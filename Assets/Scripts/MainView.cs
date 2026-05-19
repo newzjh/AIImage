@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -29,6 +30,8 @@ public class MainView : MonoBehaviour
     private ListView _imageList;
     private ListView _historyList;
     private SplitCompareView _imageViewer;
+    private Image2ImageAI _image2ImageAI;
+    private bool _aiRunning;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -47,6 +50,9 @@ public class MainView : MonoBehaviour
     private void Awake()
     {
         _uiDocument = GetComponent<UIDocument>();
+        _image2ImageAI = GetComponent<Image2ImageAI>();
+        if (_image2ImageAI == null)
+            _image2ImageAI = gameObject.AddComponent<Image2ImageAI>();
     }
 
     private void OnEnable()
@@ -837,15 +843,7 @@ public class MainView : MonoBehaviour
 
     private void ApplyOperation(ImageOp op)
     {
-        var src = GetCurrentHistoryTexture();
-        if (src == null) src = GetOriginalHistoryTexture();
-        var original = GetOriginalHistoryTexture();
-        if (src == null || original == null) return;
-
-        var result = GenerateModifiedTexture(src, op);
-        if (result == null) return;
-
-        AddHistory(result, OpLabel(op));
+        RunAIForOperation(op).Forget();
     }
 
     private void OnFaceSwap() => ApplyOperation(ImageOp.FaceSwap);
@@ -856,6 +854,52 @@ public class MainView : MonoBehaviour
     private void OnRemovePerson() => ApplyOperation(ImageOp.RemovePerson);
     private void OnColorGrade() => ApplyOperation(ImageOp.ColorGrade);
     private void OnDehaze() => ApplyOperation(ImageOp.Dehaze);
+
+    private async UniTaskVoid RunAIForOperation(ImageOp op)
+    {
+        if (_aiRunning) return;
+        if (_image2ImageAI == null) return;
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        var original = GetOriginalHistoryTexture();
+        if (src == null || original == null) return;
+
+        _aiRunning = true;
+        try
+        {
+            var prompt = BuildPromptForOp(op);
+            var result = await _image2ImageAI.ImageToImageAsync(
+                src,
+                prompt,
+                original.width,
+                original.height,
+                new System.Threading.CancellationToken());
+
+            if (result != null)
+                AddHistory(result, OpLabel(op));
+        }
+        finally
+        {
+            _aiRunning = false;
+        }
+    }
+
+    private static string BuildPromptForOp(ImageOp op)
+    {
+        return op switch
+        {
+            ImageOp.FaceSwap => "将输入图片中的前景人物脸部进行自然的换脸处理，保持光照、肤色和细节一致，结果真实且无明显伪影。",
+            ImageOp.Sharpen => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，提高前景人物清晰度",
+            ImageOp.Whiten => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，对前景人物进行自然美白与肤色优化，保持肤质真实，避免假白和过度磨皮。",
+            ImageOp.DeGlare => "对输入图片进行去反光/去高光处理，降低镜面反射与眩光，保留细节与真实质感。",
+            ImageOp.ChangeBackground => "在保持主体完整的前提下替换背景，边缘自然干净，主体与背景融合自然。",
+            ImageOp.RemovePerson => "移除画面中的背景人物，自动补全背景，纹理连贯自然，无明显修补痕迹。",
+            ImageOp.ColorGrade => "对输入图片进行调色，提升整体观感与色彩层次，保持自然不过饱和。",
+            ImageOp.Dehaze => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏。",
+            _ => op.ToString()
+        };
+    }
 
     private static string OpLabel(ImageOp op)
     {

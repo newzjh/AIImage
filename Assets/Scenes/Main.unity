@@ -638,6 +638,7 @@ GameObject:
   - component: {fileID: 2021060201}
   - component: {fileID: 2021060200}
   - component: {fileID: 2021060202}
+  - component: {fileID: 2021060203}
   m_Layer: 5
   m_Name: UIDocument
   m_TagString: Untagged
@@ -698,9 +699,37 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::MainView
   leftPaneWidth: 380
   leftTopPaneHeight: 420
+  leftCenterPaneHeight: 260
   maxDirectoryDepth: 6
   maxChildrenPerDirectory: 250
   textureCacheLimit: 12
+--- !u!114 &2021060203
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2021060199}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d38120371191a9048a2dea64b4b200f1, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Image2ImageAI
+  provider: 3
+  googleApiKey: 
+  googleModel: gemini-2.0-flash-exp
+  googleBaseUrl: https://generativelanguage.googleapis.com/v1beta
+  replicateApiToken: 
+  replicateVersion: 
+  replicateInputImageField: image
+  replicateStrength: 0.65
+  dashScopeApiKey: 
+  dashScopeModel: wanx-v1
+  dashScopeBaseUrl: https://dashscope.aliyuncs.com
+  doubaoApiKey: ba0e3461-60b9-49d2-87e6-d6e6d95e10bd
+  doubaoBaseUrl: https://ark.cn-beijing.volces.com/api/v3
+  timeoutSeconds: 180
+  pollIntervalMs: 900
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
