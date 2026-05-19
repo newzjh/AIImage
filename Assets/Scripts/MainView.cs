@@ -1185,12 +1185,12 @@ public class MainView : MonoBehaviour
 
         try
         {
-#if UNITY_EDITOR
-            UnityEditor.EditorUtility.RevealInFinder(path);
-#elif UNITY_STANDALONE_WIN
-            Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true });
-#elif UNITY_STANDALONE_OSX
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            Process.Start(new ProcessStartInfo("explorer.exe", "/open,\"" + path + "\"") { UseShellExecute = true });
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
             Process.Start(new ProcessStartInfo("open", "-R \"" + path + "\"") { UseShellExecute = false });
+#elif UNITY_EDITOR
+            UnityEditor.EditorUtility.RevealInFinder(path);
 #elif UNITY_STANDALONE_LINUX
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrWhiteSpace(dir))
@@ -1209,7 +1209,7 @@ public class MainView : MonoBehaviour
     }
 #endif
 
-    private int GetDepthForPath(string directoryPath)
+            private int GetDepthForPath(string directoryPath)
     {
         if (string.IsNullOrWhiteSpace(_currentDriveRoot) || string.IsNullOrWhiteSpace(directoryPath))
             return 0;
