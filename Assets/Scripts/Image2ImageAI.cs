@@ -69,7 +69,7 @@ public sealed class Image2ImageAI : MonoBehaviour
  
     [Header("Google AI Studio (Gemini)")]
     [SerializeField] private string googleApiKey;
-    [SerializeField] private string googleModel = "gemini-2.0-flash-exp";
+    public const string googleModel = "gemini-2.5-flash-image";
     [SerializeField] private string googleBaseUrl = "https://generativelanguage.googleapis.com/v1beta";
  
     [Header("Replicate")]
@@ -86,7 +86,8 @@ public sealed class Image2ImageAI : MonoBehaviour
     [Header("Doubao")]
     [SerializeField] private string doubaoApiKey;
     [SerializeField] private string doubaoBaseUrl = "https://ark.cn-beijing.volces.com/api/v3";
- 
+    public const string doubaoModel = "doubao-seedream-4-5-251128";
+
     [Header("Runtime")]
     [SerializeField] private int timeoutSeconds = 180;
     [SerializeField] private int pollIntervalMs = 900;
@@ -185,42 +186,45 @@ public sealed class Image2ImageAI : MonoBehaviour
     private async UniTask<List<Texture2D>> ReplicateImageToImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(replicateApiToken)) return null;
-        if (string.IsNullOrWhiteSpace(replicateVersion)) return null;
+        //if (string.IsNullOrWhiteSpace(replicateVersion)) return null;
  
         var png = EncodePng(referenceImages[0]);
         if (png == null || png.Length == 0) return null;
  
-        var imageDataUrl = "data:image/png;base64," + Convert.ToBase64String(png);
-        var extraRefs = new List<object>();
-        for (var i = 1; i < referenceImages.Count; i++)
+        var refs = new List<object>();
+        for (var i = 0; i < referenceImages.Count; i++)
         {
             var b = EncodePng(referenceImages[i]);
             if (b == null || b.Length == 0) continue;
-            extraRefs.Add("data:image/png;base64," + Convert.ToBase64String(b));
+            refs.Add("data:image/png;base64," + Convert.ToBase64String(b));
         }
  
         var inputObj = new Dictionary<string, object>
         {
             ["prompt"] = prompt,
-            [replicateInputImageField] = imageDataUrl,
-            ["strength"] = replicateStrength
+            ["input_images"] = refs,
+            ["resolution"] = "2 MP",
+            ["output_format"] = "png",
+            ["safety_tolerance"] = 2
         };
-        if (extraRefs.Count > 0)
-        {
-            inputObj["reference_images"] = extraRefs;
-            inputObj["images"] = extraRefs;
-        }
+
+        //var requestJson = BuildJsonObject(new Dictionary<string, object>
+        //{
+        //    ["version"] = replicateVersion,
+        //    ["input"] = inputObj
+        //});
 
         var requestJson = BuildJsonObject(new Dictionary<string, object>
         {
-            ["version"] = replicateVersion,
             ["input"] = inputObj
         });
- 
-        var createUrl = "https://api.replicate.com/v1/predictions";
+
+        //var createUrl = "https://api.replicate.com/v1/predictions";
+        var createUrl = "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions";
+        
         var created = await SendJsonAsync(createUrl, "POST", requestJson, new Dictionary<string, string>
         {
-            ["Authorization"] = "Token " + replicateApiToken
+            ["Authorization"] = "Bearer " + replicateApiToken
         }, ct);
  
         if (string.IsNullOrWhiteSpace(created))
@@ -238,7 +242,7 @@ public sealed class Image2ImageAI : MonoBehaviour
             var pollUrl = "https://api.replicate.com/v1/predictions/" + id;
             var polled = await SendJsonAsync(pollUrl, "GET", null, new Dictionary<string, string>
             {
-                ["Authorization"] = "Token " + replicateApiToken
+                ["Authorization"] = "Bearer " + replicateApiToken
             }, ct);
  
             if (string.IsNullOrWhiteSpace(polled))
@@ -436,7 +440,7 @@ public sealed class Image2ImageAI : MonoBehaviour
         var url = doubaoBaseUrl.TrimEnd('/') + "/images/generations";
         var reqObj = new Dictionary<string, object>
         {
-            ["model"] = "doubao-seedream-4-5-251128",
+            ["model"] = doubaoModel,
             ["prompt"] = prompt,
             ["image"] = dataUrl,
             ["size"] = "2k",
@@ -664,7 +668,18 @@ public sealed class Image2ImageAI : MonoBehaviour
             }
  
             req.timeout = Mathf.Max(5, timeoutSeconds);
-            await req.SendWebRequest().ToUniTask(cancellationToken: ct);
+            try
+            {
+                await req.SendWebRequest();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError(ex);
+                var body = req.downloadHandler?.text;
+                var msg = BuildRequestErrorMessage(method, url, req.responseCode, ex.ToString(), body);
+                try { RequestError?.Invoke(msg); } catch { }
+                return body;
+            }
             if (req.result != UnityWebRequest.Result.Success)
             {
                 var body = req.downloadHandler?.text;

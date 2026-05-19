@@ -517,6 +517,11 @@ PrefabInstance:
       propertyPath: m_Name
       value: CanvasBrowser
       objectReference: {fileID: 0}
+    - target: {fileID: 1819851258691348145, guid: e95e49d31255c67468ebc1b43ad04834,
+        type: 3}
+      propertyPath: m_IsActive
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 3020779689352427220, guid: e95e49d31255c67468ebc1b43ad04834,
         type: 3}
       propertyPath: m_Pivot.x
@@ -715,9 +720,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d38120371191a9048a2dea64b4b200f1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Image2ImageAI
+  imageProcessingCS: {fileID: 0}
   provider: 3
-  googleApiKey: 
-  googleModel: gemini-2.0-flash-exp
+  googleApiKey: AIzaSyB2vQlPOEE3w8i93ZyWJkJ7I2JPgydfn_Q
   googleBaseUrl: https://generativelanguage.googleapis.com/v1beta
   replicateApiToken: 
   replicateVersion: 
@@ -730,6 +735,9 @@ MonoBehaviour:
   doubaoBaseUrl: https://ark.cn-beijing.volces.com/api/v3
   timeoutSeconds: 180
   pollIntervalMs: 900
+  enableRemoveWatermark: 0
+  watermarkRect: {x: 0.72, y: 0.86, z: 0.26, w: 0.12}
+  watermarkRadius: 6
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
