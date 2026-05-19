@@ -11,8 +11,9 @@ public class MainView : MonoBehaviour
 {
     private const string PrefKeyLastImagePath = "MainView.LastImagePath";
 
-    [SerializeField] private int leftPaneWidth = 380;
-    [SerializeField] private int leftTopPaneHeight = 420;
+    [SerializeField] private int leftPaneWidth = 320;
+    [SerializeField] private int leftTopPaneHeight = 320;
+    [SerializeField] private int leftCenterPaneHeight = 260;
     [SerializeField] private int maxDirectoryDepth = 6;
     [SerializeField] private int maxChildrenPerDirectory = 250;
     [SerializeField] private int textureCacheLimit = 12;
@@ -20,14 +21,17 @@ public class MainView : MonoBehaviour
     private UIDocument _uiDocument;
 
     private TwoPaneSplitView _mainSplitView;
-    private TwoPaneSplitView _leftSplitView;
+    private TwoPaneSplitView _leftSplitTop;
+    private TwoPaneSplitView _leftSplitBottom;
 
     private PopupField<string> _drivePopup;
     private TreeView _directoryTree;
     private ListView _imageList;
-    private ImageViewer _imageViewer;
+    private ListView _historyList;
+    private SplitCompareView _imageViewer;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
+    private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
     private readonly Dictionary<string, Texture2D> _textureCache = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _textureCacheOrder = new Queue<string>();
 
@@ -61,6 +65,7 @@ public class MainView : MonoBehaviour
             return;
 
         _imageViewer?.Clear();
+        ClearHistory();
 
         foreach (var kv in _textureCache)
         {
@@ -97,6 +102,7 @@ public class MainView : MonoBehaviour
         leftPane.style.flexGrow = 1;
         leftPane.style.flexBasis = 0;
         leftPane.style.minWidth = 220;
+        leftPane.style.maxWidth = 260;
         leftPane.style.minHeight = 0;
         leftPane.style.height = Length.Percent(100);
         _mainSplitView.Add(leftPane);
@@ -109,28 +115,51 @@ public class MainView : MonoBehaviour
         rightPane.style.height = Length.Percent(100);
         _mainSplitView.Add(rightPane);
 
-        _leftSplitView = new TwoPaneSplitView(0, leftTopPaneHeight, TwoPaneSplitViewOrientation.Vertical);
-        _leftSplitView.style.flexGrow = 1;
-        _leftSplitView.style.minHeight = 0;
-        _leftSplitView.style.height = Length.Percent(100);
-        leftPane.Add(_leftSplitView);
+        _leftSplitTop = new TwoPaneSplitView(0, leftTopPaneHeight, TwoPaneSplitViewOrientation.Vertical);
+        _leftSplitTop.style.flexGrow = 1;
+        _leftSplitTop.style.minHeight = 0;
+        _leftSplitTop.style.height = Length.Percent(100);
+        leftPane.Add(_leftSplitTop);
 
         var leftTop = new VisualElement();
         leftTop.style.flexGrow = 1;
         leftTop.style.flexBasis = 0;
         leftTop.style.minHeight = 0;
+        leftTop.style.maxHeight = 220;
         leftTop.style.height = Length.Percent(100);
-        _leftSplitView.Add(leftTop);
+        _leftSplitTop.Add(leftTop);
+
+        var leftBottomContainer = new VisualElement();
+        leftBottomContainer.style.flexGrow = 1;
+        leftBottomContainer.style.flexBasis = 0;
+        leftBottomContainer.style.minHeight = 0;
+        leftBottomContainer.style.height = Length.Percent(100);
+        _leftSplitTop.Add(leftBottomContainer);
+
+        _leftSplitBottom = new TwoPaneSplitView(0, leftCenterPaneHeight, TwoPaneSplitViewOrientation.Vertical);
+        _leftSplitBottom.style.flexGrow = 1;
+        _leftSplitBottom.style.minHeight = 0;
+        _leftSplitBottom.style.height = Length.Percent(100);
+        leftBottomContainer.Add(_leftSplitBottom);
+
+        var leftCenter = new VisualElement();
+        leftCenter.style.flexGrow = 1;
+        leftCenter.style.flexBasis = 0;
+        leftCenter.style.minHeight = 0;
+        leftCenter.style.height = Length.Percent(100);
+        _leftSplitBottom.Add(leftCenter);
 
         var leftBottom = new VisualElement();
         leftBottom.style.flexGrow = 1;
         leftBottom.style.flexBasis = 0;
         leftBottom.style.minHeight = 0;
+        leftBottom.style.maxHeight = 200;
         leftBottom.style.height = Length.Percent(100);
-        _leftSplitView.Add(leftBottom);
+        _leftSplitBottom.Add(leftBottom);
 
         BuildDirectoryBrowser(leftTop);
-        BuildImageList(leftBottom);
+        BuildImageList(leftCenter);
+        BuildHistoryList(leftBottom);
         BuildImageViewer(rightPane);
     }
 
@@ -241,6 +270,64 @@ public class MainView : MonoBehaviour
         parent.Add(_imageList);
     }
 
+    private void BuildHistoryList(VisualElement parent)
+    {
+        parent.style.flexDirection = FlexDirection.Column;
+        parent.style.flexGrow = 1;
+        parent.style.minHeight = 0;
+
+        var header = new VisualElement();
+        header.style.flexDirection = FlexDirection.Row;
+        header.style.alignItems = Align.Center;
+        header.style.paddingLeft = 8;
+        header.style.paddingRight = 8;
+        header.style.paddingTop = 6;
+        header.style.paddingBottom = 6;
+        header.style.flexShrink = 0;
+        parent.Add(header);
+
+        var title = new Label("History");
+        title.style.flexGrow = 1;
+        header.Add(title);
+
+        _historyList = new ListView();
+        _historyList.style.flexGrow = 1;
+        _historyList.style.flexBasis = 0;
+        _historyList.style.minHeight = 0;
+        _historyList.virtualizationMethod = CollectionVirtualizationMethod.FixedHeight;
+        _historyList.fixedItemHeight = 24;
+        _historyList.showBorder = true;
+        _historyList.showAlternatingRowBackgrounds = AlternatingRowBackground.ContentOnly;
+        _historyList.selectionType = SelectionType.Single;
+        _historyList.itemsSource = _historyEntries;
+        _historyList.makeItem = () =>
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.paddingLeft = 8;
+            row.style.paddingRight = 8;
+            row.style.paddingTop = 4;
+            row.style.paddingBottom = 4;
+
+            var label = new Label();
+            label.style.flexGrow = 1;
+            label.style.unityTextAlign = TextAnchor.MiddleLeft;
+            label.style.whiteSpace = WhiteSpace.NoWrap;
+            label.style.overflow = Overflow.Hidden;
+            label.style.textOverflow = TextOverflow.Ellipsis;
+            row.Add(label);
+
+            return row;
+        };
+        _historyList.bindItem = (element, index) =>
+        {
+            var label = element.Q<Label>();
+            label.text = _historyEntries[index].label;
+        };
+        _historyList.selectionChanged += OnHistorySelectionChanged;
+        parent.Add(_historyList);
+    }
+
     private void BuildImageViewer(VisualElement parent)
     {
         parent.style.flexDirection = FlexDirection.Column;
@@ -261,15 +348,15 @@ public class MainView : MonoBehaviour
         row0.style.alignItems = Align.Center;
         header.Add(row0);
 
-        row0.Add(new Button(() => { }) { text = "换脸" });
-        row0.Add(new Button(() => { }) { text = "清晰化" });
-        row0.Add(new Button(() => { }) { text = "美白" });
-        row0.Add(new Button(() => { }) { text = "去反光" });
+        row0.Add(new Button(OnFaceSwap) { text = "换脸" });
+        row0.Add(new Button(OnSharpen) { text = "清晰化" });
+        row0.Add(new Button(OnWhiten) { text = "美白" });
+        row0.Add(new Button(OnDeGlare) { text = "去反光" });
 
-        row0.Add(new Button(() => { }) { text = "换背景" });
-        row0.Add(new Button(() => { }) { text = "去人" });
-        row0.Add(new Button(() => { }) { text = "调色" });
-        row0.Add(new Button(() => { }) { text = "去霾" });
+        row0.Add(new Button(OnChangeBackground) { text = "换背景" });
+        row0.Add(new Button(OnRemovePerson) { text = "去人" });
+        row0.Add(new Button(OnColorGrade) { text = "调色" });
+        row0.Add(new Button(OnDehaze) { text = "去霾" });
 
         var fitButton = new Button(() => _imageViewer.FitToView()) { text = "Fit" };
         row0.Add(fitButton);
@@ -278,7 +365,7 @@ public class MainView : MonoBehaviour
         row0.Add(resetButton);
 
 
-        _imageViewer = new ImageViewer();
+        _imageViewer = new SplitCompareView();
         _imageViewer.style.flexGrow = 1;
         parent.Add(_imageViewer);
     }
@@ -662,11 +749,244 @@ public class MainView : MonoBehaviour
         if (first is not ImageFileEntry entry) return;
 
         var tex = LoadTexture(entry.fullPath);
-        _imageViewer.SetTexture(tex, entry.fileName);
-        CopySelectionToClipboard(entry.fullPath, tex);
+        if (tex != null)
+        {
+            ResetHistoryWithOriginal(tex, entry.fileName, entry.fullPath);
+            CopySelectionToClipboard(entry.fullPath, tex);
 
-        PlayerPrefs.SetString(PrefKeyLastImagePath, entry.fullPath);
-        PlayerPrefs.Save();
+            PlayerPrefs.SetString(PrefKeyLastImagePath, entry.fullPath);
+            PlayerPrefs.Save();
+        }
+    }
+
+    private void OnHistorySelectionChanged(IEnumerable<object> selectedItems)
+    {
+        var first = selectedItems.FirstOrDefault();
+        if (first is not HistoryEntry entry) return;
+        if (_historyEntries.Count == 0) return;
+
+        var original = _historyEntries[0].texture;
+        var current = entry.texture;
+        _imageViewer.SetSources(current, original, entry.label);
+    }
+
+    private void ResetHistoryWithOriginal(Texture2D originalTexture, string label, string fullPath)
+    {
+        ClearHistory();
+
+        _historyEntries.Add(new HistoryEntry
+        {
+            label = "原图: " + (label ?? originalTexture.name),
+            texture = originalTexture,
+            owned = false,
+            sourcePath = fullPath
+        });
+        _historyList?.RefreshItems();
+        _historyList?.SetSelection(0);
+
+        _imageViewer.SetSources(originalTexture, originalTexture, label);
+        _imageViewer.FitToView();
+    }
+
+    private void ClearHistory()
+    {
+        for (var i = 0; i < _historyEntries.Count; i++)
+        {
+            if (_historyEntries[i].owned && _historyEntries[i].texture != null)
+                Destroy(_historyEntries[i].texture);
+        }
+
+        _historyEntries.Clear();
+        _historyList?.RefreshItems();
+    }
+
+    private Texture2D GetCurrentHistoryTexture()
+    {
+        if (_historyList == null) return null;
+        var index = _historyList.selectedIndex;
+        if (index < 0 || index >= _historyEntries.Count) return null;
+        return _historyEntries[index].texture;
+    }
+
+    private Texture2D GetOriginalHistoryTexture()
+    {
+        if (_historyEntries.Count == 0) return null;
+        return _historyEntries[0].texture;
+    }
+
+    private void AddHistory(Texture2D texture, string label)
+    {
+        if (texture == null) return;
+        if (_historyEntries.Count == 0) return;
+
+        var entry = new HistoryEntry
+        {
+            label = label ?? texture.name,
+            texture = texture,
+            owned = true,
+            sourcePath = null
+        };
+
+        _historyEntries.Insert(1, entry);
+        _historyList.RefreshItems();
+        _historyList.SetSelection(1);
+        _historyList.ScrollToItem(1);
+
+        _imageViewer.SetSources(entry.texture, GetOriginalHistoryTexture(), entry.label);
+    }
+
+    private void ApplyOperation(ImageOp op)
+    {
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        var original = GetOriginalHistoryTexture();
+        if (src == null || original == null) return;
+
+        var result = GenerateModifiedTexture(src, op);
+        if (result == null) return;
+
+        AddHistory(result, OpLabel(op));
+    }
+
+    private void OnFaceSwap() => ApplyOperation(ImageOp.FaceSwap);
+    private void OnSharpen() => ApplyOperation(ImageOp.Sharpen);
+    private void OnWhiten() => ApplyOperation(ImageOp.Whiten);
+    private void OnDeGlare() => ApplyOperation(ImageOp.DeGlare);
+    private void OnChangeBackground() => ApplyOperation(ImageOp.ChangeBackground);
+    private void OnRemovePerson() => ApplyOperation(ImageOp.RemovePerson);
+    private void OnColorGrade() => ApplyOperation(ImageOp.ColorGrade);
+    private void OnDehaze() => ApplyOperation(ImageOp.Dehaze);
+
+    private static string OpLabel(ImageOp op)
+    {
+        return op switch
+        {
+            ImageOp.FaceSwap => "换脸",
+            ImageOp.Sharpen => "清晰化",
+            ImageOp.Whiten => "美白",
+            ImageOp.DeGlare => "去反光",
+            ImageOp.ChangeBackground => "换背景",
+            ImageOp.RemovePerson => "去人",
+            ImageOp.ColorGrade => "调色",
+            ImageOp.Dehaze => "去霾",
+            _ => op.ToString()
+        };
+    }
+
+    private static Texture2D GenerateModifiedTexture(Texture2D src, ImageOp op)
+    {
+        if (src == null) return null;
+
+        Color32[] pixels;
+        try
+        {
+            pixels = src.GetPixels32();
+        }
+        catch
+        {
+            return null;
+        }
+
+        var w = src.width;
+        var h = src.height;
+
+        switch (op)
+        {
+            case ImageOp.Whiten:
+                for (var i = 0; i < pixels.Length; i++)
+                {
+                    var p = pixels[i];
+                    p.r = (byte)Mathf.Clamp(p.r + 18, 0, 255);
+                    p.g = (byte)Mathf.Clamp(p.g + 18, 0, 255);
+                    p.b = (byte)Mathf.Clamp(p.b + 18, 0, 255);
+                    pixels[i] = p;
+                }
+                break;
+            case ImageOp.ColorGrade:
+                for (var i = 0; i < pixels.Length; i++)
+                {
+                    var p = pixels[i];
+                    p.r = (byte)Mathf.Clamp(p.r * 1.06f, 0, 255);
+                    p.g = (byte)Mathf.Clamp(p.g * 1.00f, 0, 255);
+                    p.b = (byte)Mathf.Clamp(p.b * 0.96f, 0, 255);
+                    pixels[i] = p;
+                }
+                break;
+            case ImageOp.Dehaze:
+                for (var i = 0; i < pixels.Length; i++)
+                {
+                    var p = pixels[i];
+                    var c = (p.r + p.g + p.b) / 3f;
+                    var k = 1.12f;
+                    p.r = (byte)Mathf.Clamp((p.r - c) * k + c, 0, 255);
+                    p.g = (byte)Mathf.Clamp((p.g - c) * k + c, 0, 255);
+                    p.b = (byte)Mathf.Clamp((p.b - c) * k + c, 0, 255);
+                    pixels[i] = p;
+                }
+                break;
+            case ImageOp.DeGlare:
+                for (var i = 0; i < pixels.Length; i++)
+                {
+                    var p = pixels[i];
+                    p.r = (byte)Mathf.Clamp(p.r * 0.97f, 0, 255);
+                    p.g = (byte)Mathf.Clamp(p.g * 0.97f, 0, 255);
+                    p.b = (byte)Mathf.Clamp(p.b * 0.97f, 0, 255);
+                    pixels[i] = p;
+                }
+                break;
+            case ImageOp.Sharpen:
+                {
+                    var srcCopy = (Color32[])pixels.Clone();
+                    var amount = 0.9f;
+                    int Idx(int x, int y) => y * w + x;
+                    for (var y = 1; y < h - 1; y++)
+                    {
+                        for (var x = 1; x < w - 1; x++)
+                        {
+                            var c = srcCopy[Idx(x, y)];
+                            var l = srcCopy[Idx(x - 1, y)];
+                            var r = srcCopy[Idx(x + 1, y)];
+                            var u = srcCopy[Idx(x, y - 1)];
+                            var d = srcCopy[Idx(x, y + 1)];
+                            var nr = Mathf.Clamp(c.r + amount * (c.r * 4 - l.r - r.r - u.r - d.r), 0, 255);
+                            var ng = Mathf.Clamp(c.g + amount * (c.g * 4 - l.g - r.g - u.g - d.g), 0, 255);
+                            var nb = Mathf.Clamp(c.b + amount * (c.b * 4 - l.b - r.b - u.b - d.b), 0, 255);
+                            pixels[Idx(x, y)] = new Color32((byte)nr, (byte)ng, (byte)nb, c.a);
+                        }
+                    }
+                }
+                break;
+            case ImageOp.FaceSwap:
+            case ImageOp.ChangeBackground:
+            case ImageOp.RemovePerson:
+            default:
+                {
+                    for (var y = 0; y < h; y++)
+                    {
+                        for (var x = 0; x < w; x++)
+                        {
+                            var i = y * w + x;
+                            var p = pixels[i];
+                            var t = (x + y) % 16;
+                            if (t == 0)
+                            {
+                                p.r = (byte)Mathf.Clamp(p.r + 24, 0, 255);
+                                p.b = (byte)Mathf.Clamp(p.b + 24, 0, 255);
+                            }
+                            pixels[i] = p;
+                        }
+                    }
+                }
+                break;
+        }
+
+        var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+        tex.SetPixels32(pixels);
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        tex.name = OpLabel(op);
+        return tex;
     }
 
     private void RestoreLastSelection()
@@ -898,22 +1218,53 @@ public class MainView : MonoBehaviour
         public string fileName;
     }
 
-    private sealed class ImageViewer : VisualElement
+    [Serializable]
+    private struct HistoryEntry
     {
-        private readonly VisualElement _viewport;
-        private readonly Image _image;
+        public string label;
+        public Texture2D texture;
+        public bool owned;
+        public string sourcePath;
+    }
+
+    private enum ImageOp
+    {
+        FaceSwap,
+        Sharpen,
+        Whiten,
+        DeGlare,
+        ChangeBackground,
+        RemovePerson,
+        ColorGrade,
+        Dehaze
+    }
+
+    private sealed class SplitCompareView : VisualElement
+    {
         private readonly Label _info;
 
-        private Texture2D _texture;
+        private Texture _texA;
+        private Texture _texB;
+        public float angleRad;
+        private float offset;
+        private float thicknessPx = 2f;
+        private Color lineColor = new Color(1f, 1f, 1f, 0.9f);
+
         private float _zoom = 1f;
-        private Vector3 _pan;
+        private Vector2 _pan;
 
-        private bool _dragging;
-        private int _dragPointerId;
-        private Vector3 _dragStartPointer;
-        private Vector3 _dragStartPan;
+        private bool _panning;
+        private int _panPointerId;
+        private Vector3 _panStartPointer;
+        private Vector2 _panStartPan;
 
-        public ImageViewer()
+        private bool _dragSplit;
+        private int _splitPointerId;
+        private Vector3 _splitDragStartLocal;
+        private float _splitDragStartAngle;
+        private float _splitDragStartOffset;
+
+        public SplitCompareView()
         {
             style.flexDirection = FlexDirection.Column;
             style.flexGrow = 1;
@@ -929,91 +1280,82 @@ public class MainView : MonoBehaviour
             _info.style.textOverflow = TextOverflow.Ellipsis;
             Add(_info);
 
-            _viewport = new VisualElement();
-            _viewport.style.flexGrow = 1;
-            _viewport.style.overflow = Overflow.Hidden;
-            _viewport.style.backgroundColor = new StyleColor(new Color(0.12f, 0.12f, 0.12f, 1f));
-            _viewport.style.minHeight = 0;
-            Add(_viewport);
+            style.flexGrow = 1;
+            style.minHeight = 0;
+            style.backgroundColor = new StyleColor(new Color(0.12f, 0.12f, 0.12f, 1f));
 
-            _image = new Image();
-            _image.pickingMode = PickingMode.Ignore;
-            _image.style.position = Position.Absolute;
-            _image.style.left = 0;
-            _image.style.top = 0;
-            _image.style.transformOrigin = new TransformOrigin(Length.Percent(0), Length.Percent(0));
-            _viewport.Add(_image);
+            pickingMode = PickingMode.Position;
+            angleRad = 0f;
+            offset = 0f;
 
-            _viewport.RegisterCallback<GeometryChangedEvent>(_ => { if (_texture != null) FitToView(); });
-            _viewport.RegisterCallback<WheelEvent>(OnWheel, TrickleDown.TrickleDown);
-            _viewport.RegisterCallback<PointerDownEvent>(OnPointerDown, TrickleDown.TrickleDown);
-            _viewport.RegisterCallback<PointerMoveEvent>(OnPointerMove, TrickleDown.TrickleDown);
-            _viewport.RegisterCallback<PointerUpEvent>(OnPointerUp, TrickleDown.TrickleDown);
+            generateVisualContent += OnGenerateVisualContent;
+            RegisterCallback<GeometryChangedEvent>(_ => { if (_texA != null || _texB != null) FitToView(); });
+            RegisterCallback<WheelEvent>(OnWheel, TrickleDown.TrickleDown);
+            RegisterCallback<PointerDownEvent>(OnPointerDown);
+            RegisterCallback<PointerMoveEvent>(OnPointerMove);
+            RegisterCallback<PointerUpEvent>(OnPointerUp);
+            RegisterCallback<PointerCancelEvent>(OnPointerCancel);
         }
 
-        public void SetTexture(Texture2D texture, string fileName)
+        public void SetSources(Texture2D current, Texture2D original, string label)
         {
-            _texture = texture;
-            _image.image = texture;
+            _texA = current;
+            _texB = original;
 
-            if (texture == null)
-            {
-                _image.style.width = 0;
-                _image.style.height = 0;
-                _info.text = "";
-                return;
-            }
-
-            _image.style.width = texture.width;
-            _image.style.height = texture.height;
-            _info.text = fileName ?? texture.name;
-
-            FitToView();
+            var refTex = _texA != null ? _texA : _texB;
+            _info.text = refTex == null ? "" : (label ?? refTex.name);
+            MarkDirtyRepaint();
         }
 
         public void Clear()
         {
-            SetTexture(null, null);
+            SetSources(null, null, null);
             ResetView();
         }
 
         public void ResetView()
         {
             _zoom = 1f;
-            if (_texture != null)
+            var refTex = _texA != null ? _texA : _texB;
+            if (refTex != null)
             {
-                var viewportSize = _viewport.contentRect.size;
-                var scaledSize = new Vector2(_texture.width * _zoom, _texture.height * _zoom);
+                var viewportSize = new Vector2(contentRect.width, Mathf.Max(1f, contentRect.height - _info.resolvedStyle.height));
+                var scaledSize = new Vector2(refTex.width * _zoom, refTex.height * _zoom);
                 _pan = (viewportSize - scaledSize) * 0.5f;
             }
             else
             {
                 _pan = Vector2.zero;
             }
-            ApplyTransform();
+            MarkDirtyRepaint();
         }
 
         public void FitToView()
         {
-            if (_texture == null) return;
+            var refTex = _texA != null ? _texA : _texB;
+            if (refTex == null) return;
 
-            var viewportSize = _viewport.contentRect.size;
+            var viewportSize = new Vector2(contentRect.width, Mathf.Max(1f, contentRect.height - _info.resolvedStyle.height));
             if (viewportSize.x <= 1f || viewportSize.y <= 1f) return;
 
-            var scaleX = viewportSize.x / _texture.width;
-            var scaleY = viewportSize.y / _texture.height;
+            var scaleX = viewportSize.x / refTex.width;
+            var scaleY = viewportSize.y / refTex.height;
             _zoom = Mathf.Clamp(Mathf.Min(scaleX, scaleY), 0.01f, 20f);
 
-            var scaledSize = new Vector2(_texture.width * _zoom, _texture.height * _zoom);
+            var scaledSize = new Vector2(refTex.width * _zoom, refTex.height * _zoom);
             _pan = (viewportSize - scaledSize) * 0.5f;
-            ApplyTransform();
+            MarkDirtyRepaint();
         }
 
         private void OnWheel(WheelEvent evt)
         {
-            if (_texture == null) return;
+            if (_texA == null && _texB == null) return;
 
-            Vector3 viewportPos = evt.localMousePosition;
+            var viewportTop = _info.resolvedStyle.height;
+            if (evt.localMousePosition.y < viewportTop)
+                return;
+
+            var viewportPos = new Vector2(evt.localMousePosition.x, evt.localMousePosition.y - viewportTop);
             var oldZoom = _zoom;
             var factor = Mathf.Pow(1.12f, -evt.delta.y / 12f);
             _zoom = Mathf.Clamp(oldZoom * factor, 0.02f, 40f);
@@ -1022,14 +1364,14 @@ public class MainView : MonoBehaviour
 
             var imageLocal = (viewportPos - _pan) / oldZoom;
             _pan = viewportPos - imageLocal * _zoom;
-            ApplyTransform();
+            MarkDirtyRepaint();
 
             evt.StopPropagation();
         }
 
         private void OnPointerDown(PointerDownEvent evt)
         {
-            if (_texture == null) return;
+            if (_texA == null && _texB == null) return;
 
             if (evt.clickCount == 2)
             {
@@ -1040,39 +1382,306 @@ public class MainView : MonoBehaviour
 
             if (evt.button != 0 && evt.button != 2) return;
 
-            _dragging = true;
-            _dragPointerId = evt.pointerId;
-            _dragStartPointer = evt.localPosition;
-            _dragStartPan = _pan;
+            var refTex = _texA != null ? _texA : _texB;
+            var viewportTop = _info.resolvedStyle.height;
+            if (evt.localPosition.y < viewportTop)
+                return;
 
-            _viewport.CapturePointer(_dragPointerId);
+            var imgRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, viewportTop));
+            if (imgRect.width <= 1f || imgRect.height <= 1f)
+                return;
+
+            if (evt.button == 0)
+            {
+                _dragSplit = true;
+                _splitPointerId = evt.pointerId;
+                _splitDragStartLocal = evt.localPosition;
+                _splitDragStartAngle = angleRad;
+                _splitDragStartOffset = offset;
+                this.CapturePointer(_splitPointerId);
+                evt.StopPropagation();
+                return;
+            }
+
+            _panning = true;
+            _panPointerId = evt.pointerId;
+            _panStartPointer = evt.localPosition;
+            _panStartPan = _pan;
+            this.CapturePointer(_panPointerId);
             evt.StopPropagation();
         }
 
         private void OnPointerMove(PointerMoveEvent evt)
         {
-            if (!_dragging || _dragPointerId != evt.pointerId) return;
+            if (_dragSplit && _splitPointerId == evt.pointerId && this.HasPointerCapture(_splitPointerId))
+            {
+                var refTex = _texA != null ? _texA : _texB;
+                var imgRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, _info.resolvedStyle.height));
+                var w = Mathf.Max(1f, imgRect.width);
+                var h = Mathf.Max(1f, imgRect.height);
+                var deltaLocal = evt.localPosition - _splitDragStartLocal;
+                var deltaUv = new Vector2(deltaLocal.x / w, -deltaLocal.y / h);
 
-            _pan = _dragStartPan + (evt.localPosition - _dragStartPointer);
-            ApplyTransform();
+                if (evt.shiftKey)
+                {
+                    var deltaAngle = (deltaLocal.x / w) * Mathf.PI * 2f;
+                    angleRad = _splitDragStartAngle + deltaAngle;
+                }
+                else
+                {
+                    var n = new Vector2(Mathf.Cos(angleRad), Mathf.Sin(angleRad));
+                    offset = _splitDragStartOffset - Vector2.Dot(n, deltaUv);
+                }
+
+                MarkDirtyRepaint();
+                evt.StopPropagation();
+                return;
+            }
+
+            if (!_panning || _panPointerId != evt.pointerId || !this.HasPointerCapture(_panPointerId))
+                return;
+
+            _pan = _panStartPan + (Vector2)(evt.localPosition - _panStartPointer);
+            MarkDirtyRepaint();
             evt.StopPropagation();
         }
 
         private void OnPointerUp(PointerUpEvent evt)
         {
-            if (!_dragging || _dragPointerId != evt.pointerId) return;
+            if (_dragSplit && _splitPointerId == evt.pointerId)
+            {
+                _dragSplit = false;
+                if (this.HasPointerCapture(_splitPointerId))
+                    this.ReleasePointer(_splitPointerId);
+                evt.StopPropagation();
+                return;
+            }
 
-            _dragging = false;
-            if (_viewport.HasPointerCapture(_dragPointerId))
-                _viewport.ReleasePointer(_dragPointerId);
+            if (!_panning || _panPointerId != evt.pointerId)
+                return;
+
+            _panning = false;
+            if (this.HasPointerCapture(_panPointerId))
+                this.ReleasePointer(_panPointerId);
 
             evt.StopPropagation();
         }
 
-        private void ApplyTransform()
+        private void OnPointerCancel(PointerCancelEvent evt)
         {
-            _image.style.translate = new Translate(_pan.x, _pan.y, 0f);
-            _image.style.scale = new Scale(new Vector3(_zoom, _zoom, 1f));
+            if (_dragSplit && _splitPointerId == evt.pointerId)
+            {
+                _dragSplit = false;
+                if (this.HasPointerCapture(_splitPointerId))
+                    this.ReleasePointer(_splitPointerId);
+                evt.StopPropagation();
+                return;
+            }
+
+            if (_panning && _panPointerId == evt.pointerId)
+            {
+                _panning = false;
+                if (this.HasPointerCapture(_panPointerId))
+                    this.ReleasePointer(_panPointerId);
+                evt.StopPropagation();
+            }
+        }
+
+        private static Rect GetImageRect(Texture refTex, float zoom, Vector2 pan)
+        {
+            if (refTex == null) return default;
+            return new Rect(pan.x, pan.y, refTex.width * zoom, refTex.height * zoom);
+        }
+
+        private static Rect IntersectRect(Rect a, Rect b)
+        {
+            var xMin = Mathf.Max(a.xMin, b.xMin);
+            var yMin = Mathf.Max(a.yMin, b.yMin);
+            var xMax = Mathf.Min(a.xMax, b.xMax);
+            var yMax = Mathf.Min(a.yMax, b.yMax);
+            if (xMax <= xMin || yMax <= yMin)
+                return new Rect(0, 0, 0, 0);
+            return Rect.MinMaxRect(xMin, yMin, xMax, yMax);
+        }
+
+        private float SignedDistUv(Vector2 pLocal, Rect imageRect)
+        {
+            var n = new Vector2(Mathf.Cos(angleRad), Mathf.Sin(angleRad));
+            var uv = new Vector2(
+                (pLocal.x - imageRect.xMin) / imageRect.width,
+                1f - ((pLocal.y - imageRect.yMin) / imageRect.height)
+            );
+            return Vector2.Dot(n, uv - new Vector2(0.5f, 0.5f)) + offset;
+        }
+
+        private void OnGenerateVisualContent(MeshGenerationContext mgc)
+        {
+            var w = contentRect.width;
+            var viewportTop = _info.resolvedStyle.height;
+            var h = contentRect.height - viewportTop;
+            if (w <= 1f || h <= 1f)
+                return;
+
+            var refTex = _texA != null ? _texA : _texB;
+            if (refTex == null)
+                return;
+
+            var viewRect = new Rect(0, viewportTop, w, h);
+            var imageRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, viewportTop));
+            var drawRect = IntersectRect(viewRect, imageRect);
+            if (drawRect.width <= 1f || drawRect.height <= 1f)
+                return;
+
+            float SignedDist(Vector2 p) => SignedDistUv(p, imageRect);
+
+            if (_texA != null)
+                DrawHalfPlane(mgc, _texA, drawRect, imageRect, SignedDist, keepNegative: true);
+            if (_texB != null)
+                DrawHalfPlane(mgc, _texB, drawRect, imageRect, SignedDist, keepNegative: false);
+
+            DrawSplitLine(mgc, drawRect, imageRect);
+        }
+
+        private void DrawHalfPlane(
+            MeshGenerationContext mgc,
+            Texture tex,
+            Rect drawRect,
+            Rect imageRect,
+            Func<Vector2, float> signedDistFunc,
+            bool keepNegative)
+        {
+            var rectPoly = new List<Vector2>
+            {
+                new Vector2(drawRect.xMin, drawRect.yMin),
+                new Vector2(drawRect.xMax, drawRect.yMin),
+                new Vector2(drawRect.xMax, drawRect.yMax),
+                new Vector2(drawRect.xMin, drawRect.yMax)
+            };
+
+            var clipped = ClipPolygon(rectPoly, signedDistFunc, keepNegative);
+            if (clipped.Count < 3)
+                return;
+
+            var vCount = clipped.Count;
+            var iCount = (vCount - 2) * 3;
+            var mesh = mgc.Allocate(vCount, iCount, tex);
+
+            for (int i = 0; i < vCount; i++)
+            {
+                var p = clipped[i];
+                var uv = new Vector2(
+                    (p.x - imageRect.xMin) / imageRect.width,
+                    1f - ((p.y - imageRect.yMin) / imageRect.height)
+                );
+                mesh.SetNextVertex(new Vertex
+                {
+                    position = p,
+                    uv = uv,
+                    tint = Color.white
+                });
+            }
+
+            for (int i = 0; i < vCount - 2; i++)
+            {
+                mesh.SetNextIndex(0);
+                mesh.SetNextIndex((ushort)(i + 1));
+                mesh.SetNextIndex((ushort)(i + 2));
+            }
+        }
+
+        private void DrawSplitLine(MeshGenerationContext mgc, Rect drawRect, Rect imageRect)
+        {
+            var n = new Vector2(Mathf.Cos(angleRad), Mathf.Sin(angleRad));
+            var t = new Vector2(-n.y, n.x);
+            var centerUv = new Vector2(0.5f, 0.5f) - n * offset;
+            var centerLocal = new Vector2(
+                imageRect.xMin + centerUv.x * imageRect.width,
+                imageRect.yMin + (1f - centerUv.y) * imageRect.height
+            );
+
+            var len = Mathf.Max(drawRect.width, drawRect.height) * 1.5f;
+            var halfThick = thicknessPx * 0.5f;
+
+            var p0 = centerLocal + t * len + n * halfThick;
+            var p1 = centerLocal + t * len - n * halfThick;
+            var p2 = centerLocal - t * len - n * halfThick;
+            var p3 = centerLocal - t * len + n * halfThick;
+
+            var poly = new List<Vector2> { p0, p1, p2, p3 };
+            Func<Vector2, float> clipRect = p =>
+            {
+                if (p.x < drawRect.xMin) return drawRect.xMin - p.x;
+                if (p.x > drawRect.xMax) return p.x - drawRect.xMax;
+                if (p.y < drawRect.yMin) return drawRect.yMin - p.y;
+                if (p.y > drawRect.yMax) return p.y - drawRect.yMax;
+                return -1f;
+            };
+
+            var clipped = ClipPolygon(poly, clipRect, keepNegative: true);
+            if (clipped.Count < 3)
+                return;
+
+            var vCount = clipped.Count;
+            var iCount = (vCount - 2) * 3;
+            var mesh = mgc.Allocate(vCount, iCount);
+            for (int i = 0; i < vCount; i++)
+            {
+                mesh.SetNextVertex(new Vertex
+                {
+                    position = clipped[i],
+                    uv = Vector2.zero,
+                    tint = lineColor
+                });
+            }
+            for (int i = 0; i < vCount - 2; i++)
+            {
+                mesh.SetNextIndex(0);
+                mesh.SetNextIndex((ushort)(i + 1));
+                mesh.SetNextIndex((ushort)(i + 2));
+            }
+        }
+
+        private static List<Vector2> ClipPolygon(List<Vector2> poly, Func<Vector2, float> signedDist, bool keepNegative)
+        {
+            var output = new List<Vector2>(poly.Count + 4);
+            if (poly.Count == 0)
+                return output;
+
+            Vector2 prev = poly[^1];
+            float prevD = signedDist(prev);
+            bool prevIn = keepNegative ? prevD <= 0f : prevD >= 0f;
+
+            for (int i = 0; i < poly.Count; i++)
+            {
+                Vector2 cur = poly[i];
+                float curD = signedDist(cur);
+                bool curIn = keepNegative ? curD <= 0f : curD >= 0f;
+
+                if (curIn)
+                {
+                    if (!prevIn)
+                    {
+                        output.Add(Intersect(prev, cur, prevD, curD));
+                    }
+                    output.Add(cur);
+                }
+                else if (prevIn)
+                {
+                    output.Add(Intersect(prev, cur, prevD, curD));
+                }
+
+                prev = cur;
+                prevD = curD;
+                prevIn = curIn;
+            }
+
+            return output;
+        }
+
+        private static Vector2 Intersect(Vector2 a, Vector2 b, float da, float db)
+        {
+            var t = da / (da - db);
+            return a + (b - a) * t;
         }
     }
 }
