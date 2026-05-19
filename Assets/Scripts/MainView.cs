@@ -32,6 +32,12 @@ public class MainView : MonoBehaviour
     private SplitCompareView _imageViewer;
     private Image2ImageAI _image2ImageAI;
     private bool _aiRunning;
+    private VisualElement _busyOverlay;
+    private VisualElement _busyBarTrack;
+    private VisualElement _busyBar;
+    private Label _busyText;
+    private IVisualElementScheduledItem _busyAnim;
+    private float _busyPhase;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -96,6 +102,7 @@ public class MainView : MonoBehaviour
         root.style.flexGrow = 1;
         root.style.flexDirection = FlexDirection.Column;
         root.style.minHeight = 0;
+        root.style.position = Position.Relative;
 
         _mainSplitView = new TwoPaneSplitView(0, leftPaneWidth, TwoPaneSplitViewOrientation.Horizontal);
         _mainSplitView.style.backgroundColor = Color.gray;
@@ -167,6 +174,116 @@ public class MainView : MonoBehaviour
         BuildImageList(leftCenter);
         BuildHistoryList(leftBottom);
         BuildImageViewer(rightPane);
+        BuildBusyOverlay(root);
+    }
+
+    private void BuildBusyOverlay(VisualElement root)
+    {
+        _busyOverlay = new VisualElement();
+        _busyOverlay.style.position = Position.Absolute;
+        _busyOverlay.style.left = 0;
+        _busyOverlay.style.top = 0;
+        _busyOverlay.style.right = 0;
+        _busyOverlay.style.bottom = 0;
+        _busyOverlay.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.35f));
+        _busyOverlay.style.alignItems = Align.Center;
+        _busyOverlay.style.justifyContent = Justify.Center;
+        _busyOverlay.style.display = DisplayStyle.None;
+
+        var panel = new VisualElement();
+        panel.style.width = 360;
+        panel.style.paddingLeft = 14;
+        panel.style.paddingRight = 14;
+        panel.style.paddingTop = 12;
+        panel.style.paddingBottom = 12;
+        panel.style.backgroundColor = new StyleColor(new Color(0.12f, 0.12f, 0.12f, 0.95f));
+        panel.style.borderTopLeftRadius = 8;
+        panel.style.borderTopRightRadius = 8;
+        panel.style.borderBottomLeftRadius = 8;
+        panel.style.borderBottomRightRadius = 8;
+        panel.style.borderLeftWidth = 1;
+        panel.style.borderRightWidth = 1;
+        panel.style.borderTopWidth = 1;
+        panel.style.borderBottomWidth = 1;
+        panel.style.borderLeftColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderRightColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderBottomColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.flexDirection = FlexDirection.Column;
+        panel.style.alignItems = Align.Stretch;
+        _busyOverlay.Add(panel);
+
+        _busyText = new Label("处理中…");
+        _busyText.style.unityTextAlign = TextAnchor.MiddleLeft;
+        _busyText.style.whiteSpace = WhiteSpace.NoWrap;
+        _busyText.style.overflow = Overflow.Hidden;
+        _busyText.style.textOverflow = TextOverflow.Ellipsis;
+        _busyText.style.marginBottom = 10;
+        panel.Add(_busyText);
+
+        _busyBarTrack = new VisualElement();
+        _busyBarTrack.style.height = 10;
+        _busyBarTrack.style.backgroundColor = new StyleColor(new Color(1f, 1f, 1f, 0.10f));
+        _busyBarTrack.style.borderTopLeftRadius = 6;
+        _busyBarTrack.style.borderTopRightRadius = 6;
+        _busyBarTrack.style.borderBottomLeftRadius = 6;
+        _busyBarTrack.style.borderBottomRightRadius = 6;
+        _busyBarTrack.style.overflow = Overflow.Hidden;
+        _busyBarTrack.style.position = Position.Relative;
+        panel.Add(_busyBarTrack);
+
+        _busyBar = new VisualElement();
+        _busyBar.style.position = Position.Absolute;
+        _busyBar.style.left = 0;
+        _busyBar.style.top = 0;
+        _busyBar.style.height = Length.Percent(100);
+        _busyBar.style.width = 120;
+        _busyBar.style.backgroundColor = new StyleColor(new Color(0.35f, 0.78f, 1f, 0.85f));
+        _busyBarTrack.Add(_busyBar);
+
+        root.Add(_busyOverlay);
+    }
+
+    private void ShowBusy(string text)
+    {
+        if (_busyOverlay == null) return;
+        _busyText.text = string.IsNullOrWhiteSpace(text) ? "处理中…" : text;
+        _busyOverlay.style.display = DisplayStyle.Flex;
+        _busyOverlay.BringToFront();
+        _busyPhase = 0f;
+
+        if (_busyAnim == null)
+        {
+            _busyAnim = _busyOverlay.schedule.Execute(() =>
+            {
+                if (_busyOverlay.resolvedStyle.display == DisplayStyle.None)
+                    return;
+
+                var w = _busyBarTrack.resolvedStyle.width;
+                if (w <= 1f) return;
+
+                _busyPhase += 0.10f;
+                var t = (Mathf.Sin(_busyPhase) + 1f) * 0.5f;
+                var barW = Mathf.Clamp(w * (0.25f + 0.20f * (Mathf.Sin(_busyPhase * 1.7f) * 0.5f + 0.5f)), 50f, w);
+                var x = (w - barW) * t;
+                var a = 0.55f + 0.35f * (Mathf.Sin(_busyPhase * 2.3f) * 0.5f + 0.5f);
+
+                _busyBar.style.width = barW;
+                _busyBar.style.left = x;
+                _busyBar.style.opacity = a;
+            }).Every(16);
+        }
+        else
+        {
+            _busyAnim.Resume();
+        }
+    }
+
+    private void HideBusy()
+    {
+        if (_busyOverlay == null) return;
+        _busyOverlay.style.display = DisplayStyle.None;
+        _busyAnim?.Pause();
     }
 
     private void BuildDirectoryBrowser(VisualElement parent)
@@ -866,6 +983,7 @@ public class MainView : MonoBehaviour
         if (src == null || original == null) return;
 
         _aiRunning = true;
+        ShowBusy(OpLabel(op) + "处理中…");
         try
         {
             var prompt = BuildPromptForOp(op);
@@ -882,6 +1000,7 @@ public class MainView : MonoBehaviour
         finally
         {
             _aiRunning = false;
+            HideBusy();
         }
     }
 
@@ -1437,14 +1556,19 @@ public class MainView : MonoBehaviour
 
             if (evt.button == 0)
             {
-                _dragSplit = true;
-                _splitPointerId = evt.pointerId;
-                _splitDragStartLocal = evt.localPosition;
-                _splitDragStartAngle = angleRad;
-                _splitDragStartOffset = offset;
-                this.CapturePointer(_splitPointerId);
-                evt.StopPropagation();
-                return;
+                var sd = SignedDistUv(evt.localPosition, imgRect);
+                var thresholdUv = 12f / Mathf.Min(imgRect.width, imgRect.height);
+                if (Mathf.Abs(sd) <= thresholdUv)
+                {
+                    _dragSplit = true;
+                    _splitPointerId = evt.pointerId;
+                    _splitDragStartLocal = evt.localPosition;
+                    _splitDragStartAngle = angleRad;
+                    _splitDragStartOffset = offset;
+                    this.CapturePointer(_splitPointerId);
+                    evt.StopPropagation();
+                    return;
+                }
             }
 
             _panning = true;
