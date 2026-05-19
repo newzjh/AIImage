@@ -40,6 +40,9 @@ public class MainView : MonoBehaviour
     private float _busyPhase;
     private VisualElement _choiceOverlay;
     private UniTaskCompletionSource<int> _choiceTcs;
+    private VisualElement _toastOverlay;
+    private Label _toastText;
+    private IVisualElementScheduledItem _toastHide;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -85,6 +88,8 @@ public class MainView : MonoBehaviour
         ClearHistory();
         HideBusy();
         HideChoice();
+        if (_toastOverlay != null)
+            _toastOverlay.style.display = DisplayStyle.None;
 
         if (_image2ImageAI != null)
             _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
@@ -185,6 +190,7 @@ public class MainView : MonoBehaviour
         BuildHistoryList(leftBottom);
         BuildImageViewer(rightPane);
         BuildBusyOverlay(root);
+        BuildToast(root);
     }
 
     private void BuildBusyOverlay(VisualElement root)
@@ -294,6 +300,65 @@ public class MainView : MonoBehaviour
         if (_busyOverlay == null) return;
         _busyOverlay.style.display = DisplayStyle.None;
         _busyAnim?.Pause();
+    }
+
+    private void BuildToast(VisualElement root)
+    {
+        _toastOverlay = new VisualElement();
+        _toastOverlay.style.position = Position.Absolute;
+        _toastOverlay.style.left = 0;
+        _toastOverlay.style.right = 0;
+        _toastOverlay.style.top = 14;
+        _toastOverlay.style.alignItems = Align.Center;
+        _toastOverlay.style.justifyContent = Justify.FlexStart;
+        _toastOverlay.style.display = DisplayStyle.None;
+        _toastOverlay.pickingMode = PickingMode.Ignore;
+
+        var bubble = new VisualElement();
+        bubble.style.backgroundColor = new StyleColor(new Color(0.1f, 0.1f, 0.1f, 0.90f));
+        bubble.style.borderTopLeftRadius = 10;
+        bubble.style.borderTopRightRadius = 10;
+        bubble.style.borderBottomLeftRadius = 10;
+        bubble.style.borderBottomRightRadius = 10;
+        bubble.style.paddingLeft = 14;
+        bubble.style.paddingRight = 14;
+        bubble.style.paddingTop = 8;
+        bubble.style.paddingBottom = 8;
+        bubble.style.borderLeftWidth = 1;
+        bubble.style.borderRightWidth = 1;
+        bubble.style.borderTopWidth = 1;
+        bubble.style.borderBottomWidth = 1;
+        bubble.style.borderLeftColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        bubble.style.borderRightColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        bubble.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        bubble.style.borderBottomColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        _toastOverlay.Add(bubble);
+
+        _toastText = new Label();
+        _toastText.style.whiteSpace = WhiteSpace.NoWrap;
+        _toastText.style.overflow = Overflow.Hidden;
+        _toastText.style.textOverflow = TextOverflow.Ellipsis;
+        _toastText.style.color = Color.white;
+        bubble.Add(_toastText);
+
+        root.Add(_toastOverlay);
+    }
+
+    private void ShowToast(string text, int milliseconds = 2000)
+    {
+        if (_toastOverlay == null) return;
+        _toastText.text = text ?? "";
+        _toastOverlay.style.display = DisplayStyle.Flex;
+        _toastOverlay.BringToFront();
+
+        if (_toastHide != null)
+            _toastHide.Pause();
+
+        _toastHide = _toastOverlay.schedule.Execute(() =>
+        {
+            if (_toastOverlay != null)
+                _toastOverlay.style.display = DisplayStyle.None;
+        }).StartingIn(Mathf.Max(200, milliseconds));
     }
 
     private void BuildDirectoryBrowser(VisualElement parent)
@@ -496,6 +561,9 @@ public class MainView : MonoBehaviour
 
         var resetButton = new Button(() => _imageViewer.ResetView()) { text = "Reset" };
         row0.Add(resetButton);
+
+        var saveButton = new Button(OnSaveCurrentImage) { text = "保存" };
+        row0.Add(saveButton);
 
 
         _imageViewer = new SplitCompareView();
@@ -885,10 +953,88 @@ public class MainView : MonoBehaviour
         if (tex != null)
         {
             ResetHistoryWithOriginal(tex, entry.fileName, entry.fullPath);
-            CopySelectionToClipboard(entry.fullPath, tex);
+            CopySelectionToClipboardAsync(entry.fullPath, tex).Forget();
 
             PlayerPrefs.SetString(PrefKeyLastImagePath, entry.fullPath);
             PlayerPrefs.Save();
+        }
+    }
+
+    private async UniTaskVoid CopySelectionToClipboardAsync(string imageFilePath, Texture2D texture)
+    {
+        await UniTask.NextFrame();
+
+        if (string.IsNullOrWhiteSpace(imageFilePath))
+            return;
+        if (texture == null)
+            return;
+
+        try
+        {
+            CopySelectionToClipboard(imageFilePath, texture);
+            ShowToast("图片已复制到粘贴板", 2000);
+        }
+        catch
+        {
+        }
+    }
+
+    private void OnSaveCurrentImage()
+    {
+        SaveCurrentImageAsync().Forget();
+    }
+
+    private async UniTaskVoid SaveCurrentImageAsync()
+    {
+        await UniTask.NextFrame();
+
+        if (_historyEntries.Count <= 1)
+        {
+            ShowToast("没有修改", 2000);
+            return;
+        }
+
+        var path = _historyEntries.Count > 0 ? _historyEntries[0].sourcePath : null;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        var tex = GetCurrentHistoryTexture();
+        if (tex == null)
+            return;
+
+        byte[] bytes = null;
+        var ext = (Path.GetExtension(path) ?? "").ToLowerInvariant();
+        try
+        {
+            if (ext == ".png")
+                bytes = tex.EncodeToPNG();
+            else if (ext == ".jpg" || ext == ".jpeg")
+                bytes = tex.EncodeToJPG(95);
+            else if (ext == ".tga")
+                bytes = tex.EncodeToTGA();
+            else if (ext == ".exr")
+                bytes = tex.EncodeToEXR(Texture2D.EXRFlags.CompressZIP);
+            else
+            {
+                ShowToast("不支持保存格式: " + ext, 2000);
+                return;
+            }
+        }
+        catch
+        {
+            return;
+        }
+
+        if (bytes == null || bytes.Length == 0)
+            return;
+
+        try
+        {
+            await File.WriteAllBytesAsync(path, bytes);
+            ShowToast("已保存到原路径", 2000);
+        }
+        catch
+        {
         }
     }
 
@@ -1786,7 +1932,8 @@ public class MainView : MonoBehaviour
             var refTex = _texA != null ? _texA : _texB;
             if (refTex != null)
             {
-                var viewportSize = new Vector2(contentRect.width, Mathf.Max(1f, contentRect.height - _info.resolvedStyle.height));
+                var viewRect = GetViewRect();
+                var viewportSize = viewRect.size;
                 var scaledSize = new Vector2(refTex.width * _zoom, refTex.height * _zoom);
                 _pan = (viewportSize - scaledSize) * 0.5f;
             }
@@ -1802,7 +1949,8 @@ public class MainView : MonoBehaviour
             var refTex = _texA != null ? _texA : _texB;
             if (refTex == null) return;
 
-            var viewportSize = new Vector2(contentRect.width, Mathf.Max(1f, contentRect.height - _info.resolvedStyle.height));
+            var viewRect = GetViewRect();
+            var viewportSize = viewRect.size;
             if (viewportSize.x <= 1f || viewportSize.y <= 1f) return;
 
             var scaleX = viewportSize.x / refTex.width;
@@ -1818,17 +1966,19 @@ public class MainView : MonoBehaviour
         {
             if (_texA == null && _texB == null) return;
 
-            var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
-            if (evt.localMousePosition.y < viewportTop)
+            var refTex0 = _texA != null ? _texA : _texB;
+            var viewRect0 = GetViewRect();
+            if (viewRect0.width <= 1f || viewRect0.height <= 1f)
+                return;
+            if (!viewRect0.Contains(evt.localMousePosition))
                 return;
 
-            var viewportPos = new Vector2(evt.localMousePosition.x, evt.localMousePosition.y - viewportTop);
-            var refTex0 = _texA != null ? _texA : _texB;
-            var imgRect0 = GetImageRect(refTex0, _zoom, _pan + new Vector2(0f, viewportTop));
-            var viewRect0 = new Rect(0, viewportTop, contentRect.width, Mathf.Max(1f, contentRect.height - viewportTop));
+            var imgRect0 = GetImageRect(refTex0, _zoom, viewRect0.position + _pan);
             var drawRect0 = IntersectRect(viewRect0, imgRect0);
             if (!drawRect0.Contains(evt.localMousePosition))
                 return;
+
+            var viewportPos = evt.localMousePosition - viewRect0.position;
             var oldZoom = _zoom;
             var factor = Mathf.Pow(1.12f, -evt.delta.y / 12f);
             _zoom = Mathf.Clamp(oldZoom * factor, 0.02f, 40f);
@@ -1856,14 +2006,15 @@ public class MainView : MonoBehaviour
             if (evt.button != 0 && evt.button != 2) return;
 
             var refTex = _texA != null ? _texA : _texB;
-            var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
-            if (evt.localPosition.y < viewportTop)
+            var viewRect = GetViewRect();
+            if (viewRect.width <= 1f || viewRect.height <= 1f)
+                return;
+            if (!viewRect.Contains(evt.localPosition))
                 return;
 
-            var imgRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, viewportTop));
+            var imgRect = GetImageRect(refTex, _zoom, viewRect.position + _pan);
             if (imgRect.width <= 1f || imgRect.height <= 1f)
                 return;
-            var viewRect = new Rect(0, viewportTop, contentRect.width, Mathf.Max(1f, contentRect.height - viewportTop));
             var drawRect = IntersectRect(viewRect, imgRect);
             if (!drawRect.Contains(evt.localPosition))
                 return;
@@ -1898,8 +2049,8 @@ public class MainView : MonoBehaviour
             if (_dragSplit && _splitPointerId == evt.pointerId && this.HasPointerCapture(_splitPointerId))
             {
                 var refTex = _texA != null ? _texA : _texB;
-                var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
-                var imgRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, viewportTop));
+                var viewRect = GetViewRect();
+                var imgRect = GetImageRect(refTex, _zoom, viewRect.position + _pan);
                 var w = Mathf.Max(1f, imgRect.width);
                 var h = Mathf.Max(1f, imgRect.height);
                 var deltaLocal = evt.localPosition - _splitDragStartLocal;
@@ -1976,6 +2127,13 @@ public class MainView : MonoBehaviour
             return new Rect(pan.x, pan.y, refTex.width * zoom, refTex.height * zoom);
         }
 
+        private Rect GetViewRect()
+        {
+            var bounds = contentRect;
+            var infoBottom = Mathf.Max(bounds.yMin, _info.layout.y + _info.layout.height);
+            return Rect.MinMaxRect(bounds.xMin, infoBottom, bounds.xMax, bounds.yMax);
+        }
+
         private static Rect IntersectRect(Rect a, Rect b)
         {
             var xMin = Mathf.Max(a.xMin, b.xMin);
@@ -1999,18 +2157,15 @@ public class MainView : MonoBehaviour
 
         private void OnGenerateVisualContent(MeshGenerationContext mgc)
         {
-            var w = contentRect.width;
-            var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
-            var h = contentRect.height - viewportTop;
-            if (w <= 1f || h <= 1f)
-                return;
-
             var refTex = _texA != null ? _texA : _texB;
             if (refTex == null)
                 return;
 
-            var viewRect = new Rect(0, viewportTop, w, h);
-            var imageRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, viewportTop));
+            var viewRect = GetViewRect();
+            if (viewRect.width <= 1f || viewRect.height <= 1f)
+                return;
+
+            var imageRect = GetImageRect(refTex, _zoom, viewRect.position + _pan);
             var drawRect = IntersectRect(viewRect, imageRect);
             if (drawRect.width <= 1f || drawRect.height <= 1f)
                 return;
