@@ -19,6 +19,7 @@ public sealed class Image2ImageAI : MonoBehaviour
     }
  
     public event Func<IReadOnlyList<Texture2D>, UniTask<int>> SelectResultIndex;
+    public event Action<string> RequestError;
 
     [SerializeField]
     public ComputeShader imageProcessingCS;
@@ -665,9 +666,69 @@ public sealed class Image2ImageAI : MonoBehaviour
             req.timeout = Mathf.Max(5, timeoutSeconds);
             await req.SendWebRequest().ToUniTask(cancellationToken: ct);
             if (req.result != UnityWebRequest.Result.Success)
-                return req.downloadHandler?.text;
+            {
+                var body = req.downloadHandler?.text;
+                var msg = BuildRequestErrorMessage(method, url, req.responseCode, req.error, body);
+                try { RequestError?.Invoke(msg); } catch { }
+                return body;
+            }
+            if (req.responseCode >= 400)
+            {
+                var body = req.downloadHandler?.text;
+                var msg = BuildRequestErrorMessage(method, url, req.responseCode, req.error, body);
+                try { RequestError?.Invoke(msg); } catch { }
+                return body;
+            }
             return req.downloadHandler?.text;
         }
+    }
+
+    private string BuildRequestErrorMessage(string method, string url, long code, string error, string body)
+    {
+        var p = provider.ToString();
+        var sb = new StringBuilder(256);
+        sb.Append(p);
+        sb.Append(" request failed: ");
+        sb.Append(method);
+        sb.Append(' ');
+        sb.Append(ShortenUrl(url));
+        if (code > 0)
+        {
+            sb.Append(" (");
+            sb.Append(code);
+            sb.Append(')');
+        }
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            sb.Append(' ');
+            sb.Append(error);
+        }
+        var snippet = ExtractErrorSnippet(body);
+        if (!string.IsNullOrWhiteSpace(snippet))
+        {
+            sb.Append(" | ");
+            sb.Append(snippet);
+        }
+        return sb.ToString();
+    }
+
+    private static string ShortenUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return "";
+        if (url.Length <= 70)
+            return url;
+        return url.Substring(0, 62) + "…";
+    }
+
+    private static string ExtractErrorSnippet(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return "";
+        var s = body.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (s.Length <= 120)
+            return s;
+        return s.Substring(0, 112) + "…";
     }
  
     private static List<string> ExtractAllUrlsFromJson(string json)

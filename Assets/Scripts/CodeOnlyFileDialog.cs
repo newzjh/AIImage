@@ -376,6 +376,8 @@ public class CodeOnlyFileDialog : MonoBehaviour
         _fileListView = new ListView();
         _fileListView.name = "file-list";
         _fileListView.style.flexGrow = 1;
+        _fileListView.style.flexBasis = 0;
+        _fileListView.style.minHeight = 0;
         _fileListView.style.backgroundColor = new Color(0.95f, 0.95f, 0.95f);
         //_fileListView.style.borderWidth = 1;
         _fileListView.style.borderBottomLeftRadius = 1;
@@ -385,6 +387,9 @@ public class CodeOnlyFileDialog : MonoBehaviour
         //_fileListView.style.borderColor = new Color(0.8f, 0.8f, 0.8f);
         _fileListView.style.marginBottom = 10;
         _fileListView.style.unityFont = _root.style.unityFont;
+        _fileListView.selectionType = SelectionType.Single;
+        _fileListView.virtualizationMethod = CollectionVirtualizationMethod.FixedHeight;
+        _fileListView.fixedItemHeight = 30;
         // 配置列表项创建和绑定
         _fileListView.makeItem = MakeFileListItem;
         _fileListView.bindItem = BindFileListItem;
@@ -776,6 +781,7 @@ public class CodeOnlyFileDialog : MonoBehaviour
     /// </summary>
     public void ShowOpenFileDialog()
     {
+        HideDropdown();
         _dialogContainer.style.display = DisplayStyle.Flex;
         _confirmBtn.text = "Open";
         _dialogContainer.MarkDirtyRepaint();
@@ -788,6 +794,7 @@ public class CodeOnlyFileDialog : MonoBehaviour
     /// <param name="defaultFileName">默认文件名</param>
     public void ShowSaveFileDialog(string defaultFileName = "new_file")
     {
+        HideDropdown();
         _dialogContainer.style.display = DisplayStyle.Flex;
         _confirmBtn.text = "Save";
         _fileNameInput.value = defaultFileName;
@@ -800,6 +807,7 @@ public class CodeOnlyFileDialog : MonoBehaviour
     /// </summary>
     public void HideDialog()
     {
+        HideDropdown();
         _dialogContainer.style.display = DisplayStyle.None;
         _selectedFile = null;
         _fileNameInput.value = string.Empty;

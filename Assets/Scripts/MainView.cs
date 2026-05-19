@@ -105,6 +105,8 @@ public class MainView : MonoBehaviour
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
+        _image2ImageAI.RequestError -= OnAIRequestError;
+        _image2ImageAI.RequestError += OnAIRequestError;
 
         _fileDialog = GetComponent<CodeOnlyFileDialog>();
         if (_fileDialog == null)
@@ -166,7 +168,10 @@ public class MainView : MonoBehaviour
         _backgroundPath = null;
 
         if (_image2ImageAI != null)
+        {
             _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
+            _image2ImageAI.RequestError -= OnAIRequestError;
+        }
 
         foreach (var kv in _textureCache)
         {
@@ -180,6 +185,13 @@ public class MainView : MonoBehaviour
         if (root!=null && _mainSplitView != null)
             root.Remove(_mainSplitView);
         //root.Clear();
+    }
+
+    private void OnAIRequestError(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+        ShowToast(message, 3500);
     }
 
     private void BuildUI()
@@ -606,6 +618,17 @@ public class MainView : MonoBehaviour
         parent.style.flexGrow = 1;
         parent.style.minHeight = 0;
 
+        var headerContain = new VisualElement();
+        headerContain.style.flexDirection = FlexDirection.Row;
+        headerContain.style.alignItems = Align.Stretch;
+        headerContain.style.paddingLeft = 0;
+        headerContain.style.paddingRight = 0;
+        headerContain.style.paddingTop = 0;
+        headerContain.style.paddingBottom = 0;
+        headerContain.style.flexShrink = 0;
+        headerContain.style.backgroundColor = new StyleColor(new Color(0.15f, 0.15f, 0.15f, 1f));
+        parent.Add(headerContain);
+
         var header = new VisualElement();
         header.style.flexDirection = FlexDirection.Column;
         header.style.alignItems = Align.Stretch;
@@ -615,7 +638,7 @@ public class MainView : MonoBehaviour
         header.style.paddingBottom = 6;
         header.style.flexShrink = 0;
         header.style.backgroundColor = new StyleColor(new Color(0.15f, 0.15f, 0.15f, 1f));
-        parent.Add(header);
+        headerContain.Add(header);
 
         var row0 = new VisualElement();
         row0.style.flexDirection = FlexDirection.Row;
@@ -623,38 +646,34 @@ public class MainView : MonoBehaviour
         header.Add(row0);
 
         row0.Add(new Button(OnFaceSwap) { text = "换脸" });
-        row0.Add(new Button(OnSharpen) { text = "清晰化" });
+        row0.Add(new Button(OnSharpen) { text = "清晰" });
         row0.Add(new Button(OnWhiten) { text = "美白" });
-        row0.Add(new Button(OnSharpenWhiten) { text = "清晰化&美白" });
+        row0.Add(new Button(OnSharpenWhiten) { text = "清晰&美白" });
 
         row0.Add(new Button(OnChangeBackground) { text = "换背景" });
         row0.Add(new Button(OnDehazeColorGrade) { text = "去霾&调色" });
         row0.Add(new Button(OnColorGrade) { text = "调色" });
         row0.Add(new Button(OnDehaze) { text = "去霾" });
 
-        var deglareToggle = new Toggle("去反光");
+        var deglareLabel = new Label("去反光");
+        deglareLabel.style.color = Color.white;
+        row0.Add(deglareLabel);
+
+        var deglareToggle = new Toggle();
         deglareToggle.value = false;
+        deglareToggle.style.color = Color.white;
         deglareToggle.RegisterValueChangedCallback(evt => _appendDeGlarePrompt = evt.newValue);
         row0.Add(deglareToggle);
 
-        var removeBgPeopleToggle = new Toggle("去背景人物");
+        var removeBgPeopleLabel = new Label("去背景人物");
+        removeBgPeopleLabel.style.color = Color.white;
+        row0.Add(removeBgPeopleLabel);
+
+        var removeBgPeopleToggle = new Toggle();
         removeBgPeopleToggle.value = true;
+        removeBgPeopleToggle.style.color = Color.white;
         removeBgPeopleToggle.RegisterValueChangedCallback(evt => _appendRemoveBgPeoplePrompt = evt.newValue);
         row0.Add(removeBgPeopleToggle);
-
-        var fitButton = new Button(() => _imageViewer.FitToView()) { text = "Fit" };
-        row0.Add(fitButton);
-
-        var resetButton = new Button(() => _imageViewer.ResetView()) { text = "Reset" };
-        row0.Add(resetButton);
-
-        var saveButton = new Button(OnSaveCurrentImage) { text = "保存" };
-        row0.Add(saveButton);
-
-#if !UNITY_WEBGL
-        var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
-        row0.Add(browseButton);
-#endif
 
         var row1 = new VisualElement();
         row1.style.flexDirection = FlexDirection.Row;
@@ -663,11 +682,25 @@ public class MainView : MonoBehaviour
         row1.style.marginTop = 8;
         header.Add(row1);
 
-        row1.Add(BuildReferencePickerGroup("男脸", "点击设置男人脸", OnPickMaleFace, out _maleFaceButton));
-        row1.Add(BuildReferencePickerGroup("女脸", "点击设置女人脸", OnPickFemaleFace, out _femaleFaceButton));
-        row1.Add(BuildReferencePickerGroup("背景", "点击设置背景图", OnPickBackground, out _backgroundButton));
+        var fitButton = new Button(() => _imageViewer.FitToView()) { text = "Fit" };
+        row1.Add(fitButton);
+
+        var resetButton = new Button(() => _imageViewer.ResetView()) { text = "Reset" };
+        row1.Add(resetButton);
+
+        var saveButton = new Button(OnSaveCurrentImage) { text = "保存" };
+        row1.Add(saveButton);
+
+#if !UNITY_WEBGL
+        var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
+        row1.Add(browseButton);
+#endif
+
         row1.Add(BuildProviderGroup(out _providerDropdown, out _apiKeyField));
 
+        headerContain.Add(BuildReferencePickerGroup("男脸", "点击设置男人脸", OnPickMaleFace, out _maleFaceButton));
+        headerContain.Add(BuildReferencePickerGroup("女脸", "点击设置女人脸", OnPickFemaleFace, out _femaleFaceButton));
+        headerContain.Add(BuildReferencePickerGroup("背景", "点击设置背景图", OnPickBackground, out _backgroundButton));
 
         _imageViewer = new SplitCompareView();
         _imageViewer.style.flexGrow = 1;
@@ -680,19 +713,19 @@ public class MainView : MonoBehaviour
         var group = new GroupBox();
         group.style.flexDirection = FlexDirection.Row;
         group.style.alignItems = Align.Center;
-        group.style.marginRight = 10;
-        group.style.paddingLeft = 8;
-        group.style.paddingRight = 8;
-        group.style.paddingTop = 6;
-        group.style.paddingBottom = 6;
+        group.style.marginRight = 2;
+        group.style.paddingLeft = 2;
+        group.style.paddingRight = 2;
+        group.style.paddingTop = 2;
+        group.style.paddingBottom = 2;
 
-        var label = new Label(labelText);
-        label.style.marginRight = 6;
-        group.Add(label);
+        //var label = new Label(labelText);
+        //label.style.marginRight = 6;
+        //group.Add(label);
 
         button = new Button(onClick) { text = buttonText };
-        button.style.width = 170;
-        button.style.height = 44;
+        button.style.width = 128;
+        button.style.height = 128;
         button.style.unityTextAlign = TextAnchor.MiddleCenter;
         button.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.18f, 1f));
         button.style.color = Color.white;
@@ -1314,7 +1347,6 @@ public class MainView : MonoBehaviour
         if (!Directory.Exists(directoryPath))
         {
             _imageList.RefreshItems();
-            _imageViewer.Clear();
             return;
         }
 
@@ -1333,7 +1365,6 @@ public class MainView : MonoBehaviour
         }
 
         _imageList.RefreshItems();
-        _imageViewer.Clear();
     }
 
     private static bool IsImageFile(string filePath)
@@ -1894,7 +1925,7 @@ public class MainView : MonoBehaviour
         return op switch
         {
             ImageOp.FaceSwap => "换脸",
-            ImageOp.Sharpen => "清晰化",
+            ImageOp.Sharpen => "清晰",
             ImageOp.Whiten => "美白",
             ImageOp.SharpenWhiten => "清晰&美白",
             ImageOp.ChangeBackground => "换背景",
