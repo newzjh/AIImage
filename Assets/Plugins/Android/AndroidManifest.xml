@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="${applicationId}">
+  <application>
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="${applicationId}.aiimage.clipboardprovider"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/aiimage_clipboard_paths" />
+    </provider>
+  </application>
+</manifest>
+

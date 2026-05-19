@@ -1416,6 +1416,58 @@ public class MainView : MonoBehaviour
 
         TrySetImageToWindowsClipboard(pngBytes);
 #endif
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        if (texture == null) return;
+        try
+        {
+            var pngBytes = texture.EncodeToPNG();
+            if (pngBytes != null && pngBytes.Length > 0)
+                TrySetImageToAndroidClipboard(pngBytes, Path.GetFileName(imageFilePath));
+        }
+        catch
+        {
+        }
+#endif
+
+#if UNITY_IOS && !UNITY_EDITOR
+        if (texture == null) return;
+        try
+        {
+            var pngBytes = texture.EncodeToPNG();
+            if (pngBytes != null && pngBytes.Length > 0)
+                TrySetImageToIOSClipboard(pngBytes);
+        }
+        catch
+        {
+        }
+#endif
+
+#if UNITY_STANDALONE_OSX && !UNITY_EDITOR
+        if (texture == null) return;
+        try
+        {
+            var pngBytes = texture.EncodeToPNG();
+            if (pngBytes != null && pngBytes.Length > 0)
+                TrySetImageToMacClipboard(pngBytes);
+        }
+        catch
+        {
+        }
+#endif
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+        if (texture == null) return;
+        try
+        {
+            var pngBytes = texture.EncodeToPNG();
+            if (pngBytes != null && pngBytes.Length > 0)
+                TrySetImageToWebGLClipboard(pngBytes);
+        }
+        catch
+        {
+        }
+#endif
     }
 
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
@@ -1464,6 +1516,109 @@ public class MainView : MonoBehaviour
         }
         catch
         {
+        }
+    }
+#endif
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+    private static void TrySetImageToAndroidClipboard(byte[] pngBytes, string label)
+    {
+        var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+        var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+        var context = activity.Call<AndroidJavaObject>("getApplicationContext");
+
+        var cacheDir = context.Call<AndroidJavaObject>("getCacheDir");
+        var file = new AndroidJavaObject("java.io.File", cacheDir, "aiimage_clipboard.png");
+        var fos = new AndroidJavaObject("java.io.FileOutputStream", file);
+        fos.Call("write", pngBytes);
+        fos.Call("flush");
+        fos.Call("close");
+
+        var pkg = context.Call<string>("getPackageName");
+        var authority = pkg + ".aiimage.clipboardprovider";
+        var fileProvider = new AndroidJavaClass("androidx.core.content.FileProvider");
+        var uri = fileProvider.CallStatic<AndroidJavaObject>("getUriForFile", context, authority, file);
+
+        var resolver = context.Call<AndroidJavaObject>("getContentResolver");
+        var clipDataClass = new AndroidJavaClass("android.content.ClipData");
+        var clip = clipDataClass.CallStatic<AndroidJavaObject>("newUri", resolver, label ?? "image", uri);
+
+        var contextClass = new AndroidJavaClass("android.content.Context");
+        var clipboardService = contextClass.GetStatic<string>("CLIPBOARD_SERVICE");
+        var clipboard = context.Call<AndroidJavaObject>("getSystemService", clipboardService);
+        clipboard.Call("setPrimaryClip", clip);
+    }
+#endif
+
+#if UNITY_IOS && !UNITY_EDITOR
+    [System.Runtime.InteropServices.DllImport("__Internal")]
+    private static extern void AIImageClipboardCopyPNG(System.IntPtr data, int length);
+
+    private static void TrySetImageToIOSClipboard(byte[] pngBytes)
+    {
+        var handle = System.Runtime.InteropServices.GCHandle.Alloc(pngBytes, System.Runtime.InteropServices.GCHandleType.Pinned);
+        try
+        {
+            AIImageClipboardCopyPNG(handle.AddrOfPinnedObject(), pngBytes.Length);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+#endif
+
+#if UNITY_STANDALONE_OSX && !UNITY_EDITOR
+    private static void TrySetImageToMacClipboard(byte[] pngBytes)
+    {
+        try
+        {
+            var tmpDir = Application.temporaryCachePath;
+            var tmpPath = Path.Combine(tmpDir, "aiimage_clipboard.png");
+            File.WriteAllBytes(tmpPath, pngBytes);
+
+            var script = "set the clipboard to (read (POSIX file " + QuoteAppleScript(tmpPath) + ") as «class PNGf»)";
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "/usr/bin/osascript",
+                Arguments = "-e " + QuoteAppleScript(script),
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string QuoteAppleScript(string s)
+    {
+        if (s == null) return "\"\"";
+        return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+    }
+#endif
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+    [System.Runtime.InteropServices.DllImport("__Internal")]
+    private static extern void AIImageClipboardCopyPNGFromUnity(System.IntPtr data, int length);
+
+    private static void TrySetImageToWebGLClipboard(byte[] pngBytes)
+    {
+        var handle = System.Runtime.InteropServices.GCHandle.Alloc(pngBytes, System.Runtime.InteropServices.GCHandleType.Pinned);
+        try
+        {
+            AIImageClipboardCopyPNGFromUnity(handle.AddrOfPinnedObject(), pngBytes.Length);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            handle.Free();
         }
     }
 #endif
@@ -1579,6 +1734,7 @@ public class MainView : MonoBehaviour
         {
             style.flexDirection = FlexDirection.Column;
             style.flexGrow = 1;
+            style.overflow = Overflow.Hidden;
 
             _info = new Label();
             _info.style.flexShrink = 0;
@@ -1662,11 +1818,17 @@ public class MainView : MonoBehaviour
         {
             if (_texA == null && _texB == null) return;
 
-            var viewportTop = _info.resolvedStyle.height;
+            var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
             if (evt.localMousePosition.y < viewportTop)
                 return;
 
             var viewportPos = new Vector2(evt.localMousePosition.x, evt.localMousePosition.y - viewportTop);
+            var refTex0 = _texA != null ? _texA : _texB;
+            var imgRect0 = GetImageRect(refTex0, _zoom, _pan + new Vector2(0f, viewportTop));
+            var viewRect0 = new Rect(0, viewportTop, contentRect.width, Mathf.Max(1f, contentRect.height - viewportTop));
+            var drawRect0 = IntersectRect(viewRect0, imgRect0);
+            if (!drawRect0.Contains(evt.localMousePosition))
+                return;
             var oldZoom = _zoom;
             var factor = Mathf.Pow(1.12f, -evt.delta.y / 12f);
             _zoom = Mathf.Clamp(oldZoom * factor, 0.02f, 40f);
@@ -1694,12 +1856,16 @@ public class MainView : MonoBehaviour
             if (evt.button != 0 && evt.button != 2) return;
 
             var refTex = _texA != null ? _texA : _texB;
-            var viewportTop = _info.resolvedStyle.height;
+            var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
             if (evt.localPosition.y < viewportTop)
                 return;
 
             var imgRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, viewportTop));
             if (imgRect.width <= 1f || imgRect.height <= 1f)
+                return;
+            var viewRect = new Rect(0, viewportTop, contentRect.width, Mathf.Max(1f, contentRect.height - viewportTop));
+            var drawRect = IntersectRect(viewRect, imgRect);
+            if (!drawRect.Contains(evt.localPosition))
                 return;
 
             if (evt.button == 0)
@@ -1732,7 +1898,8 @@ public class MainView : MonoBehaviour
             if (_dragSplit && _splitPointerId == evt.pointerId && this.HasPointerCapture(_splitPointerId))
             {
                 var refTex = _texA != null ? _texA : _texB;
-                var imgRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, _info.resolvedStyle.height));
+                var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
+                var imgRect = GetImageRect(refTex, _zoom, _pan + new Vector2(0f, viewportTop));
                 var w = Mathf.Max(1f, imgRect.width);
                 var h = Mathf.Max(1f, imgRect.height);
                 var deltaLocal = evt.localPosition - _splitDragStartLocal;
@@ -1833,7 +2000,7 @@ public class MainView : MonoBehaviour
         private void OnGenerateVisualContent(MeshGenerationContext mgc)
         {
             var w = contentRect.width;
-            var viewportTop = _info.resolvedStyle.height;
+            var viewportTop = Mathf.Max(_info.layout.height, _info.resolvedStyle.height);
             var h = contentRect.height - viewportTop;
             if (w <= 1f || h <= 1f)
                 return;

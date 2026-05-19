@@ -6,6 +6,7 @@ using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEngine.Rendering;
  
 public sealed class Image2ImageAI : MonoBehaviour
 {
@@ -22,6 +23,7 @@ public sealed class Image2ImageAI : MonoBehaviour
     [SerializeField]
     public ComputeShader imageProcessingCS;
     private static int s_resizeKernel = -1;
+    private static int s_removeWatermarkKernel = -1;
 
 
     [SerializeField] private Provider provider = Provider.Replicate;
@@ -49,6 +51,11 @@ public sealed class Image2ImageAI : MonoBehaviour
     [Header("Runtime")]
     [SerializeField] private int timeoutSeconds = 180;
     [SerializeField] private int pollIntervalMs = 900;
+
+    [Header("Post Process")]
+    [SerializeField] private bool enableRemoveWatermark = false;
+    [SerializeField] private Vector4 watermarkRect = new Vector4(0.72f, 0.86f, 0.26f, 0.12f);
+    [SerializeField] private int watermarkRadius = 6;
  
     public UniTask<Texture2D> ImageToImageAsync(
         Texture2D input,
@@ -123,9 +130,10 @@ public sealed class Image2ImageAI : MonoBehaviour
 
         if (selected == null) return null;
 
-        if (targetWidth > 0 && targetHeight > 0 && (selected.width != targetWidth || selected.height != targetHeight))
+        var needResize = targetWidth > 0 && targetHeight > 0 && (selected.width != targetWidth || selected.height != targetHeight);
+        if (needResize || enableRemoveWatermark)
         {
-            var resized = ResizeTo(selected, targetWidth, targetHeight);
+            var resized = await ResizeAndPostProcessAsync(selected, targetWidth, targetHeight, cancellationToken);
             Destroy(selected);
             selected = resized;
         }
@@ -457,38 +465,85 @@ public sealed class Image2ImageAI : MonoBehaviour
         return tex;
     }
  
-    private Texture2D ResizeTo(Texture2D src, int targetWidth, int targetHeight)
+    private async UniTask<Texture2D> ResizeAndPostProcessAsync(Texture2D src, int targetWidth, int targetHeight, CancellationToken ct)
     {
-        var compute = GetImageProcessingCompute();
-        if (compute == null)
-            return ResizeToBlit(src, targetWidth, targetHeight);
+        if (src == null) return null;
 
-        if (s_resizeKernel < 0)
+        var dstW = targetWidth > 0 ? targetWidth : src.width;
+        var dstH = targetHeight > 0 ? targetHeight : src.height;
+
+        var compute = GetImageProcessingCompute();
+
+        if (compute != null && s_resizeKernel < 0)
         {
             try { s_resizeKernel = compute.FindKernel("ResizeBilinear"); }
             catch { s_resizeKernel = -1; }
         }
-        if (s_resizeKernel < 0)
-            return ResizeToBlit(src, targetWidth, targetHeight);
 
-        var rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32);
-        rt.enableRandomWrite = true;
-        rt.Create();
-        var prev = RenderTexture.active;
+        if (compute != null && enableRemoveWatermark && s_removeWatermarkKernel < 0)
+        {
+            try { s_removeWatermarkKernel = compute.FindKernel("RemoveWatermark"); }
+            catch { s_removeWatermarkKernel = -1; }
+        }
+
+        var rt0 = new RenderTexture(dstW, dstH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+        rt0.enableRandomWrite = true;
+        rt0.wrapMode = TextureWrapMode.Clamp;
+        rt0.filterMode = FilterMode.Bilinear;
+        rt0.Create();
+
+        RenderTexture rt1 = null;
+        RenderTexture finalRt = rt0;
+
         try
         {
-            compute.SetTexture(s_resizeKernel, "_Source", src);
-            compute.SetTexture(s_resizeKernel, "_Result", rt);
-            compute.SetVector("_SrcSize", new Vector4(src.width, src.height, 0f, 0f));
-            compute.SetVector("_DstSize", new Vector4(targetWidth, targetHeight, 0f, 0f));
+            ct.ThrowIfCancellationRequested();
 
-            var gx = Mathf.CeilToInt(targetWidth / 8f);
-            var gy = Mathf.CeilToInt(targetHeight / 8f);
-            compute.Dispatch(s_resizeKernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
+            if (compute != null && s_resizeKernel >= 0)
+            {
+                compute.SetTexture(s_resizeKernel, "_Source", src);
+                compute.SetTexture(s_resizeKernel, "_Result", rt0);
+                compute.SetVector("_SrcSize", new Vector4(src.width, src.height, 0f, 0f));
+                compute.SetVector("_DstSize", new Vector4(dstW, dstH, 0f, 0f));
 
-            RenderTexture.active = rt;
-            var tex = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
-            tex.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+                var gx = Mathf.CeilToInt(dstW / 8f);
+                var gy = Mathf.CeilToInt(dstH / 8f);
+                compute.Dispatch(s_resizeKernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
+            }
+            else
+            {
+                Graphics.Blit(src, rt0);
+            }
+
+            if (compute != null && enableRemoveWatermark && s_removeWatermarkKernel >= 0)
+            {
+                rt1 = new RenderTexture(dstW, dstH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+                rt1.enableRandomWrite = true;
+                rt1.wrapMode = TextureWrapMode.Clamp;
+                rt1.filterMode = FilterMode.Bilinear;
+                rt1.Create();
+
+                compute.SetTexture(s_removeWatermarkKernel, "_Source", rt0);
+                compute.SetTexture(s_removeWatermarkKernel, "_Result", rt1);
+                compute.SetVector("_WatermarkRect", watermarkRect);
+                compute.SetInt("_Radius", Mathf.Max(2, watermarkRadius));
+
+                var gx = Mathf.CeilToInt(dstW / 8f);
+                var gy = Mathf.CeilToInt(dstH / 8f);
+                compute.Dispatch(s_removeWatermarkKernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
+
+                finalRt = rt1;
+            }
+
+            var r = await RequestReadback(finalRt);
+            if (r.hasError)
+                return null;
+            if (ct.IsCancellationRequested)
+                return null;
+
+            var data = r.GetData<byte>();
+            var tex = new Texture2D(dstW, dstH, TextureFormat.RGBA32, false);
+            tex.LoadRawTextureData(data);
             tex.Apply(false, false);
             tex.wrapMode = TextureWrapMode.Clamp;
             tex.filterMode = FilterMode.Bilinear;
@@ -496,31 +551,21 @@ public sealed class Image2ImageAI : MonoBehaviour
         }
         finally
         {
-            RenderTexture.active = prev;
-            RenderTexture.ReleaseTemporary(rt);
+            if (rt1 != null)
+            {
+                rt1.Release();
+                Destroy(rt1);
+            }
+            rt0.Release();
+            Destroy(rt0);
         }
     }
 
-    private static Texture2D ResizeToBlit(Texture2D src, int targetWidth, int targetHeight)
+    private static UniTask<AsyncGPUReadbackRequest> RequestReadback(RenderTexture rt)
     {
-        var rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
-        var prev = RenderTexture.active;
-        try
-        {
-            Graphics.Blit(src, rt);
-            RenderTexture.active = rt;
-            var tex = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
-            tex.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
-            tex.Apply(false, false);
-            tex.wrapMode = TextureWrapMode.Clamp;
-            tex.filterMode = FilterMode.Bilinear;
-            return tex;
-        }
-        finally
-        {
-            RenderTexture.active = prev;
-            RenderTexture.ReleaseTemporary(rt);
-        }
+        var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
+        AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, r => tcs.TrySetResult(r));
+        return tcs.Task;
     }
 
     private ComputeShader GetImageProcessingCompute()
