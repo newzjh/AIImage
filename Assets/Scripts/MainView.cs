@@ -125,7 +125,7 @@ public class MainView : MonoBehaviour
         leftPane.style.flexGrow = 1;
         leftPane.style.flexBasis = 0;
         leftPane.style.minWidth = 220;
-        leftPane.style.maxWidth = 260;
+        leftPane.style.maxWidth = 360;
         leftPane.style.minHeight = 0;
         leftPane.style.height = Length.Percent(100);
         _mainSplitView.Add(leftPane);
@@ -148,7 +148,7 @@ public class MainView : MonoBehaviour
         leftTop.style.flexGrow = 1;
         leftTop.style.flexBasis = 0;
         leftTop.style.minHeight = 0;
-        leftTop.style.maxHeight = 220;
+        leftTop.style.maxHeight = 540;
         leftTop.style.height = Length.Percent(100);
         _leftSplitTop.Add(leftTop);
 
@@ -176,7 +176,7 @@ public class MainView : MonoBehaviour
         leftBottom.style.flexGrow = 1;
         leftBottom.style.flexBasis = 0;
         leftBottom.style.minHeight = 0;
-        leftBottom.style.maxHeight = 200;
+        leftBottom.style.maxHeight = 270;
         leftBottom.style.height = Length.Percent(100);
         _leftSplitBottom.Add(leftBottom);
 
