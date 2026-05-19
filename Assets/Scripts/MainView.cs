@@ -1,16 +1,27 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UIElements;
+using Process = System.Diagnostics.Process;
+using ProcessStartInfo = System.Diagnostics.ProcessStartInfo;
 
 [DisallowMultipleComponent]
 [RequireComponent(typeof(UIDocument))]
 public class MainView : MonoBehaviour
 {
     private const string PrefKeyLastImagePath = "MainView.LastImagePath";
+    private const string PrefKeyMaleFacePath = "MainView.Ref.MaleFacePath";
+    private const string PrefKeyFemaleFacePath = "MainView.Ref.FemaleFacePath";
+    private const string PrefKeyBackgroundPath = "MainView.Ref.BackgroundPath";
+    private const string PrefKeyAIProvider = "MainView.AI.Provider";
+    private const string PrefKeyGoogleApiKey = "MainView.AI.GoogleApiKey";
+    private const string PrefKeyReplicateApiKey = "MainView.AI.ReplicateApiToken";
+    private const string PrefKeyDashScopeApiKey = "MainView.AI.DashScopeApiKey";
+    private const string PrefKeyDoubaoApiKey = "MainView.AI.DoubaoApiKey";
 
     [SerializeField] private int leftPaneWidth = 320;
     [SerializeField] private int leftTopPaneHeight = 320;
@@ -43,6 +54,23 @@ public class MainView : MonoBehaviour
     private VisualElement _toastOverlay;
     private Label _toastText;
     private IVisualElementScheduledItem _toastHide;
+    private System.Threading.CancellationTokenSource _clipboardCts;
+
+    private Texture2D _maleFaceTexture;
+    private Texture2D _femaleFaceTexture;
+    private Texture2D _backgroundTexture;
+    private Button _maleFaceButton;
+    private Button _femaleFaceButton;
+    private Button _backgroundButton;
+    private DropdownField _providerDropdown;
+    private TextField _apiKeyField;
+    private string _maleFacePath;
+    private string _femaleFacePath;
+    private string _backgroundPath;
+    private System.Threading.CancellationTokenSource _lifetimeCts;
+    private CodeOnlyFileDialog _fileDialog;
+    private bool _appendDeGlarePrompt;
+    private bool _appendRemoveBgPeoplePrompt = true;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -58,6 +86,16 @@ public class MainView : MonoBehaviour
         ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".tiff", ".tif", ".exr"
     };
 
+    private static readonly string[] OriginalNameMarkersZh =
+    {
+        "原图", "原始", "原始图", "原片", "未编辑", "未处理", "直出", "原版"
+    };
+
+    private static readonly string[] OriginalNameMarkersEn =
+    {
+        "original", "originals", "orig", "unedited", "unprocessed", "raw", "source", "camera"
+    };
+
     private void Awake()
     {
         _uiDocument = GetComponent<UIDocument>();
@@ -67,6 +105,10 @@ public class MainView : MonoBehaviour
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
+
+        _fileDialog = GetComponent<CodeOnlyFileDialog>();
+        if (_fileDialog == null)
+            _fileDialog = gameObject.AddComponent<CodeOnlyFileDialog>();
     }
 
     private void OnEnable()
@@ -74,7 +116,17 @@ public class MainView : MonoBehaviour
         if (!Application.isPlaying)
             return;
 
+        if (_lifetimeCts != null)
+        {
+            _lifetimeCts.Cancel();
+            _lifetimeCts.Dispose();
+        }
+        _lifetimeCts = new System.Threading.CancellationTokenSource();
+
         BuildUI();
+        _fileDialog?.EnsureInitialized();
+        RestoreReferencePickersFromPrefs();
+        RestoreAISettingsFromPrefs();
         PopulateDrives();
         RestoreLastSelection();
     }
@@ -90,6 +142,28 @@ public class MainView : MonoBehaviour
         HideChoice();
         if (_toastOverlay != null)
             _toastOverlay.style.display = DisplayStyle.None;
+        if (_clipboardCts != null)
+        {
+            _clipboardCts.Cancel();
+            _clipboardCts.Dispose();
+            _clipboardCts = null;
+        }
+        if (_lifetimeCts != null)
+        {
+            _lifetimeCts.Cancel();
+            _lifetimeCts.Dispose();
+            _lifetimeCts = null;
+        }
+
+        if (_maleFaceTexture != null) Destroy(_maleFaceTexture);
+        if (_femaleFaceTexture != null) Destroy(_femaleFaceTexture);
+        if (_backgroundTexture != null) Destroy(_backgroundTexture);
+        _maleFaceTexture = null;
+        _femaleFaceTexture = null;
+        _backgroundTexture = null;
+        _maleFacePath = null;
+        _femaleFacePath = null;
+        _backgroundPath = null;
 
         if (_image2ImageAI != null)
             _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
@@ -530,6 +604,7 @@ public class MainView : MonoBehaviour
     {
         parent.style.flexDirection = FlexDirection.Column;
         parent.style.flexGrow = 1;
+        parent.style.minHeight = 0;
 
         var header = new VisualElement();
         header.style.flexDirection = FlexDirection.Column;
@@ -539,6 +614,7 @@ public class MainView : MonoBehaviour
         header.style.paddingTop = 6;
         header.style.paddingBottom = 6;
         header.style.flexShrink = 0;
+        header.style.backgroundColor = new StyleColor(new Color(0.15f, 0.15f, 0.15f, 1f));
         parent.Add(header);
 
         var row0 = new VisualElement();
@@ -549,12 +625,22 @@ public class MainView : MonoBehaviour
         row0.Add(new Button(OnFaceSwap) { text = "换脸" });
         row0.Add(new Button(OnSharpen) { text = "清晰化" });
         row0.Add(new Button(OnWhiten) { text = "美白" });
-        row0.Add(new Button(OnDeGlare) { text = "去反光" });
+        row0.Add(new Button(OnSharpenWhiten) { text = "清晰化&美白" });
 
         row0.Add(new Button(OnChangeBackground) { text = "换背景" });
-        row0.Add(new Button(OnRemovePerson) { text = "去人" });
+        row0.Add(new Button(OnDehazeColorGrade) { text = "去霾&调色" });
         row0.Add(new Button(OnColorGrade) { text = "调色" });
         row0.Add(new Button(OnDehaze) { text = "去霾" });
+
+        var deglareToggle = new Toggle("去反光");
+        deglareToggle.value = false;
+        deglareToggle.RegisterValueChangedCallback(evt => _appendDeGlarePrompt = evt.newValue);
+        row0.Add(deglareToggle);
+
+        var removeBgPeopleToggle = new Toggle("去背景人物");
+        removeBgPeopleToggle.value = true;
+        removeBgPeopleToggle.RegisterValueChangedCallback(evt => _appendRemoveBgPeoplePrompt = evt.newValue);
+        row0.Add(removeBgPeopleToggle);
 
         var fitButton = new Button(() => _imageViewer.FitToView()) { text = "Fit" };
         row0.Add(fitButton);
@@ -565,10 +651,91 @@ public class MainView : MonoBehaviour
         var saveButton = new Button(OnSaveCurrentImage) { text = "保存" };
         row0.Add(saveButton);
 
+#if !UNITY_WEBGL
+        var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
+        row0.Add(browseButton);
+#endif
+
+        var row1 = new VisualElement();
+        row1.style.flexDirection = FlexDirection.Row;
+        row1.style.flexWrap = Wrap.Wrap;
+        row1.style.alignItems = Align.Center;
+        row1.style.marginTop = 8;
+        header.Add(row1);
+
+        row1.Add(BuildReferencePickerGroup("男脸", "点击设置男人脸", OnPickMaleFace, out _maleFaceButton));
+        row1.Add(BuildReferencePickerGroup("女脸", "点击设置女人脸", OnPickFemaleFace, out _femaleFaceButton));
+        row1.Add(BuildReferencePickerGroup("背景", "点击设置背景图", OnPickBackground, out _backgroundButton));
+        row1.Add(BuildProviderGroup(out _providerDropdown, out _apiKeyField));
+
 
         _imageViewer = new SplitCompareView();
         _imageViewer.style.flexGrow = 1;
+        _imageViewer.style.minHeight = 0;
         parent.Add(_imageViewer);
+    }
+
+    private static GroupBox BuildReferencePickerGroup(string labelText, string buttonText, Action onClick, out Button button)
+    {
+        var group = new GroupBox();
+        group.style.flexDirection = FlexDirection.Row;
+        group.style.alignItems = Align.Center;
+        group.style.marginRight = 10;
+        group.style.paddingLeft = 8;
+        group.style.paddingRight = 8;
+        group.style.paddingTop = 6;
+        group.style.paddingBottom = 6;
+
+        var label = new Label(labelText);
+        label.style.marginRight = 6;
+        group.Add(label);
+
+        button = new Button(onClick) { text = buttonText };
+        button.style.width = 170;
+        button.style.height = 44;
+        button.style.unityTextAlign = TextAnchor.MiddleCenter;
+        button.style.backgroundColor = new StyleColor(new Color(0.18f, 0.18f, 0.18f, 1f));
+        button.style.color = Color.white;
+        button.style.borderTopLeftRadius = 6;
+        button.style.borderTopRightRadius = 6;
+        button.style.borderBottomLeftRadius = 6;
+        button.style.borderBottomRightRadius = 6;
+        group.Add(button);
+
+        return group;
+    }
+
+    private static GroupBox BuildProviderGroup(out DropdownField providerDropdown, out TextField apiKeyField)
+    {
+        var group = new GroupBox();
+        group.style.flexDirection = FlexDirection.Row;
+        group.style.alignItems = Align.Center;
+        group.style.marginRight = 10;
+        group.style.paddingLeft = 8;
+        group.style.paddingRight = 8;
+        group.style.paddingTop = 6;
+        group.style.paddingBottom = 6;
+
+        var label = new Label("模型");
+        label.style.marginRight = 4;
+        group.Add(label);
+
+        providerDropdown = new DropdownField();
+        providerDropdown.style.width = 160;
+        providerDropdown.style.height = 36;
+        providerDropdown.style.marginRight = 4;
+        group.Add(providerDropdown);
+
+        var apiLabel = new Label("API Key");
+        apiLabel.style.marginRight = 4;
+        group.Add(apiLabel);
+
+        apiKeyField = new TextField();
+        apiKeyField.style.width = 360;
+        apiKeyField.style.height = 36;
+        group.Add(apiKeyField);
+
+        return group;
     }
 
     private void PopulateDrives()
@@ -657,6 +824,7 @@ public class MainView : MonoBehaviour
         if (_loadedDirectoryIds.Contains(id))
         {
             children = EnumerateDirectoriesSafe(directoryPath, maxChildrenPerDirectory)
+                .Where(p => !IsOriginalDefinedPath(p))
                 .Select(p => BuildDirectoryItem(p, DirectoryNameFromPath(p), depth + 1))
                 .ToList();
         }
@@ -782,7 +950,9 @@ public class MainView : MonoBehaviour
         var parentDepth = GetDepthForPath(parentPath);
         var childDepth = parentDepth + 1;
 
-        var childDirs = EnumerateDirectoriesSafe(parentPath, maxChildrenPerDirectory).ToList();
+        var childDirs = EnumerateDirectoriesSafe(parentPath, maxChildrenPerDirectory)
+            .Where(p => !IsOriginalDefinedPath(p))
+            .ToList();
         for (var i = 0; i < childDirs.Count; i++)
         {
             var childPath = childDirs[i];
@@ -810,6 +980,234 @@ public class MainView : MonoBehaviour
 
         _directoryTree.ExpandItem(parentId);
     }
+
+    private void RestoreReferencePickersFromPrefs()
+    {
+        TryRestoreReference(PrefKeyMaleFacePath, _maleFaceButton, "点击设置男人脸", tex => _maleFaceTexture = tex, () => _maleFaceTexture, p => _maleFacePath = p);
+        TryRestoreReference(PrefKeyFemaleFacePath, _femaleFaceButton, "点击设置女人脸", tex => _femaleFaceTexture = tex, () => _femaleFaceTexture, p => _femaleFacePath = p);
+        TryRestoreReference(PrefKeyBackgroundPath, _backgroundButton, "点击设置背景图", tex => _backgroundTexture = tex, () => _backgroundTexture, p => _backgroundPath = p);
+    }
+
+    private void TryRestoreReference(
+        string prefKey,
+        Button button,
+        string defaultText,
+        Action<Texture2D> setTex,
+        Func<Texture2D> getTex,
+        Action<string> setPath)
+    {
+        var path = PlayerPrefs.GetString(prefKey, "");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            var old0 = getTex();
+            if (old0 != null) Destroy(old0);
+            setTex(null);
+            setPath(null);
+            if (button != null)
+            {
+                button.style.backgroundImage = StyleKeyword.None;
+                button.text = defaultText ?? "";
+            }
+            return;
+        }
+
+        var tex = LoadTextureFromFile(path);
+        if (tex == null)
+            return;
+
+        var old = getTex();
+        if (old != null) Destroy(old);
+        setTex(tex);
+        setPath(path);
+        if (button != null)
+        {
+            button.style.backgroundImage = new StyleBackground(tex);
+            button.style.unityBackgroundScaleMode = ScaleMode.ScaleToFit;
+            button.text = "";
+        }
+    }
+
+    private void RestoreAISettingsFromPrefs()
+    {
+        if (_image2ImageAI == null)
+            return;
+
+        if (PlayerPrefs.HasKey(PrefKeyAIProvider))
+        {
+            var p = (Image2ImageAI.Provider)PlayerPrefs.GetInt(PrefKeyAIProvider, (int)_image2ImageAI.CurrentProvider);
+            _image2ImageAI.CurrentProvider = p;
+        }
+
+        var google = PlayerPrefs.GetString(PrefKeyGoogleApiKey, null);
+        if (!string.IsNullOrEmpty(google))
+            _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.GoogleAIStudio, google);
+
+        var repl = PlayerPrefs.GetString(PrefKeyReplicateApiKey, null);
+        if (!string.IsNullOrEmpty(repl))
+            _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.Replicate, repl);
+
+        var dash = PlayerPrefs.GetString(PrefKeyDashScopeApiKey, null);
+        if (!string.IsNullOrEmpty(dash))
+            _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.AliTongyiWanxiang, dash);
+
+        var dou = PlayerPrefs.GetString(PrefKeyDoubaoApiKey, null);
+        if (!string.IsNullOrEmpty(dou))
+            _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.Doubao, dou);
+
+        if (_providerDropdown != null)
+        {
+            _providerDropdown.choices = Enum.GetNames(typeof(Image2ImageAI.Provider)).ToList();
+            var providerName = _image2ImageAI.CurrentProvider.ToString();
+            if (_providerDropdown.choices.Contains(providerName))
+                _providerDropdown.SetValueWithoutNotify(providerName);
+
+            _providerDropdown.RegisterValueChangedCallback(evt =>
+            {
+                if (_image2ImageAI == null) return;
+                if (!Enum.TryParse(evt.newValue, out Image2ImageAI.Provider newP))
+                    return;
+                _image2ImageAI.CurrentProvider = newP;
+                PlayerPrefs.SetInt(PrefKeyAIProvider, (int)newP);
+                PlayerPrefs.Save();
+                UpdateApiKeyFieldFromAI();
+            });
+        }
+
+        if (_apiKeyField != null)
+        {
+            UpdateApiKeyFieldFromAI();
+            _apiKeyField.RegisterValueChangedCallback(evt =>
+            {
+                if (_image2ImageAI == null) return;
+                var p = _image2ImageAI.CurrentProvider;
+                _image2ImageAI.SetApiKeyForProvider(p, evt.newValue ?? "");
+                var key = GetApiKeyPrefKey(p);
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    PlayerPrefs.SetString(key, evt.newValue ?? "");
+                    PlayerPrefs.Save();
+                }
+            });
+        }
+    }
+
+    private void UpdateApiKeyFieldFromAI()
+    {
+        if (_apiKeyField == null || _image2ImageAI == null)
+            return;
+        var key = _image2ImageAI.GetApiKeyForProvider(_image2ImageAI.CurrentProvider) ?? "";
+        _apiKeyField.SetValueWithoutNotify(key);
+    }
+
+    private static string GetApiKeyPrefKey(Image2ImageAI.Provider p)
+    {
+        return p switch
+        {
+            Image2ImageAI.Provider.GoogleAIStudio => PrefKeyGoogleApiKey,
+            Image2ImageAI.Provider.Replicate => PrefKeyReplicateApiKey,
+            Image2ImageAI.Provider.AliTongyiWanxiang => PrefKeyDashScopeApiKey,
+            Image2ImageAI.Provider.Doubao => PrefKeyDoubaoApiKey,
+            _ => null
+        };
+    }
+
+    private static bool IsOriginalDefinedPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        var normalized = path.Replace('\\', '/');
+        var parts = normalized.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            if (IsOriginalDefinedName(parts[i]))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsOriginalDefinedName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        for (int i = 0; i < OriginalNameMarkersZh.Length; i++)
+        {
+            if (name.IndexOf(OriginalNameMarkersZh[i], StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+
+        var lower = name.ToLowerInvariant();
+        for (int i = 0; i < OriginalNameMarkersEn.Length; i++)
+        {
+            var marker = OriginalNameMarkersEn[i];
+            if (marker.Length <= 4)
+            {
+                if (ContainsEnglishMarkerWithBoundary(lower, marker))
+                    return true;
+            }
+            else if (lower.Contains(marker))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsEnglishMarkerWithBoundary(string lower, string markerLower)
+    {
+        var idx = lower.IndexOf(markerLower, StringComparison.Ordinal);
+        while (idx >= 0)
+        {
+            var beforeOk = idx == 0 || !char.IsLetterOrDigit(lower[idx - 1]);
+            var end = idx + markerLower.Length;
+            var afterOk = end >= lower.Length || !char.IsLetterOrDigit(lower[end]);
+            if (beforeOk && afterOk)
+                return true;
+            idx = lower.IndexOf(markerLower, idx + 1, StringComparison.Ordinal);
+        }
+        return false;
+    }
+
+#if !UNITY_WEBGL
+    private void OnBrowseOriginalImage()
+    {
+        var path = _historyEntries.Count > 0 ? _historyEntries[0].sourcePath : null;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            ShowToast("没有原路径", 2000);
+            return;
+        }
+        if (!File.Exists(path))
+        {
+            ShowToast("原文件不存在", 2000);
+            return;
+        }
+
+        try
+        {
+#if UNITY_EDITOR
+            UnityEditor.EditorUtility.RevealInFinder(path);
+#elif UNITY_STANDALONE_WIN
+            Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true });
+#elif UNITY_STANDALONE_OSX
+            Process.Start(new ProcessStartInfo("open", "-R \"" + path + "\"") { UseShellExecute = false });
+#elif UNITY_STANDALONE_LINUX
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Process.Start(new ProcessStartInfo("xdg-open", "\"" + dir + "\"") { UseShellExecute = false });
+#elif UNITY_ANDROID || UNITY_IOS
+            var url = "file://" + path.Replace('\\', '/');
+            Application.OpenURL(url);
+#else
+            var url = "file://" + path.Replace('\\', '/');
+            Application.OpenURL(url);
+#endif
+        }
+        catch
+        {
+        }
+    }
+#endif
 
     private int GetDepthForPath(string directoryPath)
     {
@@ -949,6 +1347,13 @@ public class MainView : MonoBehaviour
         var first = selectedItems.FirstOrDefault();
         if (first is not ImageFileEntry entry) return;
 
+        if (IsOriginalDefinedName(entry.fileName) || IsOriginalDefinedPath(entry.fullPath))
+        {
+            ShowToast("文件名包含原图字样，如需编辑请改名", 2200);
+            _imageList?.ClearSelection();
+            return;
+        }
+
         var tex = LoadTexture(entry.fullPath);
         if (tex != null)
         {
@@ -962,7 +1367,20 @@ public class MainView : MonoBehaviour
 
     private async UniTaskVoid CopySelectionToClipboardAsync(string imageFilePath, Texture2D texture)
     {
+        if (_clipboardCts != null)
+        {
+            _clipboardCts.Cancel();
+            _clipboardCts.Dispose();
+        }
+        _clipboardCts = new System.Threading.CancellationTokenSource();
+        var localCts = _clipboardCts;
+
         await UniTask.NextFrame();
+
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+            return;
+        if (!ReferenceEquals(_clipboardCts, localCts) || localCts.IsCancellationRequested)
+            return;
 
         if (string.IsNullOrWhiteSpace(imageFilePath))
             return;
@@ -1036,6 +1454,92 @@ public class MainView : MonoBehaviour
         catch
         {
         }
+    }
+
+    private void OnPickMaleFace() => PickReferenceImageAsync("选择男人脸图片", _maleFaceButton, tex => _maleFaceTexture = tex, () => _maleFaceTexture, "点击设置男人脸").Forget();
+    private void OnPickFemaleFace() => PickReferenceImageAsync("选择女人脸图片", _femaleFaceButton, tex => _femaleFaceTexture = tex, () => _femaleFaceTexture, "点击设置女人脸").Forget();
+    private void OnPickBackground() => PickReferenceImageAsync("选择背景图片", _backgroundButton, tex => _backgroundTexture = tex, () => _backgroundTexture, "点击设置背景图").Forget();
+
+    private async UniTaskVoid PickReferenceImageAsync(string title, Button button, Action<Texture2D> setTex, Func<Texture2D> getTex, string defaultText)
+    {
+        await UniTask.NextFrame();
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+            return;
+        if (_fileDialog == null)
+            return;
+
+        _fileDialog.EnsureInitialized();
+        var path = await _fileDialog.ShowOpenImageAsync();
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+            return;
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            var old0 = getTex();
+            if (old0 != null)
+                Destroy(old0);
+            setTex(null);
+
+            if (ReferenceEquals(button, _maleFaceButton)) { _maleFacePath = null; PlayerPrefs.DeleteKey(PrefKeyMaleFacePath); }
+            if (ReferenceEquals(button, _femaleFaceButton)) { _femaleFacePath = null; PlayerPrefs.DeleteKey(PrefKeyFemaleFacePath); }
+            if (ReferenceEquals(button, _backgroundButton)) { _backgroundPath = null; PlayerPrefs.DeleteKey(PrefKeyBackgroundPath); }
+            PlayerPrefs.Save();
+
+            if (button != null)
+            {
+                button.style.backgroundImage = StyleKeyword.None;
+                button.text = defaultText ?? "";
+            }
+            return;
+        }
+
+        var tex = LoadTextureFromFile(path);
+        if (tex == null)
+            return;
+
+        var old = getTex();
+        if (old != null)
+            Destroy(old);
+
+        setTex(tex);
+        if (ReferenceEquals(button, _maleFaceButton)) { _maleFacePath = path; PlayerPrefs.SetString(PrefKeyMaleFacePath, path); }
+        if (ReferenceEquals(button, _femaleFaceButton)) { _femaleFacePath = path; PlayerPrefs.SetString(PrefKeyFemaleFacePath, path); }
+        if (ReferenceEquals(button, _backgroundButton)) { _backgroundPath = path; PlayerPrefs.SetString(PrefKeyBackgroundPath, path); }
+        PlayerPrefs.Save();
+
+        if (button != null)
+        {
+            button.style.backgroundImage = new StyleBackground(tex);
+            button.style.unityBackgroundScaleMode = ScaleMode.ScaleToFit;
+            button.text = "";
+        }
+    }
+
+    private static Texture2D LoadTextureFromFile(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return null;
+
+        byte[] data;
+        try
+        {
+            data = File.ReadAllBytes(filePath);
+        }
+        catch
+        {
+            return null;
+        }
+
+        var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+        if (!tex.LoadImage(data, false))
+        {
+            Destroy(tex);
+            return null;
+        }
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        tex.name = Path.GetFileName(filePath);
+        return tex;
     }
 
     private void OnHistorySelectionChanged(IEnumerable<object> selectedItems)
@@ -1122,9 +1626,9 @@ public class MainView : MonoBehaviour
     private void OnFaceSwap() => ApplyOperation(ImageOp.FaceSwap);
     private void OnSharpen() => ApplyOperation(ImageOp.Sharpen);
     private void OnWhiten() => ApplyOperation(ImageOp.Whiten);
-    private void OnDeGlare() => ApplyOperation(ImageOp.DeGlare);
+    private void OnSharpenWhiten() => ApplyOperation(ImageOp.SharpenWhiten);
     private void OnChangeBackground() => ApplyOperation(ImageOp.ChangeBackground);
-    private void OnRemovePerson() => ApplyOperation(ImageOp.RemovePerson);
+    private void OnDehazeColorGrade() => ApplyOperation(ImageOp.DehazeColorGrade);
     private void OnColorGrade() => ApplyOperation(ImageOp.ColorGrade);
     private void OnDehaze() => ApplyOperation(ImageOp.Dehaze);
 
@@ -1132,6 +1636,7 @@ public class MainView : MonoBehaviour
     {
         if (_aiRunning) return;
         if (_image2ImageAI == null) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
 
         var src = GetCurrentHistoryTexture();
         if (src == null) src = GetOriginalHistoryTexture();
@@ -1144,15 +1649,60 @@ public class MainView : MonoBehaviour
         {
             var prompt = BuildPromptForOp(op);
             var refs = new List<Texture2D> { src };
-            if (op == ImageOp.FaceSwap && original != null && !ReferenceEquals(original, src))
-                refs.Add(original);
+            if (op == ImageOp.FaceSwap)
+            {
+                var hasMale = _maleFaceTexture != null;
+                var hasFemale = _femaleFaceTexture != null;
+
+                if (hasMale && hasFemale)
+                {
+                    var same = ReferenceEquals(_maleFaceTexture, _femaleFaceTexture) ||
+                               (!string.IsNullOrWhiteSpace(_maleFacePath) &&
+                                string.Equals(_maleFacePath, _femaleFacePath, StringComparison.OrdinalIgnoreCase));
+
+                    if (same)
+                    {
+                        prompt = "替换男角色人脸为图2的，替换女角色人脸为图2的";
+                        refs.Add(_maleFaceTexture);
+                    }
+                    else
+                    {
+                        prompt = "替换男角色人脸为图2的，替换女角色人脸为图3的";
+                        refs.Add(_maleFaceTexture);
+                        refs.Add(_femaleFaceTexture);
+                    }
+                }
+                else if (hasMale)
+                {
+                    prompt = "替换男角色人脸为图2的";
+                    refs.Add(_maleFaceTexture);
+                }
+                else if (hasFemale)
+                {
+                    prompt = "替换女角色人脸为图2的";
+                    refs.Add(_femaleFaceTexture);
+                }
+                else
+                {
+                    if (original != null && !ReferenceEquals(original, src))
+                        refs.Add(original);
+                }
+            }
+            else if (op == ImageOp.ChangeBackground)
+            {
+                if (_backgroundTexture != null)
+                    refs.Add(_backgroundTexture);
+            }
+
+            if (ShouldAppendPromptToggles(op))
+                prompt = AppendPromptToggles(prompt);
 
             var result = await _image2ImageAI.ImageToImageAsync(
                 refs,
                 prompt,
                 original.width,
                 original.height,
-                new System.Threading.CancellationToken());
+                _lifetimeCts.Token);
 
             if (result != null)
                 AddHistory(result, OpLabel(op));
@@ -1162,6 +1712,31 @@ public class MainView : MonoBehaviour
             _aiRunning = false;
             HideBusy();
         }
+    }
+
+    private static bool ShouldAppendPromptToggles(ImageOp op)
+    {
+        return op == ImageOp.FaceSwap ||
+               op == ImageOp.Sharpen ||
+               op == ImageOp.Whiten ||
+               op == ImageOp.SharpenWhiten ||
+               op == ImageOp.ChangeBackground ||
+               op == ImageOp.DehazeColorGrade ||
+               op == ImageOp.ColorGrade ||
+               op == ImageOp.Dehaze;
+    }
+
+    private string AppendPromptToggles(string prompt)
+    {
+        if (string.IsNullOrWhiteSpace(prompt))
+            prompt = "";
+
+        if (_appendDeGlarePrompt)
+            prompt += (prompt.Length > 0 ? " " : "") + "并进行去反光/去高光处理，降低镜面反射与眩光，保留细节与真实质感。";
+        if (_appendRemoveBgPeoplePrompt)
+            prompt += (prompt.Length > 0 ? " " : "") + "并移除画面中的背景人物，自动补全背景，纹理连贯自然，无明显修补痕迹。";
+
+        return prompt;
     }
 
     private async UniTask<int> OnSelectAIResultIndex(IReadOnlyList<Texture2D> options)
@@ -1304,10 +1879,10 @@ public class MainView : MonoBehaviour
         {
             ImageOp.FaceSwap => "将输入图片中的前景人物脸部进行自然的换脸处理，保持光照、肤色和细节一致，结果真实且无明显伪影。",
             ImageOp.Sharpen => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，提高前景人物清晰度",
-            ImageOp.Whiten => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，对前景人物进行自然美白与肤色优化，保持肤质真实，避免假白和过度磨皮。",
-            ImageOp.DeGlare => "对输入图片进行去反光/去高光处理，降低镜面反射与眩光，保留细节与真实质感。",
+            ImageOp.Whiten => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，对前景人物进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮。",
+            ImageOp.SharpenWhiten => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，提高前景人物清晰度，并进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮。",
             ImageOp.ChangeBackground => "在保持主体完整的前提下替换背景，边缘自然干净，主体与背景融合自然。",
-            ImageOp.RemovePerson => "移除画面中的背景人物，自动补全背景，纹理连贯自然，无明显修补痕迹。",
+            ImageOp.DehazeColorGrade => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏，并进行调色优化，提升整体观感与色彩层次，保持自然不过饱和。",
             ImageOp.ColorGrade => "对输入图片进行调色，提升整体观感与色彩层次，保持自然不过饱和。",
             ImageOp.Dehaze => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏。",
             _ => op.ToString()
@@ -1321,9 +1896,9 @@ public class MainView : MonoBehaviour
             ImageOp.FaceSwap => "换脸",
             ImageOp.Sharpen => "清晰化",
             ImageOp.Whiten => "美白",
-            ImageOp.DeGlare => "去反光",
+            ImageOp.SharpenWhiten => "清晰&美白",
             ImageOp.ChangeBackground => "换背景",
-            ImageOp.RemovePerson => "去人",
+            ImageOp.DehazeColorGrade => "去霾&调色",
             ImageOp.ColorGrade => "调色",
             ImageOp.Dehaze => "去霾",
             _ => op.ToString()
@@ -1381,16 +1956,6 @@ public class MainView : MonoBehaviour
                     pixels[i] = p;
                 }
                 break;
-            case ImageOp.DeGlare:
-                for (var i = 0; i < pixels.Length; i++)
-                {
-                    var p = pixels[i];
-                    p.r = (byte)Mathf.Clamp(p.r * 0.97f, 0, 255);
-                    p.g = (byte)Mathf.Clamp(p.g * 0.97f, 0, 255);
-                    p.b = (byte)Mathf.Clamp(p.b * 0.97f, 0, 255);
-                    pixels[i] = p;
-                }
-                break;
             case ImageOp.Sharpen:
                 {
                     var srcCopy = (Color32[])pixels.Clone();
@@ -1415,7 +1980,6 @@ public class MainView : MonoBehaviour
                 break;
             case ImageOp.FaceSwap:
             case ImageOp.ChangeBackground:
-            case ImageOp.RemovePerson:
             default:
                 {
                     for (var y = 0; y < h; y++)
@@ -1844,9 +2408,9 @@ public class MainView : MonoBehaviour
         FaceSwap,
         Sharpen,
         Whiten,
-        DeGlare,
+        SharpenWhiten,
         ChangeBackground,
-        RemovePerson,
+        DehazeColorGrade,
         ColorGrade,
         Dehaze
     }
@@ -2130,7 +2694,11 @@ public class MainView : MonoBehaviour
         private Rect GetViewRect()
         {
             var bounds = contentRect;
-            var infoBottom = Mathf.Max(bounds.yMin, _info.layout.y + _info.layout.height);
+            if (bounds.width <= 1f || bounds.height <= 1f)
+                return new Rect(0, 0, 0, 0);
+
+            var infoBottom = _info.layout.y + _info.layout.height;
+            infoBottom = Mathf.Clamp(infoBottom, bounds.yMin, bounds.yMax);
             return Rect.MinMaxRect(bounds.xMin, infoBottom, bounds.xMax, bounds.yMax);
         }
 
@@ -2229,54 +2797,108 @@ public class MainView : MonoBehaviour
 
         private void DrawSplitLine(MeshGenerationContext mgc, Rect drawRect, Rect imageRect)
         {
+            if (imageRect.width <= 1f || imageRect.height <= 1f)
+                return;
+
             var n = new Vector2(Mathf.Cos(angleRad), Mathf.Sin(angleRad));
-            var t = new Vector2(-n.y, n.x);
-            var centerUv = new Vector2(0.5f, 0.5f) - n * offset;
-            var centerLocal = new Vector2(
-                imageRect.xMin + centerUv.x * imageRect.width,
-                imageRect.yMin + (1f - centerUv.y) * imageRect.height
-            );
+            var w = imageRect.width;
+            var h = imageRect.height;
+            var x0 = imageRect.xMin;
+            var y0 = imageRect.yMin;
+            var y1 = imageRect.yMax;
+            var c = 0.5f * (n.x + n.y) - offset;
+            var A = n.x / w;
+            var B = -n.y / h;
+            var C = (-n.x * x0 / w) + (n.y * y1 / h) - c;
 
-            var len = Mathf.Max(drawRect.width, drawRect.height) * 1.5f;
-            var halfThick = thicknessPx * 0.5f;
+            float F(Vector2 p) => A * p.x + B * p.y + C;
 
-            var p0 = centerLocal + t * len + n * halfThick;
-            var p1 = centerLocal + t * len - n * halfThick;
-            var p2 = centerLocal - t * len - n * halfThick;
-            var p3 = centerLocal - t * len + n * halfThick;
-
-            var poly = new List<Vector2> { p0, p1, p2, p3 };
-            Func<Vector2, float> clipRect = p =>
+            var corners = new[]
             {
-                if (p.x < drawRect.xMin) return drawRect.xMin - p.x;
-                if (p.x > drawRect.xMax) return p.x - drawRect.xMax;
-                if (p.y < drawRect.yMin) return drawRect.yMin - p.y;
-                if (p.y > drawRect.yMax) return p.y - drawRect.yMax;
-                return -1f;
+                new Vector2(drawRect.xMin, drawRect.yMin),
+                new Vector2(drawRect.xMax, drawRect.yMin),
+                new Vector2(drawRect.xMax, drawRect.yMax),
+                new Vector2(drawRect.xMin, drawRect.yMax)
             };
 
-            var clipped = ClipPolygon(poly, clipRect, keepNegative: true);
+            var points = new List<Vector2>(4);
+            for (int i = 0; i < 4; i++)
+            {
+                var p0 = corners[i];
+                var p1 = corners[(i + 1) % 4];
+                var f0 = F(p0);
+                var f1 = F(p1);
+
+                if (Mathf.Abs(f0) <= 1e-6f)
+                    points.Add(p0);
+
+                if ((f0 > 0f && f1 < 0f) || (f0 < 0f && f1 > 0f))
+                {
+                    var t = f0 / (f0 - f1);
+                    points.Add(p0 + (p1 - p0) * t);
+                }
+            }
+
+            if (points.Count < 2)
+                return;
+
+            var segA = points[0];
+            var segB = points[1];
+            float bestDist = (segB - segA).sqrMagnitude;
+            for (int i = 0; i < points.Count; i++)
+            {
+                for (int j = i + 1; j < points.Count; j++)
+                {
+                    var d = (points[j] - points[i]).sqrMagnitude;
+                    if (d > bestDist)
+                    {
+                        bestDist = d;
+                        segA = points[i];
+                        segB = points[j];
+                    }
+                }
+            }
+
+            var dir = segB - segA;
+            if (dir.sqrMagnitude < 1e-4f)
+                return;
+            dir.Normalize();
+            var perp = new Vector2(-dir.y, dir.x) * (thicknessPx * 0.5f);
+
+            var v0p = segA + perp;
+            var v1p = segA - perp;
+            var v2p = segB - perp;
+            var v3p = segB + perp;
+
+            var quad = new List<Vector2> { v0p, v1p, v2p, v3p };
+            var clipped = ClipToRect(quad, drawRect);
             if (clipped.Count < 3)
                 return;
 
             var vCount = clipped.Count;
             var iCount = (vCount - 2) * 3;
-            var mesh = mgc.Allocate(vCount, iCount);
+            var mesh = mgc.Allocate(vCount, iCount, Texture2D.whiteTexture);
             for (int i = 0; i < vCount; i++)
-            {
-                mesh.SetNextVertex(new Vertex
-                {
-                    position = clipped[i],
-                    uv = Vector2.zero,
-                    tint = lineColor
-                });
-            }
+                mesh.SetNextVertex(new Vertex { position = clipped[i], uv = Vector2.zero, tint = lineColor });
             for (int i = 0; i < vCount - 2; i++)
             {
                 mesh.SetNextIndex(0);
                 mesh.SetNextIndex((ushort)(i + 1));
                 mesh.SetNextIndex((ushort)(i + 2));
             }
+        }
+
+        private static List<Vector2> ClipToRect(List<Vector2> poly, Rect rect)
+        {
+            List<Vector2> p = poly;
+            p = ClipPolygon(p, v => rect.xMin - v.x, true);
+            if (p.Count < 3) return p;
+            p = ClipPolygon(p, v => v.x - rect.xMax, true);
+            if (p.Count < 3) return p;
+            p = ClipPolygon(p, v => rect.yMin - v.y, true);
+            if (p.Count < 3) return p;
+            p = ClipPolygon(p, v => v.y - rect.yMax, true);
+            return p;
         }
 
         private static List<Vector2> ClipPolygon(List<Vector2> poly, Func<Vector2, float> signedDist, bool keepNegative)

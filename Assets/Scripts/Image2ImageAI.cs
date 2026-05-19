@@ -27,6 +27,44 @@ public sealed class Image2ImageAI : MonoBehaviour
 
 
     [SerializeField] private Provider provider = Provider.Replicate;
+
+    public Provider CurrentProvider
+    {
+        get => provider;
+        set => provider = value;
+    }
+
+    public string GetApiKeyForProvider(Provider p)
+    {
+        return p switch
+        {
+            Provider.GoogleAIStudio => googleApiKey,
+            Provider.Replicate => replicateApiToken,
+            Provider.AliTongyiWanxiang => dashScopeApiKey,
+            Provider.Doubao => doubaoApiKey,
+            _ => ""
+        };
+    }
+
+    public void SetApiKeyForProvider(Provider p, string key)
+    {
+        key ??= "";
+        switch (p)
+        {
+            case Provider.GoogleAIStudio:
+                googleApiKey = key;
+                break;
+            case Provider.Replicate:
+                replicateApiToken = key;
+                break;
+            case Provider.AliTongyiWanxiang:
+                dashScopeApiKey = key;
+                break;
+            case Provider.Doubao:
+                doubaoApiKey = key;
+                break;
+        }
+    }
  
     [Header("Google AI Studio (Gemini)")]
     [SerializeField] private string googleApiKey;
