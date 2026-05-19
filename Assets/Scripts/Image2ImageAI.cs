@@ -17,6 +17,12 @@ public sealed class Image2ImageAI : MonoBehaviour
         Doubao
     }
  
+    public event Func<IReadOnlyList<Texture2D>, UniTask<int>> SelectResultIndex;
+
+    [SerializeField]
+    public ComputeShader imageProcessingCS;
+    private static int s_resizeKernel = -1;
+
 
     [SerializeField] private Provider provider = Provider.Replicate;
  
@@ -37,74 +43,131 @@ public sealed class Image2ImageAI : MonoBehaviour
     [SerializeField] private string dashScopeBaseUrl = "https://dashscope.aliyuncs.com";
  
     [Header("Doubao")]
-    [SerializeField] private string doubaoApiKey = "ba0e3461-60b9-49d2-87e6-d6e6d95e10bd";
+    [SerializeField] private string doubaoApiKey;
     [SerializeField] private string doubaoBaseUrl = "https://ark.cn-beijing.volces.com/api/v3";
  
     [Header("Runtime")]
     [SerializeField] private int timeoutSeconds = 180;
     [SerializeField] private int pollIntervalMs = 900;
  
-    public async UniTask<Texture2D> ImageToImageAsync(
+    public UniTask<Texture2D> ImageToImageAsync(
         Texture2D input,
         string prompt,
         int targetWidth,
         int targetHeight,
         CancellationToken cancellationToken)
     {
-        if (input == null) return null;
+        if (input == null) return UniTask.FromResult<Texture2D>(null);
+        return ImageToImageAsync(new List<Texture2D> { input }, prompt, targetWidth, targetHeight, cancellationToken);
+    }
+
+    public async UniTask<Texture2D> ImageToImageAsync(
+        IReadOnlyList<Texture2D> referenceImages,
+        string prompt,
+        int targetWidth,
+        int targetHeight,
+        CancellationToken cancellationToken)
+    {
+        if (referenceImages == null || referenceImages.Count == 0) return null;
         if (string.IsNullOrWhiteSpace(prompt)) return null;
- 
-        Texture2D raw;
+
+        var refs = new List<Texture2D>(referenceImages.Count);
+        for (var i = 0; i < referenceImages.Count; i++)
+        {
+            if (referenceImages[i] != null)
+                refs.Add(referenceImages[i]);
+        }
+        if (refs.Count == 0) return null;
+
+        List<Texture2D> raws;
         switch (provider)
         {
             case Provider.GoogleAIStudio:
-                raw = await GoogleGeminiImageEditAsync(input, prompt, cancellationToken);
+                raws = await GoogleGeminiImageEditAsync(refs, prompt, cancellationToken);
                 break;
             case Provider.Replicate:
-                raw = await ReplicateImageToImageAsync(input, prompt, cancellationToken);
+                raws = await ReplicateImageToImageAsync(refs, prompt, cancellationToken);
                 break;
             case Provider.AliTongyiWanxiang:
-                raw = await DashScopeImageToImageAsync(input, prompt, cancellationToken);
+                raws = await DashScopeImageToImageAsync(refs, prompt, cancellationToken);
                 break;
             case Provider.Doubao:
-                raw = await DoubaoImageToImageAsync(input, prompt, cancellationToken);
+                raws = await DoubaoImageToImageAsync(refs, prompt, cancellationToken);
                 break;
             default:
                 return null;
         }
- 
-        if (raw == null) return null;
- 
-        if (targetWidth > 0 && targetHeight > 0 && (raw.width != targetWidth || raw.height != targetHeight))
+
+        if (raws == null || raws.Count == 0) return null;
+
+        var selectedIndex = 0;
+        if (raws.Count > 1 && SelectResultIndex != null)
         {
-            var resized = ResizeTo(raw, targetWidth, targetHeight);
-            Destroy(raw);
-            raw = resized;
+            try
+            {
+                selectedIndex = await SelectResultIndex.Invoke(raws);
+            }
+            catch
+            {
+                selectedIndex = 0;
+            }
         }
- 
-        raw.name = "AI_" + provider;
-        return raw;
+        selectedIndex = Mathf.Clamp(selectedIndex, 0, raws.Count - 1);
+
+        var selected = raws[selectedIndex];
+        for (var i = 0; i < raws.Count; i++)
+        {
+            if (i == selectedIndex) continue;
+            if (raws[i] != null) Destroy(raws[i]);
+        }
+
+        if (selected == null) return null;
+
+        if (targetWidth > 0 && targetHeight > 0 && (selected.width != targetWidth || selected.height != targetHeight))
+        {
+            var resized = ResizeTo(selected, targetWidth, targetHeight);
+            Destroy(selected);
+            selected = resized;
+        }
+
+        if (selected != null)
+            selected.name = "AI_" + provider;
+        return selected;
     }
- 
-    private async UniTask<Texture2D> ReplicateImageToImageAsync(Texture2D input, string prompt, CancellationToken ct)
+
+    private async UniTask<List<Texture2D>> ReplicateImageToImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(replicateApiToken)) return null;
         if (string.IsNullOrWhiteSpace(replicateVersion)) return null;
  
-        var png = EncodePng(input);
+        var png = EncodePng(referenceImages[0]);
         if (png == null || png.Length == 0) return null;
  
         var imageDataUrl = "data:image/png;base64," + Convert.ToBase64String(png);
+        var extraRefs = new List<object>();
+        for (var i = 1; i < referenceImages.Count; i++)
+        {
+            var b = EncodePng(referenceImages[i]);
+            if (b == null || b.Length == 0) continue;
+            extraRefs.Add("data:image/png;base64," + Convert.ToBase64String(b));
+        }
  
+        var inputObj = new Dictionary<string, object>
+        {
+            ["prompt"] = prompt,
+            [replicateInputImageField] = imageDataUrl,
+            ["strength"] = replicateStrength
+        };
+        if (extraRefs.Count > 0)
+        {
+            inputObj["reference_images"] = extraRefs;
+            inputObj["images"] = extraRefs;
+        }
+
         var requestJson = BuildJsonObject(new Dictionary<string, object>
         {
             ["version"] = replicateVersion,
-            ["input"] = new Dictionary<string, object>
-            {
-                ["prompt"] = prompt,
-                [replicateInputImageField] = imageDataUrl,
-                ["strength"] = replicateStrength
-            }
+            ["input"] = inputObj
         });
  
         var createUrl = "https://api.replicate.com/v1/predictions";
@@ -137,10 +200,17 @@ public sealed class Image2ImageAI : MonoBehaviour
             var status = ExtractJsonString(polled, "status");
             if (string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
             {
-                var outputUrl = ExtractFirstUrlFromJson(polled);
-                if (string.IsNullOrWhiteSpace(outputUrl))
-                    return null;
-                return await DownloadTextureAsync(outputUrl, ct);
+                var urls = ExtractAllUrlsFromJson(polled);
+                if (urls.Count == 0)
+                    return ExtractAllImagesFromJson(polled);
+
+                var results = new List<Texture2D>(urls.Count);
+                for (var i = 0; i < urls.Count; i++)
+                {
+                    var tex = await DownloadTextureAsync(urls[i], ct);
+                    if (tex != null) results.Add(tex);
+                }
+                return results;
             }
  
             if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase) ||
@@ -153,25 +223,36 @@ public sealed class Image2ImageAI : MonoBehaviour
         return null;
     }
  
-    private async UniTask<Texture2D> DashScopeImageToImageAsync(Texture2D input, string prompt, CancellationToken ct)
+    private async UniTask<List<Texture2D>> DashScopeImageToImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(dashScopeApiKey)) return null;
  
-        var png = EncodePng(input);
+        var png = EncodePng(referenceImages[0]);
         if (png == null || png.Length == 0) return null;
  
         var imageBase64 = Convert.ToBase64String(png);
+        var extraRefs = new List<object>();
+        for (var i = 1; i < referenceImages.Count; i++)
+        {
+            var b = EncodePng(referenceImages[i]);
+            if (b == null || b.Length == 0) continue;
+            extraRefs.Add("data:image/png;base64," + Convert.ToBase64String(b));
+        }
  
         var url = dashScopeBaseUrl.TrimEnd('/') + "/api/v1/services/aigc/image2image/image-synthesis";
  
+        var inputObj = new Dictionary<string, object>
+        {
+            ["prompt"] = prompt,
+            ["img"] = "data:image/png;base64," + imageBase64
+        };
+        if (extraRefs.Count > 0)
+            inputObj["ref_images"] = extraRefs;
+
         var requestJson = BuildJsonObject(new Dictionary<string, object>
         {
             ["model"] = dashScopeModel,
-            ["input"] = new Dictionary<string, object>
-            {
-                ["prompt"] = prompt,
-                ["img"] = "data:image/png;base64," + imageBase64
-            },
+            ["input"] = inputObj,
             ["parameters"] = new Dictionary<string, object>
             {
                 ["n"] = 1
@@ -186,13 +267,12 @@ public sealed class Image2ImageAI : MonoBehaviour
         if (string.IsNullOrWhiteSpace(resp))
             return null;
  
-        var outputUrl = ExtractFirstUrlFromJson(resp);
-        if (!string.IsNullOrWhiteSpace(outputUrl))
-            return await DownloadTextureAsync(outputUrl, ct);
- 
-        var b64 = ExtractJsonImageBase64(resp);
-        if (!string.IsNullOrWhiteSpace(b64))
-            return DecodeTextureFromBase64(b64);
+        var urls0 = ExtractAllUrlsFromJson(resp);
+        if (urls0.Count > 0)
+            return await DownloadAllTexturesAsync(urls0, ct);
+        var imgs0 = ExtractAllImagesFromJson(resp);
+        if (imgs0.Count > 0)
+            return imgs0;
  
         var taskId = ExtractJsonString(resp, "task_id");
         if (string.IsNullOrWhiteSpace(taskId))
@@ -221,12 +301,14 @@ public sealed class Image2ImageAI : MonoBehaviour
             if (string.Equals(status, "SUCCEEDED", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
             {
-                outputUrl = ExtractFirstUrlFromJson(polled);
-                if (!string.IsNullOrWhiteSpace(outputUrl))
-                    return await DownloadTextureAsync(outputUrl, ct);
-                b64 = ExtractJsonImageBase64(polled);
-                if (!string.IsNullOrWhiteSpace(b64))
-                    return DecodeTextureFromBase64(b64);
+                var urls = ExtractAllUrlsFromJson(polled);
+                if (urls.Count > 0)
+                    return await DownloadAllTexturesAsync(urls, ct);
+
+                var imgs = ExtractAllImagesFromJson(polled);
+                if (imgs.Count > 0)
+                    return imgs;
+
                 return null;
             }
  
@@ -240,56 +322,85 @@ public sealed class Image2ImageAI : MonoBehaviour
         return null;
     }
  
-    private async UniTask<Texture2D> GoogleGeminiImageEditAsync(Texture2D input, string prompt, CancellationToken ct)
+    private async UniTask<List<Texture2D>> GoogleGeminiImageEditAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(googleApiKey)) return null;
         if (string.IsNullOrWhiteSpace(googleModel)) return null;
  
-        var png = EncodePng(input);
-        if (png == null || png.Length == 0) return null;
- 
-        var base64 = Convert.ToBase64String(png);
+        var parts = new StringBuilder(1024);
+        parts.Append("{\"text\":");
+        parts.Append(Quote(prompt));
+        parts.Append('}');
+
+        for (var i = 0; i < referenceImages.Count; i++)
+        {
+            var png = EncodePng(referenceImages[i]);
+            if (png == null || png.Length == 0) continue;
+            var base64 = Convert.ToBase64String(png);
+            parts.Append(",{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":");
+            parts.Append(Quote(base64));
+            parts.Append("}}");
+        }
+
         var url = googleBaseUrl.TrimEnd('/') + "/models/" + googleModel + ":generateContent?key=" + UnityWebRequest.EscapeURL(googleApiKey);
  
-        var requestJson =
-            "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":" + Quote(prompt) + "},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":" + Quote(base64) + "}}]}]}";
+        var requestJson = "{\"contents\":[{\"role\":\"user\",\"parts\":[" + parts + "]}]}";
  
         var resp = await SendJsonAsync(url, "POST", requestJson, null, ct);
         if (string.IsNullOrWhiteSpace(resp))
             return null;
  
-        var outB64 = ExtractGeminiInlineImageBase64(resp);
-        if (!string.IsNullOrWhiteSpace(outB64))
-            return DecodeTextureFromBase64(outB64);
- 
-        var outUrl = ExtractFirstUrlFromJson(resp);
-        if (!string.IsNullOrWhiteSpace(outUrl))
-            return await DownloadTextureAsync(outUrl, ct);
- 
+        var b64s = ExtractAllGeminiInlineImageBase64(resp);
+        if (b64s.Count > 0)
+        {
+            var imgs = new List<Texture2D>(b64s.Count);
+            for (var i = 0; i < b64s.Count; i++)
+            {
+                var tex = DecodeTextureFromBase64(b64s[i]);
+                if (tex != null) imgs.Add(tex);
+            }
+            return imgs;
+        }
+
+        var urls = ExtractAllUrlsFromJson(resp);
+        if (urls.Count > 0)
+            return await DownloadAllTexturesAsync(urls, ct);
+
         return null;
     }
  
-    private async UniTask<Texture2D> DoubaoImageToImageAsync(Texture2D input, string prompt, CancellationToken ct)
+    private async UniTask<List<Texture2D>> DoubaoImageToImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(doubaoApiKey)) return null;
  
-        var png = EncodePng(input);
+        var png = EncodePng(referenceImages[0]);
         if (png == null || png.Length == 0) return null;
  
         var base64 = Convert.ToBase64String(png);
         var dataUrl = "data:image/png;base64," + base64;
+        var extraRefs = new List<object>();
+        for (var i = 1; i < referenceImages.Count; i++)
+        {
+            var b = EncodePng(referenceImages[i]);
+            if (b == null || b.Length == 0) continue;
+            extraRefs.Add("data:image/png;base64," + Convert.ToBase64String(b));
+        }
 
-        //var url = doubaoBaseUrl.TrimEnd('/') + "/images/edits";
         var url = doubaoBaseUrl.TrimEnd('/') + "/images/generations";
-        //string url = "https://ark.cn-beijing.volces.com/api/v3/images/generations";
-        var requestJson = BuildJsonObject(new Dictionary<string, object>
+        var reqObj = new Dictionary<string, object>
         {
             ["model"] = "doubao-seedream-4-5-251128",
             ["prompt"] = prompt,
             ["image"] = dataUrl,
-            ["n"] = 1,
-            ["response_format"] = "b64_json"
-        });
+            ["size"] = "2k",
+            ["sequential_image_generation"] = "disabled",
+            ["watermark"] = false,
+            ["response_format"] = "b64_json",
+        };
+        if (extraRefs.Count > 0)
+            reqObj["reference_images"] = extraRefs;
+
+        var requestJson = BuildJsonObject(reqObj);
  
         var resp = await SendJsonAsync(url, "POST", requestJson, new Dictionary<string, string>
         {
@@ -299,14 +410,14 @@ public sealed class Image2ImageAI : MonoBehaviour
         if (string.IsNullOrWhiteSpace(resp))
             return null;
  
-        var b64 = ExtractJsonImageBase64(resp);
-        if (!string.IsNullOrWhiteSpace(b64))
-            return DecodeTextureFromBase64(b64);
- 
-        var outUrl = ExtractFirstUrlFromJson(resp);
-        if (!string.IsNullOrWhiteSpace(outUrl))
-            return await DownloadTextureAsync(outUrl, ct);
- 
+        var imgs = ExtractAllImagesFromJson(resp);
+        if (imgs.Count > 0)
+            return imgs;
+
+        var urls = ExtractAllUrlsFromJson(resp);
+        if (urls.Count > 0)
+            return await DownloadAllTexturesAsync(urls, ct);
+
         return null;
     }
  
@@ -346,7 +457,51 @@ public sealed class Image2ImageAI : MonoBehaviour
         return tex;
     }
  
-    private static Texture2D ResizeTo(Texture2D src, int targetWidth, int targetHeight)
+    private Texture2D ResizeTo(Texture2D src, int targetWidth, int targetHeight)
+    {
+        var compute = GetImageProcessingCompute();
+        if (compute == null)
+            return ResizeToBlit(src, targetWidth, targetHeight);
+
+        if (s_resizeKernel < 0)
+        {
+            try { s_resizeKernel = compute.FindKernel("ResizeBilinear"); }
+            catch { s_resizeKernel = -1; }
+        }
+        if (s_resizeKernel < 0)
+            return ResizeToBlit(src, targetWidth, targetHeight);
+
+        var rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32);
+        rt.enableRandomWrite = true;
+        rt.Create();
+        var prev = RenderTexture.active;
+        try
+        {
+            compute.SetTexture(s_resizeKernel, "_Source", src);
+            compute.SetTexture(s_resizeKernel, "_Result", rt);
+            compute.SetVector("_SrcSize", new Vector4(src.width, src.height, 0f, 0f));
+            compute.SetVector("_DstSize", new Vector4(targetWidth, targetHeight, 0f, 0f));
+
+            var gx = Mathf.CeilToInt(targetWidth / 8f);
+            var gy = Mathf.CeilToInt(targetHeight / 8f);
+            compute.Dispatch(s_resizeKernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
+
+            RenderTexture.active = rt;
+            var tex = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+            tex.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+            tex.Apply(false, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            tex.filterMode = FilterMode.Bilinear;
+            return tex;
+        }
+        finally
+        {
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(rt);
+        }
+    }
+
+    private static Texture2D ResizeToBlit(Texture2D src, int targetWidth, int targetHeight)
     {
         var rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
         var prev = RenderTexture.active;
@@ -366,6 +521,20 @@ public sealed class Image2ImageAI : MonoBehaviour
             RenderTexture.active = prev;
             RenderTexture.ReleaseTemporary(rt);
         }
+    }
+
+    private ComputeShader GetImageProcessingCompute()
+    {
+        if (imageProcessingCS != null) return imageProcessingCS;
+        try
+        {
+            imageProcessingCS = Resources.Load<ComputeShader>("ImageProcessing");
+        }
+        catch
+        {
+            imageProcessingCS = null;
+        }
+        return imageProcessingCS;
     }
  
     private static async UniTask<Texture2D> DownloadTextureAsync(string url, CancellationToken ct)
@@ -418,19 +587,39 @@ public sealed class Image2ImageAI : MonoBehaviour
         }
     }
  
-    private static string ExtractFirstUrlFromJson(string json)
+    private static List<string> ExtractAllUrlsFromJson(string json)
     {
-        if (string.IsNullOrWhiteSpace(json)) return null;
-        var m = Regex.Match(json, "\"url\"\\s*:\\s*\"(?<u>https?:\\\\/\\\\/[^\\\"]+)\"", RegexOptions.IgnoreCase);
-        if (m.Success)
-            return UnescapeJsonString(m.Groups["u"].Value);
-        m = Regex.Match(json, "\"output\"\\s*:\\s*\\[\\s*\"(?<u>https?:\\\\/\\\\/[^\\\"]+)\"", RegexOptions.IgnoreCase);
-        if (m.Success)
-            return UnescapeJsonString(m.Groups["u"].Value);
-        m = Regex.Match(json, "\"output\"\\s*:\\s*\"(?<u>https?:\\\\/\\\\/[^\\\"]+)\"", RegexOptions.IgnoreCase);
-        if (m.Success)
-            return UnescapeJsonString(m.Groups["u"].Value);
-        return null;
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+
+        foreach (Match m in Regex.Matches(json, "\"url\"\\s*:\\s*\"(?<u>https?:\\\\/\\\\/[^\\\"]+)\"", RegexOptions.IgnoreCase))
+        {
+            var u = UnescapeJsonString(m.Groups["u"].Value);
+            if (!string.IsNullOrWhiteSpace(u) && !list.Contains(u))
+                list.Add(u);
+        }
+
+        foreach (Match m in Regex.Matches(json, "(?<u>https?:\\\\/\\\\/[^\\\"\\s]+)", RegexOptions.IgnoreCase))
+        {
+            var u = UnescapeJsonString(m.Groups["u"].Value);
+            if (string.IsNullOrWhiteSpace(u)) continue;
+            if (u.Contains("schema=")) continue;
+            if (!list.Contains(u))
+                list.Add(u);
+        }
+
+        return list;
+    }
+
+    private static async UniTask<List<Texture2D>> DownloadAllTexturesAsync(List<string> urls, CancellationToken ct)
+    {
+        var results = new List<Texture2D>(urls.Count);
+        for (var i = 0; i < urls.Count; i++)
+        {
+            var tex = await DownloadTextureAsync(urls[i], ct);
+            if (tex != null) results.Add(tex);
+        }
+        return results;
     }
  
     private static string ExtractJsonString(string json, string key)
@@ -457,6 +646,29 @@ public sealed class Image2ImageAI : MonoBehaviour
  
         return null;
     }
+
+    private static List<Texture2D> ExtractAllImagesFromJson(string json)
+    {
+        var results = new List<Texture2D>();
+        if (string.IsNullOrWhiteSpace(json)) return results;
+
+        foreach (Match m in Regex.Matches(json, "\"b64_json\"\\s*:\\s*\"(?<v>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
+        {
+            var s = UnescapeJsonString(m.Groups["v"].Value);
+            var tex = DecodeTextureFromBase64(s);
+            if (tex != null) results.Add(tex);
+        }
+
+        foreach (Match m in Regex.Matches(json, "\"data\"\\s*:\\s*\"(?<v>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
+        {
+            var s = UnescapeJsonString(m.Groups["v"].Value);
+            if (!LooksLikeBase64(s)) continue;
+            var tex = DecodeTextureFromBase64(s);
+            if (tex != null) results.Add(tex);
+        }
+
+        return results;
+    }
  
     private static string ExtractGeminiInlineImageBase64(string json)
     {
@@ -469,6 +681,28 @@ public sealed class Image2ImageAI : MonoBehaviour
         if (m.Success) return UnescapeJsonString(m.Groups["v"].Value);
  
         return null;
+    }
+
+    private static List<string> ExtractAllGeminiInlineImageBase64(string json)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+
+        foreach (Match m in Regex.Matches(json, "\"inlineData\"\\s*:\\s*\\{[^\\}]*\"mimeType\"\\s*:\\s*\"image\\/[^\\\"]+\"[^\\}]*\"data\"\\s*:\\s*\"(?<v>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
+        {
+            var s = UnescapeJsonString(m.Groups["v"].Value);
+            if (!string.IsNullOrWhiteSpace(s))
+                list.Add(s);
+        }
+
+        foreach (Match m in Regex.Matches(json, "\"inline_data\"\\s*:\\s*\\{[^\\}]*\"mime_type\"\\s*:\\s*\"image\\/[^\\\"]+\"[^\\}]*\"data\"\\s*:\\s*\"(?<v>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
+        {
+            var s = UnescapeJsonString(m.Groups["v"].Value);
+            if (!string.IsNullOrWhiteSpace(s))
+                list.Add(s);
+        }
+
+        return list;
     }
  
     private static bool LooksLikeBase64(string s)
@@ -580,4 +814,3 @@ public sealed class Image2ImageAI : MonoBehaviour
         }
     }
 }
-

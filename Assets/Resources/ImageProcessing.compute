@@ -1,0 +1,133 @@
+#pragma kernel ResizeBilinear
+#pragma kernel BilateralFilter
+#pragma kernel RemoveWatermark
+
+Texture2D<float4> _Source;
+RWTexture2D<float4> _Result;
+
+float4 _SrcSize;
+float4 _DstSize;
+
+float _SigmaSpatial;
+float _SigmaRange;
+int _Radius;
+
+float4 _WatermarkRect; // x,y,w,h in normalized [0..1]
+
+[numthreads(8,8,1)]
+void ResizeBilinear(uint3 id : SV_DispatchThreadID)
+{
+    uint dstW, dstH;
+    _Result.GetDimensions(dstW, dstH);
+    if (id.x >= dstW || id.y >= dstH) return;
+
+    float2 srcSize = float2(_SrcSize.x, _SrcSize.y);
+    float2 dstSize = float2(dstW, dstH);
+
+    float2 uv = (float2(id.x, id.y) + 0.5) / dstSize;
+    float2 src = uv * srcSize - 0.5;
+
+    int2 p0 = int2(floor(src));
+    float2 f = frac(src);
+
+    int2 p00 = clamp(p0, int2(0,0), int2(srcSize) - 1);
+    int2 p10 = clamp(p0 + int2(1,0), int2(0,0), int2(srcSize) - 1);
+    int2 p01 = clamp(p0 + int2(0,1), int2(0,0), int2(srcSize) - 1);
+    int2 p11 = clamp(p0 + int2(1,1), int2(0,0), int2(srcSize) - 1);
+
+    float4 c00 = _Source[p00];
+    float4 c10 = _Source[p10];
+    float4 c01 = _Source[p01];
+    float4 c11 = _Source[p11];
+
+    float4 cx0 = lerp(c00, c10, f.x);
+    float4 cx1 = lerp(c01, c11, f.x);
+    float4 c = lerp(cx0, cx1, f.y);
+    _Result[int2(id.xy)] = c;
+}
+
+[numthreads(8,8,1)]
+void BilateralFilter(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float4 center = _Source[p];
+
+    float sigmaS = max(0.001, _SigmaSpatial);
+    float sigmaR = max(0.001, _SigmaRange);
+    float inv2SigmaS2 = 0.5 / (sigmaS * sigmaS);
+    float inv2SigmaR2 = 0.5 / (sigmaR * sigmaR);
+
+    int r = max(1, _Radius);
+
+    float4 sum = 0;
+    float wsum = 0;
+
+    for (int dy = -r; dy <= r; dy++)
+    {
+        for (int dx = -r; dx <= r; dx++)
+        {
+            int2 q = clamp(p + int2(dx, dy), int2(0,0), int2(int(w)-1, int(h)-1));
+            float4 c = _Source[q];
+
+            float ds2 = dx * dx + dy * dy;
+            float4 diff = c - center;
+            float dr2 = dot(diff.rgb, diff.rgb);
+
+            float ws = exp(-ds2 * inv2SigmaS2);
+            float wr = exp(-dr2 * inv2SigmaR2);
+            float ww = ws * wr;
+
+            sum += c * ww;
+            wsum += ww;
+        }
+    }
+
+    _Result[p] = sum / max(1e-6, wsum);
+}
+
+[numthreads(8,8,1)]
+void RemoveWatermark(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float2 uv = (float2(id.x, id.y) + 0.5) / float2(w, h);
+    float2 rectMin = _WatermarkRect.xy;
+    float2 rectMax = _WatermarkRect.xy + _WatermarkRect.zw;
+
+    float4 c = _Source[int2(id.xy)];
+    if (uv.x >= rectMin.x && uv.x <= rectMax.x && uv.y >= rectMin.y && uv.y <= rectMax.y)
+    {
+        int r = max(2, _Radius);
+        float4 sum = 0;
+        float wsum = 0;
+        int2 p = int2(id.xy);
+
+        for (int dy = -r; dy <= r; dy++)
+        {
+            for (int dx = -r; dx <= r; dx++)
+            {
+                float2 uv2 = (float2(p.x + dx, p.y + dy) + 0.5) / float2(w, h);
+                if (uv2.x >= rectMin.x && uv2.x <= rectMax.x && uv2.y >= rectMin.y && uv2.y <= rectMax.y)
+                    continue;
+
+                int2 q = clamp(p + int2(dx, dy), int2(0,0), int2(int(w)-1, int(h)-1));
+                float ds2 = dx * dx + dy * dy;
+                float ww = exp(-ds2 * 0.08);
+                sum += _Source[q] * ww;
+                wsum += ww;
+            }
+        }
+
+        if (wsum > 1e-5)
+            c = sum / wsum;
+    }
+
+    _Result[int2(id.xy)] = c;
+}
+

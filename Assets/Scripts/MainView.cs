@@ -38,6 +38,8 @@ public class MainView : MonoBehaviour
     private Label _busyText;
     private IVisualElementScheduledItem _busyAnim;
     private float _busyPhase;
+    private VisualElement _choiceOverlay;
+    private UniTaskCompletionSource<int> _choiceTcs;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -59,6 +61,9 @@ public class MainView : MonoBehaviour
         _image2ImageAI = GetComponent<Image2ImageAI>();
         if (_image2ImageAI == null)
             _image2ImageAI = gameObject.AddComponent<Image2ImageAI>();
+
+        _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
+        _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
     }
 
     private void OnEnable()
@@ -78,6 +83,11 @@ public class MainView : MonoBehaviour
 
         _imageViewer?.Clear();
         ClearHistory();
+        HideBusy();
+        HideChoice();
+
+        if (_image2ImageAI != null)
+            _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
 
         foreach (var kv in _textureCache)
         {
@@ -987,8 +997,12 @@ public class MainView : MonoBehaviour
         try
         {
             var prompt = BuildPromptForOp(op);
+            var refs = new List<Texture2D> { src };
+            if (op == ImageOp.FaceSwap && original != null && !ReferenceEquals(original, src))
+                refs.Add(original);
+
             var result = await _image2ImageAI.ImageToImageAsync(
-                src,
+                refs,
                 prompt,
                 original.width,
                 original.height,
@@ -1002,6 +1016,140 @@ public class MainView : MonoBehaviour
             _aiRunning = false;
             HideBusy();
         }
+    }
+
+    private async UniTask<int> OnSelectAIResultIndex(IReadOnlyList<Texture2D> options)
+    {
+        HideBusy();
+        var idx = await ShowChoiceAsync(options);
+        return idx;
+    }
+
+    private UniTask<int> ShowChoiceAsync(IReadOnlyList<Texture2D> options)
+    {
+        if (options == null || options.Count == 0)
+            return UniTask.FromResult(0);
+
+        HideChoice();
+
+        _choiceTcs = new UniTaskCompletionSource<int>();
+        var root = _uiDocument.rootVisualElement;
+
+        _choiceOverlay = new VisualElement();
+        _choiceOverlay.style.position = Position.Absolute;
+        _choiceOverlay.style.left = 0;
+        _choiceOverlay.style.top = 0;
+        _choiceOverlay.style.right = 0;
+        _choiceOverlay.style.bottom = 0;
+        _choiceOverlay.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.55f));
+        _choiceOverlay.style.alignItems = Align.Center;
+        _choiceOverlay.style.justifyContent = Justify.Center;
+
+        var panel = new VisualElement();
+        panel.style.width = 680;
+        panel.style.maxHeight = 520;
+        panel.style.paddingLeft = 12;
+        panel.style.paddingRight = 12;
+        panel.style.paddingTop = 10;
+        panel.style.paddingBottom = 12;
+        panel.style.backgroundColor = new StyleColor(new Color(0.12f, 0.12f, 0.12f, 0.97f));
+        panel.style.borderTopLeftRadius = 10;
+        panel.style.borderTopRightRadius = 10;
+        panel.style.borderBottomLeftRadius = 10;
+        panel.style.borderBottomRightRadius = 10;
+        panel.style.borderLeftWidth = 1;
+        panel.style.borderRightWidth = 1;
+        panel.style.borderTopWidth = 1;
+        panel.style.borderBottomWidth = 1;
+        panel.style.borderLeftColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderRightColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderBottomColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.flexDirection = FlexDirection.Column;
+        panel.style.minHeight = 0;
+        _choiceOverlay.Add(panel);
+
+        var header = new VisualElement();
+        header.style.flexDirection = FlexDirection.Row;
+        header.style.alignItems = Align.Center;
+        header.style.marginBottom = 8;
+        panel.Add(header);
+
+        var title = new Label("请选择一张结果图");
+        title.style.flexGrow = 1;
+        header.Add(title);
+
+        var cancelBtn = new Button(() => ResolveChoice(0)) { text = "取消" };
+        header.Add(cancelBtn);
+
+        var scroll = new ScrollView(ScrollViewMode.Vertical);
+        scroll.style.flexGrow = 1;
+        scroll.style.minHeight = 0;
+        panel.Add(scroll);
+
+        var grid = new VisualElement();
+        grid.style.flexDirection = FlexDirection.Row;
+        grid.style.flexWrap = Wrap.Wrap;
+        grid.style.alignContent = Align.FlexStart;
+        scroll.Add(grid);
+
+        for (var i = 0; i < options.Count; i++)
+        {
+            var tex = options[i];
+            var idx = i;
+
+            var card = new Button(() => ResolveChoice(idx));
+            card.style.width = 160;
+            card.style.height = 190;
+            card.style.marginLeft = 6;
+            card.style.marginRight = 6;
+            card.style.marginTop = 6;
+            card.style.marginBottom = 6;
+            card.style.paddingLeft = 6;
+            card.style.paddingRight = 6;
+            card.style.paddingTop = 6;
+            card.style.paddingBottom = 6;
+
+            var img = new Image();
+            img.image = tex;
+            img.style.width = Length.Percent(100);
+            img.style.height = 140;
+            img.scaleMode = ScaleMode.ScaleToFit;
+            card.Add(img);
+
+            var lb = new Label("结果 " + idx);
+            lb.style.unityTextAlign = TextAnchor.MiddleCenter;
+            lb.style.marginTop = 6;
+            card.Add(lb);
+
+            grid.Add(card);
+        }
+
+        root.Add(_choiceOverlay);
+        _choiceOverlay.BringToFront();
+
+        return _choiceTcs.Task;
+    }
+
+    private void ResolveChoice(int index)
+    {
+        if (_choiceTcs == null)
+            return;
+
+        var tcs = _choiceTcs;
+        _choiceTcs = null;
+        HideChoice();
+        tcs.TrySetResult(index);
+    }
+
+    private void HideChoice()
+    {
+        if (_choiceOverlay == null) return;
+        var root = _uiDocument != null ? _uiDocument.rootVisualElement : null;
+        if (root != null && root.Contains(_choiceOverlay))
+            root.Remove(_choiceOverlay);
+        _choiceOverlay = null;
+        _choiceTcs = null;
     }
 
     private static string BuildPromptForOp(ImageOp op)

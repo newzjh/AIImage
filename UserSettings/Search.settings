@@ -12,6 +12,10 @@ scopes = {
 	"last_search.66F56946" = "IRExecutor"
 	"OpenInspectorPreview.66F56946" = "0"
 	"currentGroup.66F56946" = "all"
+	"picker_window_position_offset.00000000" = "-821.5;405.5;320;550"
+	"picker_visibility_flags.00000000" = "0"
+	"picker_item_size.00000000" = "1"
+	"picker_inspector.00000000" = "0"
 }
 providers = {
 	asset = {
@@ -59,6 +63,11 @@ providers = {
 		priority = 210
 		defaultAction = null
 	}
+	presets_provider = {
+		active = false
+		priority = -10
+		defaultAction = null
+	}
 }
 objectSelectors = {
 }
@@ -78,3 +87,4 @@ helperWidgetCurrentArea = "all"
 disabledIndexers = ""
 minIndexVariations = 2
 findProviderIndexHelper = true
+itemIconSize = 32
