@@ -48,6 +48,14 @@ public class MainView : MonoBehaviour
     private Image2ImageAI _image2ImageAI;
     private bool _aiRunning;
     private bool _adjustRunning;
+    private bool _previewRunning;
+    private RenderTexture _previewRt;
+    private Texture2D _previewSource;
+    private string _previewKernelName;
+    private Action<ComputeShader, float> _previewParamSetter;
+    private float _previewValue;
+    private int _previewPointerId = -1;
+    private VisualElement _previewCaptureElement;
     private VisualElement _busyOverlay;
     private VisualElement _busyBarTrack;
     private VisualElement _busyBar;
@@ -78,6 +86,7 @@ public class MainView : MonoBehaviour
     private bool _appendRemoveBgPeoplePrompt = true;
     private ComputeShader _imageProcessingCS;
     private readonly Dictionary<string, int> _imageProcessingKernelIds = new Dictionary<string, int>(StringComparer.Ordinal);
+    private long _historyOpSeq;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -147,6 +156,7 @@ public class MainView : MonoBehaviour
         if (!Application.isPlaying)
             return;
 
+        StopPreview();
         _imageViewer?.Clear();
         ClearHistory();
         HideBusy();
@@ -213,6 +223,9 @@ public class MainView : MonoBehaviour
         root.style.flexDirection = FlexDirection.Column;
         root.style.minHeight = 0;
         root.style.position = Position.Relative;
+        root.RegisterCallback<KeyDownEvent>(OnRootKeyDown, TrickleDown.TrickleDown);
+        root.RegisterCallback<PointerUpEvent>(OnAnyPointerUp, TrickleDown.TrickleDown);
+        root.RegisterCallback<PointerCancelEvent>(OnAnyPointerCancel, TrickleDown.TrickleDown);
 
         _mainSplitView = new TwoPaneSplitView(0, leftPaneWidth, TwoPaneSplitViewOrientation.Horizontal);
         _mainSplitView.style.backgroundColor = Color.gray;
@@ -830,13 +843,15 @@ public class MainView : MonoBehaviour
             evt.StopPropagation();
         });
 
-        body.Add(BuildAdjustRow("对比度", -1f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustContrast", cs => cs.SetFloat("_Contrast", v), $"对比度 {v:0.00}").Forget()));
-        body.Add(BuildAdjustRow("亮度", -1f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustBrightness", cs => cs.SetFloat("_Brightness", v), $"亮度 {v:0.00}").Forget()));
-        body.Add(BuildAdjustRow("自然饱和度", -1f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustVibrance", cs => cs.SetFloat("_Vibrance", v), $"自然饱和度 {v:0.00}").Forget()));
-        body.Add(BuildAdjustRow("去阴影", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustShadows", cs => cs.SetFloat("_Shadows", v), $"去阴影 {v:0.00}").Forget()));
-        body.Add(BuildAdjustRow("去高光", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustHighlights", cs => cs.SetFloat("_Highlights", v), $"去高光 {v:0.00}").Forget()));
-        body.Add(BuildAdjustRow("加温滤镜", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("WarmFilter", cs => cs.SetFloat("_Warm", v), $"加温 {v:0.00}").Forget()));
-        body.Add(BuildAdjustRow("冷却滤镜", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("CoolFilter", cs => cs.SetFloat("_Cool", v), $"冷却 {v:0.00}").Forget()));
+        body.Add(BuildAdjustRow("对比度", -1f, 1f, 0f, "AdjustContrast", (cs, v) => cs.SetFloat("_Contrast", v), v => $"对比度 {v:0.00}"));
+        body.Add(BuildAdjustRow("亮度", -1f, 1f, 0f, "AdjustBrightness", (cs, v) => cs.SetFloat("_Brightness", v), v => $"亮度 {v:0.00}"));
+        body.Add(BuildAdjustRow("自然饱和度", -1f, 1f, 0f, "AdjustVibrance", (cs, v) => cs.SetFloat("_Vibrance", v), v => $"自然饱和度 {v:0.00}"));
+        body.Add(BuildAdjustRow("去阴影", 0f, 1f, 0f, "AdjustShadows", (cs, v) => cs.SetFloat("_Shadows", v), v => $"去阴影 {v:0.00}"));
+        body.Add(BuildAdjustRow("去高光", 0f, 1f, 0f, "AdjustHighlights", (cs, v) => cs.SetFloat("_Highlights", v), v => $"去高光 {v:0.00}"));
+        body.Add(BuildAdjustRow("加温滤镜", 0f, 1f, 0f, "WarmFilter", (cs, v) => cs.SetFloat("_Warm", v), v => $"加温 {v:0.00}"));
+        body.Add(BuildAdjustRow("冷却滤镜", 0f, 1f, 0f, "CoolFilter", (cs, v) => cs.SetFloat("_Cool", v), v => $"冷却 {v:0.00}"));
+        body.Add(BuildAdjustRow("锐化", 0f, 1f, 0f, "Sharpen", (cs, v) => cs.SetFloat("_Sharpen", v), v => $"锐化 {v:0.00}"));
+        body.Add(BuildAdjustRow("模糊", 0f, 1f, 0f, "Blur", (cs, v) => cs.SetFloat("_Blur", v), v => $"模糊 {v:0.00}"));
 
         parent.Add(panel);
         panel.BringToFront();
@@ -857,7 +872,7 @@ public class MainView : MonoBehaviour
         });
     }
 
-    private static VisualElement BuildAdjustRow(string name, float min, float max, float defaultValue, Action<float> onApply)
+    private VisualElement BuildAdjustRow(string name, float min, float max, float defaultValue, string kernelName, Action<ComputeShader, float> paramSetter, Func<float, string> historyLabel)
     {
         var row = new VisualElement();
         row.style.flexDirection = FlexDirection.Row;
@@ -872,13 +887,231 @@ public class MainView : MonoBehaviour
         slider.value = defaultValue;
         slider.style.flexGrow = 1;
         slider.style.marginRight = 8;
+        slider.RegisterValueChangedCallback(evt =>
+        {
+            if (_previewRunning && ReferenceEquals(_previewCaptureElement, slider))
+                _previewValue = evt.newValue;
+        });
+        slider.RegisterCallback<PointerDownEvent>(evt =>
+        {
+            if (evt.button != 0) return;
+            StartPreview(slider, evt.pointerId, kernelName, paramSetter, slider.value);
+        }, TrickleDown.TrickleDown);
+        slider.RegisterCallback<PointerUpEvent>(evt =>
+        {
+            if (_previewRunning && ReferenceEquals(_previewCaptureElement, slider) && _previewPointerId == evt.pointerId)
+                StopPreview();
+        }, TrickleDown.TrickleDown);
+        slider.RegisterCallback<PointerCancelEvent>(evt =>
+        {
+            if (_previewRunning && ReferenceEquals(_previewCaptureElement, slider) && _previewPointerId == evt.pointerId)
+                StopPreview();
+        }, TrickleDown.TrickleDown);
         row.Add(slider);
 
-        var btn = new Button(() => onApply?.Invoke(slider.value)) { text = "应用" };
+        var btn = new Button(() =>
+        {
+            StopPreview();
+            var v = slider.value;
+            ApplyComputeAdjustmentAsync(kernelName, cs => paramSetter?.Invoke(cs, v), historyLabel != null ? historyLabel(v) : name).Forget();
+        }) { text = "应用" };
         btn.style.height = 28;
         row.Add(btn);
 
         return row;
+    }
+
+    private void Update()
+    {
+        if (!Application.isPlaying)
+            return;
+        if (!_previewRunning)
+            return;
+        if (!Input.GetMouseButton(0))
+        {
+            StopPreview();
+            return;
+        }
+        if (_previewRt == null || _previewSource == null)
+        {
+            StopPreview();
+            return;
+        }
+        if (_aiRunning || _adjustRunning)
+            return;
+
+        var cs = GetImageProcessingCS();
+        if (cs == null)
+            return;
+        var kernel = GetKernelId(_previewKernelName);
+        if (kernel < 0)
+            return;
+
+        cs.SetTexture(kernel, "_Source", _previewSource);
+        cs.SetTexture(kernel, "_Result", _previewRt);
+        _previewParamSetter?.Invoke(cs, _previewValue);
+
+        var gx = Mathf.CeilToInt(_previewSource.width / 8f);
+        var gy = Mathf.CeilToInt(_previewSource.height / 8f);
+        cs.Dispatch(kernel, gx, gy, 1);
+
+        _imageViewer?.MarkDirtyRepaint();
+    }
+
+    private void StartPreview(VisualElement captureElement, int pointerId, string kernelName, Action<ComputeShader, float> paramSetter, float initialValue)
+    {
+        if (_aiRunning || _adjustRunning)
+            return;
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null)
+            return;
+
+        var cs = GetImageProcessingCS();
+        if (cs == null)
+            return;
+        var kernel = GetKernelId(kernelName);
+        if (kernel < 0)
+            return;
+
+        StopPreview();
+        _previewRunning = true;
+        _previewKernelName = kernelName;
+        _previewParamSetter = paramSetter;
+        _previewValue = initialValue;
+        _previewSource = src;
+        _previewPointerId = pointerId;
+        _previewCaptureElement = captureElement;
+
+        _previewRt = new RenderTexture(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+        _previewRt.enableRandomWrite = true;
+        _previewRt.Create();
+
+        if (_previewCaptureElement != null)
+            _previewCaptureElement.CapturePointer(_previewPointerId);
+
+        _imageViewer?.SetPreview(_previewRt);
+        _imageViewer?.MarkDirtyRepaint();
+    }
+
+    private void StopPreview()
+    {
+        if (!_previewRunning)
+            return;
+
+        if (_previewCaptureElement != null && _previewPointerId >= 0 && _previewCaptureElement.HasPointerCapture(_previewPointerId))
+            _previewCaptureElement.ReleasePointer(_previewPointerId);
+
+        _previewRunning = false;
+        _previewKernelName = null;
+        _previewParamSetter = null;
+        _previewValue = 0f;
+        _previewPointerId = -1;
+        _previewCaptureElement = null;
+        _previewSource = null;
+
+        _imageViewer?.SetPreview(null);
+        _imageViewer?.MarkDirtyRepaint();
+
+        if (_previewRt != null)
+        {
+            _previewRt.Release();
+            Destroy(_previewRt);
+            _previewRt = null;
+        }
+    }
+
+    private void OnAnyPointerUp(PointerUpEvent evt)
+    {
+        if (!_previewRunning)
+            return;
+        if (evt.pointerId != _previewPointerId)
+            return;
+        StopPreview();
+    }
+
+    private void OnAnyPointerCancel(PointerCancelEvent evt)
+    {
+        if (!_previewRunning)
+            return;
+        if (evt.pointerId != _previewPointerId)
+            return;
+        StopPreview();
+    }
+
+    private void OnRootKeyDown(KeyDownEvent evt)
+    {
+        if (evt == null)
+            return;
+
+        if (evt.target is TextField)
+            return;
+
+        var ctrlOrCmd = evt.ctrlKey || evt.commandKey;
+        if (!ctrlOrCmd)
+            return;
+
+        if (evt.keyCode == KeyCode.Z && !evt.shiftKey)
+        {
+            UndoLastOperation();
+            evt.StopPropagation();
+        }
+    }
+
+    private void UndoLastOperation()
+    {
+        if (_historyEntries.Count <= 1)
+        {
+            ShowToast("没有可撤销的历史记录", 1800);
+            return;
+        }
+
+        var bestSeq = -1L;
+        var bestIndex = -1;
+        for (int i = 1; i < _historyEntries.Count; i++)
+        {
+            var s = _historyEntries[i].opSeq;
+            if (s > bestSeq)
+            {
+                bestSeq = s;
+                bestIndex = i;
+            }
+        }
+
+        if (bestIndex < 0 || bestSeq <= 0)
+        {
+            ShowToast("没有可撤销的历史记录", 1800);
+            return;
+        }
+
+        var removed = _historyEntries[bestIndex];
+        _historyEntries.RemoveAt(bestIndex);
+        if (removed.owned && removed.texture != null)
+            Destroy(removed.texture);
+
+        var selectSeq = -1L;
+        var selectIndex = 0;
+        for (int i = 1; i < _historyEntries.Count; i++)
+        {
+            var s = _historyEntries[i].opSeq;
+            if (s > selectSeq)
+            {
+                selectSeq = s;
+                selectIndex = i;
+            }
+        }
+
+        _historyList?.RefreshItems();
+        if (_historyList != null)
+        {
+            _historyList.SetSelection(selectIndex);
+            _historyList.ScrollToItem(selectIndex);
+        }
+
+        var current = _historyEntries[selectIndex].texture;
+        var original = GetOriginalHistoryTexture();
+        _imageViewer?.SetSources(current, original, _historyEntries[selectIndex].label);
     }
 
     private ComputeShader GetImageProcessingCS()
@@ -1877,13 +2110,15 @@ public class MainView : MonoBehaviour
     private void ResetHistoryWithOriginal(Texture2D originalTexture, string label, string fullPath)
     {
         ClearHistory();
+        _historyOpSeq = 0;
 
         _historyEntries.Add(new HistoryEntry
         {
             label = "原图: " + (label ?? originalTexture.name),
             texture = originalTexture,
             owned = false,
-            sourcePath = fullPath
+            sourcePath = fullPath,
+            opSeq = 0
         });
         _historyList?.RefreshItems();
         _historyList?.SetSelection(0);
@@ -1928,7 +2163,8 @@ public class MainView : MonoBehaviour
             label = label ?? texture.name,
             texture = texture,
             owned = true,
-            sourcePath = null
+            sourcePath = null,
+            opSeq = ++_historyOpSeq
         };
 
         _historyEntries.Insert(1, entry);
@@ -2756,6 +2992,7 @@ public class MainView : MonoBehaviour
         public Texture2D texture;
         public bool owned;
         public string sourcePath;
+        public long opSeq;
     }
 
     private enum ImageOp
@@ -2776,6 +3013,7 @@ public class MainView : MonoBehaviour
 
         private Texture _texA;
         private Texture _texB;
+        private Texture _previewTex;
         public float angleRad;
         private float offset;
         private float thicknessPx = 2f;
@@ -2836,6 +3074,12 @@ public class MainView : MonoBehaviour
 
             var refTex = _texA != null ? _texA : _texB;
             _info.text = refTex == null ? "" : (label ?? refTex.name);
+            MarkDirtyRepaint();
+        }
+
+        public void SetPreview(Texture preview)
+        {
+            _previewTex = preview;
             MarkDirtyRepaint();
         }
 
@@ -3145,6 +3389,12 @@ public class MainView : MonoBehaviour
                 return;
 
             ClampOffsetToDrawRect(drawRect, imageRect);
+
+            if (_previewTex != null)
+            {
+                DrawFullRect(mgc, _previewTex, drawRect, imageRect);
+                return;
+            }
             float SignedDist(Vector2 p) => SignedDistUv(p, imageRect);
 
             if (_texA != null)
@@ -3153,6 +3403,35 @@ public class MainView : MonoBehaviour
                 DrawHalfPlane(mgc, _texB, drawRect, imageRect, SignedDist, keepNegative: false);
 
             DrawSplitLine(mgc, drawRect, imageRect);
+        }
+
+        private static void DrawFullRect(MeshGenerationContext mgc, Texture tex, Rect drawRect, Rect imageRect)
+        {
+            var mesh = mgc.Allocate(4, 6, tex);
+            var p0 = new Vector2(drawRect.xMin, drawRect.yMin);
+            var p1 = new Vector2(drawRect.xMax, drawRect.yMin);
+            var p2 = new Vector2(drawRect.xMax, drawRect.yMax);
+            var p3 = new Vector2(drawRect.xMin, drawRect.yMax);
+
+            Vector2 Uv(Vector2 p)
+            {
+                return new Vector2(
+                    (p.x - imageRect.xMin) / imageRect.width,
+                    1f - ((p.y - imageRect.yMin) / imageRect.height)
+                );
+            }
+
+            mesh.SetNextVertex(new Vertex { position = p0, uv = Uv(p0), tint = Color.white });
+            mesh.SetNextVertex(new Vertex { position = p1, uv = Uv(p1), tint = Color.white });
+            mesh.SetNextVertex(new Vertex { position = p2, uv = Uv(p2), tint = Color.white });
+            mesh.SetNextVertex(new Vertex { position = p3, uv = Uv(p3), tint = Color.white });
+
+            mesh.SetNextIndex(0);
+            mesh.SetNextIndex(1);
+            mesh.SetNextIndex(2);
+            mesh.SetNextIndex(0);
+            mesh.SetNextIndex(2);
+            mesh.SetNextIndex(3);
         }
 
         private void DrawHalfPlane(
