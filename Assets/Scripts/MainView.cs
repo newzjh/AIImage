@@ -1769,11 +1769,9 @@ public class MainView : MonoBehaviour
 
     private static bool ShouldAppendPromptToggles(ImageOp op)
     {
-        return op == ImageOp.FaceSwap ||
-               op == ImageOp.Sharpen ||
+        return op == ImageOp.Sharpen ||
                op == ImageOp.Whiten ||
                op == ImageOp.SharpenWhiten ||
-               op == ImageOp.ChangeBackground ||
                op == ImageOp.DehazeColorGrade ||
                op == ImageOp.ColorGrade ||
                op == ImageOp.Dehaze;
@@ -1785,9 +1783,9 @@ public class MainView : MonoBehaviour
             prompt = "";
 
         if (_appendDeGlarePrompt)
-            prompt += (prompt.Length > 0 ? " " : "") + "并进行去反光/去高光处理，降低镜面反射与眩光，保留细节与真实质感。";
+            prompt += (prompt.Length > 0 ? " " : "") + "并进行去反光/去高光处理，降低镜面反射与眩光，保留细节与真实质感，";
         if (_appendRemoveBgPeoplePrompt)
-            prompt += (prompt.Length > 0 ? " " : "") + "并移除画面中的背景人物，自动补全背景，纹理连贯自然，无明显修补痕迹。";
+            prompt += (prompt.Length > 0 ? " " : "") + "并移除画面中的背景人物，自动补全背景，纹理连贯自然，无明显修补痕迹，";
 
         return prompt;
     }

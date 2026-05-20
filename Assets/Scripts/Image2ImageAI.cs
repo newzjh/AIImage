@@ -581,11 +581,17 @@ public sealed class Image2ImageAI : MonoBehaviour
 
         var (w, h) = ClampToMaxSide(Mathf.Max(64, targetWidth), Mathf.Max(64, targetHeight), 2048);
 
-        var seedPng = EncodePng(referenceImages[0]);
-        if (seedPng == null || seedPng.Length == 0)
-            return null;
+        List<string> refs = new List<string>();
+        for (int i = 0; i < referenceImages.Count; i++)
+        {
+            var seedPng = EncodePng(referenceImages[i]);
+            if (seedPng == null || seedPng.Length == 0)
+                continue;
+            var seedDataUri = "data:image/png;base64," + Convert.ToBase64String(seedPng);
+            refs.Add(seedDataUri);
+        }
 
-        var seedDataUri = "data:image/png;base64," + Convert.ToBase64String(seedPng);
+
         var taskUuid = Guid.NewGuid().ToString();
 
         var body = BuildJsonArray(new List<object>
@@ -601,10 +607,10 @@ public sealed class Image2ImageAI : MonoBehaviour
                 ["numberResults"] = 1,
                 ["outputType"] = "base64Data",
                 ["outputFormat"] = "PNG",
-                ["strength"] = Mathf.Clamp01(runwareStrength),
+                //["strength"] = Mathf.Clamp01(runwareStrength),
                 ["inputs"] = new Dictionary<string, object>
                 {
-                    ["seedImage"] = seedDataUri
+                    ["referenceImages"] = refs
                 }
             }
         });
