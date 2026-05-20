@@ -335,7 +335,7 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.SetTexture(kFaceMask, "_FaceMaskOut", faceMaskRaw);
                 cs.Dispatch(kFaceMask, gx, gy, 1);
 
-                cs.SetInt("_BoxRadius", 6);
+                cs.SetInt("_BoxRadius", 4);
                 cs.SetTexture(kBoxH, "_ScalarIn", faceMaskRaw);
                 cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
                 cs.Dispatch(kBoxH, gx, gy, 1);
@@ -343,7 +343,7 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.SetTexture(kBoxV, "_BoxOut", faceMask);
                 cs.Dispatch(kBoxV, gx, gy, 1);
 
-                var guidedRadius = Mathf.Clamp(Mathf.RoundToInt(Mathf.Max(w, h) * 0.005f), 8, 16);
+                var guidedRadius = Mathf.Clamp(Mathf.RoundToInt(Mathf.Max(w, h) * 0.003f), 6, 12);
                 cs.SetInt("_BoxRadius", guidedRadius);
                 BoxBlur(cs, kBoxH, kBoxV, clampedY, boxTmp, meanI, gx, gy);
 
@@ -353,7 +353,7 @@ public sealed class GpuSharpenRunner : MonoBehaviour
 
                 BoxBlur(cs, kBoxH, kBoxV, i2, boxTmp, meanII, gx, gy);
 
-                cs.SetFloat("_GuidedEps", 0.006f);
+                cs.SetFloat("_GuidedEps", 0.0025f);
                 cs.SetTexture(kGuidedAB, "_MeanIIn", meanI);
                 cs.SetTexture(kGuidedAB, "_MeanIIIn", meanII);
                 cs.SetTexture(kGuidedAB, "_AOut", aRt);
@@ -390,8 +390,8 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.Dispatch(kBilateralNoise, gx, gy, 1);
 
                 var faceStrength = Mathf.Clamp(faceDetailStrength, 0f, 6f);
-                cs.SetFloat("_MidW", 1.2f * faceStrength);
-                cs.SetFloat("_TextureScale", 0.55f * faceStrength);
+                cs.SetFloat("_MidW", 1.5f * faceStrength);
+                cs.SetFloat("_TextureScale", 0.25f + 0.12f * faceStrength);
                 cs.SetTexture(kFaceStruct, "_Source", src);
                 cs.SetTexture(kFaceStruct, "_AnalysisIn", analysis);
                 cs.SetTexture(kFaceStruct, "_FaceMaskIn", faceMask);
