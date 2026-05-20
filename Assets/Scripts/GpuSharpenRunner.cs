@@ -335,7 +335,7 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.SetTexture(kFaceMask, "_FaceMaskOut", faceMaskRaw);
                 cs.Dispatch(kFaceMask, gx, gy, 1);
 
-                cs.SetInt("_BoxRadius", 10);
+                cs.SetInt("_BoxRadius", 6);
                 cs.SetTexture(kBoxH, "_ScalarIn", faceMaskRaw);
                 cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
                 cs.Dispatch(kBoxH, gx, gy, 1);
@@ -343,7 +343,8 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.SetTexture(kBoxV, "_BoxOut", faceMask);
                 cs.Dispatch(kBoxV, gx, gy, 1);
 
-                cs.SetInt("_BoxRadius", 12);
+                var guidedRadius = Mathf.Clamp(Mathf.RoundToInt(Mathf.Max(w, h) * 0.005f), 8, 16);
+                cs.SetInt("_BoxRadius", guidedRadius);
                 BoxBlur(cs, kBoxH, kBoxV, clampedY, boxTmp, meanI, gx, gy);
 
                 cs.SetTexture(kSquare, "_ScalarIn", clampedY);
@@ -352,7 +353,7 @@ public sealed class GpuSharpenRunner : MonoBehaviour
 
                 BoxBlur(cs, kBoxH, kBoxV, i2, boxTmp, meanII, gx, gy);
 
-                cs.SetFloat("_GuidedEps", 0.01f);
+                cs.SetFloat("_GuidedEps", 0.006f);
                 cs.SetTexture(kGuidedAB, "_MeanIIn", meanI);
                 cs.SetTexture(kGuidedAB, "_MeanIIIn", meanII);
                 cs.SetTexture(kGuidedAB, "_AOut", aRt);
@@ -368,7 +369,7 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.SetTexture(kApplyGuided, "_GuidedOut", guidedBase);
                 cs.Dispatch(kApplyGuided, gx, gy, 1);
 
-                cs.SetInt("_BoxRadius", 5);
+                cs.SetInt("_BoxRadius", 4);
                 BoxBlur(cs, kBoxH, kBoxV, clampedY, boxTmp, blurMid, gx, gy);
                 cs.SetTexture(kMid, "_ScalarIn", clampedY);
                 cs.SetTexture(kMid, "_BlurIn", blurMid);
@@ -388,9 +389,9 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.SetTexture(kBilateralNoise, "_NoiseOut", noiseFiltered);
                 cs.Dispatch(kBilateralNoise, gx, gy, 1);
 
-                var faceStrength = Mathf.Clamp(faceDetailStrength, 0f, 3f);
-                cs.SetFloat("_MidW", 1.0f * faceStrength);
-                cs.SetFloat("_TextureScale", 0.45f * faceStrength);
+                var faceStrength = Mathf.Clamp(faceDetailStrength, 0f, 6f);
+                cs.SetFloat("_MidW", 1.2f * faceStrength);
+                cs.SetFloat("_TextureScale", 0.55f * faceStrength);
                 cs.SetTexture(kFaceStruct, "_Source", src);
                 cs.SetTexture(kFaceStruct, "_AnalysisIn", analysis);
                 cs.SetTexture(kFaceStruct, "_FaceMaskIn", faceMask);
@@ -406,6 +407,18 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 cs.SetTexture(kFaceBlend, "_FaceStructIn", faceStruct);
                 cs.SetTexture(kFaceBlend, "_FaceEnhancedOut", faceEnhancedY);
                 cs.Dispatch(kFaceBlend, gx, gy, 1);
+
+                if (dumpStages)
+                {
+                    dumpDir ??= CreateDumpDir();
+                    await DumpStageAsync(dumpDir, w, h, "08_faceMask_raw.png", "DebugVisScalar", faceMaskRaw, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, w, h, "08_faceMask.png", "DebugVisScalar", faceMask, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, w, h, "08_face_baseY.png", "DebugVisYScalar", guidedBase, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, w, h, "08_face_midFreq.png", "DebugVisSignedScalar", midFreq, 4.0f, true, ct);
+                    await DumpStageAsync(dumpDir, w, h, "08_face_noiseTex.png", "DebugVisSignedScalar", noiseFiltered, 4.0f, true, ct);
+                    await DumpStageAsync(dumpDir, w, h, "08_face_structY.png", "DebugVisYScalar", faceStruct, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, w, h, "08_face_enhancedY.png", "DebugVisYScalar", faceEnhancedY, 1f, true, ct);
+                }
             }
 
             if (dumpStages)

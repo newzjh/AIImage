@@ -605,17 +605,20 @@ void FaceMask(uint3 id : SV_DispatchThreadID)
                  smoothstep(128.0, 140.0, cr255) * (1.0 - smoothstep(168.0, 180.0, cr255));
 
     float2 uv = (float2(id.x, id.y) + 0.5) / float2(w, h);
-    float2 c = float2(0.5, 0.42);
+    float2 c = float2(0.5, 0.45);
     float2 d = (uv - c);
     d.x *= 1.1;
-    d.y *= 1.6;
+    d.y *= 1.45;
     float r2 = dot(d, d);
-    float center = 1.0 - smoothstep(0.06, 0.22, r2);
+    float center = 1.0 - smoothstep(0.05, 0.18, r2);
 
     float edge = _AnalysisIn[p].x;
-    float edgeSuppress = 1.0 - smoothstep(0.25, 0.80, edge);
+    float edgeSuppress = 1.0 - smoothstep(0.12, 0.55, edge);
+    float tex = _AnalysisIn[p].w;
+    float texSuppress = 1.0 - smoothstep(0.22, 0.65, tex);
+    float yGate = smoothstep(0.10, 0.20, ycc.x) * (1.0 - smoothstep(0.92, 0.98, ycc.x));
 
-    float m = saturate(skin * center * edgeSuppress);
+    float m = saturate(skin * center * edgeSuppress * texSuppress * yGate);
     _FaceMaskOut[p] = m;
 }
 
@@ -773,7 +776,8 @@ void FaceStruct(uint3 id : SV_DispatchThreadID)
     int2 size = int2((int)w, (int)h);
     int2 p = int2(id.xy);
 
-    float fm = saturate(_FaceMaskIn[p]);
+    float fm0 = saturate(_FaceMaskIn[p]);
+    float fm = smoothstep(0.18, 0.40, fm0);
     if (fm <= 0.001)
     {
         _FaceStructOut[p] = _ScalarIn[p];
@@ -810,13 +814,15 @@ void FaceStruct(uint3 id : SV_DispatchThreadID)
     float varTex = saturate(_AnalysisIn[p].w);
     float noiseEst = (1.0 - coh) * saturate(varTex * 1.2);
     float wMid = _MidW;
-    float ww = (0.6 + 0.8 * edge - 0.4 * noiseEst) * wMid;
-    ww = clamp(ww, 0.0, 2.0);
+    float wwBase = (0.6 + 0.8 * edge - 0.4 * noiseEst);
+    float ww = wwBase * wMid;
+    ww = clamp(ww, 0.0, 8.0);
+    float midBoost = 3.0;
 
-    float texScale = _TextureScale * (1.0 - 0.55 * fm);
+    float texScale = _TextureScale * (1.0 - 0.70 * fm);
     float tex = noise * texScale;
 
-    float outY = baseY + mid * ww + tex;
+    float outY = baseY + mid * (ww * midBoost) + tex;
     outY = clamp(outY, 0.0, 1.0);
     _FaceStructOut[p] = outY;
 }
@@ -828,7 +834,8 @@ void FaceBlend(uint3 id : SV_DispatchThreadID)
     _FaceEnhancedOut.GetDimensions(w, h);
     if (id.x >= w || id.y >= h) return;
     int2 p = int2(id.xy);
-    float fm = saturate(_FaceMaskIn[p]);
+    float fm0 = saturate(_FaceMaskIn[p]);
+    float fm = smoothstep(0.18, 0.40, fm0);
     float I = _ScalarIn[p];
     float F = _FaceStructIn[p];
     _FaceEnhancedOut[p] = lerp(I, F, fm);
