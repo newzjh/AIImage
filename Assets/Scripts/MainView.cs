@@ -87,6 +87,10 @@ public class MainView : MonoBehaviour
     private ComputeShader _imageProcessingCS;
     private readonly Dictionary<string, int> _imageProcessingKernelIds = new Dictionary<string, int>(StringComparer.Ordinal);
     private long _historyOpSeq;
+    private ComputeShader _gpuSharpenCS;
+    private readonly Dictionary<string, int> _gpuSharpenKernelIds = new Dictionary<string, int>(StringComparer.Ordinal);
+    private bool _gpuSharpenDumpStages;
+    public bool enableGpuSharpenNoiseSuppression = true;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -120,6 +124,7 @@ public class MainView : MonoBehaviour
             _image2ImageAI = gameObject.AddComponent<Image2ImageAI>();
 
         _imageProcessingCS = Resources.Load<ComputeShader>("ImageProcessing");
+        _gpuSharpenCS = Resources.Load<ComputeShader>("GPUSharpen");
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -719,6 +724,19 @@ public class MainView : MonoBehaviour
         row1.Add(browseButton);
 #endif
 
+        var gpuSharpenButton = new Button(OnGpuSharpen) { text = "GPU清晰化" };
+        row1.Add(gpuSharpenButton);
+
+        var gpuSharpenDebugLabel = new Label("调试输出");
+        gpuSharpenDebugLabel.style.color = Color.white;
+        row1.Add(gpuSharpenDebugLabel);
+
+        var gpuSharpenDebugToggle = new Toggle();
+        gpuSharpenDebugToggle.value = false;
+        gpuSharpenDebugToggle.style.color = Color.white;
+        gpuSharpenDebugToggle.RegisterValueChangedCallback(evt => _gpuSharpenDumpStages = evt.newValue);
+        row1.Add(gpuSharpenDebugToggle);
+
         row1.Add(BuildProviderGroup(out _providerDropdown, out _apiKeyField));
 
         headerContain.Add(BuildReferencePickerGroup("男脸", "点击设置男人脸", OnPickMaleFace, out _maleFaceButton));
@@ -1122,6 +1140,13 @@ public class MainView : MonoBehaviour
         return _imageProcessingCS;
     }
 
+    private ComputeShader GetGpuSharpenCS()
+    {
+        if (_gpuSharpenCS == null)
+            _gpuSharpenCS = Resources.Load<ComputeShader>("GPUSharpen");
+        return _gpuSharpenCS;
+    }
+
     private int GetKernelId(string kernelName)
     {
         if (string.IsNullOrWhiteSpace(kernelName))
@@ -1142,6 +1167,446 @@ public class MainView : MonoBehaviour
         _imageProcessingKernelIds[kernelName] = id;
         return id;
     }
+
+    private int GetGpuSharpenKernelId(string kernelName)
+    {
+        if (string.IsNullOrWhiteSpace(kernelName))
+            return -1;
+        if (_gpuSharpenKernelIds.TryGetValue(kernelName, out var id))
+            return id;
+        var cs = GetGpuSharpenCS();
+        if (cs == null)
+            return -1;
+        try
+        {
+            id = cs.FindKernel(kernelName);
+        }
+        catch
+        {
+            id = -1;
+        }
+        _gpuSharpenKernelIds[kernelName] = id;
+        return id;
+    }
+
+    private void OnGpuSharpen()
+    {
+        ApplyGpuSharpenAsync().Forget();
+    }
+
+    private async UniTaskVoid ApplyGpuSharpenAsync()
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        StopPreview();
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        var cs = GetGpuSharpenCS();
+        if (cs == null)
+        {
+            ShowToast("找不到GPUSharpen.compute", 2200);
+            return;
+        }
+
+        var k1 = GetGpuSharpenKernelId("StructureAnalysis");
+        var k2 = GetGpuSharpenKernelId("EdgeAwareDecompose");
+        var kDown = GetGpuSharpenKernelId("GaussianDown2");
+        var kUp = GetGpuSharpenKernelId("GaussianUp2");
+        var kDiff = GetGpuSharpenKernelId("LaplacianDiff");
+        var kEnh = GetGpuSharpenKernelId("EnhanceLaplacian");
+        var kDirLap = GetGpuSharpenKernelId("DirectionalSharpenLap");
+        var kAdd = GetGpuSharpenKernelId("AddScalar");
+        var kResp = GetGpuSharpenKernelId("DirectionalResponse");
+        var kApply = GetGpuSharpenKernelId("ApplyDirectionalSharpen");
+        var kClamp = GetGpuSharpenKernelId("EdgeAwareClamp");
+        var kNoise = GetGpuSharpenKernelId("NoiseSuppression");
+        var k5 = GetGpuSharpenKernelId("SkinNoiseProtect");
+        if (k1 < 0 || k2 < 0 || kDown < 0 || kUp < 0 || kDiff < 0 || kEnh < 0 || kDirLap < 0 || kAdd < 0 || kResp < 0 || kApply < 0 || kClamp < 0 || kNoise < 0 || k5 < 0)
+        {
+            ShowToast("GPUSharpen kernel无效", 2200);
+            return;
+        }
+
+        _adjustRunning = true;
+        ShowBusy("GPU清晰化");
+
+        RenderTexture analysis = null;
+        RenderTexture mask = null;
+        RenderTexture baseRt = null;
+        RenderTexture detail = null;
+        RenderTexture enhancedDetailFull = null;
+        RenderTexture accumPing = null;
+        RenderTexture fullAdd = null;
+        var gaussianLevels = new List<RenderTexture>();
+        var laplacians = new List<RenderTexture>();
+        var enhancedLaps = new List<RenderTexture>();
+        var upTemps = new List<RenderTexture>();
+        RenderTexture directionalResponse = null;
+        RenderTexture sharpenY = null;
+        RenderTexture clampedY = null;
+        RenderTexture noiseSuppressedY = null;
+        RenderTexture finalRt = null;
+        string dumpDir = null;
+
+        try
+        {
+            var w = src.width;
+            var h = src.height;
+            var gx = Mathf.CeilToInt(w / 8f);
+            var gy = Mathf.CeilToInt(h / 8f);
+
+            analysis = new RenderTexture(w, h, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            mask = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            baseRt = new RenderTexture(w, h, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            detail = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            sharpenY = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            finalRt = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+
+            analysis.Create();
+            mask.Create();
+            baseRt.Create();
+            detail.Create();
+            sharpenY.Create();
+            finalRt.Create();
+
+            cs.SetTexture(k1, "_Source", src);
+            cs.SetTexture(k1, "_AnalysisOut", analysis);
+            cs.SetTexture(k1, "_MaskOut", mask);
+            cs.Dispatch(k1, gx, gy, 1);
+
+            if (_gpuSharpenDumpStages)
+            {
+                dumpDir ??= CreateGpuSharpenDumpDir();
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "01_edge.png", "DebugVisEdge", analysis, 1f, false);
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "01_dir.png", "DebugVisDir", analysis, 1f, false);
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "01_tex.png", "DebugVisTex", analysis, 1f, false);
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "01_flat.png", "DebugVisScalar", mask, 1f, true);
+            }
+
+            cs.SetInt("_Radius", 6);
+            cs.SetFloat("_SigmaSpatial", 3.2f);
+            cs.SetFloat("_SigmaRange", 0.055f);
+            cs.SetTexture(k2, "_Source", src);
+            cs.SetTexture(k2, "_AnalysisIn", analysis);
+            cs.SetTexture(k2, "_BaseOut", baseRt);
+            cs.SetTexture(k2, "_DetailOut", detail);
+            cs.Dispatch(k2, gx, gy, 1);
+
+            if (_gpuSharpenDumpStages)
+            {
+                dumpDir ??= CreateGpuSharpenDumpDir();
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "02_base.png", "DebugVisCopyRgb", baseRt, 1f, false);
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "02_detail.png", "DebugVisSignedScalar", detail, 4.0f, true);
+            }
+
+            var maxDim = Mathf.Max(w, h);
+            float[] weights;
+            if (maxDim >= 4096)
+                weights = new[] { 0f, 0f, 0.6f, 2.4f, 2.8f, 1.0f, 0.3f };
+            else if (maxDim >= 2048)
+                weights = new[] { 0f, 0.3f, 1.0f, 2.6f, 2.2f, 0.8f };
+            else if (maxDim >= 1024)
+                weights = new[] { 0.10f, 0.80f, 1.80f, 2.40f, 1.20f };
+            else
+                weights = new[] { 0.25f, 1.20f, 2.20f, 1.00f };
+
+            var lapCount = weights.Length;
+            gaussianLevels.Clear();
+            laplacians.Clear();
+            enhancedLaps.Clear();
+            upTemps.Clear();
+
+            gaussianLevels.Add(detail);
+            for (int gi = 1; gi < lapCount + 1; gi++)
+            {
+                var pw = gaussianLevels[gi - 1].width;
+                var ph = gaussianLevels[gi - 1].height;
+                var nw = Mathf.Max(1, (pw + 1) / 2);
+                var nh = Mathf.Max(1, (ph + 1) / 2);
+                var g = new RenderTexture(nw, nh, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                g.Create();
+                gaussianLevels.Add(g);
+            }
+
+            for (int gi = 0; gi < lapCount; gi++)
+            {
+                var outG = gaussianLevels[gi + 1];
+                var gx2 = Mathf.CeilToInt(outG.width / 8f);
+                var gy2 = Mathf.CeilToInt(outG.height / 8f);
+                cs.SetTexture(kDown, "_ScalarIn", gaussianLevels[gi]);
+                cs.SetTexture(kDown, "_ScalarOut", outG);
+                cs.Dispatch(kDown, Mathf.Max(1, gx2), Mathf.Max(1, gy2), 1);
+            }
+
+            for (int li = 0; li < lapCount; li++)
+            {
+                var curG = gaussianLevels[li];
+                var nextG = gaussianLevels[li + 1];
+                var up = new RenderTexture(curG.width, curG.height, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                var lap = new RenderTexture(curG.width, curG.height, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                var enh = new RenderTexture(curG.width, curG.height, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                var enhDir = new RenderTexture(curG.width, curG.height, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                up.Create();
+                lap.Create();
+                enh.Create();
+                enhDir.Create();
+                upTemps.Add(up);
+                laplacians.Add(lap);
+                enhancedLaps.Add(enhDir);
+
+                cs.SetTexture(kUp, "_LowIn", nextG);
+                cs.SetTexture(kUp, "_UpOut", up);
+                cs.Dispatch(kUp, Mathf.Max(1, Mathf.CeilToInt(curG.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(curG.height / 8f)), 1);
+
+                cs.SetTexture(kDiff, "_HighIn", curG);
+                cs.SetTexture(kDiff, "_LowUpIn", up);
+                cs.SetTexture(kDiff, "_LapOut", lap);
+                cs.Dispatch(kDiff, Mathf.Max(1, Mathf.CeilToInt(curG.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(curG.height / 8f)), 1);
+
+                cs.SetFloat("_LapWeight", weights[li]);
+                cs.SetTexture(kEnh, "_LapIn", lap);
+                cs.SetTexture(kEnh, "_AnalysisIn", analysis);
+                cs.SetTexture(kEnh, "_EnhancedOut", enh);
+                cs.Dispatch(kEnh, Mathf.Max(1, Mathf.CeilToInt(curG.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(curG.height / 8f)), 1);
+
+                var dirStrength = 0.25f + 0.65f * Mathf.Clamp01(weights[li] / 2.8f);
+                cs.SetFloat("_LapDirStrength", dirStrength);
+                cs.SetTexture(kDirLap, "_LapIn", enh);
+                cs.SetTexture(kDirLap, "_AnalysisIn", analysis);
+                cs.SetTexture(kDirLap, "_SharpenLapOut", enhDir);
+                cs.Dispatch(kDirLap, Mathf.Max(1, Mathf.CeilToInt(curG.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(curG.height / 8f)), 1);
+
+                if (_gpuSharpenDumpStages)
+                {
+                    dumpDir ??= CreateGpuSharpenDumpDir();
+                    await DumpGpuSharpenStageAsync(cs, dumpDir, curG.width, curG.height, "03_L" + li + ".png", "DebugVisSignedScalar", lap, 6.0f, true);
+                    await DumpGpuSharpenStageAsync(cs, dumpDir, curG.width, curG.height, "03_EL" + li + ".png", "DebugVisSignedScalar", enh, 6.0f, true);
+                    await DumpGpuSharpenStageAsync(cs, dumpDir, curG.width, curG.height, "04_DirEL" + li + ".png", "DebugVisSignedScalar", enhDir, 6.0f, true);
+                }
+            }
+
+            enhancedDetailFull = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            accumPing = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            fullAdd = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            enhancedDetailFull.Create();
+            accumPing.Create();
+            fullAdd.Create();
+
+            var lowG = gaussianLevels[gaussianLevels.Count - 1];
+            cs.SetTexture(kUp, "_LowIn", lowG);
+            cs.SetTexture(kUp, "_UpOut", enhancedDetailFull);
+            cs.Dispatch(kUp, gx, gy, 1);
+
+            for (int li = 0; li < lapCount; li++)
+            {
+                cs.SetTexture(kUp, "_LowIn", enhancedLaps[li]);
+                cs.SetTexture(kUp, "_UpOut", fullAdd);
+                cs.Dispatch(kUp, gx, gy, 1);
+
+                cs.SetTexture(kAdd, "_AccIn", enhancedDetailFull);
+                cs.SetTexture(kAdd, "_AddIn", fullAdd);
+                cs.SetTexture(kAdd, "_AccOut", accumPing);
+                cs.Dispatch(kAdd, gx, gy, 1);
+
+                var tmp = enhancedDetailFull;
+                enhancedDetailFull = accumPing;
+                accumPing = tmp;
+            }
+
+            if (_gpuSharpenDumpStages)
+            {
+                dumpDir ??= CreateGpuSharpenDumpDir();
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "04_enhanced_detail.png", "DebugVisSignedScalar", enhancedDetailFull, 4.0f, true);
+            }
+
+            directionalResponse = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            directionalResponse.Create();
+
+            cs.SetTexture(kResp, "_AnalysisIn", analysis);
+            cs.SetTexture(kResp, "_EnhancedDetailIn", enhancedDetailFull);
+            cs.SetTexture(kResp, "_DirectionalResponseOut", directionalResponse);
+            cs.Dispatch(kResp, gx, gy, 1);
+
+            cs.SetFloat("_Wb", 10.0f);
+            cs.SetFloat("_Alpha", 0.6f);
+            cs.SetFloat("_Beta", 0.3f);
+            cs.SetTexture(kApply, "_AnalysisIn", analysis);
+            cs.SetTexture(kApply, "_BaseIn", baseRt);
+            cs.SetTexture(kApply, "_DirectionalResponseIn", directionalResponse);
+            cs.SetTexture(kApply, "_SharpenYOut", sharpenY);
+            cs.Dispatch(kApply, gx, gy, 1);
+
+            clampedY = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+            clampedY.Create();
+            cs.SetFloat("_ClampDelta", 0.10f);
+            cs.SetTexture(kClamp, "_Source", src);
+            cs.SetTexture(kClamp, "_AnalysisIn", analysis);
+            cs.SetTexture(kClamp, "_SharpenYIn", sharpenY);
+            cs.SetTexture(kClamp, "_SharpenYOut", clampedY);
+            cs.Dispatch(kClamp, gx, gy, 1);
+
+            if (_gpuSharpenDumpStages)
+            {
+                dumpDir ??= CreateGpuSharpenDumpDir();
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "05_directional_response.png", "DebugVisSignedScalar", directionalResponse, 6.0f, true);
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "06_sharpenY.png", "DebugVisYScalar", sharpenY, 1f, true);
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "07_clampedY.png", "DebugVisYScalar", clampedY, 1f, true);
+            }
+
+            if (enableGpuSharpenNoiseSuppression)
+            {
+                noiseSuppressedY = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                noiseSuppressedY.Create();
+                cs.SetTexture(kNoise, "_Source", src);
+                cs.SetTexture(kNoise, "_AnalysisIn", analysis);
+                cs.SetTexture(kNoise, "_SharpenYIn", clampedY);
+                cs.SetTexture(kNoise, "_SharpenYOut", noiseSuppressedY);
+                cs.Dispatch(kNoise, gx, gy, 1);
+
+                if (_gpuSharpenDumpStages)
+                {
+                    dumpDir ??= CreateGpuSharpenDumpDir();
+                    await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "08_noise_suppressedY.png", "DebugVisYScalar", noiseSuppressedY, 1f, true);
+                }
+            }
+
+            cs.SetTexture(k5, "_Source", src);
+            cs.SetTexture(k5, "_AnalysisIn", analysis);
+            cs.SetTexture(k5, "_SharpenYIn", noiseSuppressedY != null ? noiseSuppressedY : clampedY);
+            cs.SetTexture(k5, "_Result", finalRt);
+            cs.Dispatch(k5, gx, gy, 1);
+
+            if (_gpuSharpenDumpStages)
+            {
+                dumpDir ??= CreateGpuSharpenDumpDir();
+                await DumpGpuSharpenStageAsync(cs, dumpDir, w, h, "05_result.png", "DebugVisCopyRgb", finalRt, 1f, false);
+            }
+
+            var tex = await ReadbackTextureAsync(finalRt, w, h);
+            if (tex != null)
+                AddHistory(tex, "GPU清晰化");
+
+            if (!string.IsNullOrWhiteSpace(dumpDir))
+                OpenFolderInShell(dumpDir);
+        }
+        finally
+        {
+            if (analysis != null) { analysis.Release(); Destroy(analysis); }
+            if (mask != null) { mask.Release(); Destroy(mask); }
+            if (baseRt != null) { baseRt.Release(); Destroy(baseRt); }
+            if (detail != null) { detail.Release(); Destroy(detail); }
+            for (int i = 1; i < gaussianLevels.Count; i++)
+            {
+                if (gaussianLevels[i] != null) { gaussianLevels[i].Release(); Destroy(gaussianLevels[i]); }
+            }
+            for (int i = 0; i < upTemps.Count; i++)
+            {
+                if (upTemps[i] != null) { upTemps[i].Release(); Destroy(upTemps[i]); }
+            }
+            for (int i = 0; i < laplacians.Count; i++)
+            {
+                if (laplacians[i] != null) { laplacians[i].Release(); Destroy(laplacians[i]); }
+            }
+            for (int i = 0; i < enhancedLaps.Count; i++)
+            {
+                if (enhancedLaps[i] != null) { enhancedLaps[i].Release(); Destroy(enhancedLaps[i]); }
+            }
+            if (enhancedDetailFull != null) { enhancedDetailFull.Release(); Destroy(enhancedDetailFull); }
+            if (accumPing != null) { accumPing.Release(); Destroy(accumPing); }
+            if (fullAdd != null) { fullAdd.Release(); Destroy(fullAdd); }
+            if (directionalResponse != null) { directionalResponse.Release(); Destroy(directionalResponse); }
+            if (sharpenY != null) { sharpenY.Release(); Destroy(sharpenY); }
+            if (clampedY != null) { clampedY.Release(); Destroy(clampedY); }
+            if (noiseSuppressedY != null) { noiseSuppressedY.Release(); Destroy(noiseSuppressedY); }
+            if (finalRt != null) { finalRt.Release(); Destroy(finalRt); }
+
+            _adjustRunning = false;
+            HideBusy();
+        }
+    }
+
+    private string CreateGpuSharpenDumpDir()
+    {
+        var root = Application.temporaryCachePath;
+        if (string.IsNullOrWhiteSpace(root))
+            root = Path.GetTempPath();
+        var dir = Path.Combine(root, "AIImage_GPUSharpen_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        try { Directory.CreateDirectory(dir); } catch { }
+        return dir;
+    }
+
+    private async UniTask DumpGpuSharpenStageAsync(ComputeShader cs, string dir, int w, int h, string fileName, string visKernel, Texture srcTex, float debugScale, bool scalarInput)
+    {
+        if (cs == null) return;
+        if (string.IsNullOrWhiteSpace(dir)) return;
+        if (srcTex == null) return;
+
+        var k = GetGpuSharpenKernelId(visKernel);
+        if (k < 0) return;
+
+        var vis = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+        vis.Create();
+        try
+        {
+            cs.SetTexture(k, scalarInput ? "_DebugScalarIn" : "_DebugIn", srcTex);
+            cs.SetFloat("_DebugScale", debugScale);
+            cs.SetTexture(k, "_Result", vis);
+
+            var gx = Mathf.CeilToInt(w / 8f);
+            var gy = Mathf.CeilToInt(h / 8f);
+            cs.Dispatch(k, gx, gy, 1);
+
+            var tex = await ReadbackTextureAsync(vis, w, h);
+            if (tex == null) return;
+            try
+            {
+                var bytes = tex.EncodeToPNG();
+                var path = Path.Combine(dir, fileName);
+                await File.WriteAllBytesAsync(path, bytes);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                Destroy(tex);
+            }
+        }
+        finally
+        {
+            vis.Release();
+            Destroy(vis);
+        }
+    }
+
+#if !UNITY_WEBGL
+    private void OpenFolderInShell(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            return;
+        try
+        {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + directoryPath + "\"") { UseShellExecute = true });
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+            Process.Start(new ProcessStartInfo("open", "\"" + directoryPath + "\"") { UseShellExecute = false });
+#elif UNITY_STANDALONE_LINUX
+            Process.Start(new ProcessStartInfo("xdg-open", "\"" + directoryPath + "\"") { UseShellExecute = false });
+#else
+            var url = "file://" + directoryPath.Replace('\\', '/');
+            Application.OpenURL(url);
+#endif
+        }
+        catch
+        {
+        }
+    }
+#endif
 
     private async UniTaskVoid ApplyComputeAdjustmentAsync(string kernelName, Action<ComputeShader> setParams, string historyLabel)
     {
