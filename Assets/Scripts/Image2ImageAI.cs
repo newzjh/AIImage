@@ -29,6 +29,8 @@ public sealed class Image2ImageAI : MonoBehaviour
     public ComputeShader imageProcessingCS;
     private static int s_resizeKernel = -1;
     private static int s_removeWatermarkKernel = -1;
+    private static long s_lastGeminiEditUtcTicks;
+    private const long GeminiEditCooldownTicks = TimeSpan.TicksPerMinute;
 
 
     [SerializeField] private Provider provider = Provider.Replicate;
@@ -821,6 +823,21 @@ public sealed class Image2ImageAI : MonoBehaviour
     {
         if (string.IsNullOrWhiteSpace(googleApiKey)) return null;
         if (string.IsNullOrWhiteSpace(googleModel)) return null;
+
+        var nowTicks = DateTime.UtcNow.Ticks;
+        while (true)
+        {
+            var last = Interlocked.Read(ref s_lastGeminiEditUtcTicks);
+            var dt = nowTicks - last;
+            if (last != 0 && dt >= 0 && dt < GeminiEditCooldownTicks)
+            {
+                var secondsLeft = (int)Math.Ceiling((GeminiEditCooldownTicks - dt) / (double)TimeSpan.TicksPerSecond);
+                RequestError?.Invoke("Google Gemini: rate limited. Please try again in " + secondsLeft + "s.");
+                return null;
+            }
+            if (Interlocked.CompareExchange(ref s_lastGeminiEditUtcTicks, nowTicks, last) == last)
+                break;
+        }
  
         var parts = new StringBuilder(1024);
         parts.Append("{\"text\":");
@@ -829,7 +846,7 @@ public sealed class Image2ImageAI : MonoBehaviour
 
         for (var i = 0; i < referenceImages.Count; i++)
         {
-            var png = EncodePng(referenceImages[i]);
+            var png = await EncodePngForUploadAsync(referenceImages[i], 1024, ct);
             if (png == null || png.Length == 0) continue;
             var base64 = Convert.ToBase64String(png);
             parts.Append(",{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":");
@@ -862,6 +879,97 @@ public sealed class Image2ImageAI : MonoBehaviour
             return await DownloadAllTexturesAsync(urls, ct);
 
         return null;
+    }
+
+    private async UniTask<byte[]> EncodePngForUploadAsync(Texture2D tex, int maxDim, CancellationToken ct)
+    {
+        if (tex == null)
+            return null;
+
+        var w = tex.width;
+        var h = tex.height;
+        var maxSide = Mathf.Max(w, h);
+        if (maxSide <= maxDim)
+            return EncodePng(tex);
+
+        var scale = maxDim / (float)maxSide;
+        var tw = Mathf.Max(1, Mathf.RoundToInt(w * scale));
+        var th = Mathf.Max(1, Mathf.RoundToInt(h * scale));
+
+        Texture2D resized = null;
+        try
+        {
+            resized = await ResizeTextureOnlyAsync(tex, tw, th, ct);
+            if (resized == null)
+                return null;
+            return EncodePng(resized);
+        }
+        finally
+        {
+            if (resized != null)
+                Destroy(resized);
+        }
+    }
+
+    private async UniTask<Texture2D> ResizeTextureOnlyAsync(Texture2D src, int targetWidth, int targetHeight, CancellationToken ct)
+    {
+        if (src == null) return null;
+
+        var dstW = targetWidth > 0 ? targetWidth : src.width;
+        var dstH = targetHeight > 0 ? targetHeight : src.height;
+
+        var compute = GetImageProcessingCompute();
+        if (compute != null && s_resizeKernel < 0)
+        {
+            try { s_resizeKernel = compute.FindKernel("ResizeBilinear"); }
+            catch { s_resizeKernel = -1; }
+        }
+
+        var rt0 = new RenderTexture(dstW, dstH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+        rt0.enableRandomWrite = true;
+        rt0.wrapMode = TextureWrapMode.Clamp;
+        rt0.filterMode = FilterMode.Bilinear;
+        rt0.Create();
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (compute != null && s_resizeKernel >= 0)
+            {
+                compute.SetTexture(s_resizeKernel, "_Source", src);
+                compute.SetTexture(s_resizeKernel, "_Result", rt0);
+                compute.SetVector("_SrcSize", new Vector4(src.width, src.height, 0f, 0f));
+                compute.SetVector("_DstSize", new Vector4(dstW, dstH, 0f, 0f));
+
+                var gx = Mathf.CeilToInt(dstW / 8f);
+                var gy = Mathf.CeilToInt(dstH / 8f);
+                compute.Dispatch(s_resizeKernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
+            }
+            else
+            {
+                Graphics.Blit(src, rt0);
+            }
+
+            var r = await RequestReadback(rt0);
+            if (r.hasError)
+                return null;
+            if (ct.IsCancellationRequested)
+                return null;
+
+            var data = r.GetData<byte>();
+            var tex = new Texture2D(dstW, dstH, TextureFormat.RGBA32, false);
+            tex.LoadRawTextureData(data);
+            tex.Apply(false, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            tex.filterMode = FilterMode.Bilinear;
+            return tex;
+        }
+        finally
+        {
+            rt0.Release();
+            Destroy(rt0);
+        }
     }
  
     private async UniTask<List<Texture2D>> DoubaoImageToImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, CancellationToken ct)

@@ -843,15 +843,15 @@ public class MainView : MonoBehaviour
             evt.StopPropagation();
         });
 
-        body.Add(BuildAdjustRow("对比度", -1f, 1f, 0f, "AdjustContrast", (cs, v) => cs.SetFloat("_Contrast", v), v => $"对比度 {v:0.00}"));
-        body.Add(BuildAdjustRow("亮度", -1f, 1f, 0f, "AdjustBrightness", (cs, v) => cs.SetFloat("_Brightness", v), v => $"亮度 {v:0.00}"));
+        body.Add(BuildAdjustRow("对比度", -0.5f, 0.5f, 0f, "AdjustContrast", (cs, v) => cs.SetFloat("_Contrast", v), v => $"对比度 {v:0.00}"));
+        body.Add(BuildAdjustRow("亮度", -0.5f, 0.5f, 0f, "AdjustBrightness", (cs, v) => cs.SetFloat("_Brightness", v), v => $"亮度 {v:0.00}"));
         body.Add(BuildAdjustRow("自然饱和度", -1f, 1f, 0f, "AdjustVibrance", (cs, v) => cs.SetFloat("_Vibrance", v), v => $"自然饱和度 {v:0.00}"));
-        body.Add(BuildAdjustRow("去阴影", 0f, 1f, 0f, "AdjustShadows", (cs, v) => cs.SetFloat("_Shadows", v), v => $"去阴影 {v:0.00}"));
-        body.Add(BuildAdjustRow("去高光", 0f, 1f, 0f, "AdjustHighlights", (cs, v) => cs.SetFloat("_Highlights", v), v => $"去高光 {v:0.00}"));
+        body.Add(BuildAdjustRow("去阴影", 0f, 0.5f, 0f, "AdjustShadows", (cs, v) => cs.SetFloat("_Shadows", v), v => $"去阴影 {v:0.00}"));
+        body.Add(BuildAdjustRow("去高光", 0f, 0.5f, 0f, "AdjustHighlights", (cs, v) => cs.SetFloat("_Highlights", v), v => $"去高光 {v:0.00}"));
         body.Add(BuildAdjustRow("加温滤镜", 0f, 1f, 0f, "WarmFilter", (cs, v) => cs.SetFloat("_Warm", v), v => $"加温 {v:0.00}"));
         body.Add(BuildAdjustRow("冷却滤镜", 0f, 1f, 0f, "CoolFilter", (cs, v) => cs.SetFloat("_Cool", v), v => $"冷却 {v:0.00}"));
-        body.Add(BuildAdjustRow("锐化", 0f, 1f, 0f, "Sharpen", (cs, v) => cs.SetFloat("_Sharpen", v), v => $"锐化 {v:0.00}"));
-        body.Add(BuildAdjustRow("模糊", 0f, 1f, 0f, "Blur", (cs, v) => cs.SetFloat("_Blur", v), v => $"模糊 {v:0.00}"));
+        body.Add(BuildAdjustRow("锐化", 0f, 4f, 0f, "Sharpen", (cs, v) => cs.SetFloat("_Sharpen", v), v => $"锐化 {v:0.00}"));
+        body.Add(BuildAdjustRow("模糊", 0f, 4f, 0f, "Blur", (cs, v) => cs.SetFloat("_Blur", v), v => $"模糊 {v:0.00}"));
 
         parent.Add(panel);
         panel.BringToFront();
@@ -880,6 +880,7 @@ public class MainView : MonoBehaviour
         row.style.marginBottom = 6;
 
         var label = new Label(name);
+        label.style.width = 100;
         label.style.color = Color.white;
         row.Add(label);
 
