@@ -623,6 +623,14 @@ public sealed class Image2ImageAI : MonoBehaviour
         if (string.IsNullOrWhiteSpace(resp))
             return null;
 
+        if (TryExtractRunwareOutputByJson(resp, out var runwareImages, out var runwareUrls))
+        {
+            if (runwareImages != null && runwareImages.Count > 0)
+                return runwareImages;
+            if (runwareUrls != null && runwareUrls.Count > 0)
+                return await DownloadAllTexturesAsync(runwareUrls, ct);
+        }
+
         var images = ExtractAllRunwareImagesFromJson(resp);
         if (images.Count > 0)
             return images;
@@ -631,6 +639,121 @@ public sealed class Image2ImageAI : MonoBehaviour
         if (urls.Count == 0)
             return null;
         return await DownloadAllTexturesAsync(urls, ct);
+    }
+
+    [Serializable]
+    private sealed class RunwareEnvelope
+    {
+        public RunwareTaskItem[] data;
+        public RunwareErrorItem[] errors;
+    }
+
+    [Serializable]
+    private sealed class RunwareTaskItem
+    {
+        public string taskType;
+        public string taskUUID;
+        public string imageUUID;
+        public string imageURL;
+        public string imageBase64Data;
+        public string imageDataURI;
+        public long seed;
+        public float cost;
+    }
+
+    [Serializable]
+    private sealed class RunwareErrorItem
+    {
+        public string code;
+        public string message;
+        public string parameter;
+        public string type;
+        public string taskType;
+    }
+
+    private static bool TryExtractRunwareOutputByJson(string json, out List<Texture2D> images, out List<string> urls)
+    {
+        images = null;
+        urls = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        try
+        {
+            var envelope = JsonConvert.DeserializeObject<RunwareEnvelope>(json);
+            if (envelope?.data != null && envelope.data.Length > 0)
+            {
+                ExtractRunwareItems(envelope.data, out images, out urls);
+                return (images != null && images.Count > 0) || (urls != null && urls.Count > 0);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var single = JsonConvert.DeserializeObject<RunwareTaskItem>(json);
+            if (single != null)
+            {
+                ExtractRunwareItems(new[] { single }, out images, out urls);
+                return (images != null && images.Count > 0) || (urls != null && urls.Count > 0);
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    private static void ExtractRunwareItems(RunwareTaskItem[] items, out List<Texture2D> images, out List<string> urls)
+    {
+        images = null;
+        urls = null;
+        if (items == null || items.Length == 0)
+            return;
+
+        for (int i = 0; i < items.Length; i++)
+        {
+            var it = items[i];
+            if (it == null) continue;
+
+            if (!string.IsNullOrWhiteSpace(it.imageBase64Data))
+            {
+                var tex = DecodeTextureFromBase64(it.imageBase64Data);
+                if (tex != null)
+                {
+                    images ??= new List<Texture2D>();
+                    images.Add(tex);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(it.imageDataURI))
+            {
+                var s = it.imageDataURI;
+                var comma = s.IndexOf(',');
+                if (comma >= 0)
+                    s = s.Substring(comma + 1);
+                var tex = DecodeTextureFromBase64(s);
+                if (tex != null)
+                {
+                    images ??= new List<Texture2D>();
+                    images.Add(tex);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(it.imageURL))
+            {
+                var u = NormalizeUrlCandidate(it.imageURL);
+                if (!string.IsNullOrWhiteSpace(u) && u.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                {
+                    urls ??= new List<string>();
+                    if (!urls.Contains(u))
+                        urls.Add(u);
+                }
+            }
+        }
     }
 
     private static (int w, int h) ClampToMaxSide(int w, int h, int maxSide)
@@ -686,7 +809,7 @@ public sealed class Image2ImageAI : MonoBehaviour
 
         foreach (Match m in Regex.Matches(json, "\"imageURL\"\\s*:\\s*\"(?<u>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
         {
-            var u = UnescapeJsonString(m.Groups["u"].Value);
+            var u = NormalizeUrlCandidate(UnescapeJsonString(m.Groups["u"].Value));
             if (!string.IsNullOrWhiteSpace(u) && !list.Contains(u))
                 list.Add(u);
         }
