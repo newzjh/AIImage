@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using Process = System.Diagnostics.Process;
 using ProcessStartInfo = System.Diagnostics.ProcessStartInfo;
@@ -46,6 +47,7 @@ public class MainView : MonoBehaviour
     private SplitCompareView _imageViewer;
     private Image2ImageAI _image2ImageAI;
     private bool _aiRunning;
+    private bool _adjustRunning;
     private VisualElement _busyOverlay;
     private VisualElement _busyBarTrack;
     private VisualElement _busyBar;
@@ -74,6 +76,8 @@ public class MainView : MonoBehaviour
     private CodeOnlyFileDialog _fileDialog;
     private bool _appendDeGlarePrompt;
     private bool _appendRemoveBgPeoplePrompt = true;
+    private ComputeShader _imageProcessingCS;
+    private readonly Dictionary<string, int> _imageProcessingKernelIds = new Dictionary<string, int>(StringComparer.Ordinal);
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -105,6 +109,8 @@ public class MainView : MonoBehaviour
         _image2ImageAI = GetComponent<Image2ImageAI>();
         if (_image2ImageAI == null)
             _image2ImageAI = gameObject.AddComponent<Image2ImageAI>();
+
+        _imageProcessingCS = Resources.Load<ComputeShader>("ImageProcessing");
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -620,6 +626,7 @@ public class MainView : MonoBehaviour
         parent.style.flexDirection = FlexDirection.Column;
         parent.style.flexGrow = 1;
         parent.style.minHeight = 0;
+        parent.style.position = Position.Relative;
 
         var headerContain = new VisualElement();
         headerContain.style.flexDirection = FlexDirection.Row;
@@ -709,6 +716,271 @@ public class MainView : MonoBehaviour
         _imageViewer.style.flexGrow = 1;
         _imageViewer.style.minHeight = 0;
         parent.Add(_imageViewer);
+
+        BuildFloatingAdjustPanel(parent);
+    }
+
+    private Button collapseBtn;
+    private void BuildFloatingAdjustPanel(VisualElement parent)
+    {
+        var panel = new VisualElement();
+        panel.style.position = Position.Absolute;
+        panel.style.width = 360;
+        panel.style.backgroundColor = new StyleColor(new Color(0.10f, 0.10f, 0.10f, 0.92f));
+        panel.style.borderTopLeftRadius = 8;
+        panel.style.borderTopRightRadius = 8;
+        panel.style.borderBottomLeftRadius = 8;
+        panel.style.borderBottomRightRadius = 8;
+        panel.style.borderLeftWidth = 1;
+        panel.style.borderRightWidth = 1;
+        panel.style.borderTopWidth = 1;
+        panel.style.borderBottomWidth = 1;
+        panel.style.borderLeftColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderRightColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderBottomColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.paddingLeft = 8;
+        panel.style.paddingRight = 8;
+        panel.style.paddingTop = 8;
+        panel.style.paddingBottom = 8;
+
+        var header = new VisualElement();
+        header.style.flexDirection = FlexDirection.Row;
+        header.style.alignItems = Align.Center;
+        header.style.height = 30;
+        header.style.marginBottom = 6;
+        header.style.backgroundColor = new Color(0.2f,0.2f,0.2f);
+        panel.Add(header);
+
+        var title = new Label("图像调节");
+        title.style.flexGrow = 1;
+        title.style.color = Color.yellow;
+        title.style.unityTextAlign = TextAnchor.MiddleLeft;
+        header.Add(title);
+
+        var body = new VisualElement();
+        body.style.flexDirection = FlexDirection.Column;
+        body.style.minHeight = 0;
+        panel.Add(body);
+
+        var collapsed = false;
+        collapseBtn = new Button(() =>
+        {
+            collapsed = !collapsed;
+            body.style.display = collapsed ? DisplayStyle.None : DisplayStyle.Flex;
+            collapseBtn.text = collapsed ? "+" : "-";
+        })
+        { text = "-" };
+        collapseBtn.style.height = 28;
+        collapseBtn.style.fontSize = 28;
+        header.Add(collapseBtn);
+
+        bool dragging = false;
+        int dragPointerId = -1;
+        Vector2 startPointer = default;
+        Vector2 startPos = default;
+
+        header.RegisterCallback<PointerDownEvent>(evt =>
+        {
+            if (evt.button != 0) return;
+            dragging = true;
+            dragPointerId = evt.pointerId;
+            startPointer = evt.position;
+            startPos = new Vector2(panel.layout.x, panel.layout.y);
+            header.CapturePointer(dragPointerId);
+            evt.StopPropagation();
+        });
+        header.RegisterCallback<PointerMoveEvent>(evt =>
+        {
+            if (!dragging || dragPointerId != evt.pointerId || !header.HasPointerCapture(dragPointerId))
+                return;
+
+            var delta = (Vector2)evt.position - startPointer;
+            var newPos = startPos + delta;
+
+            var bounds = parent.contentRect;
+            var pw = panel.resolvedStyle.width;
+            var ph = panel.resolvedStyle.height;
+            var headerH = header.resolvedStyle.height;
+
+            var maxX = Mathf.Max(0f, bounds.width - pw);
+            var maxY = Mathf.Max(0f, bounds.height - headerH);
+
+            newPos.x = Mathf.Clamp(newPos.x, 0f, maxX);
+            newPos.y = Mathf.Clamp(newPos.y, 0f, maxY);
+
+            panel.style.left = newPos.x;
+            panel.style.top = newPos.y;
+            evt.StopPropagation();
+        });
+        header.RegisterCallback<PointerUpEvent>(evt =>
+        {
+            if (!dragging || dragPointerId != evt.pointerId) return;
+            dragging = false;
+            if (header.HasPointerCapture(dragPointerId))
+                header.ReleasePointer(dragPointerId);
+            evt.StopPropagation();
+        });
+        header.RegisterCallback<PointerCancelEvent>(evt =>
+        {
+            if (!dragging || dragPointerId != evt.pointerId) return;
+            dragging = false;
+            if (header.HasPointerCapture(dragPointerId))
+                header.ReleasePointer(dragPointerId);
+            evt.StopPropagation();
+        });
+
+        body.Add(BuildAdjustRow("对比度", -1f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustContrast", cs => cs.SetFloat("_Contrast", v), $"对比度 {v:0.00}").Forget()));
+        body.Add(BuildAdjustRow("亮度", -1f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustBrightness", cs => cs.SetFloat("_Brightness", v), $"亮度 {v:0.00}").Forget()));
+        body.Add(BuildAdjustRow("自然饱和度", -1f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustVibrance", cs => cs.SetFloat("_Vibrance", v), $"自然饱和度 {v:0.00}").Forget()));
+        body.Add(BuildAdjustRow("去阴影", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustShadows", cs => cs.SetFloat("_Shadows", v), $"去阴影 {v:0.00}").Forget()));
+        body.Add(BuildAdjustRow("去高光", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("AdjustHighlights", cs => cs.SetFloat("_Highlights", v), $"去高光 {v:0.00}").Forget()));
+        body.Add(BuildAdjustRow("加温滤镜", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("WarmFilter", cs => cs.SetFloat("_Warm", v), $"加温 {v:0.00}").Forget()));
+        body.Add(BuildAdjustRow("冷却滤镜", 0f, 1f, 0f, v => ApplyComputeAdjustmentAsync("CoolFilter", cs => cs.SetFloat("_Cool", v), $"冷却 {v:0.00}").Forget()));
+
+        parent.Add(panel);
+        panel.BringToFront();
+
+        var placed = false;
+        panel.RegisterCallback<GeometryChangedEvent>(_ =>
+        {
+            if (placed)
+                return;
+            if (parent.contentRect.width <= 1f || parent.contentRect.height <= 1f)
+                return;
+
+            var w = panel.resolvedStyle.width;
+            var x = Mathf.Max(0f, parent.contentRect.width - w - 12f);
+            panel.style.left = x;
+            panel.style.top = 140f;
+            placed = true;
+        });
+    }
+
+    private static VisualElement BuildAdjustRow(string name, float min, float max, float defaultValue, Action<float> onApply)
+    {
+        var row = new VisualElement();
+        row.style.flexDirection = FlexDirection.Row;
+        row.style.alignItems = Align.Center;
+        row.style.marginBottom = 6;
+
+        var label = new Label(name);
+        label.style.color = Color.white;
+        row.Add(label);
+
+        var slider = new Slider(min, max);
+        slider.value = defaultValue;
+        slider.style.flexGrow = 1;
+        slider.style.marginRight = 8;
+        row.Add(slider);
+
+        var btn = new Button(() => onApply?.Invoke(slider.value)) { text = "应用" };
+        btn.style.height = 28;
+        row.Add(btn);
+
+        return row;
+    }
+
+    private ComputeShader GetImageProcessingCS()
+    {
+        if (_imageProcessingCS == null)
+            _imageProcessingCS = Resources.Load<ComputeShader>("ImageProcessing");
+        return _imageProcessingCS;
+    }
+
+    private int GetKernelId(string kernelName)
+    {
+        if (string.IsNullOrWhiteSpace(kernelName))
+            return -1;
+        if (_imageProcessingKernelIds.TryGetValue(kernelName, out var id))
+            return id;
+        var cs = GetImageProcessingCS();
+        if (cs == null)
+            return -1;
+        try
+        {
+            id = cs.FindKernel(kernelName);
+        }
+        catch
+        {
+            id = -1;
+        }
+        _imageProcessingKernelIds[kernelName] = id;
+        return id;
+    }
+
+    private async UniTaskVoid ApplyComputeAdjustmentAsync(string kernelName, Action<ComputeShader> setParams, string historyLabel)
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        var cs = GetImageProcessingCS();
+        if (cs == null)
+        {
+            ShowToast("找不到ImageProcessing.compute", 2200);
+            return;
+        }
+
+        var kernel = GetKernelId(kernelName);
+        if (kernel < 0)
+        {
+            ShowToast("Compute kernel无效: " + kernelName, 2200);
+            return;
+        }
+
+        _adjustRunning = true;
+        ShowBusy(historyLabel);
+        RenderTexture rt = null;
+        try
+        {
+            rt = new RenderTexture(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            rt.enableRandomWrite = true;
+            rt.Create();
+
+            cs.SetTexture(kernel, "_Source", src);
+            cs.SetTexture(kernel, "_Result", rt);
+            setParams?.Invoke(cs);
+
+            var gx = Mathf.CeilToInt(src.width / 8f);
+            var gy = Mathf.CeilToInt(src.height / 8f);
+            cs.Dispatch(kernel, gx, gy, 1);
+
+            var tex = await ReadbackTextureAsync(rt, src.width, src.height);
+            if (tex != null)
+                AddHistory(tex, historyLabel);
+        }
+        finally
+        {
+            if (rt != null)
+            {
+                rt.Release();
+                Destroy(rt);
+            }
+            _adjustRunning = false;
+            HideBusy();
+        }
+    }
+
+    private async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h)
+    {
+        var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
+        AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
+        var r = await tcs.Task;
+        if (r.hasError)
+            return null;
+
+        var data = r.GetData<byte>();
+        var tex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+        tex.LoadRawTextureData(data);
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
     }
 
     private static GroupBox BuildReferencePickerGroup(string labelText, string buttonText, Action onClick, out Button button)

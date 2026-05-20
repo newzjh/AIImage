@@ -1,6 +1,13 @@
 #pragma kernel ResizeBilinear
 #pragma kernel BilateralFilter
 #pragma kernel RemoveWatermark
+#pragma kernel AdjustContrast
+#pragma kernel AdjustBrightness
+#pragma kernel AdjustVibrance
+#pragma kernel AdjustShadows
+#pragma kernel AdjustHighlights
+#pragma kernel WarmFilter
+#pragma kernel CoolFilter
 
 Texture2D<float4> _Source;
 RWTexture2D<float4> _Result;
@@ -13,6 +20,80 @@ float _SigmaRange;
 int _Radius;
 
 float4 _WatermarkRect; // x,y,w,h in normalized [0..1]
+
+float _Contrast;   // [-1..1]
+float _Brightness; // [-1..1]
+float _Vibrance;   // [-1..1]
+float _Shadows;    // [0..1]
+float _Highlights; // [0..1]
+float _Warm;       // [0..1]
+float _Cool;       // [0..1]
+
+static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
+
+float3 Clamp01(float3 v)
+{
+    return saturate(v);
+}
+
+float3 ApplyContrast(float3 c, float amount)
+{
+    float f = 1.0 + amount;
+    return (c - 0.5) * f + 0.5;
+}
+
+float3 ApplyBrightness(float3 c, float amount)
+{
+    return c + amount;
+}
+
+float3 ApplySaturation(float3 c, float amount)
+{
+    float l = dot(c, kLuma);
+    float3 g = l.xxx;
+    return lerp(g, c, 1.0 + amount);
+}
+
+float3 ApplyVibrance(float3 c, float amount)
+{
+    float maxC = max(c.r, max(c.g, c.b));
+    float minC = min(c.r, min(c.g, c.b));
+    float sat = maxC - minC;
+    float adj = (amount >= 0.0) ? amount * (1.0 - sat) : amount;
+    return ApplySaturation(c, adj);
+}
+
+float3 ApplyShadows(float3 c, float amount)
+{
+    float l = dot(c, kLuma);
+    float mask = saturate((0.5 - l) / 0.5);
+    return c + mask * amount * (1.0 - c);
+}
+
+float3 ApplyHighlights(float3 c, float amount)
+{
+    float l = dot(c, kLuma);
+    float mask = saturate((l - 0.5) / 0.5);
+    return c - mask * amount * c;
+}
+
+float3 ApplyWarm(float3 c, float amount)
+{
+    float3 t = c;
+    t.r += amount * 0.10;
+    t.g += amount * 0.02;
+    t.b -= amount * 0.08;
+    return t;
+}
+
+float3 ApplyCool(float3 c, float amount)
+{
+    float3 t = c;
+    t.r -= amount * 0.08;
+    t.g -= amount * 0.02;
+    t.b += amount * 0.10;
+    return t;
+}
 
 [numthreads(8,8,1)]
 void ResizeBilinear(uint3 id : SV_DispatchThreadID)
@@ -131,3 +212,86 @@ void RemoveWatermark(uint3 id : SV_DispatchThreadID)
     _Result[int2(id.xy)] = c;
 }
 
+[numthreads(8,8,1)]
+void AdjustContrast(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float4 p = _Source[int2(id.xy)];
+    p.rgb = Clamp01(ApplyContrast(p.rgb, _Contrast));
+    _Result[int2(id.xy)] = p;
+}
+
+[numthreads(8,8,1)]
+void AdjustBrightness(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float4 p = _Source[int2(id.xy)];
+    p.rgb = Clamp01(ApplyBrightness(p.rgb, _Brightness));
+    _Result[int2(id.xy)] = p;
+}
+
+[numthreads(8,8,1)]
+void AdjustVibrance(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float4 p = _Source[int2(id.xy)];
+    p.rgb = Clamp01(ApplyVibrance(p.rgb, _Vibrance));
+    _Result[int2(id.xy)] = p;
+}
+
+[numthreads(8,8,1)]
+void AdjustShadows(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float4 p = _Source[int2(id.xy)];
+    p.rgb = Clamp01(ApplyShadows(p.rgb, _Shadows));
+    _Result[int2(id.xy)] = p;
+}
+
+[numthreads(8,8,1)]
+void AdjustHighlights(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float4 p = _Source[int2(id.xy)];
+    p.rgb = Clamp01(ApplyHighlights(p.rgb, _Highlights));
+    _Result[int2(id.xy)] = p;
+}
+
+[numthreads(8,8,1)]
+void WarmFilter(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float4 p = _Source[int2(id.xy)];
+    p.rgb = Clamp01(ApplyWarm(p.rgb, _Warm));
+    _Result[int2(id.xy)] = p;
+}
+
+[numthreads(8,8,1)]
+void CoolFilter(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    float4 p = _Source[int2(id.xy)];
+    p.rgb = Clamp01(ApplyCool(p.rgb, _Cool));
+    _Result[int2(id.xy)] = p;
+}
