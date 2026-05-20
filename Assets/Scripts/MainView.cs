@@ -1715,24 +1715,24 @@ public class MainView : MonoBehaviour
 
                     if (same)
                     {
-                        prompt = "替换男角色人脸为图2的，替换女角色人脸为图2的";
+                        prompt = "替换图1中男角色人脸为图2的，替换图1中女角色人脸为图2的";
                         refs.Add(_maleFaceTexture);
                     }
                     else
                     {
-                        prompt = "替换男角色人脸为图2的，替换女角色人脸为图3的";
+                        prompt = "替换图1中男角色人脸为图2的，替换图1中女角色人脸为图3的";
                         refs.Add(_maleFaceTexture);
                         refs.Add(_femaleFaceTexture);
                     }
                 }
                 else if (hasMale)
                 {
-                    prompt = "替换男角色人脸为图2的";
+                    prompt = "替换图1中男角色人脸为图2的";
                     refs.Add(_maleFaceTexture);
                 }
                 else if (hasFemale)
                 {
-                    prompt = "替换女角色人脸为图2的";
+                    prompt = "替换图1中女角色人脸为图2的";
                     refs.Add(_femaleFaceTexture);
                 }
                 else
