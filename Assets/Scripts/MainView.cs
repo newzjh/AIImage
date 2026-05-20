@@ -91,6 +91,7 @@ public class MainView : MonoBehaviour
     private readonly Dictionary<string, int> _gpuSharpenKernelIds = new Dictionary<string, int>(StringComparer.Ordinal);
     private bool _gpuSharpenDumpStages;
     public bool enableGpuSharpenNoiseSuppression = true;
+    public bool enableGpuSharpenFaceMidFreqReconstruction = true;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -1225,8 +1226,23 @@ public class MainView : MonoBehaviour
         var kApply = GetGpuSharpenKernelId("ApplyDirectionalSharpen");
         var kClamp = GetGpuSharpenKernelId("EdgeAwareClamp");
         var kNoise = GetGpuSharpenKernelId("NoiseSuppression");
+        var kFaceMask = GetGpuSharpenKernelId("FaceMask");
+        var kBoxH = GetGpuSharpenKernelId("BoxFilterH");
+        var kBoxV = GetGpuSharpenKernelId("BoxFilterV");
+        var kSquare = GetGpuSharpenKernelId("SquareScalar");
+        var kGuidedAB = GetGpuSharpenKernelId("GuidedAB");
+        var kApplyGuided = GetGpuSharpenKernelId("ApplyGuided");
+        var kMid = GetGpuSharpenKernelId("MidFreq");
+        var kHigh = GetGpuSharpenKernelId("HighFreq");
+        var kBilateralNoise = GetGpuSharpenKernelId("BilateralNoise");
+        var kFaceStruct = GetGpuSharpenKernelId("FaceStruct");
+        var kFaceBlend = GetGpuSharpenKernelId("FaceBlend");
         var k5 = GetGpuSharpenKernelId("SkinNoiseProtect");
-        if (k1 < 0 || k2 < 0 || kDown < 0 || kUp < 0 || kDiff < 0 || kEnh < 0 || kDirLap < 0 || kAdd < 0 || kResp < 0 || kApply < 0 || kClamp < 0 || kNoise < 0 || k5 < 0)
+        if (k1 < 0 || k2 < 0 || kDown < 0 || kUp < 0 || kDiff < 0 || kEnh < 0 || kDirLap < 0 || kAdd < 0 ||
+            kResp < 0 || kApply < 0 || kClamp < 0 || kNoise < 0 ||
+            kFaceMask < 0 || kBoxH < 0 || kBoxV < 0 || kSquare < 0 || kGuidedAB < 0 || kApplyGuided < 0 ||
+            kMid < 0 || kHigh < 0 || kBilateralNoise < 0 || kFaceStruct < 0 || kFaceBlend < 0 ||
+            k5 < 0)
         {
             ShowToast("GPUSharpen kernel无效", 2200);
             return;
@@ -1250,6 +1266,24 @@ public class MainView : MonoBehaviour
         RenderTexture sharpenY = null;
         RenderTexture clampedY = null;
         RenderTexture noiseSuppressedY = null;
+        RenderTexture faceMaskRaw = null;
+        RenderTexture faceMask = null;
+        RenderTexture boxTmp = null;
+        RenderTexture i2 = null;
+        RenderTexture meanI = null;
+        RenderTexture meanII = null;
+        RenderTexture aRt = null;
+        RenderTexture bRt = null;
+        RenderTexture meanA = null;
+        RenderTexture meanB = null;
+        RenderTexture guidedBase = null;
+        RenderTexture blurMid = null;
+        RenderTexture midFreq = null;
+        RenderTexture blurHigh = null;
+        RenderTexture highFreq = null;
+        RenderTexture noiseFiltered = null;
+        RenderTexture faceStruct = null;
+        RenderTexture faceEnhancedY = null;
         RenderTexture finalRt = null;
         string dumpDir = null;
 
@@ -1450,6 +1484,158 @@ public class MainView : MonoBehaviour
             cs.SetTexture(kClamp, "_SharpenYOut", clampedY);
             cs.Dispatch(kClamp, gx, gy, 1);
 
+            faceEnhancedY = clampedY;
+            faceMask = null;
+            if (enableGpuSharpenFaceMidFreqReconstruction)
+            {
+                faceMaskRaw = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                faceMask = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                boxTmp = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                i2 = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                meanI = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                meanII = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                aRt = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                bRt = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                meanA = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                meanB = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                guidedBase = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                blurMid = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                midFreq = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                blurHigh = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                highFreq = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                noiseFiltered = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                faceStruct = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                faceEnhancedY = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+
+                faceMaskRaw.Create();
+                faceMask.Create();
+                boxTmp.Create();
+                i2.Create();
+                meanI.Create();
+                meanII.Create();
+                aRt.Create();
+                bRt.Create();
+                meanA.Create();
+                meanB.Create();
+                guidedBase.Create();
+                blurMid.Create();
+                midFreq.Create();
+                blurHigh.Create();
+                highFreq.Create();
+                noiseFiltered.Create();
+                faceStruct.Create();
+                faceEnhancedY.Create();
+
+                cs.SetTexture(kFaceMask, "_Source", src);
+                cs.SetTexture(kFaceMask, "_AnalysisIn", analysis);
+                cs.SetTexture(kFaceMask, "_FaceMaskOut", faceMaskRaw);
+                cs.Dispatch(kFaceMask, gx, gy, 1);
+
+                cs.SetInt("_BoxRadius", 10);
+                cs.SetTexture(kBoxH, "_ScalarIn", faceMaskRaw);
+                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
+                cs.Dispatch(kBoxH, gx, gy, 1);
+                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
+                cs.SetTexture(kBoxV, "_BoxOut", faceMask);
+                cs.Dispatch(kBoxV, gx, gy, 1);
+
+                cs.SetInt("_BoxRadius", 12);
+                cs.SetTexture(kBoxH, "_ScalarIn", clampedY);
+                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
+                cs.Dispatch(kBoxH, gx, gy, 1);
+                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
+                cs.SetTexture(kBoxV, "_BoxOut", meanI);
+                cs.Dispatch(kBoxV, gx, gy, 1);
+
+                cs.SetTexture(kSquare, "_ScalarIn", clampedY);
+                cs.SetTexture(kSquare, "_SquareOut", i2);
+                cs.Dispatch(kSquare, gx, gy, 1);
+
+                cs.SetTexture(kBoxH, "_ScalarIn", i2);
+                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
+                cs.Dispatch(kBoxH, gx, gy, 1);
+                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
+                cs.SetTexture(kBoxV, "_BoxOut", meanII);
+                cs.Dispatch(kBoxV, gx, gy, 1);
+
+                cs.SetFloat("_GuidedEps", 0.01f);
+                cs.SetTexture(kGuidedAB, "_MeanIIn", meanI);
+                cs.SetTexture(kGuidedAB, "_MeanIIIn", meanII);
+                cs.SetTexture(kGuidedAB, "_AOut", aRt);
+                cs.SetTexture(kGuidedAB, "_BOut", bRt);
+                cs.Dispatch(kGuidedAB, gx, gy, 1);
+
+                cs.SetTexture(kBoxH, "_ScalarIn", aRt);
+                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
+                cs.Dispatch(kBoxH, gx, gy, 1);
+                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
+                cs.SetTexture(kBoxV, "_BoxOut", meanA);
+                cs.Dispatch(kBoxV, gx, gy, 1);
+
+                cs.SetTexture(kBoxH, "_ScalarIn", bRt);
+                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
+                cs.Dispatch(kBoxH, gx, gy, 1);
+                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
+                cs.SetTexture(kBoxV, "_BoxOut", meanB);
+                cs.Dispatch(kBoxV, gx, gy, 1);
+
+                cs.SetTexture(kApplyGuided, "_ScalarIn", clampedY);
+                cs.SetTexture(kApplyGuided, "_MeanAIn", meanA);
+                cs.SetTexture(kApplyGuided, "_MeanBIn", meanB);
+                cs.SetTexture(kApplyGuided, "_GuidedOut", guidedBase);
+                cs.Dispatch(kApplyGuided, gx, gy, 1);
+
+                cs.SetInt("_BoxRadius", 5);
+                cs.SetTexture(kBoxH, "_ScalarIn", clampedY);
+                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
+                cs.Dispatch(kBoxH, gx, gy, 1);
+                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
+                cs.SetTexture(kBoxV, "_BoxOut", blurMid);
+                cs.Dispatch(kBoxV, gx, gy, 1);
+
+                cs.SetTexture(kMid, "_ScalarIn", clampedY);
+                cs.SetTexture(kMid, "_BlurIn", blurMid);
+                cs.SetTexture(kMid, "_MidOut", midFreq);
+                cs.Dispatch(kMid, gx, gy, 1);
+
+                cs.SetInt("_BoxRadius", 2);
+                cs.SetTexture(kBoxH, "_ScalarIn", clampedY);
+                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
+                cs.Dispatch(kBoxH, gx, gy, 1);
+                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
+                cs.SetTexture(kBoxV, "_BoxOut", blurHigh);
+                cs.Dispatch(kBoxV, gx, gy, 1);
+
+                cs.SetTexture(kHigh, "_ScalarIn", clampedY);
+                cs.SetTexture(kHigh, "_BlurIn", blurHigh);
+                cs.SetTexture(kHigh, "_NoiseOut", highFreq);
+                cs.Dispatch(kHigh, gx, gy, 1);
+
+                cs.SetFloat("_BilateralSigmaRange", 0.03f);
+                cs.SetTexture(kBilateralNoise, "_NoiseIn", highFreq);
+                cs.SetTexture(kBilateralNoise, "_FaceMaskIn", faceMask);
+                cs.SetTexture(kBilateralNoise, "_NoiseOut", noiseFiltered);
+                cs.Dispatch(kBilateralNoise, gx, gy, 1);
+
+                cs.SetFloat("_MidW", 1.0f);
+                cs.SetFloat("_TextureScale", 0.45f);
+                cs.SetTexture(kFaceStruct, "_Source", src);
+                cs.SetTexture(kFaceStruct, "_AnalysisIn", analysis);
+                cs.SetTexture(kFaceStruct, "_FaceMaskIn", faceMask);
+                cs.SetTexture(kFaceStruct, "_ScalarIn", clampedY);
+                cs.SetTexture(kFaceStruct, "_GuidedIn", guidedBase);
+                cs.SetTexture(kFaceStruct, "_MidIn", midFreq);
+                cs.SetTexture(kFaceStruct, "_NoiseFilteredIn", noiseFiltered);
+                cs.SetTexture(kFaceStruct, "_FaceStructOut", faceStruct);
+                cs.Dispatch(kFaceStruct, gx, gy, 1);
+
+                cs.SetTexture(kFaceBlend, "_FaceMaskIn", faceMask);
+                cs.SetTexture(kFaceBlend, "_ScalarIn", clampedY);
+                cs.SetTexture(kFaceBlend, "_FaceStructIn", faceStruct);
+                cs.SetTexture(kFaceBlend, "_FaceEnhancedOut", faceEnhancedY);
+                cs.Dispatch(kFaceBlend, gx, gy, 1);
+            }
+
             if (_gpuSharpenDumpStages)
             {
                 dumpDir ??= CreateGpuSharpenDumpDir();
@@ -1464,7 +1650,18 @@ public class MainView : MonoBehaviour
                 noiseSuppressedY.Create();
                 cs.SetTexture(kNoise, "_Source", src);
                 cs.SetTexture(kNoise, "_AnalysisIn", analysis);
-                cs.SetTexture(kNoise, "_SharpenYIn", clampedY);
+                cs.SetTexture(kNoise, "_SharpenYIn", faceEnhancedY);
+                if (faceMask == null)
+                {
+                    faceMaskRaw = new RenderTexture(w, h, 0, RenderTextureFormat.RHalf, RenderTextureReadWrite.Linear) { enableRandomWrite = true };
+                    faceMaskRaw.Create();
+                    cs.SetTexture(kFaceMask, "_Source", src);
+                    cs.SetTexture(kFaceMask, "_AnalysisIn", analysis);
+                    cs.SetTexture(kFaceMask, "_FaceMaskOut", faceMaskRaw);
+                    cs.Dispatch(kFaceMask, gx, gy, 1);
+                    faceMask = faceMaskRaw;
+                }
+                cs.SetTexture(kNoise, "_FaceMaskIn", faceMask);
                 cs.SetTexture(kNoise, "_SharpenYOut", noiseSuppressedY);
                 cs.Dispatch(kNoise, gx, gy, 1);
 
@@ -1477,7 +1674,7 @@ public class MainView : MonoBehaviour
 
             cs.SetTexture(k5, "_Source", src);
             cs.SetTexture(k5, "_AnalysisIn", analysis);
-            cs.SetTexture(k5, "_SharpenYIn", noiseSuppressedY != null ? noiseSuppressedY : clampedY);
+            cs.SetTexture(k5, "_SharpenYIn", noiseSuppressedY != null ? noiseSuppressedY : faceEnhancedY);
             cs.SetTexture(k5, "_Result", finalRt);
             cs.Dispatch(k5, gx, gy, 1);
 
@@ -1523,6 +1720,24 @@ public class MainView : MonoBehaviour
             if (sharpenY != null) { sharpenY.Release(); Destroy(sharpenY); }
             if (clampedY != null) { clampedY.Release(); Destroy(clampedY); }
             if (noiseSuppressedY != null) { noiseSuppressedY.Release(); Destroy(noiseSuppressedY); }
+            if (faceMaskRaw != null) { faceMaskRaw.Release(); Destroy(faceMaskRaw); }
+            if (faceMask != null) { faceMask.Release(); Destroy(faceMask); }
+            if (boxTmp != null) { boxTmp.Release(); Destroy(boxTmp); }
+            if (i2 != null) { i2.Release(); Destroy(i2); }
+            if (meanI != null) { meanI.Release(); Destroy(meanI); }
+            if (meanII != null) { meanII.Release(); Destroy(meanII); }
+            if (aRt != null) { aRt.Release(); Destroy(aRt); }
+            if (bRt != null) { bRt.Release(); Destroy(bRt); }
+            if (meanA != null) { meanA.Release(); Destroy(meanA); }
+            if (meanB != null) { meanB.Release(); Destroy(meanB); }
+            if (guidedBase != null) { guidedBase.Release(); Destroy(guidedBase); }
+            if (blurMid != null) { blurMid.Release(); Destroy(blurMid); }
+            if (midFreq != null) { midFreq.Release(); Destroy(midFreq); }
+            if (blurHigh != null) { blurHigh.Release(); Destroy(blurHigh); }
+            if (highFreq != null) { highFreq.Release(); Destroy(highFreq); }
+            if (noiseFiltered != null) { noiseFiltered.Release(); Destroy(noiseFiltered); }
+            if (faceStruct != null) { faceStruct.Release(); Destroy(faceStruct); }
+            if (faceEnhancedY != null && faceEnhancedY != clampedY) { faceEnhancedY.Release(); Destroy(faceEnhancedY); }
             if (finalRt != null) { finalRt.Release(); Destroy(finalRt); }
 
             _adjustRunning = false;

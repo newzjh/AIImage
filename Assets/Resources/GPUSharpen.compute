@@ -11,6 +11,17 @@
 #pragma kernel ApplyDirectionalSharpen
 #pragma kernel EdgeAwareClamp
 #pragma kernel NoiseSuppression
+#pragma kernel FaceMask
+#pragma kernel BoxFilterH
+#pragma kernel BoxFilterV
+#pragma kernel SquareScalar
+#pragma kernel GuidedAB
+#pragma kernel ApplyGuided
+#pragma kernel MidFreq
+#pragma kernel HighFreq
+#pragma kernel BilateralNoise
+#pragma kernel FaceStruct
+#pragma kernel FaceBlend
 #pragma kernel SkinNoiseProtect
 #pragma kernel DebugVisEdge
 #pragma kernel DebugVisDir
@@ -30,8 +41,13 @@ Texture2D<float4> _BaseIn;
 Texture2D<float> _EnhancedDetailIn;
 Texture2D<float> _SharpenYIn;
 Texture2D<float> _DirectionalResponseIn;
+Texture2D<float> _FaceMaskIn;
 Texture2D<float4> _DebugIn;
 Texture2D<float> _ScalarIn;
+Texture2D<float> _GuidedIn;
+Texture2D<float> _MidIn;
+Texture2D<float> _NoiseFilteredIn;
+Texture2D<float> _FaceStructIn;
 Texture2D<float> _LowIn;
 Texture2D<float> _HighIn;
 Texture2D<float> _LowUpIn;
@@ -39,6 +55,14 @@ Texture2D<float> _LapIn;
 Texture2D<float> _AccIn;
 Texture2D<float> _AddIn;
 Texture2D<float> _DebugScalarIn;
+Texture2D<float> _AIn;
+Texture2D<float> _BIn;
+Texture2D<float> _MeanIIn;
+Texture2D<float> _MeanIIIn;
+Texture2D<float> _MeanAIn;
+Texture2D<float> _MeanBIn;
+Texture2D<float> _BlurIn;
+Texture2D<float> _NoiseIn;
 
 RWTexture2D<float4> _AnalysisOut;
 RWTexture2D<float> _MaskOut;
@@ -53,6 +77,16 @@ RWTexture2D<float> _LapOut;
 RWTexture2D<float> _EnhancedOut;
 RWTexture2D<float> _AccOut;
 RWTexture2D<float> _SharpenLapOut;
+RWTexture2D<float> _FaceMaskOut;
+RWTexture2D<float> _BoxOut;
+RWTexture2D<float> _SquareOut;
+RWTexture2D<float> _AOut;
+RWTexture2D<float> _BOut;
+RWTexture2D<float> _GuidedOut;
+RWTexture2D<float> _MidOut;
+RWTexture2D<float> _NoiseOut;
+RWTexture2D<float> _FaceStructOut;
+RWTexture2D<float> _FaceEnhancedOut;
 
 int _Radius;
 float _SigmaSpatial;
@@ -65,6 +99,11 @@ float _Wb;
 float _Alpha;
 float _Beta;
 float _ClampDelta;
+int _BoxRadius;
+float _GuidedEps;
+float _MidW;
+float _TextureScale;
+float _BilateralSigmaRange;
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -83,6 +122,30 @@ float2 Normalize2(float2 v)
     float l2 = dot(v, v);
     if (l2 < 1e-10) return float2(0, 0);
     return v * rsqrt(l2);
+}
+
+
+
+float3 YCbCrFromRgb(float3 rgb)
+{
+    float R = rgb.r;
+    float G = rgb.g;
+    float B = rgb.b;
+    float Y = dot(rgb, float3(0.299, 0.587, 0.114));
+    float Cb = 128.0 / 255.0 + (-0.168736 * R - 0.331264 * G + 0.5 * B);
+    float Cr = 128.0 / 255.0 + (0.5 * R - 0.418688 * G - 0.081312 * B);
+    return float3(Y, Cb, Cr);
+}
+
+float3 RgbFromYCbCr(float3 ycc)
+{
+    float Y = ycc.x;
+    float Cb = ycc.y - 128.0 / 255.0;
+    float Cr = ycc.z - 128.0 / 255.0;
+    float R = Y + 1.402 * Cr;
+    float G = Y - 0.344136 * Cb - 0.714136 * Cr;
+    float B = Y + 1.772 * Cb;
+    return float3(R, G, B);
 }
 
 [numthreads(8,8,1)]
@@ -518,9 +581,257 @@ void NoiseSuppression(uint3 id : SV_DispatchThreadID)
     float cGate = saturate((coherence - 0.10) / 0.90);
 
     float keep = saturate(cGate * (0.35 + 0.65 * vGate));
+    float fm = saturate(_FaceMaskIn[p]);
+    keep = lerp(keep, 1.0, fm);
     float yOut = lerp(yOrig, ySharp, keep);
 
     _SharpenYOut[p] = yOut;
+}
+
+[numthreads(8,8,1)]
+void FaceMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _FaceMaskOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float3 rgb = _Source[p].rgb;
+    float3 ycc = YCbCrFromRgb(rgb);
+
+    float cb255 = ycc.y * 255.0;
+    float cr255 = ycc.z * 255.0;
+    float skin = smoothstep(70.0, 82.0, cb255) * (1.0 - smoothstep(122.0, 134.0, cb255)) *
+                 smoothstep(128.0, 140.0, cr255) * (1.0 - smoothstep(168.0, 180.0, cr255));
+
+    float2 uv = (float2(id.x, id.y) + 0.5) / float2(w, h);
+    float2 c = float2(0.5, 0.42);
+    float2 d = (uv - c);
+    d.x *= 1.1;
+    d.y *= 1.6;
+    float r2 = dot(d, d);
+    float center = 1.0 - smoothstep(0.06, 0.22, r2);
+
+    float edge = _AnalysisIn[p].x;
+    float edgeSuppress = 1.0 - smoothstep(0.25, 0.80, edge);
+
+    float m = saturate(skin * center * edgeSuppress);
+    _FaceMaskOut[p] = m;
+}
+
+[numthreads(8,8,1)]
+void BoxFilterH(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _BoxOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    int r = max(1, _BoxRadius);
+    float sum = 0.0;
+    for (int dx = -r; dx <= r; dx++)
+    {
+        int2 q = int2(clamp((int)id.x + dx, 0, (int)w - 1), (int)id.y);
+        sum += _ScalarIn[q];
+    }
+    _BoxOut[p] = sum / (float)(2 * r + 1);
+}
+
+[numthreads(8,8,1)]
+void BoxFilterV(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _BoxOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    int r = max(1, _BoxRadius);
+    float sum = 0.0;
+    for (int dy = -r; dy <= r; dy++)
+    {
+        int2 q = int2((int)id.x, clamp((int)id.y + dy, 0, (int)h - 1));
+        sum += _ScalarIn[q];
+    }
+    _BoxOut[p] = sum / (float)(2 * r + 1);
+}
+
+[numthreads(8,8,1)]
+void SquareScalar(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _SquareOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    float v = _ScalarIn[p];
+    _SquareOut[p] = v * v;
+}
+
+[numthreads(8,8,1)]
+void GuidedAB(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _AOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+
+    float meanI = _MeanIIn[p];
+    float meanII = _MeanIIIn[p];
+    float varI = max(0.0, meanII - meanI * meanI);
+    float eps = max(1e-6, _GuidedEps);
+    float a = varI / (varI + eps);
+    float b = meanI * (1.0 - a);
+
+    _AOut[p] = a;
+    _BOut[p] = b;
+}
+
+[numthreads(8,8,1)]
+void ApplyGuided(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _GuidedOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    float I = _ScalarIn[p];
+    float a = _MeanAIn[p];
+    float b = _MeanBIn[p];
+    _GuidedOut[p] = saturate(a * I + b);
+}
+
+[numthreads(8,8,1)]
+void MidFreq(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _MidOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    float I = _ScalarIn[p];
+    float B = _BlurIn[p];
+    float m = I - B;
+    _MidOut[p] = m;
+}
+
+[numthreads(8,8,1)]
+void HighFreq(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _NoiseOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    float I = _ScalarIn[p];
+    float B = _BlurIn[p];
+    _NoiseOut[p] = I - B;
+}
+
+[numthreads(8,8,1)]
+void BilateralNoise(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _NoiseOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float m = saturate(_FaceMaskIn[p]);
+    if (m <= 0.001)
+    {
+        _NoiseOut[p] = 0.0;
+        return;
+    }
+
+    int2 size = int2((int)w, (int)h);
+    float center = _NoiseIn[p];
+    float sigmaR = max(0.001, _BilateralSigmaRange);
+
+    float sum = 0.0;
+    float wsum = 0.0;
+    for (int dy = -1; dy <= 1; dy++)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            int2 q = clamp(p + int2(dx, dy), int2(0,0), size - 1);
+            float v = _NoiseIn[q];
+            float ds2 = (float)(dx * dx + dy * dy);
+            float wr = exp(-((v - center) * (v - center)) / (2.0 * sigmaR * sigmaR));
+            float ws = exp(-ds2 * 0.6);
+            float ww = ws * wr;
+            sum += v * ww;
+            wsum += ww;
+        }
+    }
+
+    float outV = sum / max(1e-6, wsum);
+    _NoiseOut[p] = outV;
+}
+
+[numthreads(8,8,1)]
+void FaceStruct(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _FaceStructOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 size = int2((int)w, (int)h);
+    int2 p = int2(id.xy);
+
+    float fm = saturate(_FaceMaskIn[p]);
+    if (fm <= 0.001)
+    {
+        _FaceStructOut[p] = _ScalarIn[p];
+        return;
+    }
+
+    float I = _ScalarIn[p];
+    float baseY = _GuidedIn[p];
+    float mid = _MidIn[p] * fm;
+    float noise = _NoiseFilteredIn[p];
+
+    float y00 = Luma(SampleClamped(_Source, p + int2(-1, -1), size).rgb);
+    float y10 = Luma(SampleClamped(_Source, p + int2( 0, -1), size).rgb);
+    float y20 = Luma(SampleClamped(_Source, p + int2( 1, -1), size).rgb);
+    float y01 = Luma(SampleClamped(_Source, p + int2(-1,  0), size).rgb);
+    float y11 = Luma(SampleClamped(_Source, p, size).rgb);
+    float y21 = Luma(SampleClamped(_Source, p + int2( 1,  0), size).rgb);
+    float y02 = Luma(SampleClamped(_Source, p + int2(-1,  1), size).rgb);
+    float y12 = Luma(SampleClamped(_Source, p + int2( 0,  1), size).rgb);
+    float y22 = Luma(SampleClamped(_Source, p + int2( 1,  1), size).rgb);
+
+    float gx = (-3.0*y00 + 3.0*y20) + (-10.0*y01 + 10.0*y21) + (-3.0*y02 + 3.0*y22);
+    float gy = (-3.0*y00 - 10.0*y10 - 3.0*y20) + (3.0*y02 + 10.0*y12 + 3.0*y22);
+    float Jxx = gx * gx;
+    float Jyy = gy * gy;
+    float Jxy = gx * gy;
+    float trace = Jxx + Jyy;
+    float det = Jxx * Jyy - Jxy * Jxy;
+    float disc = max(0.0, trace * trace - 4.0 * det);
+    float coh = sqrt(disc) / max(1e-6, trace);
+    coh = saturate(coh);
+
+    float edge = saturate(_AnalysisIn[p].x);
+    float varTex = saturate(_AnalysisIn[p].w);
+    float noiseEst = (1.0 - coh) * saturate(varTex * 1.2);
+    float wMid = _MidW;
+    float ww = (0.6 + 0.8 * edge - 0.4 * noiseEst) * wMid;
+    ww = clamp(ww, 0.0, 2.0);
+
+    float texScale = _TextureScale * (1.0 - 0.55 * fm);
+    float tex = noise * texScale;
+
+    float outY = baseY + mid * ww + tex;
+    outY = clamp(outY, 0.0, 1.0);
+    _FaceStructOut[p] = outY;
+}
+
+[numthreads(8,8,1)]
+void FaceBlend(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _FaceEnhancedOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    float fm = saturate(_FaceMaskIn[p]);
+    float I = _ScalarIn[p];
+    float F = _FaceStructIn[p];
+    _FaceEnhancedOut[p] = lerp(I, F, fm);
 }
 
 [numthreads(8,8,1)]
@@ -566,27 +877,6 @@ void DirectionalSharpen(uint3 id : SV_DispatchThreadID)
     _SharpenYOut[p] = y;
 }
 
-float3 YCbCrFromRgb(float3 rgb)
-{
-    float R = rgb.r;
-    float G = rgb.g;
-    float B = rgb.b;
-    float Y = dot(rgb, float3(0.299, 0.587, 0.114));
-    float Cb = 128.0/255.0 + (-0.168736 * R - 0.331264 * G + 0.5 * B);
-    float Cr = 128.0/255.0 + (0.5 * R - 0.418688 * G - 0.081312 * B);
-    return float3(Y, Cb, Cr);
-}
-
-float3 RgbFromYCbCr(float3 ycc)
-{
-    float Y = ycc.x;
-    float Cb = ycc.y - 128.0/255.0;
-    float Cr = ycc.z - 128.0/255.0;
-    float R = Y + 1.402 * Cr;
-    float G = Y - 0.344136 * Cb - 0.714136 * Cr;
-    float B = Y + 1.772 * Cb;
-    return float3(R, G, B);
-}
 
 [numthreads(8,8,1)]
 void SkinNoiseProtect(uint3 id : SV_DispatchThreadID)
