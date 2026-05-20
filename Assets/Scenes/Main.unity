@@ -227,7 +227,6 @@ GameObject:
   - component: {fileID: 963194228}
   - component: {fileID: 963194227}
   - component: {fileID: 963194226}
-  - component: {fileID: 963194229}
   - component: {fileID: 963194230}
   m_Layer: 0
   m_Name: Main Camera
@@ -310,18 +309,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 45, y: 0, z: 0}
---- !u!114 &963194229
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 963194225}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 8763ac699f616eb4896564e6ec280aab, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
 --- !u!114 &963194230
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -724,7 +711,7 @@ MonoBehaviour:
   provider: 3
   googleApiKey: AIzaSyB2vQlPOEE3w8i93ZyWJkJ7I2JPgydfn_Q
   googleBaseUrl: https://generativelanguage.googleapis.com/v1beta
-  replicateApiToken: 
+  replicateApiToken: r8_5UZtNi0eO4J1zAD8TsFes3LEislLKyP2J2kDH
   replicateVersion: 
   replicateInputImageField: image
   replicateStrength: 0.65
@@ -733,7 +720,17 @@ MonoBehaviour:
   dashScopeBaseUrl: https://dashscope.aliyuncs.com
   doubaoApiKey: ba0e3461-60b9-49d2-87e6-d6e6d95e10bd
   doubaoBaseUrl: https://ark.cn-beijing.volces.com/api/v3
-  timeoutSeconds: 180
+  huggingFaceToken: 
+  huggingFaceBaseUrl: https://router.huggingface.co/v1
+  huggingFaceModel: black-forest-labs/FLUX.1-schnell
+  runwareApiKey: 
+  runwareBaseUrl: https://api.runware.ai/v1
+  runwareModel: runware:100@1
+  runwareStrength: 0.65
+  lumenfallApiKey: lmnfl_key_3DwxzK5zn93t42cJrGT7hbx6kvw.70bLKXBSbpUVGfRsRUrQ8WwZh9XpF2zq4wNBqAKcdYU
+  lumenfallBaseUrl: https://api.lumenfall.ai/openai/v1
+  lumenfallModel: flux.2-dev-flash
+  timeoutSeconds: 600
   pollIntervalMs: 900
   enableRemoveWatermark: 0
   watermarkRect: {x: 0.72, y: 0.86, z: 0.26, w: 0.12}

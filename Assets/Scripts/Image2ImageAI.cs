@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Cysharp.Threading.Tasks;
+using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.Rendering;
@@ -15,7 +16,10 @@ public sealed class Image2ImageAI : MonoBehaviour
         GoogleAIStudio,
         Replicate,
         AliTongyiWanxiang,
-        Doubao
+        Doubao,
+        HuggingFaceInferenceProviders,
+        RunwareAI,
+        Lumenfall
     }
  
     public event Func<IReadOnlyList<Texture2D>, UniTask<int>> SelectResultIndex;
@@ -43,6 +47,9 @@ public sealed class Image2ImageAI : MonoBehaviour
             Provider.Replicate => replicateApiToken,
             Provider.AliTongyiWanxiang => dashScopeApiKey,
             Provider.Doubao => doubaoApiKey,
+            Provider.HuggingFaceInferenceProviders => huggingFaceToken,
+            Provider.RunwareAI => runwareApiKey,
+            Provider.Lumenfall => lumenfallApiKey,
             _ => ""
         };
     }
@@ -63,6 +70,15 @@ public sealed class Image2ImageAI : MonoBehaviour
                 break;
             case Provider.Doubao:
                 doubaoApiKey = key;
+                break;
+            case Provider.HuggingFaceInferenceProviders:
+                huggingFaceToken = key;
+                break;
+            case Provider.RunwareAI:
+                runwareApiKey = key;
+                break;
+            case Provider.Lumenfall:
+                lumenfallApiKey = key;
                 break;
         }
     }
@@ -86,10 +102,26 @@ public sealed class Image2ImageAI : MonoBehaviour
     [Header("Doubao")]
     [SerializeField] private string doubaoApiKey;
     [SerializeField] private string doubaoBaseUrl = "https://ark.cn-beijing.volces.com/api/v3";
+ 
+    [Header("Hugging Face Inference Providers")]
+    [SerializeField] private string huggingFaceToken;
+    [SerializeField] private string huggingFaceBaseUrl = "https://router.huggingface.co/v1";
+    [SerializeField] private string huggingFaceModel = "black-forest-labs/FLUX.1-schnell";
+ 
+    [Header("Runware.ai")]
+    [SerializeField] private string runwareApiKey;
+    [SerializeField] private string runwareBaseUrl = "https://api.runware.ai/v1";
+    [SerializeField] private string runwareModel = "runware:100@1";
+    [SerializeField] private float runwareStrength = 0.65f;
+ 
+    [Header("Lumenfall")]
+    [SerializeField] private string lumenfallApiKey;
+    [SerializeField] private string lumenfallBaseUrl = "https://api.lumenfall.ai/openai/v1";
+    [SerializeField] private string lumenfallModel = "flux.1-schnell";
     public const string doubaoModel = "doubao-seedream-4-5-251128";
 
     [Header("Runtime")]
-    [SerializeField] private int timeoutSeconds = 180;
+    [SerializeField] private int timeoutSeconds = 600;
     [SerializeField] private int pollIntervalMs = 900;
 
     [Header("Post Process")]
@@ -140,6 +172,15 @@ public sealed class Image2ImageAI : MonoBehaviour
                 break;
             case Provider.Doubao:
                 raws = await DoubaoImageToImageAsync(refs, prompt, cancellationToken);
+                break;
+            case Provider.HuggingFaceInferenceProviders:
+                raws = await HuggingFaceImageAsync(refs, prompt, targetWidth, targetHeight, cancellationToken);
+                break;
+            case Provider.RunwareAI:
+                raws = await RunwareImageToImageAsync(refs, prompt, targetWidth, targetHeight, cancellationToken);
+                break;
+            case Provider.Lumenfall:
+                raws = await LumenfallImageAsync(refs, prompt, targetWidth, targetHeight, cancellationToken);
                 break;
             default:
                 return null;
@@ -371,6 +412,280 @@ public sealed class Image2ImageAI : MonoBehaviour
         }
  
         return null;
+    }
+
+    private async UniTask<List<Texture2D>> HuggingFaceImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, int targetWidth, int targetHeight, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(huggingFaceToken))
+            return null;
+
+        var (w, h) = ClampToMaxSide(Mathf.Max(64, targetWidth), Mathf.Max(64, targetHeight), 1024);
+
+        var url = huggingFaceBaseUrl.TrimEnd('/') + "/images/generations";
+        var req = BuildJsonObject(new Dictionary<string, object>
+        {
+            ["model"] = string.IsNullOrWhiteSpace(huggingFaceModel) ? "black-forest-labs/FLUX.1-schnell" : huggingFaceModel,
+            ["prompt"] = prompt,
+            ["size"] = w + "x" + h,
+            ["response_format"] = "b64_json",
+            ["n"] = 1
+        });
+
+        var resp = await SendJsonAsync(url, "POST", req, new Dictionary<string, string>
+        {
+            ["Authorization"] = "Bearer " + huggingFaceToken
+        }, ct);
+
+        if (string.IsNullOrWhiteSpace(resp))
+            return null;
+
+        var images = ExtractAllImagesFromJson(resp);
+        if (images.Count > 0)
+            return images;
+
+        var urls = ExtractAllUrlsFromJson(resp);
+        if (urls.Count == 0)
+            return null;
+        return await DownloadAllTexturesAsync(urls, ct);
+    }
+
+    private async UniTask<List<Texture2D>> LumenfallImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, int targetWidth, int targetHeight, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(lumenfallApiKey))
+            return null;
+
+        var (w, h) = ClampToMaxSide(Mathf.Max(64, targetWidth), Mathf.Max(64, targetHeight), 2048);
+
+
+        var url = lumenfallBaseUrl.TrimEnd('/') + "/images/edits";
+
+        WWWForm form = new WWWForm();
+
+        form.AddField("model", lumenfallModel);
+        form.AddField("prompt", prompt);
+        form.AddField("size", w + "x" + h);
+        form.AddField("output_format", "png");
+
+        for (var i = 0; i < referenceImages.Count; i++)
+        {
+            var b = EncodePng(referenceImages[i]);
+            form.AddBinaryData(
+                "image",
+                b,
+                "input.png",
+                "image/png"
+            );
+        }
+
+        var resp = await SendFormAsync(url, form, new Dictionary<string, string>
+        {
+            ["Authorization"] = "Bearer " + lumenfallApiKey
+        }, ct);
+
+
+        if (!Application.isPlaying)
+            return null;
+
+        if (string.IsNullOrWhiteSpace(resp))
+            return null;
+
+        var images = ExtractAllImagesFromJson(resp);
+        if (images.Count > 0)
+            return images;
+
+        if (TryExtractLumenfallUrlsByJson(resp, out var urlsFromJson) && urlsFromJson.Count > 0)
+            return await DownloadAllTexturesAsync(urlsFromJson, ct);
+
+        var urls = ExtractAllUrlsFromJson(resp);
+        if (urls.Count == 0)
+            return null;
+        return await DownloadAllTexturesAsync(urls, ct);
+    }
+
+    [Serializable]
+    private sealed class LumenfallApiResponse
+    {
+        public string id;
+        public long created;
+        public string size;
+        public string output_format;
+        public LumenfallApiUsage usage;
+        public LumenfallApiDataItem[] data;
+        public LumenfallApiMetadata metadata;
+    }
+
+    [Serializable]
+    private sealed class LumenfallApiUsage
+    {
+        public int output_images;
+    }
+
+    [Serializable]
+    private sealed class LumenfallApiDataItem
+    {
+        public string url;
+        public string b64_json;
+    }
+
+    [Serializable]
+    private sealed class LumenfallApiMetadata
+    {
+        public string provider_name;
+        public string provider;
+        public string upstream_id;
+        public string model;
+        public string executed_model;
+        public float cost;
+        public string cost_currency;
+    }
+
+    private static bool TryExtractLumenfallUrlsByJson(string json, out List<string> urls)
+    {
+        urls = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        LumenfallApiResponse parsed;
+        try
+        {
+            parsed = JsonConvert.DeserializeObject<LumenfallApiResponse>(json);
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (parsed?.data == null || parsed.data.Length == 0)
+            return false;
+
+        urls = new List<string>(parsed.data.Length);
+        for (int i = 0; i < parsed.data.Length; i++)
+        {
+            var u0 = parsed.data[i]?.url;
+            var u = NormalizeUrlCandidate(u0);
+            if (string.IsNullOrWhiteSpace(u))
+                continue;
+            if (!u.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!urls.Contains(u))
+                urls.Add(u);
+        }
+
+        return urls.Count > 0;
+    }
+
+    private async UniTask<List<Texture2D>> RunwareImageToImageAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, int targetWidth, int targetHeight, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(runwareApiKey))
+            return null;
+
+        var (w, h) = ClampToMaxSide(Mathf.Max(64, targetWidth), Mathf.Max(64, targetHeight), 2048);
+
+        var seedPng = EncodePng(referenceImages[0]);
+        if (seedPng == null || seedPng.Length == 0)
+            return null;
+
+        var seedDataUri = "data:image/png;base64," + Convert.ToBase64String(seedPng);
+        var taskUuid = Guid.NewGuid().ToString();
+
+        var body = BuildJsonArray(new List<object>
+        {
+            new Dictionary<string, object>
+            {
+                ["taskType"] = "imageInference",
+                ["taskUUID"] = taskUuid,
+                ["model"] = string.IsNullOrWhiteSpace(runwareModel) ? "runware:100@1" : runwareModel,
+                ["positivePrompt"] = prompt,
+                ["width"] = w,
+                ["height"] = h,
+                ["numberResults"] = 1,
+                ["outputType"] = "base64Data",
+                ["outputFormat"] = "PNG",
+                ["strength"] = Mathf.Clamp01(runwareStrength),
+                ["inputs"] = new Dictionary<string, object>
+                {
+                    ["seedImage"] = seedDataUri
+                }
+            }
+        });
+
+        var resp = await SendJsonAsync(runwareBaseUrl.TrimEnd('/'), "POST", body, new Dictionary<string, string>
+        {
+            ["Authorization"] = "Bearer " + runwareApiKey
+        }, ct);
+
+        if (string.IsNullOrWhiteSpace(resp))
+            return null;
+
+        var images = ExtractAllRunwareImagesFromJson(resp);
+        if (images.Count > 0)
+            return images;
+
+        var urls = ExtractAllRunwareUrlsFromJson(resp);
+        if (urls.Count == 0)
+            return null;
+        return await DownloadAllTexturesAsync(urls, ct);
+    }
+
+    private static (int w, int h) ClampToMaxSide(int w, int h, int maxSide)
+    {
+        maxSide = Mathf.Max(64, maxSide);
+        w = Mathf.Max(64, w);
+        h = Mathf.Max(64, h);
+        if (w <= maxSide && h <= maxSide)
+            return (w, h);
+        var scale = maxSide / (float)Mathf.Max(w, h);
+        var nw = Mathf.Max(64, Mathf.RoundToInt(w * scale));
+        var nh = Mathf.Max(64, Mathf.RoundToInt(h * scale));
+        return (nw, nh);
+    }
+
+    private static string BuildJsonArray(IEnumerable<object> arr)
+    {
+        var sb = new StringBuilder(1024);
+        AppendValue(sb, arr);
+        return sb.ToString();
+    }
+
+    private static List<Texture2D> ExtractAllRunwareImagesFromJson(string json)
+    {
+        var results = new List<Texture2D>();
+        if (string.IsNullOrWhiteSpace(json)) return results;
+
+        foreach (Match m in Regex.Matches(json, "\"imageBase64Data\"\\s*:\\s*\"(?<v>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
+        {
+            var s = UnescapeJsonString(m.Groups["v"].Value);
+            var tex = DecodeTextureFromBase64(s);
+            if (tex != null) results.Add(tex);
+        }
+
+        foreach (Match m in Regex.Matches(json, "\"imageDataURI\"\\s*:\\s*\"(?<v>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
+        {
+            var s = UnescapeJsonString(m.Groups["v"].Value);
+            if (string.IsNullOrWhiteSpace(s)) continue;
+            var comma = s.IndexOf(',');
+            if (comma >= 0)
+                s = s.Substring(comma + 1);
+            var tex = DecodeTextureFromBase64(s);
+            if (tex != null) results.Add(tex);
+        }
+
+        return results;
+    }
+
+    private static List<string> ExtractAllRunwareUrlsFromJson(string json)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+
+        foreach (Match m in Regex.Matches(json, "\"imageURL\"\\s*:\\s*\"(?<u>(\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase))
+        {
+            var u = UnescapeJsonString(m.Groups["u"].Value);
+            if (!string.IsNullOrWhiteSpace(u) && !list.Contains(u))
+                list.Add(u);
+        }
+
+        return list;
     }
  
     private async UniTask<List<Texture2D>> GoogleGeminiImageEditAsync(IReadOnlyList<Texture2D> referenceImages, string prompt, CancellationToken ct)
@@ -698,6 +1013,56 @@ public sealed class Image2ImageAI : MonoBehaviour
         }
     }
 
+    private async UniTask<string> SendFormAsync(
+      string url,
+      WWWForm form,
+      Dictionary<string, string> headers,
+      CancellationToken ct)
+    {
+        using (var req = UnityWebRequest.Post(url,form))
+        {
+            req.downloadHandler = new DownloadHandlerBuffer();
+
+            if (headers != null)
+            {
+                foreach (var kv in headers)
+                {
+                    if (!string.IsNullOrWhiteSpace(kv.Key) && kv.Value != null)
+                        req.SetRequestHeader(kv.Key, kv.Value);
+                }
+            }
+
+            req.timeout = Mathf.Max(5, timeoutSeconds);
+            try
+            {
+                await req.SendWebRequest();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError(ex);
+                var body = req.downloadHandler?.text;
+                var msg = BuildRequestErrorMessage("post", url, req.responseCode, ex.ToString(), body);
+                try { RequestError?.Invoke(msg); } catch { }
+                return body;
+            }
+            if (req.result != UnityWebRequest.Result.Success)
+            {
+                var body = req.downloadHandler?.text;
+                var msg = BuildRequestErrorMessage("post", url, req.responseCode, req.error, body);
+                try { RequestError?.Invoke(msg); } catch { }
+                return body;
+            }
+            if (req.responseCode >= 400)
+            {
+                var body = req.downloadHandler?.text;
+                var msg = BuildRequestErrorMessage("post", url, req.responseCode, req.error, body);
+                try { RequestError?.Invoke(msg); } catch { }
+                return body;
+            }
+            return req.downloadHandler?.text;
+        }
+    }
+
     private string BuildRequestErrorMessage(string method, string url, long code, string error, string body)
     {
         var p = provider.ToString();
@@ -753,14 +1118,14 @@ public sealed class Image2ImageAI : MonoBehaviour
 
         foreach (Match m in Regex.Matches(json, "\"url\"\\s*:\\s*\"(?<u>https?:\\\\/\\\\/[^\\\"]+)\"", RegexOptions.IgnoreCase))
         {
-            var u = UnescapeJsonString(m.Groups["u"].Value);
+            var u = NormalizeUrlCandidate(UnescapeJsonString(m.Groups["u"].Value));
             if (!string.IsNullOrWhiteSpace(u) && !list.Contains(u))
                 list.Add(u);
         }
 
         foreach (Match m in Regex.Matches(json, "(?<u>https?:\\\\/\\\\/[^\\\"\\s]+)", RegexOptions.IgnoreCase))
         {
-            var u = UnescapeJsonString(m.Groups["u"].Value);
+            var u = NormalizeUrlCandidate(UnescapeJsonString(m.Groups["u"].Value));
             if (string.IsNullOrWhiteSpace(u)) continue;
             if (u.Contains("schema=")) continue;
             if (!list.Contains(u))
@@ -768,6 +1133,48 @@ public sealed class Image2ImageAI : MonoBehaviour
         }
 
         return list;
+    }
+
+    private static string NormalizeUrlCandidate(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var s = raw.Trim();
+        if (s.IndexOf("http", StringComparison.OrdinalIgnoreCase) > 0)
+        {
+            var idx = s.IndexOf("http", StringComparison.OrdinalIgnoreCase);
+            s = s.Substring(idx);
+        }
+
+        s = s.Trim();
+
+        while (s.Length > 0)
+        {
+            var c = s[s.Length - 1];
+            if (c == '`' || c == '"' || c == '\'' || c == ',' || c == ')' || c == ']' || c == '>' || char.IsWhiteSpace(c))
+            {
+                s = s.Substring(0, s.Length - 1).TrimEnd();
+                continue;
+            }
+            break;
+        }
+
+        while (s.Length > 0)
+        {
+            var c = s[0];
+            if (c == '`' || c == '"' || c == '\'' || c == '<' || char.IsWhiteSpace(c))
+            {
+                s = s.Substring(1).TrimStart();
+                continue;
+            }
+            break;
+        }
+
+        if (s.IndexOf('`') >= 0)
+            s = s.Replace("`", "");
+
+        return s.Trim();
     }
 
     private static async UniTask<List<Texture2D>> DownloadAllTexturesAsync(List<string> urls, CancellationToken ct)

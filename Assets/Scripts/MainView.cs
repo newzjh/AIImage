@@ -22,6 +22,9 @@ public class MainView : MonoBehaviour
     private const string PrefKeyReplicateApiKey = "MainView.AI.ReplicateApiToken";
     private const string PrefKeyDashScopeApiKey = "MainView.AI.DashScopeApiKey";
     private const string PrefKeyDoubaoApiKey = "MainView.AI.DoubaoApiKey";
+    private const string PrefKeyHuggingFaceToken = "MainView.AI.HuggingFaceToken";
+    private const string PrefKeyRunwareApiKey = "MainView.AI.RunwareApiKey";
+    private const string PrefKeyLumenfallApiKey = "MainView.AI.LumenfallApiKey";
 
     [SerializeField] private int leftPaneWidth = 320;
     [SerializeField] private int leftTopPaneHeight = 320;
@@ -1086,6 +1089,18 @@ public class MainView : MonoBehaviour
         var dou = PlayerPrefs.GetString(PrefKeyDoubaoApiKey, null);
         if (!string.IsNullOrEmpty(dou))
             _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.Doubao, dou);
+ 
+        var hf = PlayerPrefs.GetString(PrefKeyHuggingFaceToken, null);
+        if (!string.IsNullOrEmpty(hf))
+            _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.HuggingFaceInferenceProviders, hf);
+ 
+        var runware = PlayerPrefs.GetString(PrefKeyRunwareApiKey, null);
+        if (!string.IsNullOrEmpty(runware))
+            _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.RunwareAI, runware);
+ 
+        var lumenfall = PlayerPrefs.GetString(PrefKeyLumenfallApiKey, null);
+        if (!string.IsNullOrEmpty(lumenfall))
+            _image2ImageAI.SetApiKeyForProvider(Image2ImageAI.Provider.Lumenfall, lumenfall);
 
         if (_providerDropdown != null)
         {
@@ -1140,6 +1155,9 @@ public class MainView : MonoBehaviour
             Image2ImageAI.Provider.Replicate => PrefKeyReplicateApiKey,
             Image2ImageAI.Provider.AliTongyiWanxiang => PrefKeyDashScopeApiKey,
             Image2ImageAI.Provider.Doubao => PrefKeyDoubaoApiKey,
+            Image2ImageAI.Provider.HuggingFaceInferenceProviders => PrefKeyHuggingFaceToken,
+            Image2ImageAI.Provider.RunwareAI => PrefKeyRunwareApiKey,
+            Image2ImageAI.Provider.Lumenfall => PrefKeyLumenfallApiKey,
             _ => null
         };
     }
@@ -1679,6 +1697,10 @@ public class MainView : MonoBehaviour
         try
         {
             var prompt = BuildPromptForOp(op);
+
+            if ((op == ImageOp.Sharpen || op == ImageOp.SharpenWhiten) && _image2ImageAI.CurrentProvider != Image2ImageAI.Provider.Doubao)
+                prompt += "调整构图，聚焦前景人物，放大前景人物，让前景人物突出些，";
+
             var refs = new List<Texture2D> { src };
             if (op == ImageOp.FaceSwap)
             {
@@ -1908,14 +1930,14 @@ public class MainView : MonoBehaviour
     {
         return op switch
         {
-            ImageOp.FaceSwap => "将输入图片中的前景人物脸部进行自然的换脸处理，保持光照、肤色和细节一致，结果真实且无明显伪影。",
-            ImageOp.Sharpen => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，提高前景人物清晰度",
-            ImageOp.Whiten => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，对前景人物进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮。",
-            ImageOp.SharpenWhiten => "对输入图片在保持原有构图基础上，严格保持前景人物脸容发型和五官不变，提高前景人物清晰度，并进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮。",
-            ImageOp.ChangeBackground => "在保持主体完整的前提下替换背景，边缘自然干净，主体与背景融合自然。",
-            ImageOp.DehazeColorGrade => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏，并进行调色优化，提升整体观感与色彩层次，保持自然不过饱和。",
-            ImageOp.ColorGrade => "对输入图片进行调色，提升整体观感与色彩层次，保持自然不过饱和。",
-            ImageOp.Dehaze => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏。",
+            ImageOp.FaceSwap => "将输入图片中的前景人物脸部进行自然的换脸处理，保持光照、肤色和细节一致，结果真实且无明显伪影,",
+            ImageOp.Sharpen => "对输入图片严格保持前景人物脸容发型和五官不变，提高前景人物清晰度,",
+            ImageOp.Whiten => "对输入图片严格保持前景人物脸容发型和五官不变，对前景人物进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮,",
+            ImageOp.SharpenWhiten => "对输入图片在严格保持前景人物脸容发型和五官不变，提高前景人物清晰度，并进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮,",
+            ImageOp.ChangeBackground => "在保持主体完整的前提下替换背景，边缘自然干净，主体与背景融合自然,",
+            ImageOp.DehazeColorGrade => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏，并进行调色优化，提升整体观感与色彩层次，保持自然不过饱和,",
+            ImageOp.ColorGrade => "对输入图片进行调色，提升整体观感与色彩层次，保持自然不过饱和,",
+            ImageOp.Dehaze => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏,",
             _ => op.ToString()
         };
     }
