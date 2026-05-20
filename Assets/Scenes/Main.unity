@@ -725,7 +725,7 @@ MonoBehaviour:
   huggingFaceModel: black-forest-labs/FLUX.1-schnell
   runwareApiKey: vmc3GogRzkh8P0Cc3zTi8PEQl0dQQk4P
   runwareBaseUrl: https://api.runware.ai/v1
-  runwareModel: runware:400@4
+  runwareModel: runware:400@2
   runwareStrength: 0.65
   lumenfallApiKey: lmnfl_key_3DwxzK5zn93t42cJrGT7hbx6kvw.70bLKXBSbpUVGfRsRUrQ8WwZh9XpF2zq4wNBqAKcdYU
   lumenfallBaseUrl: https://api.lumenfall.ai/openai/v1

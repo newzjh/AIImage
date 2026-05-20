@@ -1696,10 +1696,14 @@ public class MainView : MonoBehaviour
         ShowBusy(OpLabel(op) + "处理中…");
         try
         {
-            var prompt = BuildPromptForOp(op);
+            var useChinesePrompt = _image2ImageAI.CurrentProvider == Image2ImageAI.Provider.Doubao ||
+                                   _image2ImageAI.CurrentProvider == Image2ImageAI.Provider.AliTongyiWanxiang;
+            var prompt = BuildPromptForOp(op, useChinesePrompt);
 
             if ((op == ImageOp.Sharpen || op == ImageOp.SharpenWhiten) && _image2ImageAI.CurrentProvider != Image2ImageAI.Provider.Doubao)
-                prompt += "调整构图，聚焦前景人物，放大前景人物，让前景人物突出些，";
+                prompt += useChinesePrompt
+                    ? "调整构图，聚焦前景人物，适当放大前景人物，让前景人物更突出，"
+                    : "Adjust the framing to focus on the main subject. Slightly zoom in so the subject stands out. ";
 
             var refs = new List<Texture2D> { src };
             if (op == ImageOp.FaceSwap)
@@ -1715,24 +1719,32 @@ public class MainView : MonoBehaviour
 
                     if (same)
                     {
-                        prompt = "替换图1中男角色人脸为图2的，替换图1中女角色人脸为图2的";
+                        prompt = useChinesePrompt
+                            ? "以图1的构图和人物为基础，用图2的男角色人脸替换掉图1中男角色的人脸，用图2的女角色人脸替换掉图1中女角色的人脸，保留图1的构图与内容，只改变对应人脸；保持光照、肤色与细节一致，结果真实自然无明显伪影。"
+                            : "Replace the male face in image 1 with the face from image 2, and replace the female face in image 1 with the face from image 2. Keep image 1 as the base: preserve composition and content, only change the specified faces. Match lighting, skin tone and fine details. Natural and artifact-free.";
                         refs.Add(_maleFaceTexture);
                     }
                     else
                     {
-                        prompt = "替换图1中男角色人脸为图2的，替换图1中女角色人脸为图3的";
+                        prompt = useChinesePrompt
+                            ? "以图1的构图和人物为基础，用图2的男角色人脸替换掉图1中男角色的人脸，用图3的女角色人脸替换掉图1中女角色的人脸，保留图1的构图与内容，只改变对应人脸；保持光照、肤色与细节一致，结果真实自然无明显伪影。"
+                            : "Replace the male face in image 1 with the face from image 2, and replace the female face in image 1 with the face from image 3. Keep image 1 as the base: preserve composition and content, only change the specified faces. Match lighting, skin tone and fine details. Natural and artifact-free.";
                         refs.Add(_maleFaceTexture);
                         refs.Add(_femaleFaceTexture);
                     }
                 }
                 else if (hasMale)
                 {
-                    prompt = "替换图1中男角色人脸为图2的";
+                    prompt = useChinesePrompt
+                        ? "以图1的构图和人物为基础，用图2的男角色人脸替换掉图1中男角色的人脸，保留图1的构图与内容，只改变该人脸；保持光照、肤色与细节一致，结果真实自然无明显伪影。"
+                        : "Replace the male face in image 1 with the face from image 2. Keep image 1 as the base: preserve composition and content, only change that face. Match lighting, skin tone and fine details. Natural and artifact-free.";
                     refs.Add(_maleFaceTexture);
                 }
                 else if (hasFemale)
                 {
-                    prompt = "替换图1中女角色人脸为图2的";
+                    prompt = useChinesePrompt
+                        ? "以图1的构图和人物为基础，用图2的女角色人脸替换掉图1中女角色的人脸，保留图1的构图与内容，只改变该人脸；保持光照、肤色与细节一致，结果真实自然无明显伪影。"
+                        : "Replace the female face in image 1 with the face from image 2. Keep image 1 as the base: preserve composition and content, only change that face. Match lighting, skin tone and fine details. Natural and artifact-free.";
                     refs.Add(_femaleFaceTexture);
                 }
                 else
@@ -1748,7 +1760,7 @@ public class MainView : MonoBehaviour
             }
 
             if (ShouldAppendPromptToggles(op))
-                prompt = AppendPromptToggles(prompt);
+                prompt = AppendPromptToggles(prompt, useChinesePrompt);
 
             var result = await _image2ImageAI.ImageToImageAsync(
                 refs,
@@ -1777,15 +1789,19 @@ public class MainView : MonoBehaviour
                op == ImageOp.Dehaze;
     }
 
-    private string AppendPromptToggles(string prompt)
+    private string AppendPromptToggles(string prompt, bool useChinesePrompt)
     {
         if (string.IsNullOrWhiteSpace(prompt))
             prompt = "";
 
         if (_appendDeGlarePrompt)
-            prompt += (prompt.Length > 0 ? " " : "") + "并进行去反光/去高光处理，降低镜面反射与眩光，保留细节与真实质感，";
+            prompt += (prompt.Length > 0 ? " " : "") + (useChinesePrompt
+                ? "并进行去反光/去高光处理，降低镜面反射与眩光，保留细节与真实质感，"
+                : "Reduce glare and specular highlights. Minimize reflections and flare while preserving fine details and realistic texture. ");
         if (_appendRemoveBgPeoplePrompt)
-            prompt += (prompt.Length > 0 ? " " : "") + "并移除画面中的背景人物，自动补全背景，纹理连贯自然，无明显修补痕迹，";
+            prompt += (prompt.Length > 0 ? " " : "") + (useChinesePrompt
+                ? "并移除画面中的背景人物，自动补全背景，纹理连贯自然，无明显修补痕迹，"
+                : "Remove background people and inpaint the background seamlessly. Keep textures coherent and avoid obvious retouching artifacts. ");
 
         return prompt;
     }
@@ -1924,18 +1940,34 @@ public class MainView : MonoBehaviour
         _choiceTcs = null;
     }
 
-    private static string BuildPromptForOp(ImageOp op)
+    private static string BuildPromptForOp(ImageOp op, bool useChinesePrompt)
     {
+        if (useChinesePrompt)
+        {
+            return op switch
+            {
+                ImageOp.FaceSwap => "将输入图片中的前景人物脸部进行自然的换脸处理，保持光照、肤色和细节一致，结果真实且无明显伪影,",
+                ImageOp.Sharpen => "对输入图片严格保持前景人物脸容发型和五官不变，提高前景人物清晰度,",
+                ImageOp.Whiten => "对输入图片严格保持前景人物脸容发型和五官不变，对前景人物进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮,",
+                ImageOp.SharpenWhiten => "对输入图片在严格保持前景人物脸容发型和五官不变，提高前景人物清晰度，并进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮,",
+                ImageOp.ChangeBackground => "在保持主体完整的前提下替换背景，边缘自然干净，主体与背景融合自然,",
+                ImageOp.DehazeColorGrade => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏，并进行调色优化，提升整体观感与色彩层次，保持自然不过饱和,",
+                ImageOp.ColorGrade => "对输入图片进行调色，提升整体观感与色彩层次，保持自然不过饱和,",
+                ImageOp.Dehaze => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏,",
+                _ => op.ToString()
+            };
+        }
+
         return op switch
         {
-            ImageOp.FaceSwap => "将输入图片中的前景人物脸部进行自然的换脸处理，保持光照、肤色和细节一致，结果真实且无明显伪影,",
-            ImageOp.Sharpen => "对输入图片严格保持前景人物脸容发型和五官不变，提高前景人物清晰度,",
-            ImageOp.Whiten => "对输入图片严格保持前景人物脸容发型和五官不变，对前景人物进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮,",
-            ImageOp.SharpenWhiten => "对输入图片在严格保持前景人物脸容发型和五官不变，提高前景人物清晰度，并进行轻微美白与肤色优化，保持肤质真实，避免假白和过度磨皮,",
-            ImageOp.ChangeBackground => "在保持主体完整的前提下替换背景，边缘自然干净，主体与背景融合自然,",
-            ImageOp.DehazeColorGrade => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏，并进行调色优化，提升整体观感与色彩层次，保持自然不过饱和,",
-            ImageOp.ColorGrade => "对输入图片进行调色，提升整体观感与色彩层次，保持自然不过饱和,",
-            ImageOp.Dehaze => "对输入图片进行去霾与对比度提升，增强通透感，保留细节避免色偏,",
+            ImageOp.FaceSwap => "Perform a natural face replacement on the foreground person. Preserve lighting, skin tone and fine details. Realistic result with minimal artifacts.",
+            ImageOp.Sharpen => "Keep the subject's face, hairstyle and facial features strictly unchanged. Increase clarity and sharpness on the subject while keeping everything else consistent.",
+            ImageOp.Whiten => "Keep the subject's face, hairstyle and facial features strictly unchanged. Apply subtle whitening and skin tone enhancement. Keep skin texture realistic; avoid over-smoothing and unnatural whitening.",
+            ImageOp.SharpenWhiten => "Keep the subject's face, hairstyle and facial features strictly unchanged. Increase clarity/sharpness and apply subtle whitening and skin tone enhancement. Keep skin texture realistic; avoid over-smoothing and unnatural whitening.",
+            ImageOp.ChangeBackground => "Replace the background while keeping the subject intact. Clean natural edges and seamless blending between subject and background.",
+            ImageOp.DehazeColorGrade => "Remove haze and boost contrast to improve clarity while preserving details and avoiding color cast. Then apply natural color grading to enhance overall look and color depth without over-saturation.",
+            ImageOp.ColorGrade => "Apply natural color grading to enhance overall look and color depth without over-saturation.",
+            ImageOp.Dehaze => "Remove haze and boost contrast to improve clarity while preserving details and avoiding color cast.",
             _ => op.ToString()
         };
     }
@@ -2670,16 +2702,19 @@ public class MainView : MonoBehaviour
                 var h = Mathf.Max(1f, imgRect.height);
                 var deltaLocal = evt.localPosition - _splitDragStartLocal;
                 var deltaUv = new Vector2(deltaLocal.x / w, -deltaLocal.y / h);
+                var drawRect = IntersectRect(viewRect, imgRect);
 
                 if (evt.shiftKey)
                 {
                     var deltaAngle = (deltaLocal.x / w) * Mathf.PI * 2f;
                     angleRad = _splitDragStartAngle + deltaAngle;
+                    ClampOffsetToDrawRect(drawRect, imgRect);
                 }
                 else
                 {
                     var n = new Vector2(Mathf.Cos(angleRad), Mathf.Sin(angleRad));
                     offset = _splitDragStartOffset - Vector2.Dot(n, deltaUv);
+                    ClampOffsetToDrawRect(drawRect, imgRect);
                 }
 
                 MarkDirtyRepaint();
@@ -2774,6 +2809,54 @@ public class MainView : MonoBehaviour
             return Vector2.Dot(n, uv - new Vector2(0.5f, 0.5f)) + offset;
         }
 
+        private void ClampOffsetToDrawRect(Rect drawRect, Rect imageRect)
+        {
+            if (drawRect.width <= 1f || drawRect.height <= 1f)
+                return;
+            if (imageRect.width <= 1f || imageRect.height <= 1f)
+                return;
+
+            var n = new Vector2(Mathf.Cos(angleRad), Mathf.Sin(angleRad));
+            if (n.sqrMagnitude <= 1e-6f)
+                return;
+            n.Normalize();
+
+            Vector2 UvOf(Vector2 pLocal)
+            {
+                return new Vector2(
+                    (pLocal.x - imageRect.xMin) / imageRect.width,
+                    1f - ((pLocal.y - imageRect.yMin) / imageRect.height)
+                );
+            }
+
+            var p0 = new Vector2(drawRect.xMin, drawRect.yMin);
+            var p1 = new Vector2(drawRect.xMax, drawRect.yMin);
+            var p2 = new Vector2(drawRect.xMax, drawRect.yMax);
+            var p3 = new Vector2(drawRect.xMin, drawRect.yMax);
+
+            var c = new Vector2(0.5f, 0.5f);
+            float D(Vector2 uv) => Vector2.Dot(n, uv - c);
+
+            var d0 = D(UvOf(p0));
+            var d1 = D(UvOf(p1));
+            var d2 = D(UvOf(p2));
+            var d3 = D(UvOf(p3));
+
+            var minD = Mathf.Min(Mathf.Min(d0, d1), Mathf.Min(d2, d3));
+            var maxD = Mathf.Max(Mathf.Max(d0, d1), Mathf.Max(d2, d3));
+
+            var minOffset = -maxD;
+            var maxOffset = -minD;
+            if (minOffset > maxOffset)
+            {
+                var t = minOffset;
+                minOffset = maxOffset;
+                maxOffset = t;
+            }
+
+            offset = Mathf.Clamp(offset, minOffset, maxOffset);
+        }
+
         private void OnGenerateVisualContent(MeshGenerationContext mgc)
         {
             var refTex = _texA != null ? _texA : _texB;
@@ -2789,6 +2872,7 @@ public class MainView : MonoBehaviour
             if (drawRect.width <= 1f || drawRect.height <= 1f)
                 return;
 
+            ClampOffsetToDrawRect(drawRect, imageRect);
             float SignedDist(Vector2 p) => SignedDistUv(p, imageRect);
 
             if (_texA != null)
