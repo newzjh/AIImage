@@ -119,6 +119,8 @@ public sealed class GpuSharpenRunner : MonoBehaviour
         RenderTexture zeroMask = null;
         RenderTexture pseudoGanY = null;
         RenderTexture pseudoTmp0 = null;
+        RenderTexture pseudoFlow = null;
+        RenderTexture pseudoFlowMag = null;
         RenderTexture pseudoTmp1 = null;
         RenderTexture pseudoTmp2 = null;
         RenderTexture pseudoTmp3 = null;
@@ -410,13 +412,15 @@ public sealed class GpuSharpenRunner : MonoBehaviour
             }
 
             var pseudo = GetComponent<PseudoGANPrior>();
-            if (pseudo != null && pseudo.enabled && pseudo.enablePseudoGanPrior && faceMask != null && faceEnhancedY != null)
+            if (pseudo != null && pseudo.enabled && faceMask != null && faceEnhancedY != null)
             {
                 var pr = pseudo.Process(src, analysis, faceMask, faceEnhancedY, gx, gy);
                 if (string.IsNullOrWhiteSpace(pr.error) && pr.outputY != null)
                 {
                     pseudoGanY = pr.outputY;
                     pseudoTmp0 = pr.temp0;
+                    pseudoFlow = pr.tempFlow;
+                    pseudoFlowMag = pr.tempFlowMag;
                     pseudoTmp1 = pr.temp1;
                     pseudoTmp2 = pr.temp2;
                     pseudoTmp3 = pr.temp3;
@@ -431,6 +435,7 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                     {
                         dumpDir ??= CreateDumpDir();
                         if (pseudoTmp0 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_prior.png", "DebugVisScalar", pseudoTmp0, 1f, true, ct);
+                        if (pseudoFlowMag != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_flow_magnitude.png", "DebugVisScalar", pseudoFlowMag, 1f, true, ct);
                         if (pseudoTmp1 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_synth.png", "DebugVisSignedScalar", pseudoTmp1, 6.0f, true, ct);
                         if (pseudoTmp2 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_contrastDelta.png", "DebugVisSignedScalar", pseudoTmp2, 60.0f, true, ct);
                         if (pseudoTmp3 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_pseudoY.png", "DebugVisYScalar", pseudoTmp3, 1f, true, ct);
@@ -443,6 +448,8 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 {
                     SafeReleaseRT(pr.outputY);
                     SafeReleaseRT(pr.temp0);
+                    SafeReleaseRT(pr.tempFlow);
+                    SafeReleaseRT(pr.tempFlowMag);
                     SafeReleaseRT(pr.temp1);
                     SafeReleaseRT(pr.temp2);
                     SafeReleaseRT(pr.temp3);
@@ -543,6 +550,8 @@ public sealed class GpuSharpenRunner : MonoBehaviour
             SafeReleaseRT(faceStruct);
             SafeReleaseRT(zeroMask);
             SafeReleaseRT(pseudoTmp0);
+            SafeReleaseRT(pseudoFlow);
+            SafeReleaseRT(pseudoFlowMag);
             SafeReleaseRT(pseudoTmp1);
             SafeReleaseRT(pseudoTmp2);
             SafeReleaseRT(pseudoTmp3);

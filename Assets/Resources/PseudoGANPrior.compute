@@ -1,15 +1,20 @@
 #pragma kernel BuildSkinPrior
+#pragma kernel BuildSkinFlow
 #pragma kernel SynthesizeTexture
 #pragma kernel LocalContrast
 #pragma kernel PseudoInject
 #pragma kernel IdentityClamp
 #pragma kernel DiffScalar
+#pragma kernel FlowMagnitude
 
 Texture2D<float4> _Source;
 Texture2D<float4> _AnalysisIn;
 Texture2D<float> _FaceMaskIn;
 Texture2D<float> _FaceYIn;
 Texture2D<float> _PriorIn;
+Texture2D<float2> _SkinFlowIn;
+Texture2D<float4> _BlueNoiseTex;
+Texture2D<float4> _UserDetailTex;
 Texture2D<float> _SynthIn;
 Texture2D<float> _ContrastIn;
 Texture2D<float> _PseudoIn;
@@ -17,22 +22,35 @@ Texture2D<float> _DiffAIn;
 Texture2D<float> _DiffBIn;
 
 RWTexture2D<float> _PriorOut;
+RWTexture2D<float2> _SkinFlowOut;
 RWTexture2D<float> _SynthOut;
 RWTexture2D<float> _ContrastOut;
 RWTexture2D<float> _PseudoOut;
 RWTexture2D<float> _FinalOut;
 RWTexture2D<float> _DiffOut;
+RWTexture2D<float> _FlowMagOut;
 
 int _PriorSmallRadius;
 int _PriorLargeRadius;
 float _SynthStrength;
 float _Boost;
+float _BlueNoiseScale;
+float _FlowStep;
+float _SynthInputGain;
 float _ContrastK;
 float _Alpha;
 float _Beta;
 float _MaxDelta;
 float _ClampToOrigMax;
 float _EdgeProtect;
+int _UseUserDetail;
+
+SamplerState _LinearClamp
+{
+    Filter = MIN_MAG_MIP_LINEAR;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -60,6 +78,13 @@ float Smoothstep01(float t)
     return t * t * (3.0 - 2.0 * t);
 }
 
+float2 Rotate2(float2 p, float a)
+{
+    float s = sin(a);
+    float c = cos(a);
+    return float2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
 float ValueNoise(float2 x, float cell)
 {
     float2 g = x / max(1.0, cell);
@@ -80,6 +105,27 @@ float ValueNoise(float2 x, float cell)
     float ab = lerp(a, b, u.x);
     float cd = lerp(c, d, u.x);
     return lerp(ab, cd, u.y) * 2.0 - 1.0;
+}
+
+float Ridge(float n)
+{
+    return 1.0 - abs(n);
+}
+
+float SampleNoiseWrap(float2 uv)
+{
+    uv = frac(uv);
+    uv = min(uv, float2(0.999999, 0.999999));
+    float v = _BlueNoiseTex.SampleLevel(_LinearClamp, uv, 0).r;
+    return v * 2.0 - 1.0;
+}
+
+float SampleUserClamp(float2 uv)
+{
+    uv = saturate(uv);
+    float3 rgb = _UserDetailTex.SampleLevel(_LinearClamp, uv, 0).rgb;
+    float v = dot(rgb, float3(0.333333, 0.333333, 0.333333));
+    return v * 2.0 - 1.0;
 }
 
 float SampleScalarClamped(Texture2D<float> tex, int2 p, int2 size)
@@ -160,6 +206,28 @@ void BuildSkinPrior(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void BuildSkinFlow(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _SkinFlowOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float fm = saturate(_FaceMaskIn[p]);
+    if (fm <= 0.001)
+    {
+        _SkinFlowOut[p] = float2(0, 0);
+        return;
+    }
+
+    float2 gdir = _AnalysisIn[p].yz;
+    float2 t = Normalize2(float2(-gdir.y, gdir.x));
+    float texVar = saturate(_AnalysisIn[p].w);
+    float2 flow = t * (0.35 + 0.65 * texVar);
+    _SkinFlowOut[p] = flow * fm;
+}
+
+[numthreads(8,8,1)]
 void SynthesizeTexture(uint3 id : SV_DispatchThreadID)
 {
     uint w, h;
@@ -175,31 +243,71 @@ void SynthesizeTexture(uint3 id : SV_DispatchThreadID)
     }
 
     float prior = saturate(_PriorIn[p]);
-    float2 gdir = _AnalysisIn[p].yz;
-    float2 t = Normalize2(float2(-gdir.y, gdir.x));
-    float2 dir = (dot(t, t) < 1e-6) ? float2(1, 0) : t;
-
-    float2 pf = float2(p);
-    float nA = ValueNoise(pf, 6.0);
-    float nB = ValueNoise(pf, 12.0);
-    float nC = ValueNoise(pf, 24.0);
-    float band = (nA - 0.65 * nB) + 0.25 * nC;
-
-    float2 adv1 = dir * 2.0;
-    float2 adv2 = dir * 5.0;
-    float a1 = ValueNoise(pf + adv1, 6.0);
-    float b1 = ValueNoise(pf - adv1, 6.0);
-    float a2 = ValueNoise(pf + adv2, 12.0);
-    float b2 = ValueNoise(pf - adv2, 12.0);
-    float adv = 0.35 * (a1 + b1) + 0.20 * (a2 + b2);
 
     float texVar = saturate(_AnalysisIn[p].w);
     float edge = saturate(_AnalysisIn[p].x);
     float gate = saturate(0.25 + 0.75 * texVar);
     gate *= saturate(1.0 - smoothstep(0.10, 0.55, edge));
 
-    float tex = (band + adv) * (0.55 + 0.95 * prior) * _SynthStrength;
-    tex = tex / (1.0 + abs(tex));
+    float2 flow = _SkinFlowIn[p];
+    float2 dir = Normalize2(flow);
+    if (dot(dir, dir) < 1e-6)
+        dir = float2(1, 0);
+
+    float2 uv = (float2(p) + 0.5) / float2(w, h);
+    float2 uvN = uv * max(0.1, _BlueNoiseScale);
+    float2 stepUvImg = dir * (_FlowStep / float2(w, h));
+    float2 perpUvImg = float2(-dir.y, dir.x) * (0.75 / float2(w, h));
+    float2 stepUvNoise = stepUvImg * max(0.1, _BlueNoiseScale);
+    float2 perpUvNoise = perpUvImg * max(0.1, _BlueNoiseScale);
+
+    float sum = 0.0;
+    float wsum = 0.0;
+    [unroll]
+    for (int i = -4; i <= 4; i++)
+    {
+        float fi = (float)i;
+        float w0 = exp(-0.5 * (fi * fi) / (2.2 * 2.2));
+        float2 uviN = uvN + stepUvNoise * fi;
+        float n = SampleNoiseWrap(uviN);
+        if (_UseUserDetail != 0)
+            n = SampleUserClamp(uv + stepUvImg * fi);
+        sum += n * w0;
+        wsum += w0;
+    }
+    float adv = sum / max(1e-6, wsum);
+
+    float sumP = 0.0;
+    float wsumP = 0.0;
+    [unroll]
+    for (int j = -2; j <= 2; j++)
+    {
+        float fj = (float)j;
+        float w1 = exp(-0.5 * (fj * fj) / (1.4 * 1.4));
+        float2 uvjN = uvN + perpUvNoise * fj;
+        float n = SampleNoiseWrap(uvjN);
+        if (_UseUserDetail != 0)
+            n = SampleUserClamp(uv + perpUvImg * fj);
+        sumP += n * w1;
+        wsumP += w1;
+    }
+    float cross = sumP / max(1e-6, wsumP);
+
+    float low = 0.0;
+    [unroll]
+    for (int k = -2; k <= 2; k++)
+    {
+        float2 uvlN = uvN + stepUvNoise * (float)(k * 3);
+        float n = SampleNoiseWrap(uvlN);
+        if (_UseUserDetail != 0)
+            n = SampleUserClamp(uv + stepUvImg * (float)(k * 3));
+        low += n;
+    }
+    low *= 0.2;
+
+    float mid = (0.75 * adv + 0.25 * cross) - low;
+    float tex = mid * _SynthInputGain * (0.35 + 1.15 * prior) * (0.25 + 0.75 * texVar) * _SynthStrength;
+    tex = tex / (1.0 + 1.2 * abs(tex));
     _SynthOut[p] = tex * fm * gate;
 }
 
@@ -302,7 +410,8 @@ void IdentityClamp(uint3 id : SV_DispatchThreadID)
 
     float midOnly = d - meanD;
     float m = max(0.05, _ClampToOrigMax);
-    float allowed = min(maxD, m);
+    float allowed = maxD * (m / 0.24);
+    allowed = min(allowed, m);
     midOnly = clamp(midOnly, -allowed, allowed);
 
     float outY = yBase + midOnly;
@@ -322,4 +431,16 @@ void DiffScalar(uint3 id : SV_DispatchThreadID)
     if (id.x >= w || id.y >= h) return;
     int2 p = int2(id.xy);
     _DiffOut[p] = _DiffAIn[p] - _DiffBIn[p];
+}
+
+[numthreads(8,8,1)]
+void FlowMagnitude(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _FlowMagOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    float2 f = _SkinFlowIn[p];
+    float m = saturate(length(f) * 2.0);
+    _FlowMagOut[p] = m;
 }

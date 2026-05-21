@@ -4,7 +4,6 @@ using UnityEngine;
 
 public sealed class PseudoGANPrior : MonoBehaviour
 {
-    public bool enablePseudoGanPrior = true;
     public float alpha = 0.75f;
     public float beta = 0.55f;
     public float synthStrength = 0.85f;
@@ -15,9 +14,12 @@ public sealed class PseudoGANPrior : MonoBehaviour
     public float edgeProtect = 0.65f;
     public int priorSmallRadius = 2;
     public int priorLargeRadius = 11;
+    public Texture2D blueNoiseTexture;
+    public Texture2D faceDetailTexture;
 
     private ComputeShader _cs;
     private readonly Dictionary<string, int> _kernelIds = new Dictionary<string, int>(StringComparer.Ordinal);
+    private Texture2D _fallbackBlueNoise;
 
     public ComputeShader GetComputeShader()
     {
@@ -49,7 +51,7 @@ public sealed class PseudoGANPrior : MonoBehaviour
 
     public PseudoGanPriorResult Process(Texture2D original, RenderTexture analysis, Texture faceMask, RenderTexture faceY, int gx, int gy)
     {
-        if (!enablePseudoGanPrior)
+        if (!enabled)
             return default;
         if (original == null || analysis == null || faceMask == null || faceY == null)
             return default;
@@ -65,18 +67,22 @@ public sealed class PseudoGANPrior : MonoBehaviour
             return new PseudoGanPriorResult { error = "PseudoGANPrior.compute not found" };
 
         var kPrior = GetKernel("BuildSkinPrior");
+        var kFlow = GetKernel("BuildSkinFlow");
         var kSynth = GetKernel("SynthesizeTexture");
         var kContrast = GetKernel("LocalContrast");
         var kInject = GetKernel("PseudoInject");
         var kClamp = GetKernel("IdentityClamp");
         var kDiff = GetKernel("DiffScalar");
-        if (kPrior < 0 || kSynth < 0 || kContrast < 0 || kInject < 0 || kClamp < 0 || kDiff < 0)
+        var kFlowMag = GetKernel("FlowMagnitude");
+        if (kPrior < 0 || kFlow < 0 || kSynth < 0 || kContrast < 0 || kInject < 0 || kClamp < 0 || kDiff < 0 || kFlowMag < 0)
             return new PseudoGanPriorResult { error = "PseudoGANPrior kernels not found" };
 
         var w = original.width;
         var h = original.height;
 
         var prior = NewRT(w, h, RenderTextureFormat.RHalf);
+        var flow = NewRT(w, h, RenderTextureFormat.RGHalf);
+        var flowMag = NewRT(w, h, RenderTextureFormat.RHalf);
         var synth = NewRT(w, h, RenderTextureFormat.RHalf);
         var contrast = NewRT(w, h, RenderTextureFormat.RHalf);
         var pseudo = NewRT(w, h, RenderTextureFormat.RHalf);
@@ -94,15 +100,39 @@ public sealed class PseudoGANPrior : MonoBehaviour
         cs.SetFloat("_MaxDelta", Mathf.Clamp(maxDelta, 0f, 0.35f));
         cs.SetFloat("_ClampToOrigMax", Mathf.Clamp(clampToOriginalMax, 0.05f, 0.95f));
         cs.SetFloat("_EdgeProtect", Mathf.Clamp01(edgeProtect));
+        cs.SetFloat("_BlueNoiseScale", 3.5f);
+        cs.SetFloat("_FlowStep", 2.0f);
+        var bn = GetBlueNoiseTexture();
+        cs.SetTexture(kSynth, "_BlueNoiseTex", bn);
+        if (faceDetailTexture != null)
+        {
+            cs.SetInt("_UseUserDetail", 1);
+            cs.SetTexture(kSynth, "_UserDetailTex", faceDetailTexture);
+        }
+        else
+        {
+            cs.SetInt("_UseUserDetail", 0);
+            cs.SetTexture(kSynth, "_UserDetailTex", bn);
+        }
 
         cs.SetTexture(kPrior, "_FaceYIn", faceY);
         cs.SetTexture(kPrior, "_FaceMaskIn", faceMask);
         cs.SetTexture(kPrior, "_PriorOut", prior);
         cs.Dispatch(kPrior, gx, gy, 1);
 
+        cs.SetTexture(kFlow, "_AnalysisIn", analysis);
+        cs.SetTexture(kFlow, "_FaceMaskIn", faceMask);
+        cs.SetTexture(kFlow, "_SkinFlowOut", flow);
+        cs.Dispatch(kFlow, gx, gy, 1);
+
+        cs.SetTexture(kFlowMag, "_SkinFlowIn", flow);
+        cs.SetTexture(kFlowMag, "_FlowMagOut", flowMag);
+        cs.Dispatch(kFlowMag, gx, gy, 1);
+
         cs.SetTexture(kSynth, "_AnalysisIn", analysis);
         cs.SetTexture(kSynth, "_FaceMaskIn", faceMask);
         cs.SetTexture(kSynth, "_PriorIn", prior);
+        cs.SetTexture(kSynth, "_SkinFlowIn", flow);
         cs.SetTexture(kSynth, "_SynthOut", synth);
         cs.Dispatch(kSynth, gx, gy, 1);
 
@@ -142,6 +172,8 @@ public sealed class PseudoGANPrior : MonoBehaviour
         {
             outputY = finalY,
             temp0 = prior,
+            tempFlow = flow,
+            tempFlowMag = flowMag,
             temp1 = synth,
             temp2 = contrast,
             temp3 = pseudo,
@@ -156,12 +188,39 @@ public sealed class PseudoGANPrior : MonoBehaviour
         rt.Create();
         return rt;
     }
+
+    private Texture2D GetBlueNoiseTexture()
+    {
+        if (blueNoiseTexture != null)
+            return blueNoiseTexture;
+        if (_fallbackBlueNoise != null)
+            return _fallbackBlueNoise;
+
+        var size = 256;
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false, true);
+        tex.wrapMode = TextureWrapMode.Repeat;
+        tex.filterMode = FilterMode.Bilinear;
+        var pixels = new Color32[size * size];
+        var s = 2166136261u;
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            s ^= (uint)i + 0x9e3779b9u + (s << 6) + (s >> 2);
+            var v = (byte)(s & 0xFF);
+            pixels[i] = new Color32(v, v, v, 255);
+        }
+        tex.SetPixels32(pixels);
+        tex.Apply(false, true);
+        _fallbackBlueNoise = tex;
+        return _fallbackBlueNoise;
+    }
 }
 
 public struct PseudoGanPriorResult
 {
     public RenderTexture outputY;
     public RenderTexture temp0;
+    public RenderTexture tempFlow;
+    public RenderTexture tempFlowMag;
     public RenderTexture temp1;
     public RenderTexture temp2;
     public RenderTexture temp3;

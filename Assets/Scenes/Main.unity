@@ -633,6 +633,7 @@ GameObject:
   - component: {fileID: 2021060203}
   - component: {fileID: 2021060204}
   - component: {fileID: 2021060205}
+  - component: {fileID: 2021060206}
   m_Layer: 5
   m_Name: UIDocument
   m_TagString: Untagged
@@ -768,6 +769,30 @@ MonoBehaviour:
   currentImageFaceMask: {fileID: 0}
   maleFaceMask: {fileID: 0}
   femaleFaceMask: {fileID: 0}
+--- !u!114 &2021060206
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2021060199}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 22c8c31438230854f93181427497dd43, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PseudoGANPrior
+  alpha: 0.55
+  beta: 0.35
+  synthStrength: 0.65
+  boost: 20
+  contrastK: 9
+  maxDelta: 0.12
+  clampToOriginalMax: 0.24
+  edgeProtect: 0.85
+  priorSmallRadius: 3
+  priorLargeRadius: 9
+  blueNoiseTexture: {fileID: 0}
+  faceDetailTexture: {fileID: 2800000, guid: 63f26154873aced40b689be25dbfc93c, type: 3}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
