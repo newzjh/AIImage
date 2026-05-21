@@ -11,12 +11,6 @@
 #pragma kernel ApplyDirectionalSharpen
 #pragma kernel EdgeAwareClamp
 #pragma kernel NoiseSuppression
-#pragma kernel FaceMaskRaw
-#pragma kernel MaskDown2
-#pragma kernel ResetFaceStats
-#pragma kernel FaceStatsToParams
-#pragma kernel FaceMaskStats
-#pragma kernel FaceMaskApply
 #pragma kernel BoxFilterH
 #pragma kernel BoxFilterV
 #pragma kernel SquareScalar
@@ -93,6 +87,7 @@ RWTexture2D<float> _NoiseOut;
 RWTexture2D<float> _FaceStructOut;
 RWTexture2D<float> _FaceEnhancedOut;
 
+
 int _Radius;
 float _SigmaSpatial;
 float _SigmaRange;
@@ -109,13 +104,6 @@ float _GuidedEps;
 float _MidW;
 float _TextureScale;
 float _BilateralSigmaRange;
-int _StatsScale;
-int _UseGaussian;
-float2 _GaussCenter;
-float _GaussSigma;
-
-RWStructuredBuffer<int> _FaceStats;
-RWStructuredBuffer<float4> _FaceParams;
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -598,192 +586,6 @@ void NoiseSuppression(uint3 id : SV_DispatchThreadID)
     float yOut = lerp(yOrig, ySharp, keep);
 
     _SharpenYOut[p] = yOut;
-}
-
-[numthreads(8,8,1)]
-void FaceMaskRaw(uint3 id : SV_DispatchThreadID)
-{
-    uint w, h;
-    _FaceMaskOut.GetDimensions(w, h);
-    if (id.x >= w || id.y >= h) return;
-
-    int2 p = int2(id.xy);
-    float3 rgb = _Source[p].rgb;
-    float3 ycc = YCbCrFromRgb(rgb);
-
-    float cb255 = ycc.y * 255.0;
-    float cr255 = ycc.z * 255.0;
-    float skin = smoothstep(70.0, 82.0, cb255) * (1.0 - smoothstep(122.0, 134.0, cb255)) *
-                 smoothstep(128.0, 140.0, cr255) * (1.0 - smoothstep(168.0, 180.0, cr255));
-
-    float2 uv = (float2(id.x, id.y) + 0.5) / float2(w, h);
-    float posGate = smoothstep(0.10, 0.20, uv.y) * (1.0 - smoothstep(0.80, 0.92, uv.y));
-    float xGate = smoothstep(0.08, 0.18, uv.x) * (1.0 - smoothstep(0.82, 0.92, uv.x));
-
-    float edge = _AnalysisIn[p].x;
-    float edgeSuppress = 1.0 - smoothstep(0.08, 0.40, edge);
-    float tex = _AnalysisIn[p].w;
-    float texSuppress = 1.0 - smoothstep(0.18, 0.55, tex);
-    float yGate = smoothstep(0.10, 0.20, ycc.x) * (1.0 - smoothstep(0.92, 0.98, ycc.x));
-
-    float m = saturate(skin * edgeSuppress * texSuppress * yGate * posGate * xGate);
-    _FaceMaskOut[p] = m;
-}
-
-[numthreads(8,8,1)]
-void MaskDown2(uint3 id : SV_DispatchThreadID)
-{
-    uint w, h;
-    _ScalarOut.GetDimensions(w, h);
-    if (id.x >= w || id.y >= h) return;
-
-    uint inW, inH;
-    _ScalarIn.GetDimensions(inW, inH);
-    int2 inSize = int2((int)inW, (int)inH);
-
-    int2 pOut = int2(id.xy);
-    int2 pIn = pOut * 2;
-
-    float a = _ScalarIn[clamp(pIn + int2(0, 0), int2(0, 0), inSize - 1)];
-    float b = _ScalarIn[clamp(pIn + int2(1, 0), int2(0, 0), inSize - 1)];
-    float c = _ScalarIn[clamp(pIn + int2(0, 1), int2(0, 0), inSize - 1)];
-    float d = _ScalarIn[clamp(pIn + int2(1, 1), int2(0, 0), inSize - 1)];
-    _ScalarOut[pOut] = 0.25 * (a + b + c + d);
-}
-
-[numthreads(1,1,1)]
-void ResetFaceStats(uint3 id : SV_DispatchThreadID)
-{
-    _FaceStats[0] = 0;
-    _FaceStats[1] = 0;
-    _FaceStats[2] = 0;
-    _FaceStats[3] = 2147483647;
-    _FaceStats[4] = 0;
-    _FaceStats[5] = 2147483647;
-    _FaceStats[6] = 0;
-}
-
-[numthreads(1,1,1)]
-void FaceStatsToParams(uint3 id : SV_DispatchThreadID)
-{
-    int sumW = _FaceStats[2];
-    if (sumW <= 0)
-    {
-        _FaceParams[0] = float4(0, 0, 0, 0);
-        return;
-    }
-
-    float invW = 1.0 / (float)sumW;
-    float cx = (float)_FaceStats[0] * invW;
-    float cy = (float)_FaceStats[1] * invW;
-
-    int minX = _FaceStats[3];
-    int maxX = _FaceStats[4];
-    int minY = _FaceStats[5];
-    int maxY = _FaceStats[6];
-
-    float rx = max(4.0, (float)(maxX - minX) * 0.60);
-    float ry = max(4.0, (float)(maxY - minY) * 0.75);
-    float sigma = max(6.0, max(rx, ry) * 0.9);
-
-    _FaceParams[0] = float4(cx, cy, sigma, 0);
-}
-
-[numthreads(8,8,1)]
-void FaceMaskStats(uint3 id : SV_DispatchThreadID)
-{
-    uint w, h;
-    _FaceMaskIn.GetDimensions(w, h);
-    if (id.x >= w || id.y >= h) return;
-
-    float m0 = _FaceMaskIn[int2(id.xy)];
-    if (m0 < 0.10)
-        return;
-
-    float2 uv = (float2(id.x, id.y) + 0.5) / float2(w, h);
-    float posGate = smoothstep(0.12, 0.20, uv.y) * (1.0 - smoothstep(0.78, 0.90, uv.y));
-    float xGate = smoothstep(0.12, 0.20, uv.x) * (1.0 - smoothstep(0.80, 0.88, uv.x));
-    float weight = saturate(m0) * posGate * xGate;
-    weight = weight * weight;
-
-    if (_UseGaussian != 0)
-    {
-        float2 c = _FaceParams[0].xy;
-        float sigma = max(2.0, _FaceParams[0].z);
-        float2 d = (float2(id.x, id.y) - c);
-        float g = exp(-dot(d, d) / (2.0 * sigma * sigma));
-        weight *= g;
-    }
-
-    if (weight < 0.02)
-        return;
-
-    int xs = (int)id.x;
-    int ys = (int)id.y;
-
-    int wI = (int)round(min(63.0, weight * 63.0));
-    if (wI <= 0)
-        return;
-
-    InterlockedAdd(_FaceStats[0], xs * wI);
-    InterlockedAdd(_FaceStats[1], ys * wI);
-    InterlockedAdd(_FaceStats[2], wI);
-
-    InterlockedMin(_FaceStats[3], xs);
-    InterlockedMax(_FaceStats[4], xs);
-    InterlockedMin(_FaceStats[5], ys);
-    InterlockedMax(_FaceStats[6], ys);
-}
-
-[numthreads(8,8,1)]
-void FaceMaskApply(uint3 id : SV_DispatchThreadID)
-{
-    uint w, h;
-    _FaceMaskOut.GetDimensions(w, h);
-    if (id.x >= w || id.y >= h) return;
-
-    float raw = _FaceMaskIn[int2(id.xy)];
-
-    int sumW = _FaceStats[2];
-    if (sumW < 256)
-    {
-        _FaceMaskOut[int2(id.xy)] = raw;
-        return;
-    }
-
-    float invW = 1.0 / (float)sumW;
-    float cxS = (float)_FaceStats[0] * invW;
-    float cyS = (float)_FaceStats[1] * invW;
-    float scale = max(1.0, (float)_StatsScale);
-    float cx = (cxS + 0.5) * scale;
-    float cy = (cyS + 0.5) * scale;
-
-    int minXS = _FaceStats[3];
-    int maxXS = _FaceStats[4];
-    int minYS = _FaceStats[5];
-    int maxYS = _FaceStats[6];
-
-    float rx = max(24.0, (float)(maxXS - minXS) * scale * 0.60);
-    float ry = max(28.0, (float)(maxYS - minYS) * scale * 0.75);
-
-    rx = min(rx, (float)w * 0.38);
-    ry = min(ry, (float)h * 0.42);
-
-    float2 p = float2((float)id.x + 0.5, (float)id.y + 0.5);
-    float2 d = (p - float2(cx, cy));
-    d.x /= rx;
-    d.y /= ry;
-    float r2 = dot(d, d);
-    float center = 1.0 - smoothstep(0.70, 1.10, r2);
-    center = pow(saturate(center), 1.6);
-
-    float2 uv = (float2(id.x, id.y) + 0.5) / float2(w, h);
-    float posGate = smoothstep(0.10, 0.18, uv.y) * (1.0 - smoothstep(0.82, 0.92, uv.y));
-    float xGate = smoothstep(0.10, 0.18, uv.x) * (1.0 - smoothstep(0.82, 0.92, uv.x));
-    float3 ycc = YCbCrFromRgb(_Source[int2(id.xy)].rgb);
-    float yGate = smoothstep(0.10, 0.20, ycc.x) * (1.0 - smoothstep(0.92, 0.98, ycc.x));
-    float outM = saturate(raw * center * posGate * xGate * yGate);
-    _FaceMaskOut[int2(id.xy)] = outM;
 }
 
 [numthreads(8,8,1)]

@@ -89,6 +89,10 @@ public class MainView : MonoBehaviour
     private long _historyOpSeq;
     private bool _gpuSharpenDumpStages;
     private GpuSharpenRunner _gpuSharpenRunner;
+    private FaceMaskGenerator _faceMaskGenerator;
+    private System.Threading.CancellationTokenSource _faceMaskCts;
+    private System.Threading.CancellationTokenSource _maleFaceMaskCts;
+    private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
 
     private readonly List<ImageFileEntry> _imageFiles = new List<ImageFileEntry>();
     private readonly List<HistoryEntry> _historyEntries = new List<HistoryEntry>();
@@ -125,6 +129,10 @@ public class MainView : MonoBehaviour
         _gpuSharpenRunner = GetComponent<GpuSharpenRunner>();
         if (_gpuSharpenRunner == null)
             _gpuSharpenRunner = gameObject.AddComponent<GpuSharpenRunner>();
+
+        _faceMaskGenerator = GetComponent<FaceMaskGenerator>();
+        if (_faceMaskGenerator == null)
+            _faceMaskGenerator = gameObject.AddComponent<FaceMaskGenerator>();
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -190,6 +198,11 @@ public class MainView : MonoBehaviour
         _maleFacePath = null;
         _femaleFacePath = null;
         _backgroundPath = null;
+
+        CancelAndDisposeCts(ref _faceMaskCts);
+        CancelAndDisposeCts(ref _maleFaceMaskCts);
+        CancelAndDisposeCts(ref _femaleFaceMaskCts);
+        _faceMaskGenerator?.ClearAllMasks();
 
         if (_image2ImageAI != null)
         {
@@ -1238,7 +1251,16 @@ public class MainView : MonoBehaviour
                 return;
             }
 
-            var r = await _gpuSharpenRunner.ProcessAsync(src, _gpuSharpenDumpStages, _lifetimeCts.Token);
+            Texture2D faceMask = _faceMaskGenerator != null ? _faceMaskGenerator.currentImageFaceMask : null;
+            if ((faceMask == null || faceMask.width != src.width || faceMask.height != src.height) && _faceMaskGenerator != null)
+            {
+                CancelAndDisposeCts(ref _faceMaskCts);
+                _faceMaskCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+                var gen = await _faceMaskGenerator.GenerateForCurrentAsync(src, false, _faceMaskCts.Token);
+                faceMask = string.IsNullOrWhiteSpace(gen.error) ? gen.mask : null;
+            }
+
+            var r = await _gpuSharpenRunner.ProcessAsync(src, faceMask, _gpuSharpenDumpStages, _lifetimeCts.Token);
             if (!string.IsNullOrWhiteSpace(r.error))
             {
                 ShowToast(r.error, 3500);
@@ -1639,6 +1661,11 @@ public class MainView : MonoBehaviour
         TryRestoreReference(PrefKeyMaleFacePath, _maleFaceButton, "点击设置男人脸", tex => _maleFaceTexture = tex, () => _maleFaceTexture, p => _maleFacePath = p);
         TryRestoreReference(PrefKeyFemaleFacePath, _femaleFaceButton, "点击设置女人脸", tex => _femaleFaceTexture = tex, () => _femaleFaceTexture, p => _femaleFacePath = p);
         TryRestoreReference(PrefKeyBackgroundPath, _backgroundButton, "点击设置背景图", tex => _backgroundTexture = tex, () => _backgroundTexture, p => _backgroundPath = p);
+
+        if (_maleFaceTexture != null)
+            PrepareFaceMaskForReferenceAsync(_maleFaceTexture, true).Forget();
+        if (_femaleFaceTexture != null)
+            PrepareFaceMaskForReferenceAsync(_femaleFaceTexture, false).Forget();
     }
 
     private void TryRestoreReference(
@@ -2020,11 +2047,12 @@ public class MainView : MonoBehaviour
             return;
         }
 
-        var tex = LoadTexture(entry.fullPath);
+        var tex = LoadTexture(entry.fullPath, true);
         if (tex != null)
         {
             ResetHistoryWithOriginal(tex, entry.fileName, entry.fullPath);
             CopySelectionToClipboardAsync(entry.fullPath, tex).Forget();
+            PrepareFaceMaskForSelectedImageAsync(entry.fullPath, tex, _gpuSharpenDumpStages).Forget();
 
             PlayerPrefs.SetString(PrefKeyLastImagePath, entry.fullPath);
             PlayerPrefs.Save();
@@ -2115,6 +2143,7 @@ public class MainView : MonoBehaviour
         try
         {
             await File.WriteAllBytesAsync(path, bytes);
+            InvalidateTextureCacheForPath(path);
             ShowToast("已保存到原路径", 2000);
         }
         catch
@@ -2151,6 +2180,17 @@ public class MainView : MonoBehaviour
             if (ReferenceEquals(button, _backgroundButton)) { _backgroundPath = null; PlayerPrefs.DeleteKey(PrefKeyBackgroundPath); }
             PlayerPrefs.Save();
 
+            if (ReferenceEquals(button, _maleFaceButton))
+            {
+                CancelAndDisposeCts(ref _maleFaceMaskCts);
+                _faceMaskGenerator?.ClearMaleMask();
+            }
+            if (ReferenceEquals(button, _femaleFaceButton))
+            {
+                CancelAndDisposeCts(ref _femaleFaceMaskCts);
+                _faceMaskGenerator?.ClearFemaleMask();
+            }
+
             if (button != null)
             {
                 button.style.backgroundImage = StyleKeyword.None;
@@ -2178,6 +2218,81 @@ public class MainView : MonoBehaviour
             button.style.backgroundImage = new StyleBackground(tex);
             button.style.unityBackgroundScaleMode = ScaleMode.ScaleToFit;
             button.text = "";
+        }
+
+        if (ReferenceEquals(button, _maleFaceButton))
+            PrepareFaceMaskForReferenceAsync(tex, true).Forget();
+        if (ReferenceEquals(button, _femaleFaceButton))
+            PrepareFaceMaskForReferenceAsync(tex, false).Forget();
+    }
+
+    private static void CancelAndDisposeCts(ref System.Threading.CancellationTokenSource cts)
+    {
+        if (cts == null)
+            return;
+        try { cts.Cancel(); } catch { }
+        try { cts.Dispose(); } catch { }
+        cts = null;
+    }
+
+    private async UniTaskVoid PrepareFaceMaskForSelectedImageAsync(string imagePath, Texture2D src, bool dumpDebug)
+    {
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+            return;
+        if (_faceMaskGenerator == null)
+            return;
+        if (string.IsNullOrWhiteSpace(imagePath) || src == null)
+            return;
+
+        CancelAndDisposeCts(ref _faceMaskCts);
+        _faceMaskCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        var localCts = _faceMaskCts;
+
+        var r = await _faceMaskGenerator.GenerateForCurrentAsync(src, dumpDebug, localCts.Token);
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+        {
+            return;
+        }
+        if (!ReferenceEquals(_faceMaskCts, localCts) || localCts.IsCancellationRequested)
+        {
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(r.error) || r.mask == null)
+            return;
+    }
+
+    private async UniTaskVoid PrepareFaceMaskForReferenceAsync(Texture2D src, bool isMale)
+    {
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+            return;
+        if (_faceMaskGenerator == null || src == null)
+            return;
+
+        if (isMale)
+        {
+            CancelAndDisposeCts(ref _maleFaceMaskCts);
+            _maleFaceMaskCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            var localCts = _maleFaceMaskCts;
+            var r = await _faceMaskGenerator.GenerateForMaleAsync(src, false, localCts.Token);
+            if (!ReferenceEquals(_maleFaceMaskCts, localCts) || localCts.IsCancellationRequested)
+            {
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(r.error) || r.mask == null)
+                return;
+        }
+        else
+        {
+            CancelAndDisposeCts(ref _femaleFaceMaskCts);
+            _femaleFaceMaskCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            var localCts = _femaleFaceMaskCts;
+            var r = await _faceMaskGenerator.GenerateForFemaleAsync(src, false, localCts.Token);
+            if (!ReferenceEquals(_femaleFaceMaskCts, localCts) || localCts.IsCancellationRequested)
+            {
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(r.error) || r.mask == null)
+                return;
         }
     }
 
@@ -3036,12 +3151,30 @@ public class MainView : MonoBehaviour
     }
 #endif
 
-    private Texture2D LoadTexture(string filePath)
+    private void InvalidateTextureCacheForPath(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
+        if (_textureCache.TryGetValue(filePath, out var cached) && cached != null)
+            Destroy(cached);
+        _textureCache.Remove(filePath);
+    }
+
+    private Texture2D LoadTexture(string filePath, bool forceReload)
     {
         if (string.IsNullOrWhiteSpace(filePath)) return null;
 
-        if (_textureCache.TryGetValue(filePath, out var cached) && cached != null)
-            return cached;
+        if (!forceReload)
+        {
+            if (_textureCache.TryGetValue(filePath, out var cached0) && cached0 != null)
+                return cached0;
+        }
+        else
+        {
+            if (_textureCache.TryGetValue(filePath, out var cached0) && cached0 != null)
+                Destroy(cached0);
+            _textureCache.Remove(filePath);
+        }
 
         byte[] data;
         try
