@@ -67,7 +67,12 @@ public sealed class GpuSharpenRunner : MonoBehaviour
         var kApply = GetKernel("ApplyDirectionalSharpen");
         var kClamp = GetKernel("EdgeAwareClamp");
         var kNoise = GetKernel("NoiseSuppression");
-        var kFaceMask = GetKernel("FaceMask");
+        var kFaceMaskRaw = GetKernel("FaceMaskRaw");
+        var kDown2 = GetKernel("MaskDown2");
+        var kResetFaceStats = GetKernel("ResetFaceStats");
+        var kStatsToParams = GetKernel("FaceStatsToParams");
+        var kFaceMaskStats = GetKernel("FaceMaskStats");
+        var kFaceMaskApply = GetKernel("FaceMaskApply");
         var kBoxH = GetKernel("BoxFilterH");
         var kBoxV = GetKernel("BoxFilterV");
         var kSquare = GetKernel("SquareScalar");
@@ -81,7 +86,8 @@ public sealed class GpuSharpenRunner : MonoBehaviour
         var k5 = GetKernel("SkinNoiseProtect");
         if (k1 < 0 || k2 < 0 || kDown < 0 || kUp < 0 || kDiff < 0 || kEnh < 0 || kDirLap < 0 || kAdd < 0 ||
             kResp < 0 || kApply < 0 || kClamp < 0 || kNoise < 0 ||
-            kFaceMask < 0 || kBoxH < 0 || kBoxV < 0 || kSquare < 0 || kGuidedAB < 0 || kApplyGuided < 0 ||
+            kFaceMaskRaw < 0 || kDown2 < 0 || kResetFaceStats < 0 || kStatsToParams < 0 || kFaceMaskStats < 0 || kFaceMaskApply < 0 ||
+            kBoxH < 0 || kBoxV < 0 || kSquare < 0 || kGuidedAB < 0 || kApplyGuided < 0 ||
             kMid < 0 || kHigh < 0 || kBilateralNoise < 0 || kFaceStruct < 0 || kFaceBlend < 0 ||
             k5 < 0)
             return new GpuSharpenResult { error = "GPUSharpen kernels not found" };
@@ -311,8 +317,16 @@ public sealed class GpuSharpenRunner : MonoBehaviour
             faceMask = null;
             if (enableFaceMidFreqReconstruction)
             {
+                var faceStats = new ComputeBuffer(7, sizeof(int), ComputeBufferType.Structured);
+                var faceParams = new ComputeBuffer(1, sizeof(float) * 4, ComputeBufferType.Structured);
+
                 faceMaskRaw = NewRT(w, h, RenderTextureFormat.RHalf);
                 faceMask = NewRT(w, h, RenderTextureFormat.RHalf);
+                var faceMaskD1 = NewRT(Mathf.Max(1, (w + 1) / 2), Mathf.Max(1, (h + 1) / 2), RenderTextureFormat.RHalf);
+                var faceMaskD2 = NewRT(Mathf.Max(1, (faceMaskD1.width + 1) / 2), Mathf.Max(1, (faceMaskD1.height + 1) / 2), RenderTextureFormat.RHalf);
+                var faceMaskD3 = NewRT(Mathf.Max(1, (faceMaskD2.width + 1) / 2), Mathf.Max(1, (faceMaskD2.height + 1) / 2), RenderTextureFormat.RHalf);
+                var faceMaskD4 = NewRT(Mathf.Max(1, (faceMaskD3.width + 1) / 2), Mathf.Max(1, (faceMaskD3.height + 1) / 2), RenderTextureFormat.RHalf);
+                var faceMaskD5 = NewRT(Mathf.Max(1, (faceMaskD4.width + 1) / 2), Mathf.Max(1, (faceMaskD4.height + 1) / 2), RenderTextureFormat.RHalf);
                 boxTmp = NewRT(w, h, RenderTextureFormat.RHalf);
                 i2 = NewRT(w, h, RenderTextureFormat.RHalf);
                 meanI = NewRT(w, h, RenderTextureFormat.RHalf);
@@ -330,18 +344,63 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 faceStruct = NewRT(w, h, RenderTextureFormat.RHalf);
                 faceEnhancedY = NewRT(w, h, RenderTextureFormat.RHalf);
 
-                cs.SetTexture(kFaceMask, "_Source", src);
-                cs.SetTexture(kFaceMask, "_AnalysisIn", analysis);
-                cs.SetTexture(kFaceMask, "_FaceMaskOut", faceMaskRaw);
-                cs.Dispatch(kFaceMask, gx, gy, 1);
+                cs.SetTexture(kFaceMaskRaw, "_Source", src);
+                cs.SetTexture(kFaceMaskRaw, "_AnalysisIn", analysis);
+                cs.SetTexture(kFaceMaskRaw, "_FaceMaskOut", faceMaskRaw);
+                cs.Dispatch(kFaceMaskRaw, gx, gy, 1);
 
-                cs.SetInt("_BoxRadius", 4);
-                cs.SetTexture(kBoxH, "_ScalarIn", faceMaskRaw);
-                cs.SetTexture(kBoxH, "_BoxOut", boxTmp);
-                cs.Dispatch(kBoxH, gx, gy, 1);
-                cs.SetTexture(kBoxV, "_ScalarIn", boxTmp);
-                cs.SetTexture(kBoxV, "_BoxOut", faceMask);
-                cs.Dispatch(kBoxV, gx, gy, 1);
+                cs.SetTexture(kDown2, "_ScalarIn", faceMaskRaw);
+                cs.SetTexture(kDown2, "_ScalarOut", faceMaskD1);
+                cs.Dispatch(kDown2, Mathf.CeilToInt(faceMaskD1.width / 8f), Mathf.CeilToInt(faceMaskD1.height / 8f), 1);
+                cs.SetTexture(kDown2, "_ScalarIn", faceMaskD1);
+                cs.SetTexture(kDown2, "_ScalarOut", faceMaskD2);
+                cs.Dispatch(kDown2, Mathf.CeilToInt(faceMaskD2.width / 8f), Mathf.CeilToInt(faceMaskD2.height / 8f), 1);
+                cs.SetTexture(kDown2, "_ScalarIn", faceMaskD2);
+                cs.SetTexture(kDown2, "_ScalarOut", faceMaskD3);
+                cs.Dispatch(kDown2, Mathf.CeilToInt(faceMaskD3.width / 8f), Mathf.CeilToInt(faceMaskD3.height / 8f), 1);
+
+                cs.SetTexture(kDown2, "_ScalarIn", faceMaskD3);
+                cs.SetTexture(kDown2, "_ScalarOut", faceMaskD4);
+                cs.Dispatch(kDown2, Mathf.CeilToInt(faceMaskD4.width / 8f), Mathf.CeilToInt(faceMaskD4.height / 8f), 1);
+
+                cs.SetTexture(kDown2, "_ScalarIn", faceMaskD4);
+                cs.SetTexture(kDown2, "_ScalarOut", faceMaskD5);
+                cs.Dispatch(kDown2, Mathf.CeilToInt(faceMaskD5.width / 8f), Mathf.CeilToInt(faceMaskD5.height / 8f), 1);
+
+                var statsScale = 32;
+                cs.SetInt("_StatsScale", statsScale);
+
+                cs.SetBuffer(kResetFaceStats, "_FaceStats", faceStats);
+                cs.Dispatch(kResetFaceStats, 1, 1, 1);
+
+                cs.SetInt("_UseGaussian", 0);
+                cs.SetTexture(kFaceMaskStats, "_FaceMaskIn", faceMaskD5);
+                cs.SetBuffer(kFaceMaskStats, "_FaceStats", faceStats);
+                cs.SetBuffer(kFaceMaskStats, "_FaceParams", faceParams);
+                cs.Dispatch(kFaceMaskStats, Mathf.CeilToInt(faceMaskD5.width / 8f), Mathf.CeilToInt(faceMaskD5.height / 8f), 1);
+
+                cs.SetBuffer(kStatsToParams, "_FaceStats", faceStats);
+                cs.SetBuffer(kStatsToParams, "_FaceParams", faceParams);
+                cs.Dispatch(kStatsToParams, 1, 1, 1);
+
+                cs.Dispatch(kResetFaceStats, 1, 1, 1);
+
+                cs.SetInt("_UseGaussian", 1);
+                cs.SetTexture(kFaceMaskStats, "_FaceMaskIn", faceMaskD5);
+                cs.SetBuffer(kFaceMaskStats, "_FaceStats", faceStats);
+                cs.SetBuffer(kFaceMaskStats, "_FaceParams", faceParams);
+                cs.Dispatch(kFaceMaskStats, Mathf.CeilToInt(faceMaskD5.width / 8f), Mathf.CeilToInt(faceMaskD5.height / 8f), 1);
+
+                cs.SetInt("_UseGaussian", 0);
+                cs.SetTexture(kFaceMaskApply, "_FaceMaskIn", faceMaskRaw);
+                cs.SetBuffer(kFaceMaskApply, "_FaceStats", faceStats);
+                cs.SetBuffer(kFaceMaskApply, "_FaceParams", faceParams);
+                cs.SetTexture(kFaceMaskApply, "_FaceMaskOut", faceMask);
+                cs.SetTexture(kFaceMaskApply, "_Source", src);
+                cs.Dispatch(kFaceMaskApply, gx, gy, 1);
+
+                cs.SetInt("_BoxRadius", 2);
+                BoxBlur(cs, kBoxH, kBoxV, faceMask, boxTmp, faceMask, gx, gy);
 
                 var guidedRadius = Mathf.Clamp(Mathf.RoundToInt(Mathf.Max(w, h) * 0.003f), 6, 12);
                 cs.SetInt("_BoxRadius", guidedRadius);
@@ -412,6 +471,11 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 {
                     dumpDir ??= CreateDumpDir();
                     await DumpStageAsync(dumpDir, w, h, "08_faceMask_raw.png", "DebugVisScalar", faceMaskRaw, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, faceMaskD1.width, faceMaskD1.height, "08_faceMask_d1.png", "DebugVisScalar", faceMaskD1, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, faceMaskD2.width, faceMaskD2.height, "08_faceMask_d2.png", "DebugVisScalar", faceMaskD2, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, faceMaskD3.width, faceMaskD3.height, "08_faceMask_d3.png", "DebugVisScalar", faceMaskD3, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, faceMaskD4.width, faceMaskD4.height, "08_faceMask_d4.png", "DebugVisScalar", faceMaskD4, 1f, true, ct);
+                    await DumpStageAsync(dumpDir, faceMaskD5.width, faceMaskD5.height, "08_faceMask_d5.png", "DebugVisScalar", faceMaskD5, 1f, true, ct);
                     await DumpStageAsync(dumpDir, w, h, "08_faceMask.png", "DebugVisScalar", faceMask, 1f, true, ct);
                     await DumpStageAsync(dumpDir, w, h, "08_face_baseY.png", "DebugVisYScalar", guidedBase, 1f, true, ct);
                     await DumpStageAsync(dumpDir, w, h, "08_face_midFreq.png", "DebugVisSignedScalar", midFreq, 4.0f, true, ct);
@@ -419,6 +483,14 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                     await DumpStageAsync(dumpDir, w, h, "08_face_structY.png", "DebugVisYScalar", faceStruct, 1f, true, ct);
                     await DumpStageAsync(dumpDir, w, h, "08_face_enhancedY.png", "DebugVisYScalar", faceEnhancedY, 1f, true, ct);
                 }
+
+                faceStats.Dispose();
+                faceParams.Dispose();
+                SafeReleaseRT(faceMaskD1);
+                SafeReleaseRT(faceMaskD2);
+                SafeReleaseRT(faceMaskD3);
+                SafeReleaseRT(faceMaskD4);
+                SafeReleaseRT(faceMaskD5);
             }
 
             if (dumpStages)
@@ -438,10 +510,10 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 if (faceMask == null)
                 {
                     faceMaskRaw = NewRT(w, h, RenderTextureFormat.RHalf);
-                    cs.SetTexture(kFaceMask, "_Source", src);
-                    cs.SetTexture(kFaceMask, "_AnalysisIn", analysis);
-                    cs.SetTexture(kFaceMask, "_FaceMaskOut", faceMaskRaw);
-                    cs.Dispatch(kFaceMask, gx, gy, 1);
+                    cs.SetTexture(kFaceMaskRaw, "_Source", src);
+                    cs.SetTexture(kFaceMaskRaw, "_AnalysisIn", analysis);
+                    cs.SetTexture(kFaceMaskRaw, "_FaceMaskOut", faceMaskRaw);
+                    cs.Dispatch(kFaceMaskRaw, gx, gy, 1);
                     faceMask = faceMaskRaw;
                 }
                 cs.SetTexture(kNoise, "_FaceMaskIn", faceMask);
@@ -620,12 +692,13 @@ public sealed class GpuSharpenRunner : MonoBehaviour
             return;
         try
         {
+            try { Directory.CreateDirectory(directoryPath); } catch { }
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + directoryPath + "\"") { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo { FileName = directoryPath, UseShellExecute = true });
 #elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
-            Process.Start(new ProcessStartInfo("open", "\"" + directoryPath + "\"") { UseShellExecute = false });
+            Process.Start(new ProcessStartInfo("open", directoryPath) { UseShellExecute = false });
 #elif UNITY_STANDALONE_LINUX
-            Process.Start(new ProcessStartInfo("xdg-open", "\"" + directoryPath + "\"") { UseShellExecute = false });
+            Process.Start(new ProcessStartInfo("xdg-open", directoryPath) { UseShellExecute = false });
 #else
             var url = "file://" + directoryPath.Replace('\\', '/');
             Application.OpenURL(url);

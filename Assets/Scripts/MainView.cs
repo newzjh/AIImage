@@ -944,6 +944,8 @@ public class MainView : MonoBehaviour
     {
         if (!Application.isPlaying)
             return;
+        HandleGlobalShortcuts();
+
         if (!_previewRunning)
             return;
         if (!Input.GetMouseButton(0))
@@ -975,6 +977,53 @@ public class MainView : MonoBehaviour
         cs.Dispatch(kernel, gx, gy, 1);
 
         _imageViewer?.MarkDirtyRepaint();
+    }
+
+    private void HandleGlobalShortcuts()
+    {
+        if (_uiDocument == null)
+            return;
+        var root = _uiDocument.rootVisualElement;
+        var focused = root?.focusController?.focusedElement;
+        if (focused is TextField)
+            return;
+
+        var ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+        var cmd = Input.GetKey(KeyCode.LeftCommand) || Input.GetKey(KeyCode.RightCommand);
+        var ctrlOrCmd = ctrl || cmd;
+        var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+        if (ctrlOrCmd && !shift && Input.GetKeyDown(KeyCode.Z))
+            UndoLastOperation();
+
+        if (Input.GetKeyDown(KeyCode.Delete))
+            DeleteSelectedHistoryEntry();
+    }
+
+    private void DeleteSelectedHistoryEntry()
+    {
+        if (_historyList == null)
+            return;
+        var index = _historyList.selectedIndex;
+        if (index <= 0 || index >= _historyEntries.Count)
+            return;
+
+        var removed = _historyEntries[index];
+        _historyEntries.RemoveAt(index);
+        if (removed.owned && removed.texture != null)
+            Destroy(removed.texture);
+
+        var newIndex = Mathf.Clamp(index, 0, _historyEntries.Count - 1);
+        if (_historyList != null)
+        {
+            _historyList.RefreshItems();
+            _historyList.SetSelection(newIndex);
+            _historyList.ScrollToItem(newIndex);
+        }
+
+        var entry = _historyEntries[newIndex];
+        var original = GetOriginalHistoryTexture();
+        _imageViewer?.SetSources(entry.texture, original, entry.label);
     }
 
     private void StartPreview(VisualElement captureElement, int pointerId, string kernelName, Action<ComputeShader, float> paramSetter, float initialValue)
