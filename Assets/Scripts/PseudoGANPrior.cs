@@ -5,9 +5,9 @@ using UnityEngine;
 public sealed class PseudoGANPrior : MonoBehaviour
 {
     public bool enablePseudoGanPrior = true;
-    public float alpha = 0.90f;
-    public float beta = 0.60f;
-    public float synthStrength = 1.25f;
+    public float alpha = 0.75f;
+    public float beta = 0.55f;
+    public float synthStrength = 0.85f;
     public float boost = 2.6f;
     public float contrastK = 12.0f;
     public float maxDelta = 0.22f;

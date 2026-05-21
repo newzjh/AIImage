@@ -54,6 +54,34 @@ float Hash01(uint2 p)
     return (h & 0x00FFFFFFu) / 16777216.0;
 }
 
+float Smoothstep01(float t)
+{
+    t = saturate(t);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+float ValueNoise(float2 x, float cell)
+{
+    float2 g = x / max(1.0, cell);
+    float2 i = floor(g);
+    float2 f = g - i;
+    float2 u = float2(Smoothstep01(f.x), Smoothstep01(f.y));
+
+    uint2 i00 = uint2((uint)i.x, (uint)i.y);
+    uint2 i10 = uint2((uint)(i.x + 1.0), (uint)i.y);
+    uint2 i01 = uint2((uint)i.x, (uint)(i.y + 1.0));
+    uint2 i11 = uint2((uint)(i.x + 1.0), (uint)(i.y + 1.0));
+
+    float a = Hash01(i00);
+    float b = Hash01(i10);
+    float c = Hash01(i01);
+    float d = Hash01(i11);
+
+    float ab = lerp(a, b, u.x);
+    float cd = lerp(c, d, u.x);
+    return lerp(ab, cd, u.y) * 2.0 - 1.0;
+}
+
 float SampleScalarClamped(Texture2D<float> tex, int2 p, int2 size)
 {
     int2 q = clamp(p, int2(0, 0), size - 1);
@@ -151,27 +179,28 @@ void SynthesizeTexture(uint3 id : SV_DispatchThreadID)
     float2 t = Normalize2(float2(-gdir.y, gdir.x));
     float2 dir = (dot(t, t) < 1e-6) ? float2(1, 0) : t;
 
-    float n0 = Hash01(uint2((uint)p.x, (uint)p.y)) * 2.0 - 1.0;
-    float n1 = Hash01(uint2((uint)(p.x * 2 + 17), (uint)(p.y * 2 + 31))) * 2.0 - 1.0;
-    float n2 = Hash01(uint2((uint)(p.x + 59), (uint)(p.y + 101))) * 2.0 - 1.0;
+    float2 pf = float2(p);
+    float nA = ValueNoise(pf, 6.0);
+    float nB = ValueNoise(pf, 12.0);
+    float nC = ValueNoise(pf, 24.0);
+    float band = (nA - 0.65 * nB) + 0.25 * nC;
 
-    float s = 0.45 * n0 + 0.35 * n1 + 0.20 * n2;
+    float2 adv1 = dir * 2.0;
+    float2 adv2 = dir * 5.0;
+    float a1 = ValueNoise(pf + adv1, 6.0);
+    float b1 = ValueNoise(pf - adv1, 6.0);
+    float a2 = ValueNoise(pf + adv2, 12.0);
+    float b2 = ValueNoise(pf - adv2, 12.0);
+    float adv = 0.35 * (a1 + b1) + 0.20 * (a2 + b2);
 
-    float2 o1 = dir * 1.3;
-    float2 o2 = dir * 2.7;
-    int2 q1 = int2(round(float2(p) + o1));
-    int2 q2 = int2(round(float2(p) - o1));
-    int2 q3 = int2(round(float2(p) + o2));
-    int2 q4 = int2(round(float2(p) - o2));
+    float texVar = saturate(_AnalysisIn[p].w);
+    float edge = saturate(_AnalysisIn[p].x);
+    float gate = saturate(0.25 + 0.75 * texVar);
+    gate *= saturate(1.0 - smoothstep(0.10, 0.55, edge));
 
-    float a = Hash01(uint2((uint)q1.x, (uint)q1.y)) * 2.0 - 1.0;
-    float b = Hash01(uint2((uint)q2.x, (uint)q2.y)) * 2.0 - 1.0;
-    float c = Hash01(uint2((uint)q3.x, (uint)q3.y)) * 2.0 - 1.0;
-    float d = Hash01(uint2((uint)q4.x, (uint)q4.y)) * 2.0 - 1.0;
-
-    float adv = 0.30 * (a + b) + 0.20 * (c + d);
-    float tex = (s + adv) * (0.85 + 1.35 * prior) * _SynthStrength;
-    _SynthOut[p] = tex * fm;
+    float tex = (band + adv) * (0.55 + 0.95 * prior) * _SynthStrength;
+    tex = tex / (1.0 + abs(tex));
+    _SynthOut[p] = tex * fm * gate;
 }
 
 [numthreads(8,8,1)]
@@ -272,11 +301,12 @@ void IdentityClamp(uint3 id : SV_DispatchThreadID)
     meanD /= max(1.0, (float)cnt);
 
     float midOnly = d - meanD;
-    midOnly = clamp(midOnly, -maxD, maxD);
+    float m = max(0.05, _ClampToOrigMax);
+    float allowed = min(maxD, m);
+    midOnly = clamp(midOnly, -allowed, allowed);
 
     float outY = yBase + midOnly;
     float dToOrig = outY - yOrig;
-    float m = max(0.05, _ClampToOrigMax);
     float clampToOrig = clamp(dToOrig, -m, m);
     outY = yOrig + clampToOrig;
 
