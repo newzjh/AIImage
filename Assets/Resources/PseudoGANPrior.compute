@@ -1,0 +1,295 @@
+#pragma kernel BuildSkinPrior
+#pragma kernel SynthesizeTexture
+#pragma kernel LocalContrast
+#pragma kernel PseudoInject
+#pragma kernel IdentityClamp
+#pragma kernel DiffScalar
+
+Texture2D<float4> _Source;
+Texture2D<float4> _AnalysisIn;
+Texture2D<float> _FaceMaskIn;
+Texture2D<float> _FaceYIn;
+Texture2D<float> _PriorIn;
+Texture2D<float> _SynthIn;
+Texture2D<float> _ContrastIn;
+Texture2D<float> _PseudoIn;
+Texture2D<float> _DiffAIn;
+Texture2D<float> _DiffBIn;
+
+RWTexture2D<float> _PriorOut;
+RWTexture2D<float> _SynthOut;
+RWTexture2D<float> _ContrastOut;
+RWTexture2D<float> _PseudoOut;
+RWTexture2D<float> _FinalOut;
+RWTexture2D<float> _DiffOut;
+
+int _PriorSmallRadius;
+int _PriorLargeRadius;
+float _SynthStrength;
+float _Boost;
+float _ContrastK;
+float _Alpha;
+float _Beta;
+float _MaxDelta;
+float _ClampToOrigMax;
+float _EdgeProtect;
+
+static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
+
+float Luma(float3 rgb) { return dot(rgb, kLuma); }
+
+uint HashU(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    x *= 0x846ca68b;
+    x ^= x >> 16;
+    return x;
+}
+
+float Hash01(uint2 p)
+{
+    uint h = HashU(p.x * 1664525u + 1013904223u) ^ HashU(p.y * 22695477u + 1u);
+    return (h & 0x00FFFFFFu) / 16777216.0;
+}
+
+float SampleScalarClamped(Texture2D<float> tex, int2 p, int2 size)
+{
+    int2 q = clamp(p, int2(0, 0), size - 1);
+    return tex[q];
+}
+
+float2 Normalize2(float2 v)
+{
+    float l2 = dot(v, v);
+    if (l2 < 1e-10) return float2(0, 0);
+    return v * rsqrt(l2);
+}
+
+float MeanBox(Texture2D<float> tex, int2 p, int2 size, int r)
+{
+    float sum = 0.0;
+    int cnt = 0;
+    for (int dy = -r; dy <= r; dy++)
+    {
+        for (int dx = -r; dx <= r; dx++)
+        {
+            sum += SampleScalarClamped(tex, p + int2(dx, dy), size);
+            cnt++;
+        }
+    }
+    return sum / max(1.0, (float)cnt);
+}
+
+float VarBox(Texture2D<float> tex, int2 p, int2 size, int r, float mean)
+{
+    float sum2 = 0.0;
+    int cnt = 0;
+    for (int dy = -r; dy <= r; dy++)
+    {
+        for (int dx = -r; dx <= r; dx++)
+        {
+            float v = SampleScalarClamped(tex, p + int2(dx, dy), size);
+            float d = v - mean;
+            sum2 += d * d;
+            cnt++;
+        }
+    }
+    return sum2 / max(1.0, (float)cnt);
+}
+
+[numthreads(8,8,1)]
+void BuildSkinPrior(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _PriorOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 size = int2((int)w, (int)h);
+    int2 p = int2(id.xy);
+
+    float fm = saturate(_FaceMaskIn[p]);
+    if (fm <= 0.001)
+    {
+        _PriorOut[p] = 0.0;
+        return;
+    }
+
+    int rs = max(1, _PriorSmallRadius);
+    int rl = max(rs + 2, _PriorLargeRadius);
+
+    float y = _FaceYIn[p];
+    float ms = MeanBox(_FaceYIn, p, size, rs);
+    float ml = MeanBox(_FaceYIn, p, size, rl);
+    float dog = (y - ms) - (y - ml);
+
+    float v = abs(dog);
+    float m = saturate(v * 12.0);
+    m = smoothstep(0.06, 0.92, m);
+    float prior = pow(m, 0.65);
+    _PriorOut[p] = prior * fm;
+}
+
+[numthreads(8,8,1)]
+void SynthesizeTexture(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _SynthOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float fm = saturate(_FaceMaskIn[p]);
+    if (fm <= 0.001)
+    {
+        _SynthOut[p] = 0.0;
+        return;
+    }
+
+    float prior = saturate(_PriorIn[p]);
+    float2 gdir = _AnalysisIn[p].yz;
+    float2 t = Normalize2(float2(-gdir.y, gdir.x));
+    float2 dir = (dot(t, t) < 1e-6) ? float2(1, 0) : t;
+
+    float n0 = Hash01(uint2((uint)p.x, (uint)p.y)) * 2.0 - 1.0;
+    float n1 = Hash01(uint2((uint)(p.x * 2 + 17), (uint)(p.y * 2 + 31))) * 2.0 - 1.0;
+    float n2 = Hash01(uint2((uint)(p.x + 59), (uint)(p.y + 101))) * 2.0 - 1.0;
+
+    float s = 0.45 * n0 + 0.35 * n1 + 0.20 * n2;
+
+    float2 o1 = dir * 1.3;
+    float2 o2 = dir * 2.7;
+    int2 q1 = int2(round(float2(p) + o1));
+    int2 q2 = int2(round(float2(p) - o1));
+    int2 q3 = int2(round(float2(p) + o2));
+    int2 q4 = int2(round(float2(p) - o2));
+
+    float a = Hash01(uint2((uint)q1.x, (uint)q1.y)) * 2.0 - 1.0;
+    float b = Hash01(uint2((uint)q2.x, (uint)q2.y)) * 2.0 - 1.0;
+    float c = Hash01(uint2((uint)q3.x, (uint)q3.y)) * 2.0 - 1.0;
+    float d = Hash01(uint2((uint)q4.x, (uint)q4.y)) * 2.0 - 1.0;
+
+    float adv = 0.30 * (a + b) + 0.20 * (c + d);
+    float tex = (s + adv) * (0.85 + 1.35 * prior) * _SynthStrength;
+    _SynthOut[p] = tex * fm;
+}
+
+[numthreads(8,8,1)]
+void LocalContrast(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _ContrastOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 size = int2((int)w, (int)h);
+    int2 p = int2(id.xy);
+
+    float fm = saturate(_FaceMaskIn[p]);
+    if (fm <= 0.001)
+    {
+        _ContrastOut[p] = 0.0;
+        return;
+    }
+
+    float y = _FaceYIn[p];
+    float mu = MeanBox(_FaceYIn, p, size, 2);
+    float var = VarBox(_FaceYIn, p, size, 2, mu);
+    float sigma = sqrt(max(1e-6, var));
+
+    float k = _ContrastK * (0.6 + 0.4 * saturate(sigma * 6.0));
+    float x = (y - mu);
+    float s = 1.0 / (1.0 + exp(-k * x));
+    float y2 = mu + (s - 0.5) * 2.0 * sigma;
+
+    float t = saturate(abs(_SynthIn[p])) * 0.22;
+    y2 = mu + (y2 - mu) * (1.0 + 0.55 * t);
+
+    float delta = (y2 - y);
+    _ContrastOut[p] = delta * fm;
+}
+
+[numthreads(8,8,1)]
+void PseudoInject(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _PseudoOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float fm = saturate(_FaceMaskIn[p]);
+    if (fm <= 0.001)
+    {
+        _PseudoOut[p] = _FaceYIn[p];
+        return;
+    }
+
+    float y = _FaceYIn[p];
+    float prior = saturate(_PriorIn[p]);
+    float t = _SynthIn[p];
+    float c = _ContrastIn[p];
+
+    float injT = _Alpha * t * (0.35 + 0.65 * prior);
+    float injC = _Beta * c * (0.25 + 0.75 * prior) * (1.0 + 0.55 * abs(t));
+    float dy = injT + injC;
+    float outY = y + dy * _Boost * (0.75 + 0.75 * prior);
+    _PseudoOut[p] = lerp(y, outY, fm);
+}
+
+[numthreads(8,8,1)]
+void IdentityClamp(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _FinalOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 size = int2((int)w, (int)h);
+    int2 p = int2(id.xy);
+
+    float fm = saturate(_FaceMaskIn[p]);
+    float yOrig = Luma(_Source[p].rgb);
+    float yBase = _FaceYIn[p];
+    float yP = _PseudoIn[p];
+
+    float edge = saturate(_AnalysisIn[p].x);
+    float protect = saturate(1.0 - _EdgeProtect * smoothstep(0.10, 0.55, edge));
+
+    float maxD = _MaxDelta * (0.45 + 0.55 * protect);
+    float d = yP - yBase;
+
+    float meanD = 0.0;
+    int cnt = 0;
+    [loop]
+    for (int dy = -6; dy <= 6; dy++)
+    {
+        [loop]
+        for (int dx = -6; dx <= 6; dx++)
+        {
+            float v = SampleScalarClamped(_PseudoIn, p + int2(dx, dy), size) - SampleScalarClamped(_FaceYIn, p + int2(dx, dy), size);
+            meanD += v;
+            cnt++;
+        }
+    }
+    meanD /= max(1.0, (float)cnt);
+
+    float midOnly = d - meanD;
+    midOnly = clamp(midOnly, -maxD, maxD);
+
+    float outY = yBase + midOnly;
+    float dToOrig = outY - yOrig;
+    float m = max(0.05, _ClampToOrigMax);
+    float clampToOrig = clamp(dToOrig, -m, m);
+    outY = yOrig + clampToOrig;
+
+    outY = lerp(yBase, outY, fm);
+    _FinalOut[p] = saturate(outY);
+}
+
+[numthreads(8,8,1)]
+void DiffScalar(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _DiffOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    _DiffOut[p] = _DiffAIn[p] - _DiffBIn[p];
+}

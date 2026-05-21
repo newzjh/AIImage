@@ -765,6 +765,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 8c75e6aa7c9194f4b83a8267f2c34cf2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FaceMaskGenerator
+  currentImageFaceMask: {fileID: 0}
+  maleFaceMask: {fileID: 0}
+  femaleFaceMask: {fileID: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

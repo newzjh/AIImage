@@ -117,6 +117,13 @@ public sealed class GpuSharpenRunner : MonoBehaviour
         RenderTexture faceStruct = null;
         RenderTexture faceEnhancedY = null;
         RenderTexture zeroMask = null;
+        RenderTexture pseudoGanY = null;
+        RenderTexture pseudoTmp0 = null;
+        RenderTexture pseudoTmp1 = null;
+        RenderTexture pseudoTmp2 = null;
+        RenderTexture pseudoTmp3 = null;
+        RenderTexture pseudoTmp4 = null;
+        RenderTexture pseudoTmp5 = null;
         RenderTexture finalRt = null;
         string dumpDir = null;
 
@@ -402,6 +409,48 @@ public sealed class GpuSharpenRunner : MonoBehaviour
                 }
             }
 
+            var pseudo = GetComponent<PseudoGANPrior>();
+            if (pseudo != null && pseudo.enabled && pseudo.enablePseudoGanPrior && faceMask != null && faceEnhancedY != null)
+            {
+                var pr = pseudo.Process(src, analysis, faceMask, faceEnhancedY, gx, gy);
+                if (string.IsNullOrWhiteSpace(pr.error) && pr.outputY != null)
+                {
+                    pseudoGanY = pr.outputY;
+                    pseudoTmp0 = pr.temp0;
+                    pseudoTmp1 = pr.temp1;
+                    pseudoTmp2 = pr.temp2;
+                    pseudoTmp3 = pr.temp3;
+                    pseudoTmp4 = pr.temp4;
+                    pseudoTmp5 = pr.temp5;
+
+                    if (faceEnhancedY != null && faceEnhancedY != clampedY)
+                        SafeReleaseRT(faceEnhancedY);
+                    faceEnhancedY = pseudoGanY;
+
+                    if (dumpStages)
+                    {
+                        dumpDir ??= CreateDumpDir();
+                        if (pseudoTmp0 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_prior.png", "DebugVisScalar", pseudoTmp0, 1f, true, ct);
+                        if (pseudoTmp1 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_synth.png", "DebugVisSignedScalar", pseudoTmp1, 6.0f, true, ct);
+                        if (pseudoTmp2 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_contrastDelta.png", "DebugVisSignedScalar", pseudoTmp2, 60.0f, true, ct);
+                        if (pseudoTmp3 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_pseudoY.png", "DebugVisYScalar", pseudoTmp3, 1f, true, ct);
+                        if (pseudoGanY != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_finalY.png", "DebugVisYScalar", pseudoGanY, 1f, true, ct);
+                        if (pseudoTmp4 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_delta_preClamp.png", "DebugVisSignedScalar", pseudoTmp4, 60.0f, true, ct);
+                        if (pseudoTmp5 != null) await DumpStageAsync(dumpDir, w, h, "09_pseudo_delta_final.png", "DebugVisSignedScalar", pseudoTmp5, 60.0f, true, ct);
+                    }
+                }
+                else
+                {
+                    SafeReleaseRT(pr.outputY);
+                    SafeReleaseRT(pr.temp0);
+                    SafeReleaseRT(pr.temp1);
+                    SafeReleaseRT(pr.temp2);
+                    SafeReleaseRT(pr.temp3);
+                    SafeReleaseRT(pr.temp4);
+                    SafeReleaseRT(pr.temp5);
+                }
+            }
+
             if (dumpStages)
             {
                 dumpDir ??= CreateDumpDir();
@@ -493,6 +542,12 @@ public sealed class GpuSharpenRunner : MonoBehaviour
             SafeReleaseRT(noiseFiltered);
             SafeReleaseRT(faceStruct);
             SafeReleaseRT(zeroMask);
+            SafeReleaseRT(pseudoTmp0);
+            SafeReleaseRT(pseudoTmp1);
+            SafeReleaseRT(pseudoTmp2);
+            SafeReleaseRT(pseudoTmp3);
+            SafeReleaseRT(pseudoTmp4);
+            SafeReleaseRT(pseudoTmp5);
             if (faceEnhancedY != null && faceEnhancedY != clampedY)
                 SafeReleaseRT(faceEnhancedY);
             SafeReleaseRT(finalRt);
