@@ -159,22 +159,56 @@ public class CodeOnlyFileDialog : MonoBehaviour
     {
         _availableDrives = new List<string>();
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-        // Windows平台：获取可用盘符（原有逻辑）
         try
         {
-            DriveInfo[] allDrives = DriveInfo.GetDrives();
-            foreach (DriveInfo drive in allDrives)
+            var drives = Environment.GetLogicalDrives();
+            foreach (var d in drives)
             {
-                if (drive.IsReady && (drive.DriveType == DriveType.Fixed || drive.DriveType == DriveType.Removable))
-                {
-                    _availableDrives.Add(drive.Name); // 如 "C:\\"
-                }
+                var root = Path.GetPathRoot(d);
+                if (string.IsNullOrWhiteSpace(root))
+                    continue;
+                root = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (!Directory.Exists(root))
+                    continue;
+                _availableDrives.Add(root);
             }
         }
-        catch (Exception e)
+        catch
         {
-            Debug.LogWarning($"Failed to list drives on Windows: {e.Message}");
-            _availableDrives.Add(Application.persistentDataPath);
+        }
+
+        if (_availableDrives.Count == 0)
+        {
+            try
+            {
+                DriveInfo[] allDrives = DriveInfo.GetDrives();
+                foreach (DriveInfo drive in allDrives)
+                {
+                    try
+                    {
+                        var root = drive.RootDirectory.FullName;
+                        if (string.IsNullOrWhiteSpace(root))
+                            continue;
+                        root = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                        if (!Directory.Exists(root))
+                            continue;
+                        _availableDrives.Add(root);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        if (_availableDrives.Count == 0)
+        {
+            var fallback = Path.GetPathRoot(Application.persistentDataPath);
+            if (!string.IsNullOrWhiteSpace(fallback))
+                _availableDrives.Add(fallback);
         }
 
 #elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
@@ -670,7 +704,9 @@ public class CodeOnlyFileDialog : MonoBehaviour
             }
 
             // 2. 添加子目录
-            foreach (DirectoryInfo subDir in new DirectoryInfo(path).GetDirectories())
+            DirectoryInfo[] subDirs = Array.Empty<DirectoryInfo>();
+            try { subDirs = new DirectoryInfo(path).GetDirectories(); } catch { }
+            foreach (DirectoryInfo subDir in subDirs)
             {
                 _currentFileList.Add(subDir);
             }
@@ -679,7 +715,9 @@ public class CodeOnlyFileDialog : MonoBehaviour
             if (string.IsNullOrWhiteSpace(_currentFilterKey) || !_filterDict.ContainsKey(_currentFilterKey))
                 _currentFilterKey = _filterDict.Keys.FirstOrDefault() ?? "All Files";
             string[] currentFilter = _filterDict[_currentFilterKey];
-            foreach (FileInfo file in new DirectoryInfo(path).GetFiles())
+            FileInfo[] files = Array.Empty<FileInfo>();
+            try { files = new DirectoryInfo(path).GetFiles(); } catch { }
+            foreach (FileInfo file in files)
             {
                 if (currentFilter.Length > 0 && currentFilter[0] == "*")
                 {

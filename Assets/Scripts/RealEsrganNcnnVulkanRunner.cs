@@ -26,7 +26,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     private float _lastProgress;
     private long _lastProgressTicks;
 
-    public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
+    public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, bool dumpDebugFiles, CancellationToken ct)
     {
         if (!enableRealEsrgan)
             return new RealEsrganResult { error = "Real-ESRGAN disabled", workDir = null };
@@ -91,7 +91,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 }
                 scaledInput = ResizeTextureBilinear(src, sw, sh);
                 if (scaledInput == null)
-                    return new RealEsrganResult { error = "Failed to scale down input image" };
+                    return new RealEsrganResult { error = "Failed to scale down input image", workDir = dumpDebugFiles ? workDir : null };
 
                 var inputBytes = scaledInput.EncodeToPNG();
                 await File.WriteAllBytesAsync(scaledInputPath, inputBytes, ct);
@@ -218,13 +218,13 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             }
 
             if (!string.IsNullOrWhiteSpace(threadError))
-                return new RealEsrganResult { error = threadError, workDir = workDir };
+                return new RealEsrganResult { error = threadError, workDir = dumpDebugFiles ? workDir : null };
 
             var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
             if (!tex.LoadImage(outBytes, false))
             {
                 Destroy(tex);
-                return new RealEsrganResult { error = "Failed to decode Real-ESRGAN output image", workDir = workDir };
+                return new RealEsrganResult { error = "Failed to decode Real-ESRGAN output image", workDir = dumpDebugFiles ? workDir : null };
             }
             tex.wrapMode = TextureWrapMode.Clamp;
             tex.filterMode = FilterMode.Bilinear;
@@ -238,18 +238,22 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 Destroy(finalTex);
                 finalTex = resized;
                 if (finalTex == null)
-                    return new RealEsrganResult { error = "Failed to resize output back to original resolution" };
+                    return new RealEsrganResult { error = "Failed to resize output back to original resolution", workDir = dumpDebugFiles ? workDir : null };
             }
             finalTex.name = "RealESRGAN_" + runFactor + "x";
 
             ReportProgress(1f, "完成");
 
-            return new RealEsrganResult { texture = finalTex, workDir = workDir };
+            return new RealEsrganResult { texture = finalTex, workDir = dumpDebugFiles ? workDir : null };
         }
         finally
         {
             if (scaledInput != null)
                 Destroy(scaledInput);
+            if (!dumpDebugFiles && !string.IsNullOrWhiteSpace(workDir))
+            {
+                try { Directory.Delete(workDir, true); } catch { }
+            }
         }
     }
 

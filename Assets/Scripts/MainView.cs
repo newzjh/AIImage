@@ -883,31 +883,31 @@ public class MainView : MonoBehaviour
 #endif
 
         var gpuSharpenButton = new Button(OnGpuSharpen) { text = "GPU清晰化" };
-        row1.Add(gpuSharpenButton);
+        row0.Add(gpuSharpenButton);
 
 #if !UNITY_WEBGL
-        var realEsrganButton = new Button(OnRealEsrgan2x) { text = "Real-ESRGAN 2x" };
-        row1.Add(realEsrganButton);
+        var realEsrganButton = new Button(OnRealEsrgan2x) { text = "ESRGAN" };
+        row0.Add(realEsrganButton);
 
         //var realEsrganOrtButton = new Button(OnRealEsrganOrt2x) { text = "Real-ESRGAN 2x(内置)" };
-        //row1.Add(realEsrganOrtButton);
+        //row0.Add(realEsrganOrtButton);
 
-        var realEsrganNativeButton = new Button(OnRealEsrganNative) { text = "Real-ESRGAN(ncnn原生)" };
-        row1.Add(realEsrganNativeButton);
+        var realEsrganNativeButton = new Button(OnRealEsrganNative) { text = "ESRGAN 2" };
+        row0.Add(realEsrganNativeButton);
 
-        var gfpganNativeButton = new Button(OnGfpganNative) { text = "GFPGAN(ncnn原生)" };
-        row1.Add(gfpganNativeButton);
+        var gfpganNativeButton = new Button(OnGfpganNative) { text = "GFPGAN" };
+        row0.Add(gfpganNativeButton);
 #endif
 
         var gpuSharpenDebugLabel = new Label("调试输出");
         gpuSharpenDebugLabel.style.color = Color.white;
-        row1.Add(gpuSharpenDebugLabel);
+        row0.Add(gpuSharpenDebugLabel);
 
         var gpuSharpenDebugToggle = new Toggle();
         gpuSharpenDebugToggle.value = false;
         gpuSharpenDebugToggle.style.color = Color.white;
         gpuSharpenDebugToggle.RegisterValueChangedCallback(evt => _gpuSharpenDumpStages = evt.newValue);
-        row1.Add(gpuSharpenDebugToggle);
+        row0.Add(gpuSharpenDebugToggle);
 
         row1.Add(BuildProviderGroup(out _providerDropdown, out _apiKeyField));
 
@@ -1486,17 +1486,19 @@ public class MainView : MonoBehaviour
             void OnProgress(float p, string t) => SetProgress(p, t);
             _realEsrganRunner.ProgressChanged -= OnProgress;
             _realEsrganRunner.ProgressChanged += OnProgress;
-            var r = await _realEsrganRunner.ProcessAsync(src, _lifetimeCts.Token);
+            var r = await _realEsrganRunner.ProcessAsync(src, _gpuSharpenDumpStages, _lifetimeCts.Token);
             _realEsrganRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(r.error))
             {
-                OpenFolderInShell(r.workDir);
+                if (_gpuSharpenDumpStages && !string.IsNullOrWhiteSpace(r.workDir))
+                    OpenFolderInShell(r.workDir);
                 ShowToast(r.error, 4500);
                 return;
             }
             if (r.texture != null)
                 AddHistory(r.texture, "Real-ESRGAN 2x");
-            OpenFolderInShell(r.workDir);
+            if (_gpuSharpenDumpStages && !string.IsNullOrWhiteSpace(r.workDir))
+                OpenFolderInShell(r.workDir);
         }
         finally
         {
@@ -1806,11 +1808,30 @@ public class MainView : MonoBehaviour
 
     private void PopulateDrives()
     {
-        var drives = DriveInfo.GetDrives()
-            .Where(d => d.IsReady)
-            .Select(d => d.RootDirectory.FullName)
-            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        List<string> drives;
+        try
+        {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            drives = Environment.GetLogicalDrives()
+                .Select(d => Path.GetPathRoot(d))
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Select(d => d.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar)
+                .Where(d => Directory.Exists(d))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+#else
+            drives = DriveInfo.GetDrives()
+                .Where(d => d.IsReady)
+                .Select(d => d.RootDirectory.FullName)
+                .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+#endif
+        }
+        catch
+        {
+            drives = new List<string>();
+        }
 
         if (drives.Count == 0)
         {
