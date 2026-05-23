@@ -101,6 +101,7 @@ public class MainView : MonoBehaviour
     private RealEsrganNcnnVulkanRunner _realEsrganRunner;
     private RealEsrganOrtRunner _realEsrganOrtRunner;
     private RealEsrganNcnnNativeRunner _realEsrganNativeRunner;
+    private GfpganNcnnNativeRunner _gfpganNativeRunner;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
@@ -156,6 +157,10 @@ public class MainView : MonoBehaviour
         _realEsrganNativeRunner = GetComponent<RealEsrganNcnnNativeRunner>();
         if (_realEsrganNativeRunner == null)
             _realEsrganNativeRunner = gameObject.AddComponent<RealEsrganNcnnNativeRunner>();
+
+        _gfpganNativeRunner = GetComponent<GfpganNcnnNativeRunner>();
+        if (_gfpganNativeRunner == null)
+            _gfpganNativeRunner = gameObject.AddComponent<GfpganNcnnNativeRunner>();
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -889,6 +894,9 @@ public class MainView : MonoBehaviour
 
         var realEsrganNativeButton = new Button(OnRealEsrganNative) { text = "Real-ESRGAN(ncnn原生)" };
         row1.Add(realEsrganNativeButton);
+
+        var gfpganNativeButton = new Button(OnGfpganNative) { text = "GFPGAN(ncnn原生)" };
+        row1.Add(gfpganNativeButton);
 #endif
 
         var gpuSharpenDebugLabel = new Label("调试输出");
@@ -1394,6 +1402,11 @@ public class MainView : MonoBehaviour
     {
         ApplyRealEsrganNativeAsync().Forget();
     }
+
+    private void OnGfpganNative()
+    {
+        ApplyGfpganNativeAsync().Forget();
+    }
 #endif
 
     private async UniTaskVoid ApplyGpuSharpenAsync()
@@ -1576,6 +1589,50 @@ public class MainView : MonoBehaviour
             }
             if (r.texture != null)
                 AddHistory(r.texture, "Real-ESRGAN(ncnn原生)");
+        }
+        finally
+        {
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+
+    private async UniTaskVoid ApplyGfpganNativeAsync()
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        StopPreview();
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        _adjustRunning = true;
+        HideBusy();
+        ShowProgress("GFPGAN(ncnn原生)");
+        try
+        {
+            await UniTask.NextFrame();
+            if (_gfpganNativeRunner == null)
+            {
+                ShowToast("找不到GfpganNcnnNativeRunner", 2200);
+                return;
+            }
+
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            _gfpganNativeRunner.ProgressChanged -= OnProgress;
+            _gfpganNativeRunner.ProgressChanged += OnProgress;
+            var r = await _gfpganNativeRunner.ProcessAsync(src, _lifetimeCts.Token);
+            _gfpganNativeRunner.ProgressChanged -= OnProgress;
+            if (!string.IsNullOrWhiteSpace(r.error))
+            {
+                ShowToast(r.error, 4500);
+                return;
+            }
+            if (r.texture != null)
+                AddHistory(r.texture, "GFPGAN(ncnn原生)");
         }
         finally
         {

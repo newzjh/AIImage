@@ -10,12 +10,42 @@
 #pragma kernel CoolFilter
 #pragma kernel Sharpen
 #pragma kernel Blur
+#pragma kernel PasteRectWithMask
 
 Texture2D<float4> _Source;
+Texture2D<float4> _Overlay;
+Texture2D<float> _FaceMaskIn;
 RWTexture2D<float4> _Result;
 
 float4 _SrcSize;
 float4 _DstSize;
+int4 _CropRect;
+
+float4 SampleBilinearOverlay(float2 uv)
+{
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    if (ow == 0 || oh == 0) return 0;
+
+    float2 size = float2(ow, oh);
+    float2 src = uv * size - 0.5;
+    int2 p0 = int2(floor(src));
+    float2 f = frac(src);
+
+    int2 p00 = clamp(p0, int2(0,0), int2(size) - 1);
+    int2 p10 = clamp(p0 + int2(1,0), int2(0,0), int2(size) - 1);
+    int2 p01 = clamp(p0 + int2(0,1), int2(0,0), int2(size) - 1);
+    int2 p11 = clamp(p0 + int2(1,1), int2(0,0), int2(size) - 1);
+
+    float4 c00 = _Overlay[p00];
+    float4 c10 = _Overlay[p10];
+    float4 c01 = _Overlay[p01];
+    float4 c11 = _Overlay[p11];
+
+    float4 cx0 = lerp(c00, c10, f.x);
+    float4 cx1 = lerp(c01, c11, f.x);
+    return lerp(cx0, cx1, f.y);
+}
 
 float _SigmaSpatial;
 float _SigmaRange;
@@ -129,6 +159,41 @@ void ResizeBilinear(uint3 id : SV_DispatchThreadID)
     float4 cx1 = lerp(c01, c11, f.x);
     float4 c = lerp(cx0, cx1, f.y);
     _Result[int2(id.xy)] = c;
+}
+
+[numthreads(8,8,1)]
+void PasteRectWithMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+
+    float4 src = _Source[int2(x, y)];
+
+    int rx = _CropRect.x;
+    int ry = _CropRect.y;
+    int rw = _CropRect.z;
+    int rh = _CropRect.w;
+
+    bool inside = (x >= rx) && (y >= ry) && (x < rx + rw) && (y < ry + rh);
+    if (!inside)
+    {
+        _Result[int2(x, y)] = src;
+        return;
+    }
+
+    float2 uv = (float2((x - rx), (y - ry)) + 0.5) / float2(max(1, rw), max(1, rh));
+    float4 over = SampleBilinearOverlay(uv);
+
+    float a = 1.0;
+    a = _FaceMaskIn[int2(x, y)];
+    a = saturate(a);
+
+    float3 rgb = lerp(src.rgb, over.rgb, a);
+    _Result[int2(x, y)] = float4(rgb, src.a);
 }
 
 [numthreads(8,8,1)]
