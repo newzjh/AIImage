@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="E:\Projects\AIImage\RealESRGAN\Native\build-win64\CMakeFiles\c76620d2c558bd650f5f18f144d3c178\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{E39AAD38-85FC-3DE6-A8CB-44A64A4310C9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
