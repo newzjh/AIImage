@@ -62,6 +62,14 @@ public class MainView : MonoBehaviour
     private Label _busyText;
     private IVisualElementScheduledItem _busyAnim;
     private float _busyPhase;
+    private VisualElement _progressOverlay;
+    private ProgressBar _progressBar;
+    private Label _progressTitle;
+    private Label _progressDetail;
+    private IVisualElementScheduledItem _progressTick;
+    private readonly object _progressLock = new object();
+    private float _progressValue01;
+    private string _progressText;
     private VisualElement _choiceOverlay;
     private UniTaskCompletionSource<int> _choiceTcs;
     private VisualElement _toastOverlay;
@@ -90,6 +98,7 @@ public class MainView : MonoBehaviour
     private bool _gpuSharpenDumpStages;
     private GpuSharpenRunner _gpuSharpenRunner;
     private FaceMaskGenerator _faceMaskGenerator;
+    private RealEsrganNcnnVulkanRunner _realEsrganRunner;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
@@ -134,6 +143,10 @@ public class MainView : MonoBehaviour
         if (_faceMaskGenerator == null)
             _faceMaskGenerator = gameObject.AddComponent<FaceMaskGenerator>();
 
+        _realEsrganRunner = GetComponent<RealEsrganNcnnVulkanRunner>();
+        if (_realEsrganRunner == null)
+            _realEsrganRunner = gameObject.AddComponent<RealEsrganNcnnVulkanRunner>();
+
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
         _image2ImageAI.RequestError -= OnAIRequestError;
@@ -173,6 +186,7 @@ public class MainView : MonoBehaviour
         _imageViewer?.Clear();
         ClearHistory();
         HideBusy();
+        HideProgress();
         HideChoice();
         if (_toastOverlay != null)
             _toastOverlay.style.display = DisplayStyle.None;
@@ -316,6 +330,7 @@ public class MainView : MonoBehaviour
         BuildHistoryList(leftBottom);
         BuildImageViewer(rightPane);
         BuildBusyOverlay(root);
+        BuildProgressOverlay(root);
         BuildToast(root);
     }
 
@@ -384,6 +399,121 @@ public class MainView : MonoBehaviour
         _busyBarTrack.Add(_busyBar);
 
         root.Add(_busyOverlay);
+    }
+
+    private void BuildProgressOverlay(VisualElement root)
+    {
+        _progressOverlay = new VisualElement();
+        _progressOverlay.style.position = Position.Absolute;
+        _progressOverlay.style.left = 0;
+        _progressOverlay.style.top = 0;
+        _progressOverlay.style.right = 0;
+        _progressOverlay.style.bottom = 0;
+        _progressOverlay.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.35f));
+        _progressOverlay.style.alignItems = Align.Center;
+        _progressOverlay.style.justifyContent = Justify.Center;
+        _progressOverlay.style.display = DisplayStyle.None;
+
+        var panel = new VisualElement();
+        panel.style.width = 420;
+        panel.style.paddingLeft = 14;
+        panel.style.paddingRight = 14;
+        panel.style.paddingTop = 12;
+        panel.style.paddingBottom = 12;
+        panel.style.backgroundColor = new StyleColor(new Color(0.12f, 0.12f, 0.12f, 0.95f));
+        panel.style.borderTopLeftRadius = 8;
+        panel.style.borderTopRightRadius = 8;
+        panel.style.borderBottomLeftRadius = 8;
+        panel.style.borderBottomRightRadius = 8;
+        panel.style.borderLeftWidth = 1;
+        panel.style.borderRightWidth = 1;
+        panel.style.borderTopWidth = 1;
+        panel.style.borderBottomWidth = 1;
+        panel.style.borderLeftColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderRightColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.borderBottomColor = new StyleColor(new Color(1f, 1f, 1f, 0.12f));
+        panel.style.flexDirection = FlexDirection.Column;
+        panel.style.alignItems = Align.Stretch;
+        _progressOverlay.Add(panel);
+
+        _progressTitle = new Label("处理中…");
+        _progressTitle.style.unityTextAlign = TextAnchor.MiddleLeft;
+        _progressTitle.style.whiteSpace = WhiteSpace.NoWrap;
+        _progressTitle.style.overflow = Overflow.Hidden;
+        _progressTitle.style.textOverflow = TextOverflow.Ellipsis;
+        _progressTitle.style.marginBottom = 8;
+        panel.Add(_progressTitle);
+
+        _progressBar = new ProgressBar();
+        _progressBar.lowValue = 0;
+        _progressBar.highValue = 100;
+        _progressBar.value = 0;
+        _progressBar.title = "0%";
+        _progressBar.style.height = 18;
+        panel.Add(_progressBar);
+
+        _progressDetail = new Label("");
+        _progressDetail.style.unityTextAlign = TextAnchor.MiddleLeft;
+        _progressDetail.style.whiteSpace = WhiteSpace.NoWrap;
+        _progressDetail.style.overflow = Overflow.Hidden;
+        _progressDetail.style.textOverflow = TextOverflow.Ellipsis;
+        _progressDetail.style.marginTop = 8;
+        panel.Add(_progressDetail);
+
+        root.Add(_progressOverlay);
+    }
+
+    private void ShowProgress(string title)
+    {
+        if (_progressOverlay == null)
+            return;
+        lock (_progressLock)
+        {
+            _progressValue01 = 0f;
+            _progressText = "";
+        }
+        _progressTitle.text = string.IsNullOrWhiteSpace(title) ? "处理中…" : title;
+        _progressBar.value = 0;
+        _progressBar.title = "0%";
+        _progressDetail.text = "";
+        _progressOverlay.style.display = DisplayStyle.Flex;
+        _progressOverlay.BringToFront();
+
+        _progressTick ??= _progressOverlay.schedule.Execute(() =>
+        {
+            if (_progressOverlay.resolvedStyle.display == DisplayStyle.None)
+                return;
+            float p;
+            string t;
+            lock (_progressLock)
+            {
+                p = _progressValue01;
+                t = _progressText;
+            }
+            p = Mathf.Clamp01(p);
+            _progressBar.value = p * 100f;
+            _progressBar.title = Mathf.RoundToInt(p * 100f) + "%";
+            _progressDetail.text = t ?? "";
+        }).Every(50);
+        _progressTick.Resume();
+    }
+
+    private void HideProgress()
+    {
+        if (_progressOverlay == null)
+            return;
+        _progressOverlay.style.display = DisplayStyle.None;
+        _progressTick?.Pause();
+    }
+
+    private void SetProgress(float progress01, string text)
+    {
+        lock (_progressLock)
+        {
+            _progressValue01 = progress01;
+            _progressText = text;
+        }
     }
 
     private void ShowBusy(string text)
@@ -739,6 +869,11 @@ public class MainView : MonoBehaviour
 
         var gpuSharpenButton = new Button(OnGpuSharpen) { text = "GPU清晰化" };
         row1.Add(gpuSharpenButton);
+
+#if !UNITY_WEBGL
+        var realEsrganButton = new Button(OnRealEsrgan2x) { text = "Real-ESRGAN 2x" };
+        row1.Add(realEsrganButton);
+#endif
 
         var gpuSharpenDebugLabel = new Label("调试输出");
         gpuSharpenDebugLabel.style.color = Color.white;
@@ -1228,6 +1363,13 @@ public class MainView : MonoBehaviour
         ApplyGpuSharpenAsync().Forget();
     }
 
+#if !UNITY_WEBGL
+    private void OnRealEsrgan2x()
+    {
+        ApplyRealEsrganAsync().Forget();
+    }
+#endif
+
     private async UniTaskVoid ApplyGpuSharpenAsync()
     {
         if (_aiRunning) return;
@@ -1275,6 +1417,80 @@ public class MainView : MonoBehaviour
             HideBusy();
         }
     }
+
+#if !UNITY_WEBGL
+    private async UniTaskVoid ApplyRealEsrganAsync()
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        StopPreview();
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        _adjustRunning = true;
+        HideBusy();
+        ShowProgress("Real-ESRGAN 2x");
+        try
+        {
+            await UniTask.NextFrame();
+            if (_realEsrganRunner == null)
+            {
+                ShowToast("找不到RealEsrganNcnnVulkanRunner", 2200);
+                return;
+            }
+
+            _realEsrganRunner.scale = 2;
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            _realEsrganRunner.ProgressChanged -= OnProgress;
+            _realEsrganRunner.ProgressChanged += OnProgress;
+            var r = await _realEsrganRunner.ProcessAsync(src, _lifetimeCts.Token);
+            _realEsrganRunner.ProgressChanged -= OnProgress;
+            if (!string.IsNullOrWhiteSpace(r.error))
+            {
+                OpenFolderInShell(r.workDir);
+                ShowToast(r.error, 4500);
+                return;
+            }
+            if (r.texture != null)
+                AddHistory(r.texture, "Real-ESRGAN 2x");
+            OpenFolderInShell(r.workDir);
+        }
+        finally
+        {
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+#endif
+
+#if !UNITY_WEBGL
+    private static void OpenFolderInShell(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            return;
+        try
+        {
+            try { Directory.CreateDirectory(directoryPath); } catch { }
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            Process.Start(new ProcessStartInfo { FileName = directoryPath, UseShellExecute = true });
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+            Process.Start(new ProcessStartInfo("open", directoryPath) { UseShellExecute = false });
+#elif UNITY_STANDALONE_LINUX
+            Process.Start(new ProcessStartInfo("xdg-open", directoryPath) { UseShellExecute = false });
+#else
+            var url = "file://" + directoryPath.Replace('\\', '/');
+            Application.OpenURL(url);
+#endif
+        }
+        catch
+        {
+        }
+    }
+#endif
 
     private async UniTaskVoid ApplyComputeAdjustmentAsync(string kernelName, Action<ComputeShader> setParams, string historyLabel)
     {
