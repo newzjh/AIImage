@@ -15,12 +15,45 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
     public int gpuId = -1;
     public int prepadding = 10;
     public bool ttaMode = false;
+    public bool allowCpuFallback = false;
 
     public event Action<float, string> ProgressChanged;
 
     private IntPtr _ctx = IntPtr.Zero;
     private GCHandle _progressHandle;
     private RealEsrganNcnnNative.ProgressCallback _progressCb;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void BootstrapNativeDllSearchPath()
+    {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        try
+        {
+            var flags = LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS;
+            SetDefaultDllDirectories(flags);
+
+            var exeDir = Environment.CurrentDirectory;
+            if (!string.IsNullOrWhiteSpace(exeDir))
+                AddDllDirectory(exeDir);
+
+            var pluginsDir = Path.Combine(Application.dataPath, "Plugins");
+            if (Directory.Exists(pluginsDir))
+                AddDllDirectory(pluginsDir);
+
+            var system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            if (!string.IsNullOrWhiteSpace(system32))
+            {
+                LoadLibraryW(Path.Combine(system32, "VCRUNTIME140.dll"));
+                LoadLibraryW(Path.Combine(system32, "VCRUNTIME140_1.dll"));
+                LoadLibraryW(Path.Combine(system32, "MSVCP140.dll"));
+                LoadLibraryW(Path.Combine(system32, "CONCRT140.dll"));
+            }
+        }
+        catch
+        {
+        }
+#endif
+    }
 
     public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
@@ -185,6 +218,10 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         if (_ctx != IntPtr.Zero)
             return;
 
+#if !UNITY_EDITOR
+        allowCpuFallback = false;
+#endif
+
         _progressCb = OnNativeProgress;
         _progressHandle = GCHandle.Alloc(this);
         var user = GCHandle.ToIntPtr(_progressHandle);
@@ -198,30 +235,94 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
             "",
             CancellationToken.None).Forget();
 
+        var err = TryCreate(modelDir, modelFactor, gpuId, user, out _ctx);
+        if (!string.IsNullOrWhiteSpace(err) && allowCpuFallback)
+        {
+            var shouldFallback =
+                err.IndexOf("native exception in Realesrgan_Create", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                err.IndexOf("vulkan", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (shouldFallback)
+            {
+                ReportDbgAsync(
+                    "B",
+                    "realesrgan.native.create.fallback_cpu",
+                    "[DEBUG] fallback to CPU mode (gpuId=-2)",
+                    "{\"prevErr\":\"" + EscapeJson(err) + "\"}",
+                    "",
+                    CancellationToken.None).Forget();
+
+                ReleaseProgressHandle();
+                _progressHandle = GCHandle.Alloc(this);
+                user = GCHandle.ToIntPtr(_progressHandle);
+                err = TryCreate(modelDir, modelFactor, -2, user, out _ctx);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(err))
+        {
+            ReleaseProgressHandle();
+            throw new InvalidOperationException(err);
+        }
+        if (_ctx == IntPtr.Zero)
+        {
+            ReleaseProgressHandle();
+            throw new InvalidOperationException("创建Real-ESRGAN(原生)上下文失败");
+        }
+    }
+
+    private string TryCreate(string modelDir, int modelFactor, int createGpuId, IntPtr user, out IntPtr ctx)
+    {
+        ctx = IntPtr.Zero;
         var errPtr = RealEsrganNcnnNative.Realesrgan_Create(
             modelDir,
             modelName,
             modelFactor,
-            gpuId,
+            createGpuId,
             Mathf.Max(1, prepadding),
             ttaMode ? 1 : 0,
             user,
             _progressCb,
-            out _ctx);
+            out ctx);
 
         var err = RealEsrganNcnnNative.Utf8ToString(errPtr);
         ReportDbgAsync(
             "B",
             "realesrgan.native.create.end",
             "[DEBUG] Realesrgan_Create end",
-            "{\"err\":\"" + EscapeJson(err) + "\",\"ctx\":\"" + (_ctx != IntPtr.Zero ? "nonzero" : "zero") + "\"}",
+            "{\"err\":\"" + EscapeJson(err) + "\",\"ctx\":\"" + (ctx != IntPtr.Zero ? "nonzero" : "zero") + "\",\"gpuId\":" + createGpuId + "}",
             "",
             CancellationToken.None).Forget();
-        if (!string.IsNullOrWhiteSpace(err))
-            throw new InvalidOperationException(err);
-        if (_ctx == IntPtr.Zero)
-            throw new InvalidOperationException("创建Real-ESRGAN(原生)上下文失败");
+        return err;
     }
+
+    private void ReleaseProgressHandle()
+    {
+        try
+        {
+            if (_progressHandle.IsAllocated)
+                _progressHandle.Free();
+        }
+        catch
+        {
+        }
+        _progressHandle = default;
+    }
+
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+    private const uint LOAD_LIBRARY_SEARCH_APPLICATION_DIR = 0x00000200;
+    private const uint LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
+    private const uint LOAD_LIBRARY_SEARCH_USER_DIRS = 0x00000400;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibraryW(string lpFileName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetDefaultDllDirectories(uint DirectoryFlags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr AddDllDirectory(string NewDirectory);
+#endif
 
     [AOT.MonoPInvokeCallback(typeof(RealEsrganNcnnNative.ProgressCallback))]
     private static void OnNativeProgress(IntPtr user, float progress01, IntPtr utf8Message)
@@ -262,9 +363,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
             try { RealEsrganNcnnNative.Realesrgan_Destroy(_ctx); } catch { }
             _ctx = IntPtr.Zero;
         }
-
-        if (_progressHandle.IsAllocated)
-            _progressHandle.Free();
+        ReleaseProgressHandle();
     }
 
     private void ResetContext()
@@ -281,6 +380,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
             try { RealEsrganNcnnNative.Realesrgan_Destroy(_ctx); } catch { }
             _ctx = IntPtr.Zero;
         }
+        ReleaseProgressHandle();
     }
 
     private static int InferModelFactor(string name)
@@ -410,22 +510,34 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         if (_dbgLoaded) return;
         _dbgLoaded = true;
 
-        _dbgUrl = "http://127.0.0.1:7780/event";
-        _dbgSessionId = "realesrgan-extract-crash";
+        _dbgUrl = "http://127.0.0.1:7778/event";
+        _dbgSessionId = "windows-player-native-crash";
 
         try
         {
-            var envPath = Path.Combine(Application.dataPath, "..", ".dbg", "realesrgan-extract-crash.env");
-            if (!File.Exists(envPath)) return;
-            var lines = File.ReadAllLines(envPath);
-            foreach (var raw in lines)
+            var envName = "windows-player-native-crash.env";
+            var candidates = new[]
             {
-                var line = raw?.Trim();
-                if (string.IsNullOrEmpty(line)) continue;
-                if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
-                    _dbgUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
-                else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
-                    _dbgSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+                Path.Combine(Application.persistentDataPath, ".dbg", envName),
+                Path.Combine(Environment.CurrentDirectory, ".dbg", envName),
+                Path.Combine(Application.dataPath, "..", ".dbg", envName)
+            };
+            for (var i = 0; i < candidates.Length; i++)
+            {
+                var envPath = candidates[i];
+                if (!File.Exists(envPath))
+                    continue;
+                var lines = File.ReadAllLines(envPath);
+                foreach (var raw in lines)
+                {
+                    var line = raw?.Trim();
+                    if (string.IsNullOrEmpty(line)) continue;
+                    if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
+                        _dbgUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
+                    else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
+                        _dbgSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+                }
+                break;
             }
         }
         catch
@@ -439,7 +551,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         {
             LoadDbgEnv();
 
-            var logPath = Path.Combine(Application.dataPath, "..", ".dbg", "trae-debug-log-realesrgan-extract-crash.ndjson");
+            var logPath = Path.Combine(Application.persistentDataPath, "trae-debug-log-windows-player-native-crash.ndjson");
             var dir = Path.GetDirectoryName(logPath);
             if (!string.IsNullOrWhiteSpace(dir))
             {
@@ -460,7 +572,8 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                 "}";
 
             var line = payload + "\n";
-            await File.AppendAllTextAsync(logPath, line, ct);
+            try { File.AppendAllText(logPath, line); } catch { }
+            try { await File.AppendAllTextAsync(logPath, line, ct); } catch { }
 
             if (!string.IsNullOrWhiteSpace(_dbgUrl))
             {

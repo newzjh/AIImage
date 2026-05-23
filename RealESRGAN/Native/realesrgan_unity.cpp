@@ -6,6 +6,10 @@
 #define NOMINMAX
 #endif
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "ncnn/cpu.h"
 #include "ncnn/gpu.h"
 #include "ncnn/mat.h"
@@ -34,6 +38,7 @@ extern "C"
     {
         ncnn::Net net;
         int gpuid = 0;
+        bool use_vulkan = true;
         int model_factor = 4;
         int prepadding = 10;
         bool tta_mode = false;
@@ -42,7 +47,69 @@ extern "C"
         std::string last_error;
     };
 
+    static thread_local std::string g_last_error;
+    static const char* set_global_error(const char* msg)
+    {
+        g_last_error = msg ? msg : "";
+        return g_last_error.c_str();
+    }
+
+#if defined(_WIN32)
+    static int seh_filter_set_error(const char* where, EXCEPTION_POINTERS* ep)
+    {
+        unsigned int code = ep && ep->ExceptionRecord ? (unsigned int)ep->ExceptionRecord->ExceptionCode : 0;
+        void* addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+        const char* modname = "";
+        void* base = nullptr;
+        unsigned long long offset = 0;
+        if (addr)
+        {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(addr, &mbi, sizeof(mbi)) == sizeof(mbi))
+            {
+                base = mbi.AllocationBase;
+                offset = (unsigned long long)((uintptr_t)addr - (uintptr_t)base);
+                static char modpath[MAX_PATH] = { 0 };
+                modpath[0] = 0;
+                if (base)
+                {
+                    DWORD len = GetModuleFileNameA((HMODULE)base, modpath, MAX_PATH);
+                    if (len > 0 && len < MAX_PATH)
+                        modname = modpath;
+                }
+            }
+        }
+        char buf[512];
+        snprintf(buf, sizeof(buf), "native exception in %s: 0x%08X addr=%p base=%p off=0x%llX mod=%s",
+            where ? where : "unknown", code, addr, base, offset, modname);
+        set_global_error(buf);
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+#endif
     static int g_gpu_refcount = 0;
+
+#if defined(_WIN32)
+    static bool has_vulkan_loader()
+    {
+        HMODULE h = LoadLibraryA("vulkan-1.dll");
+        if (!h) return false;
+        FreeLibrary(h);
+        return true;
+    }
+
+    static bool get_system32_vulkan_path(char* outPath, size_t outPathSize)
+    {
+        if (!outPath || outPathSize == 0) return false;
+        outPath[0] = 0;
+        char sysdir[MAX_PATH] = { 0 };
+        UINT n = GetSystemDirectoryA(sysdir, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) return false;
+        std::string p = std::string(sysdir) + "\\vulkan-1.dll";
+        if (p.size() + 1 > outPathSize) return false;
+        memcpy(outPath, p.c_str(), p.size() + 1);
+        return true;
+    }
+#endif
 
     struct vk_alloc_scope
     {
@@ -171,7 +238,7 @@ extern "C"
         }
     }
 
-    REALESRGAN_EXPORT const char* Realesrgan_Create(
+    static const char* Realesrgan_Create_Impl(
         const char* modelDir,
         const char* modelName,
         int modelFactor,
@@ -186,13 +253,42 @@ extern "C"
         *outCtx = nullptr;
         if (!modelDir || !modelName) return "modelDir/modelName is null";
 
-        if (g_gpu_refcount == 0)
-            ncnn::create_gpu_instance();
-        g_gpu_refcount++;
+        const bool request_cpu = (gpuid == -2);
+
+#if defined(_WIN32)
+        if (!request_cpu && !has_vulkan_loader())
+            return set_global_error("vulkan-1.dll not found. Install GPU driver with Vulkan runtime.");
+#endif
+
+        const bool use_vulkan = !request_cpu;
+        if (use_vulkan)
+        {
+            const bool need_create_gpu = (g_gpu_refcount == 0);
+            if (need_create_gpu)
+            {
+#if defined(_WIN32)
+                char vkpath[MAX_PATH] = { 0 };
+                if (get_system32_vulkan_path(vkpath, MAX_PATH))
+                    ncnn::create_gpu_instance(vkpath);
+                else
+                    ncnn::create_gpu_instance();
+#else
+                ncnn::create_gpu_instance();
+#endif
+            }
+            if (ncnn::get_gpu_count() <= 0)
+            {
+                if (need_create_gpu)
+                    ncnn::destroy_gpu_instance();
+                return set_global_error("ncnn get_gpu_count() == 0. Vulkan device not available.");
+            }
+            g_gpu_refcount++;
+        }
 
         auto* ctx = new realesrgan_ctx();
         ctx->user = user;
         ctx->progress = progress;
+        ctx->use_vulkan = use_vulkan;
         ctx->gpuid = gpuid < 0 ? 0 : gpuid;
         ctx->tta_mode = ttaMode != 0;
         ctx->prepadding = prepadding > 0 ? prepadding : 10;
@@ -207,7 +303,7 @@ extern "C"
         for (auto& ch : modelpath) if (ch == '/') ch = '\\';
 #endif
 
-        ctx->net.opt.use_vulkan_compute = true;
+        ctx->net.opt.use_vulkan_compute = use_vulkan;
         // Force fp32 path first to avoid pack/layout expectations without the official preproc/postproc pipelines.
         // This sacrifices performance, but should make the basic extractor path stable.
         ctx->net.opt.use_fp16_packed = false;
@@ -215,7 +311,8 @@ extern "C"
         ctx->net.opt.use_fp16_arithmetic = false;
         ctx->net.opt.use_int8_storage = false;
         ctx->net.opt.use_int8_arithmetic = false;
-        ctx->net.set_vulkan_device(ctx->gpuid);
+        if (use_vulkan)
+            ctx->net.set_vulkan_device(ctx->gpuid);
 
         report(ctx, 0.01f, "loading model");
 
@@ -224,8 +321,11 @@ extern "C"
         {
             auto* err = set_error(ctx, "failed to load param");
             delete ctx;
-            g_gpu_refcount--;
-            if (g_gpu_refcount == 0) ncnn::destroy_gpu_instance();
+            if (use_vulkan)
+            {
+                g_gpu_refcount--;
+                if (g_gpu_refcount == 0) ncnn::destroy_gpu_instance();
+            }
             return err;
         }
         int retm = ctx->net.load_model(modelpath.c_str());
@@ -233,8 +333,11 @@ extern "C"
         {
             auto* err = set_error(ctx, "failed to load model");
             delete ctx;
-            g_gpu_refcount--;
-            if (g_gpu_refcount == 0) ncnn::destroy_gpu_instance();
+            if (use_vulkan)
+            {
+                g_gpu_refcount--;
+                if (g_gpu_refcount == 0) ncnn::destroy_gpu_instance();
+            }
             return err;
         }
 
@@ -243,10 +346,39 @@ extern "C"
         return nullptr;
     }
 
+    REALESRGAN_EXPORT const char* Realesrgan_Create(
+        const char* modelDir,
+        const char* modelName,
+        int modelFactor,
+        int gpuid,
+        int prepadding,
+        int ttaMode,
+        void* user,
+        realesrgan_progress_cb progress,
+        void** outCtx)
+    {
+#if defined(_WIN32)
+        __try
+        {
+#endif
+            return Realesrgan_Create_Impl(modelDir, modelName, modelFactor, gpuid, prepadding, ttaMode, user, progress, outCtx);
+#if defined(_WIN32)
+        }
+        __except (seh_filter_set_error("Realesrgan_Create", GetExceptionInformation()))
+        {
+            return set_global_error(g_last_error.c_str());
+        }
+#endif
+    }
+
     REALESRGAN_EXPORT void Realesrgan_Destroy(void* ctxPtr)
     {
         auto* ctx = (realesrgan_ctx*)ctxPtr;
+        const bool use_vulkan = ctx ? ctx->use_vulkan : false;
         delete ctx;
+
+        if (!use_vulkan)
+            return;
 
         g_gpu_refcount--;
         if (g_gpu_refcount <= 0)
@@ -256,7 +388,7 @@ extern "C"
         }
     }
 
-    REALESRGAN_EXPORT const char* Realesrgan_ProcessRgba(
+    static const char* Realesrgan_ProcessRgba_Impl(
         void* ctxPtr,
         const unsigned char* rgba,
         int w,
@@ -289,21 +421,28 @@ extern "C"
 
         report(ctx, 0.05f, "preprocess");
 
-        const ncnn::VulkanDevice* vkdev_const = ctx->net.vulkan_device();
-        if (!vkdev_const)
-            return set_error(ctx, "vulkan device is null");
-        ncnn::VulkanDevice* vkdev = const_cast<ncnn::VulkanDevice*>(vkdev_const);
+        const bool use_vulkan = ctx->use_vulkan && ctx->net.opt.use_vulkan_compute;
 
+        const ncnn::VulkanDevice* vkdev_const = nullptr;
+        ncnn::VulkanDevice* vkdev = nullptr;
         vk_alloc_scope alloc_scope;
-        alloc_scope.dev = vkdev;
-        alloc_scope.blob = vkdev->acquire_blob_allocator();
-        alloc_scope.staging = vkdev->acquire_staging_allocator();
-        alloc_scope.active = true;
-
         ncnn::Option opt = ctx->net.opt;
-        opt.blob_vkallocator = alloc_scope.blob;
-        opt.workspace_vkallocator = alloc_scope.blob;
-        opt.staging_vkallocator = alloc_scope.staging;
+        if (use_vulkan)
+        {
+            vkdev_const = ctx->net.vulkan_device();
+            if (!vkdev_const)
+                return set_error(ctx, "vulkan device is null");
+            vkdev = const_cast<ncnn::VulkanDevice*>(vkdev_const);
+
+            alloc_scope.dev = vkdev;
+            alloc_scope.blob = vkdev->acquire_blob_allocator();
+            alloc_scope.staging = vkdev->acquire_staging_allocator();
+            alloc_scope.active = true;
+
+            opt.blob_vkallocator = alloc_scope.blob;
+            opt.workspace_vkallocator = alloc_scope.blob;
+            opt.staging_vkallocator = alloc_scope.staging;
+        }
 
         // Fill alpha first (will overwrite later if no alpha)
         for (int i = 0; i < outW * outH; i++)
@@ -333,22 +472,29 @@ extern "C"
                 const float norm[3] = { 1.f / 255.f, 1.f / 255.f, 1.f / 255.f };
                 in.substract_mean_normalize(nullptr, norm);
 
-                ncnn::VkCompute cmd(vkdev);
-
-                ncnn::VkMat in_gpu;
+                ncnn::Extractor ex = ctx->net.create_extractor();
+                ex.set_light_mode(true);
+                if (use_vulkan)
                 {
+                    ex.set_blob_vkallocator(alloc_scope.blob);
+                    ex.set_workspace_vkallocator(alloc_scope.blob);
+                    ex.set_staging_vkallocator(alloc_scope.staging);
+                }
+
+                int ri = 0;
+                if (use_vulkan)
+                {
+                    ncnn::VkCompute cmd(vkdev);
+                    ncnn::VkMat in_gpu;
                     cmd.record_clone(in, in_gpu, opt);
                     cmd.submit_and_wait();
                     cmd.reset();
+                    ri = ex.input("data", in_gpu);
                 }
-
-                ncnn::Extractor ex = ctx->net.create_extractor();
-                ex.set_light_mode(true);
-                ex.set_blob_vkallocator(alloc_scope.blob);
-                ex.set_workspace_vkallocator(alloc_scope.blob);
-                ex.set_staging_vkallocator(alloc_scope.staging);
-
-                int ri = ex.input("data", in_gpu);
+                else
+                {
+                    ri = ex.input("data", in);
+                }
                 if (ri != 0)
                 {
                     char buf[256];
@@ -357,21 +503,33 @@ extern "C"
                 }
 
                 ncnn::Mat out;
-                ncnn::VkMat out_gpu;
-                int ro = ex.extract("output", out_gpu, cmd);
-                if (ro != 0)
+                if (use_vulkan)
                 {
-                    char buf[320];
-                    snprintf(buf, sizeof(buf), "extract output failed (ro=%d) tile=(%d,%d) in=%dx%d pad=%d scale=%d", ro, xi, yi, in_tw, in_th, pad, factor);
-                    return set_error(ctx, buf);
-                }
-                cmd.submit_and_wait();
-                cmd.reset();
+                    ncnn::VkCompute cmd(vkdev);
+                    ncnn::VkMat out_gpu;
+                    int ro = ex.extract("output", out_gpu, cmd);
+                    if (ro != 0)
+                    {
+                        char buf[320];
+                        snprintf(buf, sizeof(buf), "extract output failed (ro=%d) tile=(%d,%d) in=%dx%d pad=%d scale=%d", ro, xi, yi, in_tw, in_th, pad, factor);
+                        return set_error(ctx, buf);
+                    }
+                    cmd.submit_and_wait();
+                    cmd.reset();
 
-                {
                     cmd.record_clone(out_gpu, out, opt);
                     cmd.submit_and_wait();
                     cmd.reset();
+                }
+                else
+                {
+                    int ro = ex.extract("output", out);
+                    if (ro != 0)
+                    {
+                        char buf[320];
+                        snprintf(buf, sizeof(buf), "extract output failed (ro=%d) tile=(%d,%d) in=%dx%d pad=%d scale=%d", ro, xi, yi, in_tw, in_th, pad, factor);
+                        return set_error(ctx, buf);
+                    }
                 }
 
                 const int expectedW = in_tw * factor;
@@ -434,5 +592,30 @@ extern "C"
 
         report(ctx, 0.98f, "done");
         return nullptr;
+    }
+
+    REALESRGAN_EXPORT const char* Realesrgan_ProcessRgba(
+        void* ctxPtr,
+        const unsigned char* rgba,
+        int w,
+        int h,
+        unsigned char* outRgba,
+        int outW,
+        int outH,
+        int tileSize,
+        int scale)
+    {
+#if defined(_WIN32)
+        __try
+        {
+#endif
+            return Realesrgan_ProcessRgba_Impl(ctxPtr, rgba, w, h, outRgba, outW, outH, tileSize, scale);
+#if defined(_WIN32)
+        }
+        __except (seh_filter_set_error("Realesrgan_ProcessRgba", GetExceptionInformation()))
+        {
+            return set_global_error(g_last_error.c_str());
+        }
+#endif
     }
 }

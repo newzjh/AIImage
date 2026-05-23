@@ -4,6 +4,9 @@
     <ClCompile Include="E:\Projects\AIImage\RealESRGAN\Native\realesrgan_unity.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="E:\Projects\AIImage\RealESRGAN\Native\gfpgan_unity.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="E:\Projects\AIImage\RealESRGAN\Native\CMakeLists.txt" />

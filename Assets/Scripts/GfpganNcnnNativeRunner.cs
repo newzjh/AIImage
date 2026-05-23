@@ -32,10 +32,17 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
 
         try
         {
+            await ReportDbgAsync("A", "gfpgan.native.ensureInit.begin", "[DEBUG] EnsureInit begin",
+                "{\"modelDir\":\"" + EscapeJson(modelDir) + "\",\"modelName\":\"" + EscapeJson(modelName) + "\",\"gpuId\":" + gpuId + ",\"streamingAssetsPath\":\"" + EscapeJson(Application.streamingAssetsPath) + "\"}",
+                "", ct);
             EnsureInit(modelDir);
+            await ReportDbgAsync("A", "gfpgan.native.ensureInit.ok", "[DEBUG] EnsureInit ok",
+                "{\"ctx\":\"" + (_ctx != IntPtr.Zero ? "nonzero" : "zero") + "\"}", "", ct);
         }
         catch (Exception e)
         {
+            await ReportDbgAsync("B", "gfpgan.native.ensureInit.exception", "[DEBUG] EnsureInit exception",
+                "{\"msg\":\"" + EscapeJson(e.Message) + "\"}", "", ct);
             return new GfpganResult { error = e.Message };
         }
 
@@ -98,6 +105,9 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
             var outRgba = new byte[512 * 512 * 4];
 
             ReportProgress(0.15f, "推理中…");
+            await ReportDbgAsync("A", "gfpgan.native.call.begin", "[DEBUG] calling native Gfpgan_ProcessRgba",
+                "{\"ctx\":\"" + (_ctx != IntPtr.Zero ? "nonzero" : "zero") + "\",\"w\":512,\"h\":512,\"persistentDataPath\":\"" + EscapeJson(Application.persistentDataPath) + "\"}",
+                "", ct);
             var errPtr = await UniTask.RunOnThreadPool(() =>
             {
                 ct.ThrowIfCancellationRequested();
@@ -106,7 +116,12 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
 
             var err = GfpganNcnnNative.Utf8ToString(errPtr);
             if (!string.IsNullOrWhiteSpace(err))
+            {
+                await ReportDbgAsync("C", "gfpgan.native.call.error", "[DEBUG] native returned error",
+                    "{\"err\":\"" + EscapeJson(err) + "\"}", "", ct);
                 return new GfpganResult { error = err };
+            }
+            await ReportDbgAsync("A", "gfpgan.native.call.ok", "[DEBUG] native returned ok", "{}", "", ct);
 
             await UniTask.SwitchToMainThread();
             restored512 = new Texture2D(512, 512, TextureFormat.RGBA32, false, false);
@@ -161,12 +176,23 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
         if (_ctx != IntPtr.Zero)
             return;
 
-        var errPtr = GfpganNcnnNative.Gfpgan_Create(modelDir, modelName, gpuId, out _ctx);
-        var err = GfpganNcnnNative.Utf8ToString(errPtr);
-        if (!string.IsNullOrWhiteSpace(err))
-            throw new InvalidOperationException(err);
-        if (_ctx == IntPtr.Zero)
-            throw new InvalidOperationException("创建GFPGAN(原生)上下文失败");
+        try
+        {
+            var errPtr = GfpganNcnnNative.Gfpgan_Create(modelDir, modelName, gpuId, out _ctx);
+            var err = GfpganNcnnNative.Utf8ToString(errPtr);
+            if (!string.IsNullOrWhiteSpace(err))
+                throw new InvalidOperationException(err);
+            if (_ctx == IntPtr.Zero)
+                throw new InvalidOperationException("创建GFPGAN(原生)上下文失败");
+        }
+        catch (DllNotFoundException e)
+        {
+            throw new InvalidOperationException("GFPGAN(原生) DLL加载失败: " + e.Message);
+        }
+        catch (EntryPointNotFoundException e)
+        {
+            throw new InvalidOperationException("GFPGAN(原生) 导出函数缺失: " + e.Message);
+        }
     }
 
     private void OnDestroy()
@@ -183,6 +209,104 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
         progress01 = Mathf.Clamp01(progress01);
         try { ProgressChanged?.Invoke(progress01, text ?? ""); } catch { }
     }
+
+    #region debug-point windows-player-native-crash-report
+    private static string _dbgUrl;
+    private static string _dbgSessionId;
+    private static bool _dbgLoaded;
+
+    private static void LoadDbgEnv()
+    {
+        if (_dbgLoaded) return;
+        _dbgLoaded = true;
+        _dbgUrl = "http://127.0.0.1:7778/event";
+        _dbgSessionId = "windows-player-native-crash";
+        try
+        {
+            var envName = "windows-player-native-crash.env";
+            var candidates = new[]
+            {
+                Path.Combine(Application.persistentDataPath, ".dbg", envName),
+                Path.Combine(Environment.CurrentDirectory, ".dbg", envName),
+                Path.Combine(Application.dataPath, "..", ".dbg", envName)
+            };
+            for (var i = 0; i < candidates.Length; i++)
+            {
+                var envPath = candidates[i];
+                if (!File.Exists(envPath))
+                    continue;
+                var lines = File.ReadAllLines(envPath);
+                foreach (var raw in lines)
+                {
+                    var line = raw?.Trim();
+                    if (string.IsNullOrEmpty(line)) continue;
+                    if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
+                        _dbgUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
+                    else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
+                        _dbgSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+                }
+                break;
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static async UniTask ReportDbgAsync(string hypothesisId, string type, string msg, string dataJson, string traceId, CancellationToken ct)
+    {
+        try
+        {
+            LoadDbgEnv();
+            if (string.IsNullOrWhiteSpace(hypothesisId)) hypothesisId = "A";
+            if (string.IsNullOrWhiteSpace(dataJson)) dataJson = "{}";
+            var payload =
+                "{\"sessionId\":\"" + EscapeJson(_dbgSessionId) + "\"" +
+                ",\"runId\":\"pre-fix\"" +
+                ",\"hypothesisId\":\"" + EscapeJson(hypothesisId) + "\"" +
+                ",\"location\":\"GfpganNcnnNativeRunner\"" +
+                ",\"msg\":\"" + EscapeJson(msg) + "\"" +
+                ",\"type\":\"" + EscapeJson(type) + "\"" +
+                ",\"traceId\":\"" + EscapeJson(traceId ?? "") + "\"" +
+                ",\"ts\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() +
+                ",\"data\":" + dataJson +
+                "}";
+            var line = payload + "\n";
+
+            var logPath = Path.Combine(Application.persistentDataPath, "trae-debug-log-windows-player-native-crash.ndjson");
+            try { File.AppendAllText(logPath, line); } catch { }
+            try { await File.AppendAllTextAsync(logPath, line, ct); } catch { }
+
+            if (!string.IsNullOrWhiteSpace(_dbgUrl))
+            {
+                try
+                {
+                    await UniTask.SwitchToMainThread();
+                    using var req = new UnityWebRequest(_dbgUrl, "POST");
+                    var body = System.Text.Encoding.UTF8.GetBytes(payload);
+                    req.uploadHandler = new UploadHandlerRaw(body);
+                    req.downloadHandler = new DownloadHandlerBuffer();
+                    req.SetRequestHeader("Content-Type", "application/json");
+                    var op = req.SendWebRequest();
+                    while (!op.isDone)
+                        await UniTask.Delay(15, cancellationToken: ct);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static string EscapeJson(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+    #endregion
 
     private static RectInt FindFaceRect(Texture2D mask, int w, int h, float threshold)
     {

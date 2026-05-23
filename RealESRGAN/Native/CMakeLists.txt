@@ -11,9 +11,9 @@ endif()
 option(REALESRGAN_UNITY_SHARED "Build realesrgan_unity as shared library" ${_REALESRGAN_UNITY_DEFAULT_SHARED})
 
 if (REALESRGAN_UNITY_SHARED)
-    add_library(realesrgan_unity SHARED realesrgan_unity.cpp)
+    add_library(realesrgan_unity SHARED realesrgan_unity.cpp gfpgan_unity.cpp)
 else()
-    add_library(realesrgan_unity STATIC realesrgan_unity.cpp)
+    add_library(realesrgan_unity STATIC realesrgan_unity.cpp gfpgan_unity.cpp)
 endif()
 
 target_compile_definitions(realesrgan_unity PRIVATE REALESRGAN_UNITY_BUILD=1)

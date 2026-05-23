@@ -1,12 +1,14 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Networking;
 using Debug = UnityEngine.Debug;
 
 public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
@@ -37,10 +39,28 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         var originalH = src.height;
 
         var exePath = ResolveExecutablePath();
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        exePath = NormalizeWinPath(exePath);
+#endif
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        exePath = await PrepareExeForIl2CppAsync(exePath, ct);
+#endif
+        await ReportDbgAsync("A", "realesrgan.exe.resolve", "[DEBUG] ResolveExecutablePath",
+            "{\"exePath\":\"" + EscapeJson(exePath ?? "") + "\",\"streamingAssetsPath\":\"" + EscapeJson(Application.streamingAssetsPath) + "\",\"exists\":" + (File.Exists(exePath ?? "") ? 1 : 0) + "}",
+            "", ct);
         if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
             return new RealEsrganResult { error = "realesrgan-ncnn-vulkan executable not found: " + (exePath ?? ""), workDir = null };
 
         var modelDir = ResolveModelDir();
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        modelDir = NormalizeWinPath(modelDir);
+#endif
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        modelDir = await PrepareModelsForIl2CppAsync(modelDir, exePath, ct);
+#endif
+        await ReportDbgAsync("A", "realesrgan.exe.modeldir", "[DEBUG] ResolveModelDir",
+            "{\"modelDir\":\"" + EscapeJson(modelDir ?? "") + "\",\"exists\":" + (Directory.Exists(modelDir ?? "") ? 1 : 0) + "}",
+            "", ct);
         if (string.IsNullOrWhiteSpace(modelDir) || !Directory.Exists(modelDir))
             return new RealEsrganResult { error = "Real-ESRGAN model directory not found: " + (modelDir ?? ""), workDir = null };
 
@@ -50,10 +70,26 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         var runFactor = modelFactor;
 
         var workDir = CreateWorkDir();
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        workDir = NormalizeWinPath(workDir);
+#endif
         var inputPath = Path.Combine(workDir, "input.png");
         var outputPath = Path.Combine(workDir, "output.png");
         var scaledInputPath = Path.Combine(workDir, "input_scaled.png");
         var scaledOutputPath = Path.Combine(workDir, "output_scaled.png");
+
+        try
+        {
+            var testPath = Path.Combine(workDir, "__write_test.tmp");
+            File.WriteAllBytes(testPath, new byte[] { 1, 2, 3 });
+            File.Delete(testPath);
+        }
+        catch (Exception e)
+        {
+            await ReportDbgAsync("D", "realesrgan.exe.workdir.not_writable", "[DEBUG] workDir not writable",
+                "{\"workDir\":\"" + EscapeJson(workDir) + "\",\"msg\":\"" + EscapeJson(e.Message) + "\"}",
+                "", ct);
+        }
 
         Texture2D scaledInput = null;
         try
@@ -116,6 +152,14 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(exePath) ?? ""
             };
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            psi.FileName = NormalizeWinPath(psi.FileName);
+            psi.WorkingDirectory = NormalizeWinPath(psi.WorkingDirectory);
+#endif
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+            psi.RedirectStandardOutput = false;
+            psi.RedirectStandardError = false;
+#endif
 
             string threadError = null;
             byte[] outBytes = null;
@@ -128,6 +172,19 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 int exitCode = -1;
                 try
                 {
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                    var exitCodeLocal = StartProcessAndWaitWin32(psi.FileName, psi.Arguments, psi.WorkingDirectory, ct);
+                    exitCode = exitCodeLocal;
+                    try
+                    {
+                        await ReportDbgAsync("A", "realesrgan.exe.win32.exit", "[DEBUG] CreateProcess exit",
+                            "{\"exitCode\":" + exitCode + ",\"outputExists\":" + (File.Exists(runOutputPath) ? 1 : 0) + ",\"outputPath\":\"" + EscapeJson(runOutputPath) + "\"}",
+                            "", ct);
+                    }
+                    catch
+                    {
+                    }
+#else
                     using (var p = Process.Start(psi))
                     {
                         if (p == null)
@@ -138,6 +195,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                         {
                             ReportProgress(0.05f, "开始推理");
 
+#if !(ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR)
                             var readStdout = ConsumeStreamAsync(p.StandardOutput.BaseStream, line =>
                             {
                                 lock (sbLock) stdoutSb.AppendLine(line);
@@ -149,6 +207,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                                 lock (sbLock) stderrSb.AppendLine(line);
                                 TryReportProgressFromLine(line);
                             }, ct);
+#endif
 
                             using var pseudoCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                             var pseudoProgress = PseudoProgressAsync(pseudoCts.Token);
@@ -161,12 +220,15 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 
                             try { pseudoCts.Cancel(); } catch { }
 
+#if !(ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR)
                             await readStdout;
                             await readStderr;
+#endif
                             try { await pseudoProgress; } catch { }
                             exitCode = p.ExitCode;
                         }
                     }
+#endif
                 }
                 catch (OperationCanceledException)
                 {
@@ -174,7 +236,20 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 }
                 catch (Exception e)
                 {
+                    var win32 = e as System.ComponentModel.Win32Exception;
                     threadError = e.Message;
+                    try
+                    {
+                        var realDir = Path.Combine(Application.streamingAssetsPath, "RealESRGAN");
+                        var dirExists = Directory.Exists(realDir);
+                        var files = dirExists ? string.Join("|", Directory.GetFiles(realDir)) : "";
+                        await ReportDbgAsync("D", "realesrgan.exe.process.start.exception", "[DEBUG] Process.Start exception",
+                            "{\"msg\":\"" + EscapeJson(e.Message) + "\",\"type\":\"" + EscapeJson(e.GetType().FullName) + "\",\"nativeErrorCode\":" + (win32 != null ? win32.NativeErrorCode : -1) + ",\"exePath\":\"" + EscapeJson(exePath) + "\",\"workingDir\":\"" + EscapeJson(psi.WorkingDirectory) + "\",\"args\":\"" + EscapeJson(args) + "\",\"realEsrganDir\":\"" + EscapeJson(realDir) + "\",\"realEsrganDirExists\":" + (dirExists ? 1 : 0) + ",\"files\":\"" + EscapeJson(files) + "\"}",
+                            "", ct);
+                    }
+                    catch
+                    {
+                    }
                 }
 
                 if (string.IsNullOrWhiteSpace(threadError))
@@ -192,6 +267,19 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                     }
                     else if (!File.Exists(runOutputPath))
                     {
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+                        try
+                        {
+                            var files = "";
+                            try { files = string.Join("|", Directory.GetFiles(workDir)); } catch { }
+                            await ReportDbgAsync("D", "realesrgan.exe.output.missing", "[DEBUG] output not found after exitCode=0",
+                                "{\"workDir\":\"" + EscapeJson(workDir) + "\",\"runOutputPath\":\"" + EscapeJson(runOutputPath) + "\",\"files\":\"" + EscapeJson(files) + "\"}",
+                                "", ct);
+                        }
+                        catch
+                        {
+                        }
+#endif
                         threadError = "Real-ESRGAN output not found: " + runOutputPath;
                     }
                     else
@@ -257,6 +345,213 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         }
     }
 
+    #region debug-point windows-player-native-crash-report
+    private static string _dbgUrl;
+    private static string _dbgSessionId;
+    private static bool _dbgLoaded;
+
+    private static void LoadDbgEnv()
+    {
+        if (_dbgLoaded) return;
+        _dbgLoaded = true;
+        _dbgUrl = "http://127.0.0.1:7778/event";
+        _dbgSessionId = "windows-player-native-crash";
+        try
+        {
+            var envName = "windows-player-native-crash.env";
+            var candidates = new[]
+            {
+                Path.Combine(Application.persistentDataPath, ".dbg", envName),
+                Path.Combine(Environment.CurrentDirectory, ".dbg", envName),
+                Path.Combine(Application.dataPath, "..", ".dbg", envName)
+            };
+            for (var i = 0; i < candidates.Length; i++)
+            {
+                var envPath = candidates[i];
+                if (!File.Exists(envPath))
+                    continue;
+                var lines = File.ReadAllLines(envPath);
+                foreach (var raw in lines)
+                {
+                    var line = raw?.Trim();
+                    if (string.IsNullOrEmpty(line)) continue;
+                    if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
+                        _dbgUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
+                    else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
+                        _dbgSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+                }
+                break;
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static async UniTask ReportDbgAsync(string hypothesisId, string type, string msg, string dataJson, string traceId, CancellationToken ct)
+    {
+        try
+        {
+            LoadDbgEnv();
+            if (string.IsNullOrWhiteSpace(hypothesisId)) hypothesisId = "A";
+            if (string.IsNullOrWhiteSpace(dataJson)) dataJson = "{}";
+            var payload =
+                "{\"sessionId\":\"" + EscapeJson(_dbgSessionId) + "\"" +
+                ",\"runId\":\"pre-fix\"" +
+                ",\"hypothesisId\":\"" + EscapeJson(hypothesisId) + "\"" +
+                ",\"location\":\"RealEsrganNcnnVulkanRunner\"" +
+                ",\"msg\":\"" + EscapeJson(msg) + "\"" +
+                ",\"type\":\"" + EscapeJson(type) + "\"" +
+                ",\"traceId\":\"" + EscapeJson(traceId ?? "") + "\"" +
+                ",\"ts\":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() +
+                ",\"data\":" + dataJson +
+                "}";
+            var line = payload + "\n";
+
+            var logPath = Path.Combine(Application.persistentDataPath, "trae-debug-log-windows-player-native-crash.ndjson");
+            try { File.AppendAllText(logPath, line); } catch { }
+            try { await File.AppendAllTextAsync(logPath, line, ct); } catch { }
+
+            if (!string.IsNullOrWhiteSpace(_dbgUrl))
+            {
+                try
+                {
+                    await UniTask.SwitchToMainThread();
+                    using var req = new UnityWebRequest(_dbgUrl, "POST");
+                    var body = System.Text.Encoding.UTF8.GetBytes(payload);
+                    req.uploadHandler = new UploadHandlerRaw(body);
+                    req.downloadHandler = new DownloadHandlerBuffer();
+                    req.SetRequestHeader("Content-Type", "application/json");
+                    var op = req.SendWebRequest();
+                    while (!op.isDone)
+                        await UniTask.Delay(15, cancellationToken: ct);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static string EscapeJson(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+    #endregion
+
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessW(
+        string lpApplicationName,
+        System.Text.StringBuilder lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    private static int StartProcessAndWaitWin32(string exePath, string args, string workingDir, CancellationToken ct)
+    {
+        var si = new STARTUPINFO();
+        si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+        si.dwFlags = 0x00000001;
+        si.wShowWindow = 0;
+
+        var cmd = new System.Text.StringBuilder();
+        cmd.Append('"').Append(exePath).Append('"');
+        if (!string.IsNullOrWhiteSpace(args))
+        {
+            cmd.Append(' ').Append(args);
+        }
+        const uint CREATE_NO_WINDOW = 0x08000000;
+        if (!CreateProcessW(exePath, cmd, IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW, IntPtr.Zero, workingDir, ref si, out var pi))
+        {
+            var code = Marshal.GetLastWin32Error();
+            throw new System.ComponentModel.Win32Exception(code, "CreateProcessW failed: " + exePath);
+        }
+
+        try
+        {
+            const uint WAIT_OBJECT_0 = 0x00000000;
+            const uint WAIT_TIMEOUT = 0x00000102;
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var r = WaitForSingleObject(pi.hProcess, 50);
+                if (r == WAIT_OBJECT_0)
+                    break;
+                if (r != WAIT_TIMEOUT)
+                    break;
+            }
+
+            if (!GetExitCodeProcess(pi.hProcess, out var exit))
+                return -1;
+            return unchecked((int)exit);
+        }
+        catch (OperationCanceledException)
+        {
+            try { TerminateProcess(pi.hProcess, 0); } catch { }
+            throw;
+        }
+        finally
+        {
+            try { CloseHandle(pi.hThread); } catch { }
+            try { CloseHandle(pi.hProcess); } catch { }
+        }
+    }
+#endif
+
     private string ResolveExecutablePath()
     {
         if (!string.IsNullOrWhiteSpace(executablePathOverride))
@@ -297,6 +592,122 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         return dir;
     }
 
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+    private static async UniTask<string> PrepareExeForIl2CppAsync(string streamingExePath, CancellationToken ct)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(streamingExePath) || !File.Exists(streamingExePath))
+                return streamingExePath;
+
+            var srcDir = Path.GetDirectoryName(streamingExePath);
+            if (string.IsNullOrWhiteSpace(srcDir) || !Directory.Exists(srcDir))
+                return streamingExePath;
+
+            var dstDir = Path.Combine(Application.persistentDataPath, "RealESRGAN", "bin");
+            Directory.CreateDirectory(dstDir);
+
+            var exeName = Path.GetFileName(streamingExePath);
+            var dstExe = Path.Combine(dstDir, exeName);
+
+            void CopyIfDifferent(string src, string dst)
+            {
+                try
+                {
+                    if (!File.Exists(src))
+                        return;
+                    var need = true;
+                    if (File.Exists(dst))
+                    {
+                        var a = new FileInfo(src);
+                        var b = new FileInfo(dst);
+                        need = a.Length != b.Length || a.LastWriteTimeUtc != b.LastWriteTimeUtc;
+                    }
+                    if (need)
+                        File.Copy(src, dst, true);
+                }
+                catch
+                {
+                }
+            }
+
+            CopyIfDifferent(streamingExePath, dstExe);
+            var dlls = Directory.GetFiles(srcDir, "*.dll");
+            for (var i = 0; i < dlls.Length; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var src = dlls[i];
+                var dst = Path.Combine(dstDir, Path.GetFileName(src));
+                CopyIfDifferent(src, dst);
+                await UniTask.Yield();
+            }
+            return dstExe;
+        }
+        catch
+        {
+            return streamingExePath;
+        }
+    }
+#endif
+
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+    private static async UniTask<string> PrepareModelsForIl2CppAsync(string streamingModelDir, string exePath, CancellationToken ct)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+                return streamingModelDir;
+
+            var exeDir = Path.GetDirectoryName(exePath);
+            if (string.IsNullOrWhiteSpace(exeDir))
+                return streamingModelDir;
+
+            var dstModelDir = Path.Combine(exeDir, "models");
+            Directory.CreateDirectory(dstModelDir);
+
+            if (!Directory.Exists(streamingModelDir))
+                return dstModelDir;
+
+            void CopyIfDifferent(string src, string dst)
+            {
+                try
+                {
+                    if (!File.Exists(src))
+                        return;
+                    var need = true;
+                    if (File.Exists(dst))
+                    {
+                        var a = new FileInfo(src);
+                        var b = new FileInfo(dst);
+                        need = a.Length != b.Length || a.LastWriteTimeUtc != b.LastWriteTimeUtc;
+                    }
+                    if (need)
+                        File.Copy(src, dst, true);
+                }
+                catch
+                {
+                }
+            }
+
+            var srcFiles = Directory.GetFiles(streamingModelDir);
+            for (var i = 0; i < srcFiles.Length; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var src = srcFiles[i];
+                var dst = Path.Combine(dstModelDir, Path.GetFileName(src));
+                CopyIfDifferent(src, dst);
+                await UniTask.Yield();
+            }
+
+            return dstModelDir;
+        }
+        catch
+        {
+            return streamingModelDir;
+        }
+    }
+#endif
+
     private string BuildArgs(string exePath, string inputPath, string outputPath, int s, string model, string modelDir)
     {
         var exeBase = (Path.GetFileNameWithoutExtension(exePath) ?? "").ToLowerInvariant();
@@ -310,6 +721,11 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 
         var sb = new StringBuilder();
         sb.Append("-v ");
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        inputPath = NormalizeWinPath(inputPath);
+        outputPath = NormalizeWinPath(outputPath);
+        modelDir = NormalizeWinPath(modelDir);
+#endif
         sb.Append("-i ").Append(QuoteArg(inputPath)).Append(' ');
         sb.Append("-o ").Append(QuoteArg(outputPath)).Append(' ');
         sb.Append("-s ").Append(s).Append(' ');
@@ -322,6 +738,23 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             sb.Append("-m ").Append(QuoteArg(modelDir)).Append(' ');
         return sb.ToString().Trim();
     }
+
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+    private static string NormalizeWinPath(string p)
+    {
+        if (string.IsNullOrWhiteSpace(p))
+            return p;
+        try
+        {
+            var full = Path.GetFullPath(p);
+            return full.Replace('/', '\\');
+        }
+        catch
+        {
+            return p.Replace('/', '\\');
+        }
+    }
+#endif
 
     private static string QuoteArg(string s)
     {
