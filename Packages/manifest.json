@@ -45,7 +45,10 @@
     "com.unity.modules.video": "1.0.0",
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
-    "com.unity.modules.xr": "1.0.0"
+    "com.unity.modules.xr": "1.0.0",
+    "com.github.asus4.onnxruntime": "0.4.7",
+    "com.github.asus4.onnxruntime.unity": "0.4.7",
+    "com.github.asus4.onnxruntime-extensions": "0.4.7"
   },
   "scopedRegistries": [
     {
@@ -56,6 +59,13 @@
         "org.nuget",
         "com.cysharp.unitask"
       ]
-    }
+    },
+    {
+      "name": "NPM",
+      "url": "https://registry.npmjs.com",
+      "scopes": [
+        "com.github.asus4"
+      ]
+    }    
   ]
 }

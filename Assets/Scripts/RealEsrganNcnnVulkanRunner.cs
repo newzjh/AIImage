@@ -19,6 +19,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     public string executablePathOverride;
     public string modelDirOverride;
     public int maxInputLongSide = 2048;
+    public int inputAlignMultiple = 0;
 
     public event Action<float, string> ProgressChanged;
     private readonly object _progressLock = new object();
@@ -45,6 +46,8 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 
         var s = Mathf.Clamp(scale, 2, 4);
         var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
+        var modelFactor = InferModelFactor(model);
+        var runFactor = modelFactor;
 
         var workDir = CreateWorkDir();
         var inputPath = Path.Combine(workDir, "input.png");
@@ -70,6 +73,22 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 var scaleDown = (float)limit / maxSide;
                 var sw = Mathf.Max(1, Mathf.RoundToInt(originalW * scaleDown));
                 var sh = Mathf.Max(1, Mathf.RoundToInt(originalH * scaleDown));
+                if (inputAlignMultiple >= 2)
+                {
+                    var m = inputAlignMultiple;
+                    sw = RoundToMultiple(sw, m);
+                    sh = RoundToMultiple(sh, m);
+                    if (originalW >= originalH)
+                    {
+                        if (sw > limit) sw = Mathf.Max(m, sw - m);
+                    }
+                    else
+                    {
+                        if (sh > limit) sh = Mathf.Max(m, sh - m);
+                    }
+                    sw = Mathf.Max(1, sw);
+                    sh = Mathf.Max(1, sh);
+                }
                 scaledInput = ResizeTextureBilinear(src, sw, sh);
                 if (scaledInput == null)
                     return new RealEsrganResult { error = "Failed to scale down input image" };
@@ -85,7 +104,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 await File.WriteAllBytesAsync(inputPath, inputBytes, ct);
             }
 
-            var args = BuildArgs(exePath, runInputPath, runOutputPath, s, model, modelDir);
+            var args = BuildArgs(exePath, runInputPath, runOutputPath, runFactor, model, modelDir);
 
             var psi = new ProcessStartInfo
             {
@@ -119,13 +138,13 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                         {
                             ReportProgress(0.05f, "开始推理");
 
-                            var readStdout = ConsumeLinesAsync(p.StandardOutput, line =>
+                            var readStdout = ConsumeStreamAsync(p.StandardOutput.BaseStream, line =>
                             {
                                 lock (sbLock) stdoutSb.AppendLine(line);
                                 TryReportProgressFromLine(line);
                             }, ct);
 
-                            var readStderr = ConsumeLinesAsync(p.StandardError, line =>
+                            var readStderr = ConsumeStreamAsync(p.StandardError.BaseStream, line =>
                             {
                                 lock (sbLock) stderrSb.AppendLine(line);
                                 TryReportProgressFromLine(line);
@@ -209,7 +228,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             }
             tex.wrapMode = TextureWrapMode.Clamp;
             tex.filterMode = FilterMode.Bilinear;
-            tex.name = "RealESRGAN_" + s + "x_scaled";
+            tex.name = "RealESRGAN_" + runFactor + "x_scaled";
 
             Texture2D finalTex = tex;
             if (finalTex.width != originalW || finalTex.height != originalH)
@@ -221,7 +240,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 if (finalTex == null)
                     return new RealEsrganResult { error = "Failed to resize output back to original resolution" };
             }
-            finalTex.name = "RealESRGAN_" + s + "x";
+            finalTex.name = "RealESRGAN_" + runFactor + "x";
 
             ReportProgress(1f, "完成");
 
@@ -320,15 +339,49 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         try { ProgressChanged?.Invoke(progress01, text ?? ""); } catch { }
     }
 
-    private async Task ConsumeLinesAsync(StreamReader reader, Action<string> onLine, CancellationToken ct)
+    private async Task ConsumeStreamAsync(Stream stream, Action<string> onLine, CancellationToken ct)
     {
-        while (!reader.EndOfStream)
+        var buffer = new byte[4096];
+        var carry = new StringBuilder();
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var line = await reader.ReadLineAsync();
-            if (line == null)
+            int read;
+            try
+            {
+                read = await stream.ReadAsync(buffer, 0, buffer.Length, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            if (read <= 0)
                 break;
-            try { onLine?.Invoke(line); } catch { }
+
+            for (var i = 0; i < read; i++)
+            {
+                var b = buffer[i];
+                char c = (b >= 32 && b <= 126) ? (char)b : ' ';
+                if (b == (byte)'\n' || b == (byte)'\r')
+                {
+                    if (carry.Length > 0)
+                    {
+                        var s = carry.ToString();
+                        carry.Clear();
+                        try { onLine?.Invoke(s); } catch { }
+                    }
+                }
+                else
+                {
+                    carry.Append(c);
+                }
+            }
+            if (carry.Length > 0)
+            {
+                var s = carry.ToString();
+                carry.Clear();
+                try { onLine?.Invoke(s); } catch { }
+            }
         }
     }
 
@@ -337,7 +390,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         if (string.IsNullOrWhiteSpace(line))
             return;
 
-        var mPct = Regex.Match(line, @"(\d+[.,]\d+)%");
+        var mPct = Regex.Match(line, @"(\d+(?:[.,]\d+)?)%");
         if (mPct.Success && float.TryParse(mPct.Groups[1].Value.Replace(',', '.'), out var pct))
         {
             ReportProgress(0.10f + 0.80f * Mathf.Clamp01(pct / 100f), line);
@@ -422,6 +475,35 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             try { rt.Release(); } catch { }
             Destroy(rt);
         }
+    }
+
+    private static int InferModelFactor(string model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+            return 4;
+        var m = Regex.Match(model, @"(?:x(\d+)|(\d+)x)", RegexOptions.IgnoreCase);
+        if (!m.Success)
+            return 4;
+        var s = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+        if (!int.TryParse(s, out var v))
+            return 4;
+        if (v < 2) v = 2;
+        if (v > 4) v = 4;
+        return v;
+    }
+
+    private static int RoundToMultiple(int value, int multiple)
+    {
+        if (multiple <= 1)
+            return value;
+        var r = value % multiple;
+        if (r == 0)
+            return value;
+        var down = value - r;
+        var up = down + multiple;
+        if (down <= 0)
+            return up;
+        return (value - down) <= (up - value) ? down : up;
     }
 }
 
