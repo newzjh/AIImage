@@ -39,6 +39,11 @@ namespace NcnnCompute
         private readonly int _kPaddingPack4;
         private readonly int _kPoolingPack4;
         private readonly int _kSoftmaxChannelPack4;
+        private readonly int _kUnaryOpPack4;
+        private readonly int _kBinaryOpPack4;
+        private readonly int _kSwishPack4;
+        private readonly int _kSigmoidPack4;
+        private readonly int _kGeluPack4;
 
         public NcnnOps()
         {
@@ -78,6 +83,11 @@ namespace NcnnCompute
             _kPaddingPack4 = _cs.FindKernel("NcnnPaddingPack4");
             _kPoolingPack4 = _cs.FindKernel("NcnnPoolingPack4");
             _kSoftmaxChannelPack4 = _cs.FindKernel("NcnnSoftmaxChannelPack4");
+            _kUnaryOpPack4 = _cs.FindKernel("NcnnUnaryOpPack4");
+            _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
+            _kSwishPack4 = _cs.FindKernel("NcnnSwishPack4");
+            _kSigmoidPack4 = _cs.FindKernel("NcnnSigmoidPack4");
+            _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -310,6 +320,71 @@ namespace NcnnCompute
             _cs.SetTexture(_kSoftmaxChannelPack4, "_SoftmaxInArr", input);
             _cs.SetTexture(_kSoftmaxChannelPack4, "_SoftmaxOutArr", output);
             Dispatch3D(_kSoftmaxChannelPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void UnaryOpPack4(RenderTexture input, int packs, int opType, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_UnaryOpType", opType);
+            _cs.SetTexture(_kUnaryOpPack4, "_UnaryInArr", input);
+            _cs.SetTexture(_kUnaryOpPack4, "_UnaryOutArr", output);
+            Dispatch3D(_kUnaryOpPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void BinaryOpPack4(RenderTexture a, RenderTexture b, int packs, int opType, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 0);
+            _cs.SetFloat("_BinaryScalar", 0f);
+            _cs.SetTexture(_kBinaryOpPack4, "_BinaryA", a);
+            _cs.SetTexture(_kBinaryOpPack4, "_BinaryB", b);
+            _cs.SetTexture(_kBinaryOpPack4, "_BinaryOutArr", output);
+            Dispatch3D(_kBinaryOpPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void BinaryOpScalarPack4(RenderTexture a, float b, int packs, int opType, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 1);
+            _cs.SetFloat("_BinaryScalar", b);
+            _cs.SetTexture(_kBinaryOpPack4, "_BinaryA", a);
+            _cs.SetTexture(_kBinaryOpPack4, "_BinaryB", a);
+            _cs.SetTexture(_kBinaryOpPack4, "_BinaryOutArr", output);
+            Dispatch3D(_kBinaryOpPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void SwishPack4(RenderTexture input, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetTexture(_kSwishPack4, "_ActInArr", input);
+            _cs.SetTexture(_kSwishPack4, "_ActOutArr", output);
+            Dispatch3D(_kSwishPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void SigmoidPack4(RenderTexture input, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetTexture(_kSigmoidPack4, "_ActInArr", input);
+            _cs.SetTexture(_kSigmoidPack4, "_ActOutArr", output);
+            Dispatch3D(_kSigmoidPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void GeluPack4(RenderTexture input, int packs, bool fastGelu, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_GeluFast", fastGelu ? 1 : 0);
+            _cs.SetTexture(_kGeluPack4, "_ActInArr", input);
+            _cs.SetTexture(_kGeluPack4, "_ActOutArr", output);
+            Dispatch3D(_kGeluPack4, output.width, output.height, packs, 8, 8);
         }
 
         public void Conv3x3Pack4(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, RenderTexture dstPack4)

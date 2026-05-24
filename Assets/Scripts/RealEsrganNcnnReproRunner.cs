@@ -726,11 +726,65 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
             if (string.Equals(l.type, "BinaryOp", StringComparison.Ordinal))
             {
+                var opType = l.GetInt(0, 0);
+                var withScalar = l.GetInt(1, 0);
+                var scalarB = l.GetFloat(2, 0f);
                 var a = Get(blobs, l.bottomNames[0]);
-                var b = Get(blobs, l.bottomNames[1]);
                 var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
-                _ops.AddPack4(a.t, b.t, 1f, 1f, a.packs, outArr);
+                if (withScalar != 0)
+                {
+                    _ops.BinaryOpScalarPack4(a.t, scalarB, a.packs, opType, outArr);
+                }
+                else
+                {
+                    var b = Get(blobs, l.bottomNames[1]);
+                    if (a.w != b.w || a.h != b.h || a.packs != b.packs)
+                        throw new InvalidOperationException("BinaryOp broadcast not supported: " + l.name);
+                    _ops.BinaryOpPack4(a.t, b.t, a.packs, opType, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                Consume(blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "UnaryOp", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var opType = l.GetInt(0, 0);
+                var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.UnaryOpPack4(src.t, src.packs, opType, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Swish", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.SwishPack4(src.t, src.packs, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Sigmoid", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.SigmoidPack4(src.t, src.packs, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "GELU", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var fast = l.GetInt(0, 0) != 0;
+                var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.GeluPack4(src.t, src.packs, fast, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
