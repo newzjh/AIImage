@@ -99,6 +99,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
         Texture2D runInput = null;
         var ownsRunInput = false;
+        RenderTexture scaledOutRt = null;
         RenderTexture outRt = null;
         try
         {
@@ -114,11 +115,21 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 runInput = src;
             }
 
-            outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-            outRt.enableRandomWrite = true;
-            outRt.wrapMode = TextureWrapMode.Clamp;
-            outRt.filterMode = FilterMode.Bilinear;
-            outRt.Create();
+            var scaledOutW = runInW * runFactor;
+            var scaledOutH = runInH * runFactor;
+            scaledOutRt = new RenderTexture(scaledOutW, scaledOutH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            scaledOutRt.enableRandomWrite = true;
+            scaledOutRt.wrapMode = TextureWrapMode.Clamp;
+            scaledOutRt.filterMode = FilterMode.Bilinear;
+            scaledOutRt.Create();
+
+            if (scaledOutW != originalW || scaledOutH != originalH)
+            {
+                outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                outRt.wrapMode = TextureWrapMode.Clamp;
+                outRt.filterMode = FilterMode.Bilinear;
+                outRt.Create();
+            }
 
             var tilesX = Mathf.CeilToInt(runInW / (float)Mathf.Max(1, tileSize));
             var tilesY = Mathf.CeilToInt(runInH / (float)Mathf.Max(1, tileSize));
@@ -148,19 +159,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                         _ops.PackRgbToPack4(runInput, ox, oy, inArr);
                         outArr = ForwardPack4(inArr, 1);
 
-                        var dstToSrcScale = (runInW / (float)originalW) * runFactor;
-                        var scaleX = originalW / (float)runInW;
-                        var scaleY = originalH / (float)runInH;
-                        var dstX0 = Mathf.Clamp(Mathf.FloorToInt(tx * scaleX), 0, originalW);
-                        var dstY0 = Mathf.Clamp(Mathf.FloorToInt(ty * scaleY), 0, originalH);
-                        var dstX1 = Mathf.Clamp(Mathf.CeilToInt((tx + tw) * scaleX), 0, originalW);
-                        var dstY1 = Mathf.Clamp(Mathf.CeilToInt((ty + th) * scaleY), 0, originalH);
-                        var dstW = Mathf.Max(0, dstX1 - dstX0);
-                        var dstH = Mathf.Max(0, dstY1 - dstY0);
-
+                        var dstX = tx * runFactor;
+                        var dstY = ty * runFactor;
+                        var dstW = tw * runFactor;
+                        var dstH = th * runFactor;
                         var tileOutOriginX = ox * runFactor;
                         var tileOutOriginY = oy * runFactor;
-                        _ops.BlitTileToDst(outArr, outRt, dstX0, dstY0, tileOutOriginX, tileOutOriginY, dstW, dstH, dstToSrcScale);
+                        _ops.BlitTileToDst(outArr, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
                     }
                     finally
                     {
@@ -172,20 +177,20 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 }
             }
 
-            ReportProgress(0.98f, "读取结果");
-            var scaledTex = await ReadbackTextureAsync(outRt, outRt.width, outRt.height, ct);
+            ReportProgress(0.98f, "后处理");
+            var finalRt = scaledOutRt;
+            if (outRt != null)
+            {
+                Graphics.Blit(scaledOutRt, outRt);
+                finalRt = outRt;
+            }
+
+            ReportProgress(0.99f, "读取结果");
+            var scaledTex = await ReadbackTextureAsync(finalRt, finalRt.width, finalRt.height, ct);
             if (scaledTex == null)
                 return new RealEsrganResult { error = "readback failed" };
 
             Texture2D finalTex = scaledTex;
-            if (finalTex.width != originalW || finalTex.height != originalH)
-            {
-                var resized = ResizeTextureBilinear(finalTex, originalW, originalH);
-                Destroy(finalTex);
-                finalTex = resized;
-                if (finalTex == null)
-                    return new RealEsrganResult { error = "resize output failed" };
-            }
             if (finalTex == null)
                 return new RealEsrganResult { error = "resize output failed" };
 
@@ -203,6 +208,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         finally
         {
             if (ownsRunInput && runInput != null) Destroy(runInput);
+            if (scaledOutRt != null)
+            {
+                scaledOutRt.Release();
+                Destroy(scaledOutRt);
+            }
             if (outRt != null)
             {
                 outRt.Release();
