@@ -19,6 +19,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public bool enableTempPool = false;
     public bool clearTempPoolAfterRun = true;
     public int maxPooledPerShape = 2;
+    public bool enableTileProbe = false;
+    public bool enableSeamProbe = false;
+    public int yieldEveryTiles = 4;
+    public bool enableVulkanTempPoolByDefault = true;
+    public int maxYieldEveryTiles = 16;
 
     public event Action<float, string> ProgressChanged;
 
@@ -187,7 +192,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         for (var attempt = 0; attempt < attemptTiles.Length; attempt++)
         {
             var effectiveTileSize = attemptTiles[attempt];
-            var usePool = enableTempPool || (isVulkan && attempt > 0);
+            var usePool = enableTempPool || (isVulkan && (enableVulkanTempPoolByDefault || attempt > 0));
             _useTempPoolThisRun = usePool;
             try
             {
@@ -214,6 +219,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var ownsRunInput = false;
         RenderTexture scaledOutRt = null;
         RenderTexture outRt = null;
+        ComputeBuffer probeBuf = null;
+        Vector4[] probeData = null;
+        ComputeBuffer probeInBuf = null;
         try
         {
             if (runInW != originalW || runInH != originalH)
@@ -252,6 +260,29 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var tilesY = Mathf.CeilToInt(runInH / (float)Mathf.Max(1, effectiveTileSize));
             var tileCount = Mathf.Max(1, tilesX * tilesY);
             var tileIndex = 0;
+            var packMs = 0L;
+            var forwardMs = 0L;
+            var blitMs = 0L;
+            var rentMs = 0L;
+            var returnMs = 0L;
+            var yieldMs = 0L;
+            var swTileAll = Stopwatch.StartNew();
+            if (enableTileProbe)
+            {
+                probeBuf = new ComputeBuffer(tileCount, sizeof(float) * 4, ComputeBufferType.Structured);
+                probeData = new Vector4[tileCount];
+            }
+
+            Vector4[] probeInData = null;
+            if (enableTileProbe)
+            {
+                probeInBuf = new ComputeBuffer(tileCount, sizeof(float) * 4, ComputeBufferType.Structured);
+                probeInData = new Vector4[tileCount];
+            }
+
+            var effectiveYieldEveryTiles = yieldEveryTiles;
+            if (maxYieldEveryTiles > 0)
+                effectiveYieldEveryTiles = Mathf.Clamp(effectiveYieldEveryTiles, 0, maxYieldEveryTiles);
 
             for (var ty = 0; ty < runInH; ty += Mathf.Max(1, effectiveTileSize))
             {
@@ -267,14 +298,28 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     var oy = ty - effectiveTilePad;
                     var tileProgress = (float)tileIndex / tileCount;
                     ReportProgress(tileProgress, "推理分块 " + (tileIndex + 1) + "/" + tileCount);
-                    await UniTask.Yield();
+                    if (effectiveYieldEveryTiles > 0 && (tileIndex % effectiveYieldEveryTiles) == 0)
+                    {
+                        var sw = Stopwatch.StartNew();
+                        await UniTask.Yield();
+                        yieldMs += sw.ElapsedMilliseconds;
+                    }
 
+                    var swRent = Stopwatch.StartNew();
                     var inArr = RentTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
+                    rentMs += swRent.ElapsedMilliseconds;
                     var outArr = (RenderTexture)null;
                     try
                     {
+                        var swPack = Stopwatch.StartNew();
                         _ops.PackRgbToPack4(runInput, ox, oy, inArr);
+                        packMs += swPack.ElapsedMilliseconds;
+                        if (probeInBuf != null)
+                            _ops.ProbeTilePack4(inArr, tileIndex, effectiveTilePad, tw, th, probeInBuf);
+
+                        var swFwd = Stopwatch.StartNew();
                         outArr = ForwardPack4(inArr, 1);
+                        forwardMs += swFwd.ElapsedMilliseconds;
 
                         var dstX = tx * runFactor;
                         var dstY = ty * runFactor;
@@ -282,12 +327,18 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                         var dstH = th * runFactor;
                         var tileOutOriginX = ox * runFactor;
                         var tileOutOriginY = oy * runFactor;
+                        if (probeBuf != null)
+                            _ops.ProbeTilePack4(outArr, tileIndex, effectiveTilePad * runFactor, dstW, dstH, probeBuf);
+                        var swBlit = Stopwatch.StartNew();
                         _ops.BlitTileToDst(outArr, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
+                        blitMs += swBlit.ElapsedMilliseconds;
                     }
                     finally
                     {
+                        var swRet = Stopwatch.StartNew();
                         ReturnTempArray(inArr);
                         if (outArr != null) ReturnTempArray(outArr);
+                        returnMs += swRet.ElapsedMilliseconds;
                     }
 
                     tileIndex++;
@@ -302,10 +353,149 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 finalRt = outRt;
             }
 
+            if (enableSeamProbe)
+            {
+                var seamCount = Mathf.Max(0, tilesX - 1) + Mathf.Max(0, tilesY - 1);
+                if (seamCount > 0)
+                {
+                    using (var seamBuf = new ComputeBuffer(seamCount, sizeof(float) * 4, ComputeBufferType.Structured))
+                    {
+                        _ops.ProbeSeams(scaledOutRt, tilesX, tilesY, effectiveTileSize * runFactor, effectiveTileSize * runFactor, 32, seamBuf);
+                        var seamData = new Vector4[seamCount];
+                        seamBuf.GetData(seamData);
+                        var maxScore = 0f;
+                        var maxType = 0f;
+                        var maxPos = 0f;
+                        for (var i = 0; i < seamData.Length; i++)
+                        {
+                            var v = seamData[i];
+                            if (v.x > maxScore)
+                            {
+                                maxScore = v.x;
+                                maxType = v.y;
+                                maxPos = v.z;
+                            }
+                        }
+                        var seamType = maxType < 0.5f ? "V" : "H";
+                        Debug.Log("[SEAM] ESRGAN(repro) maxScore=" + maxScore.ToString("0.######", CultureInfo.InvariantCulture) + " type=" + seamType + " pos=" + ((int)maxPos));
+                    }
+                }
+            }
+
             ReportProgress(0.99f, "读取结果");
             var scaledTex = await ReadbackTextureAsync(finalRt, finalRt.width, finalRt.height, ct);
             if (scaledTex == null)
                 return new RealEsrganResult { error = "readback failed" };
+
+            if (probeBuf != null && probeData != null)
+            {
+                try
+                {
+                    probeBuf.GetData(probeData);
+                    float maxDiff = 0f;
+                    var maxA = -1;
+                    var maxB = -1;
+                    for (var y = 0; y < tilesY; y++)
+                    {
+                        for (var x = 0; x < tilesX; x++)
+                        {
+                            var a = y * tilesX + x;
+                            if (x + 1 < tilesX)
+                            {
+                                var b = y * tilesX + (x + 1);
+                                var da = probeData[a];
+                                var db = probeData[b];
+                                var d = Mathf.Abs(da.x - db.x) + Mathf.Abs(da.y - db.y) + Mathf.Abs(da.z - db.z);
+                                if (d > maxDiff) { maxDiff = d; maxA = a; maxB = b; }
+                            }
+                            if (y + 1 < tilesY)
+                            {
+                                var b = (y + 1) * tilesX + x;
+                                var da = probeData[a];
+                                var db = probeData[b];
+                                var d = Mathf.Abs(da.x - db.x) + Mathf.Abs(da.y - db.y) + Mathf.Abs(da.z - db.z);
+                                if (d > maxDiff) { maxDiff = d; maxA = a; maxB = b; }
+                            }
+                        }
+                    }
+                    var va = (maxA >= 0 && maxA < probeData.Length) ? probeData[maxA] : Vector4.zero;
+                    var vb = (maxB >= 0 && maxB < probeData.Length) ? probeData[maxB] : Vector4.zero;
+                    var ax = maxA >= 0 ? (maxA % tilesX) : -1;
+                    var ay = maxA >= 0 ? (maxA / tilesX) : -1;
+                    var bx = maxB >= 0 ? (maxB % tilesX) : -1;
+                    var by = maxB >= 0 ? (maxB / tilesX) : -1;
+                    UnityEngine.Debug.Log(
+                        "[PROBE] ESRGAN(repro) tiles=" + tilesX + "x" + tilesY
+                        + " maxAdjDiff=" + maxDiff.ToString("0.######", CultureInfo.InvariantCulture)
+                        + " a=" + maxA + " (" + ax + "," + ay + ") (" + va.x.ToString("0.######", CultureInfo.InvariantCulture) + "," + va.y.ToString("0.######", CultureInfo.InvariantCulture) + "," + va.z.ToString("0.######", CultureInfo.InvariantCulture) + ")"
+                        + " b=" + maxB + " (" + bx + "," + by + ") (" + vb.x.ToString("0.######", CultureInfo.InvariantCulture) + "," + vb.y.ToString("0.######", CultureInfo.InvariantCulture) + "," + vb.z.ToString("0.######", CultureInfo.InvariantCulture) + ")"
+                    );
+                }
+                catch
+                {
+                }
+            }
+            if (probeInBuf != null && probeInData != null)
+            {
+                try
+                {
+                    probeInBuf.GetData(probeInData);
+                    float maxDiff = 0f;
+                    var maxA = -1;
+                    var maxB = -1;
+                    for (var y = 0; y < tilesY; y++)
+                    {
+                        for (var x = 0; x < tilesX; x++)
+                        {
+                            var a = y * tilesX + x;
+                            if (x + 1 < tilesX)
+                            {
+                                var b = y * tilesX + (x + 1);
+                                var da = probeInData[a];
+                                var db = probeInData[b];
+                                var d = Mathf.Abs(da.x - db.x) + Mathf.Abs(da.y - db.y) + Mathf.Abs(da.z - db.z);
+                                if (d > maxDiff) { maxDiff = d; maxA = a; maxB = b; }
+                            }
+                            if (y + 1 < tilesY)
+                            {
+                                var b = (y + 1) * tilesX + x;
+                                var da = probeInData[a];
+                                var db = probeInData[b];
+                                var d = Mathf.Abs(da.x - db.x) + Mathf.Abs(da.y - db.y) + Mathf.Abs(da.z - db.z);
+                                if (d > maxDiff) { maxDiff = d; maxA = a; maxB = b; }
+                            }
+                        }
+                    }
+
+                    var va = (maxA >= 0 && maxA < probeInData.Length) ? probeInData[maxA] : Vector4.zero;
+                    var vb = (maxB >= 0 && maxB < probeInData.Length) ? probeInData[maxB] : Vector4.zero;
+                    var ax = maxA >= 0 ? (maxA % tilesX) : -1;
+                    var ay = maxA >= 0 ? (maxA / tilesX) : -1;
+                    var bx = maxB >= 0 ? (maxB % tilesX) : -1;
+                    var by = maxB >= 0 ? (maxB / tilesX) : -1;
+                    UnityEngine.Debug.Log(
+                        "[PROBE] ESRGAN(repro.in) tiles=" + tilesX + "x" + tilesY
+                        + " maxAdjDiff=" + maxDiff.ToString("0.######", CultureInfo.InvariantCulture)
+                        + " a=" + maxA + " (" + ax + "," + ay + ") (" + va.x.ToString("0.######", CultureInfo.InvariantCulture) + "," + va.y.ToString("0.######", CultureInfo.InvariantCulture) + "," + va.z.ToString("0.######", CultureInfo.InvariantCulture) + ")"
+                        + " b=" + maxB + " (" + bx + "," + by + ") (" + vb.x.ToString("0.######", CultureInfo.InvariantCulture) + "," + vb.y.ToString("0.######", CultureInfo.InvariantCulture) + "," + vb.z.ToString("0.######", CultureInfo.InvariantCulture) + ")"
+                    );
+                }
+                catch
+                {
+                }
+            }
+            try
+            {
+                UnityEngine.Debug.Log(
+                    "[TIMING] ESRGAN(repro.breakdown) tiles=" + tileCount
+                    + " rent=" + rentMs + " ms | return=" + returnMs + " ms | yield=" + yieldMs + " ms"
+                    + " | pack=" + packMs + " ms | forward=" + forwardMs + " ms | blit=" + blitMs + " ms"
+                    + " | tileAll=" + swTileAll.ElapsedMilliseconds + " ms | pool=" + (_useTempPoolThisRun ? "1" : "0")
+                );
+            }
+            catch
+            {
+            }
 
             Texture2D finalTex = scaledTex;
             if (finalTex == null)
@@ -331,6 +521,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outRt.Release();
                 Destroy(outRt);
             }
+            try { probeBuf?.Dispose(); } catch { }
+            try { probeInBuf?.Dispose(); } catch { }
             if (_useTempPoolThisRun && clearTempPoolAfterRun)
                 ClearTempPool();
         }

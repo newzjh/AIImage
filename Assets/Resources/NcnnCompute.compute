@@ -29,6 +29,8 @@
 #pragma kernel NcnnClipPack4
 #pragma kernel NcnnSftPack4
 #pragma kernel NcnnPack4ToRgb01
+#pragma kernel NcnnProbeTilePack4
+#pragma kernel NcnnProbeSeams
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -781,6 +783,119 @@ void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
     float4 v = _NcnnInArr[int3(sx, sy, 0)];
     v.w = 1.0;
     _NcnnOut[int2(_DstX + (int)id.x, _DstY + (int)id.y)] = v;
+}
+
+Texture2DArray<float4> _ProbeInArr;
+RWStructuredBuffer<float4> _ProbeOut;
+int _ProbeIndex;
+int _ProbePad;
+int _ProbeCoreW;
+int _ProbeCoreH;
+
+Texture2D<float4> _SeamTex;
+RWStructuredBuffer<float4> _SeamOut4;
+int _SeamW;
+int _SeamH;
+int _SeamTilesX;
+int _SeamTilesY;
+int _SeamStepX;
+int _SeamStepY;
+int _SeamSamples;
+
+[numthreads(1,1,1)]
+void NcnnProbeTilePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint iw, ih, idd;
+    _ProbeInArr.GetDimensions(iw, ih, idd);
+    if (idd == 0) return;
+    int pad = max(0, _ProbePad);
+    int cw = max(1, _ProbeCoreW);
+    int ch = max(1, _ProbeCoreH);
+    int x0 = clamp(pad, 0, (int)iw - 1);
+    int y0 = clamp(pad, 0, (int)ih - 1);
+    int x1 = clamp(pad + cw - 1, 0, (int)iw - 1);
+    int y1 = clamp(pad + ch - 1, 0, (int)ih - 1);
+    int spanX = max(1, x1 - x0);
+    int spanY = max(1, y1 - y0);
+
+    float4 sum = 0.0;
+    [unroll]
+    for (int uy = 0; uy < 4; uy++)
+    {
+        int sy = y0 + ((uy + 1) * spanY) / 5;
+        [unroll]
+        for (int ux = 0; ux < 4; ux++)
+        {
+            int sx = x0 + ((ux + 1) * spanX) / 5;
+            sum += _ProbeInArr[int3(sx, sy, 0)];
+        }
+    }
+    _ProbeOut[_ProbeIndex] = sum * (1.0 / 16.0);
+}
+
+[numthreads(64,1,1)]
+void NcnnProbeSeams(uint3 id : SV_DispatchThreadID)
+{
+    int seamsV = max(0, _SeamTilesX - 1);
+    int seamsH = max(0, _SeamTilesY - 1);
+    int seamCount = seamsV + seamsH;
+    int i = (int)id.x;
+    if (i < 0 || i >= seamCount) return;
+
+    int samples = max(4, _SeamSamples);
+    float sumScore = 0.0;
+    int valid = 0;
+
+    if (i < seamsV)
+    {
+        int seamX = (i + 1) * _SeamStepX;
+        if (seamX - 2 < 0 || seamX + 1 >= _SeamW) { _SeamOut4[i] = float4(0.0, 0.0, (float)seamX, 0.0); return; }
+
+        [loop]
+        for (int s = 0; s < samples; s++)
+        {
+            int y = (int)((((float)s + 0.5) / (float)samples) * (float)(_SeamH - 1));
+            y = clamp(y, 0, _SeamH - 1);
+            float3 cLL = _SeamTex[int2(seamX - 2, y)].xyz;
+            float3 cL  = _SeamTex[int2(seamX - 1, y)].xyz;
+            float3 cR  = _SeamTex[int2(seamX + 0, y)].xyz;
+            float3 cRR = _SeamTex[int2(seamX + 1, y)].xyz;
+            float d0 = abs(cL.x - cR.x) + abs(cL.y - cR.y) + abs(cL.z - cR.z);
+            float d1 = abs(cLL.x - cL.x) + abs(cLL.y - cL.y) + abs(cLL.z - cL.z);
+            float d2 = abs(cR.x - cRR.x) + abs(cR.y - cRR.y) + abs(cR.z - cRR.z);
+            float local = 0.5 * (d1 + d2);
+            sumScore += max(0.0, d0 - local);
+            valid++;
+        }
+
+        float score = valid > 0 ? (sumScore / (float)valid) : 0.0;
+        _SeamOut4[i] = float4(score, 0.0, (float)seamX, 0.0);
+        return;
+    }
+
+    int j = i - seamsV;
+    int seamY = (j + 1) * _SeamStepY;
+    if (seamY - 2 < 0 || seamY + 1 >= _SeamH) { _SeamOut4[i] = float4(0.0, 1.0, (float)seamY, 0.0); return; }
+
+    [loop]
+    for (int s = 0; s < samples; s++)
+    {
+        int x = (int)((((float)s + 0.5) / (float)samples) * (float)(_SeamW - 1));
+        x = clamp(x, 0, _SeamW - 1);
+        float3 cUU = _SeamTex[int2(x, seamY - 2)].xyz;
+        float3 cU  = _SeamTex[int2(x, seamY - 1)].xyz;
+        float3 cD  = _SeamTex[int2(x, seamY + 0)].xyz;
+        float3 cDD = _SeamTex[int2(x, seamY + 1)].xyz;
+        float d0 = abs(cU.x - cD.x) + abs(cU.y - cD.y) + abs(cU.z - cD.z);
+        float d1 = abs(cUU.x - cU.x) + abs(cUU.y - cU.y) + abs(cUU.z - cU.z);
+        float d2 = abs(cD.x - cDD.x) + abs(cD.y - cDD.y) + abs(cD.z - cDD.z);
+        float local = 0.5 * (d1 + d2);
+        sumScore += max(0.0, d0 - local);
+        valid++;
+    }
+
+    float score = valid > 0 ? (sumScore / (float)valid) : 0.0;
+    _SeamOut4[i] = float4(score, 1.0, (float)seamY, 0.0);
 }
 
 [numthreads(8,8,1)]

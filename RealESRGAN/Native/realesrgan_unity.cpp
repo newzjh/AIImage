@@ -515,31 +515,20 @@ extern "C"
                     ex.set_staging_vkallocator(alloc_scope.staging);
                 }
 
-                int ri = 0;
+                ncnn::Mat out;
                 if (use_vulkan)
                 {
                     ncnn::VkCompute cmd(vkdev);
                     ncnn::VkMat in_gpu;
                     cmd.record_clone(in, in_gpu, opt);
-                    cmd.submit_and_wait();
-                    cmd.reset();
-                    ri = ex.input("data", in_gpu);
-                }
-                else
-                {
-                    ri = ex.input("data", in);
-                }
-                if (ri != 0)
-                {
-                    char buf[256];
-                    snprintf(buf, sizeof(buf), "input failed (ri=%d) tile=(%d,%d) in=%dx%d pad=%d", ri, xi, yi, in_tw, in_th, pad);
-                    return set_error(ctx, buf);
-                }
+                    int ri = ex.input("data", in_gpu);
+                    if (ri != 0)
+                    {
+                        char buf[256];
+                        snprintf(buf, sizeof(buf), "input failed (ri=%d) tile=(%d,%d) in=%dx%d pad=%d", ri, xi, yi, in_tw, in_th, pad);
+                        return set_error(ctx, buf);
+                    }
 
-                ncnn::Mat out;
-                if (use_vulkan)
-                {
-                    ncnn::VkCompute cmd(vkdev);
                     ncnn::VkMat out_gpu;
                     int ro = ex.extract("output", out_gpu, cmd);
                     if (ro != 0)
@@ -548,8 +537,6 @@ extern "C"
                         snprintf(buf, sizeof(buf), "extract output failed (ro=%d) tile=(%d,%d) in=%dx%d pad=%d scale=%d", ro, xi, yi, in_tw, in_th, pad, factor);
                         return set_error(ctx, buf);
                     }
-                    cmd.submit_and_wait();
-                    cmd.reset();
 
                     cmd.record_clone(out_gpu, out, opt);
                     cmd.submit_and_wait();
@@ -557,6 +544,14 @@ extern "C"
                 }
                 else
                 {
+                    int ri = ex.input("data", in);
+                    if (ri != 0)
+                    {
+                        char buf[256];
+                        snprintf(buf, sizeof(buf), "input failed (ri=%d) tile=(%d,%d) in=%dx%d pad=%d", ri, xi, yi, in_tw, in_th, pad);
+                        return set_error(ctx, buf);
+                    }
+
                     int ro = ex.extract("output", out);
                     if (ro != 0)
                     {

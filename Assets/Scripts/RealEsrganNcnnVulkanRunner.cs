@@ -17,6 +17,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     public int scale = 2;
     public string modelName = "realesrgan-x4plus";
     public int tileSize = 0;
+    public bool passZeroTileToExeWhenTileSizeIsZero = true;
     public int gpuId = -1;
     public string executablePathOverride;
     public string modelDirOverride;
@@ -39,6 +40,9 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         var originalW = src.width;
         var originalH = src.height;
         var totalSw = Stopwatch.StartNew();
+        var stageEncodeMs = 0L;
+        var stageRunMs = 0L;
+        var stageReadOutMs = 0L;
 
         RealEsrganResult Finish(RealEsrganResult r)
         {
@@ -46,6 +50,12 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             try
             {
                 Debug.Log("[TIMING] Real-ESRGAN(exe) " + r.elapsedMs + " ms | in=" + originalW + "x" + originalH + " | model=" + (modelName ?? "") + " | err=" + (r.error ?? ""));
+                var tileArg = tileSize;
+                if (tileArg <= 0 && passZeroTileToExeWhenTileSizeIsZero)
+                    tileArg = 0;
+                else if (tileArg <= 0)
+                    tileArg = GetAutoTileSizeLikeExe();
+                Debug.Log("[TIMING] Real-ESRGAN(exe.breakdown) encode=" + stageEncodeMs + " ms | run=" + stageRunMs + " ms | readOut=" + stageReadOutMs + " ms | -t " + tileArg);
             }
             catch
             {
@@ -150,15 +160,21 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 if (scaledInput == null)
                     return Finish(new RealEsrganResult { error = "Failed to resize input image", workDir = dumpDebugFiles ? workDir : null });
 
-                var inputBytes = scaledInput.EncodeToPNG();
-                await File.WriteAllBytesAsync(scaledInputPath, inputBytes, ct);
+                {
+                    var swEncode = Stopwatch.StartNew();
+                    var inputBytes = scaledInput.EncodeToPNG();
+                    await File.WriteAllBytesAsync(scaledInputPath, inputBytes, ct);
+                    stageEncodeMs = swEncode.ElapsedMilliseconds;
+                }
                 runInputPath = scaledInputPath;
                 runOutputPath = scaledOutputPath;
             }
             else
             {
+                var swEncode = Stopwatch.StartNew();
                 var inputBytes = src.EncodeToPNG();
                 await File.WriteAllBytesAsync(inputPath, inputBytes, ct);
+                stageEncodeMs = swEncode.ElapsedMilliseconds;
             }
 
             //await UniTask.SwitchToThreadPool();
@@ -197,17 +213,12 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 string il2cppLogText = "";
                 try
                 {
+                    var swRun = Stopwatch.StartNew();
 #if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
                     var logPath = Path.Combine(workDir, "realesrgan_stdout.txt");
                     using var tailCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     var tailTask = TailProgressFromFileAsync(logPath, tailCts.Token);
-
-                    var exitCodeLocal = await UniTask.RunOnThreadPool(() =>
-                    {
-                        return StartProcessAndWaitWin32(psi.FileName, psi.Arguments, psi.WorkingDirectory, workDir, ct);
-                    }, cancellationToken: ct);
-
-                    exitCode = exitCodeLocal;
+                    exitCode = await StartProcessAndWaitWin32Async(psi.FileName, psi.Arguments, psi.WorkingDirectory, workDir, ct);
                     try { tailCts.Cancel(); } catch { }
                     try { await tailTask; } catch { }
                     try
@@ -267,6 +278,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                         }
                     }
 #endif
+                    stageRunMs = swRun.ElapsedMilliseconds;
                 }
                 catch (OperationCanceledException)
                 {
@@ -325,7 +337,9 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                         try
                         {
                             ReportProgress(0.95f, "读取输出");
+                            var swRead = Stopwatch.StartNew();
                             outBytes = await File.ReadAllBytesAsync(runOutputPath, ct);
+                            stageReadOutMs = swRead.ElapsedMilliseconds;
                         }
                         catch (OperationCanceledException)
                         {
@@ -557,7 +571,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
-    private static int StartProcessAndWaitWin32(string exePath, string args, string workingDir, string workDir, CancellationToken ct)
+    private static PROCESS_INFORMATION StartProcessWin32(string exePath, string args, string workingDir, string workDir, out IntPtr hFile)
     {
         var si = new STARTUPINFO();
         si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
@@ -565,7 +579,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         si.wShowWindow = 0;
 
         var logPath = Path.Combine(workDir ?? "", "realesrgan_stdout.txt");
-        IntPtr hFile = IntPtr.Zero;
+        hFile = IntPtr.Zero;
         try
         {
             const uint GENERIC_WRITE = 0x40000000;
@@ -602,19 +616,27 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             var code = Marshal.GetLastWin32Error();
             throw new System.ComponentModel.Win32Exception(code, "CreateProcessW failed: " + exePath);
         }
+        return pi;
+    }
 
+    private static async UniTask<int> StartProcessAndWaitWin32Async(string exePath, string args, string workingDir, string workDir, CancellationToken ct)
+    {
+        IntPtr hFile = IntPtr.Zero;
+        PROCESS_INFORMATION pi = default;
         try
         {
+            pi = StartProcessWin32(exePath, args, workingDir, workDir, out hFile);
             const uint WAIT_OBJECT_0 = 0x00000000;
             const uint WAIT_TIMEOUT = 0x00000102;
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                var r = WaitForSingleObject(pi.hProcess, 50);
+                var r = WaitForSingleObject(pi.hProcess, 0);
                 if (r == WAIT_OBJECT_0)
                     break;
                 if (r != WAIT_TIMEOUT)
                     break;
+                await UniTask.Delay(10, cancellationToken: ct);
             }
 
             if (!GetExitCodeProcess(pi.hProcess, out var exit))
@@ -875,7 +897,9 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         if (isUpscayl)
             sb.Append("-z ").Append(s).Append(' ');
         var t = tileSize;
-        if (t <= 0)
+        if (t <= 0 && passZeroTileToExeWhenTileSizeIsZero)
+            t = 0;
+        else if (t <= 0)
             t = GetAutoTileSizeLikeExe();
         sb.Append("-t ").Append(Mathf.Max(0, t)).Append(' ');
         sb.Append("-n ").Append(QuoteArg(model)).Append(' ');

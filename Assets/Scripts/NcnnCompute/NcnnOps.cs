@@ -34,6 +34,8 @@ namespace NcnnCompute
         private readonly int _kClipPack4;
         private readonly int _kSftPack4;
         private readonly int _kPack4ToRgb01;
+        private readonly int _kProbeTilePack4;
+        private readonly int _kProbeSeams;
 
         public NcnnOps()
         {
@@ -68,6 +70,8 @@ namespace NcnnCompute
             _kClipPack4 = _cs.FindKernel("NcnnClipPack4");
             _kSftPack4 = _cs.FindKernel("NcnnSftPack4");
             _kPack4ToRgb01 = _cs.FindKernel("NcnnPack4ToRgb01");
+            _kProbeTilePack4 = _cs.FindKernel("NcnnProbeTilePack4");
+            _kProbeSeams = _cs.FindKernel("NcnnProbeSeams");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -227,6 +231,38 @@ namespace NcnnCompute
             _cs.SetTexture(_kPack4ToRgb01, "_RgbInArr", inputPack4);
             _cs.SetTexture(_kPack4ToRgb01, "_RgbOut", outputRgb);
             Dispatch2D(_kPack4ToRgb01, outputRgb.width, outputRgb.height, 32, 32);
+        }
+
+        public void ProbeTilePack4(RenderTexture tileOutPack4, int probeIndex, int pad, int coreW, int coreH, ComputeBuffer probeOut)
+        {
+            if (tileOutPack4 == null) throw new ArgumentNullException(nameof(tileOutPack4));
+            if (probeOut == null) throw new ArgumentNullException(nameof(probeOut));
+            _cs.SetInt("_ProbeIndex", probeIndex);
+            _cs.SetInt("_ProbePad", pad);
+            _cs.SetInt("_ProbeCoreW", coreW);
+            _cs.SetInt("_ProbeCoreH", coreH);
+            _cs.SetTexture(_kProbeTilePack4, "_ProbeInArr", tileOutPack4);
+            _cs.SetBuffer(_kProbeTilePack4, "_ProbeOut", probeOut);
+            _cs.Dispatch(_kProbeTilePack4, 1, 1, 1);
+        }
+
+        public void ProbeSeams(RenderTexture tex, int tilesX, int tilesY, int stepX, int stepY, int samples, ComputeBuffer seamOut4)
+        {
+            if (tex == null) throw new ArgumentNullException(nameof(tex));
+            if (seamOut4 == null) throw new ArgumentNullException(nameof(seamOut4));
+            _cs.SetTexture(_kProbeSeams, "_SeamTex", tex);
+            _cs.SetBuffer(_kProbeSeams, "_SeamOut4", seamOut4);
+            _cs.SetInt("_SeamW", tex.width);
+            _cs.SetInt("_SeamH", tex.height);
+            _cs.SetInt("_SeamTilesX", tilesX);
+            _cs.SetInt("_SeamTilesY", tilesY);
+            _cs.SetInt("_SeamStepX", stepX);
+            _cs.SetInt("_SeamStepY", stepY);
+            _cs.SetInt("_SeamSamples", samples);
+            var seamCount = Mathf.Max(0, tilesX - 1) + Mathf.Max(0, tilesY - 1);
+            if (seamCount <= 0) return;
+            var groups = Mathf.CeilToInt(seamCount / 64f);
+            _cs.Dispatch(_kProbeSeams, groups, 1, 1);
         }
 
         public void Conv3x3Pack4(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, RenderTexture dstPack4)
