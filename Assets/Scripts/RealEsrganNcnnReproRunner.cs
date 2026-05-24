@@ -27,26 +27,33 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private sealed class ConvPack : IDisposable
     {
         public int outC;
+        public int inC;
+        public int outPacks;
+        public int inPacks;
         public int kernel;
         public int pad;
         public int biasTerm;
         public int weightSize;
         public int activationType;
         public float activationSlope;
-        public ComputeBuffer w;
-        public ComputeBuffer b;
+        public ComputeBuffer w4;
+        public ComputeBuffer b4;
 
         public void Dispose()
         {
-            try { w?.Dispose(); } catch { }
-            try { b?.Dispose(); } catch { }
+            try { w4?.Dispose(); } catch { }
+            try { b4?.Dispose(); } catch { }
         }
     }
 
     private sealed class TensorRef
     {
-        public NcnnTensorBuffer t;
+        public RenderTexture t;
+        public int w;
+        public int h;
+        public int packs;
         public int refs;
+        public bool owned;
     }
 
     private void Awake()
@@ -134,32 +141,32 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     ReportProgress(tileProgress, "推理分块 " + (tileIndex + 1) + "/" + tileCount);
                     await UniTask.Yield();
 
-                    using var inBuf = new NcnnTensorBuffer(cw, ch, 3);
-                    _ops.TextureToBuffer3(runInput, ox, oy, inBuf);
-                    using var outBuf = Forward(inBuf);
+                    var inArr = GetTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
+                    var outArr = (RenderTexture)null;
+                    try
+                    {
+                        _ops.PackRgbToPack4(runInput, ox, oy, inArr);
+                        outArr = ForwardPack4(inArr, 1);
 
-                    var tileRt = RenderTexture.GetTemporary(cw * runFactor, ch * runFactor, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear);
-                    tileRt.enableRandomWrite = true;
-                    tileRt.wrapMode = TextureWrapMode.Clamp;
-                    tileRt.filterMode = FilterMode.Bilinear;
-                    tileRt.Create();
-                    _ops.BufferToTexture3(outBuf, tileRt);
+                        var dstToSrcScale = (runInW / (float)originalW) * runFactor;
+                        var scaleX = originalW / (float)runInW;
+                        var scaleY = originalH / (float)runInH;
+                        var dstX0 = Mathf.Clamp(Mathf.FloorToInt(tx * scaleX), 0, originalW);
+                        var dstY0 = Mathf.Clamp(Mathf.FloorToInt(ty * scaleY), 0, originalH);
+                        var dstX1 = Mathf.Clamp(Mathf.CeilToInt((tx + tw) * scaleX), 0, originalW);
+                        var dstY1 = Mathf.Clamp(Mathf.CeilToInt((ty + th) * scaleY), 0, originalH);
+                        var dstW = Mathf.Max(0, dstX1 - dstX0);
+                        var dstH = Mathf.Max(0, dstY1 - dstY0);
 
-                    var dstToSrcScale = (runInW / (float)originalW) * runFactor;
-                    var scaleX = originalW / (float)runInW;
-                    var scaleY = originalH / (float)runInH;
-                    var dstX0 = Mathf.Clamp(Mathf.FloorToInt(tx * scaleX), 0, originalW);
-                    var dstY0 = Mathf.Clamp(Mathf.FloorToInt(ty * scaleY), 0, originalH);
-                    var dstX1 = Mathf.Clamp(Mathf.CeilToInt((tx + tw) * scaleX), 0, originalW);
-                    var dstY1 = Mathf.Clamp(Mathf.CeilToInt((ty + th) * scaleY), 0, originalH);
-                    var dstW = Mathf.Max(0, dstX1 - dstX0);
-                    var dstH = Mathf.Max(0, dstY1 - dstY0);
-
-                    var tileOutOriginX = ox * runFactor;
-                    var tileOutOriginY = oy * runFactor;
-                    _ops.BlitTileToDst(tileRt, outRt, dstX0, dstY0, tileOutOriginX, tileOutOriginY, dstW, dstH, dstToSrcScale);
-
-                    RenderTexture.ReleaseTemporary(tileRt);
+                        var tileOutOriginX = ox * runFactor;
+                        var tileOutOriginY = oy * runFactor;
+                        _ops.BlitTileToDst(outArr, outRt, dstX0, dstY0, tileOutOriginX, tileOutOriginY, dstW, dstH, dstToSrcScale);
+                    }
+                    finally
+                    {
+                        RenderTexture.ReleaseTemporary(inArr);
+                        if (outArr != null) RenderTexture.ReleaseTemporary(outArr);
+                    }
 
                     tileIndex++;
                 }
@@ -233,6 +240,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 pack.weightSize = layer.GetInt(6, 0);
                 pack.activationType = layer.GetInt(9, 0);
                 pack.activationSlope = ParseLeakySlope(layer);
+                pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * 9));
+                pack.inPacks = (pack.inC + 3) / 4;
+                pack.outPacks = (pack.outC + 3) / 4;
 
                 var tag = br.ReadInt32();
                 if (tag != 0x01306B47)
@@ -240,10 +250,12 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
                 var w = br.ReadFp16ArrayAsFloat32(pack.weightSize);
                 var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
-                pack.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-                pack.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-                pack.w.SetData(w);
-                pack.b.SetData(b);
+                var w4 = PackWeightsToO4I4K3(w, pack.outC, pack.inC, pack.outPacks, pack.inPacks);
+                var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
+                pack.w4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                pack.b4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                pack.w4.SetData(w4);
+                pack.b4.SetData(b4);
 
                 _conv[layer.name] = pack;
             }
@@ -252,12 +264,12 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         _loaded = true;
     }
 
-    private NcnnTensorBuffer Forward(NcnnTensorBuffer input)
+    private RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks)
     {
         var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
         var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
 
-        var inputRef = new TensorRef { t = input, refs = 1 };
+        var inputRef = new TensorRef { t = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
         blobs["data"] = inputRef;
 
         for (var li = 0; li < _model.layers.Count; li++)
@@ -281,27 +293,27 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             if (string.Equals(l.type, "Concat", StringComparison.Ordinal))
             {
                 var parts = new TensorRef[l.bottomNames.Length];
+                var sumP = 0;
                 var w = 0;
                 var h = 0;
-                var sumC = 0;
                 for (var i = 0; i < l.bottomNames.Length; i++)
                 {
                     var tr = Get(blobs, l.bottomNames[i]);
                     parts[i] = tr;
-                    w = tr.t.w;
-                    h = tr.t.h;
-                    sumC += tr.t.c;
+                    w = tr.w;
+                    h = tr.h;
+                    sumP += tr.packs;
                 }
 
-                var outBuf = new NcnnTensorBuffer(w, h, sumC);
+                var outArr = GetTempArray(w, h, sumP, RenderTextureFormat.ARGBHalf);
                 var off = 0;
                 for (var i = 0; i < parts.Length; i++)
                 {
-                    _ops.CopyToConcat(parts[i].t, outBuf, off);
-                    off += parts[i].t.c;
+                    _ops.CopyPack4(parts[i].t, 0, outArr, off, parts[i].packs);
+                    off += parts[i].packs;
                 }
 
-                blobs[l.topNames[0]] = new TensorRef { t = outBuf, refs = 1 };
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = w, h = h, packs = sumP, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -312,9 +324,12 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var pack = _conv[l.name];
                 if (pack.kernel != 3)
                     throw new InvalidOperationException("unsupported kernel size: " + pack.kernel);
-                var outBuf = new NcnnTensorBuffer(src.t.w, src.t.h, pack.outC);
-                _ops.Conv3x3(src.t, pack.w, pack.b, pack.outC, 1, pack.pad, pack.activationType, pack.activationSlope, outBuf);
-                blobs[l.topNames[0]] = new TensorRef { t = outBuf, refs = 1 };
+                if (src.packs != pack.inPacks)
+                    throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
+
+                var outArr = GetTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
+                _ops.Conv3x3Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -324,9 +339,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var a = Get(blobs, l.bottomNames[0]);
                 var b = Get(blobs, l.bottomNames[1]);
                 var coeff = ParseEltwiseCoeff(l);
-                var outBuf = new NcnnTensorBuffer(a.t.w, a.t.h, a.t.c);
-                _ops.AddWeighted(a.t, b.t, coeff.coeffA, coeff.coeffB, outBuf);
-                blobs[l.topNames[0]] = new TensorRef { t = outBuf, refs = 1 };
+                var outArr = GetTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                _ops.AddPack4(a.t, b.t, coeff.coeffA, coeff.coeffB, a.packs, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -335,9 +350,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var a = Get(blobs, l.bottomNames[0]);
                 var b = Get(blobs, l.bottomNames[1]);
-                var outBuf = new NcnnTensorBuffer(a.t.w, a.t.h, a.t.c);
-                _ops.AddWeighted(a.t, b.t, 1f, 1f, outBuf);
-                blobs[l.topNames[0]] = new TensorRef { t = outBuf, refs = 1 };
+                var outArr = GetTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                _ops.AddPack4(a.t, b.t, 1f, 1f, a.packs, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -349,9 +364,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var sy = l.GetFloat(2, 1f);
                 if (Mathf.Abs(sx - 2f) > 1e-3f || Mathf.Abs(sy - 2f) > 1e-3f)
                     throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
-                var outBuf = new NcnnTensorBuffer(src.t.w * 2, src.t.h * 2, src.t.c);
-                _ops.Interp2x(src.t, outBuf);
-                blobs[l.topNames[0]] = new TensorRef { t = outBuf, refs = 1 };
+
+                var outArr = GetTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.Interp2xPack4(src.t, src.packs, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -362,6 +378,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var outRef = Get(blobs, "output");
         var keep = outRef.t;
         outRef.t = null;
+        outRef.owned = false;
 
         var visited = new HashSet<TensorRef>();
         foreach (var kv in blobs)
@@ -369,8 +386,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var tr = kv.Value;
             if (tr == null || !visited.Add(tr))
                 continue;
-            if (tr.t != null)
-                tr.t.Dispose();
+            if (tr.owned && tr.t != null)
+                RenderTexture.ReleaseTemporary(tr.t);
         }
 
         return keep;
@@ -400,8 +417,12 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 tr.refs--;
                 if (tr.refs <= 0)
                 {
-                    try { tr.t?.Dispose(); } catch { }
+                    if (tr.owned && tr.t != null)
+                    {
+                        try { RenderTexture.ReleaseTemporary(tr.t); } catch { }
+                    }
                     tr.t = null;
+                    tr.owned = false;
                 }
             }
             blobs.Remove(b);
@@ -448,6 +469,78 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             && float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var b))
             return (a, b);
         return (1f, 1f);
+    }
+
+    private static Vector4[] PackBiasToO4(float[] b, int outC, int outPacks)
+    {
+        var r = new Vector4[outPacks];
+        for (var op = 0; op < outPacks; op++)
+        {
+            var oc0 = op * 4 + 0;
+            var oc1 = op * 4 + 1;
+            var oc2 = op * 4 + 2;
+            var oc3 = op * 4 + 3;
+            r[op] = new Vector4(
+                oc0 < outC ? b[oc0] : 0f,
+                oc1 < outC ? b[oc1] : 0f,
+                oc2 < outC ? b[oc2] : 0f,
+                oc3 < outC ? b[oc3] : 0f);
+        }
+        return r;
+    }
+
+    private static Vector4[] PackWeightsToO4I4K3(float[] w, int outC, int inC, int outPacks, int inPacks)
+    {
+        var r = new Vector4[outPacks * inPacks * 3 * 3 * 4];
+        var idx = 0;
+        for (var op = 0; op < outPacks; op++)
+        {
+            for (var ip = 0; ip < inPacks; ip++)
+            {
+                for (var ky = 0; ky < 3; ky++)
+                {
+                    for (var kx = 0; kx < 3; kx++)
+                    {
+                        for (var ol = 0; ol < 4; ol++)
+                        {
+                            var oc = op * 4 + ol;
+                            var il0 = ip * 4 + 0;
+                            var il1 = ip * 4 + 1;
+                            var il2 = ip * 4 + 2;
+                            var il3 = ip * 4 + 3;
+                            var k = ky * 3 + kx;
+
+                            float GetW(int ic)
+                            {
+                                if (oc >= outC || ic >= inC)
+                                    return 0f;
+                                return w[(oc * inC + ic) * 9 + k];
+                            }
+
+                            r[idx++] = new Vector4(GetW(il0), GetW(il1), GetW(il2), GetW(il3));
+                        }
+                    }
+                }
+            }
+        }
+        return r;
+    }
+
+    private static RenderTexture GetTempArray(int w, int h, int depth, RenderTextureFormat format)
+    {
+        var desc = new RenderTextureDescriptor(w, h, format, 0)
+        {
+            dimension = TextureDimension.Tex2DArray,
+            volumeDepth = Mathf.Max(1, depth),
+            msaaSamples = 1,
+            sRGB = false,
+            enableRandomWrite = true
+        };
+        var rt = RenderTexture.GetTemporary(desc);
+        rt.wrapMode = TextureWrapMode.Clamp;
+        rt.filterMode = FilterMode.Point;
+        rt.Create();
+        return rt;
     }
 
     private async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
