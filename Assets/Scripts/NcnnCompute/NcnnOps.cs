@@ -13,6 +13,7 @@ namespace NcnnCompute
         private readonly int _kAddWeighted;
         private readonly int _kCopyC;
         private readonly int _kInterp2x;
+        private readonly int _kBlitCropDown4;
 
         public NcnnOps()
         {
@@ -26,6 +27,7 @@ namespace NcnnCompute
             _kAddWeighted = _cs.FindKernel("NcnnAddWeighted");
             _kCopyC = _cs.FindKernel("NcnnCopyC");
             _kInterp2x = _cs.FindKernel("NcnnInterp2x");
+            _kBlitCropDown4 = _cs.FindKernel("NcnnBlitCropDown4");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -56,6 +58,25 @@ namespace NcnnCompute
             _cs.SetBuffer(_kBufToTex3, "_BufA", input.buffer);
             _cs.SetTexture(_kBufToTex3, "_NcnnOut", output);
             Dispatch2D(_kBufToTex3, output.width, output.height, 8, 8);
+        }
+
+        public void BlitCropDown4(RenderTexture src4x, RenderTexture dst1x, int dstX, int dstY, int srcX, int srcY, int w, int h)
+        {
+            if (src4x == null) throw new ArgumentNullException(nameof(src4x));
+            if (dst1x == null) throw new ArgumentNullException(nameof(dst1x));
+            if (w <= 0 || h <= 0) return;
+            if (dstX < 0 || dstY < 0 || dstX + w > dst1x.width || dstY + h > dst1x.height)
+                throw new ArgumentOutOfRangeException(nameof(dstX), "dst rect out of range");
+
+            _cs.SetInt("_BlitW", w);
+            _cs.SetInt("_BlitH", h);
+            _cs.SetInt("_SrcX", srcX);
+            _cs.SetInt("_SrcY", srcY);
+            _cs.SetInt("_DstX", dstX);
+            _cs.SetInt("_DstY", dstY);
+            _cs.SetTexture(_kBlitCropDown4, "_NcnnIn", src4x);
+            _cs.SetTexture(_kBlitCropDown4, "_NcnnOut", dst1x);
+            Dispatch2D(_kBlitCropDown4, w, h, 8, 8);
         }
 
         public void Conv3x3(NcnnTensorBuffer input, ComputeBuffer weightsOihw, ComputeBuffer biasO, int outC, int stride, int pad, NcnnTensorBuffer output)

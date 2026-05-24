@@ -105,25 +105,19 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             var runInputPath = inputPath;
             var runOutputPath = outputPath;
 
-            var targetOutW = originalW;
-            var targetOutH = originalH;
-            var baseInW = Mathf.Max(1, Mathf.CeilToInt(targetOutW / (float)runFactor));
-            var baseInH = Mathf.Max(1, Mathf.CeilToInt(targetOutH / (float)runFactor));
-            var baseMaxSide = Mathf.Max(baseInW, baseInH);
-
-            var sw = baseInW;
-            var sh = baseInH;
-            if (baseMaxSide > limit)
+            var sw = originalW;
+            var sh = originalH;
+            if (maxSide > limit)
             {
-                var scaleDown = (float)limit / baseMaxSide;
-                sw = Mathf.Max(1, Mathf.RoundToInt(baseInW * scaleDown));
-                sh = Mathf.Max(1, Mathf.RoundToInt(baseInH * scaleDown));
+                var scaleDown = (float)limit / maxSide;
+                sw = Mathf.Max(1, Mathf.RoundToInt(originalW * scaleDown));
+                sh = Mathf.Max(1, Mathf.RoundToInt(originalH * scaleDown));
                 if (inputAlignMultiple >= 2)
                 {
                     var m = inputAlignMultiple;
                     sw = RoundToMultiple(sw, m);
                     sh = RoundToMultiple(sh, m);
-                    if (baseInW >= baseInH)
+                    if (originalW >= originalH)
                     {
                         if (sw > limit) sw = Mathf.Max(m, sw - m);
                     }

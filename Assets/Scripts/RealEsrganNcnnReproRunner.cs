@@ -76,33 +76,39 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var originalW = src.width;
         var originalH = src.height;
         var runFactor = 4;
-        var baseInW = Mathf.Max(1, Mathf.CeilToInt(originalW / (float)runFactor));
-        var baseInH = Mathf.Max(1, Mathf.CeilToInt(originalH / (float)runFactor));
         var limit = Mathf.Max(256, maxInputLongSide);
-        var baseMaxSide = Mathf.Max(baseInW, baseInH);
-        var runInW = baseInW;
-        var runInH = baseInH;
-        if (baseMaxSide > limit)
+        var maxSide = Mathf.Max(originalW, originalH);
+        var runInW = originalW;
+        var runInH = originalH;
+        if (maxSide > limit)
         {
-            var s = (float)limit / baseMaxSide;
-            runInW = Mathf.Max(1, Mathf.RoundToInt(baseInW * s));
-            runInH = Mathf.Max(1, Mathf.RoundToInt(baseInH * s));
+            var s = (float)limit / maxSide;
+            runInW = Mathf.Max(1, Mathf.RoundToInt(originalW * s));
+            runInH = Mathf.Max(1, Mathf.RoundToInt(originalH * s));
         }
 
         ReportProgress(0f, "准备输入");
         await UniTask.Yield();
 
         Texture2D runInput = null;
+        var ownsRunInput = false;
         RenderTexture outRt = null;
         try
         {
-            runInput = ResizeTextureBilinear(src, runInW, runInH);
-            if (runInput == null)
-                return new RealEsrganResult { error = "resize input failed" };
+            if (runInW != originalW || runInH != originalH)
+            {
+                runInput = ResizeTextureBilinear(src, runInW, runInH);
+                ownsRunInput = true;
+                if (runInput == null)
+                    return new RealEsrganResult { error = "resize input failed" };
+            }
+            else
+            {
+                runInput = src;
+            }
 
-            var scaledOutW = runInW * runFactor;
-            var scaledOutH = runInH * runFactor;
-            outRt = new RenderTexture(scaledOutW, scaledOutH, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+            outRt = new RenderTexture(runInW, runInH, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+            outRt.enableRandomWrite = true;
             outRt.wrapMode = TextureWrapMode.Clamp;
             outRt.filterMode = FilterMode.Bilinear;
             outRt.Create();
@@ -141,11 +147,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
                     var srcX = tilePad * runFactor;
                     var srcY = tilePad * runFactor;
-                    var srcW = tw * runFactor;
-                    var srcH = th * runFactor;
-                    var dstX = tx * runFactor;
-                    var dstY = ty * runFactor;
-                    Graphics.CopyTexture(tileRt, 0, 0, srcX, srcY, srcW, srcH, outRt, 0, 0, dstX, dstY);
+                    _ops.BlitCropDown4(tileRt, outRt, tx, ty, srcX, srcY, tw, th);
 
                     RenderTexture.ReleaseTemporary(tileRt);
 
@@ -158,8 +160,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             if (scaledTex == null)
                 return new RealEsrganResult { error = "readback failed" };
 
-            var finalTex = ResizeTextureBilinear(scaledTex, originalW, originalH);
-            Destroy(scaledTex);
+            Texture2D finalTex = scaledTex;
+            if (finalTex.width != originalW || finalTex.height != originalH)
+            {
+                var resized = ResizeTextureBilinear(finalTex, originalW, originalH);
+                Destroy(finalTex);
+                finalTex = resized;
+                if (finalTex == null)
+                    return new RealEsrganResult { error = "resize output failed" };
+            }
             if (finalTex == null)
                 return new RealEsrganResult { error = "resize output failed" };
 
@@ -176,7 +185,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         }
         finally
         {
-            if (runInput != null) Destroy(runInput);
+            if (ownsRunInput && runInput != null) Destroy(runInput);
             if (outRt != null)
             {
                 outRt.Release();
@@ -517,4 +526,3 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         try { ProgressChanged?.Invoke(Mathf.Clamp01(p), t ?? ""); } catch { }
     }
 }
-

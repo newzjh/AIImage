@@ -7,6 +7,7 @@
 #pragma kernel NcnnAddWeighted
 #pragma kernel NcnnCopyC
 #pragma kernel NcnnInterp2x
+#pragma kernel NcnnBlitCropDown4
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -20,6 +21,12 @@ int _Total;
 int _ChanOffset;
 int _CopyTotal;
 uint _BaseIndex;
+int _BlitW;
+int _BlitH;
+int _SrcX;
+int _SrcY;
+int _DstX;
+int _DstY;
 
 [numthreads(256,1,1)]
 void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
@@ -194,6 +201,39 @@ void NcnnInterp2x(uint3 id : SV_DispatchThreadID)
     float vx1 = lerp(v01, v11, tx);
     float v = lerp(vx0, vx1, ty);
     _BufOut[outIndex] = v;
+}
+
+[numthreads(8,8,1)]
+void NcnnBlitCropDown4(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _BlitW || (int)id.y >= _BlitH) return;
+
+    uint sw, sh;
+    _NcnnIn.GetDimensions(sw, sh);
+
+    float2 src = float2((float)_SrcX, (float)_SrcY) + (float2((float)id.x, (float)id.y) + 0.5) * 4.0;
+    float2 p = src - 0.5;
+    int x0 = (int)floor(p.x);
+    int y0 = (int)floor(p.y);
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+    float tx = p.x - x0;
+    float ty = p.y - y0;
+
+    x0 = clamp(x0, 0, (int)sw - 1);
+    x1 = clamp(x1, 0, (int)sw - 1);
+    y0 = clamp(y0, 0, (int)sh - 1);
+    y1 = clamp(y1, 0, (int)sh - 1);
+
+    float4 v00 = _NcnnIn[int2(x0, y0)];
+    float4 v10 = _NcnnIn[int2(x1, y0)];
+    float4 v01 = _NcnnIn[int2(x0, y1)];
+    float4 v11 = _NcnnIn[int2(x1, y1)];
+    float4 vx0 = lerp(v00, v10, tx);
+    float4 vx1 = lerp(v01, v11, tx);
+    float4 v = lerp(vx0, vx1, ty);
+
+    _NcnnOut[int2(_DstX + (int)id.x, _DstY + (int)id.y)] = v;
 }
 
 [numthreads(8,8,1)]
