@@ -96,11 +96,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     {
         public readonly RenderTexture rt;
         public readonly GraphicsFence fence;
+        public readonly int frame;
 
-        public PooledRt(RenderTexture rt, GraphicsFence fence)
+        public PooledRt(RenderTexture rt, GraphicsFence fence, int frame)
         {
             this.rt = rt;
             this.fence = fence;
+            this.frame = frame;
         }
     }
 
@@ -666,7 +668,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             while (stack.Count > 0)
             {
                 var p = stack.Pop();
-                if (hit == null && p.rt != null && p.fence.passed)
+                if (hit == null && p.rt != null && IsFencePassedOrAged(p))
                 {
                     hit = p.rt;
                     break;
@@ -725,7 +727,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         try
         {
             var fence = Graphics.CreateGraphicsFence(GraphicsFenceType.AsyncQueueSynchronisation, SynchronisationStageFlags.ComputeProcessing);
-            stack.Push(new PooledRt(rt, fence));
+            stack.Push(new PooledRt(rt, fence, Time.frameCount));
         }
         catch
         {
@@ -851,5 +853,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (msg.IndexOf("out of memory", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         if (msg.IndexOf("failed to create", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         return false;
+    }
+
+    private static bool IsFencePassedOrAged(PooledRt p)
+    {
+        try
+        {
+            return p.fence.passed;
+        }
+        catch
+        {
+            return (Time.frameCount - p.frame) >= 2;
+        }
     }
 }

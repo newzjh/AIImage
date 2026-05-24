@@ -135,12 +135,15 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
             var outW = w * runFactor;
             var outH = h * runFactor;
             var outRgba = new byte[outW * outH * 4];
+            var effectiveTile = tileSize;
+            if (effectiveTile <= 0)
+                effectiveTile = GetAutoTileSizeLikeExe();
 
             await ReportDbgAsync(
                 "A",
                 "realesrgan.native.process.enter",
                 "[DEBUG] ProcessAsync enter",
-                "{\"w\":" + w + ",\"h\":" + h + ",\"outW\":" + outW + ",\"outH\":" + outH + ",\"originalW\":" + originalW + ",\"originalH\":" + originalH + ",\"desiredScale\":" + desiredScale + ",\"runFactor\":" + runFactor + ",\"tileSize\":" + tileSize + ",\"gpuId\":" + gpuId + ",\"prepadding\":" + prepadding + ",\"ttaMode\":" + (ttaMode ? 1 : 0) + ",\"modelDir\":\"" + EscapeJson(modelDir) + "\",\"modelName\":\"" + EscapeJson(modelName) + "\"}",
+                "{\"w\":" + w + ",\"h\":" + h + ",\"outW\":" + outW + ",\"outH\":" + outH + ",\"originalW\":" + originalW + ",\"originalH\":" + originalH + ",\"desiredScale\":" + desiredScale + ",\"runFactor\":" + runFactor + ",\"tileSize\":" + tileSize + ",\"effectiveTile\":" + effectiveTile + ",\"gpuId\":" + gpuId + ",\"prepadding\":" + prepadding + ",\"ttaMode\":" + (ttaMode ? 1 : 0) + ",\"modelDir\":\"" + EscapeJson(modelDir) + "\",\"modelName\":\"" + EscapeJson(modelName) + "\"}",
                 traceId,
                 ct);
 
@@ -161,7 +164,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                     _ctx,
                     rgba, w, h,
                     outRgba, outW, outH,
-                    tileSize,
+                    effectiveTile,
                     runFactor);
 
                 return r;
@@ -297,6 +300,15 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
             try { rt.Release(); } catch { }
             UnityEngine.Object.Destroy(rt);
         }
+    }
+
+    private static int GetAutoTileSizeLikeExe()
+    {
+        var mb = SystemInfo.graphicsMemorySize;
+        if (mb > 1900) return 200;
+        if (mb > 550) return 100;
+        if (mb > 190) return 64;
+        return 32;
     }
 
     private void EnsureInit(string modelDir)

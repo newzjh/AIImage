@@ -25,6 +25,15 @@ namespace NcnnCompute
         private readonly int _kInterpDown2NearestPack4;
         private readonly int _kPack4ToBufferChw;
         private readonly int _kInnerProduct;
+        private readonly int _kPackRgbToPack4Gfpgan;
+        private readonly int _kFillPack4FromBufferChw;
+        private readonly int _kScalePack4;
+        private readonly int _kAddBiasPack4;
+        private readonly int _kLeakyReluPack4;
+        private readonly int _kAddNoiseBroadcastPack4;
+        private readonly int _kClipPack4;
+        private readonly int _kSftPack4;
+        private readonly int _kPack4ToRgb01;
 
         public NcnnOps()
         {
@@ -50,6 +59,15 @@ namespace NcnnCompute
             _kInterpDown2NearestPack4 = _cs.FindKernel("NcnnInterpDown2NearestPack4");
             _kPack4ToBufferChw = _cs.FindKernel("NcnnPack4ToBufferCHW");
             _kInnerProduct = _cs.FindKernel("NcnnInnerProduct");
+            _kPackRgbToPack4Gfpgan = _cs.FindKernel("NcnnPackRgbToPack4Gfpgan");
+            _kFillPack4FromBufferChw = _cs.FindKernel("NcnnFillPack4FromBufferCHW");
+            _kScalePack4 = _cs.FindKernel("NcnnScalePack4");
+            _kAddBiasPack4 = _cs.FindKernel("NcnnAddBiasPack4");
+            _kLeakyReluPack4 = _cs.FindKernel("NcnnLeakyReluPack4");
+            _kAddNoiseBroadcastPack4 = _cs.FindKernel("NcnnAddNoiseBroadcastPack4");
+            _kClipPack4 = _cs.FindKernel("NcnnClipPack4");
+            _kSftPack4 = _cs.FindKernel("NcnnSftPack4");
+            _kPack4ToRgb01 = _cs.FindKernel("NcnnPack4ToRgb01");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -111,6 +129,104 @@ namespace NcnnCompute
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnIn", src);
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnOutArr", dstPack4);
             Dispatch2D(_kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);
+        }
+
+        public void PackRgbToPack4Gfpgan(Texture src, int offsetX, int offsetY, RenderTexture dstPack4)
+        {
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            _cs.SetInt("_OffsetX", offsetX);
+            _cs.SetInt("_OffsetY", offsetY);
+            _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnIn", src);
+            _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnOutArr", dstPack4);
+            Dispatch2D(_kPackRgbToPack4Gfpgan, dstPack4.width, dstPack4.height, 32, 32);
+        }
+
+        public void FillPack4FromBufferCHW(ComputeBuffer input, int w, int h, int c, RenderTexture outputPack4)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (outputPack4 == null) throw new ArgumentNullException(nameof(outputPack4));
+            _cs.SetInt("_FillW", w);
+            _cs.SetInt("_FillH", h);
+            _cs.SetInt("_FillC", c);
+            _cs.SetBuffer(_kFillPack4FromBufferChw, "_FillIn", input);
+            _cs.SetTexture(_kFillPack4FromBufferChw, "_FillOutArr", outputPack4);
+            Dispatch3D(_kFillPack4FromBufferChw, w, h, outputPack4.volumeDepth, 8, 8);
+        }
+
+        public void ScalePack4(RenderTexture input, float k, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_ScaleK", k);
+            _cs.SetTexture(_kScalePack4, "_ScaleInArr", input);
+            _cs.SetTexture(_kScalePack4, "_ScaleOutArr", output);
+            Dispatch3D(_kScalePack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void AddBiasPack4(RenderTexture input, ComputeBuffer bias4, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (bias4 == null) throw new ArgumentNullException(nameof(bias4));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetBuffer(_kAddBiasPack4, "_Bias4", bias4);
+            _cs.SetTexture(_kAddBiasPack4, "_BiasInArr", input);
+            _cs.SetTexture(_kAddBiasPack4, "_BiasOutArr", output);
+            Dispatch3D(_kAddBiasPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void LeakyReluPack4(RenderTexture input, float slope, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_LreluSlope", slope);
+            _cs.SetTexture(_kLeakyReluPack4, "_LreluInArr", input);
+            _cs.SetTexture(_kLeakyReluPack4, "_LreluOutArr", output);
+            Dispatch3D(_kLeakyReluPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void AddNoiseBroadcastPack4(RenderTexture inOut, ComputeBuffer noise, float weight, int packs)
+        {
+            if (inOut == null) throw new ArgumentNullException(nameof(inOut));
+            if (noise == null) throw new ArgumentNullException(nameof(noise));
+            _cs.SetFloat("_NoiseWeight", weight);
+            _cs.SetBuffer(_kAddNoiseBroadcastPack4, "_Noise", noise);
+            _cs.SetTexture(_kAddNoiseBroadcastPack4, "_NoiseInOutArr", inOut);
+            Dispatch3D(_kAddNoiseBroadcastPack4, inOut.width, inOut.height, packs, 8, 8);
+        }
+
+        public void ClipPack4(RenderTexture input, float min, float max, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_ClipMin", min);
+            _cs.SetFloat("_ClipMax", max);
+            _cs.SetTexture(_kClipPack4, "_ClipInArr", input);
+            _cs.SetTexture(_kClipPack4, "_ClipOutArr", output);
+            Dispatch3D(_kClipPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void SftPack4(RenderTexture input, RenderTexture condMul, RenderTexture condAdd, int outPacks, int halfPacks, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (condMul == null) throw new ArgumentNullException(nameof(condMul));
+            if (condAdd == null) throw new ArgumentNullException(nameof(condAdd));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_SftHalfPacks", halfPacks);
+            _cs.SetTexture(_kSftPack4, "_SftInArr", input);
+            _cs.SetTexture(_kSftPack4, "_SftCondMulArr", condMul);
+            _cs.SetTexture(_kSftPack4, "_SftCondAddArr", condAdd);
+            _cs.SetTexture(_kSftPack4, "_SftOutArr", output);
+            Dispatch3D(_kSftPack4, output.width, output.height, outPacks, 8, 8);
+        }
+
+        public void Pack4ToRgb01(RenderTexture inputPack4, RenderTexture outputRgb)
+        {
+            if (inputPack4 == null) throw new ArgumentNullException(nameof(inputPack4));
+            if (outputRgb == null) throw new ArgumentNullException(nameof(outputRgb));
+            _cs.SetTexture(_kPack4ToRgb01, "_RgbInArr", inputPack4);
+            _cs.SetTexture(_kPack4ToRgb01, "_RgbOut", outputRgb);
+            Dispatch2D(_kPack4ToRgb01, outputRgb.width, outputRgb.height, 32, 32);
         }
 
         public void Conv3x3Pack4(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, RenderTexture dstPack4)

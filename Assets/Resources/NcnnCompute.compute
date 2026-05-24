@@ -20,6 +20,15 @@
 #pragma kernel NcnnInterpDown2NearestPack4
 #pragma kernel NcnnPack4ToBufferCHW
 #pragma kernel NcnnInnerProduct
+#pragma kernel NcnnPackRgbToPack4Gfpgan
+#pragma kernel NcnnFillPack4FromBufferCHW
+#pragma kernel NcnnScalePack4
+#pragma kernel NcnnAddBiasPack4
+#pragma kernel NcnnLeakyReluPack4
+#pragma kernel NcnnAddNoiseBroadcastPack4
+#pragma kernel NcnnClipPack4
+#pragma kernel NcnnSftPack4
+#pragma kernel NcnnPack4ToRgb01
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -90,6 +99,23 @@ void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
     sx = clamp(sx, 0, (int)tw - 1);
     sy = clamp(sy, 0, (int)th - 1);
     float4 v = _NcnnIn[int2(sx, sy)];
+    _NcnnOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
+}
+
+[numthreads(32,32,1)]
+void NcnnPackRgbToPack4Gfpgan(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _NcnnOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    uint tw, th;
+    _NcnnIn.GetDimensions(tw, th);
+    int sx = (int)id.x + _OffsetX;
+    int sy = (int)id.y + _OffsetY;
+    sx = clamp(sx, 0, (int)tw - 1);
+    sy = clamp(sy, 0, (int)th - 1);
+    float4 v = _NcnnIn[int2(sx, sy)];
+    v.xyz = v.xyz * 2.0 - 1.0;
     _NcnnOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
 }
 
@@ -308,14 +334,14 @@ void NcnnInterp2xPack4(uint3 id : SV_DispatchThreadID)
     float fy = ((float)id.y + 0.5) * 0.5 - 0.5;
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
-    int x1 = x0 + 1;
-    int y1 = y0 + 1;
     float tx = fx - x0;
     float ty = fy - y0;
-    x0 = clamp(x0, 0, (int)iw - 1);
-    x1 = clamp(x1, 0, (int)iw - 1);
-    y0 = clamp(y0, 0, (int)ih - 1);
-    y1 = clamp(y1, 0, (int)ih - 1);
+    if (x0 < 0) { x0 = 0; tx = 0.0; }
+    if (y0 < 0) { y0 = 0; ty = 0.0; }
+    if (x0 >= (int)iw - 1) { x0 = max(0, (int)iw - 2); tx = 1.0; }
+    if (y0 >= (int)ih - 1) { y0 = max(0, (int)ih - 2); ty = 1.0; }
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
 
     float4 v00 = _InterpInArr[int3(x0, y0, p)];
     float4 v10 = _InterpInArr[int3(x1, y0, p)];
@@ -364,14 +390,14 @@ void NcnnInterpDown2Pack4(uint3 id : SV_DispatchThreadID)
     float fy = ((float)id.y + 0.5) / 0.5 - 0.5;
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
-    int x1 = x0 + 1;
-    int y1 = y0 + 1;
     float tx = fx - x0;
     float ty = fy - y0;
-    x0 = clamp(x0, 0, (int)iw - 1);
-    x1 = clamp(x1, 0, (int)iw - 1);
-    y0 = clamp(y0, 0, (int)ih - 1);
-    y1 = clamp(y1, 0, (int)ih - 1);
+    if (x0 < 0) { x0 = 0; tx = 0.0; }
+    if (y0 < 0) { y0 = 0; ty = 0.0; }
+    if (x0 >= (int)iw - 1) { x0 = max(0, (int)iw - 2); tx = 1.0; }
+    if (y0 >= (int)ih - 1) { y0 = max(0, (int)ih - 2); ty = 1.0; }
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
 
     float4 v00 = _InterpDownInArr[int3(x0, y0, p)];
     float4 v10 = _InterpDownInArr[int3(x1, y0, p)];
@@ -442,6 +468,160 @@ void NcnnInnerProduct(uint3 id : SV_DispatchThreadID)
     for (int i = 0; i < _IPInFeatures; i++)
         sum += _IPW[wbase + (uint)i] * _IPIn[i];
     _IPOut[o] = sum;
+}
+
+StructuredBuffer<float> _FillIn;
+RWTexture2DArray<float4> _FillOutArr;
+int _FillW;
+int _FillH;
+int _FillC;
+
+[numthreads(8,8,1)]
+void NcnnFillPack4FromBufferCHW(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _FillOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    uint wh = w * h;
+    int c0 = p * 4 + 0;
+    int c1 = p * 4 + 1;
+    int c2 = p * 4 + 2;
+    int c3 = p * 4 + 3;
+    uint idx0 = (uint)c0 * wh + id.y * w + id.x;
+    uint idx1 = (uint)c1 * wh + id.y * w + id.x;
+    uint idx2 = (uint)c2 * wh + id.y * w + id.x;
+    uint idx3 = (uint)c3 * wh + id.y * w + id.x;
+    float x0 = c0 < _FillC ? _FillIn[idx0] : 0.0;
+    float x1 = c1 < _FillC ? _FillIn[idx1] : 0.0;
+    float x2 = c2 < _FillC ? _FillIn[idx2] : 0.0;
+    float x3 = c3 < _FillC ? _FillIn[idx3] : 0.0;
+    _FillOutArr[int3((int)id.x, (int)id.y, p)] = float4(x0, x1, x2, x3);
+}
+
+Texture2DArray<float4> _ScaleInArr;
+RWTexture2DArray<float4> _ScaleOutArr;
+float _ScaleK;
+
+[numthreads(8,8,1)]
+void NcnnScalePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _ScaleOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    float4 v = _ScaleInArr[int3((int)id.x, (int)id.y, p)];
+    _ScaleOutArr[int3((int)id.x, (int)id.y, p)] = v * _ScaleK;
+}
+
+Texture2DArray<float4> _BiasInArr;
+RWTexture2DArray<float4> _BiasOutArr;
+StructuredBuffer<float4> _Bias4;
+
+[numthreads(8,8,1)]
+void NcnnAddBiasPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _BiasOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    float4 v = _BiasInArr[int3((int)id.x, (int)id.y, p)];
+    float4 b = _Bias4[p];
+    _BiasOutArr[int3((int)id.x, (int)id.y, p)] = v + b;
+}
+
+Texture2DArray<float4> _LreluInArr;
+RWTexture2DArray<float4> _LreluOutArr;
+float _LreluSlope;
+
+[numthreads(8,8,1)]
+void NcnnLeakyReluPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _LreluOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    float4 v = _LreluInArr[int3((int)id.x, (int)id.y, p)];
+    float4 o = max(v, 0.0) + min(v, 0.0) * _LreluSlope;
+    _LreluOutArr[int3((int)id.x, (int)id.y, p)] = o;
+}
+
+RWTexture2DArray<float4> _NoiseInOutArr;
+StructuredBuffer<float> _Noise;
+float _NoiseWeight;
+
+[numthreads(8,8,1)]
+void NcnnAddNoiseBroadcastPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _NoiseInOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    uint idx = id.y * w + id.x;
+    float n = _Noise[idx] * _NoiseWeight;
+    float4 v = _NoiseInOutArr[int3((int)id.x, (int)id.y, p)];
+    _NoiseInOutArr[int3((int)id.x, (int)id.y, p)] = v + n;
+}
+
+Texture2DArray<float4> _ClipInArr;
+RWTexture2DArray<float4> _ClipOutArr;
+float _ClipMin;
+float _ClipMax;
+
+[numthreads(8,8,1)]
+void NcnnClipPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _ClipOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    float4 v = _ClipInArr[int3((int)id.x, (int)id.y, p)];
+    _ClipOutArr[int3((int)id.x, (int)id.y, p)] = clamp(v, _ClipMin, _ClipMax);
+}
+
+Texture2DArray<float4> _SftInArr;
+Texture2DArray<float4> _SftCondMulArr;
+Texture2DArray<float4> _SftCondAddArr;
+RWTexture2DArray<float4> _SftOutArr;
+int _SftHalfPacks;
+
+[numthreads(8,8,1)]
+void NcnnSftPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _SftOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    float4 v = _SftInArr[int3((int)id.x, (int)id.y, p)];
+    if (p >= _SftHalfPacks)
+    {
+        int cp = p - _SftHalfPacks;
+        float4 m = _SftCondMulArr[int3((int)id.x, (int)id.y, cp)];
+        float4 a = _SftCondAddArr[int3((int)id.x, (int)id.y, cp)];
+        v = v * m + a;
+    }
+    _SftOutArr[int3((int)id.x, (int)id.y, p)] = v;
+}
+
+Texture2DArray<float4> _RgbInArr;
+RWTexture2D<float4> _RgbOut;
+
+[numthreads(32,32,1)]
+void NcnnPack4ToRgb01(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _RgbOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 v = _RgbInArr[int3((int)id.x, (int)id.y, 0)];
+    v.xyz = v.xyz * 0.5 + 0.5;
+    _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
 }
 [numthreads(64,1,1)]
 void NcnnConv3x3(uint3 id : SV_DispatchThreadID)

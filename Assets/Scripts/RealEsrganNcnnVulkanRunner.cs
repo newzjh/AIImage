@@ -874,7 +874,10 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         sb.Append("-s ").Append(s).Append(' ');
         if (isUpscayl)
             sb.Append("-z ").Append(s).Append(' ');
-        sb.Append("-t ").Append(Mathf.Max(0, tileSize)).Append(' ');
+        var t = tileSize;
+        if (t <= 0)
+            t = GetAutoTileSizeLikeExe();
+        sb.Append("-t ").Append(Mathf.Max(0, t)).Append(' ');
         sb.Append("-n ").Append(QuoteArg(model)).Append(' ');
         sb.Append("-g ").Append(g).Append(' ');
         if (useModelDirArg)
@@ -882,6 +885,15 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         if (!string.IsNullOrWhiteSpace(format) && !string.Equals(format, "png", StringComparison.OrdinalIgnoreCase))
             sb.Append(" -f ").Append(QuoteArg(format));
         return sb.ToString().Trim();
+    }
+
+    private static int GetAutoTileSizeLikeExe()
+    {
+        var mb = SystemInfo.graphicsMemorySize;
+        if (mb > 1900) return 200;
+        if (mb > 550) return 100;
+        if (mb > 190) return 64;
+        return 32;
     }
 
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
