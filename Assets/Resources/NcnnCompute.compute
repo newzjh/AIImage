@@ -1,0 +1,206 @@
+#pragma kernel NcnnPassthrough
+#pragma kernel NcnnLeakyRelu
+#pragma kernel NcnnConv3x3
+#pragma kernel NcnnTexToBuf3
+#pragma kernel NcnnBufToTex3
+#pragma kernel NcnnLeakyReluBuf
+#pragma kernel NcnnAddWeighted
+#pragma kernel NcnnCopyC
+#pragma kernel NcnnInterp2x
+
+RWTexture2D<float4> _NcnnOut;
+Texture2D<float4> _NcnnIn;
+
+StructuredBuffer<float> _BufA;
+StructuredBuffer<float> _BufB;
+RWStructuredBuffer<float> _BufOut;
+float _CoeffA;
+float _CoeffB;
+int _Total;
+int _ChanOffset;
+int _CopyTotal;
+uint _BaseIndex;
+
+[numthreads(256,1,1)]
+void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _NcnnOut.GetDimensions(w, h);
+    uint idx = _BaseIndex + id.x;
+    uint n = w * h;
+    if (idx >= n) return;
+    uint x = idx % w;
+    uint y = idx / w;
+    float4 v = _NcnnIn[int2(x, y)];
+    float slope = 0.2;
+    v.xyz = (v.xyz >= 0) ? v.xyz : v.xyz * slope;
+    _NcnnOut[int2(x, y)] = v;
+}
+
+StructuredBuffer<float> _ConvIn;
+StructuredBuffer<float> _ConvW;
+StructuredBuffer<float> _ConvB;
+RWStructuredBuffer<float> _ConvOut;
+int _InW;
+int _InH;
+int _InC;
+int _OutC;
+int _Stride;
+int _Pad;
+
+int _OffsetX;
+int _OffsetY;
+
+[numthreads(64,1,1)]
+void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
+{
+    uint outIndex = _BaseIndex + id.x;
+    int outW = _InW;
+    int outH = _InH;
+    uint outN = (uint)(outW * outH * _OutC);
+    if (outIndex >= outN) return;
+
+    int oc = (int)(outIndex / (uint)(outW * outH));
+    int rem = (int)(outIndex - (uint)(oc * outW * outH));
+    int oy = rem / outW;
+    int ox = rem - oy * outW;
+
+    float sum = _ConvB[oc];
+
+    for (int ic = 0; ic < _InC; ic++)
+    {
+        for (int ky = 0; ky < 3; ky++)
+        {
+            for (int kx = 0; kx < 3; kx++)
+            {
+                int ix = ox * _Stride + kx - _Pad;
+                int iy = oy * _Stride + ky - _Pad;
+                if (ix < 0 || iy < 0 || ix >= _InW || iy >= _InH)
+                    continue;
+
+                uint inIdx = (uint)(ic * _InW * _InH + iy * _InW + ix);
+                uint wIdx = (uint)(((oc * _InC + ic) * 3 + ky) * 3 + kx);
+                sum += _ConvIn[inIdx] * _ConvW[wIdx];
+            }
+        }
+    }
+
+    _ConvOut[outIndex] = sum;
+}
+
+[numthreads(256,1,1)]
+void NcnnTexToBuf3(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    uint w = (uint)_InW;
+    uint h = (uint)_InH;
+    uint n = w * h;
+    if (idx >= n) return;
+    uint x = idx % w;
+    uint y = idx / w;
+    int sx = (int)x + _OffsetX;
+    int sy = (int)y + _OffsetY;
+    uint tw, th;
+    _NcnnIn.GetDimensions(tw, th);
+    sx = clamp(sx, 0, (int)tw - 1);
+    sy = clamp(sy, 0, (int)th - 1);
+    float4 c = _NcnnIn[int2(sx, sy)];
+    _BufOut[idx] = c.x;
+    _BufOut[n + idx] = c.y;
+    _BufOut[n * 2 + idx] = c.z;
+}
+
+[numthreads(8,8,1)]
+void NcnnBufToTex3(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _NcnnOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    uint idx = id.y * w + id.x;
+    uint n = w * h;
+    float r = _BufA[idx];
+    float g = _BufA[n + idx];
+    float b = _BufA[n * 2 + idx];
+    _NcnnOut[int2(id.x, id.y)] = float4(r, g, b, 1.0);
+}
+
+[numthreads(256,1,1)]
+void NcnnLeakyReluBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+    float v = _BufOut[idx];
+    _BufOut[idx] = v >= 0.0 ? v : v * _CoeffA;
+}
+
+[numthreads(256,1,1)]
+void NcnnAddWeighted(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+    _BufOut[idx] = _BufA[idx] * _CoeffA + _BufB[idx] * _CoeffB;
+}
+
+[numthreads(256,1,1)]
+void NcnnCopyC(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_CopyTotal) return;
+    uint wh = (uint)(_InW * _InH);
+    uint ic = idx / wh;
+    uint rem = idx - ic * wh;
+    uint oc = ic + (uint)_ChanOffset;
+    uint outIdx = oc * wh + rem;
+    _BufOut[outIdx] = _BufA[idx];
+}
+
+[numthreads(64,1,1)]
+void NcnnInterp2x(uint3 id : SV_DispatchThreadID)
+{
+    uint outIndex = _BaseIndex + id.x;
+    uint inW = (uint)_InW;
+    uint inH = (uint)_InH;
+    uint inWH = inW * inH;
+    uint outW = inW * 2;
+    uint outH = inH * 2;
+    uint outWH = outW * outH;
+    uint outN = outWH * (uint)_InC;
+    if (outIndex >= outN) return;
+
+    uint c = outIndex / outWH;
+    uint rem = outIndex - c * outWH;
+    uint oy = rem / outW;
+    uint ox = rem - oy * outW;
+
+    float fx = ((float)ox + 0.5) * 0.5 - 0.5;
+    float fy = ((float)oy + 0.5) * 0.5 - 0.5;
+    int x0 = (int)floor(fx);
+    int y0 = (int)floor(fy);
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+    float tx = fx - x0;
+    float ty = fy - y0;
+    x0 = clamp(x0, 0, (int)inW - 1);
+    x1 = clamp(x1, 0, (int)inW - 1);
+    y0 = clamp(y0, 0, (int)inH - 1);
+    y1 = clamp(y1, 0, (int)inH - 1);
+
+    uint baseC = c * inWH;
+    float v00 = _BufA[baseC + (uint)(y0 * (int)inW + x0)];
+    float v10 = _BufA[baseC + (uint)(y0 * (int)inW + x1)];
+    float v01 = _BufA[baseC + (uint)(y1 * (int)inW + x0)];
+    float v11 = _BufA[baseC + (uint)(y1 * (int)inW + x1)];
+    float vx0 = lerp(v00, v10, tx);
+    float vx1 = lerp(v01, v11, tx);
+    float v = lerp(vx0, vx1, ty);
+    _BufOut[outIndex] = v;
+}
+
+[numthreads(8,8,1)]
+void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _NcnnOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    _NcnnOut[int2(id.x, id.y)] = _NcnnIn[int2(id.x, id.y)];
+}

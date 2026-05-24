@@ -22,6 +22,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     public string modelDirOverride;
     public int maxInputLongSide = 2048;
     public int inputAlignMultiple = 0;
+    public string outputFormat = "png";
 
     public event Action<float, string> ProgressChanged;
     private readonly object _progressLock = new object();
@@ -104,17 +105,25 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             var runInputPath = inputPath;
             var runOutputPath = outputPath;
 
-            if (maxSide > limit)
+            var targetOutW = originalW;
+            var targetOutH = originalH;
+            var baseInW = Mathf.Max(1, Mathf.CeilToInt(targetOutW / (float)runFactor));
+            var baseInH = Mathf.Max(1, Mathf.CeilToInt(targetOutH / (float)runFactor));
+            var baseMaxSide = Mathf.Max(baseInW, baseInH);
+
+            var sw = baseInW;
+            var sh = baseInH;
+            if (baseMaxSide > limit)
             {
-                var scaleDown = (float)limit / maxSide;
-                var sw = Mathf.Max(1, Mathf.RoundToInt(originalW * scaleDown));
-                var sh = Mathf.Max(1, Mathf.RoundToInt(originalH * scaleDown));
+                var scaleDown = (float)limit / baseMaxSide;
+                sw = Mathf.Max(1, Mathf.RoundToInt(baseInW * scaleDown));
+                sh = Mathf.Max(1, Mathf.RoundToInt(baseInH * scaleDown));
                 if (inputAlignMultiple >= 2)
                 {
                     var m = inputAlignMultiple;
                     sw = RoundToMultiple(sw, m);
                     sh = RoundToMultiple(sh, m);
-                    if (originalW >= originalH)
+                    if (baseInW >= baseInH)
                     {
                         if (sw > limit) sw = Mathf.Max(m, sw - m);
                     }
@@ -125,9 +134,13 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                     sw = Mathf.Max(1, sw);
                     sh = Mathf.Max(1, sh);
                 }
+            }
+
+            if (sw != originalW || sh != originalH)
+            {
                 scaledInput = ResizeTextureBilinear(src, sw, sh);
                 if (scaledInput == null)
-                    return new RealEsrganResult { error = "Failed to scale down input image", workDir = dumpDebugFiles ? workDir : null };
+                    return new RealEsrganResult { error = "Failed to resize input image", workDir = dumpDebugFiles ? workDir : null };
 
                 var inputBytes = scaledInput.EncodeToPNG();
                 await File.WriteAllBytesAsync(scaledInputPath, inputBytes, ct);
@@ -140,7 +153,8 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 await File.WriteAllBytesAsync(inputPath, inputBytes, ct);
             }
 
-            var args = BuildArgs(exePath, runInputPath, runOutputPath, runFactor, model, modelDir);
+            var fmt = string.IsNullOrWhiteSpace(outputFormat) ? "png" : outputFormat.Trim().ToLowerInvariant();
+            var args = BuildArgs(exePath, runInputPath, runOutputPath, runFactor, model, modelDir, fmt);
 
             var psi = new ProcessStartInfo
             {
@@ -170,15 +184,20 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 var stderrSb = new StringBuilder();
                 var sbLock = new object();
                 int exitCode = -1;
+                string il2cppLogText = "";
                 try
                 {
 #if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
-                    var exitCodeLocal = StartProcessAndWaitWin32(psi.FileName, psi.Arguments, psi.WorkingDirectory, ct);
+                    var exitCodeLocal = StartProcessAndWaitWin32(psi.FileName, psi.Arguments, psi.WorkingDirectory, workDir, ct);
                     exitCode = exitCodeLocal;
                     try
                     {
+                        var logPath = Path.Combine(workDir, "realesrgan_stdout.txt");
+                        var logText = "";
+                        try { if (File.Exists(logPath)) logText = File.ReadAllText(logPath); } catch { }
+                        il2cppLogText = logText ?? "";
                         await ReportDbgAsync("A", "realesrgan.exe.win32.exit", "[DEBUG] CreateProcess exit",
-                            "{\"exitCode\":" + exitCode + ",\"outputExists\":" + (File.Exists(runOutputPath) ? 1 : 0) + ",\"outputPath\":\"" + EscapeJson(runOutputPath) + "\"}",
+                            "{\"exitCode\":" + exitCode + ",\"outputExists\":" + (File.Exists(runOutputPath) ? 1 : 0) + ",\"outputPath\":\"" + EscapeJson(runOutputPath) + "\",\"logPath\":\"" + EscapeJson(logPath) + "\",\"logText\":\"" + EscapeJson(logText) + "\"}",
                             "", ct);
                     }
                     catch
@@ -278,6 +297,19 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                         }
                         catch
                         {
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(il2cppLogText) && il2cppLogText.IndexOf("encode image", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            var fallbackFmt = "jpg";
+                            var fallbackOut = Path.Combine(workDir, "output_scaled.jpg");
+                            var fallbackArgs = BuildArgs(exePath, runInputPath, fallbackOut, runFactor, model, modelDir, fallbackFmt);
+                            var fallbackExit = StartProcessAndWaitWin32(psi.FileName, fallbackArgs, psi.WorkingDirectory, workDir, ct);
+                            if (fallbackExit == 0 && File.Exists(fallbackOut))
+                            {
+                                runOutputPath = fallbackOut;
+                                exitCode = 0;
+                            }
                         }
 #endif
                         threadError = "Real-ESRGAN output not found: " + runOutputPath;
@@ -476,6 +508,14 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         public int dwThreadId;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SECURITY_ATTRIBUTES
+    {
+        public int nLength;
+        public IntPtr lpSecurityDescriptor;
+        public int bInheritHandle;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcessW(
         string lpApplicationName,
@@ -489,6 +529,16 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         ref STARTUPINFO lpStartupInfo,
         out PROCESS_INFORMATION lpProcessInformation);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateFileW(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        ref SECURITY_ATTRIBUTES lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
 
@@ -501,12 +551,38 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
-    private static int StartProcessAndWaitWin32(string exePath, string args, string workingDir, CancellationToken ct)
+    private static int StartProcessAndWaitWin32(string exePath, string args, string workingDir, string workDir, CancellationToken ct)
     {
         var si = new STARTUPINFO();
         si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-        si.dwFlags = 0x00000001;
+        si.dwFlags = 0x00000001 | 0x00000100;
         si.wShowWindow = 0;
+
+        var logPath = Path.Combine(workDir ?? "", "realesrgan_stdout.txt");
+        IntPtr hFile = IntPtr.Zero;
+        try
+        {
+            const uint GENERIC_WRITE = 0x40000000;
+            const uint FILE_SHARE_READ = 0x00000001;
+            const uint FILE_SHARE_WRITE = 0x00000002;
+            const uint CREATE_ALWAYS = 2;
+            const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+            var sa = new SECURITY_ATTRIBUTES
+            {
+                nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),
+                lpSecurityDescriptor = IntPtr.Zero,
+                bInheritHandle = 1
+            };
+            hFile = CreateFileW(logPath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, ref sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+            if (hFile != IntPtr.Zero && hFile.ToInt64() != -1)
+            {
+                si.hStdOutput = hFile;
+                si.hStdError = hFile;
+            }
+        }
+        catch
+        {
+        }
 
         var cmd = new System.Text.StringBuilder();
         cmd.Append('"').Append(exePath).Append('"');
@@ -515,7 +591,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             cmd.Append(' ').Append(args);
         }
         const uint CREATE_NO_WINDOW = 0x08000000;
-        if (!CreateProcessW(exePath, cmd, IntPtr.Zero, IntPtr.Zero, false, CREATE_NO_WINDOW, IntPtr.Zero, workingDir, ref si, out var pi))
+        if (!CreateProcessW(exePath, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_NO_WINDOW, IntPtr.Zero, workingDir, ref si, out var pi))
         {
             var code = Marshal.GetLastWin32Error();
             throw new System.ComponentModel.Win32Exception(code, "CreateProcessW failed: " + exePath);
@@ -548,6 +624,12 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         {
             try { CloseHandle(pi.hThread); } catch { }
             try { CloseHandle(pi.hProcess); } catch { }
+            try
+            {
+                if (hFile != IntPtr.Zero && hFile.ToInt64() != -1)
+                    CloseHandle(hFile);
+            }
+            catch { }
         }
     }
 #endif
@@ -708,7 +790,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     }
 #endif
 
-    private string BuildArgs(string exePath, string inputPath, string outputPath, int s, string model, string modelDir)
+    private string BuildArgs(string exePath, string inputPath, string outputPath, int s, string model, string modelDir, string format)
     {
         var exeBase = (Path.GetFileNameWithoutExtension(exePath) ?? "").ToLowerInvariant();
         var isUpscayl = exeBase == "upscayl-bin";
@@ -736,6 +818,8 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         sb.Append("-g ").Append(g).Append(' ');
         if (useModelDirArg)
             sb.Append("-m ").Append(QuoteArg(modelDir)).Append(' ');
+        if (!string.IsNullOrWhiteSpace(format) && !string.Equals(format, "png", StringComparison.OrdinalIgnoreCase))
+            sb.Append(" -f ").Append(QuoteArg(format));
         return sb.ToString().Trim();
     }
 
