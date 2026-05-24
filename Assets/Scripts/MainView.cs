@@ -99,7 +99,6 @@ public class MainView : MonoBehaviour
     private GpuSharpenRunner _gpuSharpenRunner;
     private FaceMaskGenerator _faceMaskGenerator;
     private RealEsrganNcnnVulkanRunner _realEsrganRunner;
-    private RealEsrganOrtRunner _realEsrganOrtRunner;
     private RealEsrganNcnnNativeRunner _realEsrganNativeRunner;
     private RealEsrganNcnnReproRunner _realEsrganReproRunner;
     private GfpganNcnnNativeRunner _gfpganNativeRunner;
@@ -151,10 +150,6 @@ public class MainView : MonoBehaviour
         _realEsrganRunner = GetComponent<RealEsrganNcnnVulkanRunner>();
         if (_realEsrganRunner == null)
             _realEsrganRunner = gameObject.AddComponent<RealEsrganNcnnVulkanRunner>();
-
-        _realEsrganOrtRunner = GetComponent<RealEsrganOrtRunner>();
-        if (_realEsrganOrtRunner == null)
-            _realEsrganOrtRunner = gameObject.AddComponent<RealEsrganOrtRunner>();
 
         _realEsrganNativeRunner = GetComponent<RealEsrganNcnnNativeRunner>();
         if (_realEsrganNativeRunner == null)
@@ -1414,11 +1409,6 @@ public class MainView : MonoBehaviour
         ApplyRealEsrganReproAsync().Forget();
     }
 
-    private void OnRealEsrganOrt2x()
-    {
-        ApplyRealEsrganOrtAsync().Forget();
-    }
-
     private void OnRealEsrganNative()
     {
         ApplyRealEsrganNativeAsync().Forget();
@@ -1626,51 +1616,6 @@ public class MainView : MonoBehaviour
     }
 #endif
 
-#if !UNITY_WEBGL
-    private async UniTaskVoid ApplyRealEsrganOrtAsync()
-    {
-        if (_aiRunning) return;
-        if (_adjustRunning) return;
-        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
-
-        StopPreview();
-
-        var src = GetCurrentHistoryTexture();
-        if (src == null) src = GetOriginalHistoryTexture();
-        if (src == null) return;
-
-        _adjustRunning = true;
-        HideBusy();
-        ShowProgress("Real-ESRGAN 2x(内置)");
-        try
-        {
-            await UniTask.NextFrame();
-            if (_realEsrganOrtRunner == null)
-            {
-                ShowToast("找不到RealEsrganOrtRunner", 2200);
-                return;
-            }
-
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            _realEsrganOrtRunner.ProgressChanged -= OnProgress;
-            _realEsrganOrtRunner.ProgressChanged += OnProgress;
-            var r = await _realEsrganOrtRunner.ProcessAsync(src, _lifetimeCts.Token);
-            _realEsrganOrtRunner.ProgressChanged -= OnProgress;
-            if (!string.IsNullOrWhiteSpace(r.error))
-            {
-                ShowToast(r.error, 4500);
-                return;
-            }
-            if (r.texture != null)
-                AddHistory(r.texture, "Real-ESRGAN 2x(内置)");
-        }
-        finally
-        {
-            _adjustRunning = false;
-            HideProgress();
-        }
-    }
-#endif
 
 #if !UNITY_WEBGL
     private async UniTaskVoid ApplyRealEsrganNativeAsync()

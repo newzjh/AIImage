@@ -147,6 +147,8 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 await File.WriteAllBytesAsync(inputPath, inputBytes, ct);
             }
 
+            //await UniTask.SwitchToThreadPool();
+
             var fmt = string.IsNullOrWhiteSpace(outputFormat) ? "png" : outputFormat.Trim().ToLowerInvariant();
             var args = BuildArgs(exePath, runInputPath, runOutputPath, runFactor, model, modelDir, fmt);
 
@@ -171,7 +173,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 
             string threadError = null;
             byte[] outBytes = null;
-            await UniTask.SwitchToThreadPool();
+
             try
             {
                 var stdoutSb = new StringBuilder();
@@ -291,19 +293,6 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                         }
                         catch
                         {
-                        }
-
-                        if (!string.IsNullOrWhiteSpace(il2cppLogText) && il2cppLogText.IndexOf("encode image", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            var fallbackFmt = "jpg";
-                            var fallbackOut = Path.Combine(workDir, "output_scaled.jpg");
-                            var fallbackArgs = BuildArgs(exePath, runInputPath, fallbackOut, runFactor, model, modelDir, fallbackFmt);
-                            var fallbackExit = StartProcessAndWaitWin32(psi.FileName, fallbackArgs, psi.WorkingDirectory, workDir, ct);
-                            if (fallbackExit == 0 && File.Exists(fallbackOut))
-                            {
-                                runOutputPath = fallbackOut;
-                                exitCode = 0;
-                            }
                         }
 #endif
                         threadError = "Real-ESRGAN output not found: " + runOutputPath;
