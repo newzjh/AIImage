@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -14,6 +15,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public string paramRelativePath = "GFPGAN/models/encoder.param";
     public string binRelativePath = "GFPGAN/models/encoder.bin";
     public int maxInputLongSide = 2048;
+    public bool enableTempPool = false;
+    public bool clearTempPoolAfterRun = true;
+    public int maxPooledPerShape = 2;
 
     public event Action<float, string> ProgressChanged;
 
@@ -70,6 +74,50 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     private Dictionary<string, int> _blobUseCount;
     private NcnnOps _ops;
     private bool _loaded;
+    private readonly Dictionary<RtKey, Stack<PooledRt>> _rtPool = new Dictionary<RtKey, Stack<PooledRt>>();
+    private bool _useTempPoolThisRun;
+
+    private readonly struct RtKey : IEquatable<RtKey>
+    {
+        public readonly int w;
+        public readonly int h;
+        public readonly int d;
+        public readonly RenderTextureFormat format;
+
+        public RtKey(int w, int h, int d, RenderTextureFormat format)
+        {
+            this.w = w;
+            this.h = h;
+            this.d = d;
+            this.format = format;
+        }
+
+        public bool Equals(RtKey other) => w == other.w && h == other.h && d == other.d && format == other.format;
+        public override bool Equals(object obj) => obj is RtKey other && Equals(other);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                var hash = w;
+                hash = (hash * 397) ^ h;
+                hash = (hash * 397) ^ d;
+                hash = (hash * 397) ^ (int)format;
+                return hash;
+            }
+        }
+    }
+
+    private readonly struct PooledRt
+    {
+        public readonly RenderTexture rt;
+        public readonly GraphicsFence fence;
+
+        public PooledRt(RenderTexture rt, GraphicsFence fence)
+        {
+            this.rt = rt;
+            this.fence = fence;
+        }
+    }
 
     private void Awake()
     {
@@ -84,6 +132,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         foreach (var kv in _ip)
             kv.Value?.Dispose();
         _ip.Clear();
+        ClearTempPool();
         _blobUseCount = null;
         _model = null;
         _loaded = false;
@@ -96,9 +145,28 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         if (src == null)
             return default;
 
+        var totalSw = Stopwatch.StartNew();
+        var originalW0 = src.width;
+        var originalH0 = src.height;
+        var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
+        _useTempPoolThisRun = enableTempPool || isVulkan;
+
+        GfpganResult Finish(GfpganResult r)
+        {
+            r.elapsedMs = totalSw.ElapsedMilliseconds;
+            try
+            {
+                UnityEngine.Debug.Log("[TIMING] GFPGAN(repro) " + r.elapsedMs + " ms | in=" + originalW0 + "x" + originalH0 + " | err=" + (r.error ?? ""));
+            }
+            catch
+            {
+            }
+            return r;
+        }
+
         EnsureLoaded();
         if (_model == null)
-            return new GfpganResult { error = "GFPGAN(复刻) 模型不可用" };
+            return Finish(new GfpganResult { error = "GFPGAN(复刻) 模型不可用" });
 
         var originalW = src.width;
         var originalH = src.height;
@@ -127,7 +195,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             {
                 scaled = ResizeTextureBilinear(src, runInW, runInH);
                 if (scaled == null)
-                    return new GfpganResult { error = "缩放输入失败" };
+                    return Finish(new GfpganResult { error = "缩放输入失败" });
                 inputTex = scaled;
             }
 
@@ -135,13 +203,13 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             var crop = new RectInt((inputTex.width - side) / 2, (inputTex.height - side) / 2, side, side);
             var cropped = CropTexture(inputTex, crop);
             if (cropped == null)
-                return new GfpganResult { error = "裁剪失败" };
+                return Finish(new GfpganResult { error = "裁剪失败" });
             face = ResizeTextureBilinear(cropped, 512, 512);
             Destroy(cropped);
             if (face == null)
-                return new GfpganResult { error = "resize到512失败" };
+                return Finish(new GfpganResult { error = "resize到512失败" });
 
-            inArr = GetTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
+            inArr = RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
             _ops.PackRgbToPack4(face, 0, 0, inArr);
 
             ReportProgress(0.05f, "推理中…");
@@ -151,18 +219,27 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             }
             catch (Exception e)
             {
-                return new GfpganResult { error = e.Message };
+                return Finish(new GfpganResult { error = e.Message });
             }
 
             ReportProgress(1f, "完成");
-            return new GfpganResult { error = "GFPGAN(复刻) 已跑通到当前支持的层类型。下一步补齐 Reshape/InnerProduct 等算子后即可继续推进 encoder 全链路。", texture = null };
+            return Finish(new GfpganResult { error = "GFPGAN(复刻) 已跑通到当前支持的层类型。下一步补齐 Reshape/InnerProduct 等算子后即可继续推进 encoder 全链路。", texture = null });
+        }
+        catch (Exception e)
+        {
+            if (IsLikelyVulkanOom(e))
+                return Finish(new GfpganResult { error = "Vulkan - Out of device memory" });
+            return Finish(new GfpganResult { error = e.Message });
         }
         finally
         {
             if (scaled != null) Destroy(scaled);
             if (face != null) Destroy(face);
-            if (inArr != null) RenderTexture.ReleaseTemporary(inArr);
-            if (outArr != null) RenderTexture.ReleaseTemporary(outArr);
+            if (inArr != null) ReturnTempArray(inArr);
+            if (outArr != null) ReturnTempArray(outArr);
+            if (_useTempPoolThisRun && clearTempPoolAfterRun)
+                ClearTempPool();
+            _useTempPoolThisRun = false;
         }
     }
 
@@ -243,7 +320,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                     if (src.packs != pack.inPacks)
                         throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
 
-                    var outArr = GetTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
+                    var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
                     if (pack.kernel == 1)
                         _ops.Conv1x1Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.activationType, pack.activationSlope, outArr);
                     else if (pack.kernel == 3)
@@ -262,7 +339,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                     var b = Get(blobs, l.bottomNames[1]);
                     if (a.w != b.w || a.h != b.h || a.packs != b.packs)
                         throw new InvalidOperationException("shape mismatch for BinaryOp " + l.name);
-                    var outArr = GetTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                    var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
                     _ops.AddPack4(a.t, b.t, 1f, 1f, a.packs, outArr);
                     blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                     Consume(blobs, remaining, l.bottomNames);
@@ -280,7 +357,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
                     if (Mathf.Abs(sx - 2f) < 1e-3f)
                     {
-                        var outArr = GetTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
+                        var outArr = RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
                         if (resizeType == 1)
                             _ops.Interp2xNearestPack4(src.t, src.packs, outArr);
                         else
@@ -291,7 +368,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                     }
                     if (Mathf.Abs(sx - 0.5f) < 1e-3f)
                     {
-                        var outArr = GetTempArray(src.w / 2, src.h / 2, src.packs, RenderTextureFormat.ARGBHalf);
+                        var outArr = RentTempArray(src.w / 2, src.h / 2, src.packs, RenderTextureFormat.ARGBHalf);
                         if (resizeType == 1)
                             _ops.InterpDown2NearestPack4(src.t, src.packs, outArr);
                         else
@@ -316,7 +393,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 if (tr == null || !visited.Add(tr))
                     continue;
                 if (tr.owned && tr.t != null)
-                    RenderTexture.ReleaseTemporary(tr.t);
+                    ReturnTempArray(tr.t);
             }
 
             for (var i = 0; i < ownedBuffers.Count; i++)
@@ -440,7 +517,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 {
                     if (tr.owned && tr.t != null)
                     {
-                        try { RenderTexture.ReleaseTemporary(tr.t); } catch { }
+                        var v = GameObject.FindFirstObjectByType<GfpganNcnnReproRunner>();
+                        try { v.ReturnTempArray(tr.t); } catch { }
                     }
                     tr.t = null;
                     tr.owned = false;
@@ -535,7 +613,35 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return r;
     }
 
-    private static RenderTexture GetTempArray(int w, int h, int depth, RenderTextureFormat format)
+    private RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
+    {
+        if (!_useTempPoolThisRun)
+            return CreateTempArray(w, h, depth, format);
+
+        var key = new RtKey(w, h, Mathf.Max(1, depth), format);
+        if (_rtPool.TryGetValue(key, out var stack) && stack.Count > 0)
+        {
+            var keep = new Stack<PooledRt>(stack.Count);
+            RenderTexture hit = null;
+            while (stack.Count > 0)
+            {
+                var p = stack.Pop();
+                if (hit == null && p.rt != null && p.fence.passed)
+                {
+                    hit = p.rt;
+                    break;
+                }
+                keep.Push(p);
+            }
+            while (keep.Count > 0)
+                stack.Push(keep.Pop());
+            if (hit != null)
+                return hit;
+        }
+        return CreateTempArray(w, h, depth, format);
+    }
+
+    private static RenderTexture CreateTempArray(int w, int h, int depth, RenderTextureFormat format)
     {
         var desc = new RenderTextureDescriptor(w, h, format, 0)
         {
@@ -549,7 +655,66 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         rt.wrapMode = TextureWrapMode.Clamp;
         rt.filterMode = FilterMode.Point;
         rt.Create();
+        if (!rt.IsCreated())
+            throw new InvalidOperationException("failed to create temp array " + w + "x" + h + "x" + depth + " " + format);
         return rt;
+    }
+
+    private void ReturnTempArray(RenderTexture rt)
+    {
+        if (rt == null)
+            return;
+        if (!_useTempPoolThisRun)
+        {
+            RenderTexture.ReleaseTemporary(rt);
+            return;
+        }
+
+        var key = new RtKey(rt.width, rt.height, rt.volumeDepth, rt.format);
+        if (!_rtPool.TryGetValue(key, out var stack))
+        {
+            stack = new Stack<PooledRt>();
+            _rtPool[key] = stack;
+        }
+        var cap = Mathf.Max(0, maxPooledPerShape);
+        if (stack.Count >= cap)
+        {
+            RenderTexture.ReleaseTemporary(rt);
+            return;
+        }
+        try
+        {
+            var fence = Graphics.CreateGraphicsFence(GraphicsFenceType.AsyncQueueSynchronisation, SynchronisationStageFlags.ComputeProcessing);
+            stack.Push(new PooledRt(rt, fence));
+        }
+        catch
+        {
+            RenderTexture.ReleaseTemporary(rt);
+        }
+    }
+
+    private void ClearTempPool()
+    {
+        foreach (var kv in _rtPool)
+        {
+            var stack = kv.Value;
+            while (stack.Count > 0)
+            {
+                var rt = stack.Pop().rt;
+                try { RenderTexture.ReleaseTemporary(rt); } catch { }
+            }
+        }
+        _rtPool.Clear();
+    }
+
+    private static bool IsLikelyVulkanOom(Exception e)
+    {
+        if (e == null) return false;
+        var msg = e.Message ?? "";
+        if (msg.IndexOf("Out of device memory", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (msg.IndexOf("out of memory", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (msg.IndexOf("failed to create", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
     }
 
     private static RectInt ClampRect(RectInt r, int w, int h)

@@ -1508,11 +1508,15 @@ public class MainView : MonoBehaviour
             {
                 if (_gpuSharpenDumpStages && !string.IsNullOrWhiteSpace(r.workDir))
                     OpenFolderInShell(r.workDir);
-                ShowToast(r.error, 4500);
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
                 return;
             }
             if (r.texture != null)
                 AddHistory(r.texture, "Real-ESRGAN 2x");
+            if (r.elapsedMs > 0)
+                ShowToast("Real-ESRGAN 2x 耗时 " + r.elapsedMs + " ms", 1800);
             if (_gpuSharpenDumpStages && !string.IsNullOrWhiteSpace(r.workDir))
                 OpenFolderInShell(r.workDir);
         }
@@ -1556,11 +1560,15 @@ public class MainView : MonoBehaviour
             _realEsrganReproRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(r.error))
             {
-                ShowToast(r.error, 4500);
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
                 return;
             }
             if (r.texture != null)
                 AddHistory(r.texture, "ESRGAN(复刻)");
+            if (r.elapsedMs > 0)
+                ShowToast("ESRGAN(复刻) 耗时 " + r.elapsedMs + " ms", 1800);
         }
         finally
         {
@@ -1602,11 +1610,15 @@ public class MainView : MonoBehaviour
             _gfpganReproRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(r.error))
             {
-                ShowToast(r.error, 4500);
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
                 return;
             }
             if (r.texture != null)
                 AddHistory(r.texture, "GFPGAN(复刻)");
+            if (r.elapsedMs > 0)
+                ShowToast("GFPGAN(复刻) 耗时 " + r.elapsedMs + " ms", 1800);
         }
         finally
         {
@@ -1649,11 +1661,15 @@ public class MainView : MonoBehaviour
             _realEsrganNativeRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(r.error))
             {
-                ShowToast(r.error, 4500);
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
                 return;
             }
             if (r.texture != null)
                 AddHistory(r.texture, "Real-ESRGAN(ncnn原生)");
+            if (r.elapsedMs > 0)
+                ShowToast("Real-ESRGAN(ncnn原生) 耗时 " + r.elapsedMs + " ms", 1800);
         }
         finally
         {
@@ -1693,11 +1709,15 @@ public class MainView : MonoBehaviour
             _gfpganNativeRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(r.error))
             {
-                ShowToast(r.error, 4500);
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
                 return;
             }
             if (r.texture != null)
                 AddHistory(r.texture, "GFPGAN(ncnn原生)");
+            if (r.elapsedMs > 0)
+                ShowToast("GFPGAN(ncnn原生) 耗时 " + r.elapsedMs + " ms", 1800);
         }
         finally
         {

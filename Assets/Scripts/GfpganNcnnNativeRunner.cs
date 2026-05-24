@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -26,9 +27,24 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
         if (src == null)
             return default;
 
+        var totalSw = Stopwatch.StartNew();
+
+        GfpganResult Finish(GfpganResult r, int w, int h)
+        {
+            r.elapsedMs = totalSw.ElapsedMilliseconds;
+            try
+            {
+                UnityEngine.Debug.Log("[TIMING] GFPGAN(native) " + r.elapsedMs + " ms | in=" + w + "x" + h + " | model=" + (modelName ?? "") + " | err=" + (r.error ?? ""));
+            }
+            catch
+            {
+            }
+            return r;
+        }
+
         var modelDir = await PrepareModelDirAsync(modelName, ct);
         if (string.IsNullOrWhiteSpace(modelDir) || !Directory.Exists(modelDir))
-            return new GfpganResult { error = "models目录不可用: " + (modelDir ?? "") };
+            return Finish(new GfpganResult { error = "models目录不可用: " + (modelDir ?? "") }, src.width, src.height);
 
         try
         {
@@ -43,7 +59,7 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
         {
             await ReportDbgAsync("B", "gfpgan.native.ensureInit.exception", "[DEBUG] EnsureInit exception",
                 "{\"msg\":\"" + EscapeJson(e.Message) + "\"}", "", ct);
-            return new GfpganResult { error = e.Message };
+            return Finish(new GfpganResult { error = e.Message }, src.width, src.height);
         }
 
         var originalW = src.width;
@@ -74,7 +90,7 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
                 var sh = Mathf.Max(1, Mathf.RoundToInt(originalH * scaleDown));
                 scaledInput = ResizeTextureBilinear(src, sw, sh);
                 if (scaledInput == null)
-                    return new GfpganResult { error = "缩小输入失败" };
+                    return Finish(new GfpganResult { error = "缩小输入失败" }, originalW, originalH);
                 inputTex = scaledInput;
             }
 
@@ -95,11 +111,11 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
             ReportProgress(0.10f, "裁剪脸部");
             faceCrop = CropTexture(inputTex, rect);
             if (faceCrop == null)
-                return new GfpganResult { error = "裁剪失败" };
+                return Finish(new GfpganResult { error = "裁剪失败" }, originalW, originalH);
 
             face512 = ResizeTextureBilinear(faceCrop, 512, 512);
             if (face512 == null)
-                return new GfpganResult { error = "resize到512失败" };
+                return Finish(new GfpganResult { error = "resize到512失败" }, originalW, originalH);
 
             var rgba = face512.GetRawTextureData<byte>().ToArray();
             var outRgba = new byte[512 * 512 * 4];
@@ -119,7 +135,7 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
             {
                 await ReportDbgAsync("C", "gfpgan.native.call.error", "[DEBUG] native returned error",
                     "{\"err\":\"" + EscapeJson(err) + "\"}", "", ct);
-                return new GfpganResult { error = err };
+                return Finish(new GfpganResult { error = err }, originalW, originalH);
             }
             await ReportDbgAsync("A", "gfpgan.native.call.ok", "[DEBUG] native returned ok", "{}", "", ct);
 
@@ -133,15 +149,15 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
             ReportProgress(0.85f, "回贴到原图");
             restoredCrop = ResizeTextureBilinear(restored512, rect.width, rect.height);
             if (restoredCrop == null)
-                return new GfpganResult { error = "回贴缩放失败" };
+                return Finish(new GfpganResult { error = "回贴缩放失败" }, originalW, originalH);
 
             composed = ComposeWithMask(inputTex, restoredCrop, faceMask, rect);
             if (composed == null)
-                return new GfpganResult { error = "合成失败" };
+                return Finish(new GfpganResult { error = "合成失败" }, originalW, originalH);
 
             var composedTex = RenderTextureToTexture2D(composed, inputTex.width, inputTex.height);
             if (composedTex == null)
-                return new GfpganResult { error = "合成回读失败" };
+                return Finish(new GfpganResult { error = "合成回读失败" }, originalW, originalH);
 
             Texture2D finalTex = composedTex;
             if (finalTex.width != originalW || finalTex.height != originalH)
@@ -151,14 +167,14 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
                 Destroy(finalTex);
                 finalTex = resized;
                 if (finalTex == null)
-                    return new GfpganResult { error = "回缩放失败" };
+                    return Finish(new GfpganResult { error = "回缩放失败" }, originalW, originalH);
             }
 
             finalTex.wrapMode = TextureWrapMode.Clamp;
             finalTex.filterMode = FilterMode.Bilinear;
             finalTex.name = "GFPGAN_NCNN";
             ReportProgress(1f, "完成");
-            return new GfpganResult { texture = finalTex };
+            return Finish(new GfpganResult { texture = finalTex }, originalW, originalH);
         }
         finally
         {
@@ -567,6 +583,7 @@ public struct GfpganResult
 {
     public Texture2D texture;
     public string error;
+    public long elapsedMs;
 }
 
 internal static class GfpganNcnnNative

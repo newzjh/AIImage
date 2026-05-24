@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -141,6 +142,20 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
         var originalW = src.width;
         var originalH = src.height;
+        var totalSw = Stopwatch.StartNew();
+
+        RealEsrganResult Finish(RealEsrganResult r)
+        {
+            r.elapsedMs = totalSw.ElapsedMilliseconds;
+            try
+            {
+                UnityEngine.Debug.Log("[TIMING] ESRGAN(repro) " + r.elapsedMs + " ms | in=" + originalW + "x" + originalH + " | model=" + (modelName ?? "") + " | err=" + (r.error ?? ""));
+            }
+            catch
+            {
+            }
+            return r;
+        }
         var runFactor = 4;
         var limit = Mathf.Max(256, maxInputLongSide);
         var maxSide = Mathf.Max(originalW, originalH);
@@ -175,7 +190,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             try
             {
                 var r = await ProcessOnceAsync(src, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
-                return r;
+                return Finish(r);
             }
             catch (Exception e)
             {
@@ -188,7 +203,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
         }
 
-        return new RealEsrganResult { error = lastErr != null ? lastErr.Message : "unknown error" };
+        return Finish(new RealEsrganResult { error = lastErr != null ? lastErr.Message : "unknown error" });
     }
 
     private async UniTask<RealEsrganResult> ProcessOnceAsync(Texture2D src, CancellationToken ct, int originalW, int originalH, int runInW, int runInH, int runFactor, int effectiveTileSize, int effectiveTilePad)

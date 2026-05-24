@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -65,9 +66,23 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         var traceId = Guid.NewGuid().ToString("N");
         var originalW = src.width;
         var originalH = src.height;
+        var totalSw = Stopwatch.StartNew();
+
+        RealEsrganResult Finish(RealEsrganResult r)
+        {
+            r.elapsedMs = totalSw.ElapsedMilliseconds;
+            try
+            {
+                UnityEngine.Debug.Log("[TIMING] Real-ESRGAN(native) " + r.elapsedMs + " ms | in=" + originalW + "x" + originalH + " | model=" + (modelName ?? "") + " | err=" + (r.error ?? ""));
+            }
+            catch
+            {
+            }
+            return r;
+        }
         var modelDir = await PrepareModelDirAsync(modelName, ct);
         if (string.IsNullOrWhiteSpace(modelDir) || !Directory.Exists(modelDir))
-            return new RealEsrganResult { error = "models目录不可用: " + (modelDir ?? "") };
+            return Finish(new RealEsrganResult { error = "models目录不可用: " + (modelDir ?? "") });
 
         try
         {
@@ -82,7 +97,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                 "{\"msg\":\"" + EscapeJson(e.Message) + "\",\"modelDir\":\"" + EscapeJson(modelDir) + "\",\"modelName\":\"" + EscapeJson(modelName) + "\"}",
                 traceId,
                 ct);
-            return new RealEsrganResult { error = e.Message };
+            return Finish(new RealEsrganResult { error = e.Message });
         }
 
         ReportProgress(0f, "准备输入");
@@ -107,7 +122,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                 var sh = Mathf.Max(1, Mathf.RoundToInt(originalH * scaleDown));
                 scaledInput = ResizeTextureBilinear(src, sw, sh);
                 if (scaledInput == null)
-                    return new RealEsrganResult { error = "缩小输入失败" };
+                    return Finish(new RealEsrganResult { error = "缩小输入失败" });
                 inputTex = scaledInput;
             }
 
@@ -115,7 +130,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
             var h = inputTex.height;
             var rgba = GetRgbaBytes(inputTex, out rgbaInput);
             if (rgba == null || rgba.Length != w * h * 4)
-                return new RealEsrganResult { error = "读取RGBA像素失败" };
+                return Finish(new RealEsrganResult { error = "读取RGBA像素失败" });
 
             var outW = w * runFactor;
             var outH = h * runFactor;
@@ -163,7 +178,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                     traceId,
                     ct);
                 ResetContext();
-                return new RealEsrganResult { error = err };
+                return Finish(new RealEsrganResult { error = err });
             }
 
             await ReportDbgAsync(
@@ -192,7 +207,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                 Destroy(finalTex);
                 finalTex = resized;
                 if (finalTex == null)
-                    return new RealEsrganResult { error = "回缩放失败" };
+                    return Finish(new RealEsrganResult { error = "回缩放失败" });
             }
 
             if (finalTex.width != originalW * desiredScale || finalTex.height != originalH * desiredScale)
@@ -202,12 +217,12 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                 Destroy(finalTex);
                 finalTex = resized;
                 if (finalTex == null)
-                    return new RealEsrganResult { error = "回缩放失败" };
+                    return Finish(new RealEsrganResult { error = "回缩放失败" });
             }
 
             finalTex.name = "RealESRGAN_NCNN_" + desiredScale + "x";
             ReportProgress(1f, "完成");
-            return new RealEsrganResult { texture = finalTex };
+            return Finish(new RealEsrganResult { texture = finalTex });
         }
         finally
         {

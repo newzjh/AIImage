@@ -38,6 +38,20 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 
         var originalW = src.width;
         var originalH = src.height;
+        var totalSw = Stopwatch.StartNew();
+
+        RealEsrganResult Finish(RealEsrganResult r)
+        {
+            r.elapsedMs = totalSw.ElapsedMilliseconds;
+            try
+            {
+                Debug.Log("[TIMING] Real-ESRGAN(exe) " + r.elapsedMs + " ms | in=" + originalW + "x" + originalH + " | model=" + (modelName ?? "") + " | err=" + (r.error ?? ""));
+            }
+            catch
+            {
+            }
+            return r;
+        }
 
         var exePath = ResolveExecutablePath();
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
@@ -50,7 +64,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             "{\"exePath\":\"" + EscapeJson(exePath ?? "") + "\",\"streamingAssetsPath\":\"" + EscapeJson(Application.streamingAssetsPath) + "\",\"exists\":" + (File.Exists(exePath ?? "") ? 1 : 0) + "}",
             "", ct);
         if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
-            return new RealEsrganResult { error = "realesrgan-ncnn-vulkan executable not found: " + (exePath ?? ""), workDir = null };
+            return Finish(new RealEsrganResult { error = "realesrgan-ncnn-vulkan executable not found: " + (exePath ?? ""), workDir = null });
 
         var modelDir = ResolveModelDir();
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
@@ -63,7 +77,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             "{\"modelDir\":\"" + EscapeJson(modelDir ?? "") + "\",\"exists\":" + (Directory.Exists(modelDir ?? "") ? 1 : 0) + "}",
             "", ct);
         if (string.IsNullOrWhiteSpace(modelDir) || !Directory.Exists(modelDir))
-            return new RealEsrganResult { error = "Real-ESRGAN model directory not found: " + (modelDir ?? ""), workDir = null };
+            return Finish(new RealEsrganResult { error = "Real-ESRGAN model directory not found: " + (modelDir ?? ""), workDir = null });
 
         var s = Mathf.Clamp(scale, 2, 4);
         var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
@@ -134,7 +148,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             {
                 scaledInput = ResizeTextureBilinear(src, sw, sh);
                 if (scaledInput == null)
-                    return new RealEsrganResult { error = "Failed to resize input image", workDir = dumpDebugFiles ? workDir : null };
+                    return Finish(new RealEsrganResult { error = "Failed to resize input image", workDir = dumpDebugFiles ? workDir : null });
 
                 var inputBytes = scaledInput.EncodeToPNG();
                 await File.WriteAllBytesAsync(scaledInputPath, inputBytes, ct);
@@ -330,13 +344,13 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             }
 
             if (!string.IsNullOrWhiteSpace(threadError))
-                return new RealEsrganResult { error = threadError, workDir = dumpDebugFiles ? workDir : null };
+                return Finish(new RealEsrganResult { error = threadError, workDir = dumpDebugFiles ? workDir : null });
 
             var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
             if (!tex.LoadImage(outBytes, false))
             {
                 Destroy(tex);
-                return new RealEsrganResult { error = "Failed to decode Real-ESRGAN output image", workDir = dumpDebugFiles ? workDir : null };
+                return Finish(new RealEsrganResult { error = "Failed to decode Real-ESRGAN output image", workDir = dumpDebugFiles ? workDir : null });
             }
             tex.wrapMode = TextureWrapMode.Clamp;
             tex.filterMode = FilterMode.Bilinear;
@@ -350,13 +364,13 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 Destroy(finalTex);
                 finalTex = resized;
                 if (finalTex == null)
-                    return new RealEsrganResult { error = "Failed to resize output back to original resolution", workDir = dumpDebugFiles ? workDir : null };
+                    return Finish(new RealEsrganResult { error = "Failed to resize output back to original resolution", workDir = dumpDebugFiles ? workDir : null });
             }
             finalTex.name = "RealESRGAN_" + runFactor + "x";
 
             ReportProgress(1f, "完成");
 
-            return new RealEsrganResult { texture = finalTex, workDir = dumpDebugFiles ? workDir : null };
+            return Finish(new RealEsrganResult { texture = finalTex, workDir = dumpDebugFiles ? workDir : null });
         }
         finally
         {
@@ -1080,4 +1094,5 @@ public struct RealEsrganResult
     public Texture2D texture;
     public string workDir;
     public string error;
+    public long elapsedMs;
 }
