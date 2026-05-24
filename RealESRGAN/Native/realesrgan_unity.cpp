@@ -109,6 +109,19 @@ extern "C"
         memcpy(outPath, p.c_str(), p.size() + 1);
         return true;
     }
+
+    static bool try_get_loaded_module_path(const char* moduleName, std::string& outPath)
+    {
+        outPath.clear();
+        if (!moduleName || !moduleName[0]) return false;
+        HMODULE h = GetModuleHandleA(moduleName);
+        if (!h) return false;
+        char buf[MAX_PATH] = { 0 };
+        DWORD n = GetModuleFileNameA(h, buf, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) return false;
+        outPath.assign(buf);
+        return true;
+    }
 #endif
 
     struct vk_alloc_scope
@@ -259,6 +272,27 @@ extern "C"
         if (!request_cpu && !has_vulkan_loader())
             return set_global_error("vulkan-1.dll not found. Install GPU driver with Vulkan runtime.");
 #endif
+
+        if (!request_cpu)
+        {
+#if defined(_WIN32)
+            std::string msvcp;
+            if (try_get_loaded_module_path("MSVCP140.dll", msvcp))
+            {
+                std::string lower = msvcp;
+                for (size_t i = 0; i < lower.size(); i++)
+                {
+                    char c = lower[i];
+                    if (c >= 'A' && c <= 'Z') lower[i] = (char)(c - 'A' + 'a');
+                }
+                if (lower.find("\\i4remote\\") != std::string::npos)
+                {
+                    std::string msg = "MSVCP140.dll loaded from unexpected path: " + msvcp;
+                    return set_global_error(msg.c_str());
+                }
+            }
+#endif
+        }
 
         const bool use_vulkan = !request_cpu;
         if (use_vulkan)
