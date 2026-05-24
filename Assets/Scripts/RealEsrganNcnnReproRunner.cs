@@ -107,7 +107,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 runInput = src;
             }
 
-            outRt = new RenderTexture(runInW, runInH, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+            outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             outRt.enableRandomWrite = true;
             outRt.wrapMode = TextureWrapMode.Clamp;
             outRt.filterMode = FilterMode.Bilinear;
@@ -138,16 +138,26 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     _ops.TextureToBuffer3(runInput, ox, oy, inBuf);
                     using var outBuf = Forward(inBuf);
 
-                    var tileRt = RenderTexture.GetTemporary(cw * runFactor, ch * runFactor, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+                    var tileRt = RenderTexture.GetTemporary(cw * runFactor, ch * runFactor, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear);
                     tileRt.enableRandomWrite = true;
                     tileRt.wrapMode = TextureWrapMode.Clamp;
                     tileRt.filterMode = FilterMode.Bilinear;
                     tileRt.Create();
                     _ops.BufferToTexture3(outBuf, tileRt);
 
-                    var srcX = tilePad * runFactor;
-                    var srcY = tilePad * runFactor;
-                    _ops.BlitCropDown4(tileRt, outRt, tx, ty, srcX, srcY, tw, th);
+                    var dstToSrcScale = (runInW / (float)originalW) * runFactor;
+                    var scaleX = originalW / (float)runInW;
+                    var scaleY = originalH / (float)runInH;
+                    var dstX0 = Mathf.Clamp(Mathf.FloorToInt(tx * scaleX), 0, originalW);
+                    var dstY0 = Mathf.Clamp(Mathf.FloorToInt(ty * scaleY), 0, originalH);
+                    var dstX1 = Mathf.Clamp(Mathf.CeilToInt((tx + tw) * scaleX), 0, originalW);
+                    var dstY1 = Mathf.Clamp(Mathf.CeilToInt((ty + th) * scaleY), 0, originalH);
+                    var dstW = Mathf.Max(0, dstX1 - dstX0);
+                    var dstH = Mathf.Max(0, dstY1 - dstY0);
+
+                    var tileOutOriginX = ox * runFactor;
+                    var tileOutOriginY = oy * runFactor;
+                    _ops.BlitTileToDst(tileRt, outRt, dstX0, dstY0, tileOutOriginX, tileOutOriginY, dstW, dstH, dstToSrcScale);
 
                     RenderTexture.ReleaseTemporary(tileRt);
 
@@ -303,9 +313,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 if (pack.kernel != 3)
                     throw new InvalidOperationException("unsupported kernel size: " + pack.kernel);
                 var outBuf = new NcnnTensorBuffer(src.t.w, src.t.h, pack.outC);
-                _ops.Conv3x3(src.t, pack.w, pack.b, pack.outC, 1, pack.pad, outBuf);
-                if (pack.activationType == 2)
-                    _ops.LeakyReluInplace(outBuf, pack.activationSlope);
+                _ops.Conv3x3(src.t, pack.w, pack.b, pack.outC, 1, pack.pad, pack.activationType, pack.activationSlope, outBuf);
                 blobs[l.topNames[0]] = new TensorRef { t = outBuf, refs = 1 };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;

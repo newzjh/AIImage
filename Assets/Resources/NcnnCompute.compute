@@ -7,7 +7,7 @@
 #pragma kernel NcnnAddWeighted
 #pragma kernel NcnnCopyC
 #pragma kernel NcnnInterp2x
-#pragma kernel NcnnBlitCropDown4
+#pragma kernel NcnnBlitTileToDst
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -27,6 +27,9 @@ int _SrcX;
 int _SrcY;
 int _DstX;
 int _DstY;
+int _TileOutX;
+int _TileOutY;
+float _BlitScale;
 
 [numthreads(256,1,1)]
 void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
@@ -57,6 +60,8 @@ int _Pad;
 
 int _OffsetX;
 int _OffsetY;
+int _ActType;
+float _ActParam;
 
 [numthreads(64,1,1)]
 void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
@@ -91,6 +96,9 @@ void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
             }
         }
     }
+
+    if (_ActType == 2)
+        sum = sum >= 0.0 ? sum : sum * _ActParam;
 
     _ConvOut[outIndex] = sum;
 }
@@ -204,15 +212,17 @@ void NcnnInterp2x(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
-void NcnnBlitCropDown4(uint3 id : SV_DispatchThreadID)
+void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= _BlitW || (int)id.y >= _BlitH) return;
 
     uint sw, sh;
     _NcnnIn.GetDimensions(sw, sh);
 
-    float2 src = float2((float)_SrcX, (float)_SrcY) + (float2((float)id.x, (float)id.y) + 0.5) * 4.0;
-    float2 p = src - 0.5;
+    float2 dstPix = float2((float)(_DstX + (int)id.x), (float)(_DstY + (int)id.y));
+    float2 srcGlobal = (dstPix + 0.5) * _BlitScale - 0.5;
+    float2 srcLocal = srcGlobal - float2((float)_TileOutX, (float)_TileOutY);
+    float2 p = srcLocal;
     int x0 = (int)floor(p.x);
     int y0 = (int)floor(p.y);
     int x1 = x0 + 1;

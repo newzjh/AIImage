@@ -13,7 +13,7 @@ namespace NcnnCompute
         private readonly int _kAddWeighted;
         private readonly int _kCopyC;
         private readonly int _kInterp2x;
-        private readonly int _kBlitCropDown4;
+        private readonly int _kBlitTileToDst;
 
         public NcnnOps()
         {
@@ -27,7 +27,7 @@ namespace NcnnCompute
             _kAddWeighted = _cs.FindKernel("NcnnAddWeighted");
             _kCopyC = _cs.FindKernel("NcnnCopyC");
             _kInterp2x = _cs.FindKernel("NcnnInterp2x");
-            _kBlitCropDown4 = _cs.FindKernel("NcnnBlitCropDown4");
+            _kBlitTileToDst = _cs.FindKernel("NcnnBlitTileToDst");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -60,26 +60,27 @@ namespace NcnnCompute
             Dispatch2D(_kBufToTex3, output.width, output.height, 8, 8);
         }
 
-        public void BlitCropDown4(RenderTexture src4x, RenderTexture dst1x, int dstX, int dstY, int srcX, int srcY, int w, int h)
+        public void BlitTileToDst(RenderTexture tileOut, RenderTexture dst, int dstX, int dstY, int tileOutOriginX, int tileOutOriginY, int w, int h, float dstToSrcScale)
         {
-            if (src4x == null) throw new ArgumentNullException(nameof(src4x));
-            if (dst1x == null) throw new ArgumentNullException(nameof(dst1x));
+            if (tileOut == null) throw new ArgumentNullException(nameof(tileOut));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
             if (w <= 0 || h <= 0) return;
-            if (dstX < 0 || dstY < 0 || dstX + w > dst1x.width || dstY + h > dst1x.height)
+            if (dstX < 0 || dstY < 0 || dstX + w > dst.width || dstY + h > dst.height)
                 throw new ArgumentOutOfRangeException(nameof(dstX), "dst rect out of range");
 
             _cs.SetInt("_BlitW", w);
             _cs.SetInt("_BlitH", h);
-            _cs.SetInt("_SrcX", srcX);
-            _cs.SetInt("_SrcY", srcY);
             _cs.SetInt("_DstX", dstX);
             _cs.SetInt("_DstY", dstY);
-            _cs.SetTexture(_kBlitCropDown4, "_NcnnIn", src4x);
-            _cs.SetTexture(_kBlitCropDown4, "_NcnnOut", dst1x);
-            Dispatch2D(_kBlitCropDown4, w, h, 8, 8);
+            _cs.SetInt("_TileOutX", tileOutOriginX);
+            _cs.SetInt("_TileOutY", tileOutOriginY);
+            _cs.SetFloat("_BlitScale", dstToSrcScale);
+            _cs.SetTexture(_kBlitTileToDst, "_NcnnIn", tileOut);
+            _cs.SetTexture(_kBlitTileToDst, "_NcnnOut", dst);
+            Dispatch2D(_kBlitTileToDst, w, h, 8, 8);
         }
 
-        public void Conv3x3(NcnnTensorBuffer input, ComputeBuffer weightsOihw, ComputeBuffer biasO, int outC, int stride, int pad, NcnnTensorBuffer output)
+        public void Conv3x3(NcnnTensorBuffer input, ComputeBuffer weightsOihw, ComputeBuffer biasO, int outC, int stride, int pad, int activationType, float activationParam, NcnnTensorBuffer output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -93,6 +94,8 @@ namespace NcnnCompute
             _cs.SetInt("_OutC", outC);
             _cs.SetInt("_Stride", Mathf.Max(1, stride));
             _cs.SetInt("_Pad", Mathf.Max(0, pad));
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
             _cs.SetBuffer(_kConv3x3, "_ConvIn", input.buffer);
             _cs.SetBuffer(_kConv3x3, "_ConvW", weightsOihw);
             _cs.SetBuffer(_kConv3x3, "_ConvB", biasO);
