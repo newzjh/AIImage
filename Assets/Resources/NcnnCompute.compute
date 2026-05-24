@@ -87,10 +87,8 @@ void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
     _NcnnIn.GetDimensions(tw, th);
     int sx = (int)id.x + _OffsetX;
     int sy = (int)id.y + _OffsetY;
-    sx = abs(sx);
-    sx = ((int)tw - 1) - abs(sx - ((int)tw - 1));
-    sy = abs(sy);
-    sy = ((int)th - 1) - abs(sy - ((int)th - 1));
+    sx = clamp(sx, 0, (int)tw - 1);
+    sy = clamp(sy, 0, (int)th - 1);
     float4 v = _NcnnIn[int2(sx, sy)];
     _NcnnOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
 }

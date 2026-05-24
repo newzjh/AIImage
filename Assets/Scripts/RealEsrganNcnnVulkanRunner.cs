@@ -160,7 +160,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(exePath) ?? ""
+                WorkingDirectory = workDir ?? ""
             };
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
             psi.FileName = NormalizeWinPath(psi.FileName);
@@ -184,11 +184,20 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                 try
                 {
 #if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
-                    var exitCodeLocal = StartProcessAndWaitWin32(psi.FileName, psi.Arguments, psi.WorkingDirectory, workDir, ct);
+                    var logPath = Path.Combine(workDir, "realesrgan_stdout.txt");
+                    using var tailCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    var tailTask = TailProgressFromFileAsync(logPath, tailCts.Token);
+
+                    var exitCodeLocal = await UniTask.RunOnThreadPool(() =>
+                    {
+                        return StartProcessAndWaitWin32(psi.FileName, psi.Arguments, psi.WorkingDirectory, workDir, ct);
+                    }, cancellationToken: ct);
+
                     exitCode = exitCodeLocal;
+                    try { tailCts.Cancel(); } catch { }
+                    try { await tailTask; } catch { }
                     try
                     {
-                        var logPath = Path.Combine(workDir, "realesrgan_stdout.txt");
                         var logText = "";
                         try { if (File.Exists(logPath)) logText = File.ReadAllText(logPath); } catch { }
                         il2cppLogText = logText ?? "";
@@ -649,13 +658,70 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 
     private static string CreateWorkDir()
     {
-        var root = Application.temporaryCachePath;
+        var root = Application.persistentDataPath;
         if (string.IsNullOrWhiteSpace(root))
             root = Path.GetTempPath();
-        var dir = Path.Combine(root, "AIImage_RealESRGAN_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        var dir = Path.Combine(root, "RealESRGAN", "Work", "AIImage_RealESRGAN_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         try { Directory.CreateDirectory(dir); } catch { }
         return dir;
     }
+
+#if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
+    private async UniTask TailProgressFromFileAsync(string logPath, CancellationToken ct)
+    {
+        long pos = 0;
+        var carry = new StringBuilder();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (File.Exists(logPath))
+                {
+                    using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        if (pos > fs.Length)
+                            pos = 0;
+                        fs.Seek(pos, SeekOrigin.Begin);
+                        var buf = new byte[4096];
+                        int read;
+                        while ((read = await fs.ReadAsync(buf, 0, buf.Length, ct)) > 0)
+                        {
+                            pos += read;
+                            for (var i = 0; i < read; i++)
+                            {
+                                var b = buf[i];
+                                if (b == (byte)'\n' || b == (byte)'\r')
+                                {
+                                    if (carry.Length > 0)
+                                    {
+                                        var line = carry.ToString();
+                                        carry.Clear();
+                                        TryReportProgressFromLine(line);
+                                    }
+                                }
+                                else
+                                {
+                                    char c = (b >= 32 && b <= 126) ? (char)b : ' ';
+                                    carry.Append(c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+            }
+
+            await UniTask.Delay(80, cancellationToken: ct);
+        }
+    }
+#endif
 
 #if ENABLE_IL2CPP && UNITY_STANDALONE_WIN && !UNITY_EDITOR
     private static async UniTask<string> PrepareExeForIl2CppAsync(string streamingExePath, CancellationToken ct)
@@ -778,9 +844,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         var exeBase = (Path.GetFileNameWithoutExtension(exePath) ?? "").ToLowerInvariant();
         var isUpscayl = exeBase == "upscayl-bin";
 
-        var exeDir = Path.GetDirectoryName(exePath) ?? "";
-        var defaultModelDir = Path.Combine(exeDir, "models");
-        var useModelDirArg = !isUpscayl && !string.Equals(Path.GetFullPath(modelDir), Path.GetFullPath(defaultModelDir), StringComparison.OrdinalIgnoreCase);
+        var useModelDirArg = !isUpscayl && !string.IsNullOrWhiteSpace(modelDir);
 
         var g = gpuId < 0 ? "auto" : gpuId.ToString();
 

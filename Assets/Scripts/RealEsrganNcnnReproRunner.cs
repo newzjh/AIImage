@@ -26,7 +26,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private Dictionary<string, int> _blobUseCount;
     private NcnnOps _ops;
     private bool _loaded;
-    private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
+    private readonly Dictionary<RtKey, Stack<PooledRt>> _rtPool = new Dictionary<RtKey, Stack<PooledRt>>();
+    private bool _useTempPoolThisRun;
 
     private readonly struct RtKey : IEquatable<RtKey>
     {
@@ -90,6 +91,18 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         public bool owned;
     }
 
+    private readonly struct PooledRt
+    {
+        public readonly RenderTexture rt;
+        public readonly GraphicsFence fence;
+
+        public PooledRt(RenderTexture rt, GraphicsFence fence)
+        {
+            this.rt = rt;
+            this.fence = fence;
+        }
+    }
+
     private void Awake()
     {
         _ops = new NcnnOps();
@@ -106,7 +119,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var stack = kv.Value;
             while (stack.Count > 0)
             {
-                var rt = stack.Pop();
+                var rt = stack.Pop().rt;
                 try { RenderTexture.ReleaseTemporary(rt); } catch { }
             }
         }
@@ -139,12 +152,47 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             runInW = Mathf.Max(1, Mathf.RoundToInt(originalW * s));
             runInH = Mathf.Max(1, Mathf.RoundToInt(originalH * s));
         }
-        var effectiveTileSize = tileSize > 0 ? tileSize : AutoTileSize();
+        var baseTileSize = tileSize > 0 ? tileSize : AutoTileSize();
         var effectiveTilePad = tilePad > 0 ? tilePad : 10;
 
         ReportProgress(0f, "准备输入");
         await UniTask.Yield();
 
+        var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
+        var attemptTiles = new[]
+        {
+            Mathf.Max(16, baseTileSize),
+            Mathf.Max(16, baseTileSize / 2),
+            Mathf.Max(16, baseTileSize / 4)
+        };
+
+        Exception lastErr = null;
+        for (var attempt = 0; attempt < attemptTiles.Length; attempt++)
+        {
+            var effectiveTileSize = attemptTiles[attempt];
+            var usePool = enableTempPool || (isVulkan && attempt > 0);
+            _useTempPoolThisRun = usePool;
+            try
+            {
+                var r = await ProcessOnceAsync(src, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
+                return r;
+            }
+            catch (Exception e)
+            {
+                lastErr = e;
+                if (!IsLikelyVulkanOom(e))
+                    break;
+                if (_useTempPoolThisRun && clearTempPoolAfterRun)
+                    ClearTempPool();
+                await UniTask.Yield();
+            }
+        }
+
+        return new RealEsrganResult { error = lastErr != null ? lastErr.Message : "unknown error" };
+    }
+
+    private async UniTask<RealEsrganResult> ProcessOnceAsync(Texture2D src, CancellationToken ct, int originalW, int originalH, int runInW, int runInH, int runFactor, int effectiveTileSize, int effectiveTilePad)
+    {
         Texture2D runInput = null;
         var ownsRunInput = false;
         RenderTexture scaledOutRt = null;
@@ -170,6 +218,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             scaledOutRt.wrapMode = TextureWrapMode.Clamp;
             scaledOutRt.filterMode = FilterMode.Bilinear;
             scaledOutRt.Create();
+            if (!scaledOutRt.IsCreated())
+                throw new InvalidOperationException("failed to create scaledOutRt " + scaledOutW + "x" + scaledOutH);
 
             if (scaledOutW != originalW || scaledOutH != originalH)
             {
@@ -177,6 +227,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outRt.wrapMode = TextureWrapMode.Clamp;
                 outRt.filterMode = FilterMode.Bilinear;
                 outRt.Create();
+                if (!outRt.IsCreated())
+                    throw new InvalidOperationException("failed to create outRt " + originalW + "x" + originalH);
             }
 
             var tilesX = Mathf.CeilToInt(runInW / (float)Mathf.Max(1, effectiveTileSize));
@@ -249,10 +301,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         {
             return new RealEsrganResult { error = "Cancelled" };
         }
-        catch (Exception e)
-        {
-            return new RealEsrganResult { error = e.Message };
-        }
         finally
         {
             if (ownsRunInput && runInput != null) Destroy(runInput);
@@ -266,7 +314,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outRt.Release();
                 Destroy(outRt);
             }
-            if (enableTempPool && clearTempPoolAfterRun)
+            if (_useTempPoolThisRun && clearTempPoolAfterRun)
                 ClearTempPool();
         }
     }
@@ -592,12 +640,29 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
     {
-        if (!enableTempPool)
+        if (!_useTempPoolThisRun)
             return CreateTempArray(w, h, depth, format);
 
         var key = new RtKey(w, h, Mathf.Max(1, depth), format);
         if (_rtPool.TryGetValue(key, out var stack) && stack.Count > 0)
-            return stack.Pop();
+        {
+            var keep = new Stack<PooledRt>(stack.Count);
+            RenderTexture hit = null;
+            while (stack.Count > 0)
+            {
+                var p = stack.Pop();
+                if (hit == null && p.rt != null && p.fence.passed)
+                {
+                    hit = p.rt;
+                    break;
+                }
+                keep.Push(p);
+            }
+            while (keep.Count > 0)
+                stack.Push(keep.Pop());
+            if (hit != null)
+                return hit;
+        }
 
         return CreateTempArray(w, h, depth, format);
     }
@@ -616,6 +681,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         rt.wrapMode = TextureWrapMode.Clamp;
         rt.filterMode = FilterMode.Point;
         rt.Create();
+        if (!rt.IsCreated())
+            throw new InvalidOperationException("failed to create temp array " + w + "x" + h + "x" + depth + " " + format);
         return rt;
     }
 
@@ -623,7 +690,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     {
         if (rt == null)
             return;
-        if (!enableTempPool)
+        if (!_useTempPoolThisRun)
         {
             RenderTexture.ReleaseTemporary(rt);
             return;
@@ -631,7 +698,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var key = new RtKey(rt.width, rt.height, rt.volumeDepth, rt.format);
         if (!_rtPool.TryGetValue(key, out var stack))
         {
-            stack = new Stack<RenderTexture>();
+            stack = new Stack<PooledRt>();
             _rtPool[key] = stack;
         }
         var cap = Mathf.Max(0, maxPooledPerShape);
@@ -640,7 +707,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             RenderTexture.ReleaseTemporary(rt);
             return;
         }
-        stack.Push(rt);
+        try
+        {
+            var fence = Graphics.CreateGraphicsFence(GraphicsFenceType.AsyncQueueSynchronisation, SynchronisationStageFlags.ComputeProcessing);
+            stack.Push(new PooledRt(rt, fence));
+        }
+        catch
+        {
+            RenderTexture.ReleaseTemporary(rt);
+        }
     }
 
     private void ClearTempPool()
@@ -650,7 +725,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var stack = kv.Value;
             while (stack.Count > 0)
             {
-                var rt = stack.Pop();
+                var rt = stack.Pop().rt;
                 try { RenderTexture.ReleaseTemporary(rt); } catch { }
             }
         }
@@ -751,5 +826,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (mb > 190)
             return 64;
         return 32;
+    }
+
+    private static bool IsLikelyVulkanOom(Exception e)
+    {
+        if (e == null) return false;
+        var msg = e.Message ?? "";
+        if (msg.IndexOf("Out of device memory", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (msg.IndexOf("out of memory", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (msg.IndexOf("failed to create", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
     }
 }

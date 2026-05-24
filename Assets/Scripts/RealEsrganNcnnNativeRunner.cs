@@ -94,6 +94,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         const int maxInputLongSide = 2048;
 
         Texture2D scaledInput = null;
+        Texture2D rgbaInput = null;
         try
         {
             var inputTex = src;
@@ -110,9 +111,11 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
                 inputTex = scaledInput;
             }
 
-            var rgba = inputTex.GetRawTextureData<byte>().ToArray();
             var w = inputTex.width;
             var h = inputTex.height;
+            var rgba = GetRgbaBytes(inputTex, out rgbaInput);
+            if (rgba == null || rgba.Length != w * h * 4)
+                return new RealEsrganResult { error = "读取RGBA像素失败" };
 
             var outW = w * runFactor;
             var outH = h * runFactor;
@@ -210,6 +213,74 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         {
             if (scaledInput != null)
                 Destroy(scaledInput);
+            if (rgbaInput != null)
+                Destroy(rgbaInput);
+        }
+    }
+
+    private static byte[] GetRgbaBytes(Texture2D src, out Texture2D readableCopy)
+    {
+        readableCopy = null;
+        if (src == null)
+            return null;
+
+        Texture2D tex = src;
+        if (!src.isReadable)
+        {
+            readableCopy = RenderToReadableRgba32(src, src.width, src.height);
+            tex = readableCopy;
+        }
+        else if (src.format != TextureFormat.RGBA32)
+        {
+            readableCopy = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, false);
+            readableCopy.SetPixels32(src.GetPixels32());
+            readableCopy.Apply(false, false);
+            tex = readableCopy;
+        }
+
+        if (tex == null)
+            return null;
+
+        var pixels = tex.GetPixels32();
+        var bytes = new byte[pixels.Length * 4];
+        var bi = 0;
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            var p = pixels[i];
+            bytes[bi++] = p.r;
+            bytes[bi++] = p.g;
+            bytes[bi++] = p.b;
+            bytes[bi++] = p.a;
+        }
+        return bytes;
+    }
+
+    private static Texture2D RenderToReadableRgba32(Texture src, int w, int h)
+    {
+        var prev = RenderTexture.active;
+        var rt = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+        rt.enableRandomWrite = false;
+        rt.Create();
+        try
+        {
+            Graphics.Blit(src, rt);
+            RenderTexture.active = rt;
+            var tex = new Texture2D(w, h, TextureFormat.RGBA32, false, false);
+            tex.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
+            tex.Apply(false, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            tex.filterMode = FilterMode.Bilinear;
+            return tex;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            RenderTexture.active = prev;
+            try { rt.Release(); } catch { }
+            UnityEngine.Object.Destroy(rt);
         }
     }
 
