@@ -377,7 +377,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                             }
                         }
                         var seamType = maxType < 0.5f ? "V" : "H";
-                        Debug.Log("[SEAM] ESRGAN(repro) maxScore=" + maxScore.ToString("0.######", CultureInfo.InvariantCulture) + " type=" + seamType + " pos=" + ((int)maxPos));
+                        UnityEngine.Debug.Log("[SEAM] ESRGAN(repro) maxScore=" + maxScore.ToString("0.######", CultureInfo.InvariantCulture) + " type=" + seamType + " pos=" + ((int)maxPos));
                     }
                 }
             }
@@ -631,6 +631,67 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 }
 
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = w, h = h, packs = sumP, refs = 1, owned = true };
+                Consume(blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Padding", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var top = l.GetInt(0, 0);
+                var bottom = l.GetInt(1, 0);
+                var left = l.GetInt(2, 0);
+                var right = l.GetInt(3, 0);
+                var type = l.GetInt(4, 0);
+                var value = l.GetFloat(5, 0f);
+
+                var outW = src.w + left + right;
+                var outH = src.h + top + bottom;
+                if (outW <= 0 || outH <= 0)
+                    throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
+
+                var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.PaddingPack4(src.t, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                Consume(blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Pooling", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var poolingType = l.GetInt(0, 0);
+                var kernelW = l.GetInt(1, 0);
+                var kernelH = l.GetInt(11, kernelW);
+                var strideW = l.GetInt(2, 1);
+                var strideH = l.GetInt(12, strideW);
+                var padLeft = l.GetInt(3, 0);
+                var padTop = l.GetInt(13, padLeft);
+                var globalPooling = l.GetInt(4, 0);
+                var adaptivePooling = l.GetInt(7, 0);
+                if (globalPooling != 0 || adaptivePooling != 0)
+                    throw new InvalidOperationException("Pooling(global/adaptive) not supported");
+
+                var outW = (src.w + padLeft * 2 - kernelW) / strideW + 1;
+                var outH = (src.h + padTop * 2 - kernelH) / strideH + 1;
+                outW = Mathf.Max(1, outW);
+                outH = Mathf.Max(1, outH);
+                var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.PoolingPack4(src.t, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                Consume(blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Softmax", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var axis = l.GetInt(0, 0);
+                if (axis != 0)
+                    throw new InvalidOperationException("Softmax axis not supported: " + axis);
+                var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                _ops.SoftmaxChannelPack4(src.t, src.packs, outArr);
+                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }

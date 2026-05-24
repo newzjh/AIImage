@@ -36,6 +36,9 @@ namespace NcnnCompute
         private readonly int _kPack4ToRgb01;
         private readonly int _kProbeTilePack4;
         private readonly int _kProbeSeams;
+        private readonly int _kPaddingPack4;
+        private readonly int _kPoolingPack4;
+        private readonly int _kSoftmaxChannelPack4;
 
         public NcnnOps()
         {
@@ -72,6 +75,9 @@ namespace NcnnCompute
             _kPack4ToRgb01 = _cs.FindKernel("NcnnPack4ToRgb01");
             _kProbeTilePack4 = _cs.FindKernel("NcnnProbeTilePack4");
             _kProbeSeams = _cs.FindKernel("NcnnProbeSeams");
+            _kPaddingPack4 = _cs.FindKernel("NcnnPaddingPack4");
+            _kPoolingPack4 = _cs.FindKernel("NcnnPoolingPack4");
+            _kSoftmaxChannelPack4 = _cs.FindKernel("NcnnSoftmaxChannelPack4");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -263,6 +269,47 @@ namespace NcnnCompute
             if (seamCount <= 0) return;
             var groups = Mathf.CeilToInt(seamCount / 64f);
             _cs.Dispatch(_kProbeSeams, groups, 1, 1);
+        }
+
+        public void PaddingPack4(RenderTexture input, int packs, int padLeft, int padRight, int padTop, int padBottom, int padType, Vector4 padValue, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PadLeft", padLeft);
+            _cs.SetInt("_PadRight", padRight);
+            _cs.SetInt("_PadTop", padTop);
+            _cs.SetInt("_PadBottom", padBottom);
+            _cs.SetInt("_PadType", padType);
+            _cs.SetVector("_PadValue4", padValue);
+            _cs.SetTexture(_kPaddingPack4, "_PadInArr", input);
+            _cs.SetTexture(_kPaddingPack4, "_PadOutArr", output);
+            Dispatch3D(_kPaddingPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void PoolingPack4(RenderTexture input, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int poolType, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PoolKernelW", kernelW);
+            _cs.SetInt("_PoolKernelH", kernelH);
+            _cs.SetInt("_PoolStrideW", strideW);
+            _cs.SetInt("_PoolStrideH", strideH);
+            _cs.SetInt("_PoolPadLeft", padLeft);
+            _cs.SetInt("_PoolPadTop", padTop);
+            _cs.SetInt("_PoolType", poolType);
+            _cs.SetTexture(_kPoolingPack4, "_PoolInArr", input);
+            _cs.SetTexture(_kPoolingPack4, "_PoolOutArr", output);
+            Dispatch3D(_kPoolingPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void SoftmaxChannelPack4(RenderTexture input, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_SoftmaxPacks", packs);
+            _cs.SetTexture(_kSoftmaxChannelPack4, "_SoftmaxInArr", input);
+            _cs.SetTexture(_kSoftmaxChannelPack4, "_SoftmaxOutArr", output);
+            Dispatch3D(_kSoftmaxChannelPack4, output.width, output.height, packs, 8, 8);
         }
 
         public void Conv3x3Pack4(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, RenderTexture dstPack4)

@@ -31,6 +31,9 @@
 #pragma kernel NcnnPack4ToRgb01
 #pragma kernel NcnnProbeTilePack4
 #pragma kernel NcnnProbeSeams
+#pragma kernel NcnnPaddingPack4
+#pragma kernel NcnnPoolingPack4
+#pragma kernel NcnnSoftmaxChannelPack4
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -802,6 +805,40 @@ int _SeamStepX;
 int _SeamStepY;
 int _SeamSamples;
 
+Texture2DArray<float4> _PadInArr;
+RWTexture2DArray<float4> _PadOutArr;
+int _PadLeft;
+int _PadRight;
+int _PadTop;
+int _PadBottom;
+int _PadType;
+float4 _PadValue4;
+
+Texture2DArray<float4> _PoolInArr;
+RWTexture2DArray<float4> _PoolOutArr;
+int _PoolKernelW;
+int _PoolKernelH;
+int _PoolStrideW;
+int _PoolStrideH;
+int _PoolPadLeft;
+int _PoolPadTop;
+int _PoolType;
+
+Texture2DArray<float4> _SoftmaxInArr;
+RWTexture2DArray<float4> _SoftmaxOutArr;
+int _SoftmaxPacks;
+
+static int Reflect101(int x, int len)
+{
+    if (len <= 1) return 0;
+    while (x < 0 || x >= len)
+    {
+        if (x < 0) x = -x;
+        if (x >= len) x = (len - 1) * 2 - x;
+    }
+    return x;
+}
+
 [numthreads(1,1,1)]
 void NcnnProbeTilePack4(uint3 id : SV_DispatchThreadID)
 {
@@ -896,6 +933,132 @@ void NcnnProbeSeams(uint3 id : SV_DispatchThreadID)
 
     float score = valid > 0 ? (sumScore / (float)valid) : 0.0;
     _SeamOut4[i] = float4(score, 1.0, (float)seamY, 0.0);
+}
+
+[numthreads(8,8,1)]
+void NcnnPaddingPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _PadOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _PadInArr.GetDimensions(iw, ih, idd);
+    int sx = (int)id.x - _PadLeft;
+    int sy = (int)id.y - _PadTop;
+
+    if (_PadType == 0)
+    {
+        if (sx < 0 || sy < 0 || sx >= (int)iw || sy >= (int)ih || p >= (int)idd)
+        {
+            _PadOutArr[int3((int)id.x, (int)id.y, p)] = _PadValue4;
+            return;
+        }
+        _PadOutArr[int3((int)id.x, (int)id.y, p)] = _PadInArr[int3(sx, sy, p)];
+        return;
+    }
+
+    if (sx < 0 || sx >= (int)iw)
+    {
+        if (_PadType == 1)
+            sx = clamp(sx, 0, (int)iw - 1);
+        else
+            sx = Reflect101(sx, (int)iw);
+    }
+    if (sy < 0 || sy >= (int)ih)
+    {
+        if (_PadType == 1)
+            sy = clamp(sy, 0, (int)ih - 1);
+        else
+            sy = Reflect101(sy, (int)ih);
+    }
+    int sp = p;
+    if (sp >= (int)idd) sp = (int)idd - 1;
+    _PadOutArr[int3((int)id.x, (int)id.y, p)] = _PadInArr[int3(sx, sy, sp)];
+}
+
+[numthreads(8,8,1)]
+void NcnnPoolingPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _PoolOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _PoolInArr.GetDimensions(iw, ih, idd);
+    int ox = (int)id.x;
+    int oy = (int)id.y;
+
+    int sx0 = ox * _PoolStrideW - _PoolPadLeft;
+    int sy0 = oy * _PoolStrideH - _PoolPadTop;
+    int sx1 = sx0 + _PoolKernelW;
+    int sy1 = sy0 + _PoolKernelH;
+
+    float4 acc;
+    if (_PoolType == 0)
+        acc = float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38);
+    else
+        acc = 0.0;
+
+    int count = 0;
+    for (int yy = sy0; yy < sy1; yy++)
+    {
+        for (int xx = sx0; xx < sx1; xx++)
+        {
+            if (xx < 0 || yy < 0 || xx >= (int)iw || yy >= (int)ih) continue;
+            if (p >= (int)idd) continue;
+            float4 v = _PoolInArr[int3(xx, yy, p)];
+            if (_PoolType == 0)
+                acc = max(acc, v);
+            else
+            {
+                acc += v;
+                count++;
+            }
+        }
+    }
+
+    if (_PoolType != 0)
+    {
+        float inv = count > 0 ? (1.0 / (float)count) : 0.0;
+        acc *= inv;
+    }
+
+    _PoolOutArr[int3(ox, oy, p)] = acc;
+}
+
+[numthreads(8,8,1)]
+void NcnnSoftmaxChannelPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _SoftmaxOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    float4 v = _SoftmaxInArr[int3((int)id.x, (int)id.y, p)];
+
+    float maxv = -3.402823466e+38;
+    for (int ip = 0; ip < _SoftmaxPacks; ip++)
+    {
+        float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip)];
+        maxv = max(maxv, max(max(t.x, t.y), max(t.z, t.w)));
+    }
+
+    float sum = 0.0;
+    for (int ip = 0; ip < _SoftmaxPacks; ip++)
+    {
+        float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip)];
+        float4 e = exp(t - maxv);
+        sum += e.x + e.y + e.z + e.w;
+    }
+    float inv = sum > 0.0 ? (1.0 / sum) : 0.0;
+    float4 o = exp(v - maxv) * inv;
+    _SoftmaxOutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
 [numthreads(8,8,1)]
