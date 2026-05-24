@@ -44,6 +44,11 @@ namespace NcnnCompute
         private readonly int _kSwishPack4;
         private readonly int _kSigmoidPack4;
         private readonly int _kGeluPack4;
+        private readonly int _kMatMul2D;
+        private readonly int _kGemm2D;
+        private readonly int _kLayerNorm2D;
+        private readonly int _kSoftmax2D;
+        private readonly int _kEmbed;
 
         public NcnnOps()
         {
@@ -88,6 +93,11 @@ namespace NcnnCompute
             _kSwishPack4 = _cs.FindKernel("NcnnSwishPack4");
             _kSigmoidPack4 = _cs.FindKernel("NcnnSigmoidPack4");
             _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
+            _kMatMul2D = _cs.FindKernel("NcnnMatMul2D");
+            _kGemm2D = _cs.FindKernel("NcnnGemm2D");
+            _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
+            _kSoftmax2D = _cs.FindKernel("NcnnSoftmax2D");
+            _kEmbed = _cs.FindKernel("NcnnEmbed");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -523,6 +533,109 @@ namespace NcnnCompute
             _cs.SetBuffer(_kInnerProduct, "_IPB", bias);
             _cs.SetBuffer(_kInnerProduct, "_IPOut", output);
             Dispatch1D(_kInnerProduct, outFeatures, 64);
+        }
+
+        public void MatMul2D(ComputeBuffer a, ComputeBuffer b, int m, int n, int k, bool transB, ComputeBuffer output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", 0);
+            _cs.SetInt("_MatBroadcastTypeC", 0);
+            _cs.SetFloat("_MatAlpha", 1f);
+            _cs.SetFloat("_MatBeta", 0f);
+            _cs.SetBuffer(_kMatMul2D, "_MatA", a);
+            _cs.SetBuffer(_kMatMul2D, "_MatB", b);
+            _cs.SetBuffer(_kMatMul2D, "_MatC", a);
+            _cs.SetBuffer(_kMatMul2D, "_MatOut", output);
+
+            Dispatch2D(_cs, _kMatMul2D, n, m, 8, 8);
+        }
+
+        public void Gemm2D(ComputeBuffer a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, ComputeBuffer output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetBuffer(_kGemm2D, "_MatA", a);
+            _cs.SetBuffer(_kGemm2D, "_MatB", b);
+            _cs.SetBuffer(_kGemm2D, "_MatC", useC ? c : a);
+            _cs.SetBuffer(_kGemm2D, "_MatOut", output);
+
+            Dispatch2D(_cs, _kGemm2D, n, m, 8, 8);
+        }
+
+        public void LayerNorm2DInplace(ComputeBuffer inOut, int rows, int cols, float eps, bool affine, ComputeBuffer gamma, ComputeBuffer beta)
+        {
+            if (inOut == null) throw new ArgumentNullException(nameof(inOut));
+            if (rows <= 0) throw new ArgumentOutOfRangeException(nameof(rows));
+            if (cols <= 0) throw new ArgumentOutOfRangeException(nameof(cols));
+            if (affine && (gamma == null || beta == null)) throw new ArgumentNullException(nameof(gamma));
+
+            _cs.SetInt("_LnRows", rows);
+            _cs.SetInt("_LnCols", cols);
+            _cs.SetInt("_LnAffine", affine ? 1 : 0);
+            _cs.SetFloat("_LnEps", eps);
+            _cs.SetBuffer(_kLayerNorm2D, "_LnInOut", inOut);
+            _cs.SetBuffer(_kLayerNorm2D, "_LnGamma", affine ? gamma : inOut);
+            _cs.SetBuffer(_kLayerNorm2D, "_LnBeta", affine ? beta : inOut);
+            _cs.Dispatch(_kLayerNorm2D, Mathf.Max(1, rows), 1, 1);
+        }
+
+        public void Softmax2D(ComputeBuffer input, ComputeBuffer output, int rows, int cols)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (rows <= 0) throw new ArgumentOutOfRangeException(nameof(rows));
+            if (cols <= 0) throw new ArgumentOutOfRangeException(nameof(cols));
+
+            _cs.SetInt("_SoftRows", rows);
+            _cs.SetInt("_SoftCols", cols);
+            _cs.SetBuffer(_kSoftmax2D, "_SoftIn", input);
+            _cs.SetBuffer(_kSoftmax2D, "_SoftOut", output);
+            _cs.Dispatch(_kSoftmax2D, Mathf.Max(1, rows), 1, 1);
+        }
+
+        public void Embed(ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, ComputeBuffer output)
+        {
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (weight == null) throw new ArgumentNullException(nameof(weight));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (words <= 0) throw new ArgumentOutOfRangeException(nameof(words));
+            if (numOutput <= 0) throw new ArgumentOutOfRangeException(nameof(numOutput));
+            if (inputDim <= 0) throw new ArgumentOutOfRangeException(nameof(inputDim));
+            if (biasTerm && bias == null) throw new ArgumentNullException(nameof(bias));
+
+            _cs.SetInt("_EmbedWords", words);
+            _cs.SetInt("_EmbedNumOutput", numOutput);
+            _cs.SetInt("_EmbedInputDim", inputDim);
+            _cs.SetInt("_EmbedBiasTerm", biasTerm ? 1 : 0);
+            _cs.SetBuffer(_kEmbed, "_EmbedIdx", indices);
+            _cs.SetBuffer(_kEmbed, "_EmbedW", weight);
+            _cs.SetBuffer(_kEmbed, "_EmbedB", biasTerm ? bias : weight);
+            _cs.SetBuffer(_kEmbed, "_EmbedOut", output);
+            Dispatch2D(_cs, _kEmbed, numOutput, words, 8, 8);
         }
 
         public void Conv3x3(NcnnTensorBuffer input, ComputeBuffer weightsOihw, ComputeBuffer biasO, int outC, int stride, int pad, int activationType, float activationParam, NcnnTensorBuffer output)

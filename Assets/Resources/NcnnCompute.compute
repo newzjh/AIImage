@@ -39,6 +39,11 @@
 #pragma kernel NcnnSwishPack4
 #pragma kernel NcnnSigmoidPack4
 #pragma kernel NcnnGeluPack4
+#pragma kernel NcnnMatMul2D
+#pragma kernel NcnnGemm2D
+#pragma kernel NcnnLayerNorm2D
+#pragma kernel NcnnSoftmax2D
+#pragma kernel NcnnEmbed
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -848,6 +853,41 @@ Texture2DArray<float4> _ActInArr;
 RWTexture2DArray<float4> _ActOutArr;
 int _GeluFast;
 
+StructuredBuffer<float> _MatA;
+StructuredBuffer<float> _MatB;
+StructuredBuffer<float> _MatC;
+RWStructuredBuffer<float> _MatOut;
+int _MatM;
+int _MatN;
+int _MatK;
+int _MatTransB;
+int _MatUseC;
+int _MatBroadcastTypeC;
+float _MatAlpha;
+float _MatBeta;
+
+RWStructuredBuffer<float> _LnInOut;
+StructuredBuffer<float> _LnGamma;
+StructuredBuffer<float> _LnBeta;
+int _LnRows;
+int _LnCols;
+int _LnAffine;
+float _LnEps;
+
+StructuredBuffer<float> _SoftIn;
+RWStructuredBuffer<float> _SoftOut;
+int _SoftRows;
+int _SoftCols;
+
+StructuredBuffer<int> _EmbedIdx;
+StructuredBuffer<float> _EmbedW;
+StructuredBuffer<float> _EmbedB;
+RWStructuredBuffer<float> _EmbedOut;
+int _EmbedWords;
+int _EmbedNumOutput;
+int _EmbedInputDim;
+int _EmbedBiasTerm;
+
 static int Reflect101(int x, int len)
 {
     if (len <= 1) return 0;
@@ -1178,6 +1218,181 @@ void NcnnGeluPack4(uint3 id : SV_DispatchThreadID)
         y = 0.5 * x * (1.0 + tanh(0.79788452 * (x + 0.044715 * x3)));
     }
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
+}
+
+[numthreads(8,8,1)]
+void NcnnEmbed(uint3 id : SV_DispatchThreadID)
+{
+    int p = (int)id.x;
+    int q = (int)id.y;
+    if (q < 0 || p < 0 || q >= _EmbedWords || p >= _EmbedNumOutput) return;
+
+    int word_index = _EmbedIdx[q];
+    word_index = clamp(word_index, 0, _EmbedInputDim - 1);
+    float v = _EmbedW[word_index * _EmbedNumOutput + p];
+    if (_EmbedBiasTerm != 0)
+        v += _EmbedB[p];
+    _EmbedOut[q * _EmbedNumOutput + p] = v;
+}
+
+groupshared float _Red0[256];
+groupshared float _Red1[256];
+
+[numthreads(256,1,1)]
+void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int row = (int)groupId.x;
+    if (row < 0 || row >= _LnRows) return;
+    int tid = (int)groupThreadId.x;
+    int cols = max(1, _LnCols);
+    int baseIndex = row * cols;
+
+    float sum = 0.0;
+    float sqsum = 0.0;
+    for (int col = tid; col < cols; col += 256)
+    {
+        float x = _LnInOut[baseIndex + col];
+        sum += x;
+        sqsum += x * x;
+    }
+
+    _Red0[tid] = sum;
+    _Red1[tid] = sqsum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stride = 128; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+        {
+            _Red0[tid] += _Red0[tid + stride];
+            _Red1[tid] += _Red1[tid + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    float mean = _Red0[0] / cols;
+    float var = _Red1[0] / cols - mean * mean;
+    float invstd = rsqrt(max(var + _LnEps, 1e-20));
+
+    for (int col = tid; col < cols; col += 256)
+    {
+        float x = _LnInOut[baseIndex + col];
+        float y = (x - mean) * invstd;
+        if (_LnAffine != 0)
+            y = y * _LnGamma[col] + _LnBeta[col];
+        _LnInOut[baseIndex + col] = y;
+    }
+}
+
+[numthreads(256,1,1)]
+void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int row = (int)groupId.x;
+    if (row < 0 || row >= _SoftRows) return;
+    int tid = (int)groupThreadId.x;
+    int cols = max(1, _SoftCols);
+    int baseIndex = row * cols;
+
+    float maxv = -3.402823466e+38;
+    for (int col = tid; col < cols; col += 256)
+    {
+        float x = _SoftIn[baseIndex + col];
+        maxv = max(maxv, x);
+    }
+    _Red0[tid] = maxv;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stride = 128; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+            _Red0[tid] = max(_Red0[tid], _Red0[tid + stride]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float rowMax = _Red0[0];
+
+    float sum = 0.0;
+    for (int col = tid; col < cols; col += 256)
+    {
+        float e = exp(_SoftIn[baseIndex + col] - rowMax);
+        sum += e;
+        _SoftOut[baseIndex + col] = e;
+    }
+    _Red1[tid] = sum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stride = 128; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+            _Red1[tid] += _Red1[tid + stride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float invSum = 1.0 / max(_Red1[0], 1e-20);
+
+    for (int col = tid; col < cols; col += 256)
+    {
+        _SoftOut[baseIndex + col] = _SoftOut[baseIndex + col] * invSum;
+    }
+}
+
+[numthreads(8,8,1)]
+void NcnnMatMul2D(uint3 id : SV_DispatchThreadID)
+{
+    int j = (int)id.x;
+    int i = (int)id.y;
+    if (i < 0 || j < 0 || i >= _MatM || j >= _MatN) return;
+    float sum = 0.0;
+    int aBase = i * _MatK;
+    for (int k = 0; k < _MatK; k++)
+    {
+        float a = _MatA[aBase + k];
+        float b;
+        if (_MatTransB != 0)
+            b = _MatB[j * _MatK + k];
+        else
+            b = _MatB[k * _MatN + j];
+        sum += a * b;
+    }
+    _MatOut[i * _MatN + j] = sum;
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2D(uint3 id : SV_DispatchThreadID)
+{
+    int j = (int)id.x;
+    int i = (int)id.y;
+    if (i < 0 || j < 0 || i >= _MatM || j >= _MatN) return;
+
+    float sum = 0.0;
+    if (_MatUseC != 0)
+    {
+        if (_MatBroadcastTypeC == 0)
+            sum = _MatC[0];
+        else if (_MatBroadcastTypeC == 1)
+            sum = _MatC[i];
+        else if (_MatBroadcastTypeC == 3)
+            sum = _MatC[i * _MatN + j];
+        else if (_MatBroadcastTypeC == 4)
+            sum = _MatC[j];
+        sum *= _MatBeta;
+    }
+
+    int aBase = i * _MatK;
+    float acc = 0.0;
+    for (int k = 0; k < _MatK; k++)
+    {
+        float a = _MatA[aBase + k];
+        float b;
+        if (_MatTransB != 0)
+            b = _MatB[j * _MatK + k];
+        else
+            b = _MatB[k * _MatN + j];
+        acc += a * b;
+    }
+    sum += acc * _MatAlpha;
+    _MatOut[i * _MatN + j] = sum;
 }
 
 [numthreads(8,8,1)]

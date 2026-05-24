@@ -19,6 +19,13 @@ namespace NcnnCompute
             public string[] topNames;
             public Dictionary<int, string> intParams = new Dictionary<int, string>();
 
+            public string GetString(int key, string defaultValue = null)
+            {
+                if (intParams != null && intParams.TryGetValue(key, out var v))
+                    return v;
+                return defaultValue;
+            }
+
             public int GetInt(int key, int defaultValue = 0)
             {
                 if (intParams != null && intParams.TryGetValue(key, out var v))
@@ -35,6 +42,36 @@ namespace NcnnCompute
                 {
                     if (float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
                         return f;
+                }
+                return defaultValue;
+            }
+
+            public int[] GetInts(int key, int[] defaultValue = null)
+            {
+                if (intParams != null && intParams.TryGetValue(key, out var v))
+                {
+                    var parts = v.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 0)
+                        return Array.Empty<int>();
+                    var arr = new int[parts.Length];
+                    for (var i = 0; i < parts.Length; i++)
+                        arr[i] = int.Parse(parts[i], NumberStyles.Integer, CultureInfo.InvariantCulture);
+                    return arr;
+                }
+                return defaultValue;
+            }
+
+            public float[] GetFloats(int key, float[] defaultValue = null)
+            {
+                if (intParams != null && intParams.TryGetValue(key, out var v))
+                {
+                    var parts = v.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 0)
+                        return Array.Empty<float>();
+                    var arr = new float[parts.Length];
+                    for (var i = 0; i < parts.Length; i++)
+                        arr[i] = float.Parse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture);
+                    return arr;
                 }
                 return defaultValue;
             }
@@ -131,4 +168,3 @@ namespace NcnnCompute
         }
     }
 }
-
