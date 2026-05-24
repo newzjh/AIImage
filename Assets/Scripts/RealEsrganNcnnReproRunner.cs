@@ -15,6 +15,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public int tileSize = 128;
     public int tilePad = 10;
     public int maxInputLongSide = 2048;
+    public bool enableTempPool = false;
+    public bool clearTempPoolAfterRun = true;
+    public int maxPooledPerShape = 2;
 
     public event Action<float, string> ProgressChanged;
 
@@ -23,6 +26,37 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private Dictionary<string, int> _blobUseCount;
     private NcnnOps _ops;
     private bool _loaded;
+    private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
+
+    private readonly struct RtKey : IEquatable<RtKey>
+    {
+        public readonly int w;
+        public readonly int h;
+        public readonly int d;
+        public readonly RenderTextureFormat format;
+
+        public RtKey(int w, int h, int d, RenderTextureFormat format)
+        {
+            this.w = w;
+            this.h = h;
+            this.d = d;
+            this.format = format;
+        }
+
+        public bool Equals(RtKey other) => w == other.w && h == other.h && d == other.d && format == other.format;
+        public override bool Equals(object obj) => obj is RtKey other && Equals(other);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                var hash = w;
+                hash = (hash * 397) ^ h;
+                hash = (hash * 397) ^ d;
+                hash = (hash * 397) ^ (int)format;
+                return hash;
+            }
+        }
+    }
 
     private sealed class ConvPack : IDisposable
     {
@@ -66,6 +100,18 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         foreach (var kv in _conv)
             kv.Value?.Dispose();
         _conv.Clear();
+
+        foreach (var kv in _rtPool)
+        {
+            var stack = kv.Value;
+            while (stack.Count > 0)
+            {
+                var rt = stack.Pop();
+                try { RenderTexture.ReleaseTemporary(rt); } catch { }
+            }
+        }
+        _rtPool.Clear();
+
         _loaded = false;
         _model = null;
         _blobUseCount = null;
@@ -93,6 +139,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             runInW = Mathf.Max(1, Mathf.RoundToInt(originalW * s));
             runInH = Mathf.Max(1, Mathf.RoundToInt(originalH * s));
         }
+        var effectiveTileSize = tileSize > 0 ? tileSize : AutoTileSize();
+        var effectiveTilePad = tilePad > 0 ? tilePad : 10;
 
         ReportProgress(0f, "准备输入");
         await UniTask.Yield();
@@ -131,28 +179,28 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outRt.Create();
             }
 
-            var tilesX = Mathf.CeilToInt(runInW / (float)Mathf.Max(1, tileSize));
-            var tilesY = Mathf.CeilToInt(runInH / (float)Mathf.Max(1, tileSize));
+            var tilesX = Mathf.CeilToInt(runInW / (float)Mathf.Max(1, effectiveTileSize));
+            var tilesY = Mathf.CeilToInt(runInH / (float)Mathf.Max(1, effectiveTileSize));
             var tileCount = Mathf.Max(1, tilesX * tilesY);
             var tileIndex = 0;
 
-            for (var ty = 0; ty < runInH; ty += Mathf.Max(1, tileSize))
+            for (var ty = 0; ty < runInH; ty += Mathf.Max(1, effectiveTileSize))
             {
-                for (var tx = 0; tx < runInW; tx += Mathf.Max(1, tileSize))
+                for (var tx = 0; tx < runInW; tx += Mathf.Max(1, effectiveTileSize))
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    var tw = Mathf.Min(tileSize, runInW - tx);
-                    var th = Mathf.Min(tileSize, runInH - ty);
-                    var cw = tw + tilePad * 2;
-                    var ch = th + tilePad * 2;
-                    var ox = tx - tilePad;
-                    var oy = ty - tilePad;
+                    var tw = Mathf.Min(effectiveTileSize, runInW - tx);
+                    var th = Mathf.Min(effectiveTileSize, runInH - ty);
+                    var cw = tw + effectiveTilePad * 2;
+                    var ch = th + effectiveTilePad * 2;
+                    var ox = tx - effectiveTilePad;
+                    var oy = ty - effectiveTilePad;
                     var tileProgress = (float)tileIndex / tileCount;
                     ReportProgress(tileProgress, "推理分块 " + (tileIndex + 1) + "/" + tileCount);
                     await UniTask.Yield();
 
-                    var inArr = GetTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
+                    var inArr = RentTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
                     var outArr = (RenderTexture)null;
                     try
                     {
@@ -169,8 +217,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     }
                     finally
                     {
-                        RenderTexture.ReleaseTemporary(inArr);
-                        if (outArr != null) RenderTexture.ReleaseTemporary(outArr);
+                        ReturnTempArray(inArr);
+                        if (outArr != null) ReturnTempArray(outArr);
                     }
 
                     tileIndex++;
@@ -218,6 +266,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outRt.Release();
                 Destroy(outRt);
             }
+            if (enableTempPool && clearTempPoolAfterRun)
+                ClearTempPool();
         }
     }
 
@@ -315,7 +365,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     sumP += tr.packs;
                 }
 
-                var outArr = GetTempArray(w, h, sumP, RenderTextureFormat.ARGBHalf);
+                var outArr = RentTempArray(w, h, sumP, RenderTextureFormat.ARGBHalf);
                 var off = 0;
                 for (var i = 0; i < parts.Length; i++)
                 {
@@ -337,7 +387,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 if (src.packs != pack.inPacks)
                     throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
 
-                var outArr = GetTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
+                var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
                 _ops.Conv3x3Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -349,7 +399,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var a = Get(blobs, l.bottomNames[0]);
                 var b = Get(blobs, l.bottomNames[1]);
                 var coeff = ParseEltwiseCoeff(l);
-                var outArr = GetTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
                 _ops.AddPack4(a.t, b.t, coeff.coeffA, coeff.coeffB, a.packs, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -360,7 +410,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var a = Get(blobs, l.bottomNames[0]);
                 var b = Get(blobs, l.bottomNames[1]);
-                var outArr = GetTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
                 _ops.AddPack4(a.t, b.t, 1f, 1f, a.packs, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -370,13 +420,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             if (string.Equals(l.type, "Interp", StringComparison.Ordinal))
             {
                 var src = Get(blobs, l.bottomNames[0]);
+                var resizeType = l.GetInt(0, 2);
                 var sx = l.GetFloat(1, 1f);
                 var sy = l.GetFloat(2, 1f);
                 if (Mathf.Abs(sx - 2f) > 1e-3f || Mathf.Abs(sy - 2f) > 1e-3f)
                     throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
 
-                var outArr = GetTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
-                _ops.Interp2xPack4(src.t, src.packs, outArr);
+                var outArr = RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
+                if (resizeType == 1)
+                    _ops.Interp2xNearestPack4(src.t, src.packs, outArr);
+                else
+                    _ops.Interp2xPack4(src.t, src.packs, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -397,7 +451,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             if (tr == null || !visited.Add(tr))
                 continue;
             if (tr.owned && tr.t != null)
-                RenderTexture.ReleaseTemporary(tr.t);
+                ReturnTempArray(tr.t);
         }
 
         return keep;
@@ -410,7 +464,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         return tr;
     }
 
-    private static void Consume(Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames)
+    private void Consume(Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames)
     {
         for (var i = 0; i < bottomNames.Length; i++)
         {
@@ -429,7 +483,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 {
                     if (tr.owned && tr.t != null)
                     {
-                        try { RenderTexture.ReleaseTemporary(tr.t); } catch { }
+                        try { ReturnTempArray(tr.t); } catch { }
                     }
                     tr.t = null;
                     tr.owned = false;
@@ -536,7 +590,19 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         return r;
     }
 
-    private static RenderTexture GetTempArray(int w, int h, int depth, RenderTextureFormat format)
+    private RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
+    {
+        if (!enableTempPool)
+            return CreateTempArray(w, h, depth, format);
+
+        var key = new RtKey(w, h, Mathf.Max(1, depth), format);
+        if (_rtPool.TryGetValue(key, out var stack) && stack.Count > 0)
+            return stack.Pop();
+
+        return CreateTempArray(w, h, depth, format);
+    }
+
+    private static RenderTexture CreateTempArray(int w, int h, int depth, RenderTextureFormat format)
     {
         var desc = new RenderTextureDescriptor(w, h, format, 0)
         {
@@ -551,6 +617,44 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         rt.filterMode = FilterMode.Point;
         rt.Create();
         return rt;
+    }
+
+    private void ReturnTempArray(RenderTexture rt)
+    {
+        if (rt == null)
+            return;
+        if (!enableTempPool)
+        {
+            RenderTexture.ReleaseTemporary(rt);
+            return;
+        }
+        var key = new RtKey(rt.width, rt.height, rt.volumeDepth, rt.format);
+        if (!_rtPool.TryGetValue(key, out var stack))
+        {
+            stack = new Stack<RenderTexture>();
+            _rtPool[key] = stack;
+        }
+        var cap = Mathf.Max(0, maxPooledPerShape);
+        if (stack.Count >= cap)
+        {
+            RenderTexture.ReleaseTemporary(rt);
+            return;
+        }
+        stack.Push(rt);
+    }
+
+    private void ClearTempPool()
+    {
+        foreach (var kv in _rtPool)
+        {
+            var stack = kv.Value;
+            while (stack.Count > 0)
+            {
+                var rt = stack.Pop();
+                try { RenderTexture.ReleaseTemporary(rt); } catch { }
+            }
+        }
+        _rtPool.Clear();
     }
 
     private async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
@@ -635,5 +739,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private void ReportProgress(float p, string t)
     {
         try { ProgressChanged?.Invoke(Mathf.Clamp01(p), t ?? ""); } catch { }
+    }
+
+    private static int AutoTileSize()
+    {
+        var mb = SystemInfo.graphicsMemorySize;
+        if (mb > 1900)
+            return 200;
+        if (mb > 550)
+            return 100;
+        if (mb > 190)
+            return 64;
+        return 32;
     }
 }

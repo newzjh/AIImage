@@ -11,9 +11,15 @@
 #pragma kernel NcnnPackRgbToPack4
 #pragma kernel NcnnUnpackPack4ToRgb
 #pragma kernel NcnnConv3x3Pack4
+#pragma kernel NcnnConv1x1Pack4
 #pragma kernel NcnnAddPack4
 #pragma kernel NcnnCopyPack4
 #pragma kernel NcnnInterp2xPack4
+#pragma kernel NcnnInterp2xNearestPack4
+#pragma kernel NcnnInterpDown2Pack4
+#pragma kernel NcnnInterpDown2NearestPack4
+#pragma kernel NcnnPack4ToBufferCHW
+#pragma kernel NcnnInnerProduct
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -71,7 +77,7 @@ int _OffsetY;
 int _ActType;
 float _ActParam;
 
-[numthreads(8,8,1)]
+[numthreads(32,32,1)]
 void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
 {
     uint w, h, d;
@@ -89,7 +95,7 @@ void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
     _NcnnOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
 }
 
-[numthreads(8,8,1)]
+[numthreads(32,32,1)]
 void NcnnUnpackPack4ToRgb(uint3 id : SV_DispatchThreadID)
 {
     uint w, h;
@@ -106,8 +112,120 @@ Texture2DArray<float4> _ConvInArr;
 int _InPacks;
 int _OutPacks;
 
+groupshared float4 _Conv3x3Pack4_s_in[100];
+groupshared float4 _Conv3x3Pack4_s_w[36];
+
 [numthreads(8,8,1)]
-void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
+void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    bool active = (id.x < ow && id.y < oh);
+    int op = (int)id.z;
+
+    float4 sum = _ConvB4[op];
+
+    uint iw, ih, idd;
+    _ConvInArr.GetDimensions(iw, ih, idd);
+
+    int baseX = (int)groupId.x * 8;
+    int baseY = (int)groupId.y * 8;
+    int tid = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
+
+#if defined(SHADER_API_D3D11)
+    // D3D11 下避免 groupshared + barrier（容易触发卡死/驱动 TDR），使用朴素实现确保稳定
+    if (active)
+    {
+        for (int ip = 0; ip < _InPacks; ip++)
+        {
+            for (int ky = 0; ky < 3; ky++)
+            {
+                for (int kx = 0; kx < 3; kx++)
+                {
+                    int ix = (int)id.x + kx - _Pad;
+                    int iy = (int)id.y + ky - _Pad;
+                    float4 inV = 0.0;
+                    if (ix >= 0 && iy >= 0 && ix < (int)iw && iy < (int)ih)
+                        inV = _ConvInArr[int3(ix, iy, ip)];
+
+                    int base = ((((op * _InPacks + ip) * 3 + ky) * 3 + kx) * 4);
+                    float4 w0 = _ConvW4[base + 0];
+                    float4 w1 = _ConvW4[base + 1];
+                    float4 w2 = _ConvW4[base + 2];
+                    float4 w3 = _ConvW4[base + 3];
+                    sum.x += dot(inV, w0);
+                    sum.y += dot(inV, w1);
+                    sum.z += dot(inV, w2);
+                    sum.w += dot(inV, w3);
+                }
+            }
+        }
+    }
+#else
+    for (int ip = 0; ip < _InPacks; ip++)
+    {
+        for (int loadIndex = tid; loadIndex < 100; loadIndex += 64)
+        {
+            int lx = loadIndex - (loadIndex / 10) * 10;
+            int ly = loadIndex / 10;
+            int ix = baseX + lx - _Pad;
+            int iy = baseY + ly - _Pad;
+            float4 v = 0.0;
+            if (ix >= 0 && iy >= 0 && ix < (int)iw && iy < (int)ih)
+                v = _ConvInArr[int3(ix, iy, ip)];
+            _Conv3x3Pack4_s_in[loadIndex] = v;
+        }
+
+        if (tid == 0)
+        {
+            int wbase = ((op * _InPacks + ip) * 9 * 4);
+            [unroll]
+            for (int k = 0; k < 9; k++)
+            {
+                _Conv3x3Pack4_s_w[k * 4 + 0] = _ConvW4[wbase + k * 4 + 0];
+                _Conv3x3Pack4_s_w[k * 4 + 1] = _ConvW4[wbase + k * 4 + 1];
+                _Conv3x3Pack4_s_w[k * 4 + 2] = _ConvW4[wbase + k * 4 + 2];
+                _Conv3x3Pack4_s_w[k * 4 + 3] = _ConvW4[wbase + k * 4 + 3];
+            }
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+
+        int tx = (int)groupThreadId.x;
+        int ty = (int)groupThreadId.y;
+
+        [unroll]
+        for (int ky = 0; ky < 3; ky++)
+        {
+            [unroll]
+            for (int kx = 0; kx < 3; kx++)
+            {
+                float4 inV = _Conv3x3Pack4_s_in[(ty + ky) * 10 + (tx + kx)];
+                int k = ky * 3 + kx;
+                float4 w0 = _Conv3x3Pack4_s_w[k * 4 + 0];
+                float4 w1 = _Conv3x3Pack4_s_w[k * 4 + 1];
+                float4 w2 = _Conv3x3Pack4_s_w[k * 4 + 2];
+                float4 w3 = _Conv3x3Pack4_s_w[k * 4 + 3];
+                sum.x += dot(inV, w0);
+                sum.y += dot(inV, w1);
+                sum.z += dot(inV, w2);
+                sum.w += dot(inV, w3);
+            }
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+#endif
+
+    if (_ActType == 2)
+        sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
+
+    if (active)
+        _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+}
+
+[numthreads(8,8,1)]
+void NcnnConv1x1Pack4(uint3 id : SV_DispatchThreadID)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
@@ -117,32 +235,18 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
 
     float4 sum = _ConvB4[op];
 
-    uint iw, ih, idd;
-    _ConvInArr.GetDimensions(iw, ih, idd);
-
     for (int ip = 0; ip < _InPacks; ip++)
     {
-        for (int ky = 0; ky < 3; ky++)
-        {
-            for (int kx = 0; kx < 3; kx++)
-            {
-                int ix = (int)id.x + kx - _Pad;
-                int iy = (int)id.y + ky - _Pad;
-                float4 inV = 0.0;
-                if (ix >= 0 && iy >= 0 && ix < (int)iw && iy < (int)ih)
-                    inV = _ConvInArr[int3(ix, iy, ip)];
-
-                int base = ((((op * _InPacks + ip) * 3 + ky) * 3 + kx) * 4);
-                float4 w0 = _ConvW4[base + 0];
-                float4 w1 = _ConvW4[base + 1];
-                float4 w2 = _ConvW4[base + 2];
-                float4 w3 = _ConvW4[base + 3];
-                sum.x += dot(inV, w0);
-                sum.y += dot(inV, w1);
-                sum.z += dot(inV, w2);
-                sum.w += dot(inV, w3);
-            }
-        }
+        float4 inV = _ConvInArr[int3((int)id.x, (int)id.y, ip)];
+        int base = ((op * _InPacks + ip) * 4);
+        float4 w0 = _ConvW4[base + 0];
+        float4 w1 = _ConvW4[base + 1];
+        float4 w2 = _ConvW4[base + 2];
+        float4 w3 = _ConvW4[base + 3];
+        sum.x += dot(inV, w0);
+        sum.y += dot(inV, w1);
+        sum.z += dot(inV, w2);
+        sum.w += dot(inV, w3);
     }
 
     if (_ActType == 2)
@@ -223,6 +327,123 @@ void NcnnInterp2xPack4(uint3 id : SV_DispatchThreadID)
     float4 vx1 = lerp(v01, v11, tx);
     float4 v = lerp(vx0, vx1, ty);
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = v;
+}
+
+RWTexture2DArray<float4> _InterpNnOutArr;
+Texture2DArray<float4> _InterpNnInArr;
+
+[numthreads(8,8,1)]
+void NcnnInterp2xNearestPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _InterpNnOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _InterpNnInArr.GetDimensions(iw, ih, idd);
+    int sx = min((int)(id.x >> 1), (int)iw - 1);
+    int sy = min((int)(id.y >> 1), (int)ih - 1);
+    _InterpNnOutArr[int3((int)id.x, (int)id.y, p)] = _InterpNnInArr[int3(sx, sy, p)];
+}
+
+RWTexture2DArray<float4> _InterpDownOutArr;
+Texture2DArray<float4> _InterpDownInArr;
+
+[numthreads(8,8,1)]
+void NcnnInterpDown2Pack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _InterpDownOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+    uint iw, ih, idd;
+    _InterpDownInArr.GetDimensions(iw, ih, idd);
+
+    float fx = ((float)id.x + 0.5) / 0.5 - 0.5;
+    float fy = ((float)id.y + 0.5) / 0.5 - 0.5;
+    int x0 = (int)floor(fx);
+    int y0 = (int)floor(fy);
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+    float tx = fx - x0;
+    float ty = fy - y0;
+    x0 = clamp(x0, 0, (int)iw - 1);
+    x1 = clamp(x1, 0, (int)iw - 1);
+    y0 = clamp(y0, 0, (int)ih - 1);
+    y1 = clamp(y1, 0, (int)ih - 1);
+
+    float4 v00 = _InterpDownInArr[int3(x0, y0, p)];
+    float4 v10 = _InterpDownInArr[int3(x1, y0, p)];
+    float4 v01 = _InterpDownInArr[int3(x0, y1, p)];
+    float4 v11 = _InterpDownInArr[int3(x1, y1, p)];
+    float4 vx0 = lerp(v00, v10, tx);
+    float4 vx1 = lerp(v01, v11, tx);
+    float4 v = lerp(vx0, vx1, ty);
+    _InterpDownOutArr[int3((int)id.x, (int)id.y, p)] = v;
+}
+
+RWTexture2DArray<float4> _InterpDownNnOutArr;
+Texture2DArray<float4> _InterpDownNnInArr;
+
+[numthreads(8,8,1)]
+void NcnnInterpDown2NearestPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _InterpDownNnOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _InterpDownNnInArr.GetDimensions(iw, ih, idd);
+    int sx = min((int)(id.x * 2), (int)iw - 1);
+    int sy = min((int)(id.y * 2), (int)ih - 1);
+    _InterpDownNnOutArr[int3((int)id.x, (int)id.y, p)] = _InterpDownNnInArr[int3(sx, sy, p)];
+}
+
+Texture2DArray<float4> _Pack4InArr;
+RWStructuredBuffer<float> _Pack4Out;
+int _Pack4W;
+int _Pack4H;
+int _Pack4C;
+
+[numthreads(256,1,1)]
+void NcnnPack4ToBufferCHW(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    uint wh = (uint)(_Pack4W * _Pack4H);
+    uint c = idx / wh;
+    if (c >= (uint)_Pack4C) return;
+    uint rem = idx - c * wh;
+    uint y = rem / (uint)_Pack4W;
+    uint x = rem - y * (uint)_Pack4W;
+    int pack = (int)(c >> 2);
+    int lane = (int)(c & 3);
+    float4 v = _Pack4InArr[int3((int)x, (int)y, pack)];
+    float o = lane == 0 ? v.x : (lane == 1 ? v.y : (lane == 2 ? v.z : v.w));
+    _Pack4Out[idx] = o;
+}
+
+StructuredBuffer<float> _IPIn;
+StructuredBuffer<float> _IPW;
+StructuredBuffer<float> _IPB;
+RWStructuredBuffer<float> _IPOut;
+int _IPInFeatures;
+int _IPOutFeatures;
+
+[numthreads(64,1,1)]
+void NcnnInnerProduct(uint3 id : SV_DispatchThreadID)
+{
+    uint o = _BaseIndex + id.x;
+    if (o >= (uint)_IPOutFeatures) return;
+    float sum = _IPB[o];
+    uint wbase = o * (uint)_IPInFeatures;
+    for (int i = 0; i < _IPInFeatures; i++)
+        sum += _IPW[wbase + (uint)i] * _IPIn[i];
+    _IPOut[o] = sum;
 }
 [numthreads(64,1,1)]
 void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
@@ -372,39 +593,15 @@ void NcnnInterp2x(uint3 id : SV_DispatchThreadID)
     _BufOut[outIndex] = v;
 }
 
-[numthreads(8,8,1)]
+[numthreads(32,32,1)]
 void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= _BlitW || (int)id.y >= _BlitH) return;
 
-    uint sw, sh, sd;
-    _NcnnInArr.GetDimensions(sw, sh, sd);
-
-    float2 dstPix = float2((float)(_DstX + (int)id.x), (float)(_DstY + (int)id.y));
-    float2 srcGlobal = (dstPix + 0.5) * _BlitScale - 0.5;
-    float2 srcLocal = srcGlobal - float2((float)_TileOutX, (float)_TileOutY);
-    float2 p = srcLocal;
-    int x0 = (int)floor(p.x);
-    int y0 = (int)floor(p.y);
-    int x1 = x0 + 1;
-    int y1 = y0 + 1;
-    float tx = p.x - x0;
-    float ty = p.y - y0;
-
-    x0 = clamp(x0, 0, (int)sw - 1);
-    x1 = clamp(x1, 0, (int)sw - 1);
-    y0 = clamp(y0, 0, (int)sh - 1);
-    y1 = clamp(y1, 0, (int)sh - 1);
-
-    float4 v00 = _NcnnInArr[int3(x0, y0, 0)];
-    float4 v10 = _NcnnInArr[int3(x1, y0, 0)];
-    float4 v01 = _NcnnInArr[int3(x0, y1, 0)];
-    float4 v11 = _NcnnInArr[int3(x1, y1, 0)];
-    float4 vx0 = lerp(v00, v10, tx);
-    float4 vx1 = lerp(v01, v11, tx);
-    float4 v = lerp(vx0, vx1, ty);
+    int sx = (_DstX + (int)id.x) - _TileOutX;
+    int sy = (_DstY + (int)id.y) - _TileOutY;
+    float4 v = _NcnnInArr[int3(sx, sy, 0)];
     v.w = 1.0;
-
     _NcnnOut[int2(_DstX + (int)id.x, _DstY + (int)id.y)] = v;
 }
 

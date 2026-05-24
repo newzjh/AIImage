@@ -103,6 +103,7 @@ public class MainView : MonoBehaviour
     private RealEsrganNcnnNativeRunner _realEsrganNativeRunner;
     private RealEsrganNcnnReproRunner _realEsrganReproRunner;
     private GfpganNcnnNativeRunner _gfpganNativeRunner;
+    private GfpganNcnnReproRunner _gfpganReproRunner;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
@@ -166,6 +167,10 @@ public class MainView : MonoBehaviour
         _gfpganNativeRunner = GetComponent<GfpganNcnnNativeRunner>();
         if (_gfpganNativeRunner == null)
             _gfpganNativeRunner = gameObject.AddComponent<GfpganNcnnNativeRunner>();
+
+        _gfpganReproRunner = GetComponent<GfpganNcnnReproRunner>();
+        if (_gfpganReproRunner == null)
+            _gfpganReproRunner = gameObject.AddComponent<GfpganNcnnReproRunner>();
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -905,6 +910,9 @@ public class MainView : MonoBehaviour
 
         var gfpganNativeButton = new Button(OnGfpganNative) { text = "GFPGAN" };
         row0.Add(gfpganNativeButton);
+
+        var gfpganReproButton = new Button(OnGfpganRepro) { text = "GFPGAN(复刻)" };
+        row0.Add(gfpganReproButton);
 #endif
 
         var gpuSharpenDebugLabel = new Label("调试输出");
@@ -1420,6 +1428,11 @@ public class MainView : MonoBehaviour
     {
         ApplyGfpganNativeAsync().Forget();
     }
+
+    private void OnGfpganRepro()
+    {
+        ApplyGfpganReproAsync().Forget();
+    }
 #endif
 
     private async UniTaskVoid ApplyGpuSharpenAsync()
@@ -1558,6 +1571,52 @@ public class MainView : MonoBehaviour
             }
             if (r.texture != null)
                 AddHistory(r.texture, "ESRGAN(复刻)");
+        }
+        finally
+        {
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+#endif
+
+#if !UNITY_WEBGL
+    private async UniTaskVoid ApplyGfpganReproAsync()
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        StopPreview();
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        _adjustRunning = true;
+        HideBusy();
+        ShowProgress("GFPGAN(复刻)");
+        try
+        {
+            await UniTask.NextFrame();
+            if (_gfpganReproRunner == null)
+            {
+                ShowToast("找不到GfpganNcnnReproRunner", 2200);
+                return;
+            }
+
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            _gfpganReproRunner.ProgressChanged -= OnProgress;
+            _gfpganReproRunner.ProgressChanged += OnProgress;
+            var r = await _gfpganReproRunner.ProcessAsync(src, _lifetimeCts.Token);
+            _gfpganReproRunner.ProgressChanged -= OnProgress;
+            if (!string.IsNullOrWhiteSpace(r.error))
+            {
+                ShowToast(r.error, 4500);
+                return;
+            }
+            if (r.texture != null)
+                AddHistory(r.texture, "GFPGAN(复刻)");
         }
         finally
         {
