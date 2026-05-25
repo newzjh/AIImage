@@ -16,7 +16,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     public bool enableRealEsrgan = true;
     public int scale = 2;
     public string modelName = "realesrgan-x4plus";
-    public int tileSize = 0;
+    public int tileSize = 128;
     public bool passZeroTileToExeWhenTileSizeIsZero = true;
     public int gpuId = -1;
     public string executablePathOverride;

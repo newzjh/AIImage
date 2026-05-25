@@ -257,7 +257,17 @@ namespace NcnnCompute
         private readonly int _kBlitTileToDst;
         private readonly int _kPackRgbToPack4;
         private readonly int _kConv3x3Pack4;
+        private readonly int _kWinograd23TransformInput;
+        private readonly int _kWinograd23Gemm;
+        private readonly int _kWinograd23TransformOutput;
         private readonly int _kConv1x1Pack4;
+
+        private ComputeBuffer _winoBottomTm;
+        private ComputeBuffer _winoTopTm;
+        private int _winoBottomCap;
+        private int _winoTopCap;
+        private ComputeBuffer _gpuIdleSync;
+        private readonly uint[] _gpuIdleScratch = new uint[1];
         private readonly int _kAddPack4;
         private readonly int _kCopyPack4;
         private readonly int _kInterp2xPack4;
@@ -322,6 +332,9 @@ namespace NcnnCompute
             _kBlitTileToDst = _cs.FindKernel("NcnnBlitTileToDst");
             _kPackRgbToPack4 = _cs.FindKernel("NcnnPackRgbToPack4");
             _kConv3x3Pack4 = _cs.FindKernel("NcnnConv3x3Pack4");
+            _kWinograd23TransformInput = _cs.FindKernel("NcnnWinograd23TransformInputPack4");
+            _kWinograd23Gemm = _cs.FindKernel("NcnnWinograd23GemmPack4");
+            _kWinograd23TransformOutput = _cs.FindKernel("NcnnWinograd23TransformOutputPack4");
             _kConv1x1Pack4 = _cs.FindKernel("NcnnConv1x1Pack4");
             _kAddPack4 = _cs.FindKernel("NcnnAddPack4");
             _kCopyPack4 = _cs.FindKernel("NcnnCopyPack4");
@@ -691,6 +704,201 @@ namespace NcnnCompute
             _cs.SetTexture(_kConv3x3Pack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConv3x3Pack4, "_ConvOutArr", dstPack4);
             Dispatch3D(_kConv3x3Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+        }
+
+        public void Conv3x3Pack4Winograd23(RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (wTm23 == null) throw new ArgumentNullException(nameof(wTm23));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+
+            DispatchWinograd23Pack4(srcPack4, inPacks, wTm23, b4, outPacks, biasTerm, activationType, activationParam, dstPack4, null);
+        }
+
+        public void Conv3x3Pack4Winograd23(CommandBuffer cmd, RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            DispatchWinograd23Pack4(srcPack4, inPacks, wTm23, b4, outPacks, biasTerm, activationType, activationParam, dstPack4, cmd);
+        }
+
+        public void ReleaseWinogradWorkspace()
+        {
+            if (_winoBottomTm != null)
+            {
+                try { _winoBottomTm.Release(); } catch { }
+                _winoBottomTm = null;
+            }
+            if (_winoTopTm != null)
+            {
+                try { _winoTopTm.Release(); } catch { }
+                _winoTopTm = null;
+            }
+            if (_gpuIdleSync != null)
+            {
+                try { _gpuIdleSync.Release(); } catch { }
+                _gpuIdleSync = null;
+            }
+            _winoBottomCap = 0;
+            _winoTopCap = 0;
+        }
+
+        private void WaitGpuIdle()
+        {
+            if (_gpuIdleSync == null)
+                _gpuIdleSync = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+            TouchU32(_gpuIdleSync, 1u);
+            _gpuIdleSync.GetData(_gpuIdleScratch);
+        }
+
+        private void EnsureWinogradWorkspace(int bottomCount, int topCount)
+        {
+            if (bottomCount <= 0 || topCount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(bottomCount));
+
+            if (_winoBottomTm == null || _winoBottomCap < bottomCount)
+            {
+                if (_winoBottomTm != null)
+                {
+                    try { _winoBottomTm.Release(); } catch { }
+                }
+                _winoBottomCap = bottomCount;
+                _winoBottomTm = new ComputeBuffer(bottomCount, sizeof(float) * 4, ComputeBufferType.Structured);
+            }
+
+            if (_winoTopTm == null || _winoTopCap < topCount)
+            {
+                if (_winoTopTm != null)
+                {
+                    try { _winoTopTm.Release(); } catch { }
+                }
+                _winoTopCap = topCount;
+                _winoTopTm = new ComputeBuffer(topCount, sizeof(float) * 4, ComputeBufferType.Structured);
+            }
+        }
+
+        private void DispatchWinograd23Pack4(RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4, CommandBuffer cmd)
+        {
+            var w = srcPack4.width;
+            var h = srcPack4.height;
+            var blockX = NcnnWinograd23.BlockX(w);
+            var blockY = NcnnWinograd23.BlockY(h);
+            var tiles = blockX * blockY;
+            var bottomCount = NcnnWinograd23.BottomTmCount(w, h, inPacks);
+            var topCount = NcnnWinograd23.TopTmCount(w, h, outPacks);
+            EnsureWinogradWorkspace(bottomCount, topCount);
+
+            if (cmd != null)
+            {
+                SetWinograd23Params(cmd, w, h, inPacks, outPacks, activationType, activationParam, biasTerm);
+                cmd.SetComputeTextureParam(_cs, _kWinograd23TransformInput, "_WinoInArr", srcPack4);
+                cmd.SetComputeBufferParam(_cs, _kWinograd23TransformInput, "_WinoBottomTm", _winoBottomTm);
+                DispatchWinograd23TransformInput(cmd, blockX, blockY, inPacks);
+
+                cmd.SetComputeBufferParam(_cs, _kWinograd23Gemm, "_WinoBottomTm", _winoBottomTm);
+                cmd.SetComputeBufferParam(_cs, _kWinograd23Gemm, "_WinoTopTm", _winoTopTm);
+                cmd.SetComputeBufferParam(_cs, _kWinograd23Gemm, "_WinoWeightTm", wTm23);
+                DispatchWinograd23Gemm(cmd, tiles, outPacks);
+
+                cmd.SetComputeBufferParam(_cs, _kWinograd23TransformOutput, "_WinoTopTm", _winoTopTm);
+                cmd.SetComputeBufferParam(_cs, _kWinograd23TransformOutput, "_WinoBias4", b4);
+                cmd.SetComputeTextureParam(_cs, _kWinograd23TransformOutput, "_WinoOutArr", dstPack4);
+                DispatchWinograd23TransformOutput(cmd, blockX, blockY, outPacks);
+            }
+            else
+            {
+                SetWinograd23Params(w, h, inPacks, outPacks, activationType, activationParam, biasTerm);
+                _cs.SetTexture(_kWinograd23TransformInput, "_WinoInArr", srcPack4);
+                _cs.SetBuffer(_kWinograd23TransformInput, "_WinoBottomTm", _winoBottomTm);
+                DispatchWinograd23TransformInput(null, blockX, blockY, inPacks);
+
+                _cs.SetBuffer(_kWinograd23Gemm, "_WinoBottomTm", _winoBottomTm);
+                _cs.SetBuffer(_kWinograd23Gemm, "_WinoTopTm", _winoTopTm);
+                _cs.SetBuffer(_kWinograd23Gemm, "_WinoWeightTm", wTm23);
+                DispatchWinograd23Gemm(null, tiles, outPacks);
+
+                _cs.SetBuffer(_kWinograd23TransformOutput, "_WinoTopTm", _winoTopTm);
+                _cs.SetBuffer(_kWinograd23TransformOutput, "_WinoBias4", b4);
+                _cs.SetTexture(_kWinograd23TransformOutput, "_WinoOutArr", dstPack4);
+                DispatchWinograd23TransformOutput(null, blockX, blockY, outPacks);
+            }
+
+            WaitGpuIdle();
+        }
+
+        private void DispatchWinograd23TransformInput(CommandBuffer cmd, int blockX, int blockY, int inPacks)
+        {
+            var groupsX = Mathf.Max(1, blockX);
+            var groupsY = Mathf.Max(1, blockY);
+            var groupsZ = Mathf.Max(1, inPacks);
+            if (cmd != null)
+                cmd.DispatchCompute(_cs, _kWinograd23TransformInput, groupsX, groupsY, groupsZ);
+            else
+                _cs.Dispatch(_kWinograd23TransformInput, groupsX, groupsY, groupsZ);
+        }
+
+        private void DispatchWinograd23Gemm(CommandBuffer cmd, int tiles, int outPacks)
+        {
+            var groupsX = Mathf.Max(1, (tiles + 3) / 4);
+            var groupsY = Mathf.Max(1, outPacks);
+            var groupsZ = 16;
+            if (cmd != null)
+                cmd.DispatchCompute(_cs, _kWinograd23Gemm, groupsX, groupsY, groupsZ);
+            else
+                _cs.Dispatch(_kWinograd23Gemm, groupsX, groupsY, groupsZ);
+        }
+
+        private void DispatchWinograd23TransformOutput(CommandBuffer cmd, int blockX, int blockY, int outPacks)
+        {
+            var groupsX = Mathf.Max(1, blockX);
+            var groupsY = Mathf.Max(1, blockY);
+            var groupsZ = Mathf.Max(1, outPacks);
+            if (cmd != null)
+                cmd.DispatchCompute(_cs, _kWinograd23TransformOutput, groupsX, groupsY, groupsZ);
+            else
+                _cs.Dispatch(_kWinograd23TransformOutput, groupsX, groupsY, groupsZ);
+        }
+
+        private void SetWinograd23Params(int w, int h, int inPacks, int outPacks, int activationType, float activationParam, int biasTerm)
+        {
+            var blockX = NcnnWinograd23.BlockX(w);
+            var blockY = NcnnWinograd23.BlockY(h);
+            var tiles = blockX * blockY;
+            _cs.SetInt("_WinoW", w);
+            _cs.SetInt("_WinoH", h);
+            _cs.SetInt("_WinoOutW", w);
+            _cs.SetInt("_WinoOutH", h);
+            _cs.SetInt("_WinoInCstep", tiles);
+            _cs.SetInt("_WinoOutCstep", tiles);
+            _cs.SetInt("_WinoBlockX", blockX);
+            _cs.SetInt("_WinoBlockY", blockY);
+            _cs.SetInt("_InPacks", inPacks);
+            _cs.SetInt("_OutPacks", outPacks);
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetInt("_WinoBiasTerm", biasTerm);
+        }
+
+        private void SetWinograd23Params(CommandBuffer cmd, int w, int h, int inPacks, int outPacks, int activationType, float activationParam, int biasTerm)
+        {
+            var blockX = NcnnWinograd23.BlockX(w);
+            var blockY = NcnnWinograd23.BlockY(h);
+            var tiles = blockX * blockY;
+            cmd.SetComputeIntParam(_cs, "_WinoW", w);
+            cmd.SetComputeIntParam(_cs, "_WinoH", h);
+            cmd.SetComputeIntParam(_cs, "_WinoOutW", w);
+            cmd.SetComputeIntParam(_cs, "_WinoOutH", h);
+            cmd.SetComputeIntParam(_cs, "_WinoInCstep", tiles);
+            cmd.SetComputeIntParam(_cs, "_WinoOutCstep", tiles);
+            cmd.SetComputeIntParam(_cs, "_WinoBlockX", blockX);
+            cmd.SetComputeIntParam(_cs, "_WinoBlockY", blockY);
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeIntParam(_cs, "_WinoBiasTerm", biasTerm);
         }
 
         public void Conv1x1Pack4(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int activationType, float activationParam, RenderTexture dstPack4)

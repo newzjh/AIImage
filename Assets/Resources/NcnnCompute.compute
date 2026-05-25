@@ -11,6 +11,9 @@
 #pragma kernel NcnnPackRgbToPack4
 #pragma kernel NcnnUnpackPack4ToRgb
 #pragma kernel NcnnConv3x3Pack4
+#pragma kernel NcnnWinograd23TransformInputPack4
+#pragma kernel NcnnWinograd23GemmPack4
+#pragma kernel NcnnWinograd23TransformOutputPack4
 #pragma kernel NcnnConv1x1Pack4
 #pragma kernel NcnnAddPack4
 #pragma kernel NcnnCopyPack4
@@ -179,78 +182,289 @@ Texture2DArray<float4> _ConvInArr;
 int _InPacks;
 int _OutPacks;
 
-groupshared float4 _Conv3x3Pack4_s_in[100];
-groupshared float4 _Conv3x3Pack4_s_w[36];
-
+// Direct-read 3x3 pack4 (no per-input-pack barrier). Matches NcnnConv1x1Pack4 strategy;
+// avoids 2 * InPacks group syncs per 8x8 tile that dominated forward time vs ncnn exe.
 [numthreads(8,8,1)]
-void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint3 id : SV_DispatchThreadID)
+void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
-    bool active = (id.x < ow && id.y < oh);
+    if (id.x >= ow || id.y >= oh) return;
     int op = (int)id.z;
+    if (op < 0 || op >= _OutPacks) return;
 
     float4 sum = _ConvB4[op];
 
     uint iw, ih, idd;
     _ConvInArr.GetDimensions(iw, ih, idd);
 
-    int baseX = (int)groupId.x * 8;
-    int baseY = (int)groupId.y * 8;
-    int tid = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
-
     for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
-        for (int loadIndex = tid; loadIndex < 100; loadIndex += 64)
-        {
-            int ly = (int)((float)loadIndex * 0.1);
-            int lx = loadIndex - ly * 10;
-            int ix = baseX + lx - _Pad;
-            int iy = baseY + ly - _Pad;
-            float4 v = 0.0;
-            if (ix >= 0 && iy >= 0 && ix < (int)iw && iy < (int)ih)
-                v = _ConvInArr[int3(ix, iy, ip0)];
-            _Conv3x3Pack4_s_in[loadIndex] = v;
-        }
-
-        int wbase = ((op * _InPacks + ip0) * 9 * 4);
-        for (int wi = tid; wi < 36; wi += 64)
-        {
-            _Conv3x3Pack4_s_w[wi] = _ConvW4[wbase + wi];
-        }
-
-        GroupMemoryBarrierWithGroupSync();
-
-        int tx = (int)groupThreadId.x;
-        int ty = (int)groupThreadId.y;
-
         [unroll]
         for (int ky = 0; ky < 3; ky++)
         {
             [unroll]
             for (int kx = 0; kx < 3; kx++)
             {
-                float4 inV = _Conv3x3Pack4_s_in[(ty + ky) * 10 + (tx + kx)];
+                int ix = (int)id.x + kx - _Pad;
+                int iy = (int)id.y + ky - _Pad;
+                float4 inV = 0.0;
+                if (ix >= 0 && iy >= 0 && ix < (int)iw && iy < (int)ih)
+                    inV = _ConvInArr[int3(ix, iy, ip0)];
                 int k = ky * 3 + kx;
-                float4 w0 = _Conv3x3Pack4_s_w[k * 4 + 0];
-                float4 w1 = _Conv3x3Pack4_s_w[k * 4 + 1];
-                float4 w2 = _Conv3x3Pack4_s_w[k * 4 + 2];
-                float4 w3 = _Conv3x3Pack4_s_w[k * 4 + 3];
+                int wbase = ((op * _InPacks + ip0) * 9 + k) * 4;
+                float4 w0 = _ConvW4[wbase + 0];
+                float4 w1 = _ConvW4[wbase + 1];
+                float4 w2 = _ConvW4[wbase + 2];
+                float4 w3 = _ConvW4[wbase + 3];
                 sum.x += dot(inV, w0);
                 sum.y += dot(inV, w1);
                 sum.z += dot(inV, w2);
                 sum.w += dot(inV, w3);
             }
         }
-
-        GroupMemoryBarrierWithGroupSync();
     }
 
     if (_ActType == 2)
         sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
 
-    if (active)
-        _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+    _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+}
+
+Texture2DArray<float4> _WinoInArr;
+RWStructuredBuffer<float4> _WinoBottomTm;
+RWStructuredBuffer<float4> _WinoTopTm;
+StructuredBuffer<float4> _WinoWeightTm;
+StructuredBuffer<float4> _WinoBias4;
+RWTexture2DArray<float4> _WinoOutArr;
+int _WinoW;
+int _WinoH;
+int _WinoInCstep;
+int _WinoOutCstep;
+int _WinoBlockX;
+int _WinoBlockY;
+int _WinoOutW;
+int _WinoOutH;
+int _WinoBiasTerm;
+
+float4 NcnnApplyActivation(float4 v)
+{
+    if (_ActType == 2)
+        v = max(v, 0.0) + min(v, 0.0) * _ActParam;
+    else if (_ActType == 1)
+        v = v + min(v, 0.0) * _ActParam;
+    return v;
+}
+
+// ncnn pack4 winograd23 transform_input: local_size 8x8x1, 2x2 output tile per block.
+[numthreads(8,8,1)]
+void NcnnWinograd23TransformInputPack4(uint3 id : SV_DispatchThreadID)
+{
+    int gx = (int)id.x;
+    int gy = (int)id.y;
+    int gz = (int)id.z;
+    if (gx >= _WinoBlockX || gy >= _WinoBlockY || gz >= _InPacks)
+        return;
+
+    int sx = gx * 2;
+    int sy = gy * 2;
+    int cstep = _WinoInCstep;
+
+    float4 v00 = _WinoInArr[int3(sx + 0, sy + 0, gz)];
+    float4 v01 = sx + 1 < _WinoW ? _WinoInArr[int3(sx + 1, sy + 0, gz)] : 0.0;
+    float4 v02 = sx + 2 < _WinoW ? _WinoInArr[int3(sx + 2, sy + 0, gz)] : 0.0;
+    float4 v03 = sx + 3 < _WinoW ? _WinoInArr[int3(sx + 3, sy + 0, gz)] : 0.0;
+
+    float4 v10 = sy + 1 < _WinoH ? _WinoInArr[int3(sx + 0, sy + 1, gz)] : 0.0;
+    float4 v11 = sy + 1 < _WinoH && sx + 1 < _WinoW ? _WinoInArr[int3(sx + 1, sy + 1, gz)] : 0.0;
+    float4 v12 = sy + 1 < _WinoH && sx + 2 < _WinoW ? _WinoInArr[int3(sx + 2, sy + 1, gz)] : 0.0;
+    float4 v13 = sy + 1 < _WinoH && sx + 3 < _WinoW ? _WinoInArr[int3(sx + 3, sy + 1, gz)] : 0.0;
+
+    float4 v20 = sy + 2 < _WinoH ? _WinoInArr[int3(sx + 0, sy + 2, gz)] : 0.0;
+    float4 v21 = sy + 2 < _WinoH && sx + 1 < _WinoW ? _WinoInArr[int3(sx + 1, sy + 2, gz)] : 0.0;
+    float4 v22 = sy + 2 < _WinoH && sx + 2 < _WinoW ? _WinoInArr[int3(sx + 2, sy + 2, gz)] : 0.0;
+    float4 v23 = sy + 2 < _WinoH && sx + 3 < _WinoW ? _WinoInArr[int3(sx + 3, sy + 2, gz)] : 0.0;
+
+    float4 v30 = sy + 3 < _WinoH ? _WinoInArr[int3(sx + 0, sy + 3, gz)] : 0.0;
+    float4 v31 = sy + 3 < _WinoH && sx + 1 < _WinoW ? _WinoInArr[int3(sx + 1, sy + 3, gz)] : 0.0;
+    float4 v32 = sy + 3 < _WinoH && sx + 2 < _WinoW ? _WinoInArr[int3(sx + 2, sy + 3, gz)] : 0.0;
+    float4 v33 = sy + 3 < _WinoH && sx + 3 < _WinoW ? _WinoInArr[int3(sx + 3, sy + 3, gz)] : 0.0;
+
+    float4 m00 = v00 - v02;
+    float4 m01 = v10 - v12;
+    float4 m02 = v20 - v22;
+    float4 m03 = v30 - v32;
+
+    float4 m10 = v02 + v01;
+    float4 m11 = v12 + v11;
+    float4 m12 = v22 + v21;
+    float4 m13 = v32 + v31;
+
+    float4 m20 = v02 - v01;
+    float4 m21 = v12 - v11;
+    float4 m22 = v22 - v21;
+    float4 m23 = v32 - v31;
+
+    float4 m30 = v03 - v01;
+    float4 m31 = v13 - v11;
+    float4 m32 = v23 - v21;
+    float4 m33 = v33 - v31;
+
+    v00 = m00 - m02;
+    v10 = m10 - m12;
+    v20 = m20 - m22;
+    v30 = m30 - m32;
+
+    v01 = m02 + m01;
+    v11 = m12 + m11;
+    v21 = m22 + m21;
+    v31 = m32 + m31;
+
+    v02 = m02 - m01;
+    v12 = m12 - m11;
+    v22 = m22 - m21;
+    v32 = m32 - m31;
+
+    v03 = m03 - m01;
+    v13 = m13 - m11;
+    v23 = m23 - m21;
+    v33 = m33 - m31;
+
+    int vTmOffset = gz * cstep + gy * _WinoBlockX + gx;
+    int packC = _InPacks;
+    _WinoBottomTm[vTmOffset + 0 * cstep * packC] = v00;
+    _WinoBottomTm[vTmOffset + 1 * cstep * packC] = v01;
+    _WinoBottomTm[vTmOffset + 2 * cstep * packC] = v02;
+    _WinoBottomTm[vTmOffset + 3 * cstep * packC] = v03;
+    _WinoBottomTm[vTmOffset + 4 * cstep * packC] = v10;
+    _WinoBottomTm[vTmOffset + 5 * cstep * packC] = v11;
+    _WinoBottomTm[vTmOffset + 6 * cstep * packC] = v12;
+    _WinoBottomTm[vTmOffset + 7 * cstep * packC] = v13;
+    _WinoBottomTm[vTmOffset + 8 * cstep * packC] = v20;
+    _WinoBottomTm[vTmOffset + 9 * cstep * packC] = v21;
+    _WinoBottomTm[vTmOffset + 10 * cstep * packC] = v22;
+    _WinoBottomTm[vTmOffset + 11 * cstep * packC] = v23;
+    _WinoBottomTm[vTmOffset + 12 * cstep * packC] = v30;
+    _WinoBottomTm[vTmOffset + 13 * cstep * packC] = v31;
+    _WinoBottomTm[vTmOffset + 14 * cstep * packC] = v32;
+    _WinoBottomTm[vTmOffset + 15 * cstep * packC] = v33;
+}
+
+// ncnn pack4 winograd gemm: gx*4 spatial tiles, gy output pack, gz winograd tile (16).
+[numthreads(8,8,1)]
+void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
+{
+    int gx = (int)id.x * 4;
+    int gy = (int)id.y;
+    int gz = (int)id.z;
+    int tiles = _WinoInCstep;
+    int outc = _OutPacks;
+    if (gx >= tiles || gy >= outc || gz >= 16)
+        return;
+
+    float4 sum0 = 0.0;
+    float4 sum1 = 0.0;
+    float4 sum2 = 0.0;
+    float4 sum3 = 0.0;
+
+    int vOffset = gz * _InPacks * tiles + gx;
+    int wOffset = (gz * _InPacks * outc + gy * _InPacks) * 4;
+
+    for (int z = 0; z < _InPacks; z++)
+    {
+        float4 v0 = _WinoBottomTm[vOffset + 0];
+        float4 v1 = _WinoBottomTm[vOffset + 1];
+        float4 v2 = _WinoBottomTm[vOffset + 2];
+        float4 v3 = _WinoBottomTm[vOffset + 3];
+
+        float4 k0 = _WinoWeightTm[wOffset + 0];
+        float4 k1 = _WinoWeightTm[wOffset + 1];
+        float4 k2 = _WinoWeightTm[wOffset + 2];
+        float4 k3 = _WinoWeightTm[wOffset + 3];
+
+        sum0.x += dot(v0, k0); sum0.y += dot(v0, k1); sum0.z += dot(v0, k2); sum0.w += dot(v0, k3);
+        sum1.x += dot(v1, k0); sum1.y += dot(v1, k1); sum1.z += dot(v1, k2); sum1.w += dot(v1, k3);
+        sum2.x += dot(v2, k0); sum2.y += dot(v2, k1); sum2.z += dot(v2, k2); sum2.w += dot(v2, k3);
+        sum3.x += dot(v3, k0); sum3.y += dot(v3, k1); sum3.z += dot(v3, k2); sum3.w += dot(v3, k3);
+
+        vOffset += tiles;
+        wOffset += 4;
+    }
+
+    int gi = gz * outc * _WinoOutCstep + gy * _WinoOutCstep + gx;
+    _WinoTopTm[gi + 0] = sum0;
+    if (gx + 1 < tiles) _WinoTopTm[gi + 1] = sum1;
+    if (gx + 2 < tiles) _WinoTopTm[gi + 2] = sum2;
+    if (gx + 3 < tiles) _WinoTopTm[gi + 3] = sum3;
+}
+
+// ncnn pack4 winograd23 transform_output: local_size 8x8x1.
+[numthreads(8,8,1)]
+void NcnnWinograd23TransformOutputPack4(uint3 id : SV_DispatchThreadID)
+{
+    int gx = (int)id.x;
+    int gy = (int)id.y;
+    int gz = (int)id.z;
+    if (gx >= _WinoBlockX || gy >= _WinoBlockY || gz >= _OutPacks)
+        return;
+
+    int vTmOffset = gz * _WinoOutCstep + gy * _WinoBlockX + gx;
+    int packC = _OutPacks;
+
+    float4 v00 = _WinoTopTm[vTmOffset + 0 * _WinoOutCstep * packC];
+    float4 v01 = _WinoTopTm[vTmOffset + 1 * _WinoOutCstep * packC];
+    float4 v02 = _WinoTopTm[vTmOffset + 2 * _WinoOutCstep * packC];
+    float4 v03 = _WinoTopTm[vTmOffset + 3 * _WinoOutCstep * packC];
+    float4 v10 = _WinoTopTm[vTmOffset + 4 * _WinoOutCstep * packC];
+    float4 v11 = _WinoTopTm[vTmOffset + 5 * _WinoOutCstep * packC];
+    float4 v12 = _WinoTopTm[vTmOffset + 6 * _WinoOutCstep * packC];
+    float4 v13 = _WinoTopTm[vTmOffset + 7 * _WinoOutCstep * packC];
+    float4 v20 = _WinoTopTm[vTmOffset + 8 * _WinoOutCstep * packC];
+    float4 v21 = _WinoTopTm[vTmOffset + 9 * _WinoOutCstep * packC];
+    float4 v22 = _WinoTopTm[vTmOffset + 10 * _WinoOutCstep * packC];
+    float4 v23 = _WinoTopTm[vTmOffset + 11 * _WinoOutCstep * packC];
+    float4 v30 = _WinoTopTm[vTmOffset + 12 * _WinoOutCstep * packC];
+    float4 v31 = _WinoTopTm[vTmOffset + 13 * _WinoOutCstep * packC];
+    float4 v32 = _WinoTopTm[vTmOffset + 14 * _WinoOutCstep * packC];
+    float4 v33 = _WinoTopTm[vTmOffset + 15 * _WinoOutCstep * packC];
+
+    float4 m00 = v00 + v01 + v02;
+    float4 m01 = v10 + v11 + v12;
+    float4 m02 = v20 + v21 + v22;
+    float4 m03 = v30 + v31 + v32;
+
+    float4 m10 = v01 - v02 + v03;
+    float4 m11 = v11 - v12 + v13;
+    float4 m12 = v21 - v22 + v23;
+    float4 m13 = v31 - v32 + v33;
+
+    if (_WinoBiasTerm != 0)
+    {
+        float4 biasValue = _WinoBias4[gz];
+        v00 = biasValue + m00 + m01 + m02;
+        v10 = biasValue + m10 + m11 + m12;
+        v01 = biasValue + m01 - m02 + m03;
+        v11 = biasValue + m11 - m12 + m13;
+    }
+    else
+    {
+        v00 = m00 + m01 + m02;
+        v10 = m10 + m11 + m12;
+        v01 = m01 - m02 + m03;
+        v11 = m11 - m12 + m13;
+    }
+
+    v00 = NcnnApplyActivation(v00);
+    v01 = NcnnApplyActivation(v01);
+    v10 = NcnnApplyActivation(v10);
+    v11 = NcnnApplyActivation(v11);
+
+    int x = gx * 2;
+    int y = gy * 2;
+    _WinoOutArr[int3(x + 0, y + 0, gz)] = v00;
+    if (x + 1 < _WinoOutW) _WinoOutArr[int3(x + 1, y + 0, gz)] = v01;
+    if (y + 1 < _WinoOutH) _WinoOutArr[int3(x + 0, y + 1, gz)] = v10;
+    if (y + 1 < _WinoOutH && x + 1 < _WinoOutW) _WinoOutArr[int3(x + 1, y + 1, gz)] = v11;
 }
 
 [numthreads(8,8,1)]

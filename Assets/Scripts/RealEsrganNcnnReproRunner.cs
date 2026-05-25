@@ -25,6 +25,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public bool enableVulkanTempPoolByDefault = true;
     public int maxYieldEveryTiles = 16;
     public bool useCommandBufferOnVulkan = true;
+    public bool enableWinograd23 = false;
     public bool enableGpuFenceTiming = false;
     public int gpuFenceEveryTiles = 1;
 
@@ -82,11 +83,14 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         public int activationType;
         public float activationSlope;
         public ComputeBuffer w4;
+        public ComputeBuffer wTm23;
         public ComputeBuffer b4;
+        public bool useWinograd23;
 
         public void Dispose()
         {
             try { w4?.Dispose(); } catch { }
+            try { wTm23?.Dispose(); } catch { }
             try { b4?.Dispose(); } catch { }
         }
     }
@@ -140,6 +144,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         _loaded = false;
         _model = null;
         _blobUseCount = null;
+        try { _ops?.ReleaseWinogradWorkspace(); } catch { }
     }
 
     public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
@@ -178,7 +183,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             runInW = Mathf.Max(1, Mathf.RoundToInt(originalW * s));
             runInH = Mathf.Max(1, Mathf.RoundToInt(originalH * s));
         }
-        var baseTileSize = tileSize > 0 ? tileSize : AutoTileSize();
+        var baseTileSize = tileSize > 0 ? tileSize : Mathf.Max(runInW, runInH);
         var effectiveTilePad = tilePad > 0 ? tilePad : 10;
 
         ReportProgress(0f, "准备输入");
@@ -610,6 +615,14 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 pack.w4.SetData(w4);
                 pack.b4.SetData(b4);
 
+                pack.useWinograd23 = NcnnWinograd23.CanUse(pack.kernel, pack.pad, pack.inPacks, pack.outPacks);
+                if (pack.useWinograd23)
+                {
+                    var wTm = NcnnWinograd23.PackWeightTm23(w, pack.outC, pack.inC, pack.outPacks, pack.inPacks);
+                    pack.wTm23 = new ComputeBuffer(wTm.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    pack.wTm23.SetData(wTm);
+                }
+
                 _conv[layer.name] = pack;
             }
         }
@@ -790,7 +803,14 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
 
                 var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
+                if (pack.useWinograd23 && enableWinograd23)
+                {
+                    // Winograd uses persistent workspace buffers; flush pending cmd work and
+                    // dispatch immediately so buffers are not freed before GPU finishes.
+                    FlushCmd();
+                    _ops.Conv3x3Pack4Winograd23(src.t, pack.inPacks, pack.wTm23, pack.b4, pack.outPacks, pack.biasTerm, pack.activationType, pack.activationSlope, outArr);
+                }
+                else if (_useCmdThisRun)
                 {
                     EnsureCmd();
                     _ops.Conv3x3Pack4(cmd, src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
