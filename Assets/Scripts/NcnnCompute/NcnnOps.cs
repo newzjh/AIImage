@@ -1,5 +1,239 @@
 using System;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using UnityEngine;
+
+namespace UnityEngine
+{
+    [System.Serializable]
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Vector4Int : IEquatable<Vector4Int>, IFormattable
+    {
+        public int x { get { return m_X; } set { m_X = value; } }
+        public int y { get { return m_Y; } set { m_Y = value; } }
+        public int z { get { return m_Z; } set { m_Z = value; } }
+        public int w { get { return m_W; } set { m_W = value; } }
+
+        private int m_X;
+        private int m_Y;
+        private int m_Z;
+        private int m_W;
+
+        public Vector4Int(int x, int y, int z, int w)
+        {
+            m_X = x;
+            m_Y = y;
+            m_Z = z;
+            m_W = w;
+        }
+
+        // Set x, y and z components of an existing Vector.
+        public void Set(int x, int y, int z, int w)
+        {
+            m_X = x;
+            m_Y = y;
+            m_Z = z;
+            m_W = w;
+        }
+
+        // Access the /x/, /y/ or /z/ component using [0], [1] or [2] respectively.
+        public int this[int index]
+        {
+            get
+            {
+                switch (index)
+                {
+                    case 0: return x;
+                    case 1: return y;
+                    case 2: return z;
+                    case 3: return w;
+                    default:
+                        throw new IndexOutOfRangeException(string.Format("Invalid Vector4Int index addressed: {0}!", index));
+                }
+            }
+
+            set
+            {
+                switch (index)
+                {
+                    case 0: x = value; break;
+                    case 1: y = value; break;
+                    case 2: z = value; break;
+                    case 3: w = value; break;
+                    default:
+                        throw new IndexOutOfRangeException(string.Format("Invalid Vector4Int index addressed: {0}!", index));
+                }
+            }
+        }
+
+        // Returns the length of this vector (RO).
+        public float magnitude { get { return Mathf.Sqrt((float)(x * x + y * y + z * z + w * w)); } }
+
+        // Returns the squared length of this vector (RO).
+        public int sqrMagnitude { get { return x * x + y * y + z * z + w * w; } }
+
+        // Returns the distance between /a/ and /b/.
+        public static float Distance(Vector4Int a, Vector4Int b) { return (a - b).magnitude; }
+
+        // Returns a vector that is made from the smallest components of two vectors.
+        public static Vector4Int Min(Vector4Int lhs, Vector4Int rhs) { return new Vector4Int(Mathf.Min(lhs.x, rhs.x), Mathf.Min(lhs.y, rhs.y), Mathf.Min(lhs.z, rhs.z), Mathf.Min(lhs.w, rhs.w)); }
+
+        // Returns a vector that is made from the largest components of two vectors.
+        public static Vector4Int Max(Vector4Int lhs, Vector4Int rhs) { return new Vector4Int(Mathf.Max(lhs.x, rhs.x), Mathf.Max(lhs.y, rhs.y), Mathf.Max(lhs.z, rhs.z), Mathf.Max(lhs.w, rhs.w)); }
+
+        // Multiplies two vectors component-wise.
+        public static Vector4Int Scale(Vector4Int a, Vector4Int b) { return new Vector4Int(a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w); }
+
+        // Multiplies every component of this vector by the same component of /scale/.
+        public void Scale(Vector4Int scale) { x *= scale.x; y *= scale.y; z *= scale.z; w *= scale.w; }
+
+        public void Clamp(Vector4Int min, Vector4Int max)
+        {
+            x = Math.Max(min.x, x);
+            x = Math.Min(max.x, x);
+            y = Math.Max(min.y, y);
+            y = Math.Min(max.y, y);
+            z = Math.Max(min.z, z);
+            z = Math.Min(max.z, z);
+            w = Math.Max(min.w, w);
+            w = Math.Min(max.w, w);
+        }
+
+        // Converts a Vector4Int to a [[Vector4]].
+        public static implicit operator Vector4(Vector4Int v)
+        {
+            return new Vector4(v.x, v.y, v.z, v.w);
+        }
+
+        // Converts a Vector4Int to a [[Vector2Int]].
+        public static explicit operator Vector3Int(Vector4Int v)
+        {
+            return new Vector3Int(v.x, v.y, v.z);
+        }
+
+        // Converts a Vector4Int to a [[Vector2Int]].
+        public static explicit operator Vector2Int(Vector4Int v)
+        {
+            return new Vector2Int(v.x, v.y);
+        }
+
+        public static Vector4Int FloorToInt(Vector4 v)
+        {
+            return new Vector4Int(
+                Mathf.FloorToInt(v.x),
+                Mathf.FloorToInt(v.y),
+                Mathf.FloorToInt(v.z),
+                Mathf.FloorToInt(v.w)
+            );
+        }
+
+        public static Vector4Int CeilToInt(Vector4 v)
+        {
+            return new Vector4Int(
+                Mathf.CeilToInt(v.x),
+                Mathf.CeilToInt(v.y),
+                Mathf.CeilToInt(v.z),
+                Mathf.CeilToInt(v.w)
+            );
+        }
+
+        public static Vector4Int RoundToInt(Vector4 v)
+        {
+            return new Vector4Int(
+                Mathf.RoundToInt(v.x),
+                Mathf.RoundToInt(v.y),
+                Mathf.RoundToInt(v.z),
+                Mathf.RoundToInt(v.w)
+            );
+        }
+
+        public static Vector4Int operator +(Vector4Int a, Vector4Int b)
+        {
+            return new Vector4Int(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+        }
+
+        public static Vector4Int operator -(Vector4Int a, Vector4Int b)
+        {
+            return new Vector4Int(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
+        }
+
+        public static Vector4Int operator *(Vector4Int a, Vector4Int b)
+        {
+            return new Vector4Int(a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w);
+        }
+
+        public static Vector4Int operator -(Vector4Int a)
+        {
+            return new Vector4Int(-a.x, -a.y, -a.z, -a.w);
+        }
+
+        public static Vector4Int operator *(Vector4Int a, int b)
+        {
+            return new Vector4Int(a.x * b, a.y * b, a.z * b, a.w * b);
+        }
+
+        public static Vector4Int operator *(int a, Vector4Int b)
+        {
+            return new Vector4Int(a * b.x, a * b.y, a * b.z, a * b.w);
+        }
+
+        public static Vector4Int operator /(Vector4Int a, int b)
+        {
+            return new Vector4Int(a.x / b, a.y / b, a.z / b, a.w / b);
+        }
+
+        public static bool operator ==(Vector4Int lhs, Vector4Int rhs)
+        {
+            return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z && lhs.w == rhs.w;
+        }
+
+        public static bool operator !=(Vector4Int lhs, Vector4Int rhs)
+        {
+            return !(lhs == rhs);
+        }
+
+        public override bool Equals(object other)
+        {
+            if (!(other is Vector4Int)) return false;
+
+            return Equals((Vector4Int)other);
+        }
+
+        public bool Equals(Vector4Int other)
+        {
+            return this == other;
+        }
+
+        public override int GetHashCode()
+        {
+            var yHash = y.GetHashCode();
+            var zHash = z.GetHashCode();
+            var wHash = w.GetHashCode();
+            return x.GetHashCode() ^ (yHash << 8) ^ (yHash >> 24) ^ (zHash << 16) ^ (zHash >> 16) ^ (wHash << 24) ^ (wHash >> 8);
+        }
+
+        public override string ToString()
+        {
+            return ToString(null, CultureInfo.InvariantCulture.NumberFormat);
+        }
+
+        public string ToString(string format)
+        {
+            return ToString(format, CultureInfo.InvariantCulture.NumberFormat);
+        }
+
+        public string ToString(string format, IFormatProvider formatProvider)
+        {
+            return string.Format("({0}, {1}, {2}, {3})", x.ToString(format, formatProvider), y.ToString(format, formatProvider), z.ToString(format, formatProvider), w.ToString(format, formatProvider));
+        }
+
+        public static Vector4Int zero { get { return s_Zero; } }
+        public static Vector4Int one { get { return s_One; } }
+
+        private static readonly Vector4Int s_Zero = new Vector4Int(0, 0, 0, 0);
+        private static readonly Vector4Int s_One = new Vector4Int(1, 1, 1, 1);
+    }
+}
 
 namespace NcnnCompute
 {
@@ -49,6 +283,8 @@ namespace NcnnCompute
         private readonly int _kLayerNorm2D;
         private readonly int _kSoftmax2D;
         private readonly int _kEmbed;
+        private readonly int _kPermute;
+        private readonly int _kSlice;
 
         public NcnnOps()
         {
@@ -98,6 +334,8 @@ namespace NcnnCompute
             _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
             _kSoftmax2D = _cs.FindKernel("NcnnSoftmax2D");
             _kEmbed = _cs.FindKernel("NcnnEmbed");
+            _kPermute = _cs.FindKernel("NcnnPermute");
+            _kSlice = _cs.FindKernel("NcnnSlice");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -543,6 +781,7 @@ namespace NcnnCompute
             if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
             if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (k > 2048) throw new ArgumentOutOfRangeException(nameof(k), "k too large for current tiled kernel (MATK_MAX=2048): " + k);
 
             _cs.SetInt("_MatM", m);
             _cs.SetInt("_MatN", n);
@@ -568,6 +807,7 @@ namespace NcnnCompute
             if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
             if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (k > 2048) throw new ArgumentOutOfRangeException(nameof(k), "k too large for current tiled kernel (MATK_MAX=2048): " + k);
             if (useC && c == null) throw new ArgumentNullException(nameof(c));
 
             _cs.SetInt("_MatM", m);
@@ -636,6 +876,142 @@ namespace NcnnCompute
             _cs.SetBuffer(_kEmbed, "_EmbedB", biasTerm ? bias : weight);
             _cs.SetBuffer(_kEmbed, "_EmbedOut", output);
             Dispatch2D(_cs, _kEmbed, numOutput, words, 8, 8);
+        }
+
+        public void Permute(ComputeBuffer input, int dims, int inW, int inH, int inD, int inC, int orderType, ComputeBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (dims < 2 || dims > 4) throw new ArgumentOutOfRangeException(nameof(dims));
+            if (inW <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (inH <= 0) throw new ArgumentOutOfRangeException(nameof(inH));
+            if (dims >= 3 && inC <= 0) throw new ArgumentOutOfRangeException(nameof(inC));
+            if (dims == 4 && inD <= 0) throw new ArgumentOutOfRangeException(nameof(inD));
+            if (dims != 4) inD = 1;
+            if (dims == 2) inC = 1;
+
+            var axes = GetPermuteAxes(dims, orderType);
+            var outW = GetAxisSize(dims, inW, inH, inD, inC, axes.x);
+            var outH = GetAxisSize(dims, inW, inH, inD, inC, axes.y);
+            var outD = dims == 4 ? GetAxisSize(dims, inW, inH, inD, inC, axes.z) : 1;
+            var outC = dims == 2 ? 1 : GetAxisSize(dims, inW, inH, inD, inC, dims == 4 ? axes.w : axes.z);
+
+            var outCount = checked(outW * outH * outD * outC);
+            if (output.count != outCount)
+                throw new ArgumentOutOfRangeException(nameof(output), "output.count mismatch, expect " + outCount);
+
+            _cs.SetInt("_PermuteDims", dims);
+            _cs.SetInt("_PermuteInW", inW);
+            _cs.SetInt("_PermuteInH", inH);
+            _cs.SetInt("_PermuteInD", inD);
+            _cs.SetInt("_PermuteInC", inC);
+            _cs.SetInt("_PermuteOutW", outW);
+            _cs.SetInt("_PermuteOutH", outH);
+            _cs.SetInt("_PermuteOutD", outD);
+            _cs.SetInt("_PermuteOutC", outC);
+            _cs.SetInts("_PermuteAxes", axes.x, axes.y, axes.z, axes.w);
+            _cs.SetBuffer(_kPermute, "_PermuteIn", input);
+            _cs.SetBuffer(_kPermute, "_PermuteOut", output);
+            Dispatch1D(_kPermute, outCount, 256);
+        }
+
+        public void Slice(ComputeBuffer input, int dims, int inW, int inH, int inD, int inC, int axis, int begin, int outW, int outH, int outD, int outC, ComputeBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (dims < 2 || dims > 4) throw new ArgumentOutOfRangeException(nameof(dims));
+            if (axis < 0) axis += dims;
+            if (axis < 0 || axis >= dims) throw new ArgumentOutOfRangeException(nameof(axis));
+            if (begin < 0) throw new ArgumentOutOfRangeException(nameof(begin));
+            if (inW <= 0 || inH <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (dims == 3 && inC <= 0) throw new ArgumentOutOfRangeException(nameof(inC));
+            if (dims == 4 && (inD <= 0 || inC <= 0)) throw new ArgumentOutOfRangeException(nameof(inD));
+            if (dims != 4) inD = 1;
+            if (dims == 2) inC = 1;
+
+            if (outW <= 0 || outH <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+            if (dims == 3 && outC <= 0) throw new ArgumentOutOfRangeException(nameof(outC));
+            if (dims == 4 && (outD <= 0 || outC <= 0)) throw new ArgumentOutOfRangeException(nameof(outD));
+            if (dims != 4) outD = 1;
+            if (dims == 2) outC = 1;
+
+            var outCount = checked(outW * outH * outD * outC);
+            if (output.count != outCount)
+                throw new ArgumentOutOfRangeException(nameof(output), "output.count mismatch, expect " + outCount);
+
+            _cs.SetInt("_SliceDims", dims);
+            _cs.SetInt("_SliceInW", inW);
+            _cs.SetInt("_SliceInH", inH);
+            _cs.SetInt("_SliceInD", inD);
+            _cs.SetInt("_SliceInC", inC);
+            _cs.SetInt("_SliceAxis", axis);
+            _cs.SetInt("_SliceBegin", begin);
+            _cs.SetInt("_SliceOutW", outW);
+            _cs.SetInt("_SliceOutH", outH);
+            _cs.SetInt("_SliceOutD", outD);
+            _cs.SetInt("_SliceOutC", outC);
+            _cs.SetBuffer(_kSlice, "_SliceIn", input);
+            _cs.SetBuffer(_kSlice, "_SliceOut", output);
+            Dispatch1D(_kSlice, outCount, 256);
+        }
+
+        private static Vector4Int GetPermuteAxes(int dims, int orderType)
+        {
+            if (dims == 2)
+            {
+                if (orderType == 0) return new Vector4Int(0, 1, 0, 0);
+                if (orderType == 1) return new Vector4Int(1, 0, 0, 0);
+                throw new ArgumentOutOfRangeException(nameof(orderType), "unsupported orderType for dims=2: " + orderType);
+            }
+
+            if (dims == 3)
+            {
+                if (orderType == 0) return new Vector4Int(0, 1, 2, 0);
+                if (orderType == 1) return new Vector4Int(1, 0, 2, 0);
+                if (orderType == 2) return new Vector4Int(0, 2, 1, 0);
+                if (orderType == 3) return new Vector4Int(2, 0, 1, 0);
+                if (orderType == 4) return new Vector4Int(1, 2, 0, 0);
+                if (orderType == 5) return new Vector4Int(2, 1, 0, 0);
+                throw new ArgumentOutOfRangeException(nameof(orderType), "unsupported orderType for dims=3: " + orderType);
+            }
+
+            switch (orderType)
+            {
+                case 0: return new Vector4Int(0, 1, 2, 3);
+                case 1: return new Vector4Int(1, 0, 2, 3);
+                case 2: return new Vector4Int(0, 2, 1, 3);
+                case 3: return new Vector4Int(2, 0, 1, 3);
+                case 4: return new Vector4Int(1, 2, 0, 3);
+                case 5: return new Vector4Int(2, 1, 0, 3);
+                case 6: return new Vector4Int(0, 1, 3, 2);
+                case 7: return new Vector4Int(1, 0, 3, 2);
+                case 8: return new Vector4Int(0, 3, 1, 2);
+                case 9: return new Vector4Int(3, 0, 1, 2);
+                case 10: return new Vector4Int(1, 3, 0, 2);
+                case 11: return new Vector4Int(3, 1, 0, 2);
+                case 12: return new Vector4Int(0, 2, 3, 1);
+                case 13: return new Vector4Int(2, 0, 3, 1);
+                case 14: return new Vector4Int(0, 3, 2, 1);
+                case 15: return new Vector4Int(3, 0, 2, 1);
+                case 16: return new Vector4Int(2, 3, 0, 1);
+                case 17: return new Vector4Int(3, 2, 0, 1);
+                case 18: return new Vector4Int(1, 2, 3, 0);
+                case 19: return new Vector4Int(2, 1, 3, 0);
+                case 20: return new Vector4Int(1, 3, 2, 0);
+                case 21: return new Vector4Int(3, 1, 2, 0);
+                case 22: return new Vector4Int(2, 3, 1, 0);
+                case 23: return new Vector4Int(3, 2, 1, 0);
+                default: throw new ArgumentOutOfRangeException(nameof(orderType), "unsupported orderType for dims=4: " + orderType);
+            }
+        }
+
+        private static int GetAxisSize(int dims, int w, int h, int d, int c, int axis)
+        {
+            if (axis == 0) return w;
+            if (axis == 1) return h;
+            if (axis == 2) return dims == 4 ? d : c;
+            if (axis == 3) return c;
+            throw new ArgumentOutOfRangeException(nameof(axis));
         }
 
         public void Conv3x3(NcnnTensorBuffer input, ComputeBuffer weightsOihw, ComputeBuffer biasO, int outC, int stride, int pad, int activationType, float activationParam, NcnnTensorBuffer output)

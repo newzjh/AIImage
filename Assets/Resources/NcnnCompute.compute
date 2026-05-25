@@ -44,6 +44,8 @@
 #pragma kernel NcnnLayerNorm2D
 #pragma kernel NcnnSoftmax2D
 #pragma kernel NcnnEmbed
+#pragma kernel NcnnPermute
+#pragma kernel NcnnSlice
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -888,6 +890,33 @@ int _EmbedNumOutput;
 int _EmbedInputDim;
 int _EmbedBiasTerm;
 
+StructuredBuffer<float> _PermuteIn;
+RWStructuredBuffer<float> _PermuteOut;
+int _PermuteDims;
+int _PermuteInW;
+int _PermuteInH;
+int _PermuteInD;
+int _PermuteInC;
+int _PermuteOutW;
+int _PermuteOutH;
+int _PermuteOutD;
+int _PermuteOutC;
+int4 _PermuteAxes;
+
+StructuredBuffer<float> _SliceIn;
+RWStructuredBuffer<float> _SliceOut;
+int _SliceDims;
+int _SliceInW;
+int _SliceInH;
+int _SliceInD;
+int _SliceInC;
+int _SliceAxis;
+int _SliceBegin;
+int _SliceOutW;
+int _SliceOutH;
+int _SliceOutD;
+int _SliceOutC;
+
 static int Reflect101(int x, int len)
 {
     if (len <= 1) return 0;
@@ -1337,62 +1366,267 @@ void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThr
     }
 }
 
-[numthreads(8,8,1)]
-void NcnnMatMul2D(uint3 id : SV_DispatchThreadID)
+[numthreads(256,1,1)]
+void NcnnPermute(uint3 id : SV_DispatchThreadID)
 {
-    int j = (int)id.x;
-    int i = (int)id.y;
-    if (i < 0 || j < 0 || i >= _MatM || j >= _MatN) return;
-    float sum = 0.0;
-    int aBase = i * _MatK;
-    for (int k = 0; k < _MatK; k++)
+    uint idx = _BaseIndex + id.x;
+    int dims = _PermuteDims;
+
+    if (dims == 2)
     {
-        float a = _MatA[aBase + k];
-        float b;
-        if (_MatTransB != 0)
-            b = _MatB[j * _MatK + k];
-        else
-            b = _MatB[k * _MatN + j];
-        sum += a * b;
+        uint total = (uint)(_PermuteOutW * _PermuteOutH);
+        if (idx >= total) return;
+
+        int ow = (int)(idx % (uint)_PermuteOutW);
+        int oh = (int)(idx / (uint)_PermuteOutW);
+
+        int ax0 = _PermuteAxes.x;
+        int ax1 = _PermuteAxes.y;
+        int inv0 = ax0 == 0 ? 0 : 1;
+        int inv1 = ax0 == 1 ? 0 : 1;
+
+        int out0 = ow;
+        int out1 = oh;
+        int iw = (inv0 == 0 ? out0 : out1);
+        int ih = (inv1 == 0 ? out0 : out1);
+
+        uint inIdx = (uint)(ih * _PermuteInW + iw);
+        _PermuteOut[idx] = _PermuteIn[inIdx];
+        return;
     }
-    _MatOut[i * _MatN + j] = sum;
+
+    if (dims == 3)
+    {
+        uint total = (uint)(_PermuteOutW * _PermuteOutH * _PermuteOutC);
+        if (idx >= total) return;
+
+        int ow = (int)(idx % (uint)_PermuteOutW);
+        uint t1 = idx / (uint)_PermuteOutW;
+        int oh = (int)(t1 % (uint)_PermuteOutH);
+        int oc = (int)(t1 / (uint)_PermuteOutH);
+
+        int ax0 = _PermuteAxes.x;
+        int ax1 = _PermuteAxes.y;
+        int ax2 = _PermuteAxes.z;
+        int inv0 = ax0 == 0 ? 0 : (ax1 == 0 ? 1 : 2);
+        int inv1 = ax0 == 1 ? 0 : (ax1 == 1 ? 1 : 2);
+        int inv2 = ax0 == 2 ? 0 : (ax1 == 2 ? 1 : 2);
+
+        int out0 = ow;
+        int out1 = oh;
+        int out2 = oc;
+        int iw = (inv0 == 0 ? out0 : (inv0 == 1 ? out1 : out2));
+        int ih = (inv1 == 0 ? out0 : (inv1 == 1 ? out1 : out2));
+        int ic = (inv2 == 0 ? out0 : (inv2 == 1 ? out1 : out2));
+
+        uint inIdx = (uint)((ic * _PermuteInH + ih) * _PermuteInW + iw);
+        _PermuteOut[idx] = _PermuteIn[inIdx];
+        return;
+    }
+
+    if (dims == 4)
+    {
+        uint total = (uint)(_PermuteOutW * _PermuteOutH * _PermuteOutD * _PermuteOutC);
+        if (idx >= total) return;
+
+        int ow = (int)(idx % (uint)_PermuteOutW);
+        uint t1 = idx / (uint)_PermuteOutW;
+        int oh = (int)(t1 % (uint)_PermuteOutH);
+        uint t2 = t1 / (uint)_PermuteOutH;
+        int od = (int)(t2 % (uint)_PermuteOutD);
+        int oc = (int)(t2 / (uint)_PermuteOutD);
+
+        int ax0 = _PermuteAxes.x;
+        int ax1 = _PermuteAxes.y;
+        int ax2 = _PermuteAxes.z;
+        int ax3 = _PermuteAxes.w;
+        int inv0 = ax0 == 0 ? 0 : (ax1 == 0 ? 1 : (ax2 == 0 ? 2 : 3));
+        int inv1 = ax0 == 1 ? 0 : (ax1 == 1 ? 1 : (ax2 == 1 ? 2 : 3));
+        int inv2 = ax0 == 2 ? 0 : (ax1 == 2 ? 1 : (ax2 == 2 ? 2 : 3));
+        int inv3 = ax0 == 3 ? 0 : (ax1 == 3 ? 1 : (ax2 == 3 ? 2 : 3));
+
+        int out0 = ow;
+        int out1 = oh;
+        int out2 = od;
+        int out3 = oc;
+
+        int iw = (inv0 == 0 ? out0 : (inv0 == 1 ? out1 : (inv0 == 2 ? out2 : out3)));
+        int ih = (inv1 == 0 ? out0 : (inv1 == 1 ? out1 : (inv1 == 2 ? out2 : out3)));
+        int idd = (inv2 == 0 ? out0 : (inv2 == 1 ? out1 : (inv2 == 2 ? out2 : out3)));
+        int ic = (inv3 == 0 ? out0 : (inv3 == 1 ? out1 : (inv3 == 2 ? out2 : out3)));
+
+        uint inIdx = (uint)((((ic * _PermuteInD + idd) * _PermuteInH + ih) * _PermuteInW) + iw);
+        _PermuteOut[idx] = _PermuteIn[inIdx];
+        return;
+    }
+}
+
+[numthreads(256,1,1)]
+void NcnnSlice(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    int dims = _SliceDims;
+    int ow = _SliceOutW;
+    int oh = _SliceOutH;
+    int od = _SliceOutD;
+    int oc = _SliceOutC;
+    uint total = (uint)(ow * oh * od * oc);
+    if (idx >= total) return;
+
+    int x = (int)(idx % (uint)ow);
+    uint t1 = idx / (uint)ow;
+    int y = (int)(t1 % (uint)oh);
+    uint t2 = t1 / (uint)oh;
+    int z = (int)(t2 % (uint)od);
+    int c = (int)(t2 / (uint)od);
+
+    int ix = x;
+    int iy = y;
+    int iz = z;
+    int ic = c;
+    int begin = _SliceBegin;
+    int axis = _SliceAxis;
+    if (dims == 2)
+    {
+        if (axis == 0) ix = x + begin;
+        else if (axis == 1) iy = y + begin;
+        uint inIdx2 = (uint)(iy * _SliceInW + ix);
+        _SliceOut[idx] = _SliceIn[inIdx2];
+        return;
+    }
+
+    if (dims == 3)
+    {
+        if (axis == 0) ix = x + begin;
+        else if (axis == 1) iy = y + begin;
+        else if (axis == 2) ic = c + begin;
+        uint inIdx3 = (uint)((ic * _SliceInH + iy) * _SliceInW + ix);
+        _SliceOut[idx] = _SliceIn[inIdx3];
+        return;
+    }
+
+    // dims == 4
+    if (axis == 0) ix = x + begin;
+    else if (axis == 1) iy = y + begin;
+    else if (axis == 2) iz = z + begin;
+    else if (axis == 3) ic = c + begin;
+    uint inIdx4 = (uint)((((ic * _SliceInD + iz) * _SliceInH + iy) * _SliceInW) + ix);
+    _SliceOut[idx] = _SliceIn[inIdx4];
+}
+
+// NOTE: GroupMemoryBarrierWithGroupSync requires all threads in a group to reach the barrier in uniform control flow.
+// Unity compute compilation is conservative; keep loop bounds constant and avoid early returns before barriers.
+#define TILE 8
+#define MATK_MAX 2048
+groupshared float As[TILE][TILE];
+groupshared float Bs[TILE][TILE];
+
+
+[numthreads(8,8,1)]
+void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int lx = (int)groupThreadId.x;
+    int ly = (int)groupThreadId.y;
+    int row = (int)groupId.y * TILE + ly;
+    int col = (int)groupId.x * TILE + lx;
+    bool valid = (row < _MatM && col < _MatN);
+
+    float acc = 0.0;
+    for (int k0 = 0; k0 < MATK_MAX; k0 += TILE)
+    {
+        int ak = k0 + lx;
+        int bk = k0 + ly;
+        float a = 0.0;
+        float b = 0.0;
+
+        if (valid && ak < _MatK)
+            a = _MatA[row * _MatK + ak];
+        if (bk < _MatK && col < _MatN)
+        {
+            if (_MatTransB != 0)
+                b = _MatB[col * _MatK + bk];
+            else
+                b = _MatB[bk * _MatN + col];
+        }
+
+        As[ly][lx] = a;
+        Bs[ly][lx] = b;
+        GroupMemoryBarrierWithGroupSync();
+
+        [unroll]
+        for (int k1 = 0; k1 < TILE; k1++)
+        {
+            int kk = k0 + k1;
+            if (kk < _MatK)
+                acc += As[ly][k1] * Bs[k1][lx];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (valid)
+        _MatOut[row * _MatN + col] = acc;
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2D(uint3 id : SV_DispatchThreadID)
+void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    int j = (int)id.x;
-    int i = (int)id.y;
-    if (i < 0 || j < 0 || i >= _MatM || j >= _MatN) return;
+    int lx = (int)groupThreadId.x;
+    int ly = (int)groupThreadId.y;
+    int row = (int)groupId.y * TILE + ly;
+    int col = (int)groupId.x * TILE + lx;
+    bool valid = (row < _MatM && col < _MatN);
 
     float sum = 0.0;
-    if (_MatUseC != 0)
+    if (valid && _MatUseC != 0)
     {
         if (_MatBroadcastTypeC == 0)
             sum = _MatC[0];
         else if (_MatBroadcastTypeC == 1)
-            sum = _MatC[i];
+            sum = _MatC[row];
         else if (_MatBroadcastTypeC == 3)
-            sum = _MatC[i * _MatN + j];
+            sum = _MatC[row * _MatN + col];
         else if (_MatBroadcastTypeC == 4)
-            sum = _MatC[j];
+            sum = _MatC[col];
         sum *= _MatBeta;
     }
 
-    int aBase = i * _MatK;
     float acc = 0.0;
-    for (int k = 0; k < _MatK; k++)
+    for (int k0 = 0; k0 < MATK_MAX; k0 += TILE)
     {
-        float a = _MatA[aBase + k];
-        float b;
-        if (_MatTransB != 0)
-            b = _MatB[j * _MatK + k];
-        else
-            b = _MatB[k * _MatN + j];
-        acc += a * b;
+        int ak = k0 + lx;
+        int bk = k0 + ly;
+        float a = 0.0;
+        float b = 0.0;
+
+        if (valid && ak < _MatK)
+            a = _MatA[row * _MatK + ak];
+        if (bk < _MatK && col < _MatN)
+        {
+            if (_MatTransB != 0)
+                b = _MatB[col * _MatK + bk];
+            else
+                b = _MatB[bk * _MatN + col];
+        }
+
+        As[ly][lx] = a;
+        Bs[ly][lx] = b;
+        GroupMemoryBarrierWithGroupSync();
+
+        [unroll]
+        for (int k1 = 0; k1 < TILE; k1++)
+        {
+            int kk = k0 + k1;
+            if (kk < _MatK)
+                acc += As[ly][k1] * Bs[k1][lx];
+        }
+        GroupMemoryBarrierWithGroupSync();
     }
-    sum += acc * _MatAlpha;
-    _MatOut[i * _MatN + j] = sum;
+
+    if (valid)
+    {
+        sum += acc * _MatAlpha;
+        _MatOut[row * _MatN + col] = sum;
+    }
 }
 
 [numthreads(8,8,1)]
