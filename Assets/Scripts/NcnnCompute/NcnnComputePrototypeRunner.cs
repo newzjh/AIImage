@@ -77,6 +77,7 @@ namespace NcnnCompute
                     "Padding","Pooling",
                     "InnerProduct",
                     "MatMul","Gemm",
+                    "MultiHeadAttention",
                     "LayerNorm","GroupNorm",
                     "Embed",
                     "Reduction",
@@ -616,7 +617,81 @@ namespace NcnnCompute
             SelfTestTile(ops);
             SelfTestReduceAll(ops);
             SelfTestGroupNorm(ops);
+            SelfTestMhaAttention(ops);
             SelfTestReshapeExpandDims();
+        }
+
+        private static void SelfTestMhaAttention(NcnnOps ops)
+        {
+            const int srcLen = 3;
+            const int dstLen = 4;
+            const int embedDim = 8;
+            const int numHeads = 2;
+            const float scale = 0.125f;
+            const int headDim = embedDim / numHeads;
+
+            var q = new float[srcLen * embedDim];
+            var k = new float[dstLen * embedDim];
+            var v = new float[dstLen * embedDim];
+            for (var i = 0; i < q.Length; i++) q[i] = (i * 13 % 17) * 0.07f - 0.5f;
+            for (var i = 0; i < k.Length; i++) k[i] = (i * 7 % 19) * 0.05f - 0.4f;
+            for (var i = 0; i < v.Length; i++) v[i] = (i * 11 % 23) * 0.03f - 0.3f;
+
+            var refOut = new float[srcLen * embedDim];
+            for (var qi = 0; qi < srcLen; qi++)
+            {
+                for (var h = 0; h < numHeads; h++)
+                {
+                    var scores = new float[dstLen];
+                    var maxv = float.NegativeInfinity;
+                    for (var j = 0; j < dstLen; j++)
+                    {
+                        var s = 0f;
+                        var qBase = qi * embedDim + h * headDim;
+                        var kBase = j * embedDim + h * headDim;
+                        for (var d = 0; d < headDim; d++)
+                            s += q[qBase + d] * k[kBase + d];
+                        s *= scale;
+                        scores[j] = s;
+                        if (s > maxv) maxv = s;
+                    }
+                    var sum = 0f;
+                    for (var j = 0; j < dstLen; j++)
+                    {
+                        var e = Mathf.Exp(scores[j] - maxv);
+                        scores[j] = e;
+                        sum += e;
+                    }
+                    var invSum = 1f / Mathf.Max(sum, 1e-20f);
+
+                    for (var d = 0; d < headDim; d++)
+                    {
+                        var acc = 0f;
+                        for (var j = 0; j < dstLen; j++)
+                        {
+                            var w = scores[j] * invSum;
+                            acc += w * v[j * embedDim + h * headDim + d];
+                        }
+                        refOut[qi * embedDim + h * headDim + d] = acc;
+                    }
+                }
+            }
+
+            using var bufQ = new ComputeBuffer(q.Length, sizeof(float), ComputeBufferType.Structured);
+            using var bufK = new ComputeBuffer(k.Length, sizeof(float), ComputeBufferType.Structured);
+            using var bufV = new ComputeBuffer(v.Length, sizeof(float), ComputeBufferType.Structured);
+            using var bufOut = new ComputeBuffer(refOut.Length, sizeof(float), ComputeBufferType.Structured);
+            bufQ.SetData(q);
+            bufK.SetData(k);
+            bufV.SetData(v);
+            ops.MhaAttention(bufQ, bufK, bufV, srcLen, dstLen, embedDim, numHeads, scale, bufOut);
+            var got = new float[refOut.Length];
+            bufOut.GetData(got);
+
+            var maxErr = 0f;
+            for (var i = 0; i < got.Length; i++)
+                maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refOut[i]));
+            Debug.Log("[SELFTEST] MhaAttention maxErr=" + maxErr);
         }
 
         private static void SelfTestMatMul(NcnnOps ops)

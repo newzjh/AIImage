@@ -296,6 +296,8 @@ namespace NcnnCompute
         private readonly int _kGroupNormStats;
         private readonly int _kGroupNormApply;
         private readonly int _kTouchU32;
+        private readonly int _kInnerProduct2D;
+        private readonly int _kMhaAttention;
 
         public NcnnOps()
         {
@@ -357,6 +359,8 @@ namespace NcnnCompute
             _kGroupNormStats = _cs.FindKernel("NcnnGroupNormStats");
             _kGroupNormApply = _cs.FindKernel("NcnnGroupNormApply");
             _kTouchU32 = _cs.FindKernel("NcnnTouchU32");
+            _kInnerProduct2D = _cs.FindKernel("NcnnInnerProduct2D");
+            _kMhaAttention = _cs.FindKernel("NcnnMhaAttention");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -1051,6 +1055,56 @@ namespace NcnnCompute
             _cs.SetBuffer(_kSigmoidBuf, "_BufA", input);
             _cs.SetBuffer(_kSigmoidBuf, "_BufOut", output);
             Dispatch1D(_kSigmoidBuf, total, 256);
+        }
+
+        public void InnerProduct2D(ComputeBuffer input, int rows, int inFeatures, ComputeBuffer weightsOxi, ComputeBuffer biasO, int outFeatures, ComputeBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (weightsOxi == null) throw new ArgumentNullException(nameof(weightsOxi));
+            if (biasO == null) throw new ArgumentNullException(nameof(biasO));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (rows < 0) throw new ArgumentOutOfRangeException(nameof(rows));
+            if (inFeatures <= 0) throw new ArgumentOutOfRangeException(nameof(inFeatures));
+            if (outFeatures <= 0) throw new ArgumentOutOfRangeException(nameof(outFeatures));
+            if (rows == 0) return;
+
+            _cs.SetInt("_IP2Rows", rows);
+            _cs.SetInt("_IP2InFeatures", inFeatures);
+            _cs.SetInt("_IP2OutFeatures", outFeatures);
+            _cs.SetBuffer(_kInnerProduct2D, "_IP2In", input);
+            _cs.SetBuffer(_kInnerProduct2D, "_IP2W", weightsOxi);
+            _cs.SetBuffer(_kInnerProduct2D, "_IP2B", biasO);
+            _cs.SetBuffer(_kInnerProduct2D, "_IP2Out", output);
+
+            var gx = (outFeatures + 7) / 8;
+            var gy = (rows + 7) / 8;
+            _cs.Dispatch(_kInnerProduct2D, gx, gy, 1);
+        }
+
+        public void MhaAttention(ComputeBuffer q, ComputeBuffer k, ComputeBuffer v, int srcLen, int dstLen, int embedDim, int numHeads, float scale, ComputeBuffer outContext)
+        {
+            if (q == null) throw new ArgumentNullException(nameof(q));
+            if (k == null) throw new ArgumentNullException(nameof(k));
+            if (v == null) throw new ArgumentNullException(nameof(v));
+            if (outContext == null) throw new ArgumentNullException(nameof(outContext));
+            if (srcLen <= 0) throw new ArgumentOutOfRangeException(nameof(srcLen));
+            if (dstLen <= 0) throw new ArgumentOutOfRangeException(nameof(dstLen));
+            if (embedDim <= 0) throw new ArgumentOutOfRangeException(nameof(embedDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if ((embedDim % numHeads) != 0) throw new ArgumentOutOfRangeException(nameof(embedDim), "embedDim must be divisible by numHeads");
+
+            _cs.SetInt("_MhaSrcLen", srcLen);
+            _cs.SetInt("_MhaDstLen", dstLen);
+            _cs.SetInt("_MhaEmbedDim", embedDim);
+            _cs.SetInt("_MhaNumHeads", numHeads);
+            _cs.SetInt("_MhaHeadDim", embedDim / numHeads);
+            _cs.SetFloat("_MhaScale", scale);
+            _cs.SetBuffer(_kMhaAttention, "_MhaQ", q);
+            _cs.SetBuffer(_kMhaAttention, "_MhaK", k);
+            _cs.SetBuffer(_kMhaAttention, "_MhaV", v);
+            _cs.SetBuffer(_kMhaAttention, "_MhaOut", outContext);
+
+            _cs.Dispatch(_kMhaAttention, srcLen, numHeads, 1);
         }
 
         public void Pack4ToBufferCHW(RenderTexture input, int w, int h, int c, ComputeBuffer output)

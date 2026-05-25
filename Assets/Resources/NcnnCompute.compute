@@ -56,6 +56,8 @@
 #pragma kernel NcnnBinaryOpBuf
 #pragma kernel NcnnUnaryOpBuf
 #pragma kernel NcnnSigmoidBuf
+#pragma kernel NcnnInnerProduct2D
+#pragma kernel NcnnMhaAttention
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -87,6 +89,9 @@ int _UnaryOpType;
 int _BinaryOpType;
 int _BinaryWithScalar;
 float _BinaryScalar;
+
+groupshared float red0[256];
+groupshared float red1[256];
 
 [numthreads(256,1,1)]
 void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
@@ -206,17 +211,10 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
             _Conv3x3Pack4_s_in[loadIndex] = v;
         }
 
-        if (tid == 0)
+        int wbase = ((op * _InPacks + ip0) * 9 * 4);
+        for (int wi = tid; wi < 36; wi += 64)
         {
-            int wbase = ((op * _InPacks + ip0) * 9 * 4);
-            [unroll]
-            for (int k = 0; k < 9; k++)
-            {
-                _Conv3x3Pack4_s_w[k * 4 + 0] = _ConvW4[wbase + k * 4 + 0];
-                _Conv3x3Pack4_s_w[k * 4 + 1] = _ConvW4[wbase + k * 4 + 1];
-                _Conv3x3Pack4_s_w[k * 4 + 2] = _ConvW4[wbase + k * 4 + 2];
-                _Conv3x3Pack4_s_w[k * 4 + 3] = _ConvW4[wbase + k * 4 + 3];
-            }
+            _Conv3x3Pack4_s_w[wi] = _ConvW4[wbase + wi];
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -463,6 +461,14 @@ RWStructuredBuffer<float> _IPOut;
 int _IPInFeatures;
 int _IPOutFeatures;
 
+StructuredBuffer<float> _IP2In;
+StructuredBuffer<float> _IP2W;
+StructuredBuffer<float> _IP2B;
+RWStructuredBuffer<float> _IP2Out;
+int _IP2Rows;
+int _IP2InFeatures;
+int _IP2OutFeatures;
+
 [numthreads(64,1,1)]
 void NcnnInnerProduct(uint3 id : SV_DispatchThreadID)
 {
@@ -473,6 +479,109 @@ void NcnnInnerProduct(uint3 id : SV_DispatchThreadID)
     for (int i = 0; i < _IPInFeatures; i++)
         sum += _IPW[wbase + (uint)i] * _IPIn[i];
     _IPOut[o] = sum;
+}
+
+[numthreads(8,8,1)]
+void NcnnInnerProduct2D(uint3 id : SV_DispatchThreadID)
+{
+    int o = (int)id.x;
+    int r = (int)id.y;
+    if (o < 0 || r < 0) return;
+    if (o >= _IP2OutFeatures || r >= _IP2Rows) return;
+    float sum = _IP2B[o];
+    uint inBase = (uint)r * (uint)_IP2InFeatures;
+    uint wBase = (uint)o * (uint)_IP2InFeatures;
+    for (int i = 0; i < _IP2InFeatures; i++)
+    {
+        sum += _IP2In[inBase + (uint)i] * _IP2W[wBase + (uint)i];
+    }
+    _IP2Out[(uint)r * (uint)_IP2OutFeatures + (uint)o] = sum;
+}
+
+StructuredBuffer<float> _MhaQ;
+StructuredBuffer<float> _MhaK;
+StructuredBuffer<float> _MhaV;
+RWStructuredBuffer<float> _MhaOut;
+int _MhaSrcLen;
+int _MhaDstLen;
+int _MhaEmbedDim;
+int _MhaNumHeads;
+int _MhaHeadDim;
+float _MhaScale;
+groupshared float _MhaScores[4096];
+
+[numthreads(64,1,1)]
+void NcnnMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int q = (int)groupId.x;
+    int head = (int)groupId.y;
+    uint tid = groupThreadId.x;
+    if (q < 0 || head < 0) return;
+    if (q >= _MhaSrcLen || head >= _MhaNumHeads) return;
+    int dst = _MhaDstLen;
+    if (dst <= 0 || dst > 4096) return;
+
+    int headDim = _MhaHeadDim;
+    int embedDim = _MhaEmbedDim;
+    int qBase = q * embedDim + head * headDim;
+    int kHeadBase = head * headDim;
+
+    float localMax = -3.402823466e+38;
+    for (int j = (int)tid; j < dst; j += 64)
+    {
+        int kBase = j * embedDim + kHeadBase;
+        float s = 0.0;
+        [unroll]
+        for (int l = 0; l < 64; l++)
+        {
+            if (l >= headDim) break;
+            s += _MhaQ[qBase + l] * _MhaK[kBase + l];
+        }
+        s *= _MhaScale;
+        _MhaScores[j] = s;
+        localMax = max(localMax, s);
+    }
+
+    red0[tid] = localMax;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll]
+    for (uint stM0 = 32u; stM0 > 0u; stM0 >>= 1u)
+    {
+        if (tid < stM0)
+            red0[tid] = max(red0[tid], red0[tid + stM0]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float m = red0[0];
+
+    float localSum = 0.0;
+    for (int j = (int)tid; j < dst; j += 64)
+    {
+        float w = exp(_MhaScores[j] - m);
+        _MhaScores[j] = w;
+        localSum += w;
+    }
+    red0[tid] = localSum;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll]
+    for (uint stM1 = 32u; stM1 > 0u; stM1 >>= 1u)
+    {
+        if (tid < stM1)
+            red0[tid] += red0[tid + stM1];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float invSum = 1.0 / max(red0[0], 1e-20);
+
+    if ((int)tid >= headDim)
+        return;
+
+    float outv = 0.0;
+    int vHeadBase = head * headDim + (int)tid;
+    for (int j = 0; j < dst; j++)
+    {
+        float w = _MhaScores[j] * invSum;
+        outv += w * _MhaV[j * embedDim + vHeadBase];
+    }
+    _MhaOut[q * embedDim + head * headDim + (int)tid] = outv;
 }
 
 StructuredBuffer<float> _FillIn;
@@ -1707,8 +1816,7 @@ void NcnnMulScalarBuf(uint3 id : SV_DispatchThreadID)
     _MulOut[idx] = _MulIn[idx] * _MulK;
 }
 
-groupshared float red0[256];
-groupshared float red1[256];
+
 [numthreads(256,1,1)]
 void NcnnGroupNormStats(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
