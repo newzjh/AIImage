@@ -599,6 +599,336 @@ namespace NcnnCompute
             }
         }
 
+        public static void RunSdUnetMhaFromUI()
+        {
+            try
+            {
+                var root = Directory.GetParent(Application.dataPath)?.FullName ?? "";
+                var baseDir = Path.Combine(root, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets");
+                var paramPath = Path.Combine(baseDir, "UNetModel-base-MHA-fp16.param");
+                var binPath = ResolveSdBinPath(baseDir, "UNetModel-base-MHA-fp16.param");
+                if (!File.Exists(paramPath) || !File.Exists(binPath))
+                {
+                    Debug.Log("[SD] UNet MHA missing files: param=" + (File.Exists(paramPath) ? 1 : 0) + " bin=" + (File.Exists(binPath) ? 1 : 0));
+                    Debug.Log("[SD] paramPath=" + paramPath);
+                    Debug.Log("[SD] binPath=" + binPath);
+                    return;
+                }
+
+                var model = NcnnParamParser.Parse(File.ReadAllText(paramPath));
+                var mhaLayer = model.layers.FirstOrDefault(l => string.Equals(l.type, "MultiHeadAttention", StringComparison.Ordinal));
+                if (mhaLayer == null)
+                {
+                    Debug.Log("[SD] UNet MHA not found in param");
+                    return;
+                }
+
+                using var fs = File.OpenRead(binPath);
+                using var br = new NcnnBinReader(fs);
+
+                var ops = new NcnnOps();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var found = false;
+
+                for (var i = 0; i < model.layers.Count; i++)
+                {
+                    var l = model.layers[i];
+
+                    if (ReferenceEquals(l, mhaLayer))
+                    {
+                        var embedDim = l.GetInt(0, 0);
+                        var numHeads = l.GetInt(1, 1);
+                        var weightDataSize = l.GetInt(2, 0);
+                        var kdim = l.GetInt(3, embedDim);
+                        var vdim = l.GetInt(4, embedDim);
+                        var scale = l.GetFloat(6, 1f / Mathf.Sqrt(Mathf.Max(1, embedDim / Mathf.Max(1, numHeads))));
+                        var qdim = embedDim > 0 ? (weightDataSize / Math.Max(1, embedDim)) : 0;
+
+                        var qW = br.ReadNcnnMatAsFloat32(embedDim * qdim, 0, 0, 0, 0);
+                        var qB = br.ReadNcnnMatAsFloat32(embedDim, 0, 0, 0, 1);
+                        var kW = br.ReadNcnnMatAsFloat32(embedDim * kdim, 0, 0, 0, 0);
+                        var kB = br.ReadNcnnMatAsFloat32(embedDim, 0, 0, 0, 1);
+                        var vW = br.ReadNcnnMatAsFloat32(embedDim * vdim, 0, 0, 0, 0);
+                        var vB = br.ReadNcnnMatAsFloat32(embedDim, 0, 0, 0, 1);
+                        var oW = br.ReadNcnnMatAsFloat32(qdim * embedDim, 0, 0, 0, 0);
+                        var oB = br.ReadNcnnMatAsFloat32(qdim, 0, 0, 0, 1);
+
+                        const int srcLen = 16;
+                        const int dstLen = 16;
+                        var q = new float[srcLen * qdim];
+                        var k = new float[dstLen * kdim];
+                        var v = new float[dstLen * vdim];
+                        for (var t = 0; t < q.Length; t++) q[t] = (t * 13 % 17) * 0.07f - 0.5f;
+                        for (var t = 0; t < k.Length; t++) k[t] = (t * 7 % 19) * 0.05f - 0.4f;
+                        for (var t = 0; t < v.Length; t++) v[t] = (t * 11 % 23) * 0.03f - 0.3f;
+
+                        var refOut = CpuMhaFull(q, k, v, srcLen, dstLen, embedDim, numHeads, qdim, kdim, vdim, scale, qW, qB, kW, kB, vW, vB, oW, oB);
+
+                        using var bufQ = new ComputeBuffer(q.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufK = new ComputeBuffer(k.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufV = new ComputeBuffer(v.Length, sizeof(float), ComputeBufferType.Structured);
+                        bufQ.SetData(q);
+                        bufK.SetData(k);
+                        bufV.SetData(v);
+
+                        using var bufQW = new ComputeBuffer(qW.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufQB = new ComputeBuffer(qB.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufKW = new ComputeBuffer(kW.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufKB = new ComputeBuffer(kB.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufVW = new ComputeBuffer(vW.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufVB = new ComputeBuffer(vB.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufOW = new ComputeBuffer(oW.Length, sizeof(float), ComputeBufferType.Structured);
+                        using var bufOB = new ComputeBuffer(oB.Length, sizeof(float), ComputeBufferType.Structured);
+                        bufQW.SetData(qW);
+                        bufQB.SetData(qB);
+                        bufKW.SetData(kW);
+                        bufKB.SetData(kB);
+                        bufVW.SetData(vW);
+                        bufVB.SetData(vB);
+                        bufOW.SetData(oW);
+                        bufOB.SetData(oB);
+
+                        using var qAff = new ComputeBuffer(srcLen * embedDim, sizeof(float), ComputeBufferType.Structured);
+                        using var kAff = new ComputeBuffer(dstLen * embedDim, sizeof(float), ComputeBufferType.Structured);
+                        using var vAff = new ComputeBuffer(dstLen * embedDim, sizeof(float), ComputeBufferType.Structured);
+                        ops.InnerProduct2D(bufQ, srcLen, qdim, bufQW, bufQB, embedDim, qAff);
+                        ops.InnerProduct2D(bufK, dstLen, kdim, bufKW, bufKB, embedDim, kAff);
+                        ops.InnerProduct2D(bufV, dstLen, vdim, bufVW, bufVB, embedDim, vAff);
+
+                        using var qAffScaled = new ComputeBuffer(srcLen * embedDim, sizeof(float), ComputeBufferType.Structured);
+                        ops.BinaryOpScalarBuf(qAff, scale, qAff.count, 2, qAffScaled);
+
+                        using var ctx = new ComputeBuffer(srcLen * embedDim, sizeof(float), ComputeBufferType.Structured);
+                        ops.MhaAttention(qAffScaled, kAff, vAff, srcLen, dstLen, embedDim, numHeads, 1f, ctx);
+
+                        using var outBuf = new ComputeBuffer(srcLen * qdim, sizeof(float), ComputeBufferType.Structured);
+                        ops.InnerProduct2D(ctx, srcLen, embedDim, bufOW, bufOB, qdim, outBuf);
+
+                        var got = new float[refOut.Length];
+                        outBuf.GetData(got);
+
+                        var maxErr = 0f;
+                        for (var t = 0; t < got.Length; t++)
+                            maxErr = Mathf.Max(maxErr, Mathf.Abs(got[t] - refOut[t]));
+
+                        Debug.Log("[SD] UNet MHA ok: layer=" + l.name + " embedDim=" + embedDim + " heads=" + numHeads + " qdim=" + qdim + " kdim=" + kdim + " vdim=" + vdim + " srcLen=" + srcLen + " dstLen=" + dstLen + " maxErr=" + maxErr.ToString("0.########", System.Globalization.CultureInfo.InvariantCulture) + " ms=" + sw.ElapsedMilliseconds);
+                        found = true;
+                        break;
+                    }
+
+                    SkipLayerWeights(br, l);
+                }
+
+                if (!found)
+                    Debug.Log("[SD] UNet MHA failed: could not locate weights at runtime");
+            }
+            catch (Exception e)
+            {
+                Debug.Log("[SD] UNet MHA failed: " + e);
+            }
+        }
+
+        private static string ResolveSdBinPath(string baseDir, string paramFileName)
+        {
+            var baseName0 = Path.GetFileNameWithoutExtension(paramFileName);
+            var candidates = new List<string>(8) { baseName0 };
+            if (baseName0.Contains("-base-", StringComparison.Ordinal))
+                candidates.Add(baseName0.Replace("-base-", "-", StringComparison.Ordinal));
+            if (baseName0.Contains("-base", StringComparison.Ordinal))
+                candidates.Add(baseName0.Replace("-base", "", StringComparison.Ordinal));
+            if (baseName0.Contains("UNetModel-base-", StringComparison.Ordinal))
+                candidates.Add(baseName0.Replace("UNetModel-base-", "UNetModel-", StringComparison.Ordinal));
+            if (baseName0.Contains("AutoencoderKL-base-", StringComparison.Ordinal))
+                candidates.Add(baseName0.Replace("AutoencoderKL-base-", "AutoencoderKL-", StringComparison.Ordinal));
+
+            for (var i = 0; i < candidates.Count; i++)
+            {
+                var p = Path.Combine(baseDir, candidates[i] + ".bin");
+                if (File.Exists(p))
+                    return p;
+            }
+            return Path.Combine(baseDir, baseName0 + ".bin");
+        }
+
+        private static void SkipLayerWeights(NcnnBinReader br, NcnnParamModel.Layer l)
+        {
+            if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
+            {
+                var numOut = l.GetInt(0, 0);
+                var biasTerm = l.GetInt(5, 0) != 0;
+                var weightSize = l.GetInt(6, 0);
+                br.SkipNcnnArray(weightSize, 0);
+                if (biasTerm)
+                    br.SkipNcnnArray(numOut, 1);
+                return;
+            }
+
+            if (string.Equals(l.type, "InnerProduct", StringComparison.Ordinal))
+            {
+                var numOut = l.GetInt(0, 0);
+                var biasTerm = l.GetInt(1, 0) != 0;
+                var weightSize = l.GetInt(2, 0);
+                br.SkipNcnnArray(weightSize, 0);
+                if (biasTerm)
+                    br.SkipNcnnArray(numOut, 1);
+                return;
+            }
+
+            if (string.Equals(l.type, "LayerNorm", StringComparison.Ordinal))
+            {
+                var affineSize = l.GetInt(0, 0);
+                var affine = l.GetInt(2, 1) != 0;
+                if (affine)
+                {
+                    br.SkipNcnnArray(affineSize, 1);
+                    br.SkipNcnnArray(affineSize, 1);
+                }
+                return;
+            }
+
+            if (string.Equals(l.type, "GroupNorm", StringComparison.Ordinal))
+            {
+                var channels = l.GetInt(1, 0);
+                var affine = l.GetInt(3, 1) != 0;
+                if (affine)
+                {
+                    br.SkipNcnnArray(channels, 1);
+                    br.SkipNcnnArray(channels, 1);
+                }
+                return;
+            }
+
+            if (string.Equals(l.type, "Embed", StringComparison.Ordinal))
+            {
+                var numOut = l.GetInt(0, 0);
+                var biasTerm = l.GetInt(2, 0) != 0;
+                var weightSize = l.GetInt(3, 0);
+                br.SkipNcnnArray(weightSize, 0);
+                if (biasTerm)
+                    br.SkipNcnnArray(numOut, 1);
+                return;
+            }
+
+            if (string.Equals(l.type, "MultiHeadAttention", StringComparison.Ordinal))
+            {
+                var embedDim = l.GetInt(0, 0);
+                var weightSize = l.GetInt(2, 0);
+                var kdim = l.GetInt(3, embedDim);
+                var vdim = l.GetInt(4, embedDim);
+                var qdim = embedDim > 0 ? (weightSize / Math.Max(1, embedDim)) : 0;
+
+                br.SkipNcnnArray(embedDim * qdim, 0);
+                br.SkipNcnnArray(embedDim, 1);
+                br.SkipNcnnArray(embedDim * kdim, 0);
+                br.SkipNcnnArray(embedDim, 1);
+                br.SkipNcnnArray(embedDim * vdim, 0);
+                br.SkipNcnnArray(embedDim, 1);
+                br.SkipNcnnArray(qdim * embedDim, 0);
+                br.SkipNcnnArray(qdim, 1);
+            }
+        }
+
+        private static float[] CpuMhaFull(
+            float[] q, float[] k, float[] v,
+            int srcLen, int dstLen,
+            int embedDim, int numHeads,
+            int qdim, int kdim, int vdim,
+            float scale,
+            float[] qW, float[] qB,
+            float[] kW, float[] kB,
+            float[] vW, float[] vB,
+            float[] oW, float[] oB)
+        {
+            var qAff = new float[srcLen * embedDim];
+            var kAff = new float[dstLen * embedDim];
+            var vAff = new float[dstLen * embedDim];
+
+            for (var r = 0; r < srcLen; r++)
+                for (var o = 0; o < embedDim; o++)
+                {
+                    var sum = qB[o];
+                    var wBase = o * qdim;
+                    var inBase = r * qdim;
+                    for (var i = 0; i < qdim; i++) sum += q[inBase + i] * qW[wBase + i];
+                    qAff[r * embedDim + o] = sum * scale;
+                }
+
+            for (var r = 0; r < dstLen; r++)
+                for (var o = 0; o < embedDim; o++)
+                {
+                    var sum = kB[o];
+                    var wBase = o * kdim;
+                    var inBase = r * kdim;
+                    for (var i = 0; i < kdim; i++) sum += k[inBase + i] * kW[wBase + i];
+                    kAff[r * embedDim + o] = sum;
+                }
+
+            for (var r = 0; r < dstLen; r++)
+                for (var o = 0; o < embedDim; o++)
+                {
+                    var sum = vB[o];
+                    var wBase = o * vdim;
+                    var inBase = r * vdim;
+                    for (var i = 0; i < vdim; i++) sum += v[inBase + i] * vW[wBase + i];
+                    vAff[r * embedDim + o] = sum;
+                }
+
+            var headDim = embedDim / numHeads;
+            var ctx = new float[srcLen * embedDim];
+            var scores = new float[dstLen];
+
+            for (var qi = 0; qi < srcLen; qi++)
+            {
+                for (var h = 0; h < numHeads; h++)
+                {
+                    var maxv = float.NegativeInfinity;
+                    for (var j = 0; j < dstLen; j++)
+                    {
+                        var s = 0f;
+                        var qBase = qi * embedDim + h * headDim;
+                        var kBase = j * embedDim + h * headDim;
+                        for (var d = 0; d < headDim; d++)
+                            s += qAff[qBase + d] * kAff[kBase + d];
+                        scores[j] = s;
+                        if (s > maxv) maxv = s;
+                    }
+
+                    var sum = 0f;
+                    for (var j = 0; j < dstLen; j++)
+                    {
+                        var e = Mathf.Exp(scores[j] - maxv);
+                        scores[j] = e;
+                        sum += e;
+                    }
+                    var invSum = 1f / Mathf.Max(sum, 1e-20f);
+
+                    for (var d = 0; d < headDim; d++)
+                    {
+                        var acc = 0f;
+                        for (var j = 0; j < dstLen; j++)
+                        {
+                            var w = scores[j] * invSum;
+                            acc += w * vAff[j * embedDim + h * headDim + d];
+                        }
+                        ctx[qi * embedDim + h * headDim + d] = acc;
+                    }
+                }
+            }
+
+            var out0 = new float[srcLen * qdim];
+            for (var r = 0; r < srcLen; r++)
+                for (var o = 0; o < qdim; o++)
+                {
+                    var sum = oB[o];
+                    var wBase = o * embedDim;
+                    var inBase = r * embedDim;
+                    for (var i = 0; i < embedDim; i++) sum += ctx[inBase + i] * oW[wBase + i];
+                    out0[r * qdim + o] = sum;
+                }
+
+            return out0;
+        }
+
         public void RunSelfTests()
         {
             RunBufferOpsSelfTest();
@@ -618,7 +948,43 @@ namespace NcnnCompute
             SelfTestReduceAll(ops);
             SelfTestGroupNorm(ops);
             SelfTestMhaAttention(ops);
+            SelfTestSwishGeluBuf(ops);
             SelfTestReshapeExpandDims();
+        }
+
+        private static void SelfTestSwishGeluBuf(NcnnOps ops)
+        {
+            const int n = 256;
+            var x = new float[n];
+            for (var i = 0; i < n; i++) x[i] = (i - 128) * 0.01f;
+
+            var refSwish = new float[n];
+            var refGelu = new float[n];
+            for (var i = 0; i < n; i++)
+            {
+                var v = x[i];
+                var s = 1f / (1f + Mathf.Exp(-v));
+                refSwish[i] = v * s;
+                var t = 0.7978845608f * (v + 0.044715f * v * v * v);
+                refGelu[i] = 0.5f * v * (1f + (float)Math.Tanh(t));
+            }
+
+            using var bufIn = new ComputeBuffer(n, sizeof(float), ComputeBufferType.Structured);
+            using var bufOut = new ComputeBuffer(n, sizeof(float), ComputeBufferType.Structured);
+            bufIn.SetData(x);
+
+            ops.SwishBuf(bufIn, n, bufOut);
+            var got = new float[n];
+            bufOut.GetData(got);
+            var maxErr = 0f;
+            for (var i = 0; i < n; i++) maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refSwish[i]));
+            Debug.Log("[SELFTEST] SwishBuf maxErr=" + maxErr);
+
+            ops.GeluBuf(bufIn, n, bufOut);
+            bufOut.GetData(got);
+            maxErr = 0f;
+            for (var i = 0; i < n; i++) maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refGelu[i]));
+            Debug.Log("[SELFTEST] GeluBuf maxErr=" + maxErr);
         }
 
         private static void SelfTestMhaAttention(NcnnOps ops)

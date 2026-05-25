@@ -250,6 +250,8 @@ namespace NcnnCompute
         private readonly int _kBinaryOpBuf;
         private readonly int _kUnaryOpBuf;
         private readonly int _kSigmoidBuf;
+        private readonly int _kSwishBuf;
+        private readonly int _kGeluBuf;
         private readonly int _kCopyC;
         private readonly int _kInterp2x;
         private readonly int _kBlitTileToDst;
@@ -313,6 +315,8 @@ namespace NcnnCompute
             _kBinaryOpBuf = _cs.FindKernel("NcnnBinaryOpBuf");
             _kUnaryOpBuf = _cs.FindKernel("NcnnUnaryOpBuf");
             _kSigmoidBuf = _cs.FindKernel("NcnnSigmoidBuf");
+            _kSwishBuf = _cs.FindKernel("NcnnSwishBuf");
+            _kGeluBuf = _cs.FindKernel("NcnnGeluBuf");
             _kCopyC = _cs.FindKernel("NcnnCopyC");
             _kInterp2x = _cs.FindKernel("NcnnInterp2x");
             _kBlitTileToDst = _cs.FindKernel("NcnnBlitTileToDst");
@@ -1055,6 +1059,32 @@ namespace NcnnCompute
             _cs.SetBuffer(_kSigmoidBuf, "_BufA", input);
             _cs.SetBuffer(_kSigmoidBuf, "_BufOut", output);
             Dispatch1D(_kSigmoidBuf, total, 256);
+        }
+
+        public void SwishBuf(ComputeBuffer input, int total, ComputeBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (total < 0) throw new ArgumentOutOfRangeException(nameof(total));
+            if (total == 0) return;
+
+            _cs.SetInt("_Total", total);
+            _cs.SetBuffer(_kSwishBuf, "_BufA", input);
+            _cs.SetBuffer(_kSwishBuf, "_BufOut", output);
+            Dispatch1D(_kSwishBuf, total, 256);
+        }
+
+        public void GeluBuf(ComputeBuffer input, int total, ComputeBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (total < 0) throw new ArgumentOutOfRangeException(nameof(total));
+            if (total == 0) return;
+
+            _cs.SetInt("_Total", total);
+            _cs.SetBuffer(_kGeluBuf, "_BufA", input);
+            _cs.SetBuffer(_kGeluBuf, "_BufOut", output);
+            Dispatch1D(_kGeluBuf, total, 256);
         }
 
         public void InnerProduct2D(ComputeBuffer input, int rows, int inFeatures, ComputeBuffer weightsOxi, ComputeBuffer biasO, int outFeatures, ComputeBuffer output)

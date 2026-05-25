@@ -898,6 +898,9 @@ public class MainView : MonoBehaviour
         var sdWeightScanButton = new Button(OnSdWeightScan) { text = "SD权重" };
         row1.Add(sdWeightScanButton);
 
+        var sdUnetMhaButton = new Button(OnSdUnetMha) { text = "SD-UNetMHA" };
+        row1.Add(sdUnetMhaButton);
+
         var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
         row1.Add(browseButton);
 #endif
@@ -1011,6 +1014,19 @@ public class MainView : MonoBehaviour
         catch (Exception e)
         {
             ShowToast("SD 权重失败: " + e.Message);
+        }
+    }
+
+    private void OnSdUnetMha()
+    {
+        try
+        {
+            NcnnCompute.NcnnComputePrototypeRunner.RunSdUnetMhaFromUI();
+            ShowToast("已触发 SD UNet MHA 冒烟测试，查看 Console 输出");
+        }
+        catch (Exception e)
+        {
+            ShowToast("SD UNetMHA 失败: " + e.Message);
         }
     }
 

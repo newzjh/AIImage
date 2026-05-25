@@ -56,6 +56,8 @@
 #pragma kernel NcnnBinaryOpBuf
 #pragma kernel NcnnUnaryOpBuf
 #pragma kernel NcnnSigmoidBuf
+#pragma kernel NcnnSwishBuf
+#pragma kernel NcnnGeluBuf
 #pragma kernel NcnnInnerProduct2D
 #pragma kernel NcnnMhaAttention
 
@@ -179,6 +181,7 @@ int _OutPacks;
 
 groupshared float4 _Conv3x3Pack4_s_in[100];
 groupshared float4 _Conv3x3Pack4_s_w[36];
+groupshared float4 _Conv1x1Pack4_s_w[4];
 
 [numthreads(8,8,1)]
 void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint3 id : SV_DispatchThreadID)
@@ -252,34 +255,46 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
 }
 
 [numthreads(8,8,1)]
-void NcnnConv1x1Pack4(uint3 id : SV_DispatchThreadID)
+void NcnnConv1x1Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint3 id : SV_DispatchThreadID)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
-    if (id.x >= ow || id.y >= oh) return;
+    bool active = (id.x < ow && id.y < oh);
     int op = (int)id.z;
-    if (op < 0 || op >= _OutPacks) return;
+    if (op < 0 || op >= _OutPacks) active = false;
 
-    float4 sum = _ConvB4[op];
+    float4 sum = active ? _ConvB4[op] : 0.0;
+    int tid1 = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
 
     for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
-        float4 inV = _ConvInArr[int3((int)id.x, (int)id.y, ip0)];
+        float4 inV = 0.0;
+        if (active)
+            inV = _ConvInArr[int3((int)id.x, (int)id.y, ip0)];
+
         int base = ((op * _InPacks + ip0) * 4);
-        float4 w0 = _ConvW4[base + 0];
-        float4 w1 = _ConvW4[base + 1];
-        float4 w2 = _ConvW4[base + 2];
-        float4 w3 = _ConvW4[base + 3];
-        sum.x += dot(inV, w0);
-        sum.y += dot(inV, w1);
-        sum.z += dot(inV, w2);
-        sum.w += dot(inV, w3);
+        if (tid1 < 4 && active)
+            _Conv1x1Pack4_s_w[tid1] = _ConvW4[base + tid1];
+        GroupMemoryBarrierWithGroupSync();
+        float4 w0 = _Conv1x1Pack4_s_w[0];
+        float4 w1 = _Conv1x1Pack4_s_w[1];
+        float4 w2 = _Conv1x1Pack4_s_w[2];
+        float4 w3 = _Conv1x1Pack4_s_w[3];
+        if (active)
+        {
+            sum.x += dot(inV, w0);
+            sum.y += dot(inV, w1);
+            sum.z += dot(inV, w2);
+            sum.w += dot(inV, w3);
+        }
+        GroupMemoryBarrierWithGroupSync();
     }
 
     if (_ActType == 2)
         sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
 
-    _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+    if (active)
+        _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
 }
 
 RWTexture2DArray<float4> _AddOutArr;
@@ -893,6 +908,28 @@ void NcnnSigmoidBuf(uint3 id : SV_DispatchThreadID)
     if (idx >= (uint)_Total) return;
     float x = _BufA[idx];
     _BufOut[idx] = 1.0 / (1.0 + exp(-x));
+}
+
+[numthreads(256,1,1)]
+void NcnnSwishBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+    float x = _BufA[idx];
+    float s = 1.0 / (1.0 + exp(-x));
+    _BufOut[idx] = x * s;
+}
+
+[numthreads(256,1,1)]
+void NcnnGeluBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+    float x = _BufA[idx];
+    float x3 = x * x * x;
+    float t = 0.7978845608 * (x + 0.044715 * x3);
+    float y = 0.5 * x * (1.0 + tanh(t));
+    _BufOut[idx] = y;
 }
 
 [numthreads(256,1,1)]
