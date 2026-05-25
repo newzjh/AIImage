@@ -181,7 +181,8 @@ int _OutPacks;
 
 groupshared float4 _Conv3x3Pack4_s_in[100];
 groupshared float4 _Conv3x3Pack4_s_w[36];
-groupshared float4 _Conv1x1Pack4_s_w[4];
+groupshared float4 _Conv3x3Pack4_s_wall[1152];
+groupshared float4 _Conv1x1Pack4_s_wall[128];
 
 [numthreads(8,8,1)]
 void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint3 id : SV_DispatchThreadID)
@@ -189,7 +190,7 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
     bool active = (id.x < ow && id.y < oh);
-    int op = (int)id.z;
+    int op = (int)groupId.z;
 
     float4 sum = _ConvB4[op];
 
@@ -199,6 +200,19 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     int baseX = (int)groupId.x * 8;
     int baseY = (int)groupId.y * 8;
     int tid = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
+
+    int preloadPacks = min(_InPacks, 32);
+    int preloadCount = preloadPacks * 36;
+    int wGlobalBase = (op * _InPacks) * 36;
+    for (int wi0 = tid; wi0 < preloadCount; wi0 += 64)
+    {
+        _Conv3x3Pack4_s_wall[wi0] = _ConvW4[wGlobalBase + wi0];
+    }
+    for (int wi1 = tid + preloadCount; wi1 < 1152; wi1 += 64)
+    {
+        _Conv3x3Pack4_s_wall[wi1] = 0.0;
+    }
+    GroupMemoryBarrierWithGroupSync();
 
     for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
@@ -214,16 +228,12 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
             _Conv3x3Pack4_s_in[loadIndex] = v;
         }
 
-        int wbase = ((op * _InPacks + ip0) * 9 * 4);
-        for (int wi = tid; wi < 36; wi += 64)
-        {
-            _Conv3x3Pack4_s_w[wi] = _ConvW4[wbase + wi];
-        }
-
         GroupMemoryBarrierWithGroupSync();
 
         int tx = (int)groupThreadId.x;
         int ty = (int)groupThreadId.y;
+        int woff = ip0 < 32 ? (ip0 * 36) : 0;
+        int wbase = ((op * _InPacks + ip0) * 36);
 
         [unroll]
         for (int ky = 0; ky < 3; ky++)
@@ -233,10 +243,10 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
             {
                 float4 inV = _Conv3x3Pack4_s_in[(ty + ky) * 10 + (tx + kx)];
                 int k = ky * 3 + kx;
-                float4 w0 = _Conv3x3Pack4_s_w[k * 4 + 0];
-                float4 w1 = _Conv3x3Pack4_s_w[k * 4 + 1];
-                float4 w2 = _Conv3x3Pack4_s_w[k * 4 + 2];
-                float4 w3 = _Conv3x3Pack4_s_w[k * 4 + 3];
+                float4 w0 = ip0 < 32 ? _Conv3x3Pack4_s_wall[woff + k * 4 + 0] : _ConvW4[wbase + k * 4 + 0];
+                float4 w1 = ip0 < 32 ? _Conv3x3Pack4_s_wall[woff + k * 4 + 1] : _ConvW4[wbase + k * 4 + 1];
+                float4 w2 = ip0 < 32 ? _Conv3x3Pack4_s_wall[woff + k * 4 + 2] : _ConvW4[wbase + k * 4 + 2];
+                float4 w3 = ip0 < 32 ? _Conv3x3Pack4_s_wall[woff + k * 4 + 3] : _ConvW4[wbase + k * 4 + 3];
                 sum.x += dot(inV, w0);
                 sum.y += dot(inV, w1);
                 sum.z += dot(inV, w2);
@@ -260,11 +270,24 @@ void NcnnConv1x1Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
     bool active = (id.x < ow && id.y < oh);
-    int op = (int)id.z;
+    int op = (int)groupId.z;
     if (op < 0 || op >= _OutPacks) active = false;
 
     float4 sum = active ? _ConvB4[op] : 0.0;
     int tid1 = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
+
+    int wGlobalBase = (op * _InPacks) * 4;
+    int preloadPacks = min(_InPacks, 32);
+    int preloadCount = preloadPacks * 4;
+    for (int wi0 = tid1; wi0 < preloadCount; wi0 += 64)
+    {
+        _Conv1x1Pack4_s_wall[wi0] = _ConvW4[wGlobalBase + wi0];
+    }
+    for (int wi1 = tid1 + preloadCount; wi1 < 128; wi1 += 64)
+    {
+        _Conv1x1Pack4_s_wall[wi1] = 0.0;
+    }
+    GroupMemoryBarrierWithGroupSync();
 
     for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
@@ -272,14 +295,11 @@ void NcnnConv1x1Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
         if (active)
             inV = _ConvInArr[int3((int)id.x, (int)id.y, ip0)];
 
-        int base = ((op * _InPacks + ip0) * 4);
-        if (tid1 < 4 && active)
-            _Conv1x1Pack4_s_w[tid1] = _ConvW4[base + tid1];
-        GroupMemoryBarrierWithGroupSync();
-        float4 w0 = _Conv1x1Pack4_s_w[0];
-        float4 w1 = _Conv1x1Pack4_s_w[1];
-        float4 w2 = _Conv1x1Pack4_s_w[2];
-        float4 w3 = _Conv1x1Pack4_s_w[3];
+        int woff = ip0 * 4;
+        float4 w0 = ip0 < 32 ? _Conv1x1Pack4_s_wall[woff + 0] : _ConvW4[wGlobalBase + woff + 0];
+        float4 w1 = ip0 < 32 ? _Conv1x1Pack4_s_wall[woff + 1] : _ConvW4[wGlobalBase + woff + 1];
+        float4 w2 = ip0 < 32 ? _Conv1x1Pack4_s_wall[woff + 2] : _ConvW4[wGlobalBase + woff + 2];
+        float4 w3 = ip0 < 32 ? _Conv1x1Pack4_s_wall[woff + 3] : _ConvW4[wGlobalBase + woff + 3];
         if (active)
         {
             sum.x += dot(inV, w0);
@@ -287,7 +307,6 @@ void NcnnConv1x1Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
             sum.z += dot(inV, w2);
             sum.w += dot(inV, w3);
         }
-        GroupMemoryBarrierWithGroupSync();
     }
 
     if (_ActType == 2)
