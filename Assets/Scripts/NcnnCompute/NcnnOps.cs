@@ -410,7 +410,7 @@ namespace NcnnCompute
             Dispatch2D(_kBufToTex3, output.width, output.height, 8, 8);
         }
 
-        public void BlitTileToDst(RenderTexture tileOut, RenderTexture dst, int dstX, int dstY, int tileOutOriginX, int tileOutOriginY, int w, int h, float dstToSrcScale)
+        public void BlitTileToDst(CommandBuffer cmd, RenderTexture tileOut, RenderTexture dst, int dstX, int dstY, int tileOutOriginX, int tileOutOriginY, int w, int h, float dstToSrcScale)
         {
             if (tileOut == null) throw new ArgumentNullException(nameof(tileOut));
             if (dst == null) throw new ArgumentNullException(nameof(dst));
@@ -427,10 +427,15 @@ namespace NcnnCompute
             _cs.SetFloat("_BlitScale", dstToSrcScale);
             _cs.SetTexture(_kBlitTileToDst, "_NcnnInArr", tileOut);
             _cs.SetTexture(_kBlitTileToDst, "_NcnnOut", dst);
-            Dispatch2D(_kBlitTileToDst, w, h, 32, 32);
+            Dispatch2D(cmd, _cs, _kBlitTileToDst, w, h, 32, 32);
         }
 
-        public void PackRgbToPack4(Texture src, int offsetX, int offsetY, RenderTexture dstPack4)
+        public void BlitTileToDst(RenderTexture tileOut, RenderTexture dst, int dstX, int dstY, int tileOutOriginX, int tileOutOriginY, int w, int h, float dstToSrcScale)
+        {
+            BlitTileToDst(null, tileOut, dst, dstX, dstY, tileOutOriginX, tileOutOriginY, w, h, dstToSrcScale);
+        }
+
+        public void PackRgbToPack4(CommandBuffer cmd, Texture src, int offsetX, int offsetY, RenderTexture dstPack4)
         {
             if (src == null) throw new ArgumentNullException(nameof(src));
             if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
@@ -438,7 +443,12 @@ namespace NcnnCompute
             _cs.SetInt("_OffsetY", offsetY);
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnIn", src);
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnOutArr", dstPack4);
-            Dispatch2D(_kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);
+            Dispatch2D(cmd, _cs, _kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);
+        }
+
+        public void PackRgbToPack4(Texture src, int offsetX, int offsetY, RenderTexture dstPack4)
+        {
+            PackRgbToPack4(null, src, offsetX, offsetY, dstPack4);
         }
 
         public void PackRgbToPack4Gfpgan(Texture src, int offsetX, int offsetY, RenderTexture dstPack4)
@@ -1851,6 +1861,16 @@ namespace NcnnCompute
             var gx = Mathf.CeilToInt(w / (float)tx);
             var gy = Mathf.CeilToInt(h / (float)ty);
             cs.Dispatch(kernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
+        }
+
+        private static void Dispatch2D(CommandBuffer cmd, ComputeShader cs, int kernel, int w, int h, int tx, int ty)
+        {
+            var gx = Mathf.CeilToInt(w / (float)tx);
+            var gy = Mathf.CeilToInt(h / (float)ty);
+            if (cmd != null)
+                cmd.DispatchCompute(cs, kernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
+            else
+                cs.Dispatch(kernel, Mathf.Max(1, gx), Mathf.Max(1, gy), 1);
         }
 
         private static void Dispatch3D(ComputeShader cs, int kernel, int w, int h, int z, int tx, int ty)

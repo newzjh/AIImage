@@ -367,11 +367,12 @@ void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
     float4 sum2 = 0.0;
     float4 sum3 = 0.0;
 
-    int vOffset = gz * _InPacks * tiles + gx;
-    int wOffset = (gz * _InPacks * outc + gy * _InPacks) * 4;
+    int vOffset = gz * tiles + gx;
+    int wBase = (gz * outc + gy) * _InPacks * 4;
 
     for (int z = 0; z < _InPacks; z++)
     {
+        int wOffset = wBase + z * 4;
         float4 v0 = _WinoBottomTm[vOffset + 0];
         float4 v1 = _WinoBottomTm[vOffset + 1];
         float4 v2 = _WinoBottomTm[vOffset + 2];
@@ -388,14 +389,14 @@ void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
         sum3.x += dot(v3, k0); sum3.y += dot(v3, k1); sum3.z += dot(v3, k2); sum3.w += dot(v3, k3);
 
         vOffset += tiles;
-        wOffset += 4;
     }
 
-    int gi = gz * outc * _WinoOutCstep + gy * _WinoOutCstep + gx;
-    _WinoTopTm[gi + 0] = sum0;
-    if (gx + 1 < tiles) _WinoTopTm[gi + 1] = sum1;
-    if (gx + 2 < tiles) _WinoTopTm[gi + 2] = sum2;
-    if (gx + 3 < tiles) _WinoTopTm[gi + 3] = sum3;
+    int base = gz * outc * _WinoOutCstep + gy * _WinoOutCstep + gx;
+    int stride = outc * _WinoOutCstep;
+    _WinoTopTm[base + 0 * stride] = sum0;
+    if (gx + 1 < tiles) _WinoTopTm[base + 1 * stride] = sum1;
+    if (gx + 2 < tiles) _WinoTopTm[base + 2 * stride] = sum2;
+    if (gx + 3 < tiles) _WinoTopTm[base + 3 * stride] = sum3;
 }
 
 // ncnn pack4 winograd23 transform_output: local_size 8x8x1.

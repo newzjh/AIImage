@@ -630,7 +630,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         _loaded = true;
     }
 
-    private RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks)
+    private RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks, bool deferFlush = false, CommandBuffer externalCmd = null)
     {
         var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
         var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
@@ -638,20 +638,30 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var inputRef = new TensorRef { t = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
         blobs["data"] = inputRef;
 
-        CommandBuffer cmd = null;
+        CommandBuffer cmd = externalCmd;
+        var ownsCmd = false;
+        var useExternalCmd = externalCmd != null;
         void EnsureCmd()
         {
             if (!_useCmdThisRun) return;
             if (cmd != null) return;
             cmd = new CommandBuffer();
             cmd.name = "NcnnForwardPack4";
+            ownsCmd = true;
         }
         void FlushCmd()
         {
             if (cmd == null) return;
             Graphics.ExecuteCommandBuffer(cmd);
-            cmd.Release();
-            cmd = null;
+            if (!useExternalCmd && ownsCmd)
+            {
+                cmd.Release();
+            }
+            if (!useExternalCmd)
+            {
+                cmd = null;
+                ownsCmd = false;
+            }
         }
 
         for (var li = 0; li < _model.layers.Count; li++)
