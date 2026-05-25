@@ -49,7 +49,23 @@ namespace NcnnCompute
             }
         }
 
-        private void RunBufferOpsSelfTest()
+        public static void RunSelfTestsFromUI()
+        {
+            var runner = FindAnyObjectByType<NcnnComputePrototypeRunner>();
+            if (runner == null)
+            {
+                var go = new GameObject("NcnnComputePrototypeRunner");
+                runner = go.AddComponent<NcnnComputePrototypeRunner>();
+            }
+            runner.RunSelfTests();
+        }
+
+        public void RunSelfTests()
+        {
+            RunBufferOpsSelfTest();
+        }
+
+        public void RunBufferOpsSelfTest()
         {
             var ops = new NcnnOps();
             SelfTestMatMul(ops);
@@ -59,6 +75,8 @@ namespace NcnnCompute
             SelfTestEmbed(ops);
             SelfTestPermute(ops);
             SelfTestSlice(ops);
+            SelfTestReduceAll(ops);
+            SelfTestGroupNorm(ops);
         }
 
         private static void SelfTestMatMul(NcnnOps ops)
@@ -456,6 +474,97 @@ namespace NcnnCompute
             var maxErr = 0f;
             for (var i = 0; i < got.Length; i++) maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refY[i]));
             UnityEngine.Debug.Log("[SELFTEST] Slice dims3 axis2 maxErr=" + maxErr);
+        }
+
+        private static void SelfTestReduceAll(NcnnOps ops)
+        {
+            var x = new float[1024];
+            var sum = 0f;
+            for (var i = 0; i < x.Length; i++)
+            {
+                x[i] = (i % 17) * 0.1f - 0.8f;
+                sum += x[i];
+            }
+            var mean = sum / x.Length;
+
+            using var bufIn = new ComputeBuffer(x.Length, sizeof(float), ComputeBufferType.Structured);
+            using var bufOut = new ComputeBuffer(1, sizeof(float), ComputeBufferType.Structured);
+            bufIn.SetData(x);
+            ops.ReduceAllSumOrMean(bufIn, x.Length, false, bufOut);
+            var gotSum = new float[1];
+            bufOut.GetData(gotSum);
+            UnityEngine.Debug.Log("[SELFTEST] ReduceAllSum absErr=" + Mathf.Abs(gotSum[0] - sum));
+
+            ops.ReduceAllSumOrMean(bufIn, x.Length, true, bufOut);
+            var gotMean = new float[1];
+            bufOut.GetData(gotMean);
+            UnityEngine.Debug.Log("[SELFTEST] ReduceAllMean absErr=" + Mathf.Abs(gotMean[0] - mean));
+        }
+
+        private static void SelfTestGroupNorm(NcnnOps ops)
+        {
+            const int w = 4;
+            const int h = 3;
+            const int c = 8;
+            const int group = 2;
+            const float eps = 0.001f;
+
+            var size = w * h;
+            var x = new float[c * size];
+            for (var i = 0; i < x.Length; i++) x[i] = (i % 23) * 0.03f - 0.4f;
+            var gamma = new float[c];
+            var beta = new float[c];
+            for (var i = 0; i < c; i++)
+            {
+                gamma[i] = 0.9f + i * 0.01f;
+                beta[i] = -0.05f + i * 0.005f;
+            }
+
+            var refY = (float[])x.Clone();
+            var channelsG = c / group;
+            for (var g = 0; g < group; g++)
+            {
+                var chBase = g * channelsG;
+                var total = channelsG * size;
+                var sum = 0f;
+                var sqsum = 0f;
+                for (var cc = 0; cc < channelsG; cc++)
+                {
+                    var ch = chBase + cc;
+                    for (var s = 0; s < size; s++)
+                    {
+                        var v = refY[ch * size + s];
+                        sum += v;
+                        sqsum += v * v;
+                    }
+                }
+                var mean = sum / total;
+                var var = sqsum / total - mean * mean;
+                var invstd = 1f / Mathf.Sqrt(var + eps);
+                for (var cc = 0; cc < channelsG; cc++)
+                {
+                    var ch = chBase + cc;
+                    for (var s = 0; s < size; s++)
+                    {
+                        var v = (refY[ch * size + s] - mean) * invstd;
+                        v = v * gamma[ch] + beta[ch];
+                        refY[ch * size + s] = v;
+                    }
+                }
+            }
+
+            using var buf = new ComputeBuffer(x.Length, sizeof(float), ComputeBufferType.Structured);
+            using var bufGamma = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
+            using var bufBeta = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
+            buf.SetData(x);
+            bufGamma.SetData(gamma);
+            bufBeta.SetData(beta);
+            ops.GroupNormInplace(buf, w, h, c, group, eps, true, bufGamma, bufBeta);
+            var got = new float[x.Length];
+            buf.GetData(got);
+            var maxErr = 0f;
+            for (var i = 0; i < got.Length; i++) maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refY[i]));
+            UnityEngine.Debug.Log("[SELFTEST] GroupNorm maxErr=" + maxErr);
         }
     }
 }

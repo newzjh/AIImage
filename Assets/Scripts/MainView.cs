@@ -883,6 +883,9 @@ public class MainView : MonoBehaviour
         row1.Add(saveButton);
 
 #if !UNITY_WEBGL
+        var ncnnSelfTestButton = new Button(OnNcnnSelfTest) { text = "NCNN自测" };
+        row1.Add(ncnnSelfTestButton);
+
         var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
         row1.Add(browseButton);
 #endif
@@ -932,6 +935,19 @@ public class MainView : MonoBehaviour
         parent.Add(_imageViewer);
 
         BuildFloatingAdjustPanel(parent);
+    }
+
+    private void OnNcnnSelfTest()
+    {
+        try
+        {
+            NcnnCompute.NcnnComputePrototypeRunner.RunSelfTestsFromUI();
+            ShowToast("已触发 NCNN 自测，查看 Console 输出");
+        }
+        catch (Exception e)
+        {
+            ShowToast("NCNN 自测失败: " + e.Message);
+        }
     }
 
     private Button collapseBtn;

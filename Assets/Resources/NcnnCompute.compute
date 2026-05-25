@@ -46,6 +46,10 @@
 #pragma kernel NcnnEmbed
 #pragma kernel NcnnPermute
 #pragma kernel NcnnSlice
+#pragma kernel NcnnReduceSum256
+#pragma kernel NcnnMulScalarBuf
+#pragma kernel NcnnGroupNormStats
+#pragma kernel NcnnGroupNormApply
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -173,36 +177,6 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     int baseY = (int)groupId.y * 8;
     int tid = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
 
-#if defined(SHADER_API_D3D11)
-    // D3D11 下避免 groupshared + barrier（容易触发卡死/驱动 TDR），使用朴素实现确保稳定
-    if (active)
-    {
-        for (int ip = 0; ip < _InPacks; ip++)
-        {
-            for (int ky = 0; ky < 3; ky++)
-            {
-                for (int kx = 0; kx < 3; kx++)
-                {
-                    int ix = (int)id.x + kx - _Pad;
-                    int iy = (int)id.y + ky - _Pad;
-                    float4 inV = 0.0;
-                    if (ix >= 0 && iy >= 0 && ix < (int)iw && iy < (int)ih)
-                        inV = _ConvInArr[int3(ix, iy, ip)];
-
-                    int base = ((((op * _InPacks + ip) * 3 + ky) * 3 + kx) * 4);
-                    float4 w0 = _ConvW4[base + 0];
-                    float4 w1 = _ConvW4[base + 1];
-                    float4 w2 = _ConvW4[base + 2];
-                    float4 w3 = _ConvW4[base + 3];
-                    sum.x += dot(inV, w0);
-                    sum.y += dot(inV, w1);
-                    sum.z += dot(inV, w2);
-                    sum.w += dot(inV, w3);
-                }
-            }
-        }
-    }
-#else
     for (int ip = 0; ip < _InPacks; ip++)
     {
         for (int loadIndex = tid; loadIndex < 100; loadIndex += 64)
@@ -256,7 +230,6 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
 
         GroupMemoryBarrierWithGroupSync();
     }
-#endif
 
     if (_ActType == 2)
         sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
@@ -917,6 +890,27 @@ int _SliceOutH;
 int _SliceOutD;
 int _SliceOutC;
 
+StructuredBuffer<float> _ReduceIn;
+RWStructuredBuffer<float> _ReduceOut;
+int _ReduceTotal;
+
+StructuredBuffer<float> _MulIn;
+RWStructuredBuffer<float> _MulOut;
+int _MulTotal;
+float _MulK;
+
+RWStructuredBuffer<float> _GnInOut;
+StructuredBuffer<float> _GnGamma;
+StructuredBuffer<float> _GnBeta;
+RWStructuredBuffer<float4> _GnStatsOut;
+int _GnW;
+int _GnH;
+int _GnC;
+int _GnGroup;
+int _GnChannelsG;
+float _GnEps;
+int _GnAffine;
+
 static int Reflect101(int x, int len)
 {
     if (len <= 1) return 0;
@@ -1514,8 +1508,114 @@ void NcnnSlice(uint3 id : SV_DispatchThreadID)
     _SliceOut[idx] = _SliceIn[inIdx4];
 }
 
-// NOTE: GroupMemoryBarrierWithGroupSync requires all threads in a group to reach the barrier in uniform control flow.
-// Unity compute compilation is conservative; keep loop bounds constant and avoid early returns before barriers.
+groupshared float sdata[256];
+[numthreads(256,1,1)]
+void NcnnReduceSum256(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    uint tid = groupThreadId.x;
+    uint group = groupId.x;
+    uint base = group * 256u;
+    uint idx = base + tid;
+
+    float v = 0.0;
+    if (idx < (uint)_ReduceTotal)
+        v = _ReduceIn[idx];
+    sdata[tid] = v;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 128u; stride > 0u; stride >>= 1u)
+    {
+        if (tid < stride)
+            sdata[tid] += sdata[tid + stride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0u)
+        _ReduceOut[group] = sdata[0];
+}
+
+[numthreads(256,1,1)]
+void NcnnMulScalarBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_MulTotal) return;
+    _MulOut[idx] = _MulIn[idx] * _MulK;
+}
+
+groupshared float red0[256];
+groupshared float red1[256];
+[numthreads(256,1,1)]
+void NcnnGroupNormStats(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    int size = _GnW * _GnH;
+    int total = _GnChannelsG * size;
+    int chBase = g * _GnChannelsG;
+
+    float sum = 0.0;
+    float sqsum = 0.0;
+    for (int t = tid; t < total; t += 256)
+    {
+        int ch = t / size;
+        int s = t - ch * size;
+        int c = chBase + ch;
+        float x = _GnInOut[c * size + s];
+        sum += x;
+        sqsum += x * x;
+    }
+
+    red0[tid] = sum;
+    red1[tid] = sqsum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stride = 128; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+        {
+            red0[tid] += red0[tid + stride];
+            red1[tid] += red1[tid + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0)
+        _GnStatsOut[g] = float4(red0[0], red1[0], 0.0, 0.0);
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormApply(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    int size = _GnW * _GnH;
+    int total = _GnChannelsG * size;
+    int chBase = g * _GnChannelsG;
+
+    float2 stats = _GnStatsOut[g].xy;
+    float mean = stats.x / max(1, total);
+    float var = stats.y / max(1, total) - mean * mean;
+    float invstd = rsqrt(max(var + _GnEps, 1e-20));
+
+    for (int t = tid; t < total; t += 256)
+    {
+        int ch = t / size;
+        int s = t - ch * size;
+        int c = chBase + ch;
+        float x = _GnInOut[c * size + s];
+        float y = (x - mean) * invstd;
+        if (_GnAffine != 0)
+            y = y * _GnGamma[c] + _GnBeta[c];
+        _GnInOut[c * size + s] = y;
+    }
+}
+
 #define TILE 8
 #define MATK_MAX 2048
 groupshared float As[TILE][TILE];

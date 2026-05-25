@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace UnityEngine
 {
@@ -285,6 +286,10 @@ namespace NcnnCompute
         private readonly int _kEmbed;
         private readonly int _kPermute;
         private readonly int _kSlice;
+        private readonly int _kReduceSum256;
+        private readonly int _kMulScalarBuf;
+        private readonly int _kGroupNormStats;
+        private readonly int _kGroupNormApply;
 
         public NcnnOps()
         {
@@ -336,6 +341,10 @@ namespace NcnnCompute
             _kEmbed = _cs.FindKernel("NcnnEmbed");
             _kPermute = _cs.FindKernel("NcnnPermute");
             _kSlice = _cs.FindKernel("NcnnSlice");
+            _kReduceSum256 = _cs.FindKernel("NcnnReduceSum256");
+            _kMulScalarBuf = _cs.FindKernel("NcnnMulScalarBuf");
+            _kGroupNormStats = _cs.FindKernel("NcnnGroupNormStats");
+            _kGroupNormApply = _cs.FindKernel("NcnnGroupNormApply");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -741,6 +750,99 @@ namespace NcnnCompute
             Dispatch3D(_kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
         }
 
+        public void Conv3x3Pack4(CommandBuffer cmd, RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_Pad", Mathf.Max(0, pad));
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3Pack4, "_ConvW4", w4);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3Pack4, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvInArr", srcPack4);
+            cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvOutArr", dstPack4);
+            Dispatch3D(cmd, _kConv3x3Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+        }
+
+        public void AddPack4(CommandBuffer cmd, RenderTexture a, RenderTexture b, float coeffA, float coeffB, int packs, RenderTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeFloatParam(_cs, "_CoeffA", coeffA);
+            cmd.SetComputeFloatParam(_cs, "_CoeffB", coeffB);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddA", a);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddB", b);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddOutArr", output);
+            Dispatch3D(cmd, _kAddPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void CopyPack4(CommandBuffer cmd, RenderTexture src, int srcPackOffset, RenderTexture dst, int dstPackOffset, int packs)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            if (packs <= 0) return;
+            if (src.width != dst.width || src.height != dst.height)
+                throw new InvalidOperationException("CopyPack4 requires same width/height");
+
+            for (var p = 0; p < packs; p++)
+            {
+                var sp = srcPackOffset + p;
+                var dp = dstPackOffset + p;
+                cmd.CopyTexture(src, sp, 0, 0, 0, src.width, src.height, dst, dp, 0, 0, 0);
+            }
+        }
+
+        public void Interp2xPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_InterpInArr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_InterpOutArr", output);
+            Dispatch3D(cmd, _kInterp2xPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void Interp2xNearestPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_InterpNnInArr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_InterpNnOutArr", output);
+            Dispatch3D(cmd, _kInterp2xNearestPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void InterpDown2Pack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownInArr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownOutArr", output);
+            Dispatch3D(cmd, _kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void InterpDown2NearestPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnInArr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnOutArr", output);
+            Dispatch3D(cmd, _kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
+        }
+
         public void Pack4ToBufferCHW(RenderTexture input, int w, int h, int c, ComputeBuffer output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -955,6 +1057,102 @@ namespace NcnnCompute
             Dispatch1D(_kSlice, outCount, 256);
         }
 
+        public void ReduceAllSumOrMean(ComputeBuffer input, int total, bool mean, ComputeBuffer outputScalar)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (outputScalar == null) throw new ArgumentNullException(nameof(outputScalar));
+            if (total <= 0) throw new ArgumentOutOfRangeException(nameof(total));
+            if (outputScalar.count != 1) throw new ArgumentOutOfRangeException(nameof(outputScalar), "outputScalar.count must be 1");
+
+            var n = total;
+            var groups = Mathf.CeilToInt(n / 256f);
+            var cur = new ComputeBuffer(groups, sizeof(float), ComputeBufferType.Structured);
+            try
+            {
+                _cs.SetInt("_ReduceTotal", n);
+                _cs.SetBuffer(_kReduceSum256, "_ReduceIn", input);
+                _cs.SetBuffer(_kReduceSum256, "_ReduceOut", cur);
+                _cs.Dispatch(_kReduceSum256, Mathf.Max(1, groups), 1, 1);
+
+                while (groups > 1)
+                {
+                    n = groups;
+                    groups = Mathf.CeilToInt(n / 256f);
+                    var next = new ComputeBuffer(groups, sizeof(float), ComputeBufferType.Structured);
+                    _cs.SetInt("_ReduceTotal", n);
+                    _cs.SetBuffer(_kReduceSum256, "_ReduceIn", cur);
+                    _cs.SetBuffer(_kReduceSum256, "_ReduceOut", next);
+                    _cs.Dispatch(_kReduceSum256, Mathf.Max(1, groups), 1, 1);
+                    cur.Dispose();
+                    cur = next;
+                }
+
+                _cs.SetInt("_MulTotal", 1);
+                _cs.SetFloat("_MulK", 1f);
+                _cs.SetBuffer(_kMulScalarBuf, "_MulIn", cur);
+                _cs.SetBuffer(_kMulScalarBuf, "_MulOut", outputScalar);
+                _cs.Dispatch(_kMulScalarBuf, 1, 1, 1);
+
+                if (mean)
+                    MulScalarInplace(outputScalar, 1f / total, 1);
+            }
+            finally
+            {
+                try { cur?.Dispose(); } catch { }
+            }
+        }
+
+        public void MulScalarInplace(ComputeBuffer inOut, float k, int total)
+        {
+            if (inOut == null) throw new ArgumentNullException(nameof(inOut));
+            if (total <= 0) throw new ArgumentOutOfRangeException(nameof(total));
+            _cs.SetInt("_MulTotal", total);
+            _cs.SetFloat("_MulK", k);
+            _cs.SetBuffer(_kMulScalarBuf, "_MulIn", inOut);
+            _cs.SetBuffer(_kMulScalarBuf, "_MulOut", inOut);
+            Dispatch1D(_kMulScalarBuf, total, 256);
+        }
+
+        public void GroupNormInplace(ComputeBuffer inOut, int w, int h, int c, int group, float eps, bool affine, ComputeBuffer gamma, ComputeBuffer beta)
+        {
+            if (inOut == null) throw new ArgumentNullException(nameof(inOut));
+            if (w <= 0) throw new ArgumentOutOfRangeException(nameof(w));
+            if (h <= 0) throw new ArgumentOutOfRangeException(nameof(h));
+            if (c <= 0) throw new ArgumentOutOfRangeException(nameof(c));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            if (c % group != 0) throw new ArgumentOutOfRangeException(nameof(group), "c must be divisible by group");
+            if (affine && (gamma == null || beta == null)) throw new ArgumentNullException(nameof(gamma));
+
+            var channelsG = c / group;
+            using var stats = new ComputeBuffer(group, sizeof(float) * 4, ComputeBufferType.Structured);
+
+            _cs.SetInt("_GnW", w);
+            _cs.SetInt("_GnH", h);
+            _cs.SetInt("_GnC", c);
+            _cs.SetInt("_GnGroup", group);
+            _cs.SetInt("_GnChannelsG", channelsG);
+            _cs.SetFloat("_GnEps", eps);
+            _cs.SetInt("_GnAffine", affine ? 1 : 0);
+            _cs.SetBuffer(_kGroupNormStats, "_GnInOut", inOut);
+            _cs.SetBuffer(_kGroupNormStats, "_GnGamma", affine ? gamma : inOut);
+            _cs.SetBuffer(_kGroupNormStats, "_GnBeta", affine ? beta : inOut);
+            _cs.SetBuffer(_kGroupNormStats, "_GnStatsOut", stats);
+            _cs.Dispatch(_kGroupNormStats, Mathf.Max(1, group), 1, 1);
+
+            _cs.SetInt("_GnW", w);
+            _cs.SetInt("_GnH", h);
+            _cs.SetInt("_GnC", c);
+            _cs.SetInt("_GnGroup", group);
+            _cs.SetInt("_GnChannelsG", channelsG);
+            _cs.SetFloat("_GnEps", eps);
+            _cs.SetInt("_GnAffine", affine ? 1 : 0);
+            _cs.SetBuffer(_kGroupNormApply, "_GnInOut", inOut);
+            _cs.SetBuffer(_kGroupNormApply, "_GnGamma", affine ? gamma : inOut);
+            _cs.SetBuffer(_kGroupNormApply, "_GnBeta", affine ? beta : inOut);
+            _cs.SetBuffer(_kGroupNormApply, "_GnStatsOut", stats);
+            _cs.Dispatch(_kGroupNormApply, Mathf.Max(1, group), 1, 1);
+        }
+
         private static Vector4Int GetPermuteAxes(int dims, int orderType)
         {
             if (dims == 2)
@@ -1122,6 +1320,13 @@ namespace NcnnCompute
         private void Dispatch3D(int kernel, int w, int h, int z, int tx, int ty)
         {
             Dispatch3D(_cs, kernel, w, h, z, tx, ty);
+        }
+
+        private void Dispatch3D(CommandBuffer cmd, int kernel, int w, int h, int z, int tx, int ty)
+        {
+            var gx = Mathf.CeilToInt(w / (float)tx);
+            var gy = Mathf.CeilToInt(h / (float)ty);
+            cmd.DispatchCompute(_cs, kernel, Mathf.Max(1, gx), Mathf.Max(1, gy), Mathf.Max(1, z));
         }
 
         private void Dispatch1D(int kernel, int total, int threadsPerGroup)

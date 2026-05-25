@@ -24,6 +24,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public int yieldEveryTiles = 4;
     public bool enableVulkanTempPoolByDefault = true;
     public int maxYieldEveryTiles = 16;
+    public bool useCommandBufferOnVulkan = true;
 
     public event Action<float, string> ProgressChanged;
 
@@ -34,6 +35,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private bool _loaded;
     private readonly Dictionary<RtKey, Stack<PooledRt>> _rtPool = new Dictionary<RtKey, Stack<PooledRt>>();
     private bool _useTempPoolThisRun;
+    private bool _useCmdThisRun;
 
     private readonly struct RtKey : IEquatable<RtKey>
     {
@@ -181,6 +183,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         await UniTask.Yield();
 
         var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
+        _useCmdThisRun = useCommandBufferOnVulkan && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
         var attemptTiles = new[]
         {
             Mathf.Max(16, baseTileSize),
@@ -589,6 +592,22 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var inputRef = new TensorRef { t = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
         blobs["data"] = inputRef;
 
+        CommandBuffer cmd = null;
+        void EnsureCmd()
+        {
+            if (!_useCmdThisRun) return;
+            if (cmd != null) return;
+            cmd = new CommandBuffer();
+            cmd.name = "NcnnForwardPack4";
+        }
+        void FlushCmd()
+        {
+            if (cmd == null) return;
+            Graphics.ExecuteCommandBuffer(cmd);
+            cmd.Release();
+            cmd = null;
+        }
+
         for (var li = 0; li < _model.layers.Count; li++)
         {
             var l = _model.layers[li];
@@ -626,7 +645,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var off = 0;
                 for (var i = 0; i < parts.Length; i++)
                 {
-                    _ops.CopyPack4(parts[i].t, 0, outArr, off, parts[i].packs);
+                    if (_useCmdThisRun)
+                    {
+                        EnsureCmd();
+                        _ops.CopyPack4(cmd, parts[i].t, 0, outArr, off, parts[i].packs);
+                    }
+                    else
+                    {
+                        _ops.CopyPack4(parts[i].t, 0, outArr, off, parts[i].packs);
+                    }
                     off += parts[i].packs;
                 }
 
@@ -651,6 +678,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
 
                 var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 _ops.PaddingPack4(src.t, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -677,6 +705,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outW = Mathf.Max(1, outW);
                 outH = Mathf.Max(1, outH);
                 var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 _ops.PoolingPack4(src.t, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -690,6 +719,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 if (axis != 0)
                     throw new InvalidOperationException("Softmax axis not supported: " + axis);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 _ops.SoftmaxChannelPack4(src.t, src.packs, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -706,7 +736,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
 
                 var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
-                _ops.Conv3x3Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.Conv3x3Pack4(cmd, src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                }
+                else
+                {
+                    _ops.Conv3x3Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -718,7 +756,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var b = Get(blobs, l.bottomNames[1]);
                 var coeff = ParseEltwiseCoeff(l);
                 var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
-                _ops.AddPack4(a.t, b.t, coeff.coeffA, coeff.coeffB, a.packs, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.AddPack4(cmd, a.t, b.t, coeff.coeffA, coeff.coeffB, a.packs, outArr);
+                }
+                else
+                {
+                    _ops.AddPack4(a.t, b.t, coeff.coeffA, coeff.coeffB, a.packs, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -731,6 +777,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var scalarB = l.GetFloat(2, 0f);
                 var a = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 if (withScalar != 0)
                 {
                     _ops.BinaryOpScalarPack4(a.t, scalarB, a.packs, opType, outArr);
@@ -752,6 +799,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var src = Get(blobs, l.bottomNames[0]);
                 var opType = l.GetInt(0, 0);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 _ops.UnaryOpPack4(src.t, src.packs, opType, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -762,6 +810,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var src = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 _ops.SwishPack4(src.t, src.packs, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -772,6 +821,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var src = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 _ops.SigmoidPack4(src.t, src.packs, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -783,6 +833,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var src = Get(blobs, l.bottomNames[0]);
                 var fast = l.GetInt(0, 0) != 0;
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun) FlushCmd();
                 _ops.GeluPack4(src.t, src.packs, fast, outArr);
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -799,10 +850,21 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
 
                 var outArr = RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
-                if (resizeType == 1)
-                    _ops.Interp2xNearestPack4(src.t, src.packs, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    if (resizeType == 1)
+                        _ops.Interp2xNearestPack4(cmd, src.t, src.packs, outArr);
+                    else
+                        _ops.Interp2xPack4(cmd, src.t, src.packs, outArr);
+                }
                 else
-                    _ops.Interp2xPack4(src.t, src.packs, outArr);
+                {
+                    if (resizeType == 1)
+                        _ops.Interp2xNearestPack4(src.t, src.packs, outArr);
+                    else
+                        _ops.Interp2xPack4(src.t, src.packs, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -810,6 +872,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
             throw new InvalidOperationException("unsupported layer type: " + l.type);
         }
+
+        FlushCmd();
 
         var outRef = Get(blobs, "output");
         var keep = outRef.t;
@@ -834,6 +898,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (!blobs.TryGetValue(name, out var tr) || tr == null || tr.t == null)
             throw new InvalidOperationException("blob not found: " + name);
         return tr;
+    }
+
+    private static bool IsComputeCmdSupported(GraphicsDeviceType t)
+    {
+        return t == GraphicsDeviceType.Vulkan
+               || t == GraphicsDeviceType.Direct3D11
+               || t == GraphicsDeviceType.Direct3D12
+               || t == GraphicsDeviceType.Metal
+               || t == GraphicsDeviceType.WebGPU;
     }
 
     private void Consume(Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames)
