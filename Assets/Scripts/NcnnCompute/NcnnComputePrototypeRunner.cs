@@ -91,6 +91,30 @@ namespace NcnnCompute
                     "AutoencoderKL-base-fp16.param"
                 };
 
+                string ResolveBinPath(string dir, string paramFileName)
+                {
+                    var baseName0 = Path.GetFileNameWithoutExtension(paramFileName);
+                    var candidates = new List<string>(8) { baseName0 };
+                    if (baseName0.Contains("-base-", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("-base-", "-", StringComparison.Ordinal));
+                    if (baseName0.Contains("-base", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("-base", "", StringComparison.Ordinal));
+                    if (baseName0.Contains("UNetModel-base-", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("UNetModel-base-", "UNetModel-", StringComparison.Ordinal));
+                    if (baseName0.Contains("AutoencoderKL-base-", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("AutoencoderKL-base-", "AutoencoderKL-", StringComparison.Ordinal));
+                    candidates.Add(baseName0.Replace("-fp16", "", StringComparison.Ordinal));
+                    candidates.Add(baseName0.Replace("-fp16", "", StringComparison.Ordinal).Replace("-base", "", StringComparison.Ordinal));
+
+                    for (var i = 0; i < candidates.Count; i++)
+                    {
+                        var p = Path.Combine(dir, candidates[i] + ".bin");
+                        if (File.Exists(p))
+                            return p;
+                    }
+                    return Path.Combine(dir, baseName0 + ".bin");
+                }
+
                 foreach (var fn in paramFiles)
                 {
                     var path = Path.Combine(baseDir, fn);
@@ -117,7 +141,7 @@ namespace NcnnCompute
                         Debug.Log("[SD] " + fn + " unsupported: " + string.Join(",", missing));
 
                     var baseName = Path.GetFileNameWithoutExtension(fn);
-                    var directBin = Path.Combine(baseDir, baseName + ".bin");
+                    var directBin = ResolveBinPath(baseDir, fn);
                     var streamingHit = Array.Empty<string>();
                     try
                     {
@@ -128,7 +152,7 @@ namespace NcnnCompute
                     }
                     var haveDirect = File.Exists(directBin);
                     var haveStreaming = streamingHit.Length > 0;
-                    Debug.Log("[SD] " + baseName + ".bin present: direct=" + (haveDirect ? 1 : 0) + " streaming=" + (haveStreaming ? streamingHit.Length : 0));
+                    Debug.Log("[SD] " + baseName + ".bin present: direct=" + (haveDirect ? 1 : 0) + " streaming=" + (haveStreaming ? streamingHit.Length : 0) + (haveDirect ? (" | directPath=" + directBin) : ""));
                 }
             }
             catch (Exception e)
@@ -418,6 +442,159 @@ namespace NcnnCompute
             catch (Exception e)
             {
                 Debug.Log("[SD] CLIP smoke failed: " + e);
+            }
+        }
+
+        public static void RunSdWeightScanFromUI()
+        {
+            try
+            {
+                var root = Directory.GetParent(Application.dataPath)?.FullName ?? "";
+                var baseDir = Path.Combine(root, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets");
+
+                var paramFiles = new[]
+                {
+                    "FrozenCLIPEmbedder-fp16.param",
+                    "UNetModel-base-MHA-fp16.param",
+                    "AutoencoderKL-base-fp16.param"
+                };
+
+                string ResolveBinPath(string dir, string paramFileName)
+                {
+                    var baseName0 = Path.GetFileNameWithoutExtension(paramFileName);
+                    var candidates = new List<string>(8) { baseName0 };
+                    if (baseName0.Contains("-base-", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("-base-", "-", StringComparison.Ordinal));
+                    if (baseName0.Contains("-base", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("-base", "", StringComparison.Ordinal));
+                    if (baseName0.Contains("UNetModel-base-", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("UNetModel-base-", "UNetModel-", StringComparison.Ordinal));
+                    if (baseName0.Contains("AutoencoderKL-base-", StringComparison.Ordinal))
+                        candidates.Add(baseName0.Replace("AutoencoderKL-base-", "AutoencoderKL-", StringComparison.Ordinal));
+
+                    for (var i = 0; i < candidates.Count; i++)
+                    {
+                        var p = Path.Combine(dir, candidates[i] + ".bin");
+                        if (File.Exists(p))
+                            return p;
+                    }
+                    return Path.Combine(dir, baseName0 + ".bin");
+                }
+
+                foreach (var pf in paramFiles)
+                {
+                    var paramPath = Path.Combine(baseDir, pf);
+                    if (!File.Exists(paramPath))
+                    {
+                        Debug.Log("[SD] WeightScan missing param: " + paramPath);
+                        continue;
+                    }
+
+                    var binPath = ResolveBinPath(baseDir, pf);
+                    if (!File.Exists(binPath))
+                    {
+                        Debug.Log("[SD] WeightScan missing bin for " + pf + " -> " + binPath);
+                        continue;
+                    }
+
+                    var model = NcnnParamParser.Parse(File.ReadAllText(paramPath));
+                    using var fs = File.OpenRead(binPath);
+                    using var br = new NcnnBinReader(fs);
+
+                    int wLayers = 0;
+                    for (var i = 0; i < model.layers.Count; i++)
+                    {
+                        var l = model.layers[i];
+
+                        if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
+                        {
+                            var numOut = l.GetInt(0, 0);
+                            var biasTerm = l.GetInt(5, 0) != 0;
+                            var weightSize = l.GetInt(6, 0);
+                            br.SkipNcnnArray(weightSize, 0);
+                            if (biasTerm)
+                                br.SkipNcnnArray(numOut, 1);
+                            wLayers++;
+                            continue;
+                        }
+
+                        if (string.Equals(l.type, "InnerProduct", StringComparison.Ordinal))
+                        {
+                            var numOut = l.GetInt(0, 0);
+                            var biasTerm = l.GetInt(1, 0) != 0;
+                            var weightSize = l.GetInt(2, 0);
+                            br.SkipNcnnArray(weightSize, 0);
+                            if (biasTerm)
+                                br.SkipNcnnArray(numOut, 1);
+                            wLayers++;
+                            continue;
+                        }
+
+                        if (string.Equals(l.type, "LayerNorm", StringComparison.Ordinal))
+                        {
+                            var affineSize = l.GetInt(0, 0);
+                            var affine = l.GetInt(2, 1) != 0;
+                            if (affine)
+                            {
+                                br.SkipNcnnArray(affineSize, 1);
+                                br.SkipNcnnArray(affineSize, 1);
+                                wLayers++;
+                            }
+                            continue;
+                        }
+
+                        if (string.Equals(l.type, "GroupNorm", StringComparison.Ordinal))
+                        {
+                            var channels = l.GetInt(0, 0);
+                            var affine = l.GetInt(3, 1) != 0;
+                            if (affine)
+                            {
+                                br.SkipNcnnArray(channels, 1);
+                                br.SkipNcnnArray(channels, 1);
+                                wLayers++;
+                            }
+                            continue;
+                        }
+
+                        if (string.Equals(l.type, "Embed", StringComparison.Ordinal))
+                        {
+                            var numOut = l.GetInt(0, 0);
+                            var biasTerm = l.GetInt(2, 0) != 0;
+                            var weightSize = l.GetInt(3, 0);
+                            br.SkipNcnnArray(weightSize, 0);
+                            if (biasTerm)
+                                br.SkipNcnnArray(numOut, 1);
+                            wLayers++;
+                            continue;
+                        }
+
+                        if (string.Equals(l.type, "MultiHeadAttention", StringComparison.Ordinal))
+                        {
+                            var embedDim = l.GetInt(0, 0);
+                            var weightSize = l.GetInt(2, 0);
+                            var kdim = l.GetInt(3, embedDim);
+                            var vdim = l.GetInt(4, embedDim);
+                            var qdim = embedDim > 0 ? (weightSize / Math.Max(1, embedDim)) : 0;
+
+                            br.SkipNcnnArray(embedDim * qdim, 0);
+                            br.SkipNcnnArray(embedDim, 1);
+                            br.SkipNcnnArray(embedDim * kdim, 0);
+                            br.SkipNcnnArray(embedDim, 1);
+                            br.SkipNcnnArray(embedDim * vdim, 0);
+                            br.SkipNcnnArray(embedDim, 1);
+                            br.SkipNcnnArray(qdim * embedDim, 0);
+                            br.SkipNcnnArray(qdim, 1);
+                            wLayers++;
+                            continue;
+                        }
+                    }
+
+                    Debug.Log("[SD] WeightScan ok: " + Path.GetFileName(paramPath) + " | weightedLayers=" + wLayers + " | binPos=" + br.Position + " / " + fs.Length + " | bin=" + Path.GetFileName(binPath));
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.Log("[SD] WeightScan failed: " + e);
             }
         }
 

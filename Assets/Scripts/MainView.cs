@@ -895,6 +895,9 @@ public class MainView : MonoBehaviour
         var sdClipSmokeButton = new Button(OnSdClipSmoke) { text = "SD-CLIP" };
         row1.Add(sdClipSmokeButton);
 
+        var sdWeightScanButton = new Button(OnSdWeightScan) { text = "SD权重" };
+        row1.Add(sdWeightScanButton);
+
         var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
         row1.Add(browseButton);
 #endif
@@ -995,6 +998,19 @@ public class MainView : MonoBehaviour
         catch (Exception e)
         {
             ShowToast("SD CLIP 失败: " + e.Message);
+        }
+    }
+
+    private void OnSdWeightScan()
+    {
+        try
+        {
+            NcnnCompute.NcnnComputePrototypeRunner.RunSdWeightScanFromUI();
+            ShowToast("已触发 SD 权重扫描，查看 Console 输出");
+        }
+        catch (Exception e)
+        {
+            ShowToast("SD 权重失败: " + e.Message);
         }
     }
 

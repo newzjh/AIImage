@@ -1479,6 +1479,8 @@ namespace NcnnCompute
             _cs.SetInt("_InH", input.h);
             _cs.SetInt("_InC", input.c);
             _cs.SetInt("_OutC", outC);
+            _cs.SetInt("_OutW", output.w);
+            _cs.SetInt("_OutH", output.h);
             _cs.SetInt("_Stride", Mathf.Max(1, stride));
             _cs.SetInt("_Pad", Mathf.Max(0, pad));
             _cs.SetInt("_ActType", activationType);
@@ -1488,7 +1490,7 @@ namespace NcnnCompute
             _cs.SetBuffer(_kConv3x3, "_ConvB", biasO);
             _cs.SetBuffer(_kConv3x3, "_ConvOut", output.buffer);
 
-            Dispatch3D(_kConv3x3, input.w, input.h, outC, 8, 8);
+            Dispatch3D(_kConv3x3, output.w, output.h, outC, 8, 8);
         }
 
         public void LeakyReluInplace(NcnnTensorBuffer t, float slope)

@@ -112,6 +112,8 @@ int _InW;
 int _InH;
 int _InC;
 int _OutC;
+int _OutW;
+int _OutH;
 int _Stride;
 int _Pad;
 
@@ -629,8 +631,8 @@ void NcnnPack4ToRgb01(uint3 id : SV_DispatchThreadID)
 [numthreads(8,8,1)]
 void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
 {
-    int outW = _InW;
-    int outH = _InH;
+    int outW = _OutW;
+    int outH = _OutH;
     int ox = (int)id.x;
     int oy = (int)id.y;
     int oc = (int)id.z;
@@ -1380,12 +1382,12 @@ void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupT
     GroupMemoryBarrierWithGroupSync();
 
     [unroll]
-    for (int stride = 128; stride > 0; stride >>= 1)
+    for (int stLn = 128; stLn > 0; stLn >>= 1)
     {
-        if (tid < stride)
+        if (tid < stLn)
         {
-            _Red0[tid] += _Red0[tid + stride];
-            _Red1[tid] += _Red1[tid + stride];
+            _Red0[tid] += _Red0[tid + stLn];
+            _Red1[tid] += _Red1[tid + stLn];
         }
         GroupMemoryBarrierWithGroupSync();
     }
@@ -1423,10 +1425,10 @@ void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThr
     GroupMemoryBarrierWithGroupSync();
 
     [unroll]
-    for (int stride = 128; stride > 0; stride >>= 1)
+    for (int stSm0 = 128; stSm0 > 0; stSm0 >>= 1)
     {
-        if (tid < stride)
-            _Red0[tid] = max(_Red0[tid], _Red0[tid + stride]);
+        if (tid < stSm0)
+            _Red0[tid] = max(_Red0[tid], _Red0[tid + stSm0]);
         GroupMemoryBarrierWithGroupSync();
     }
     float rowMax = _Red0[0];
@@ -1442,10 +1444,10 @@ void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThr
     GroupMemoryBarrierWithGroupSync();
 
     [unroll]
-    for (int stride = 128; stride > 0; stride >>= 1)
+    for (int stSm1 = 128; stSm1 > 0; stSm1 >>= 1)
     {
-        if (tid < stride)
-            _Red1[tid] += _Red1[tid + stride];
+        if (tid < stSm1)
+            _Red1[tid] += _Red1[tid + stSm1];
         GroupMemoryBarrierWithGroupSync();
     }
     float invSum = 1.0 / max(_Red1[0], 1e-20);
@@ -1630,33 +1632,43 @@ void NcnnTile(uint3 id : SV_DispatchThreadID)
     int axis = _TileAxis;
     if (dims == 1)
     {
-        ix = x % max(1, _TileInW);
+        uint inW1 = (uint)max(1, _TileInW);
+        ix = (int)((uint)x % inW1);
         _TileOut[idx] = _TileIn[ix];
         return;
     }
     if (dims == 2)
     {
-        if (axis == 0) iy = y % max(1, _TileInH);
-        else if (axis == 1) ix = x % max(1, _TileInW);
+        uint inW2 = (uint)max(1, _TileInW);
+        uint inH2 = (uint)max(1, _TileInH);
+        if (axis == 0) iy = (int)((uint)y % inH2);
+        else if (axis == 1) ix = (int)((uint)x % inW2);
         uint inIdx2 = (uint)(iy * _TileInW + ix);
         _TileOut[idx] = _TileIn[inIdx2];
         return;
     }
     if (dims == 3)
     {
-        if (axis == 0) ic = c % max(1, _TileInC);
-        else if (axis == 1) iy = y % max(1, _TileInH);
-        else if (axis == 2) ix = x % max(1, _TileInW);
+        uint inW3 = (uint)max(1, _TileInW);
+        uint inH3 = (uint)max(1, _TileInH);
+        uint inC3 = (uint)max(1, _TileInC);
+        if (axis == 0) ic = (int)((uint)c % inC3);
+        else if (axis == 1) iy = (int)((uint)y % inH3);
+        else if (axis == 2) ix = (int)((uint)x % inW3);
         uint inIdx3 = (uint)((ic * _TileInH + iy) * _TileInW + ix);
         _TileOut[idx] = _TileIn[inIdx3];
         return;
     }
 
     // dims == 4
-    if (axis == 0) ic = c % max(1, _TileInC);
-    else if (axis == 1) iz = z % max(1, _TileInD);
-    else if (axis == 2) iy = y % max(1, _TileInH);
-    else if (axis == 3) ix = x % max(1, _TileInW);
+    uint inW4 = (uint)max(1, _TileInW);
+    uint inH4 = (uint)max(1, _TileInH);
+    uint inD4 = (uint)max(1, _TileInD);
+    uint inC4 = (uint)max(1, _TileInC);
+    if (axis == 0) ic = (int)((uint)c % inC4);
+    else if (axis == 1) iz = (int)((uint)z % inD4);
+    else if (axis == 2) iy = (int)((uint)y % inH4);
+    else if (axis == 3) ix = (int)((uint)x % inW4);
     uint inIdx4 = (uint)((((ic * _TileInD + iz) * _TileInH + iy) * _TileInW) + ix);
     _TileOut[idx] = _TileIn[inIdx4];
 }
@@ -1704,17 +1716,17 @@ void NcnnGroupNormStats(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gro
     int tid = (int)groupThreadId.x;
     if (g < 0 || g >= _GnGroup) return;
 
-    int size = _GnW * _GnH;
-    int total = _GnChannelsG * size;
-    int chBase = g * _GnChannelsG;
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)(_GnChannelsG) * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
 
     float sum = 0.0;
     float sqsum = 0.0;
-    for (int t = tid; t < total; t += 256)
+    for (uint t = (uint)tid; t < total; t += 256u)
     {
-        int ch = t / size;
-        int s = t - ch * size;
-        int c = chBase + ch;
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
         float x = _GnInOut[c * size + s];
         sum += x;
         sqsum += x * x;
@@ -1725,12 +1737,12 @@ void NcnnGroupNormStats(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gro
     GroupMemoryBarrierWithGroupSync();
 
     [unroll]
-    for (int stride = 128; stride > 0; stride >>= 1)
+    for (int stGn = 128; stGn > 0; stGn >>= 1)
     {
-        if (tid < stride)
+        if (tid < stGn)
         {
-            red0[tid] += red0[tid + stride];
-            red1[tid] += red1[tid + stride];
+            red0[tid] += red0[tid + stGn];
+            red1[tid] += red1[tid + stGn];
         }
         GroupMemoryBarrierWithGroupSync();
     }
@@ -1746,20 +1758,21 @@ void NcnnGroupNormApply(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gro
     int tid = (int)groupThreadId.x;
     if (g < 0 || g >= _GnGroup) return;
 
-    int size = _GnW * _GnH;
-    int total = _GnChannelsG * size;
-    int chBase = g * _GnChannelsG;
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)(_GnChannelsG) * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
 
     float2 stats = _GnStatsOut[g].xy;
-    float mean = stats.x / max(1, total);
-    float var = stats.y / max(1, total) - mean * mean;
+    float denom = (float)max(1u, total);
+    float mean = stats.x / denom;
+    float var = stats.y / denom - mean * mean;
     float invstd = rsqrt(max(var + _GnEps, 1e-20));
 
-    for (int t = tid; t < total; t += 256)
+    for (uint t = (uint)tid; t < total; t += 256u)
     {
-        int ch = t / size;
-        int s = t - ch * size;
-        int c = chBase + ch;
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
         float x = _GnInOut[c * size + s];
         float y = (x - mean) * invstd;
         if (_GnAffine != 0)
