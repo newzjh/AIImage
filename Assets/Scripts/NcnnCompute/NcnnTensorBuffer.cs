@@ -96,6 +96,46 @@ namespace NcnnCompute
             return new NcnnTensorBuffer(buffer, dims, w, h, d, c, false);
         }
 
+        public NcnnTensorBuffer Reshape(int newDims, int newW, int newH = 1, int newD = 1, int newC = 1)
+        {
+            return View(newDims, newW, newH, newD, newC);
+        }
+
+        public NcnnTensorBuffer ExpandDims(int axis)
+        {
+            var inDims = dims;
+            if (inDims < 1 || inDims > 4)
+                throw new InvalidOperationException("invalid dims: " + inDims);
+            if (inDims == 4)
+                throw new InvalidOperationException("ExpandDims would exceed dims=4");
+
+            if (axis < 0) axis += (inDims + 1);
+            if (axis < 0 || axis > inDims)
+                throw new ArgumentOutOfRangeException(nameof(axis));
+
+            int s0 = w;
+            int s1 = inDims >= 2 ? h : 1;
+            int s2 = inDims == 4 ? d : (inDims >= 3 ? c : 1);
+            int s3 = inDims == 4 ? c : 1;
+
+            var sizes = new[] { s0, s1, s2, s3 };
+            var outSizes = new[] { 1, 1, 1, 1 };
+            var outDims = inDims + 1;
+            for (var i = 0; i < outDims; i++)
+            {
+                if (i < axis)
+                    outSizes[i] = sizes[i];
+                else if (i == axis)
+                    outSizes[i] = 1;
+                else
+                    outSizes[i] = sizes[i - 1];
+            }
+
+            if (outDims == 2) return View(2, outSizes[0], outSizes[1], 1, 1);
+            if (outDims == 3) return View(3, outSizes[0], outSizes[1], 1, outSizes[2]);
+            return View(4, outSizes[0], outSizes[1], outSizes[2], outSizes[3]);
+        }
+
         public void Dispose()
         {
             if (!ownsBuffer) return;

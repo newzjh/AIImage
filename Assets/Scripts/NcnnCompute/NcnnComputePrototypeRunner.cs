@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Linq;
+using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
@@ -60,6 +62,365 @@ namespace NcnnCompute
             runner.RunSelfTests();
         }
 
+        public static void RunSdParamSupportReportFromUI()
+        {
+            try
+            {
+                var root = Directory.GetParent(Application.dataPath)?.FullName ?? "";
+                var supported = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "Input","Split","Concat",
+                    "Reshape","Permute","Slice","ExpandDims",
+                    "Tile",
+                    "Convolution","Interp","Eltwise",
+                    "BinaryOp","UnaryOp","Swish","Sigmoid","GELU","Softmax",
+                    "Padding","Pooling",
+                    "InnerProduct",
+                    "MatMul","Gemm",
+                    "LayerNorm","GroupNorm",
+                    "Embed",
+                    "Reduction",
+                    "MemoryData"
+                };
+
+                var baseDir = Path.Combine(root, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets");
+                var paramFiles = new[]
+                {
+                    "FrozenCLIPEmbedder-fp16.param",
+                    "UNetModel-base-MHA-fp16.param",
+                    "AutoencoderKL-base-fp16.param"
+                };
+
+                foreach (var fn in paramFiles)
+                {
+                    var path = Path.Combine(baseDir, fn);
+                    if (!File.Exists(path))
+                    {
+                        Debug.Log("[SD] param not found: " + path);
+                        continue;
+                    }
+
+                    var txt = File.ReadAllText(path);
+                    var model = NcnnParamParser.Parse(txt);
+                    var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+                    foreach (var l in model.layers)
+                    {
+                        var key = l.type ?? "";
+                        if (!counts.TryGetValue(key, out var c)) c = 0;
+                        counts[key] = c + 1;
+                    }
+
+                    var missing = counts.Keys.Where(t => !supported.Contains(t)).OrderBy(t => t).ToArray();
+                    var top = counts.OrderByDescending(kv => kv.Value).Take(32).Select(kv => kv.Key + ":" + kv.Value).ToArray();
+                    Debug.Log("[SD] " + fn + " layers=" + model.layers.Count + " types=" + counts.Count + " | top=" + string.Join(",", top));
+                    if (missing.Length > 0)
+                        Debug.Log("[SD] " + fn + " unsupported: " + string.Join(",", missing));
+
+                    var baseName = Path.GetFileNameWithoutExtension(fn);
+                    var directBin = Path.Combine(baseDir, baseName + ".bin");
+                    var streamingHit = Array.Empty<string>();
+                    try
+                    {
+                        streamingHit = Directory.GetFiles(Application.streamingAssetsPath, baseName + ".bin", SearchOption.AllDirectories);
+                    }
+                    catch
+                    {
+                    }
+                    var haveDirect = File.Exists(directBin);
+                    var haveStreaming = streamingHit.Length > 0;
+                    Debug.Log("[SD] " + baseName + ".bin present: direct=" + (haveDirect ? 1 : 0) + " streaming=" + (haveStreaming ? streamingHit.Length : 0));
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.Log("[SD] support report failed: " + e);
+            }
+        }
+
+        public static void RunSdMemoryDataDumpFromUI()
+        {
+            try
+            {
+                var root = Directory.GetParent(Application.dataPath)?.FullName ?? "";
+                var baseDir = Path.Combine(root, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets");
+                var paramPath = Path.Combine(baseDir, "FrozenCLIPEmbedder-fp16.param");
+                var binPath = Path.Combine(baseDir, "FrozenCLIPEmbedder-fp16.bin");
+                if (!File.Exists(paramPath) || !File.Exists(binPath))
+                {
+                    Debug.Log("[SD] MemoryData dump missing files: param=" + (File.Exists(paramPath) ? 1 : 0) + " bin=" + (File.Exists(binPath) ? 1 : 0));
+                    Debug.Log("[SD] paramPath=" + paramPath);
+                    Debug.Log("[SD] binPath=" + binPath);
+                    return;
+                }
+
+                var model = NcnnParamParser.Parse(File.ReadAllText(paramPath));
+                using var fs = File.OpenRead(binPath);
+                using var br = new NcnnBinReader(fs);
+
+                var buffers = new List<ComputeBuffer>();
+                try
+                {
+                    var count = 0;
+                    foreach (var l in model.layers)
+                    {
+                        if (!string.Equals(l.type, "MemoryData", StringComparison.Ordinal))
+                            continue;
+
+                        var w = l.GetInt(0, 0);
+                        var h = l.GetInt(1, 0);
+                        var d = l.GetInt(11, 0);
+                        var c = l.GetInt(2, 0);
+                        var loadType = l.GetInt(21, 1);
+
+                        var a = br.ReadNcnnMatAsFloat32(w, h, d, c, loadType);
+                        var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
+                        buf.SetData(a);
+                        buffers.Add(buf);
+                        count++;
+
+                        var shape = d != 0 ? (w + "x" + h + "x" + d + "x" + c)
+                            : (c != 0 ? (w + "x" + h + "x" + c)
+                            : (h != 0 ? (w + "x" + h) : w.ToString()));
+                        var v0 = a.Length > 0 ? a[0].ToString("0.######") : "n/a";
+                        Debug.Log("[SD] MemoryData " + l.name + " shape=" + shape + " loadType=" + loadType + " count=" + a.Length + " v0=" + v0);
+                    }
+                    Debug.Log("[SD] MemoryData dump done, count=" + count + " binPos=" + br.Position);
+                }
+                finally
+                {
+                    foreach (var b in buffers)
+                    {
+                        try { b?.Dispose(); } catch { }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.Log("[SD] MemoryData dump failed: " + e);
+            }
+        }
+
+        public static void RunSdClipSmokeFromUI()
+        {
+            try
+            {
+                var root = Directory.GetParent(Application.dataPath)?.FullName ?? "";
+                var baseDir = Path.Combine(root, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets");
+                var paramPath = Path.Combine(baseDir, "FrozenCLIPEmbedder-fp16.param");
+                var binPath = Path.Combine(baseDir, "FrozenCLIPEmbedder-fp16.bin");
+                if (!File.Exists(paramPath) || !File.Exists(binPath))
+                {
+                    Debug.Log("[SD] CLIP smoke missing files: param=" + (File.Exists(paramPath) ? 1 : 0) + " bin=" + (File.Exists(binPath) ? 1 : 0));
+                    Debug.Log("[SD] paramPath=" + paramPath);
+                    Debug.Log("[SD] binPath=" + binPath);
+                    return;
+                }
+
+                var model = NcnnParamParser.Parse(File.ReadAllText(paramPath));
+                using var fs = File.OpenRead(binPath);
+                using var br = new NcnnBinReader(fs);
+                var ops = new NcnnOps();
+
+                var blobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
+                var owned = new List<ComputeBuffer>();
+                try
+                {
+                    const int words = 77;
+                    const int startTok = 49406;
+                    const int endTok = 49407;
+                    var tokenIds = new int[words];
+                    tokenIds[0] = startTok;
+                    tokenIds[words - 1] = endTok;
+                    using (var tokBuf = new ComputeBuffer(words, sizeof(int), ComputeBufferType.Structured))
+                    {
+                        tokBuf.SetData(tokenIds);
+                        blobs["token"] = tokBuf;
+                        owned.Add(tokBuf);
+
+                        long embedDataStart = 0;
+                        int embedNumOutput = 0;
+                        int embedInputDim = 0;
+                        bool embedFp16 = false;
+                        long afterEmbedPos = 0;
+
+                        for (var i = 0; i < model.layers.Count; i++)
+                        {
+                            var l = model.layers[i];
+
+                            if (string.Equals(l.type, "Input", StringComparison.Ordinal))
+                                continue;
+
+                            if (string.Equals(l.type, "MemoryData", StringComparison.Ordinal))
+                            {
+                                var w = l.GetInt(0, 0);
+                                var h = l.GetInt(1, 0);
+                                var d = l.GetInt(11, 0);
+                                var c = l.GetInt(2, 0);
+                                var loadType = l.GetInt(21, 1);
+                                var a = br.ReadNcnnMatAsFloat32(w, h, d, c, loadType);
+                                var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
+                                buf.SetData(a);
+                                blobs[l.topNames[0]] = buf;
+                                owned.Add(buf);
+                                continue;
+                            }
+
+                            if (string.Equals(l.type, "Embed", StringComparison.Ordinal))
+                            {
+                                embedNumOutput = l.GetInt(0, 0);
+                                embedInputDim = l.GetInt(1, 0);
+                                var biasTerm = l.GetInt(2, 0) != 0;
+                                var weightSize = l.GetInt(3, 0);
+                                if (embedNumOutput <= 0 || embedInputDim <= 0 || weightSize <= 0)
+                                    throw new InvalidOperationException("Embed invalid params: " + l.name);
+
+                                var flagPos = br.Position;
+                                var flag = br.ReadUInt32();
+                                var sum = (byte)(flag & 0xFF) + (byte)((flag >> 8) & 0xFF) + (byte)((flag >> 16) & 0xFF) + (byte)((flag >> 24) & 0xFF);
+                                if (flag == 0x01306B47)
+                                {
+                                    embedFp16 = true;
+                                    embedDataStart = br.Position;
+                                    br.Skip(((long)weightSize * 2 + 3) & ~3);
+                                }
+                                else if (sum == 0)
+                                {
+                                    embedFp16 = false;
+                                    embedDataStart = flagPos;
+                                    br.Seek(flagPos);
+                                    br.Skip((long)weightSize * 4);
+                                }
+                                else
+                                {
+                                    throw new InvalidOperationException("Embed unexpected flag at " + flagPos + ": 0x" + flag.ToString("X8"));
+                                }
+
+                                ComputeBuffer biasBuf = null;
+                                if (biasTerm)
+                                {
+                                    var b = br.ReadNcnnMatAsFloat32(embedNumOutput, 0, 0, 0, 1);
+                                    biasBuf = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                                    biasBuf.SetData(b);
+                                    owned.Add(biasBuf);
+                                }
+
+                                afterEmbedPos = br.Position;
+
+                                var outData = new float[words * embedNumOutput];
+                                for (var q = 0; q < words; q++)
+                                {
+                                    var ti = tokenIds[q];
+                                    if (ti < 0) ti = 0;
+                                    if (ti >= embedInputDim) ti = embedInputDim - 1;
+                                    var rowOffset = embedDataStart + (long)ti * embedNumOutput * (embedFp16 ? 2 : 4);
+                                    br.Seek(rowOffset);
+                                    float[] row;
+                                    if (embedFp16)
+                                        row = br.ReadFp16ArrayAsFloat32(embedNumOutput);
+                                    else
+                                        row = br.ReadFloat32Array(embedNumOutput);
+                                    Buffer.BlockCopy(row, 0, outData, q * embedNumOutput * sizeof(float), embedNumOutput * sizeof(float));
+                                }
+                                br.Seek(afterEmbedPos);
+
+                                if (biasBuf != null)
+                                {
+                                    using var tmpIn = new ComputeBuffer(outData.Length, sizeof(float), ComputeBufferType.Structured);
+                                    tmpIn.SetData(outData);
+                                    using var tmpOut = new ComputeBuffer(outData.Length, sizeof(float), ComputeBufferType.Structured);
+                                    ops.CopyBuf(tmpIn, tmpOut, outData.Length);
+                                    ops.BinaryOpBuf(tmpOut, biasBuf, outData.Length, 0, tmpOut);
+                                    tmpOut.GetData(outData);
+                                }
+
+                                var outBuf = new ComputeBuffer(outData.Length, sizeof(float), ComputeBufferType.Structured);
+                                outBuf.SetData(outData);
+                                blobs[l.topNames[0]] = outBuf;
+                                owned.Add(outBuf);
+                                continue;
+                            }
+
+                            if (string.Equals(l.type, "BinaryOp", StringComparison.Ordinal))
+                            {
+                                var opType = l.GetInt(0, 0);
+                                var withScalar = l.GetInt(1, 0);
+                                var scalarB = l.GetFloat(2, 0f);
+                                var a = blobs[l.bottomNames[0]];
+                                var total = a.count;
+                                var outBuf = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
+                                if (withScalar != 0)
+                                {
+                                    ops.BinaryOpScalarBuf(a, scalarB, total, opType, outBuf);
+                                }
+                                else
+                                {
+                                    var b = blobs[l.bottomNames[1]];
+                                    if (b.count != total)
+                                        throw new InvalidOperationException("BinaryOp broadcast not supported in CLIP smoke: " + l.name);
+                                    ops.BinaryOpBuf(a, b, total, opType, outBuf);
+                                }
+                                blobs[l.topNames[0]] = outBuf;
+                                owned.Add(outBuf);
+                                continue;
+                            }
+
+                            if (string.Equals(l.type, "Split", StringComparison.Ordinal))
+                            {
+                                var src = blobs[l.bottomNames[0]];
+                                for (var t = 0; t < l.topNames.Length; t++)
+                                    blobs[l.topNames[t]] = src;
+                                continue;
+                            }
+
+                            if (string.Equals(l.type, "LayerNorm", StringComparison.Ordinal))
+                            {
+                                var affineSize = l.GetInt(0, 0);
+                                var eps = l.GetFloat(1, 1e-5f);
+                                var affine = l.GetInt(2, 1) != 0;
+                                if (!affine || affineSize <= 0)
+                                    throw new InvalidOperationException("LayerNorm(affine=0) not supported in CLIP smoke: " + l.name);
+
+                                var gamma = br.ReadNcnnMatAsFloat32(affineSize, 0, 0, 0, 1);
+                                var beta = br.ReadNcnnMatAsFloat32(affineSize, 0, 0, 0, 1);
+                                var gammaBuf = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
+                                var betaBuf = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
+                                gammaBuf.SetData(gamma);
+                                betaBuf.SetData(beta);
+                                owned.Add(gammaBuf);
+                                owned.Add(betaBuf);
+
+                                var src = blobs[l.bottomNames[0]];
+                                var outBuf = new ComputeBuffer(src.count, sizeof(float), ComputeBufferType.Structured);
+                                ops.CopyBuf(src, outBuf, src.count);
+                                ops.LayerNorm2DInplace(outBuf, words, affineSize, eps, true, gammaBuf, betaBuf);
+                                blobs[l.topNames[0]] = outBuf;
+                                owned.Add(outBuf);
+
+                                var peek = new float[Math.Min(16, outBuf.count)];
+                                outBuf.GetData(peek, 0, 0, peek.Length);
+                                var maxAbs = 0f;
+                                for (var k = 0; k < peek.Length; k++)
+                                    maxAbs = Mathf.Max(maxAbs, Mathf.Abs(peek[k]));
+                                Debug.Log("[SD] CLIP smoke ok: layer=" + l.name + " out=" + l.topNames[0] + " count=" + outBuf.count + " peekMaxAbs=" + maxAbs.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture));
+                                break;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    foreach (var b in owned)
+                    {
+                        try { b?.Dispose(); } catch { }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.Log("[SD] CLIP smoke failed: " + e);
+            }
+        }
+
         public void RunSelfTests()
         {
             RunBufferOpsSelfTest();
@@ -75,8 +436,10 @@ namespace NcnnCompute
             SelfTestEmbed(ops);
             SelfTestPermute(ops);
             SelfTestSlice(ops);
+            SelfTestTile(ops);
             SelfTestReduceAll(ops);
             SelfTestGroupNorm(ops);
+            SelfTestReshapeExpandDims();
         }
 
         private static void SelfTestMatMul(NcnnOps ops)
@@ -113,6 +476,19 @@ namespace NcnnCompute
             for (var i = 0; i < got.Length; i++)
                 maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refOut[i]));
             UnityEngine.Debug.Log("[SELFTEST] MatMul2D maxErr=" + maxErr);
+
+            var bt = new float[n * k];
+            for (var kk = 0; kk < k; kk++)
+                for (var j = 0; j < n; j++)
+                    bt[j * k + kk] = b[kk * n + j];
+            using var bufBt = new ComputeBuffer(bt.Length, sizeof(float), ComputeBufferType.Structured);
+            bufBt.SetData(bt);
+            ops.MatMul2D(bufA, bufBt, m, n, k, true, bufOut);
+            bufOut.GetData(got);
+            maxErr = 0f;
+            for (var i = 0; i < got.Length; i++)
+                maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refOut[i]));
+            UnityEngine.Debug.Log("[SELFTEST] MatMul2D transB maxErr=" + maxErr);
         }
 
         private static void SelfTestGemm(NcnnOps ops)
@@ -565,6 +941,37 @@ namespace NcnnCompute
             var maxErr = 0f;
             for (var i = 0; i < got.Length; i++) maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refY[i]));
             UnityEngine.Debug.Log("[SELFTEST] GroupNorm maxErr=" + maxErr);
+        }
+
+        private static void SelfTestReshapeExpandDims()
+        {
+            using var t = new NcnnTensorBuffer(2, 3, 4);
+            var v2 = t.Reshape(2, 6, 4);
+            UnityEngine.Debug.Log("[SELFTEST] Reshape dims2 ok=" + (v2.elementCount == t.elementCount && v2.dims == 2));
+            var v4 = t.ExpandDims(2);
+            UnityEngine.Debug.Log("[SELFTEST] ExpandDims ok=" + (v4.elementCount == t.elementCount && v4.dims == 4));
+        }
+
+        private static void SelfTestTile(NcnnOps ops)
+        {
+            const int dims = 1;
+            const int inW = 4;
+            const int tiles = 3;
+            var x = new float[inW];
+            for (var i = 0; i < x.Length; i++) x[i] = i * 0.25f - 0.3f;
+            var outW = inW * tiles;
+            var refY = new float[outW];
+            for (var i = 0; i < outW; i++) refY[i] = x[i % inW];
+
+            using var bufIn = new ComputeBuffer(inW, sizeof(float), ComputeBufferType.Structured);
+            using var bufOut = new ComputeBuffer(outW, sizeof(float), ComputeBufferType.Structured);
+            bufIn.SetData(x);
+            ops.Tile(bufIn, dims, inW, 1, 1, 1, 0, tiles, outW, 1, 1, 1, bufOut);
+            var got = new float[outW];
+            bufOut.GetData(got);
+            var maxErr = 0f;
+            for (var i = 0; i < outW; i++) maxErr = Mathf.Max(maxErr, Mathf.Abs(got[i] - refY[i]));
+            UnityEngine.Debug.Log("[SELFTEST] Tile dims1 maxErr=" + maxErr);
         }
     }
 }

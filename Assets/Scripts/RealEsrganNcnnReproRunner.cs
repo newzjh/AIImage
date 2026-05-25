@@ -25,6 +25,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public bool enableVulkanTempPoolByDefault = true;
     public int maxYieldEveryTiles = 16;
     public bool useCommandBufferOnVulkan = true;
+    public bool enableGpuFenceTiming = false;
+    public int gpuFenceEveryTiles = 1;
 
     public event Action<float, string> ProgressChanged;
 
@@ -225,6 +227,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         ComputeBuffer probeBuf = null;
         Vector4[] probeData = null;
         ComputeBuffer probeInBuf = null;
+        ComputeBuffer gpuWaitSyncBuf = null;
+        uint[] gpuWaitSyncData = null;
         try
         {
             if (runInW != originalW || runInH != originalH)
@@ -269,6 +273,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var rentMs = 0L;
             var returnMs = 0L;
             var yieldMs = 0L;
+            var gpuWaitMs = 0L;
+            var gpuWaitCalls = 0;
+            var gpuWaitErrors = 0;
             var swTileAll = Stopwatch.StartNew();
             if (enableTileProbe)
             {
@@ -281,6 +288,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 probeInBuf = new ComputeBuffer(tileCount, sizeof(float) * 4, ComputeBufferType.Structured);
                 probeInData = new Vector4[tileCount];
+            }
+            if (enableGpuFenceTiming)
+            {
+                gpuWaitSyncBuf = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
+                gpuWaitSyncData = new uint[1];
             }
 
             var effectiveYieldEveryTiles = yieldEveryTiles;
@@ -335,6 +347,25 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                         var swBlit = Stopwatch.StartNew();
                         _ops.BlitTileToDst(outArr, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
                         blitMs += swBlit.ElapsedMilliseconds;
+
+                        if (enableGpuFenceTiming && gpuFenceEveryTiles > 0 && (tileIndex % gpuFenceEveryTiles) == 0)
+                        {
+                            var swGpu = Stopwatch.StartNew();
+                            try
+                            {
+                                if (gpuWaitSyncBuf != null && gpuWaitSyncData != null)
+                                {
+                                    _ops.TouchU32(gpuWaitSyncBuf, (uint)tileIndex);
+                                    gpuWaitSyncBuf.GetData(gpuWaitSyncData);
+                                }
+                                gpuWaitCalls++;
+                            }
+                            catch
+                            {
+                                gpuWaitErrors++;
+                            }
+                            gpuWaitMs += swGpu.ElapsedMilliseconds;
+                        }
                     }
                     finally
                     {
@@ -493,6 +524,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     "[TIMING] ESRGAN(repro.breakdown) tiles=" + tileCount
                     + " rent=" + rentMs + " ms | return=" + returnMs + " ms | yield=" + yieldMs + " ms"
                     + " | pack=" + packMs + " ms | forward=" + forwardMs + " ms | blit=" + blitMs + " ms"
+                    + " | gpuWait=" + gpuWaitMs + " ms (" + gpuWaitCalls + "/" + gpuWaitErrors + ")"
                     + " | tileAll=" + swTileAll.ElapsedMilliseconds + " ms | pool=" + (_useTempPoolThisRun ? "1" : "0")
                 );
             }
@@ -526,6 +558,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
             try { probeBuf?.Dispose(); } catch { }
             try { probeInBuf?.Dispose(); } catch { }
+            try { gpuWaitSyncBuf?.Dispose(); } catch { }
             if (_useTempPoolThisRun && clearTempPoolAfterRun)
                 ClearTempPool();
         }
@@ -678,8 +711,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
 
                 var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
-                _ops.PaddingPack4(src.t, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.PaddingPack4(cmd, src.t, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
+                }
+                else
+                {
+                    _ops.PaddingPack4(src.t, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -705,8 +745,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outW = Mathf.Max(1, outW);
                 outH = Mathf.Max(1, outH);
                 var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
-                _ops.PoolingPack4(src.t, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.PoolingPack4(cmd, src.t, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                }
+                else
+                {
+                    _ops.PoolingPack4(src.t, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -719,8 +766,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 if (axis != 0)
                     throw new InvalidOperationException("Softmax axis not supported: " + axis);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
-                _ops.SoftmaxChannelPack4(src.t, src.packs, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.SoftmaxChannelPack4(cmd, src.t, src.packs, outArr);
+                }
+                else
+                {
+                    _ops.SoftmaxChannelPack4(src.t, src.packs, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -777,17 +831,32 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var scalarB = l.GetFloat(2, 0f);
                 var a = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
                 if (withScalar != 0)
                 {
-                    _ops.BinaryOpScalarPack4(a.t, scalarB, a.packs, opType, outArr);
+                    if (_useCmdThisRun)
+                    {
+                        EnsureCmd();
+                        _ops.BinaryOpScalarPack4(cmd, a.t, scalarB, a.packs, opType, outArr);
+                    }
+                    else
+                    {
+                        _ops.BinaryOpScalarPack4(a.t, scalarB, a.packs, opType, outArr);
+                    }
                 }
                 else
                 {
                     var b = Get(blobs, l.bottomNames[1]);
                     if (a.w != b.w || a.h != b.h || a.packs != b.packs)
                         throw new InvalidOperationException("BinaryOp broadcast not supported: " + l.name);
-                    _ops.BinaryOpPack4(a.t, b.t, a.packs, opType, outArr);
+                    if (_useCmdThisRun)
+                    {
+                        EnsureCmd();
+                        _ops.BinaryOpPack4(cmd, a.t, b.t, a.packs, opType, outArr);
+                    }
+                    else
+                    {
+                        _ops.BinaryOpPack4(a.t, b.t, a.packs, opType, outArr);
+                    }
                 }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
@@ -799,8 +868,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var src = Get(blobs, l.bottomNames[0]);
                 var opType = l.GetInt(0, 0);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
-                _ops.UnaryOpPack4(src.t, src.packs, opType, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.UnaryOpPack4(cmd, src.t, src.packs, opType, outArr);
+                }
+                else
+                {
+                    _ops.UnaryOpPack4(src.t, src.packs, opType, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -810,8 +886,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var src = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
-                _ops.SwishPack4(src.t, src.packs, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.SwishPack4(cmd, src.t, src.packs, outArr);
+                }
+                else
+                {
+                    _ops.SwishPack4(src.t, src.packs, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -821,8 +904,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var src = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
-                _ops.SigmoidPack4(src.t, src.packs, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.SigmoidPack4(cmd, src.t, src.packs, outArr);
+                }
+                else
+                {
+                    _ops.SigmoidPack4(src.t, src.packs, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
@@ -833,8 +923,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var src = Get(blobs, l.bottomNames[0]);
                 var fast = l.GetInt(0, 0) != 0;
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun) FlushCmd();
-                _ops.GeluPack4(src.t, src.packs, fast, outArr);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.GeluPack4(cmd, src.t, src.packs, fast, outArr);
+                }
+                else
+                {
+                    _ops.GeluPack4(src.t, src.packs, fast, outArr);
+                }
                 blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;

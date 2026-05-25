@@ -46,10 +46,16 @@
 #pragma kernel NcnnEmbed
 #pragma kernel NcnnPermute
 #pragma kernel NcnnSlice
+#pragma kernel NcnnTile
 #pragma kernel NcnnReduceSum256
 #pragma kernel NcnnMulScalarBuf
 #pragma kernel NcnnGroupNormStats
 #pragma kernel NcnnGroupNormApply
+#pragma kernel NcnnTouchU32
+#pragma kernel NcnnCopyBuf
+#pragma kernel NcnnBinaryOpBuf
+#pragma kernel NcnnUnaryOpBuf
+#pragma kernel NcnnSigmoidBuf
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -74,6 +80,13 @@ int _DstY;
 int _TileOutX;
 int _TileOutY;
 float _BlitScale;
+RWStructuredBuffer<uint> _TouchOut;
+int _TouchValue;
+
+int _UnaryOpType;
+int _BinaryOpType;
+int _BinaryWithScalar;
+float _BinaryScalar;
 
 [numthreads(256,1,1)]
 void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
@@ -177,23 +190,23 @@ void NcnnConv3x3Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     int baseY = (int)groupId.y * 8;
     int tid = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
 
-    for (int ip = 0; ip < _InPacks; ip++)
+    for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
         for (int loadIndex = tid; loadIndex < 100; loadIndex += 64)
         {
-            int lx = loadIndex - (loadIndex / 10) * 10;
-            int ly = loadIndex / 10;
+            int ly = (int)((float)loadIndex * 0.1);
+            int lx = loadIndex - ly * 10;
             int ix = baseX + lx - _Pad;
             int iy = baseY + ly - _Pad;
             float4 v = 0.0;
             if (ix >= 0 && iy >= 0 && ix < (int)iw && iy < (int)ih)
-                v = _ConvInArr[int3(ix, iy, ip)];
+                v = _ConvInArr[int3(ix, iy, ip0)];
             _Conv3x3Pack4_s_in[loadIndex] = v;
         }
 
         if (tid == 0)
         {
-            int wbase = ((op * _InPacks + ip) * 9 * 4);
+            int wbase = ((op * _InPacks + ip0) * 9 * 4);
             [unroll]
             for (int k = 0; k < 9; k++)
             {
@@ -249,10 +262,10 @@ void NcnnConv1x1Pack4(uint3 id : SV_DispatchThreadID)
 
     float4 sum = _ConvB4[op];
 
-    for (int ip = 0; ip < _InPacks; ip++)
+    for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
-        float4 inV = _ConvInArr[int3((int)id.x, (int)id.y, ip)];
-        int base = ((op * _InPacks + ip) * 4);
+        float4 inV = _ConvInArr[int3((int)id.x, (int)id.y, ip0)];
+        int base = ((op * _InPacks + ip0) * 4);
         float4 w0 = _ConvW4[base + 0];
         float4 w1 = _ConvW4[base + 1];
         float4 w2 = _ConvW4[base + 2];
@@ -613,19 +626,16 @@ void NcnnPack4ToRgb01(uint3 id : SV_DispatchThreadID)
     v.xyz = v.xyz * 0.5 + 0.5;
     _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
 }
-[numthreads(64,1,1)]
+[numthreads(8,8,1)]
 void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
 {
-    uint outIndex = _BaseIndex + id.x;
     int outW = _InW;
     int outH = _InH;
-    uint outN = (uint)(outW * outH * _OutC);
-    if (outIndex >= outN) return;
-
-    int oc = (int)(outIndex / (uint)(outW * outH));
-    int rem = (int)(outIndex - (uint)(oc * outW * outH));
-    int oy = rem / outW;
-    int ox = rem - oy * outW;
+    int ox = (int)id.x;
+    int oy = (int)id.y;
+    int oc = (int)id.z;
+    if (ox < 0 || oy < 0 || oc < 0) return;
+    if (ox >= outW || oy >= outH || oc >= _OutC) return;
 
     float sum = _ConvB[oc];
 
@@ -650,6 +660,7 @@ void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
     if (_ActType == 2)
         sum = sum >= 0.0 ? sum : sum * _ActParam;
 
+    uint outIndex = (uint)((oc * outH + oy) * outW + ox);
     _ConvOut[outIndex] = sum;
 }
 
@@ -704,6 +715,73 @@ void NcnnAddWeighted(uint3 id : SV_DispatchThreadID)
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
     _BufOut[idx] = _BufA[idx] * _CoeffA + _BufB[idx] * _CoeffB;
+}
+
+[numthreads(256,1,1)]
+void NcnnCopyBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+    _BufOut[idx] = _BufA[idx];
+}
+
+[numthreads(256,1,1)]
+void NcnnBinaryOpBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+
+    float a = _BufA[idx];
+    float b = _BinaryWithScalar != 0 ? _BinaryScalar : _BufB[idx];
+
+    float o = a;
+    int t = _BinaryOpType;
+    if (t == 0) o = a + b;
+    else if (t == 1) o = a - b;
+    else if (t == 2) o = a * b;
+    else if (t == 3) o = a / max(b, 1e-12);
+    else if (t == 4) o = max(a, b);
+    else if (t == 5) o = min(a, b);
+    else if (t == 6) o = pow(abs(a), b);
+    else if (t == 7) o = b - a;
+    else if (t == 8) o = b / max(a, 1e-12);
+    else if (t == 9) o = pow(abs(b), a);
+    _BufOut[idx] = o;
+}
+
+[numthreads(256,1,1)]
+void NcnnUnaryOpBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+
+    float x = _BufA[idx];
+    float y = x;
+    int t = _UnaryOpType;
+    if (t == 0) y = abs(x);
+    else if (t == 1) y = -x;
+    else if (t == 2) y = floor(x);
+    else if (t == 3) y = ceil(x);
+    else if (t == 4) y = x * x;
+    else if (t == 5) y = sqrt(max(x, 0.0));
+    else if (t == 6) y = rsqrt(max(x, 1e-12));
+    else if (t == 7) y = exp(x);
+    else if (t == 8) y = log(max(x, 1e-12));
+    else if (t == 9) y = sin(x);
+    else if (t == 10) y = cos(x);
+    else if (t == 11) y = tan(x);
+    else if (t == 15) y = 1.0 / max(x, 1e-12);
+    else if (t == 16) y = tanh(x);
+    _BufOut[idx] = y;
+}
+
+[numthreads(256,1,1)]
+void NcnnSigmoidBuf(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+    float x = _BufA[idx];
+    _BufOut[idx] = 1.0 / (1.0 + exp(-x));
 }
 
 [numthreads(256,1,1)]
@@ -815,14 +893,12 @@ int _SoftmaxPacks;
 
 Texture2DArray<float4> _UnaryInArr;
 RWTexture2DArray<float4> _UnaryOutArr;
-int _UnaryOpType;
+
 
 Texture2DArray<float4> _BinaryA;
 Texture2DArray<float4> _BinaryB;
 RWTexture2DArray<float4> _BinaryOutArr;
-int _BinaryOpType;
-int _BinaryWithScalar;
-float _BinaryScalar;
+
 
 Texture2DArray<float4> _ActInArr;
 RWTexture2DArray<float4> _ActOutArr;
@@ -890,6 +966,20 @@ int _SliceOutH;
 int _SliceOutD;
 int _SliceOutC;
 
+StructuredBuffer<float> _TileIn;
+RWStructuredBuffer<float> _TileOut;
+int _TileDims;
+int _TileInW;
+int _TileInH;
+int _TileInD;
+int _TileInC;
+int _TileAxis;
+int _TileTiles;
+int _TileOutW;
+int _TileOutH;
+int _TileOutD;
+int _TileOutC;
+
 StructuredBuffer<float> _ReduceIn;
 RWStructuredBuffer<float> _ReduceOut;
 int _ReduceTotal;
@@ -911,15 +1001,20 @@ int _GnChannelsG;
 float _GnEps;
 int _GnAffine;
 
-static int Reflect101(int x, int len)
+static int Reflect101Index(int x, int len)
 {
     if (len <= 1) return 0;
-    while (x < 0 || x >= len)
-    {
-        if (x < 0) x = -x;
-        if (x >= len) x = (len - 1) * 2 - x;
-    }
-    return x;
+    int period = len * 2 - 2;
+    int y = abs(x);
+    int m = y % period;
+    if (m >= len) m = period - m;
+    return m;
+}
+
+[numthreads(1,1,1)]
+void NcnnTouchU32(uint3 id : SV_DispatchThreadID)
+{
+    _TouchOut[0] = (uint)_TouchValue;
 }
 
 [numthreads(1,1,1)]
@@ -942,11 +1037,11 @@ void NcnnProbeTilePack4(uint3 id : SV_DispatchThreadID)
     [unroll]
     for (int uy = 0; uy < 4; uy++)
     {
-        int sy = y0 + ((uy + 1) * spanY) / 5;
+        int sy = y0 + (int)((float)((uy + 1) * spanY) * 0.2);
         [unroll]
         for (int ux = 0; ux < 4; ux++)
         {
-            int sx = x0 + ((ux + 1) * spanX) / 5;
+            int sx = x0 + (int)((float)((ux + 1) * spanX) * 0.2);
             sum += _ProbeInArr[int3(sx, sy, 0)];
         }
     }
@@ -1048,14 +1143,14 @@ void NcnnPaddingPack4(uint3 id : SV_DispatchThreadID)
         if (_PadType == 1)
             sx = clamp(sx, 0, (int)iw - 1);
         else
-            sx = Reflect101(sx, (int)iw);
+            sx = Reflect101Index(sx, (int)iw);
     }
     if (sy < 0 || sy >= (int)ih)
     {
         if (_PadType == 1)
             sy = clamp(sy, 0, (int)ih - 1);
         else
-            sy = Reflect101(sy, (int)ih);
+            sy = Reflect101Index(sy, (int)ih);
     }
     int sp = p;
     if (sp >= (int)idd) sp = (int)idd - 1;
@@ -1126,16 +1221,16 @@ void NcnnSoftmaxChannelPack4(uint3 id : SV_DispatchThreadID)
     float4 v = _SoftmaxInArr[int3((int)id.x, (int)id.y, p)];
 
     float maxv = -3.402823466e+38;
-    for (int ip = 0; ip < _SoftmaxPacks; ip++)
+    for (int ip0 = 0; ip0 < _SoftmaxPacks; ip0++)
     {
-        float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip)];
+        float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip0)];
         maxv = max(maxv, max(max(t.x, t.y), max(t.z, t.w)));
     }
 
     float sum = 0.0;
-    for (int ip = 0; ip < _SoftmaxPacks; ip++)
+    for (int ip1 = 0; ip1 < _SoftmaxPacks; ip1++)
     {
-        float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip)];
+        float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip1)];
         float4 e = exp(t - maxv);
         sum += e.x + e.y + e.z + e.w;
     }
@@ -1260,6 +1355,7 @@ void NcnnEmbed(uint3 id : SV_DispatchThreadID)
 
 groupshared float _Red0[256];
 groupshared float _Red1[256];
+groupshared float _ReduceSum256_sdata[256];
 
 [numthreads(256,1,1)]
 void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
@@ -1272,9 +1368,9 @@ void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupT
 
     float sum = 0.0;
     float sqsum = 0.0;
-    for (int col = tid; col < cols; col += 256)
+    for (int c0 = tid; c0 < cols; c0 += 256)
     {
-        float x = _LnInOut[baseIndex + col];
+        float x = _LnInOut[baseIndex + c0];
         sum += x;
         sqsum += x * x;
     }
@@ -1298,13 +1394,13 @@ void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupT
     float var = _Red1[0] / cols - mean * mean;
     float invstd = rsqrt(max(var + _LnEps, 1e-20));
 
-    for (int col = tid; col < cols; col += 256)
+    for (int c1 = tid; c1 < cols; c1 += 256)
     {
-        float x = _LnInOut[baseIndex + col];
+        float x = _LnInOut[baseIndex + c1];
         float y = (x - mean) * invstd;
         if (_LnAffine != 0)
-            y = y * _LnGamma[col] + _LnBeta[col];
-        _LnInOut[baseIndex + col] = y;
+            y = y * _LnGamma[c1] + _LnBeta[c1];
+        _LnInOut[baseIndex + c1] = y;
     }
 }
 
@@ -1318,9 +1414,9 @@ void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThr
     int baseIndex = row * cols;
 
     float maxv = -3.402823466e+38;
-    for (int col = tid; col < cols; col += 256)
+    for (int c0 = tid; c0 < cols; c0 += 256)
     {
-        float x = _SoftIn[baseIndex + col];
+        float x = _SoftIn[baseIndex + c0];
         maxv = max(maxv, x);
     }
     _Red0[tid] = maxv;
@@ -1336,11 +1432,11 @@ void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThr
     float rowMax = _Red0[0];
 
     float sum = 0.0;
-    for (int col = tid; col < cols; col += 256)
+    for (int c1 = tid; c1 < cols; c1 += 256)
     {
-        float e = exp(_SoftIn[baseIndex + col] - rowMax);
+        float e = exp(_SoftIn[baseIndex + c1] - rowMax);
         sum += e;
-        _SoftOut[baseIndex + col] = e;
+        _SoftOut[baseIndex + c1] = e;
     }
     _Red1[tid] = sum;
     GroupMemoryBarrierWithGroupSync();
@@ -1354,9 +1450,9 @@ void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThr
     }
     float invSum = 1.0 / max(_Red1[0], 1e-20);
 
-    for (int col = tid; col < cols; col += 256)
+    for (int c2 = tid; c2 < cols; c2 += 256)
     {
-        _SoftOut[baseIndex + col] = _SoftOut[baseIndex + col] * invSum;
+        _SoftOut[baseIndex + c2] = _SoftOut[baseIndex + c2] * invSum;
     }
 }
 
@@ -1508,7 +1604,63 @@ void NcnnSlice(uint3 id : SV_DispatchThreadID)
     _SliceOut[idx] = _SliceIn[inIdx4];
 }
 
-groupshared float sdata[256];
+[numthreads(256,1,1)]
+void NcnnTile(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    int dims = _TileDims;
+    int ow = _TileOutW;
+    int oh = _TileOutH;
+    int od = _TileOutD;
+    int oc = _TileOutC;
+    uint total = (uint)(ow * oh * od * oc);
+    if (idx >= total) return;
+
+    int x = (int)(idx % (uint)ow);
+    uint t1 = idx / (uint)ow;
+    int y = (int)(t1 % (uint)oh);
+    uint t2 = t1 / (uint)oh;
+    int z = (int)(t2 % (uint)od);
+    int c = (int)(t2 / (uint)od);
+
+    int ix = x;
+    int iy = y;
+    int iz = z;
+    int ic = c;
+    int axis = _TileAxis;
+    if (dims == 1)
+    {
+        ix = x % max(1, _TileInW);
+        _TileOut[idx] = _TileIn[ix];
+        return;
+    }
+    if (dims == 2)
+    {
+        if (axis == 0) iy = y % max(1, _TileInH);
+        else if (axis == 1) ix = x % max(1, _TileInW);
+        uint inIdx2 = (uint)(iy * _TileInW + ix);
+        _TileOut[idx] = _TileIn[inIdx2];
+        return;
+    }
+    if (dims == 3)
+    {
+        if (axis == 0) ic = c % max(1, _TileInC);
+        else if (axis == 1) iy = y % max(1, _TileInH);
+        else if (axis == 2) ix = x % max(1, _TileInW);
+        uint inIdx3 = (uint)((ic * _TileInH + iy) * _TileInW + ix);
+        _TileOut[idx] = _TileIn[inIdx3];
+        return;
+    }
+
+    // dims == 4
+    if (axis == 0) ic = c % max(1, _TileInC);
+    else if (axis == 1) iz = z % max(1, _TileInD);
+    else if (axis == 2) iy = y % max(1, _TileInH);
+    else if (axis == 3) ix = x % max(1, _TileInW);
+    uint inIdx4 = (uint)((((ic * _TileInD + iz) * _TileInH + iy) * _TileInW) + ix);
+    _TileOut[idx] = _TileIn[inIdx4];
+}
+
 [numthreads(256,1,1)]
 void NcnnReduceSum256(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
@@ -1520,19 +1672,19 @@ void NcnnReduceSum256(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     float v = 0.0;
     if (idx < (uint)_ReduceTotal)
         v = _ReduceIn[idx];
-    sdata[tid] = v;
+    _ReduceSum256_sdata[tid] = v;
     GroupMemoryBarrierWithGroupSync();
 
     [unroll]
     for (uint stride = 128u; stride > 0u; stride >>= 1u)
     {
         if (tid < stride)
-            sdata[tid] += sdata[tid + stride];
+            _ReduceSum256_sdata[tid] += _ReduceSum256_sdata[tid + stride];
         GroupMemoryBarrierWithGroupSync();
     }
 
     if (tid == 0u)
-        _ReduceOut[group] = sdata[0];
+        _ReduceOut[group] = _ReduceSum256_sdata[0];
 }
 
 [numthreads(256,1,1)]
@@ -1618,8 +1770,8 @@ void NcnnGroupNormApply(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gro
 
 #define TILE 8
 #define MATK_MAX 2048
-groupshared float As[TILE][TILE];
-groupshared float Bs[TILE][TILE];
+groupshared float _MatAs[64];
+groupshared float _MatBs[64];
 
 
 [numthreads(8,8,1)]
@@ -1639,7 +1791,7 @@ void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThre
         float a = 0.0;
         float b = 0.0;
 
-        if (valid && ak < _MatK)
+        if (row < _MatM && ak < _MatK)
             a = _MatA[row * _MatK + ak];
         if (bk < _MatK && col < _MatN)
         {
@@ -1649,8 +1801,8 @@ void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThre
                 b = _MatB[bk * _MatN + col];
         }
 
-        As[ly][lx] = a;
-        Bs[ly][lx] = b;
+        _MatAs[ly * TILE + lx] = a;
+        _MatBs[ly * TILE + lx] = b;
         GroupMemoryBarrierWithGroupSync();
 
         [unroll]
@@ -1658,7 +1810,7 @@ void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThre
         {
             int kk = k0 + k1;
             if (kk < _MatK)
-                acc += As[ly][k1] * Bs[k1][lx];
+                acc += _MatAs[ly * TILE + k1] * _MatBs[k1 * TILE + lx];
         }
         GroupMemoryBarrierWithGroupSync();
     }
@@ -1698,7 +1850,7 @@ void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThread
         float a = 0.0;
         float b = 0.0;
 
-        if (valid && ak < _MatK)
+        if (row < _MatM && ak < _MatK)
             a = _MatA[row * _MatK + ak];
         if (bk < _MatK && col < _MatN)
         {
@@ -1708,8 +1860,8 @@ void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThread
                 b = _MatB[bk * _MatN + col];
         }
 
-        As[ly][lx] = a;
-        Bs[ly][lx] = b;
+        _MatAs[ly * TILE + lx] = a;
+        _MatBs[ly * TILE + lx] = b;
         GroupMemoryBarrierWithGroupSync();
 
         [unroll]
@@ -1717,7 +1869,7 @@ void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThread
         {
             int kk = k0 + k1;
             if (kk < _MatK)
-                acc += As[ly][k1] * Bs[k1][lx];
+                acc += _MatAs[ly * TILE + k1] * _MatBs[k1 * TILE + lx];
         }
         GroupMemoryBarrierWithGroupSync();
     }
