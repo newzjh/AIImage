@@ -95,6 +95,8 @@ int _BinaryOpType;
 int _BinaryWithScalar;
 float _BinaryScalar;
 
+Texture2D<float4> _BlitTileIn;
+
 groupshared float red0[256];
 groupshared float red1[256];
 
@@ -1196,10 +1198,11 @@ void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
 
     int sx = (_DstX + (int)id.x) - _TileOutX;
     int sy = (_DstY + (int)id.y) - _TileOutY;
-    float4 v = _NcnnInArr[int3(sx, sy, 0)];
+    float4 v = _BlitTileIn[int2(sx, sy)];
     v.w = 1.0;
     _NcnnOut[int2(_DstX + (int)id.x, _DstY + (int)id.y)] = v;
 }
+
 
 Texture2DArray<float4> _ProbeInArr;
 RWStructuredBuffer<float4> _ProbeOut;
@@ -2249,3 +2252,4 @@ void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
     if (id.x >= w || id.y >= h) return;
     _NcnnOut[int2(id.x, id.y)] = _NcnnIn[int2(id.x, id.y)];
 }
+

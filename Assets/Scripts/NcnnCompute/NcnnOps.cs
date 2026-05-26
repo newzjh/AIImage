@@ -432,7 +432,7 @@ namespace NcnnCompute
             _cs.SetInt("_TileOutX", tileOutOriginX);
             _cs.SetInt("_TileOutY", tileOutOriginY);
             _cs.SetFloat("_BlitScale", dstToSrcScale);
-            _cs.SetTexture(_kBlitTileToDst, "_NcnnInArr", tileOut);
+            _cs.SetTexture(_kBlitTileToDst, "_BlitTileIn", tileOut);
             _cs.SetTexture(_kBlitTileToDst, "_NcnnOut", dst);
             Dispatch2D(_cs, _kBlitTileToDst, w, h, 32, 32);
         }
@@ -452,7 +452,27 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_TileOutX", tileOutOriginX);
             cmd.SetComputeIntParam(_cs, "_TileOutY", tileOutOriginY);
             cmd.SetComputeFloatParam(_cs, "_BlitScale", dstToSrcScale);
-            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_NcnnInArr", tileOut.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_BlitTileIn", tileOut.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_NcnnOut", dst);
+            Dispatch2D(cmd, _cs, _kBlitTileToDst, w, h, 32, 32);
+        }
+
+        public void BlitTileToDst(CommandBuffer cmd, RenderTexture tileOut, RenderTexture dst, int dstX, int dstY, int tileOutOriginX, int tileOutOriginY, int w, int h, float dstToSrcScale)
+        {
+            if (tileOut == null) throw new ArgumentNullException(nameof(tileOut));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            if (w <= 0 || h <= 0) return;
+            if (dstX < 0 || dstY < 0 || dstX + w > dst.width || dstY + h > dst.height)
+                throw new ArgumentOutOfRangeException(nameof(dstX), "dst rect out of range");
+
+            cmd.SetComputeIntParam(_cs, "_BlitW", w);
+            cmd.SetComputeIntParam(_cs, "_BlitH", h);
+            cmd.SetComputeIntParam(_cs, "_DstX", dstX);
+            cmd.SetComputeIntParam(_cs, "_DstY", dstY);
+            cmd.SetComputeIntParam(_cs, "_TileOutX", tileOutOriginX);
+            cmd.SetComputeIntParam(_cs, "_TileOutY", tileOutOriginY);
+            cmd.SetComputeFloatParam(_cs, "_BlitScale", dstToSrcScale);
+            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_BlitTileIn", tileOut);
             cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_NcnnOut", dst);
             Dispatch2D(cmd, _cs, _kBlitTileToDst, w, h, 32, 32);
         }
@@ -1624,6 +1644,43 @@ namespace NcnnCompute
             Dispatch1D(_kBinaryOpBuf, total, 256);
         }
 
+        public void BinaryOpBufCmd(CommandBuffer cmd, ComputeBuffer a, ComputeBuffer b, int total, int opType, ComputeBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (total < 0) throw new ArgumentOutOfRangeException(nameof(total));
+            if (total == 0) return;
+
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpBuf, "_BufA", a);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpBuf, "_BufB", b);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpBuf, "_BufOut", output);
+            Dispatch1D(cmd, _cs, _kBinaryOpBuf, total, 256);
+        }
+
+        public void BinaryOpScalarBufCmd(CommandBuffer cmd, ComputeBuffer a, float scalarB, int total, int opType, ComputeBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (total < 0) throw new ArgumentOutOfRangeException(nameof(total));
+            if (total == 0) return;
+
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 1);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", scalarB);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpBuf, "_BufA", a);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpBuf, "_BufB", a);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpBuf, "_BufOut", output);
+            Dispatch1D(cmd, _cs, _kBinaryOpBuf, total, 256);
+        }
+
         public void UnaryOpBuf(ComputeBuffer input, int total, int opType, ComputeBuffer output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -1636,6 +1693,21 @@ namespace NcnnCompute
             _cs.SetBuffer(_kUnaryOpBuf, "_BufA", input);
             _cs.SetBuffer(_kUnaryOpBuf, "_BufOut", output);
             Dispatch1D(_kUnaryOpBuf, total, 256);
+        }
+
+        public void UnaryOpBufCmd(CommandBuffer cmd, ComputeBuffer input, int total, int opType, ComputeBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (total < 0) throw new ArgumentOutOfRangeException(nameof(total));
+            if (total == 0) return;
+
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeIntParam(_cs, "_UnaryOpType", opType);
+            cmd.SetComputeBufferParam(_cs, _kUnaryOpBuf, "_BufA", input);
+            cmd.SetComputeBufferParam(_cs, _kUnaryOpBuf, "_BufOut", output);
+            Dispatch1D(cmd, _cs, _kUnaryOpBuf, total, 256);
         }
 
         public void SigmoidBuf(ComputeBuffer input, int total, ComputeBuffer output)
@@ -1841,6 +1913,21 @@ namespace NcnnCompute
             _cs.SetBuffer(_kSoftmax2D, "_SoftIn", input);
             _cs.SetBuffer(_kSoftmax2D, "_SoftOut", output);
             _cs.Dispatch(_kSoftmax2D, Mathf.Max(1, rows), 1, 1);
+        }
+
+        public void Softmax2DCmd(CommandBuffer cmd, ComputeBuffer input, ComputeBuffer output, int rows, int cols)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (rows <= 0) throw new ArgumentOutOfRangeException(nameof(rows));
+            if (cols <= 0) throw new ArgumentOutOfRangeException(nameof(cols));
+
+            cmd.SetComputeIntParam(_cs, "_SoftRows", rows);
+            cmd.SetComputeIntParam(_cs, "_SoftCols", cols);
+            cmd.SetComputeBufferParam(_cs, _kSoftmax2D, "_SoftIn", input);
+            cmd.SetComputeBufferParam(_cs, _kSoftmax2D, "_SoftOut", output);
+            cmd.DispatchCompute(_cs, _kSoftmax2D, Mathf.Max(1, rows), 1, 1);
         }
 
         public void Embed(ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, ComputeBuffer output)
@@ -2228,6 +2315,171 @@ namespace NcnnCompute
             Dispatch1D(_kInterp2x, total, 64);
         }
 
+        public void Conv3x3Cmd(CommandBuffer cmd, NcnnTensorBuffer input, ComputeBuffer weightsOihw, ComputeBuffer biasO, int outC, int stride, int pad, int activationType, float activationParam, NcnnTensorBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsOihw == null) throw new ArgumentNullException(nameof(weightsOihw));
+            if (biasO == null) throw new ArgumentNullException(nameof(biasO));
+            if (outC <= 0) throw new ArgumentOutOfRangeException(nameof(outC));
+
+            cmd.SetComputeIntParam(_cs, "_InW", input.w);
+            cmd.SetComputeIntParam(_cs, "_InH", input.h);
+            cmd.SetComputeIntParam(_cs, "_InC", input.c);
+            cmd.SetComputeIntParam(_cs, "_OutC", outC);
+            cmd.SetComputeIntParam(_cs, "_OutW", output.w);
+            cmd.SetComputeIntParam(_cs, "_OutH", output.h);
+            cmd.SetComputeIntParam(_cs, "_Stride", Mathf.Max(1, stride));
+            cmd.SetComputeIntParam(_cs, "_Pad", Mathf.Max(0, pad));
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3, "_ConvIn", input.buffer);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3, "_ConvW", weightsOihw);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3, "_ConvB", biasO);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3, "_ConvOut", output.buffer);
+            Dispatch3D(cmd, _kConv3x3, output.w, output.h, outC, 8, 8);
+        }
+
+        public void LeakyReluInplaceCmd(CommandBuffer cmd, NcnnTensorBuffer t, float slope)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (t == null) throw new ArgumentNullException(nameof(t));
+            var total = t.w * t.h * t.c;
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeFloatParam(_cs, "_CoeffA", slope);
+            cmd.SetComputeBufferParam(_cs, _kLeakyReluBuf, "_BufOut", t.buffer);
+            Dispatch1D(cmd, _cs, _kLeakyReluBuf, total, 256);
+        }
+
+        public void AddWeightedCmd(CommandBuffer cmd, NcnnTensorBuffer a, NcnnTensorBuffer b, float coeffA, float coeffB, NcnnTensorBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (a.w != b.w || a.h != b.h || a.c != b.c || a.w != output.w || a.h != output.h || a.c != output.c)
+                throw new ArgumentOutOfRangeException(nameof(output), "shape mismatch");
+
+            var total = output.w * output.h * output.c;
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeFloatParam(_cs, "_CoeffA", coeffA);
+            cmd.SetComputeFloatParam(_cs, "_CoeffB", coeffB);
+            cmd.SetComputeBufferParam(_cs, _kAddWeighted, "_BufA", a.buffer);
+            cmd.SetComputeBufferParam(_cs, _kAddWeighted, "_BufB", b.buffer);
+            cmd.SetComputeBufferParam(_cs, _kAddWeighted, "_BufOut", output.buffer);
+            Dispatch1D(cmd, _cs, _kAddWeighted, total, 256);
+        }
+
+        public void CopyToConcatCmd(CommandBuffer cmd, NcnnTensorBuffer src, NcnnTensorBuffer dst, int dstChannelOffset)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            if (src.w != dst.w || src.h != dst.h) throw new ArgumentOutOfRangeException(nameof(dst), "shape mismatch");
+            if (dstChannelOffset < 0 || dstChannelOffset + src.c > dst.c) throw new ArgumentOutOfRangeException(nameof(dstChannelOffset));
+
+            var total = src.w * src.h * src.c;
+            cmd.SetComputeIntParam(_cs, "_InW", src.w);
+            cmd.SetComputeIntParam(_cs, "_InH", src.h);
+            cmd.SetComputeIntParam(_cs, "_ChanOffset", dstChannelOffset);
+            cmd.SetComputeIntParam(_cs, "_CopyTotal", total);
+            cmd.SetComputeBufferParam(_cs, _kCopyC, "_BufA", src.buffer);
+            cmd.SetComputeBufferParam(_cs, _kCopyC, "_BufOut", dst.buffer);
+            Dispatch1D(cmd, _cs, _kCopyC, total, 256);
+        }
+
+        public void Interp2xCmd(CommandBuffer cmd, NcnnTensorBuffer input, NcnnTensorBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (output.w != input.w * 2 || output.h != input.h * 2 || output.c != input.c)
+                throw new ArgumentOutOfRangeException(nameof(output), "output shape must be 2x");
+
+            cmd.SetComputeIntParam(_cs, "_InW", input.w);
+            cmd.SetComputeIntParam(_cs, "_InH", input.h);
+            cmd.SetComputeIntParam(_cs, "_InC", input.c);
+            cmd.SetComputeBufferParam(_cs, _kInterp2x, "_BufA", input.buffer);
+            cmd.SetComputeBufferParam(_cs, _kInterp2x, "_BufOut", output.buffer);
+            var total = output.w * output.h * output.c;
+            Dispatch1D(cmd, _cs, _kInterp2x, total, 64);
+        }
+
+        public void SigmoidBufCmd(CommandBuffer cmd, ComputeBuffer input, int total, ComputeBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeBufferParam(_cs, _kSigmoidBuf, "_BufA", input);
+            cmd.SetComputeBufferParam(_cs, _kSigmoidBuf, "_BufOut", output);
+            Dispatch1D(cmd, _cs, _kSigmoidBuf, total, 256);
+        }
+
+        public void SwishBufCmd(CommandBuffer cmd, ComputeBuffer input, int total, ComputeBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeBufferParam(_cs, _kSwishBuf, "_BufA", input);
+            cmd.SetComputeBufferParam(_cs, _kSwishBuf, "_BufOut", output);
+            Dispatch1D(cmd, _cs, _kSwishBuf, total, 256);
+        }
+
+        public void GeluBufCmd(CommandBuffer cmd, ComputeBuffer input, int total, ComputeBuffer output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeBufferParam(_cs, _kGeluBuf, "_BufA", input);
+            cmd.SetComputeBufferParam(_cs, _kGeluBuf, "_BufOut", output);
+            Dispatch1D(cmd, _cs, _kGeluBuf, total, 256);
+        }
+
+        public void CopyBufCmd(CommandBuffer cmd, ComputeBuffer src, ComputeBuffer dst, int total)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            cmd.SetComputeIntParam(_cs, "_Total", total);
+            cmd.SetComputeBufferParam(_cs, _kCopyBuf, "_BufA", src);
+            cmd.SetComputeBufferParam(_cs, _kCopyBuf, "_BufOut", dst);
+            Dispatch1D(cmd, _cs, _kCopyBuf, total, 256);
+        }
+
+        public void TextureToBuffer3Cmd(CommandBuffer cmd, Texture src, int offsetX, int offsetY, NcnnTensorBuffer dst)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+
+            cmd.SetComputeIntParam(_cs, "_OffsetX", offsetX);
+            cmd.SetComputeIntParam(_cs, "_OffsetY", offsetY);
+            cmd.SetComputeIntParam(_cs, "_InW", src.width);
+            cmd.SetComputeIntParam(_cs, "_InH", src.height);
+            cmd.SetComputeIntParam(_cs, "_BaseIndex", 0);
+            cmd.SetComputeTextureParam(_cs, _kTexToBuf3, "_NcnnIn", src);
+            cmd.SetComputeBufferParam(_cs, _kTexToBuf3, "_BufOut", dst.buffer);
+            var n = dst.w * dst.h;
+            Dispatch1D(cmd, _cs, _kTexToBuf3, n, 256);
+        }
+
+        public void BufferToTexture3Cmd(CommandBuffer cmd, NcnnTensorBuffer src, RenderTexture dst)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+
+            cmd.SetComputeIntParam(_cs, "_InW", src.w);
+            cmd.SetComputeIntParam(_cs, "_InH", src.h);
+            cmd.SetComputeTextureParam(_cs, _kBufToTex3, "_NcnnOut", dst);
+            cmd.SetComputeBufferParam(_cs, _kBufToTex3, "_BufA", src.buffer);
+            Dispatch2D(cmd, _cs, _kBufToTex3, dst.width, dst.height, 8, 8);
+        }
+
         private static void Dispatch2D(ComputeShader cs, int kernel, int w, int h, int tx, int ty)
         {
             var gx = Mathf.CeilToInt(w / (float)tx);
@@ -2281,6 +2533,27 @@ namespace NcnnCompute
                 var groups = Mathf.CeilToInt(dispatchCount / (float)threadsPerGroup);
                 _cs.SetInt("_BaseIndex", baseIndex);
                 _cs.Dispatch(kernel, Mathf.Max(1, groups), 1, 1);
+                baseIndex += groups * threadsPerGroup;
+            }
+        }
+
+        private void Dispatch1D(CommandBuffer cmd, ComputeShader cs, int kernel, int total, int threadsPerGroup)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (cs == null) throw new ArgumentNullException(nameof(cs));
+            if (total <= 0)
+                return;
+
+            const int maxGroups = 65535;
+            var maxThreads = threadsPerGroup * maxGroups;
+            var baseIndex = 0;
+            while (baseIndex < total)
+            {
+                var remaining = total - baseIndex;
+                var dispatchCount = Mathf.Min(remaining, maxThreads);
+                var groups = Mathf.CeilToInt(dispatchCount / (float)threadsPerGroup);
+                cmd.SetComputeIntParam(cs, "_BaseIndex", baseIndex);
+                cmd.DispatchCompute(cs, kernel, Mathf.Max(1, groups), 1, 1);
                 baseIndex += groups * threadsPerGroup;
             }
         }
