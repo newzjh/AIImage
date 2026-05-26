@@ -11,14 +11,12 @@ using UnityEngine.Rendering;
 
 public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 {
-    public bool enableRepro = true;
     public string modelName = "realesrgan-x4plus";
     public int tileSize = 128;
     public int tilePad = 10;
     public int maxInputLongSide = 2048;
     public bool enableTileProbe = false;
     public bool enableSeamProbe = false;
-    public bool enableVulkanTempPoolByDefault = true;
     public bool useCommandBuffer = false;
     public bool enableWinograd23 = false;
 
@@ -118,8 +116,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
-        if (!enableRepro)
-            return new RealEsrganResult { error = "ESRGAN(复刻) disabled" };
         if (src == null)
             return default;
 
@@ -214,7 +210,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
             var scaledOutW = runInW * runFactor;
             var scaledOutH = runInH * runFactor;
-            scaledOutRt = new RenderTexture(scaledOutW, scaledOutH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            scaledOutRt = new RenderTexture(scaledOutW, scaledOutH, 0, RenderTextureFormat.ARGB32);
             scaledOutRt.enableRandomWrite = true;
             scaledOutRt.wrapMode = TextureWrapMode.Clamp;
             scaledOutRt.filterMode = FilterMode.Bilinear;
@@ -224,7 +220,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
             if (scaledOutW != originalW || scaledOutH != originalH)
             {
-                outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32);
                 outRt.wrapMode = TextureWrapMode.Clamp;
                 outRt.filterMode = FilterMode.Bilinear;
                 outRt.Create();
@@ -353,7 +349,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 if (_useCmdThisRun)
                 {
                     var sC = Stopwatch.StartNew();
-                    Graphics.ExecuteCommandBuffer(rowCmd);
+                    Graphics.ExecuteCommandBufferAsync(rowCmd, ComputeQueueType.Default);
+                    //Graphics.ExecuteCommandBuffer(rowCmd);
                     rowCmd.Dispose();
                     cmdMs += sC.ElapsedMilliseconds;
                 }
