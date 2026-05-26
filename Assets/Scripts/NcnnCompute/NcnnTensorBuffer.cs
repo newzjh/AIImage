@@ -6,20 +6,12 @@ namespace NcnnCompute
     public sealed class NcnnTensorBuffer : IDisposable
     {
         public int dims { get; }
-        public int w { get; private set; }
-        public int h { get; private set; }
+        public int w { get; }
+        public int h { get; }
         public int d { get; }
-        public int c { get; private set; }
+        public int c { get; }
         public ComputeBuffer buffer { get; }
         public bool ownsBuffer { get; }
-        internal NcnnBufferPool PoolOwner { get; set; }
-
-        internal void SetDimensions(int w, int h, int c)
-        {
-            this.w = w;
-            this.h = h;
-            this.c = c;
-        }
 
         public NcnnTensorBuffer(int w, int h, int c)
         {
@@ -148,11 +140,6 @@ namespace NcnnCompute
         {
             if (!ownsBuffer) return;
             try { buffer?.Dispose(); } catch { }
-        }
-
-        public void ReturnToPool()
-        {
-            PoolOwner?.Return(this);
         }
     }
 }
