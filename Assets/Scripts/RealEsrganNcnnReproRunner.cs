@@ -16,18 +16,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public int tileSize = 128;
     public int tilePad = 10;
     public int maxInputLongSide = 2048;
-    public bool enableTempPool = false;
-    public bool clearTempPoolAfterRun = true;
-    public int maxPooledPerShape = 2;
     public bool enableTileProbe = false;
     public bool enableSeamProbe = false;
-    public int yieldEveryTiles = 4;
     public bool enableVulkanTempPoolByDefault = true;
-    public int maxYieldEveryTiles = 16;
-    public bool useCommandBufferOnVulkan = true;
+    public bool useCommandBuffer = false;
     public bool enableWinograd23 = false;
-    public bool enableGpuFenceTiming = false;
-    public int gpuFenceEveryTiles = 1;
 
     public event Action<float, string> ProgressChanged;
 
@@ -36,8 +29,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private Dictionary<string, int> _blobUseCount;
     private NcnnOps _ops;
     private bool _loaded;
-    private readonly Dictionary<RtKey, Stack<PooledRt>> _rtPool = new Dictionary<RtKey, Stack<PooledRt>>();
-    private bool _useTempPoolThisRun;
     private bool _useCmdThisRun;
 
     private readonly struct RtKey : IEquatable<RtKey>
@@ -97,7 +88,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private sealed class TensorRef
     {
-        public RenderTexture t;
+        public ComputeTexture t2;
+        public RenderTexture t1;
         public int w;
         public int h;
         public int packs;
@@ -105,19 +97,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         public bool owned;
     }
 
-    private readonly struct PooledRt
-    {
-        public readonly RenderTexture rt;
-        public readonly GraphicsFence fence;
-        public readonly int frame;
 
-        public PooledRt(RenderTexture rt, GraphicsFence fence, int frame)
-        {
-            this.rt = rt;
-            this.fence = fence;
-            this.frame = frame;
-        }
-    }
 
     private void Awake()
     {
@@ -129,17 +109,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         foreach (var kv in _conv)
             kv.Value?.Dispose();
         _conv.Clear();
-
-        foreach (var kv in _rtPool)
-        {
-            var stack = kv.Value;
-            while (stack.Count > 0)
-            {
-                var rt = stack.Pop().rt;
-                try { RenderTexture.ReleaseTemporary(rt); } catch { }
-            }
-        }
-        _rtPool.Clear();
 
         _loaded = false;
         _model = null;
@@ -190,7 +159,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         await UniTask.Yield();
 
         var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
-        _useCmdThisRun = useCommandBufferOnVulkan && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
+        _useCmdThisRun = useCommandBuffer && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
         var attemptTiles = new[]
         {
             Mathf.Max(16, baseTileSize),
@@ -202,8 +171,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         for (var attempt = 0; attempt < attemptTiles.Length; attempt++)
         {
             var effectiveTileSize = attemptTiles[attempt];
-            var usePool = enableTempPool || (isVulkan && (enableVulkanTempPoolByDefault || attempt > 0));
-            _useTempPoolThisRun = usePool;
             try
             {
                 var r = await ProcessOnceAsync(src, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
@@ -214,8 +181,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 lastErr = e;
                 if (!IsLikelyVulkanOom(e))
                     break;
-                if (_useTempPoolThisRun && clearTempPoolAfterRun)
-                    ClearTempPool();
                 await UniTask.Yield();
             }
         }
@@ -232,8 +197,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         ComputeBuffer probeBuf = null;
         Vector4[] probeData = null;
         ComputeBuffer probeInBuf = null;
-        ComputeBuffer gpuWaitSyncBuf = null;
-        uint[] gpuWaitSyncData = null;
+
         try
         {
             if (runInW != originalW || runInH != originalH)
@@ -278,9 +242,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var rentMs = 0L;
             var returnMs = 0L;
             var yieldMs = 0L;
-            var gpuWaitMs = 0L;
-            var gpuWaitCalls = 0;
-            var gpuWaitErrors = 0;
+            var cmdMs = 0L;
             var swTileAll = Stopwatch.StartNew();
             if (enableTileProbe)
             {
@@ -294,18 +256,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 probeInBuf = new ComputeBuffer(tileCount, sizeof(float) * 4, ComputeBufferType.Structured);
                 probeInData = new Vector4[tileCount];
             }
-            if (enableGpuFenceTiming)
-            {
-                gpuWaitSyncBuf = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Structured);
-                gpuWaitSyncData = new uint[1];
-            }
 
-            var effectiveYieldEveryTiles = yieldEveryTiles;
-            if (maxYieldEveryTiles > 0)
-                effectiveYieldEveryTiles = Mathf.Clamp(effectiveYieldEveryTiles, 0, maxYieldEveryTiles);
 
             for (var ty = 0; ty < runInH; ty += Mathf.Max(1, effectiveTileSize))
             {
+                CommandBuffer rowCmd = null;
+                if (_useCmdThisRun)
+                {
+                    rowCmd = new CommandBuffer();
+                    rowCmd.name = "TileRow_" + ty;
+                }
+
                 for (var tx = 0; tx < runInW; tx += Mathf.Max(1, effectiveTileSize))
                 {
                     ct.ThrowIfCancellationRequested();
@@ -316,29 +277,39 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     var ch = th + effectiveTilePad * 2;
                     var ox = tx - effectiveTilePad;
                     var oy = ty - effectiveTilePad;
-                    var tileProgress = (float)tileIndex / tileCount;
-                    ReportProgress(tileProgress, "推理分块 " + (tileIndex + 1) + "/" + tileCount);
-                    if (effectiveYieldEveryTiles > 0 && (tileIndex % effectiveYieldEveryTiles) == 0)
-                    {
-                        var sw = Stopwatch.StartNew();
-                        await UniTask.Yield();
-                        yieldMs += sw.ElapsedMilliseconds;
-                    }
+          
 
                     var swRent = Stopwatch.StartNew();
-                    var inArr = RentTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
+                    RenderTexture inArr = null;
+                    ComputeTexture inArr2 = null;
+                    if (_useCmdThisRun)
+                        inArr2 = RentTempArray(rowCmd, cw, ch, 1, RenderTextureFormat.ARGBHalf);
+                    else
+                        inArr = RentTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
                     rentMs += swRent.ElapsedMilliseconds;
-                    var outArr = (RenderTexture)null;
+                    ComputeTexture outArr2 = null;
+                    RenderTexture outArr = null;
                     try
                     {
                         var swPack = Stopwatch.StartNew();
-                        _ops.PackRgbToPack4(runInput, ox, oy, inArr);
+                        if (_useCmdThisRun)
+                            _ops.PackRgbToPack4(rowCmd, runInput, ox, oy, inArr2);
+                        else
+                            _ops.PackRgbToPack4(runInput, ox, oy, inArr);
                         packMs += swPack.ElapsedMilliseconds;
                         if (probeInBuf != null)
-                            _ops.ProbeTilePack4(inArr, tileIndex, effectiveTilePad, tw, th, probeInBuf);
+                        {
+                            if (_useCmdThisRun)
+                                _ops.ProbeTilePack4(rowCmd, inArr2, tileIndex, effectiveTilePad, tw, th, probeInBuf);
+                            else
+                                _ops.ProbeTilePack4(inArr, tileIndex, effectiveTilePad, tw, th, probeInBuf);
+                        }
 
                         var swFwd = Stopwatch.StartNew();
-                        outArr = ForwardPack4(inArr, 1);
+                        if (_useCmdThisRun)
+                            outArr2 = ForwardPack4(rowCmd, inArr2, 1);
+                        else
+                            outArr = ForwardPack4(inArr, 1);
                         forwardMs += swFwd.ElapsedMilliseconds;
 
                         var dstX = tx * runFactor;
@@ -348,40 +319,50 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                         var tileOutOriginX = ox * runFactor;
                         var tileOutOriginY = oy * runFactor;
                         if (probeBuf != null)
-                            _ops.ProbeTilePack4(outArr, tileIndex, effectiveTilePad * runFactor, dstW, dstH, probeBuf);
+                        {
+                            if (_useCmdThisRun)
+                                _ops.ProbeTilePack4(rowCmd, outArr2, tileIndex, effectiveTilePad * runFactor, dstW, dstH, probeBuf);
+                            else
+                                _ops.ProbeTilePack4(outArr, tileIndex, effectiveTilePad * runFactor, dstW, dstH, probeBuf);
+                        }
                         var swBlit = Stopwatch.StartNew();
-                        _ops.BlitTileToDst(outArr, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
+                        if (_useCmdThisRun)
+                            _ops.BlitTileToDst(rowCmd, outArr2, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
+                        else
+                            _ops.BlitTileToDst(outArr, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
                         blitMs += swBlit.ElapsedMilliseconds;
 
-                        if (enableGpuFenceTiming && gpuFenceEveryTiles > 0 && (tileIndex % gpuFenceEveryTiles) == 0)
-                        {
-                            var swGpu = Stopwatch.StartNew();
-                            try
-                            {
-                                if (gpuWaitSyncBuf != null && gpuWaitSyncData != null)
-                                {
-                                    _ops.TouchU32(gpuWaitSyncBuf, (uint)tileIndex);
-                                    gpuWaitSyncBuf.GetData(gpuWaitSyncData);
-                                }
-                                gpuWaitCalls++;
-                            }
-                            catch
-                            {
-                                gpuWaitErrors++;
-                            }
-                            gpuWaitMs += swGpu.ElapsedMilliseconds;
-                        }
                     }
                     finally
                     {
                         var swRet = Stopwatch.StartNew();
-                        ReturnTempArray(inArr);
-                        if (outArr != null) ReturnTempArray(outArr);
+                        if (_useCmdThisRun)
+                            ReturnTempArray(rowCmd, inArr2);
+                        else
+                            ReturnTempArray(inArr);
+                        if (_useCmdThisRun)
+                            if (outArr2 != null) ReturnTempArray(rowCmd, outArr2);
+                        else
+                            if (outArr != null) ReturnTempArray(outArr);
                         returnMs += swRet.ElapsedMilliseconds;
                     }
 
                     tileIndex++;
                 }
+
+                if (_useCmdThisRun)
+                {
+                    var sC = Stopwatch.StartNew();
+                    Graphics.ExecuteCommandBuffer(rowCmd);
+                    rowCmd.Dispose();
+                    cmdMs += sC.ElapsedMilliseconds;
+                }
+
+                var tileProgress = (float)tileIndex / tileCount;
+                ReportProgress(tileProgress, "推理分块 " + (tileIndex + 1) + "/" + tileCount);
+                var sw = Stopwatch.StartNew();
+                await UniTask.Yield();
+                yieldMs += sw.ElapsedMilliseconds;
             }
 
             ReportProgress(0.98f, "后处理");
@@ -528,9 +509,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 UnityEngine.Debug.Log(
                     "[TIMING] ESRGAN(repro.breakdown) tiles=" + tileCount
                     + " rent=" + rentMs + " ms | return=" + returnMs + " ms | yield=" + yieldMs + " ms"
-                    + " | pack=" + packMs + " ms | forward=" + forwardMs + " ms | blit=" + blitMs + " ms"
-                    + " | gpuWait=" + gpuWaitMs + " ms (" + gpuWaitCalls + "/" + gpuWaitErrors + ")"
-                    + " | tileAll=" + swTileAll.ElapsedMilliseconds + " ms | pool=" + (_useTempPoolThisRun ? "1" : "0")
+                    + " | pack=" + packMs + " ms | forward=" + forwardMs + " ms | cmdBuf=" + cmdMs + " ms"
+                    + " | tileAll=" + swTileAll.ElapsedMilliseconds + " ms | pool=0"
                 );
             }
             catch
@@ -563,9 +543,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
             try { probeBuf?.Dispose(); } catch { }
             try { probeInBuf?.Dispose(); } catch { }
-            try { gpuWaitSyncBuf?.Dispose(); } catch { }
-            if (_useTempPoolThisRun && clearTempPoolAfterRun)
-                ClearTempPool();
         }
     }
 
@@ -630,39 +607,327 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         _loaded = true;
     }
 
-    private RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks, bool deferFlush = false, CommandBuffer externalCmd = null)
+    
+    private ComputeTexture ForwardPack4(CommandBuffer cmd, ComputeTexture inputPack4, int inputPacks)
     {
         var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
         var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
 
-        var inputRef = new TensorRef { t = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
+        var inputRef = new TensorRef { t2 = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
         blobs["data"] = inputRef;
 
-        CommandBuffer cmd = externalCmd;
-        var ownsCmd = false;
-        var useExternalCmd = externalCmd != null;
         void EnsureCmd()
         {
-            if (!_useCmdThisRun) return;
-            if (cmd != null) return;
-            cmd = new CommandBuffer();
-            cmd.name = "NcnnForwardPack4";
-            ownsCmd = true;
+
         }
-        void FlushCmd()
+
+        for (var li = 0; li < _model.layers.Count; li++)
         {
-            if (cmd == null) return;
-            Graphics.ExecuteCommandBuffer(cmd);
-            if (!useExternalCmd && ownsCmd)
+            var l = _model.layers[li];
+            if (string.Equals(l.type, "Input", StringComparison.Ordinal))
+                continue;
+
+            if (string.Equals(l.type, "Split", StringComparison.Ordinal))
             {
-                cmd.Release();
+                var src = Get(blobs, l.bottomNames[0]);
+                for (var i = 0; i < l.topNames.Length; i++)
+                {
+                    blobs[l.topNames[i]] = src;
+                    src.refs++;
+                }
+                Consume(cmd, blobs, remaining, l.bottomNames);
+                continue;
             }
-            if (!useExternalCmd)
+
+            if (string.Equals(l.type, "Concat", StringComparison.Ordinal))
             {
-                cmd = null;
-                ownsCmd = false;
+                var parts = new TensorRef[l.bottomNames.Length];
+                var sumP = 0;
+                var w = 0;
+                var h = 0;
+                for (var i = 0; i < l.bottomNames.Length; i++)
+                {
+                    var tr = Get(blobs, l.bottomNames[i]);
+                    parts[i] = tr;
+                    w = tr.w;
+                    h = tr.h;
+                    sumP += tr.packs;
+                }
+
+                var outArr = RentTempArray(cmd, w, h, sumP, RenderTextureFormat.ARGBHalf);
+                var off = 0;
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    if (_useCmdThisRun)
+                    {
+                        EnsureCmd();
+                        _ops.CopyPack4(cmd, parts[i].t2, 0, outArr, off, parts[i].packs);
+                    }
+                    off += parts[i].packs;
+                }
+
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = w, h = h, packs = sumP, refs = 1, owned = true };
+                Consume(cmd, blobs, remaining, l.bottomNames);
+                continue;
             }
+
+            if (string.Equals(l.type, "Padding", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var top = l.GetInt(0, 0);
+                var bottom = l.GetInt(1, 0);
+                var left = l.GetInt(2, 0);
+                var right = l.GetInt(3, 0);
+                var type = l.GetInt(4, 0);
+                var value = l.GetFloat(5, 0f);
+
+                var outW = src.w + left + right;
+                var outH = src.h + top + bottom;
+                if (outW <= 0 || outH <= 0)
+                    throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
+
+                var outArr = RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.PaddingPack4(cmd, src.t2, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd, blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Pooling", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var poolingType = l.GetInt(0, 0);
+                var kernelW = l.GetInt(1, 0);
+                var kernelH = l.GetInt(11, kernelW);
+                var strideW = l.GetInt(2, 1);
+                var strideH = l.GetInt(12, strideW);
+                var padLeft = l.GetInt(3, 0);
+                var padTop = l.GetInt(13, padLeft);
+                var globalPooling = l.GetInt(4, 0);
+                var adaptivePooling = l.GetInt(7, 0);
+                if (globalPooling != 0 || adaptivePooling != 0)
+                    throw new InvalidOperationException("Pooling(global/adaptive) not supported");
+
+                var outW = (src.w + padLeft * 2 - kernelW) / strideW + 1;
+                var outH = (src.h + padTop * 2 - kernelH) / strideH + 1;
+                outW = Mathf.Max(1, outW);
+                outH = Mathf.Max(1, outH);
+                var outArr = RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.PoolingPack4(cmd, src.t2, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Softmax", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var axis = l.GetInt(0, 0);
+                if (axis != 0)
+                    throw new InvalidOperationException("Softmax axis not supported: " + axis);
+                var outArr = RentTempArray(cmd, src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.SoftmaxChannelPack4(cmd, src.t2, src.packs, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var pack = _conv[l.name];
+                if (pack.kernel != 3)
+                    throw new InvalidOperationException("unsupported kernel size: " + pack.kernel);
+                if (src.packs != pack.inPacks)
+                    throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
+
+                var outArr = RentTempArray(cmd ,src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
+                if (pack.useWinograd23 && enableWinograd23)
+                {
+                    // Winograd uses persistent workspace buffers; flush pending cmd work and
+                    // dispatch immediately so buffers are not freed before GPU finishes.
+                    _ops.Conv3x3Pack4Winograd23(cmd, src.t2, pack.inPacks, pack.wTm23, pack.b4, pack.outPacks, pack.biasTerm, pack.activationType, pack.activationSlope, outArr);
+                }
+                else if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.Conv3x3Pack4(cmd, src.t2, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Eltwise", StringComparison.Ordinal))
+            {
+                var a = Get(blobs, l.bottomNames[0]);
+                var b = Get(blobs, l.bottomNames[1]);
+                var coeff = ParseEltwiseCoeff(l);
+                var outArr = RentTempArray(cmd,a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.AddPack4(cmd, a.t2, b.t2, coeff.coeffA, coeff.coeffB, a.packs, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "BinaryOp", StringComparison.Ordinal))
+            {
+                var opType = l.GetInt(0, 0);
+                var withScalar = l.GetInt(1, 0);
+                var scalarB = l.GetFloat(2, 0f);
+                var a = Get(blobs, l.bottomNames[0]);
+                var outArr = RentTempArray(cmd, a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                if (withScalar != 0)
+                {
+                    if (_useCmdThisRun)
+                    {
+                        EnsureCmd();
+                        _ops.BinaryOpScalarPack4(cmd, a.t2, scalarB, a.packs, opType, outArr);
+                    }
+                }
+                else
+                {
+                    var b = Get(blobs, l.bottomNames[1]);
+                    if (a.w != b.w || a.h != b.h || a.packs != b.packs)
+                        throw new InvalidOperationException("BinaryOp broadcast not supported: " + l.name);
+                    if (_useCmdThisRun)
+                    {
+                        EnsureCmd();
+                        _ops.BinaryOpPack4(cmd, a.t2, b.t2, a.packs, opType, outArr);
+                    }
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "UnaryOp", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var opType = l.GetInt(0, 0);
+                var outArr = RentTempArray(cmd, src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.UnaryOpPack4(cmd, src.t2, src.packs, opType, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Swish", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var outArr = RentTempArray(cmd, src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.SwishPack4(cmd, src.t2, src.packs, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Sigmoid", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var outArr = RentTempArray(cmd, src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.SigmoidPack4(cmd, src.t2, src.packs, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "GELU", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var fast = l.GetInt(0, 0) != 0;
+                var outArr = RentTempArray(cmd, src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    _ops.GeluPack4(cmd, src.t2, src.packs, fast, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            if (string.Equals(l.type, "Interp", StringComparison.Ordinal))
+            {
+                var src = Get(blobs, l.bottomNames[0]);
+                var resizeType = l.GetInt(0, 2);
+                var sx = l.GetFloat(1, 1f);
+                var sy = l.GetFloat(2, 1f);
+                if (Mathf.Abs(sx - 2f) > 1e-3f || Mathf.Abs(sy - 2f) > 1e-3f)
+                    throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
+
+                var outArr = RentTempArray(cmd,src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
+                if (_useCmdThisRun)
+                {
+                    EnsureCmd();
+                    if (resizeType == 1)
+                        _ops.Interp2xNearestPack4(cmd, src.t2, src.packs, outArr);
+                    else
+                        _ops.Interp2xPack4(cmd, src.t2, src.packs, outArr);
+                }
+                blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
+                Consume(cmd,blobs, remaining, l.bottomNames);
+                continue;
+            }
+
+            throw new InvalidOperationException("unsupported layer type: " + l.type);
         }
+
+
+        var outRef = Get(blobs, "output");
+        var keep = outRef.t2;
+        outRef.t2 = null;
+        outRef.owned = false;
+
+        var visited = new HashSet<TensorRef>();
+        foreach (var kv in blobs)
+        {
+            var tr = kv.Value;
+            if (tr == null || !visited.Add(tr))
+                continue;
+            if (tr.owned && tr.t2 != null)
+                ReturnTempArray(cmd, tr.t2);
+        }
+
+        return keep;
+    }
+
+    private RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks)
+    {
+        var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+        var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
+
+        var inputRef = new TensorRef { t1 = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
+        blobs["data"] = inputRef;
+
 
         for (var li = 0; li < _model.layers.Count; li++)
         {
@@ -701,19 +966,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var off = 0;
                 for (var i = 0; i < parts.Length; i++)
                 {
-                    if (_useCmdThisRun)
                     {
-                        EnsureCmd();
-                        _ops.CopyPack4(cmd, parts[i].t, 0, outArr, off, parts[i].packs);
-                    }
-                    else
-                    {
-                        _ops.CopyPack4(parts[i].t, 0, outArr, off, parts[i].packs);
+                        _ops.CopyPack4(parts[i].t1, 0, outArr, off, parts[i].packs);
                     }
                     off += parts[i].packs;
                 }
 
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = w, h = h, packs = sumP, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = w, h = h, packs = sumP, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -734,16 +993,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
 
                 var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.PaddingPack4(cmd, src.t, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
+                    _ops.PaddingPack4(src.t1, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
                 }
-                else
-                {
-                    _ops.PaddingPack4(src.t, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -768,16 +1021,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outW = Mathf.Max(1, outW);
                 outH = Mathf.Max(1, outH);
                 var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.PoolingPack4(cmd, src.t, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                    _ops.PoolingPack4(src.t1, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
                 }
-                else
-                {
-                    _ops.PoolingPack4(src.t, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -789,16 +1036,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 if (axis != 0)
                     throw new InvalidOperationException("Softmax axis not supported: " + axis);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.SoftmaxChannelPack4(cmd, src.t, src.packs, outArr);
+                    _ops.SoftmaxChannelPack4(src.t1, src.packs, outArr);
                 }
-                else
-                {
-                    _ops.SoftmaxChannelPack4(src.t, src.packs, outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -817,19 +1058,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 {
                     // Winograd uses persistent workspace buffers; flush pending cmd work and
                     // dispatch immediately so buffers are not freed before GPU finishes.
-                    FlushCmd();
-                    _ops.Conv3x3Pack4Winograd23(src.t, pack.inPacks, pack.wTm23, pack.b4, pack.outPacks, pack.biasTerm, pack.activationType, pack.activationSlope, outArr);
-                }
-                else if (_useCmdThisRun)
-                {
-                    EnsureCmd();
-                    _ops.Conv3x3Pack4(cmd, src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                    _ops.Conv3x3Pack4Winograd23(src.t1, pack.inPacks, pack.wTm23, pack.b4, pack.outPacks, pack.biasTerm, pack.activationType, pack.activationSlope, outArr);
                 }
                 else
                 {
-                    _ops.Conv3x3Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                    _ops.Conv3x3Pack4(src.t1, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
                 }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -840,16 +1075,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var b = Get(blobs, l.bottomNames[1]);
                 var coeff = ParseEltwiseCoeff(l);
                 var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.AddPack4(cmd, a.t, b.t, coeff.coeffA, coeff.coeffB, a.packs, outArr);
+                    _ops.AddPack4(a.t1, b.t1, coeff.coeffA, coeff.coeffB, a.packs, outArr);
                 }
-                else
-                {
-                    _ops.AddPack4(a.t, b.t, coeff.coeffA, coeff.coeffB, a.packs, outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -863,14 +1092,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
                 if (withScalar != 0)
                 {
-                    if (_useCmdThisRun)
                     {
-                        EnsureCmd();
-                        _ops.BinaryOpScalarPack4(cmd, a.t, scalarB, a.packs, opType, outArr);
-                    }
-                    else
-                    {
-                        _ops.BinaryOpScalarPack4(a.t, scalarB, a.packs, opType, outArr);
+                        _ops.BinaryOpScalarPack4(a.t1, scalarB, a.packs, opType, outArr);
                     }
                 }
                 else
@@ -878,17 +1101,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     var b = Get(blobs, l.bottomNames[1]);
                     if (a.w != b.w || a.h != b.h || a.packs != b.packs)
                         throw new InvalidOperationException("BinaryOp broadcast not supported: " + l.name);
-                    if (_useCmdThisRun)
                     {
-                        EnsureCmd();
-                        _ops.BinaryOpPack4(cmd, a.t, b.t, a.packs, opType, outArr);
-                    }
-                    else
-                    {
-                        _ops.BinaryOpPack4(a.t, b.t, a.packs, opType, outArr);
+                        _ops.BinaryOpPack4(a.t1, b.t1, a.packs, opType, outArr);
                     }
                 }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -898,16 +1115,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var src = Get(blobs, l.bottomNames[0]);
                 var opType = l.GetInt(0, 0);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.UnaryOpPack4(cmd, src.t, src.packs, opType, outArr);
+                    _ops.UnaryOpPack4(src.t1, src.packs, opType, outArr);
                 }
-                else
-                {
-                    _ops.UnaryOpPack4(src.t, src.packs, opType, outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -916,16 +1127,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var src = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.SwishPack4(cmd, src.t, src.packs, outArr);
+                    _ops.SwishPack4(src.t1, src.packs, outArr);
                 }
-                else
-                {
-                    _ops.SwishPack4(src.t, src.packs, outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -934,16 +1139,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
                 var src = Get(blobs, l.bottomNames[0]);
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.SigmoidPack4(cmd, src.t, src.packs, outArr);
+                    _ops.SigmoidPack4(src.t1, src.packs, outArr);
                 }
-                else
-                {
-                    _ops.SigmoidPack4(src.t, src.packs, outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -953,16 +1152,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 var src = Get(blobs, l.bottomNames[0]);
                 var fast = l.GetInt(0, 0) != 0;
                 var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
                 {
-                    EnsureCmd();
-                    _ops.GeluPack4(cmd, src.t, src.packs, fast, outArr);
+                    _ops.GeluPack4(src.t1, src.packs, fast, outArr);
                 }
-                else
-                {
-                    _ops.GeluPack4(src.t, src.packs, fast, outArr);
-                }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -977,22 +1170,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
 
                 var outArr = RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
-                if (_useCmdThisRun)
-                {
-                    EnsureCmd();
-                    if (resizeType == 1)
-                        _ops.Interp2xNearestPack4(cmd, src.t, src.packs, outArr);
-                    else
-                        _ops.Interp2xPack4(cmd, src.t, src.packs, outArr);
-                }
-                else
                 {
                     if (resizeType == 1)
-                        _ops.Interp2xNearestPack4(src.t, src.packs, outArr);
+                        _ops.Interp2xNearestPack4(src.t1, src.packs, outArr);
                     else
-                        _ops.Interp2xPack4(src.t, src.packs, outArr);
+                        _ops.Interp2xPack4(src.t1, src.packs, outArr);
                 }
-                blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
+                blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);
                 continue;
             }
@@ -1000,11 +1184,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             throw new InvalidOperationException("unsupported layer type: " + l.type);
         }
 
-        FlushCmd();
 
         var outRef = Get(blobs, "output");
-        var keep = outRef.t;
-        outRef.t = null;
+        var keep = outRef.t1;
+        outRef.t1 = null;
         outRef.owned = false;
 
         var visited = new HashSet<TensorRef>();
@@ -1013,8 +1196,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var tr = kv.Value;
             if (tr == null || !visited.Add(tr))
                 continue;
-            if (tr.owned && tr.t != null)
-                ReturnTempArray(tr.t);
+            if (tr.owned && tr.t1 != null)
+                ReturnTempArray(tr.t1);
         }
 
         return keep;
@@ -1022,7 +1205,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private static TensorRef Get(Dictionary<string, TensorRef> blobs, string name)
     {
-        if (!blobs.TryGetValue(name, out var tr) || tr == null || tr.t == null)
+        if (!blobs.TryGetValue(name, out var tr) || tr == null)
             throw new InvalidOperationException("blob not found: " + name);
         return tr;
     }
@@ -1034,6 +1217,35 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                || t == GraphicsDeviceType.Direct3D12
                || t == GraphicsDeviceType.Metal
                || t == GraphicsDeviceType.WebGPU;
+    }
+
+    private void Consume(CommandBuffer cmd, Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames)
+    {
+        for (var i = 0; i < bottomNames.Length; i++)
+        {
+            var b = bottomNames[i];
+            if (!remaining.TryGetValue(b, out var c))
+                continue;
+            c--;
+            remaining[b] = c;
+            if (c > 0)
+                continue;
+
+            if (blobs.TryGetValue(b, out var tr) && tr != null)
+            {
+                tr.refs--;
+                if (tr.refs <= 0)
+                {
+                    if (tr.owned && tr.t2 != null)
+                    {
+                        try { ReturnTempArray(cmd, tr.t2); } catch { }
+                    }
+                    tr.t2 = null;
+                    tr.owned = false;
+                }
+            }
+            blobs.Remove(b);
+        }
     }
 
     private void Consume(Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames)
@@ -1053,17 +1265,18 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 tr.refs--;
                 if (tr.refs <= 0)
                 {
-                    if (tr.owned && tr.t != null)
+                    if (tr.owned && tr.t1 != null)
                     {
-                        try { ReturnTempArray(tr.t); } catch { }
+                        try { ReturnTempArray(tr.t1); } catch { }
                     }
-                    tr.t = null;
+                    tr.t1 = null;
                     tr.owned = false;
                 }
             }
             blobs.Remove(b);
         }
     }
+
 
     private static Dictionary<string, int> BuildBlobUseCount(NcnnParamModel model)
     {
@@ -1162,36 +1375,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         return r;
     }
 
-    private RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
-    {
-        if (!_useTempPoolThisRun)
-            return CreateTempArray(w, h, depth, format);
 
-        var key = new RtKey(w, h, Mathf.Max(1, depth), format);
-        if (_rtPool.TryGetValue(key, out var stack) && stack.Count > 0)
-        {
-            var keep = new Stack<PooledRt>(stack.Count);
-            RenderTexture hit = null;
-            while (stack.Count > 0)
-            {
-                var p = stack.Pop();
-                if (hit == null && p.rt != null && IsFencePassedOrAged(p))
-                {
-                    hit = p.rt;
-                    break;
-                }
-                keep.Push(p);
-            }
-            while (keep.Count > 0)
-                stack.Push(keep.Pop());
-            if (hit != null)
-                return hit;
-        }
+    private HashSet<ComputeTexture> sets = new HashSet<ComputeTexture>();
 
-        return CreateTempArray(w, h, depth, format);
-    }
-
-    private static RenderTexture CreateTempArray(int w, int h, int depth, RenderTextureFormat format)
+    private ComputeTexture RentTempArray(CommandBuffer cmd, int w, int h, int depth, RenderTextureFormat format)
     {
         var desc = new RenderTextureDescriptor(w, h, format, 0)
         {
@@ -1201,59 +1388,44 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             sRGB = false,
             enableRandomWrite = true
         };
-        var rt = RenderTexture.GetTemporary(desc);
-        rt.wrapMode = TextureWrapMode.Clamp;
-        rt.filterMode = FilterMode.Point;
-        rt.Create();
-        if (!rt.IsCreated())
-            throw new InvalidOperationException("failed to create temp array " + w + "x" + h + "x" + depth + " " + format);
-        return rt;
+
+        var guid = Guid.NewGuid();
+        int id = Shader.PropertyToID(guid.ToString());
+        cmd.GetTemporaryRT(id, desc);
+        ComputeTexture t = new ComputeTexture();
+        t.nameID = id;
+        t.width = w;
+        t.height = h;
+        sets.Add(t);
+        return t;
     }
 
-    private void ReturnTempArray(RenderTexture rt)
+    private RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
     {
-        if (rt == null)
-            return;
-        if (!_useTempPoolThisRun)
+        var desc = new RenderTextureDescriptor(w, h, format, 0)
         {
-            RenderTexture.ReleaseTemporary(rt);
-            return;
-        }
-        var key = new RtKey(rt.width, rt.height, rt.volumeDepth, rt.format);
-        if (!_rtPool.TryGetValue(key, out var stack))
+            dimension = TextureDimension.Tex2DArray,
+            volumeDepth = Mathf.Max(1, depth),
+            msaaSamples = 1,
+            sRGB = false,
+            enableRandomWrite = true
+        };
+
+        return RenderTexture.GetTemporary(desc);
+    }
+
+    private void ReturnTempArray(CommandBuffer cmd, ComputeTexture t)
+    {
+        if (sets.Contains(t))
         {
-            stack = new Stack<PooledRt>();
-            _rtPool[key] = stack;
-        }
-        var cap = Mathf.Max(0, maxPooledPerShape);
-        if (stack.Count >= cap)
-        {
-            RenderTexture.ReleaseTemporary(rt);
-            return;
-        }
-        try
-        {
-            var fence = Graphics.CreateGraphicsFence(GraphicsFenceType.AsyncQueueSynchronisation, SynchronisationStageFlags.ComputeProcessing);
-            stack.Push(new PooledRt(rt, fence, Time.frameCount));
-        }
-        catch
-        {
-            RenderTexture.ReleaseTemporary(rt);
+            cmd.ReleaseTemporaryRT(t.nameID);
+            sets.Remove(t);
         }
     }
 
-    private void ClearTempPool()
+    private void ReturnTempArray(RenderTexture t)
     {
-        foreach (var kv in _rtPool)
-        {
-            var stack = kv.Value;
-            while (stack.Count > 0)
-            {
-                var rt = stack.Pop().rt;
-                try { RenderTexture.ReleaseTemporary(rt); } catch { }
-            }
-        }
-        _rtPool.Clear();
+         RenderTexture.ReleaseTemporary(t);
     }
 
     private async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
@@ -1362,15 +1534,5 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         return false;
     }
 
-    private static bool IsFencePassedOrAged(PooledRt p)
-    {
-        try
-        {
-            return p.fence.passed;
-        }
-        catch
-        {
-            return (Time.frameCount - p.frame) >= 2;
-        }
-    }
+
 }
