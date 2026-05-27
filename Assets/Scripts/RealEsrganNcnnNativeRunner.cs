@@ -9,10 +9,9 @@ using UnityEngine.Networking;
 
 public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
 {
-    public bool enableRealEsrganNative = true;
     public string modelName = "realesrgan-x4plus";
     public int scale = 2;
-    public int tileSize = 0;
+    public int tileSize = 128;
     public int gpuId = -1;
     public int prepadding = 10;
     public bool ttaMode = false;
@@ -58,8 +57,6 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
 
     public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
-        if (!enableRealEsrganNative)
-            return new RealEsrganResult { error = "Real-ESRGAN(原生) disabled" };
         if (src == null)
             return default;
 

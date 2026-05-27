@@ -61,7 +61,7 @@ public class ConsoleLogToFile : MonoBehaviour
             // 创建文件流，共享读写，异步写入
             FileStream fileStream = new FileStream(
                 _logFilePath, 
-                FileMode.Append,
+                FileMode.OpenOrCreate,
                 FileAccess.Write, 
                 FileShare.Read, 
                 4096,                     // 缓冲区大小

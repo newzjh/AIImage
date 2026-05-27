@@ -260,6 +260,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 if (_useCmdThisRun)
                 {
                     rowCmd = new CommandBuffer();
+                    rowCmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
                     rowCmd.name = "TileRow_" + ty;
                 }
 
@@ -350,7 +351,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 {
                     var sC = Stopwatch.StartNew();
                     Graphics.ExecuteCommandBufferAsync(rowCmd, ComputeQueueType.Default);
-                    //Graphics.ExecuteCommandBuffer(rowCmd);
                     rowCmd.Dispose();
                     cmdMs += sC.ElapsedMilliseconds;
                 }

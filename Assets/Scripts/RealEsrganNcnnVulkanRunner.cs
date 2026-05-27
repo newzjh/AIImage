@@ -13,7 +13,6 @@ using Debug = UnityEngine.Debug;
 
 public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 {
-    public bool enableRealEsrgan = true;
     public int scale = 2;
     public string modelName = "realesrgan-x4plus";
     public int tileSize = 128;
@@ -32,8 +31,6 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 
     public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, bool dumpDebugFiles, CancellationToken ct)
     {
-        if (!enableRealEsrgan)
-            return new RealEsrganResult { error = "Real-ESRGAN disabled", workDir = null };
         if (src == null)
             return default;
 
