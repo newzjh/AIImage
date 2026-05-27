@@ -183,15 +183,12 @@ int _InPacks;
 int _OutPacks;
 
 groupshared float4 _ConvTile[18 * 18];
-groupshared float4 _ConvTile1[18 * 18];
 groupshared float4 _ConvWeight0[9 * 4];
 groupshared float4 _ConvWeight1[9 * 4];
-groupshared float4 _ConvWeight2[9 * 4];
-groupshared float4 _ConvWeight3[9 * 4];
 
 // Direct-read 3x3 pack4 with group-shared input tile reuse.
 // One 8x8 thread group covers a 16x16 output region and stages the corresponding
-// 18x18 input tiles for two input-packs per iteration, while each invocation computes a 2x2 x 2-pack block.
+// 18x18 input tile once per input-pack, while each invocation computes a 2x2 x 2-pack block.
 [numthreads(8,8,1)]
 void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
@@ -227,41 +224,24 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
 
     bool hasOp0 = op >= 0 && op < _OutPacks;
 
-    for (int ipBase = 0; ipBase < _InPacks; ipBase += 2)
+    for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
-        int ip0 = ipBase;
-        int ip1 = ipBase + 1;
-        bool hasIp1 = ip1 < _InPacks;
-
-        [unroll]
-        for (int loadIter = 0; loadIter < 6; loadIter++)
+        for (int li = lane; li < 18 * 18; li += 64)
         {
-            int li = loadIter * 64 + lane;
-            if (li >= 18 * 18)
-                continue;
             int tx = li % 18;
             int ty = li / 18;
             int sx = groupSx + tx;
             int sy = groupSy + ty;
-            float4 v0 = 0.0;
-            float4 v1 = 0.0;
+            float4 v = 0.0;
             if (sx >= 0 && sy >= 0 && sx < (int)iw && sy < (int)ih)
-            {
-                v0 = _ConvInArr[int3(sx, sy, ip0)];
-                if (hasIp1)
-                    v1 = _ConvInArr[int3(sx, sy, ip1)];
-            }
-            _ConvTile[li] = v0;
-            _ConvTile1[li] = v1;
+                v = _ConvInArr[int3(sx, sy, ip0)];
+            _ConvTile[li] = v;
         }
 
-        if (lane < 9 * 4)
+        for (int wi = lane; wi < 9 * 4; wi += 64)
         {
-            int wi = lane;
             _ConvWeight0[wi] = hasOp0 ? _ConvW4[((op * _InPacks + ip0) * 9) * 4 + wi] : 0.0;
             _ConvWeight1[wi] = hasOp1 ? _ConvW4[((op1 * _InPacks + ip0) * 9) * 4 + wi] : 0.0;
-            _ConvWeight2[wi] = (hasOp0 && hasIp1) ? _ConvW4[((op * _InPacks + ip1) * 9) * 4 + wi] : 0.0;
-            _ConvWeight3[wi] = (hasOp1 && hasIp1) ? _ConvW4[((op1 * _InPacks + ip1) * 9) * 4 + wi] : 0.0;
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -276,10 +256,6 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
                 float4 v01 = _ConvTile[(localOy + ky) * 18 + (localOx + kx + 1)];
                 float4 v10 = _ConvTile[(localOy + ky + 1) * 18 + (localOx + kx)];
                 float4 v11 = _ConvTile[(localOy + ky + 1) * 18 + (localOx + kx + 1)];
-                float4 u00 = _ConvTile1[(localOy + ky) * 18 + (localOx + kx)];
-                float4 u01 = _ConvTile1[(localOy + ky) * 18 + (localOx + kx + 1)];
-                float4 u10 = _ConvTile1[(localOy + ky + 1) * 18 + (localOx + kx)];
-                float4 u11 = _ConvTile1[(localOy + ky + 1) * 18 + (localOx + kx + 1)];
 
                 int k = ky * 3 + kx;
                 int wbase = k * 4;
@@ -308,34 +284,6 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
                 sum11.z += dot(v11, w02);
                 sum11.w += dot(v11, w03);
 
-                if (hasIp1)
-                {
-                    float4 t00 = _ConvWeight2[wbase + 0];
-                    float4 t01 = _ConvWeight2[wbase + 1];
-                    float4 t02 = _ConvWeight2[wbase + 2];
-                    float4 t03 = _ConvWeight2[wbase + 3];
-
-                    sum00.x += dot(u00, t00);
-                    sum00.y += dot(u00, t01);
-                    sum00.z += dot(u00, t02);
-                    sum00.w += dot(u00, t03);
-
-                    sum01.x += dot(u01, t00);
-                    sum01.y += dot(u01, t01);
-                    sum01.z += dot(u01, t02);
-                    sum01.w += dot(u01, t03);
-
-                    sum10.x += dot(u10, t00);
-                    sum10.y += dot(u10, t01);
-                    sum10.z += dot(u10, t02);
-                    sum10.w += dot(u10, t03);
-
-                    sum11.x += dot(u11, t00);
-                    sum11.y += dot(u11, t01);
-                    sum11.z += dot(u11, t02);
-                    sum11.w += dot(u11, t03);
-                }
-
                 if (hasOp1)
                 {
                     float4 w10 = _ConvWeight1[wbase + 0];
@@ -362,34 +310,6 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
                     sum31.y += dot(v11, w11);
                     sum31.z += dot(v11, w12);
                     sum31.w += dot(v11, w13);
-
-                    if (hasIp1)
-                    {
-                        float4 t10 = _ConvWeight3[wbase + 0];
-                        float4 t11 = _ConvWeight3[wbase + 1];
-                        float4 t12 = _ConvWeight3[wbase + 2];
-                        float4 t13 = _ConvWeight3[wbase + 3];
-
-                        sum20.x += dot(u00, t10);
-                        sum20.y += dot(u00, t11);
-                        sum20.z += dot(u00, t12);
-                        sum20.w += dot(u00, t13);
-
-                        sum21.x += dot(u01, t10);
-                        sum21.y += dot(u01, t11);
-                        sum21.z += dot(u01, t12);
-                        sum21.w += dot(u01, t13);
-
-                        sum30.x += dot(u10, t10);
-                        sum30.y += dot(u10, t11);
-                        sum30.z += dot(u10, t12);
-                        sum30.w += dot(u10, t13);
-
-                        sum31.x += dot(u11, t10);
-                        sum31.y += dot(u11, t11);
-                        sum31.z += dot(u11, t12);
-                        sum31.w += dot(u11, t13);
-                    }
                 }
             }
         }
