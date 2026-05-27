@@ -266,11 +266,13 @@ void NcnnWinograd23TransformInputPack4(uint3 id : SV_DispatchThreadID)
     if (gx >= _WinoBlockX || gy >= _WinoBlockY || gz >= _InPacks)
         return;
 
-    int sx = gx * 2;
-    int sy = gy * 2;
+    // ncnn winograd23 samples from the padded input tensor.
+    // Repro path keeps the source unpadded, so emulate pad=1 here.
+    int sx = gx * 2 - 1;
+    int sy = gy * 2 - 1;
     int cstep = _WinoInCstep;
 
-    float4 v00 = _WinoInArr[int3(sx + 0, sy + 0, gz)];
+    float4 v00 = (sx + 0 >= 0 && sy + 0 >= 0 && sx + 0 < _WinoW && sy + 0 < _WinoH) ? _WinoInArr[int3(sx + 0, sy + 0, gz)] : 0.0;
     float4 v01 = sx + 1 < _WinoW ? _WinoInArr[int3(sx + 1, sy + 0, gz)] : 0.0;
     float4 v02 = sx + 2 < _WinoW ? _WinoInArr[int3(sx + 2, sy + 0, gz)] : 0.0;
     float4 v03 = sx + 3 < _WinoW ? _WinoInArr[int3(sx + 3, sy + 0, gz)] : 0.0;
@@ -392,11 +394,10 @@ void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
     }
 
     int base = gz * outc * _WinoOutCstep + gy * _WinoOutCstep + gx;
-    int stride = outc * _WinoOutCstep;
-    _WinoTopTm[base + 0 * stride] = sum0;
-    if (gx + 1 < tiles) _WinoTopTm[base + 1 * stride] = sum1;
-    if (gx + 2 < tiles) _WinoTopTm[base + 2 * stride] = sum2;
-    if (gx + 3 < tiles) _WinoTopTm[base + 3 * stride] = sum3;
+    _WinoTopTm[base + 0] = sum0;
+    if (gx + 1 < tiles) _WinoTopTm[base + 1] = sum1;
+    if (gx + 2 < tiles) _WinoTopTm[base + 2] = sum2;
+    if (gx + 3 < tiles) _WinoTopTm[base + 3] = sum3;
 }
 
 // ncnn pack4 winograd23 transform_output: local_size 8x8x1.

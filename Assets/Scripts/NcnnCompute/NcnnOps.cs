@@ -900,7 +900,7 @@ namespace NcnnCompute
             DispatchWinograd23TransformOutput(null, blockX, blockY, outPacks);
             
 
-            WaitGpuIdle();
+            //WaitGpuIdle();
         }
 
         public void Conv3x3Pack4Winograd23(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, ComputeTexture dstPack4)
@@ -988,59 +988,11 @@ namespace NcnnCompute
             }
         }
 
-        private void DispatchWinograd23Pack4(RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4, CommandBuffer cmd)
-        {
-            var w = srcPack4.width;
-            var h = srcPack4.height;
-            var blockX = NcnnWinograd23.BlockX(w);
-            var blockY = NcnnWinograd23.BlockY(h);
-            var tiles = blockX * blockY;
-            var bottomCount = NcnnWinograd23.BottomTmCount(w, h, inPacks);
-            var topCount = NcnnWinograd23.TopTmCount(w, h, outPacks);
-            EnsureWinogradWorkspace(bottomCount, topCount);
-
-            if (cmd != null)
-            {
-                SetWinograd23Params(cmd, w, h, inPacks, outPacks, activationType, activationParam, biasTerm);
-                cmd.SetComputeTextureParam(_cs, _kWinograd23TransformInput, "_WinoInArr", srcPack4);
-                cmd.SetComputeBufferParam(_cs, _kWinograd23TransformInput, "_WinoBottomTm", _winoBottomTm);
-                DispatchWinograd23TransformInput(cmd, blockX, blockY, inPacks);
-
-                cmd.SetComputeBufferParam(_cs, _kWinograd23Gemm, "_WinoBottomTm", _winoBottomTm);
-                cmd.SetComputeBufferParam(_cs, _kWinograd23Gemm, "_WinoTopTm", _winoTopTm);
-                cmd.SetComputeBufferParam(_cs, _kWinograd23Gemm, "_WinoWeightTm", wTm23);
-                DispatchWinograd23Gemm(cmd, tiles, outPacks);
-
-                cmd.SetComputeBufferParam(_cs, _kWinograd23TransformOutput, "_WinoTopTm", _winoTopTm);
-                cmd.SetComputeBufferParam(_cs, _kWinograd23TransformOutput, "_WinoBias4", b4);
-                cmd.SetComputeTextureParam(_cs, _kWinograd23TransformOutput, "_WinoOutArr", dstPack4);
-                DispatchWinograd23TransformOutput(cmd, blockX, blockY, outPacks);
-            }
-            else
-            {
-                SetWinograd23Params(w, h, inPacks, outPacks, activationType, activationParam, biasTerm);
-                _cs.SetTexture(_kWinograd23TransformInput, "_WinoInArr", srcPack4);
-                _cs.SetBuffer(_kWinograd23TransformInput, "_WinoBottomTm", _winoBottomTm);
-                DispatchWinograd23TransformInput(null, blockX, blockY, inPacks);
-
-                _cs.SetBuffer(_kWinograd23Gemm, "_WinoBottomTm", _winoBottomTm);
-                _cs.SetBuffer(_kWinograd23Gemm, "_WinoTopTm", _winoTopTm);
-                _cs.SetBuffer(_kWinograd23Gemm, "_WinoWeightTm", wTm23);
-                DispatchWinograd23Gemm(null, tiles, outPacks);
-
-                _cs.SetBuffer(_kWinograd23TransformOutput, "_WinoTopTm", _winoTopTm);
-                _cs.SetBuffer(_kWinograd23TransformOutput, "_WinoBias4", b4);
-                _cs.SetTexture(_kWinograd23TransformOutput, "_WinoOutArr", dstPack4);
-                DispatchWinograd23TransformOutput(null, blockX, blockY, outPacks);
-            }
-
-            WaitGpuIdle();
-        }
 
         private void DispatchWinograd23TransformInput(CommandBuffer cmd, int blockX, int blockY, int inPacks)
         {
-            var groupsX = Mathf.Max(1, blockX);
-            var groupsY = Mathf.Max(1, blockY);
+            var groupsX = Mathf.Max(1, Mathf.CeilToInt(blockX / 8f));
+            var groupsY = Mathf.Max(1, Mathf.CeilToInt(blockY / 8f));
             var groupsZ = Mathf.Max(1, inPacks);
             if (cmd != null)
                 cmd.DispatchCompute(_cs, _kWinograd23TransformInput, groupsX, groupsY, groupsZ);
@@ -1050,8 +1002,9 @@ namespace NcnnCompute
 
         private void DispatchWinograd23Gemm(CommandBuffer cmd, int tiles, int outPacks)
         {
-            var groupsX = Mathf.Max(1, (tiles + 3) / 4);
-            var groupsY = Mathf.Max(1, outPacks);
+            var tileBlocks = Mathf.Max(1, (tiles + 3) / 4);
+            var groupsX = Mathf.Max(1, Mathf.CeilToInt(tileBlocks / 8f));
+            var groupsY = Mathf.Max(1, Mathf.CeilToInt(outPacks / 8f));
             var groupsZ = 16;
             if (cmd != null)
                 cmd.DispatchCompute(_cs, _kWinograd23Gemm, groupsX, groupsY, groupsZ);
@@ -1061,8 +1014,8 @@ namespace NcnnCompute
 
         private void DispatchWinograd23TransformOutput(CommandBuffer cmd, int blockX, int blockY, int outPacks)
         {
-            var groupsX = Mathf.Max(1, blockX);
-            var groupsY = Mathf.Max(1, blockY);
+            var groupsX = Mathf.Max(1, Mathf.CeilToInt(blockX / 8f));
+            var groupsY = Mathf.Max(1, Mathf.CeilToInt(blockY / 8f));
             var groupsZ = Mathf.Max(1, outPacks);
             if (cmd != null)
                 cmd.DispatchCompute(_cs, _kWinograd23TransformOutput, groupsX, groupsY, groupsZ);
