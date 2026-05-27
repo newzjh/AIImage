@@ -183,6 +183,8 @@ int _InPacks;
 int _OutPacks;
 
 groupshared float4 _ConvTile[18 * 18];
+groupshared float4 _ConvWeight0[9 * 4];
+groupshared float4 _ConvWeight1[9 * 4];
 
 // Direct-read 3x3 pack4 with group-shared input tile reuse.
 // One 8x8 thread group covers a 16x16 output region and stages the corresponding
@@ -220,6 +222,8 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
     int localOx = (int)groupThreadId.x * 2;
     int localOy = (int)groupThreadId.y * 2;
 
+    bool hasOp0 = op >= 0 && op < _OutPacks;
+
     for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
         for (int li = lane; li < 18 * 18; li += 64)
@@ -232,6 +236,12 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
             if (sx >= 0 && sy >= 0 && sx < (int)iw && sy < (int)ih)
                 v = _ConvInArr[int3(sx, sy, ip0)];
             _ConvTile[li] = v;
+        }
+
+        for (int wi = lane; wi < 9 * 4; wi += 64)
+        {
+            _ConvWeight0[wi] = hasOp0 ? _ConvW4[((op * _InPacks + ip0) * 9) * 4 + wi] : 0.0;
+            _ConvWeight1[wi] = hasOp1 ? _ConvW4[((op1 * _InPacks + ip0) * 9) * 4 + wi] : 0.0;
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -248,11 +258,11 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
                 float4 v11 = _ConvTile[(localOy + ky + 1) * 18 + (localOx + kx + 1)];
 
                 int k = ky * 3 + kx;
-                int wbase0 = ((op * _InPacks + ip0) * 9 + k) * 4;
-                float4 w00 = _ConvW4[wbase0 + 0];
-                float4 w01 = _ConvW4[wbase0 + 1];
-                float4 w02 = _ConvW4[wbase0 + 2];
-                float4 w03 = _ConvW4[wbase0 + 3];
+                int wbase = k * 4;
+                float4 w00 = _ConvWeight0[wbase + 0];
+                float4 w01 = _ConvWeight0[wbase + 1];
+                float4 w02 = _ConvWeight0[wbase + 2];
+                float4 w03 = _ConvWeight0[wbase + 3];
 
                 sum00.x += dot(v00, w00);
                 sum00.y += dot(v00, w01);
@@ -276,11 +286,10 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
 
                 if (hasOp1)
                 {
-                    int wbase1 = ((op1 * _InPacks + ip0) * 9 + k) * 4;
-                    float4 w10 = _ConvW4[wbase1 + 0];
-                    float4 w11 = _ConvW4[wbase1 + 1];
-                    float4 w12 = _ConvW4[wbase1 + 2];
-                    float4 w13 = _ConvW4[wbase1 + 3];
+                    float4 w10 = _ConvWeight1[wbase + 0];
+                    float4 w11 = _ConvWeight1[wbase + 1];
+                    float4 w12 = _ConvWeight1[wbase + 2];
+                    float4 w13 = _ConvWeight1[wbase + 3];
 
                     sum20.x += dot(v00, w10);
                     sum20.y += dot(v00, w11);
