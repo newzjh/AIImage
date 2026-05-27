@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
@@ -28,6 +30,45 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private NcnnOps _ops;
     private bool _loaded;
     private bool _useCmdThisRun;
+
+    #region debug-point A:winograd23-runtime-report
+    [Serializable]
+    private sealed class Winograd23DebugEvent
+    {
+        public string sessionId;
+        public string runId;
+        public string hypothesisId;
+        public long ts;
+        public string location;
+        public string msg;
+        public Winograd23DebugData data;
+    }
+
+    [Serializable]
+    private sealed class Winograd23DebugData
+    {
+        public string layer;
+        public bool useWinograd23;
+        public bool useCommandBuffer;
+        public int srcW;
+        public int srcH;
+        public int inPacks;
+        public int outPacks;
+        public float[] inputProbePack0;
+        public float[] outputProbePack0;
+        public float[] directWeightHead;
+        public float[] winogradWeightHead;
+        public float[] winogradBottomTmHead;
+        public float[] winogradTopTmHead;
+    }
+
+    private const string Winograd23DebugEnvName = "winograd23-garbage.env";
+    private bool _winograd23DebugInitialized;
+    private bool _winograd23DebugEnabled;
+    private bool _winograd23DebugCaptured;
+    private string _winograd23DebugUrl = "http://127.0.0.1:7777/event";
+    private string _winograd23DebugSessionId = "winograd23-garbage";
+    #endregion
 
     private readonly struct RtKey : IEquatable<RtKey>
     {
@@ -114,6 +155,148 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         try { _ops?.ReleaseWinogradWorkspace(); } catch { }
     }
 
+    #region debug-point B:winograd23-runtime-report-helpers
+    private void TryInitWinograd23Debug()
+    {
+        if (_winograd23DebugInitialized)
+            return;
+
+        _winograd23DebugInitialized = true;
+        try
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var envPath = Path.Combine(projectRoot, ".dbg", Winograd23DebugEnvName);
+            if (!File.Exists(envPath))
+                return;
+
+            foreach (var rawLine in File.ReadAllLines(envPath))
+            {
+                if (string.IsNullOrWhiteSpace(rawLine))
+                    continue;
+                var line = rawLine.Trim();
+                if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
+                    _winograd23DebugUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
+                else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
+                    _winograd23DebugSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+            }
+
+            _winograd23DebugEnabled = !string.IsNullOrWhiteSpace(_winograd23DebugUrl) && !string.IsNullOrWhiteSpace(_winograd23DebugSessionId);
+        }
+        catch
+        {
+            _winograd23DebugEnabled = false;
+        }
+    }
+
+    private static float[] FlattenVector4s(Vector4[] src)
+    {
+        if (src == null || src.Length == 0)
+            return Array.Empty<float>();
+
+        var dst = new float[src.Length * 4];
+        for (var i = 0; i < src.Length; i++)
+        {
+            var j = i * 4;
+            dst[j + 0] = src[i].x;
+            dst[j + 1] = src[i].y;
+            dst[j + 2] = src[i].z;
+            dst[j + 3] = src[i].w;
+        }
+        return dst;
+    }
+
+    private static float[] ReadBufferHead(ComputeBuffer buffer, int vectorCount)
+    {
+        if (buffer == null || vectorCount <= 0)
+            return Array.Empty<float>();
+
+        var n = Mathf.Min(vectorCount, buffer.count);
+        if (n <= 0)
+            return Array.Empty<float>();
+
+        var data = new Vector4[n];
+        buffer.GetData(data, 0, 0, n);
+        return FlattenVector4s(data);
+    }
+
+    private Vector4 CaptureProbePack0(RenderTexture tex, int w, int h)
+    {
+        if (tex == null)
+            return Vector4.zero;
+
+        using var probe = new ComputeBuffer(1, sizeof(float) * 4, ComputeBufferType.Structured);
+        var data = new Vector4[1];
+        _ops.ProbeTilePack4(tex, 0, 0, Mathf.Max(1, w), Mathf.Max(1, h), probe);
+        probe.GetData(data);
+        return data[0];
+    }
+
+    private void PostWinograd23Debug(string hypothesisId, string location, string msg, Winograd23DebugData data)
+    {
+        if (!_winograd23DebugEnabled)
+            return;
+
+        var evt = new Winograd23DebugEvent
+        {
+            sessionId = _winograd23DebugSessionId,
+            runId = enableWinograd23 ? "pre-winograd-on-immediate" : "pre-winograd-off-immediate",
+            hypothesisId = hypothesisId,
+            ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            location = location,
+            msg = msg,
+            data = data
+        };
+        var payload = JsonUtility.ToJson(evt);
+        var url = _winograd23DebugUrl;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                var req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = "POST";
+                req.ContentType = "application/json";
+                var bytes = Encoding.UTF8.GetBytes(payload);
+                req.ContentLength = bytes.Length;
+                using (var reqStream = req.GetRequestStream())
+                    reqStream.Write(bytes, 0, bytes.Length);
+                using var resp = (HttpWebResponse)req.GetResponse();
+            }
+            catch
+            {
+            }
+        });
+    }
+
+    private void CaptureFirstConvRuntimeDebug(string layerName, TensorRef src, ConvPack pack, RenderTexture outArr)
+    {
+        if (!_winograd23DebugEnabled || _winograd23DebugCaptured || src == null || src.t1 == null || outArr == null || !pack.useWinograd23)
+            return;
+
+        _winograd23DebugCaptured = true;
+        var data = new Winograd23DebugData
+        {
+            layer = layerName,
+            useWinograd23 = enableWinograd23 && pack.useWinograd23,
+            useCommandBuffer = _useCmdThisRun,
+            srcW = src.w,
+            srcH = src.h,
+            inPacks = pack.inPacks,
+            outPacks = pack.outPacks,
+            inputProbePack0 = FlattenVector4s(new[] { CaptureProbePack0(src.t1, src.w, src.h) }),
+            outputProbePack0 = FlattenVector4s(new[] { CaptureProbePack0(outArr, src.w, src.h) }),
+            directWeightHead = ReadBufferHead(pack.w4, 4),
+            winogradWeightHead = ReadBufferHead(pack.wTm23, 8),
+            winogradBottomTmHead = FlattenVector4s(_ops.DebugReadWinograd23BufferHead(false, 8)),
+            winogradTopTmHead = FlattenVector4s(_ops.DebugReadWinograd23BufferHead(true, 8))
+        };
+
+        PostWinograd23Debug("A", "RealEsrganNcnnReproRunner:Convolution", "[DEBUG] captured first convolution input/output probe", data);
+        PostWinograd23Debug("B", "RealEsrganNcnnReproRunner:Convolution", "[DEBUG] captured first convolution weight heads", data);
+        if (data.useWinograd23)
+            PostWinograd23Debug("C", "NcnnOps:Conv3x3Pack4Winograd23", "[DEBUG] captured winograd workspace heads", data);
+    }
+    #endregion
+
     public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
         if (src == null)
@@ -186,6 +369,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private async UniTask<RealEsrganResult> ProcessOnceAsync(Texture2D src, CancellationToken ct, int originalW, int originalH, int runInW, int runInH, int runFactor, int effectiveTileSize, int effectiveTilePad)
     {
+        TryInitWinograd23Debug();
+        _winograd23DebugCaptured = false;
+
         Texture2D runInput = null;
         var ownsRunInput = false;
         RenderTexture scaledOutRt = null;
@@ -196,6 +382,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
         try
         {
+            if (_winograd23DebugEnabled && _useCmdThisRun)
+            {
+                PostWinograd23Debug("D", "RealEsrganNcnnReproRunner:ProcessOnceAsync", "[DEBUG] winograd instrumentation only captures immediate mode; disable useCommandBuffer for this repro", new Winograd23DebugData
+                {
+                    useWinograd23 = enableWinograd23,
+                    useCommandBuffer = true
+                });
+            }
+
             if (runInW != originalW || runInH != originalH)
             {
                 runInput = ResizeTextureBilinear(src, runInW, runInH);
@@ -1056,10 +1251,12 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     // Winograd uses persistent workspace buffers; flush pending cmd work and
                     // dispatch immediately so buffers are not freed before GPU finishes.
                     _ops.Conv3x3Pack4Winograd23(src.t1, pack.inPacks, pack.wTm23, pack.b4, pack.outPacks, pack.biasTerm, pack.activationType, pack.activationSlope, outArr);
+                    CaptureFirstConvRuntimeDebug(l.name, src, pack, outArr);
                 }
                 else
                 {
                     _ops.Conv3x3Pack4(src.t1, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                    CaptureFirstConvRuntimeDebug(l.name, src, pack, outArr);
                 }
                 blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);

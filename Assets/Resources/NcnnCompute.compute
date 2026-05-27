@@ -369,7 +369,9 @@ void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
     float4 sum2 = 0.0;
     float4 sum3 = 0.0;
 
-    int vOffset = gz * tiles + gx;
+    // bottom_tm layout is [k][in_pack][tile], matching ncnn's
+    // gz * c * cstep + gx base address in convolution_pack4_3x3s1d1_winograd_gemm.
+    int vOffset = gz * _InPacks * tiles + gx;
     int wBase = (gz * outc + gy) * _InPacks * 4;
 
     for (int z = 0; z < _InPacks; z++)

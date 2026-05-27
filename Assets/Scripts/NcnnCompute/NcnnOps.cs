@@ -954,6 +954,24 @@ namespace NcnnCompute
             _winoTopCap = 0;
         }
 
+        #region debug-point C:winograd23-workspace-head
+        public Vector4[] DebugReadWinograd23BufferHead(bool topBuffer, int count)
+        {
+            if (count <= 0)
+                return Array.Empty<Vector4>();
+
+            var buffer = topBuffer ? _winoTopTm : _winoBottomTm;
+            var capacity = topBuffer ? _winoTopCap : _winoBottomCap;
+            if (buffer == null || capacity <= 0)
+                return Array.Empty<Vector4>();
+
+            var n = Mathf.Min(count, capacity);
+            var data = new Vector4[n];
+            buffer.GetData(data, 0, 0, n);
+            return data;
+        }
+        #endregion
+
         private void WaitGpuIdle()
         {
             if (_gpuIdleSync == null)
