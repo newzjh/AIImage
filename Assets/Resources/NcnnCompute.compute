@@ -183,8 +183,8 @@ int _InPacks;
 int _OutPacks;
 
 // Direct-read 3x3 pack4.
-// Each invocation computes a 2x2 output block for one output pack, mirroring ncnn's
-// convolution_packed spatial reuse strategy more closely than the previous 1x1 path.
+// Each invocation computes a 2x2 output block for two output packs, mirroring ncnn's
+// convolution_packed gx*2 / gy*2 / gz*2 reuse pattern more closely.
 [numthreads(8,8,1)]
 void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
 {
@@ -192,15 +192,22 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
     _ConvOutArr.GetDimensions(ow, oh, od);
     int ox = (int)id.x * 2;
     int oy = (int)id.y * 2;
-    int op = (int)id.z;
+    int op = (int)id.z * 2;
     if (ox >= (int)ow || oy >= (int)oh) return;
     if (op < 0 || op >= _OutPacks) return;
+    int op1 = op + 1;
+    bool hasOp1 = op1 < _OutPacks;
 
-    float4 bias = _ConvB4[op];
-    float4 sum00 = bias;
-    float4 sum01 = bias;
-    float4 sum10 = bias;
-    float4 sum11 = bias;
+    float4 bias0 = _ConvB4[op];
+    float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
+    float4 sum00 = bias0;
+    float4 sum01 = bias0;
+    float4 sum10 = bias0;
+    float4 sum11 = bias0;
+    float4 sum20 = bias1;
+    float4 sum21 = bias1;
+    float4 sum30 = bias1;
+    float4 sum31 = bias1;
 
     uint iw, ih, idd;
     _ConvInArr.GetDimensions(iw, ih, idd);
@@ -233,31 +240,60 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
                     v11 = _ConvInArr[int3(ix1, iy1, ip0)];
 
                 int k = ky * 3 + kx;
-                int wbase = ((op * _InPacks + ip0) * 9 + k) * 4;
-                float4 w0 = _ConvW4[wbase + 0];
-                float4 w1 = _ConvW4[wbase + 1];
-                float4 w2 = _ConvW4[wbase + 2];
-                float4 w3 = _ConvW4[wbase + 3];
+                int wbase0 = ((op * _InPacks + ip0) * 9 + k) * 4;
+                float4 w00 = _ConvW4[wbase0 + 0];
+                float4 w01 = _ConvW4[wbase0 + 1];
+                float4 w02 = _ConvW4[wbase0 + 2];
+                float4 w03 = _ConvW4[wbase0 + 3];
 
-                sum00.x += dot(v00, w0);
-                sum00.y += dot(v00, w1);
-                sum00.z += dot(v00, w2);
-                sum00.w += dot(v00, w3);
+                sum00.x += dot(v00, w00);
+                sum00.y += dot(v00, w01);
+                sum00.z += dot(v00, w02);
+                sum00.w += dot(v00, w03);
 
-                sum01.x += dot(v01, w0);
-                sum01.y += dot(v01, w1);
-                sum01.z += dot(v01, w2);
-                sum01.w += dot(v01, w3);
+                sum01.x += dot(v01, w00);
+                sum01.y += dot(v01, w01);
+                sum01.z += dot(v01, w02);
+                sum01.w += dot(v01, w03);
 
-                sum10.x += dot(v10, w0);
-                sum10.y += dot(v10, w1);
-                sum10.z += dot(v10, w2);
-                sum10.w += dot(v10, w3);
+                sum10.x += dot(v10, w00);
+                sum10.y += dot(v10, w01);
+                sum10.z += dot(v10, w02);
+                sum10.w += dot(v10, w03);
 
-                sum11.x += dot(v11, w0);
-                sum11.y += dot(v11, w1);
-                sum11.z += dot(v11, w2);
-                sum11.w += dot(v11, w3);
+                sum11.x += dot(v11, w00);
+                sum11.y += dot(v11, w01);
+                sum11.z += dot(v11, w02);
+                sum11.w += dot(v11, w03);
+
+                if (hasOp1)
+                {
+                    int wbase1 = ((op1 * _InPacks + ip0) * 9 + k) * 4;
+                    float4 w10 = _ConvW4[wbase1 + 0];
+                    float4 w11 = _ConvW4[wbase1 + 1];
+                    float4 w12 = _ConvW4[wbase1 + 2];
+                    float4 w13 = _ConvW4[wbase1 + 3];
+
+                    sum20.x += dot(v00, w10);
+                    sum20.y += dot(v00, w11);
+                    sum20.z += dot(v00, w12);
+                    sum20.w += dot(v00, w13);
+
+                    sum21.x += dot(v01, w10);
+                    sum21.y += dot(v01, w11);
+                    sum21.z += dot(v01, w12);
+                    sum21.w += dot(v01, w13);
+
+                    sum30.x += dot(v10, w10);
+                    sum30.y += dot(v10, w11);
+                    sum30.z += dot(v10, w12);
+                    sum30.w += dot(v10, w13);
+
+                    sum31.x += dot(v11, w10);
+                    sum31.y += dot(v11, w11);
+                    sum31.z += dot(v11, w12);
+                    sum31.w += dot(v11, w13);
+                }
             }
         }
     }
@@ -268,12 +304,26 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
         sum01 = max(sum01, 0.0) + min(sum01, 0.0) * _ActParam;
         sum10 = max(sum10, 0.0) + min(sum10, 0.0) * _ActParam;
         sum11 = max(sum11, 0.0) + min(sum11, 0.0) * _ActParam;
+        if (hasOp1)
+        {
+            sum20 = max(sum20, 0.0) + min(sum20, 0.0) * _ActParam;
+            sum21 = max(sum21, 0.0) + min(sum21, 0.0) * _ActParam;
+            sum30 = max(sum30, 0.0) + min(sum30, 0.0) * _ActParam;
+            sum31 = max(sum31, 0.0) + min(sum31, 0.0) * _ActParam;
+        }
     }
 
     _ConvOutArr[int3(ox, oy, op)] = sum00;
     if (ox + 1 < (int)ow) _ConvOutArr[int3(ox + 1, oy, op)] = sum01;
     if (oy + 1 < (int)oh) _ConvOutArr[int3(ox, oy + 1, op)] = sum10;
     if (ox + 1 < (int)ow && oy + 1 < (int)oh) _ConvOutArr[int3(ox + 1, oy + 1, op)] = sum11;
+    if (hasOp1)
+    {
+        _ConvOutArr[int3(ox, oy, op1)] = sum20;
+        if (ox + 1 < (int)ow) _ConvOutArr[int3(ox + 1, oy, op1)] = sum21;
+        if (oy + 1 < (int)oh) _ConvOutArr[int3(ox, oy + 1, op1)] = sum30;
+        if (ox + 1 < (int)ow && oy + 1 < (int)oh) _ConvOutArr[int3(ox + 1, oy + 1, op1)] = sum31;
+    }
 }
 
 Texture2DArray<float4> _WinoInArr;
