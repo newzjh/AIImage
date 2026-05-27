@@ -247,6 +247,9 @@ int _WinoOutW;
 int _WinoOutH;
 int _WinoBiasTerm;
 
+groupshared float4 _WinoTmpV[8][8][4];
+groupshared float4 _WinoTmpK[8][8][4];
+
 float4 NcnnApplyActivation(float4 v)
 {
     if (_ActType == 2)
@@ -354,15 +357,13 @@ void NcnnWinograd23TransformInputPack4(uint3 id : SV_DispatchThreadID)
 
 // ncnn pack4 winograd gemm: gx*4 spatial tiles, gy output pack, gz winograd tile (16).
 [numthreads(8,8,1)]
-void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
+void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID, uint3 tid : SV_GroupThreadID)
 {
     int gx = (int)id.x * 4;
     int gy = (int)id.y;
     int gz = (int)id.z;
     int tiles = _WinoInCstep;
     int outc = _OutPacks;
-    if (gx >= tiles || gy >= outc || gz >= 16)
-        return;
 
     float4 sum0 = 0.0;
     float4 sum1 = 0.0;
@@ -372,28 +373,105 @@ void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
     // bottom_tm layout is [k][in_pack][tile], matching ncnn's
     // gz * c * cstep + gx base address in convolution_pack4_3x3s1d1_winograd_gemm.
     int vOffset = gz * _InPacks * tiles + gx;
-    int wBase = (gz * outc + gy) * _InPacks * 4;
+    int wOffset = (gz * outc + gy) * _InPacks * 4;
+    int lx = (int)tid.x;
+    int ly = (int)tid.y;
 
-    for (int z = 0; z < _InPacks; z++)
+    int z = 0;
+    [loop]
+    for (; z + 7 < _InPacks; z += 8)
     {
-        int wOffset = wBase + z * 4;
-        float4 v0 = _WinoBottomTm[vOffset + 0];
-        float4 v1 = _WinoBottomTm[vOffset + 1];
-        float4 v2 = _WinoBottomTm[vOffset + 2];
-        float4 v3 = _WinoBottomTm[vOffset + 3];
+        if (ly < 4)
+        {
+            [unroll]
+            for (int z4 = 0; z4 < 8; z4++)
+            {
+                _WinoTmpV[lx][z4][ly] = (gx + ly < tiles && gz < 16) ? _WinoBottomTm[vOffset + z4 * tiles + ly] : 0.0;
+            }
+        }
 
-        float4 k0 = _WinoWeightTm[wOffset + 0];
-        float4 k1 = _WinoWeightTm[wOffset + 1];
-        float4 k2 = _WinoWeightTm[wOffset + 2];
-        float4 k3 = _WinoWeightTm[wOffset + 3];
+        if (lx < 4)
+        {
+            [unroll]
+            for (int z4 = 0; z4 < 8; z4++)
+            {
+                _WinoTmpK[ly][z4][lx] = (gy < outc && gz < 16) ? _WinoWeightTm[wOffset + z4 * 4 + lx] : 0.0;
+            }
+        }
 
-        sum0.x += dot(v0, k0); sum0.y += dot(v0, k1); sum0.z += dot(v0, k2); sum0.w += dot(v0, k3);
-        sum1.x += dot(v1, k0); sum1.y += dot(v1, k1); sum1.z += dot(v1, k2); sum1.w += dot(v1, k3);
-        sum2.x += dot(v2, k0); sum2.y += dot(v2, k1); sum2.z += dot(v2, k2); sum2.w += dot(v2, k3);
-        sum3.x += dot(v3, k0); sum3.y += dot(v3, k1); sum3.z += dot(v3, k2); sum3.w += dot(v3, k3);
+        GroupMemoryBarrierWithGroupSync();
 
-        vOffset += tiles;
+        [unroll]
+        for (int z4 = 0; z4 < 8; z4++)
+        {
+            float4 v0 = _WinoTmpV[lx][z4][0];
+            float4 v1 = _WinoTmpV[lx][z4][1];
+            float4 v2 = _WinoTmpV[lx][z4][2];
+            float4 v3 = _WinoTmpV[lx][z4][3];
+
+            float4 k0 = _WinoTmpK[ly][z4][0];
+            float4 k1 = _WinoTmpK[ly][z4][1];
+            float4 k2 = _WinoTmpK[ly][z4][2];
+            float4 k3 = _WinoTmpK[ly][z4][3];
+
+            sum0.x += dot(v0, k0); sum0.y += dot(v0, k1); sum0.z += dot(v0, k2); sum0.w += dot(v0, k3);
+            sum1.x += dot(v1, k0); sum1.y += dot(v1, k1); sum1.z += dot(v1, k2); sum1.w += dot(v1, k3);
+            sum2.x += dot(v2, k0); sum2.y += dot(v2, k1); sum2.z += dot(v2, k2); sum2.w += dot(v2, k3);
+            sum3.x += dot(v3, k0); sum3.y += dot(v3, k1); sum3.z += dot(v3, k2); sum3.w += dot(v3, k3);
+        }
+
+        vOffset += 8 * tiles;
+        wOffset += 8 * 4;
+
+        GroupMemoryBarrierWithGroupSync();
     }
+
+    if (z < _InPacks)
+    {
+        int remain = _InPacks - z;
+
+        if (ly < 4)
+        {
+            [loop]
+            for (int z4 = 0; z4 < remain; z4++)
+            {
+                _WinoTmpV[lx][z4][ly] = (gx + ly < tiles && gz < 16) ? _WinoBottomTm[vOffset + z4 * tiles + ly] : 0.0;
+            }
+        }
+
+        if (lx < 4)
+        {
+            [loop]
+            for (int z4 = 0; z4 < remain; z4++)
+            {
+                _WinoTmpK[ly][z4][lx] = (gy < outc && gz < 16) ? _WinoWeightTm[wOffset + z4 * 4 + lx] : 0.0;
+            }
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+
+        [loop]
+        for (int z4 = 0; z4 < remain; z4++)
+        {
+            float4 v0 = _WinoTmpV[lx][z4][0];
+            float4 v1 = _WinoTmpV[lx][z4][1];
+            float4 v2 = _WinoTmpV[lx][z4][2];
+            float4 v3 = _WinoTmpV[lx][z4][3];
+
+            float4 k0 = _WinoTmpK[ly][z4][0];
+            float4 k1 = _WinoTmpK[ly][z4][1];
+            float4 k2 = _WinoTmpK[ly][z4][2];
+            float4 k3 = _WinoTmpK[ly][z4][3];
+
+            sum0.x += dot(v0, k0); sum0.y += dot(v0, k1); sum0.z += dot(v0, k2); sum0.w += dot(v0, k3);
+            sum1.x += dot(v1, k0); sum1.y += dot(v1, k1); sum1.z += dot(v1, k2); sum1.w += dot(v1, k3);
+            sum2.x += dot(v2, k0); sum2.y += dot(v2, k1); sum2.z += dot(v2, k2); sum2.w += dot(v2, k3);
+            sum3.x += dot(v3, k0); sum3.y += dot(v3, k1); sum3.z += dot(v3, k2); sum3.w += dot(v3, k3);
+        }
+    }
+
+    if (gx >= tiles || gy >= outc || gz >= 16)
+        return;
 
     int base = gz * outc * _WinoOutCstep + gy * _WinoOutCstep + gx;
     _WinoTopTm[base + 0] = sum0;
