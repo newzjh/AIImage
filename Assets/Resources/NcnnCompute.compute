@@ -182,23 +182,24 @@ Texture2DArray<float4> _ConvInArr;
 int _InPacks;
 int _OutPacks;
 
-// Direct-read 3x3 pack4.
-// Each invocation computes a 2x2 output block for two output packs, mirroring ncnn's
-// convolution_packed gx*2 / gy*2 / gz*2 reuse pattern more closely.
+groupshared float4 _ConvTile[18 * 18];
+
+// Direct-read 3x3 pack4 with group-shared input tile reuse.
+// One 8x8 thread group covers a 16x16 output region and stages the corresponding
+// 18x18 input tile once per input-pack, while each invocation computes a 2x2 x 2-pack block.
 [numthreads(8,8,1)]
-void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
+void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
     int ox = (int)id.x * 2;
     int oy = (int)id.y * 2;
     int op = (int)id.z * 2;
-    if (ox >= (int)ow || oy >= (int)oh) return;
-    if (op < 0 || op >= _OutPacks) return;
+    bool active = ox < (int)ow && oy < (int)oh && op >= 0 && op < _OutPacks;
     int op1 = op + 1;
     bool hasOp1 = op1 < _OutPacks;
 
-    float4 bias0 = _ConvB4[op];
+    float4 bias0 = active ? _ConvB4[op] : 0.0;
     float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
     float4 sum00 = bias0;
     float4 sum01 = bias0;
@@ -211,33 +212,40 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
 
     uint iw, ih, idd;
     _ConvInArr.GetDimensions(iw, ih, idd);
+    int groupOx = (int)groupId.x * 16;
+    int groupOy = (int)groupId.y * 16;
+    int groupSx = groupOx - _Pad;
+    int groupSy = groupOy - _Pad;
+    int lane = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
+    int localOx = (int)groupThreadId.x * 2;
+    int localOy = (int)groupThreadId.y * 2;
 
     for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
+        for (int li = lane; li < 18 * 18; li += 64)
+        {
+            int tx = li % 18;
+            int ty = li / 18;
+            int sx = groupSx + tx;
+            int sy = groupSy + ty;
+            float4 v = 0.0;
+            if (sx >= 0 && sy >= 0 && sx < (int)iw && sy < (int)ih)
+                v = _ConvInArr[int3(sx, sy, ip0)];
+            _ConvTile[li] = v;
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+
         [unroll]
         for (int ky = 0; ky < 3; ky++)
         {
             [unroll]
             for (int kx = 0; kx < 3; kx++)
             {
-                int ix0 = ox + kx - _Pad;
-                int ix1 = ox + 1 + kx - _Pad;
-                int iy0 = oy + ky - _Pad;
-                int iy1 = oy + 1 + ky - _Pad;
-
-                float4 v00 = 0.0;
-                float4 v01 = 0.0;
-                float4 v10 = 0.0;
-                float4 v11 = 0.0;
-
-                if (ix0 >= 0 && iy0 >= 0 && ix0 < (int)iw && iy0 < (int)ih)
-                    v00 = _ConvInArr[int3(ix0, iy0, ip0)];
-                if (ix1 >= 0 && iy0 >= 0 && ix1 < (int)iw && iy0 < (int)ih)
-                    v01 = _ConvInArr[int3(ix1, iy0, ip0)];
-                if (ix0 >= 0 && iy1 >= 0 && ix0 < (int)iw && iy1 < (int)ih)
-                    v10 = _ConvInArr[int3(ix0, iy1, ip0)];
-                if (ix1 >= 0 && iy1 >= 0 && ix1 < (int)iw && iy1 < (int)ih)
-                    v11 = _ConvInArr[int3(ix1, iy1, ip0)];
+                float4 v00 = _ConvTile[(localOy + ky) * 18 + (localOx + kx)];
+                float4 v01 = _ConvTile[(localOy + ky) * 18 + (localOx + kx + 1)];
+                float4 v10 = _ConvTile[(localOy + ky + 1) * 18 + (localOx + kx)];
+                float4 v11 = _ConvTile[(localOy + ky + 1) * 18 + (localOx + kx + 1)];
 
                 int k = ky * 3 + kx;
                 int wbase0 = ((op * _InPacks + ip0) * 9 + k) * 4;
@@ -296,6 +304,8 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
                 }
             }
         }
+
+        GroupMemoryBarrierWithGroupSync();
     }
 
     if (_ActType == 2)
@@ -313,16 +323,19 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    _ConvOutArr[int3(ox, oy, op)] = sum00;
-    if (ox + 1 < (int)ow) _ConvOutArr[int3(ox + 1, oy, op)] = sum01;
-    if (oy + 1 < (int)oh) _ConvOutArr[int3(ox, oy + 1, op)] = sum10;
-    if (ox + 1 < (int)ow && oy + 1 < (int)oh) _ConvOutArr[int3(ox + 1, oy + 1, op)] = sum11;
-    if (hasOp1)
+    if (active)
     {
-        _ConvOutArr[int3(ox, oy, op1)] = sum20;
-        if (ox + 1 < (int)ow) _ConvOutArr[int3(ox + 1, oy, op1)] = sum21;
-        if (oy + 1 < (int)oh) _ConvOutArr[int3(ox, oy + 1, op1)] = sum30;
-        if (ox + 1 < (int)ow && oy + 1 < (int)oh) _ConvOutArr[int3(ox + 1, oy + 1, op1)] = sum31;
+        _ConvOutArr[int3(ox, oy, op)] = sum00;
+        if (ox + 1 < (int)ow) _ConvOutArr[int3(ox + 1, oy, op)] = sum01;
+        if (oy + 1 < (int)oh) _ConvOutArr[int3(ox, oy + 1, op)] = sum10;
+        if (ox + 1 < (int)ow && oy + 1 < (int)oh) _ConvOutArr[int3(ox + 1, oy + 1, op)] = sum11;
+        if (hasOp1)
+        {
+            _ConvOutArr[int3(ox, oy, op1)] = sum20;
+            if (ox + 1 < (int)ow) _ConvOutArr[int3(ox + 1, oy, op1)] = sum21;
+            if (oy + 1 < (int)oh) _ConvOutArr[int3(ox, oy + 1, op1)] = sum30;
+            if (ox + 1 < (int)ow && oy + 1 < (int)oh) _ConvOutArr[int3(ox + 1, oy + 1, op1)] = sum31;
+        }
     }
 }
 
