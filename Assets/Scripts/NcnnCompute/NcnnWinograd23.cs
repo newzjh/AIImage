@@ -21,6 +21,18 @@ namespace NcnnCompute
             return kernel == 3 && pad == 1 && inPacks >= 4 && outPacks >= 4;
         }
 
+        public static bool ShouldPreferForShape(int w, int h, int inPacks, int outPacks)
+        {
+            // Runtime evidence on the repro path shows F(2,3) is a clear win for the
+            // repeated 48->16 pack4 bottleneck shapes, but regresses the common ->8
+            // output-pack shapes. Keep the first policy conservative and only enable
+            // Winograd23 on the shape family with a strong measured benefit.
+            if (w <= 0 || h <= 0)
+                return false;
+
+            return inPacks >= 48 && outPacks >= 16;
+        }
+
         public static int BlockX(int w) => (w + 1) / 2;
         public static int BlockY(int h) => (h + 1) / 2;
 

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
@@ -19,6 +21,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public bool enableSeamProbe = false;
     public bool useCommandBuffer = false;
     public bool enableWinograd23 = false;
+    public bool enableGpuLayerProfiling = false;
 
     public event Action<float, string> ProgressChanged;
 
@@ -28,6 +31,126 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private NcnnOps _ops;
     private bool _loaded;
     private bool _useCmdThisRun;
+    private readonly Dictionary<string, GpuLayerProfileStat> _gpuLayerProfileStats = new Dictionary<string, GpuLayerProfileStat>(StringComparer.Ordinal);
+    private readonly Dictionary<string, GpuShapeProfileStat> _gpuShapeProfileStats = new Dictionary<string, GpuShapeProfileStat>(StringComparer.Ordinal);
+
+    #region debug-point A:gpu-layer-profile-report
+    [Serializable]
+    private sealed class GpuLayerProfileEvent
+    {
+        public string sessionId;
+        public string runId;
+        public string hypothesisId;
+        public long ts;
+        public string location;
+        public string msg;
+        public GpuLayerProfileData data;
+    }
+
+    [Serializable]
+    private sealed class GpuLayerProfileData
+    {
+        public string layer;
+        public string mode;
+        public string shape;
+        public string outcome;
+        public bool profilingEnabled;
+        public bool useCommandBuffer;
+        public bool enableWinograd23;
+        public int originalW;
+        public int originalH;
+        public int runInW;
+        public int runInH;
+        public int tileSize;
+        public int tilePad;
+        public int invocations;
+        public int srcW;
+        public int srcH;
+        public int inPacks;
+        public int outPacks;
+        public float totalGpuMs;
+        public float avgGpuMs;
+        public float maxGpuMs;
+        public int rank;
+        public GpuLayerProfileRow[] rows;
+        public GpuShapeProfileRow[] shapeRows;
+        public float packMs;
+        public float forwardMs;
+        public float blitMs;
+        public float rentMs;
+        public float returnMs;
+        public float yieldMs;
+        public float cmdMs;
+        public float tileAllMs;
+    }
+
+    private sealed class GpuLayerProfileStat
+    {
+        public string layer;
+        public string mode;
+        public int invocations;
+        public int srcW;
+        public int srcH;
+        public int inPacks;
+        public int outPacks;
+        public double totalGpuMs;
+        public double maxGpuMs;
+    }
+
+    [Serializable]
+    private sealed class GpuLayerProfileRow
+    {
+        public string layer;
+        public string mode;
+        public string shape;
+        public int invocations;
+        public int srcW;
+        public int srcH;
+        public int inPacks;
+        public int outPacks;
+        public float totalGpuMs;
+        public float avgGpuMs;
+        public float maxGpuMs;
+        public int rank;
+    }
+
+    private sealed class GpuShapeProfileStat
+    {
+        public string shape;
+        public string mode;
+        public int invocations;
+        public double totalGpuMs;
+        public double maxGpuMs;
+    }
+
+    [Serializable]
+    private sealed class GpuShapeProfileRow
+    {
+        public string shape;
+        public string mode;
+        public int invocations;
+        public float totalGpuMs;
+        public float avgGpuMs;
+        public float maxGpuMs;
+        public int rank;
+    }
+
+    private const string GpuLayerProfileEnvName = "gpu-layer-profiling.env";
+    private bool _gpuLayerProfileInitialized;
+    private bool _gpuLayerProfileEnabled;
+    private string _gpuLayerProfileUrl = "http://127.0.0.1:7777/event";
+    private string _gpuLayerProfileSessionId = "gpu-layer-profiling";
+    private const string SelectiveWinogradGapEnvName = "selective-winograd-gap.env";
+    private bool _selectiveWinogradGapInitialized;
+    private bool _selectiveWinogradGapEnabled;
+    private string _selectiveWinogradGapUrl = "http://127.0.0.1:7778/event";
+    private string _selectiveWinogradGapSessionId = "selective-winograd-gap";
+    private const string DirectConvOptEnvName = "direct-conv-opt.env";
+    private bool _directConvOptInitialized;
+    private bool _directConvOptEnabled;
+    private string _directConvOptUrl = "http://127.0.0.1:7779/event";
+    private string _directConvOptSessionId = "direct-conv-opt";
+    #endregion
 
     private readonly struct RtKey : IEquatable<RtKey>
     {
@@ -114,6 +237,403 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         try { _ops?.ReleaseWinogradWorkspace(); } catch { }
     }
 
+    #region debug-point C:gpu-layer-profile-helpers
+    private void TryInitGpuLayerProfiling()
+    {
+        if (_gpuLayerProfileInitialized)
+            return;
+
+        _gpuLayerProfileInitialized = true;
+        try
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var envPath = Path.Combine(projectRoot, ".dbg", GpuLayerProfileEnvName);
+            if (!File.Exists(envPath))
+                return;
+
+            foreach (var rawLine in File.ReadAllLines(envPath))
+            {
+                if (string.IsNullOrWhiteSpace(rawLine))
+                    continue;
+                var line = rawLine.Trim();
+                if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
+                    _gpuLayerProfileUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
+                else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
+                    _gpuLayerProfileSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+            }
+
+            _gpuLayerProfileEnabled = !string.IsNullOrWhiteSpace(_gpuLayerProfileUrl) && !string.IsNullOrWhiteSpace(_gpuLayerProfileSessionId);
+        }
+        catch
+        {
+            _gpuLayerProfileEnabled = false;
+        }
+    }
+
+    private void TryInitSelectiveWinogradGapDebug()
+    {
+        if (_selectiveWinogradGapInitialized)
+            return;
+
+        _selectiveWinogradGapInitialized = true;
+        try
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var envPath = Path.Combine(projectRoot, ".dbg", SelectiveWinogradGapEnvName);
+            if (!File.Exists(envPath))
+                return;
+
+            foreach (var rawLine in File.ReadAllLines(envPath))
+            {
+                if (string.IsNullOrWhiteSpace(rawLine))
+                    continue;
+                var line = rawLine.Trim();
+                if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
+                    _selectiveWinogradGapUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
+                else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
+                    _selectiveWinogradGapSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+            }
+
+            _selectiveWinogradGapEnabled = !string.IsNullOrWhiteSpace(_selectiveWinogradGapUrl) && !string.IsNullOrWhiteSpace(_selectiveWinogradGapSessionId);
+        }
+        catch
+        {
+            _selectiveWinogradGapEnabled = false;
+        }
+    }
+
+    private void TryInitDirectConvOptDebug()
+    {
+        if (_directConvOptInitialized)
+            return;
+
+        _directConvOptInitialized = true;
+        try
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var envPath = Path.Combine(projectRoot, ".dbg", DirectConvOptEnvName);
+            if (!File.Exists(envPath))
+                return;
+
+            foreach (var rawLine in File.ReadAllLines(envPath))
+            {
+                if (string.IsNullOrWhiteSpace(rawLine))
+                    continue;
+                var line = rawLine.Trim();
+                if (line.StartsWith("DEBUG_SERVER_URL=", StringComparison.Ordinal))
+                    _directConvOptUrl = line.Substring("DEBUG_SERVER_URL=".Length).Trim();
+                else if (line.StartsWith("DEBUG_SESSION_ID=", StringComparison.Ordinal))
+                    _directConvOptSessionId = line.Substring("DEBUG_SESSION_ID=".Length).Trim();
+            }
+
+            _directConvOptEnabled = !string.IsNullOrWhiteSpace(_directConvOptUrl) && !string.IsNullOrWhiteSpace(_directConvOptSessionId);
+        }
+        catch
+        {
+            _directConvOptEnabled = false;
+        }
+    }
+
+    private string CurrentGpuProfileRunId()
+    {
+        var mode = enableWinograd23 ? "winograd-on" : "winograd-off";
+        var submit = _useCmdThisRun ? "cmd" : "immediate";
+        return "profile-" + mode + "-" + submit;
+    }
+
+    private bool ShouldProfileGpuLayers()
+    {
+        return enableGpuLayerProfiling && _gpuLayerProfileEnabled && !_useCmdThisRun;
+    }
+
+    private void PostGpuLayerProfile(string hypothesisId, string location, string msg, GpuLayerProfileData data, bool blocking = false)
+    {
+        if (!_gpuLayerProfileEnabled)
+            return;
+
+        var evt = new GpuLayerProfileEvent
+        {
+            sessionId = _gpuLayerProfileSessionId,
+            runId = CurrentGpuProfileRunId(),
+            hypothesisId = hypothesisId,
+            ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            location = location,
+            msg = msg,
+            data = data
+        };
+        var payload = JsonUtility.ToJson(evt);
+        var url = _gpuLayerProfileUrl;
+        void Send()
+        {
+            try
+            {
+                var req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = "POST";
+                req.ContentType = "application/json";
+                req.Timeout = 2000;
+                req.ReadWriteTimeout = 2000;
+                var bytes = Encoding.UTF8.GetBytes(payload);
+                req.ContentLength = bytes.Length;
+                using (var reqStream = req.GetRequestStream())
+                    reqStream.Write(bytes, 0, bytes.Length);
+                using var resp = (HttpWebResponse)req.GetResponse();
+            }
+            catch
+            {
+            }
+        }
+
+        if (blocking)
+        {
+            Send();
+            return;
+        }
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            Send();
+        });
+    }
+
+    private void ResetGpuLayerProfileStats()
+    {
+        _gpuLayerProfileStats.Clear();
+        _gpuShapeProfileStats.Clear();
+    }
+
+    private bool ShouldUseWinograd23(ConvPack pack, int srcW, int srcH)
+    {
+        return enableWinograd23
+               && pack != null
+               && pack.useWinograd23
+               && NcnnWinograd23.ShouldPreferForShape(srcW, srcH, pack.inPacks, pack.outPacks);
+    }
+
+    private void RecordGpuLayerProfile(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
+    {
+        if (!ShouldProfileGpuLayers())
+            return;
+
+        var key = layerName + "|" + mode;
+        if (!_gpuLayerProfileStats.TryGetValue(key, out var stat))
+        {
+            stat = new GpuLayerProfileStat
+            {
+                layer = layerName,
+                mode = mode,
+                srcW = srcW,
+                srcH = srcH,
+                inPacks = inPacks,
+                outPacks = outPacks
+            };
+            _gpuLayerProfileStats[key] = stat;
+        }
+
+        stat.invocations++;
+        stat.totalGpuMs += gpuMs;
+        if (gpuMs > stat.maxGpuMs)
+            stat.maxGpuMs = gpuMs;
+
+        var shape = inPacks + "->" + outPacks + "@" + srcW + "x" + srcH;
+        var shapeKey = shape + "|" + mode;
+        if (!_gpuShapeProfileStats.TryGetValue(shapeKey, out var shapeStat))
+        {
+            shapeStat = new GpuShapeProfileStat
+            {
+                shape = shape,
+                mode = mode
+            };
+            _gpuShapeProfileStats[shapeKey] = shapeStat;
+        }
+
+        shapeStat.invocations++;
+        shapeStat.totalGpuMs += gpuMs;
+        if (gpuMs > shapeStat.maxGpuMs)
+            shapeStat.maxGpuMs = gpuMs;
+    }
+
+    private void PostSelectiveWinogradGapProfile(string hypothesisId, string location, string msg, GpuLayerProfileData data)
+    {
+        if (!_selectiveWinogradGapEnabled)
+            return;
+
+        var evt = new GpuLayerProfileEvent
+        {
+            sessionId = _selectiveWinogradGapSessionId,
+            runId = CurrentGpuProfileRunId(),
+            hypothesisId = hypothesisId,
+            ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            location = location,
+            msg = msg,
+            data = data
+        };
+        var payload = JsonUtility.ToJson(evt);
+        try
+        {
+            var req = (HttpWebRequest)WebRequest.Create(_selectiveWinogradGapUrl);
+            req.Method = "POST";
+            req.ContentType = "application/json";
+            req.Timeout = 2000;
+            req.ReadWriteTimeout = 2000;
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            req.ContentLength = bytes.Length;
+            using (var reqStream = req.GetRequestStream())
+                reqStream.Write(bytes, 0, bytes.Length);
+            using var resp = (HttpWebResponse)req.GetResponse();
+        }
+        catch
+        {
+        }
+    }
+
+    private void PostDirectConvOptProfile(string hypothesisId, string location, string msg, GpuLayerProfileData data)
+    {
+        if (!_directConvOptEnabled)
+            return;
+
+        var evt = new GpuLayerProfileEvent
+        {
+            sessionId = _directConvOptSessionId,
+            runId = CurrentGpuProfileRunId(),
+            hypothesisId = hypothesisId,
+            ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            location = location,
+            msg = msg,
+            data = data
+        };
+        var payload = JsonUtility.ToJson(evt);
+        try
+        {
+            var req = (HttpWebRequest)WebRequest.Create(_directConvOptUrl);
+            req.Method = "POST";
+            req.ContentType = "application/json";
+            req.Timeout = 2000;
+            req.ReadWriteTimeout = 2000;
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            req.ContentLength = bytes.Length;
+            using (var reqStream = req.GetRequestStream())
+                reqStream.Write(bytes, 0, bytes.Length);
+            using var resp = (HttpWebResponse)req.GetResponse();
+        }
+        catch
+        {
+        }
+    }
+
+    private void FlushGpuLayerProfileSummary(string outcome, int originalW, int originalH, int runInW, int runInH, int effectiveTileSize, int effectiveTilePad, long packMs, long forwardMs, long blitMs, long rentMs, long returnMs, long yieldMs, long cmdMs, long tileAllMs)
+    {
+        if (!enableGpuLayerProfiling || (!_gpuLayerProfileEnabled && !_selectiveWinogradGapEnabled && !_directConvOptEnabled))
+            return;
+
+        if (_useCmdThisRun)
+        {
+            var cmdData = new GpuLayerProfileData
+            {
+                outcome = outcome,
+                profilingEnabled = true,
+                useCommandBuffer = true,
+                enableWinograd23 = enableWinograd23,
+                originalW = originalW,
+                originalH = originalH,
+                runInW = runInW,
+                runInH = runInH,
+                tileSize = effectiveTileSize,
+                tilePad = effectiveTilePad,
+                packMs = packMs,
+                forwardMs = forwardMs,
+                blitMs = blitMs,
+                rentMs = rentMs,
+                returnMs = returnMs,
+                yieldMs = yieldMs,
+                cmdMs = cmdMs,
+                tileAllMs = tileAllMs
+            };
+            if (_gpuLayerProfileEnabled)
+                PostGpuLayerProfile("C", "RealEsrganNcnnReproRunner:ProcessOnceAsync", "[DEBUG] command buffer mode is not profiled per layer; switch to immediate mode for real GPU layer timings", cmdData, true);
+            if (_selectiveWinogradGapEnabled)
+                PostSelectiveWinogradGapProfile("C", "RealEsrganNcnnReproRunner:ProcessOnceAsync", "[DEBUG] command buffer mode is not profiled per layer; switch to immediate mode for real GPU layer timings", cmdData);
+            if (_directConvOptEnabled)
+                PostDirectConvOptProfile("C", "RealEsrganNcnnReproRunner:ProcessOnceAsync", "[DEBUG] command buffer mode is not profiled per layer; switch to immediate mode for real GPU layer timings", cmdData);
+            return;
+        }
+
+        var rows = new List<GpuLayerProfileStat>(_gpuLayerProfileStats.Values);
+        rows.Sort((a, b) => b.totalGpuMs.CompareTo(a.totalGpuMs));
+        var payloadRows = new GpuLayerProfileRow[rows.Count];
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var stat = rows[i];
+            var total = (float)stat.totalGpuMs;
+            var avg = stat.invocations > 0 ? total / stat.invocations : 0f;
+            payloadRows[i] = new GpuLayerProfileRow
+            {
+                layer = stat.layer,
+                mode = stat.mode,
+                shape = stat.inPacks + "->" + stat.outPacks + "@" + stat.srcW + "x" + stat.srcH,
+                invocations = stat.invocations,
+                srcW = stat.srcW,
+                srcH = stat.srcH,
+                inPacks = stat.inPacks,
+                outPacks = stat.outPacks,
+                totalGpuMs = total,
+                avgGpuMs = avg,
+                maxGpuMs = (float)stat.maxGpuMs,
+                rank = i + 1
+            };
+        }
+
+        var shapeRows = new List<GpuShapeProfileStat>(_gpuShapeProfileStats.Values);
+        shapeRows.Sort((a, b) => b.totalGpuMs.CompareTo(a.totalGpuMs));
+        var payloadShapeRows = new GpuShapeProfileRow[shapeRows.Count];
+        for (var i = 0; i < shapeRows.Count; i++)
+        {
+            var stat = shapeRows[i];
+            var total = (float)stat.totalGpuMs;
+            payloadShapeRows[i] = new GpuShapeProfileRow
+            {
+                shape = stat.shape,
+                mode = stat.mode,
+                invocations = stat.invocations,
+                totalGpuMs = total,
+                avgGpuMs = stat.invocations > 0 ? total / stat.invocations : 0f,
+                maxGpuMs = (float)stat.maxGpuMs,
+                rank = i + 1
+            };
+        }
+
+        var summaryData = new GpuLayerProfileData
+        {
+            outcome = outcome,
+            profilingEnabled = true,
+            useCommandBuffer = false,
+            enableWinograd23 = enableWinograd23,
+            originalW = originalW,
+            originalH = originalH,
+            runInW = runInW,
+            runInH = runInH,
+            tileSize = effectiveTileSize,
+            tilePad = effectiveTilePad,
+            rows = payloadRows,
+            shapeRows = payloadShapeRows,
+            packMs = packMs,
+            forwardMs = forwardMs,
+            blitMs = blitMs,
+            rentMs = rentMs,
+            returnMs = returnMs,
+            yieldMs = yieldMs,
+            cmdMs = cmdMs,
+            tileAllMs = tileAllMs
+        };
+
+        if (_gpuLayerProfileEnabled)
+            PostGpuLayerProfile("A", "RealEsrganNcnnReproRunner:ForwardPack4", "[DEBUG] aggregated 3x3 gpu layer profile summary", summaryData, true);
+        if (_selectiveWinogradGapEnabled)
+            PostSelectiveWinogradGapProfile("B", "RealEsrganNcnnReproRunner:ForwardPack4", "[DEBUG] aggregated 3x3 gpu shape summary with run breakdown", summaryData);
+        if (_directConvOptEnabled)
+            PostDirectConvOptProfile("B", "RealEsrganNcnnReproRunner:ForwardPack4", "[DEBUG] aggregated direct-conv candidate shape summary with run breakdown", summaryData);
+    }
+    #endregion
+
     public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
         if (src == null)
@@ -186,6 +706,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private async UniTask<RealEsrganResult> ProcessOnceAsync(Texture2D src, CancellationToken ct, int originalW, int originalH, int runInW, int runInH, int runFactor, int effectiveTileSize, int effectiveTilePad)
     {
+        TryInitGpuLayerProfiling();
+        TryInitSelectiveWinogradGapDebug();
+        TryInitDirectConvOptDebug();
+        ResetGpuLayerProfileStats();
+
         Texture2D runInput = null;
         var ownsRunInput = false;
         RenderTexture scaledOutRt = null;
@@ -193,7 +718,16 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         ComputeBuffer probeBuf = null;
         Vector4[] probeData = null;
         ComputeBuffer probeInBuf = null;
+        var profileOutcome = "failed";
 
+        var packMs = 0L;
+        var forwardMs = 0L;
+        var blitMs = 0L;
+        var rentMs = 0L;
+        var returnMs = 0L;
+        var yieldMs = 0L;
+        var cmdMs = 0L;
+        Stopwatch swTileAll = default;
         try
         {
             if (runInW != originalW || runInH != originalH)
@@ -232,14 +766,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var tilesY = Mathf.CeilToInt(runInH / (float)Mathf.Max(1, effectiveTileSize));
             var tileCount = Mathf.Max(1, tilesX * tilesY);
             var tileIndex = 0;
-            var packMs = 0L;
-            var forwardMs = 0L;
-            var blitMs = 0L;
-            var rentMs = 0L;
-            var returnMs = 0L;
-            var yieldMs = 0L;
-            var cmdMs = 0L;
-            var swTileAll = Stopwatch.StartNew();
+
+            swTileAll = Stopwatch.StartNew();
             if (enableTileProbe)
             {
                 probeBuf = new ComputeBuffer(tileCount, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -519,14 +1047,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 return new RealEsrganResult { error = "resize output failed" };
 
             ReportProgress(1f, "完成");
+            profileOutcome = "completed";
             return new RealEsrganResult { texture = finalTex, error = null };
         }
         catch (OperationCanceledException)
         {
+            profileOutcome = "cancelled";
             return new RealEsrganResult { error = "Cancelled" };
         }
         finally
         {
+            FlushGpuLayerProfileSummary(profileOutcome, originalW, originalH, runInW, runInH, effectiveTileSize, effectiveTilePad, packMs, forwardMs, blitMs, rentMs, returnMs, yieldMs, cmdMs, swTileAll.IsRunning ? swTileAll.ElapsedMilliseconds : 0L);
             if (ownsRunInput && runInput != null) Destroy(runInput);
             if (scaledOutRt != null)
             {
@@ -751,7 +1282,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
 
                 var outArr = RentTempArray(cmd ,src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
-                if (pack.useWinograd23 && enableWinograd23)
+                var useWinograd23ThisLayer = ShouldUseWinograd23(pack, src.w, src.h);
+                if (useWinograd23ThisLayer)
                 {
                     // Winograd uses persistent workspace buffers; flush pending cmd work and
                     // dispatch immediately so buffers are not freed before GPU finishes.
@@ -1051,7 +1583,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
 
                 var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
-                if (pack.useWinograd23 && enableWinograd23)
+                var gpuLayerProfile = ShouldProfileGpuLayers();
+                Stopwatch swGpu = null;
+                if (gpuLayerProfile)
+                {
+                    _ops.DebugSyncGpu();
+                    swGpu = Stopwatch.StartNew();
+                }
+                var useWinograd23ThisLayer = ShouldUseWinograd23(pack, src.w, src.h);
+                if (useWinograd23ThisLayer)
                 {
                     // Winograd uses persistent workspace buffers; flush pending cmd work and
                     // dispatch immediately so buffers are not freed before GPU finishes.
@@ -1060,6 +1600,12 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 else
                 {
                     _ops.Conv3x3Pack4(src.t1, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                }
+                if (swGpu != null)
+                {
+                    _ops.DebugSyncGpu();
+                    swGpu.Stop();
+                    RecordGpuLayerProfile(l.name, useWinograd23ThisLayer ? "winograd23" : "direct", src.w, src.h, pack.inPacks, pack.outPacks, swGpu.Elapsed.TotalMilliseconds);
                 }
                 blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                 Consume(blobs, remaining, l.bottomNames);

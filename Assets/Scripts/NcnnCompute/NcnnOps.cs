@@ -862,7 +862,7 @@ namespace NcnnCompute
             _cs.SetBuffer(_kConv3x3Pack4, "_ConvB4", b4);
             _cs.SetTexture(_kConv3x3Pack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConv3x3Pack4, "_ConvOutArr", dstPack4);
-            Dispatch3D(_kConv3x3Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+            Dispatch3D(_kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, outPacks, 8, 8);
         }
 
         public void Conv3x3Pack4Winograd23(RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4)
@@ -953,6 +953,13 @@ namespace NcnnCompute
             _winoBottomCap = 0;
             _winoTopCap = 0;
         }
+
+        #region debug-point B:gpu-layer-sync
+        public void DebugSyncGpu()
+        {
+            WaitGpuIdle();
+        }
+        #endregion
 
         private void WaitGpuIdle()
         {
@@ -1214,7 +1221,7 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, _kConv3x3Pack4, "_ConvB4", b4);
             cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvOutArr", dstPack4.nameID);
-            Dispatch3D(cmd, _kConv3x3Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+            Dispatch3D(cmd, _kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, outPacks, 8, 8);
         }
 
 
