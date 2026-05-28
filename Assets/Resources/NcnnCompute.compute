@@ -131,6 +131,8 @@ int _OffsetX;
 int _OffsetY;
 int _ActType;
 float _ActParam;
+float _ScaleX;
+float _ScaleY;
 
 [numthreads(32,32,1)]
 void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
@@ -140,8 +142,8 @@ void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
     if (id.x >= w || id.y >= h) return;
     uint tw, th;
     _NcnnIn.GetDimensions(tw, th);
-    int sx = (int)id.x + _OffsetX;
-    int sy = (int)id.y + _OffsetY;
+    int sx = (int) (id.x + _OffsetX) * _ScaleX;
+    int sy = (int) (id.y + _OffsetY) * _ScaleY;
     sx = clamp(sx, 0, (int)tw - 1);
     sy = clamp(sy, 0, (int)th - 1);
     float4 v = _NcnnIn[int2(sx, sy)];
@@ -156,8 +158,8 @@ void NcnnPackRgbToPack4Gfpgan(uint3 id : SV_DispatchThreadID)
     if (id.x >= w || id.y >= h) return;
     uint tw, th;
     _NcnnIn.GetDimensions(tw, th);
-    int sx = (int)id.x + _OffsetX;
-    int sy = (int)id.y + _OffsetY;
+    int sx = (int) (id.x + _OffsetX) * _ScaleX;
+    int sy = (int) (id.y + _OffsetY) * _ScaleY;
     sx = clamp(sx, 0, (int)tw - 1);
     sy = clamp(sy, 0, (int)th - 1);
     float4 v = _NcnnIn[int2(sx, sy)];
@@ -1314,11 +1316,14 @@ void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= _BlitW || (int)id.y >= _BlitH) return;
 
-    int sx = (_DstX + (int)id.x) - _TileOutX;
-    int sy = (_DstY + (int)id.y) - _TileOutY;
-    float4 v = _NcnnInArr[int3(sx, sy, 0)];
+    int2 Dst;
+    Dst.x = _DstX + (int) id.x;
+    Dst.y = _DstY + (int) id.y;
+    float2 Src = (float2)Dst;
+    int2 Src2 = (int2) Src - int2(_TileOutX, _TileOutY);
+    float4 v = _NcnnInArr[int3(Src2, 0)];
     v.w = 1.0;
-    _NcnnOut[int2(_DstX + (int)id.x, _DstY + (int)id.y)] = v;
+    _NcnnOut[Dst] = v;
 }
 
 Texture2DArray<float4> _ProbeInArr;

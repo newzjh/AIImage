@@ -758,15 +758,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             if (!scaledOutRt.IsCreated())
                 throw new InvalidOperationException("failed to create scaledOutRt " + scaledOutW + "x" + scaledOutH);
 
-            if (scaledOutW != originalW || scaledOutH != originalH)
-            {
-                outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32);
-                outRt.wrapMode = TextureWrapMode.Clamp;
-                outRt.filterMode = FilterMode.Bilinear;
-                outRt.Create();
-                if (!outRt.IsCreated())
-                    throw new InvalidOperationException("failed to create outRt " + originalW + "x" + originalH);
-            }
 
             var tilesX = Mathf.CeilToInt(runInW / (float)Mathf.Max(1, effectiveTileSize));
             var tilesY = Mathf.CeilToInt(runInH / (float)Mathf.Max(1, effectiveTileSize));
@@ -897,11 +888,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
 
             ReportProgress(0.98f, "后处理");
-            var finalRt = scaledOutRt;
-            if (outRt != null)
             {
+                outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32);
+                outRt.wrapMode = TextureWrapMode.Clamp;
+                outRt.filterMode = FilterMode.Bilinear;
+                outRt.Create();
+                if (!outRt.IsCreated())
+                    throw new InvalidOperationException("failed to create outRt " + originalW + "x" + originalH);
+  
                 Graphics.Blit(scaledOutRt, outRt);
-                finalRt = outRt;
             }
 
             if (enableSeamProbe)
@@ -934,7 +929,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
 
             ReportProgress(0.99f, "读取结果");
-            var scaledTex = await ReadbackTextureAsync(finalRt, finalRt.width, finalRt.height, ct);
+            var scaledTex = await ReadbackTextureAsync(outRt, outRt.width, outRt.height, ct);
             if (scaledTex == null)
                 return new RealEsrganResult { error = "readback failed" };
 
