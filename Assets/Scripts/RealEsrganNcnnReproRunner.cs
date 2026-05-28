@@ -649,9 +649,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         TryInitDirectConvOptDebug();
         ResetGpuLayerProfileStats();
 
-        //Texture runInput = null;
-        var ownsRunInput = false;
-        RenderTexture scaledOutRt = null;
         RenderTexture outRt = null;
         ComputeBuffer probeBuf = null;
         Vector4[] probeData = null;
@@ -683,15 +680,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             float sx = (float)originalW / (float)runInW;
             float sy = (float)originalH / (float)runInH;
 
-            var scaledOutW = runInW * runFactor;
-            var scaledOutH = runInH * runFactor;
-            scaledOutRt = new RenderTexture(scaledOutW, scaledOutH, 0, RenderTextureFormat.ARGB32);
-            scaledOutRt.enableRandomWrite = true;
-            scaledOutRt.wrapMode = TextureWrapMode.Clamp;
-            scaledOutRt.filterMode = FilterMode.Bilinear;
-            scaledOutRt.Create();
-            if (!scaledOutRt.IsCreated())
-                throw new InvalidOperationException("failed to create scaledOutRt " + scaledOutW + "x" + scaledOutH);
+            outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32);
+            outRt.enableRandomWrite = true;
+            outRt.wrapMode = TextureWrapMode.Clamp;
+            outRt.filterMode = FilterMode.Bilinear;
+            outRt.Create();
+            if (!outRt.IsCreated())
+                throw new InvalidOperationException("failed to create outRt " + originalW + "x" + originalH);
 
 
             var tilesX = Mathf.CeilToInt(runInW / (float)Mathf.Max(1, effectiveTileSize));
@@ -769,24 +764,39 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                             outArr = _repro.ForwardPack4(inArr, 1);
                         forwardMs += swFwd.ElapsedMilliseconds;
 
-                        var dstX = tx * runFactor;
-                        var dstY = ty * runFactor;
-                        var dstW = tw * runFactor;
-                        var dstH = th * runFactor;
-                        var tileOutOriginX = ox * runFactor;
-                        var tileOutOriginY = oy * runFactor;
+                        var tilePad = effectiveTilePad * runFactor;
+                        var tileCoreW = tw * runFactor;
+                        var tileCoreH = th * runFactor;
+                        var tileFullW = cw * runFactor;
+                        var tileFullH = ch * runFactor;
+
+                        var outDstX = Mathf.FloorToInt(tx * originalW / (float)runInW);
+                        var outDstY = Mathf.FloorToInt(ty * originalH / (float)runInH);
+                        int outEndX;
+                        if (tx + tw >= runInW)
+                            outEndX = originalW;
+                        else
+                            outEndX = Mathf.FloorToInt((tx + tw) * originalW / (float)runInW);
+                        int outEndY;
+                        if (ty + th >= runInH)
+                            outEndY = originalH;
+                        else
+                            outEndY = Mathf.FloorToInt((ty + th) * originalH / (float)runInH);
+                        var outDstW = outEndX - outDstX;
+                        var outDstH = outEndY - outDstY;
+
                         if (probeBuf != null)
                         {
                             if (_useCmdThisRun)
-                                _repro.Ops.ProbeTilePack4(rowCmd, outArr2, tileIndex, effectiveTilePad * runFactor, dstW, dstH, probeBuf);
+                                _repro.Ops.ProbeTilePack4(rowCmd, outArr2, tileIndex, tilePad, tileCoreW, tileCoreH, probeBuf);
                             else
-                                _repro.Ops.ProbeTilePack4(outArr, tileIndex, effectiveTilePad * runFactor, dstW, dstH, probeBuf);
+                                _repro.Ops.ProbeTilePack4(outArr, tileIndex, tilePad, tileCoreW, tileCoreH, probeBuf);
                         }
                         var swBlit = Stopwatch.StartNew();
                         if (_useCmdThisRun)
-                            _repro.Ops.BlitTileToDst(rowCmd, outArr2, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
+                            _repro.Ops.BlitTileToDst(rowCmd, outArr2, outRt, outDstX, outDstY, outDstW, outDstH, tilePad, tilePad, tileCoreW, tileCoreH, tileFullW, tileFullH);
                         else
-                            _repro.Ops.BlitTileToDst(outArr, scaledOutRt, dstX, dstY, tileOutOriginX, tileOutOriginY, dstW, dstH, 1f);
+                            _repro.Ops.BlitTileToDst(outArr, outRt, outDstX, outDstY, outDstW, outDstH, tilePad, tilePad, tileCoreW, tileCoreH, tileFullW, tileFullH);
                         blitMs += swBlit.ElapsedMilliseconds;
 
                     }
@@ -823,16 +833,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
 
             ReportProgress(0.98f, "后处理");
-            {
-                outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32);
-                outRt.wrapMode = TextureWrapMode.Clamp;
-                outRt.filterMode = FilterMode.Bilinear;
-                outRt.Create();
-                if (!outRt.IsCreated())
-                    throw new InvalidOperationException("failed to create outRt " + originalW + "x" + originalH);
-  
-                Graphics.Blit(scaledOutRt, outRt);
-            }
 
             if (enableSeamProbe)
             {
@@ -841,7 +841,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 {
                     using (var seamBuf = new ComputeBuffer(seamCount, sizeof(float) * 4, ComputeBufferType.Structured))
                     {
-                        _repro.Ops.ProbeSeams(scaledOutRt, tilesX, tilesY, effectiveTileSize * runFactor, effectiveTileSize * runFactor, 32, seamBuf);
+                        _repro.Ops.ProbeSeams(outRt, tilesX, tilesY, Mathf.RoundToInt(effectiveTileSize * originalW / (float)runInW), Mathf.RoundToInt(effectiveTileSize * originalH / (float)runInH), 32, seamBuf);
                         var seamData = new Vector4[seamCount];
                         seamBuf.GetData(seamData);
                         var maxScore = 0f;
@@ -994,12 +994,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         finally
         {
             FlushGpuLayerProfileSummary(profileOutcome, originalW, originalH, runInW, runInH, effectiveTileSize, effectiveTilePad, packMs, forwardMs, blitMs, rentMs, returnMs, yieldMs, cmdMs, swTileAll.IsRunning ? swTileAll.ElapsedMilliseconds : 0L);
-            //if (ownsRunInput && runInput != null) Destroy(runInput);
-            if (scaledOutRt != null)
-            {
-                scaledOutRt.Release();
-                Destroy(scaledOutRt);
-            }
             if (outRt != null)
             {
                 outRt.Release();

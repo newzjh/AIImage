@@ -84,9 +84,12 @@ int _SrcX;
 int _SrcY;
 int _DstX;
 int _DstY;
-int _TileOutX;
-int _TileOutY;
-float _BlitScale;
+int _TilePadX;
+int _TilePadY;
+int _TileCoreW;
+int _TileCoreH;
+int _TileW;
+int _TileH;
 RWStructuredBuffer<uint> _TouchOut;
 int _TouchValue;
 
@@ -1317,11 +1320,27 @@ void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
     if ((int)id.x >= _BlitW || (int)id.y >= _BlitH) return;
 
     int2 Dst;
-    Dst.x = _DstX + (int) id.x;
-    Dst.y = _DstY + (int) id.y;
-    float2 Src = (float2)Dst;
-    int2 Src2 = (int2) Src - int2(_TileOutX, _TileOutY);
-    float4 v = _NcnnInArr[int3(Src2, 0)];
+    Dst.x = _DstX + (int)id.x;
+    Dst.y = _DstY + (int)id.y;
+
+    float2 srcF;
+    srcF.x = (float)_TilePadX + ((float)id.x + 0.5f) * (float)_TileCoreW / (float)_BlitW - 0.5f;
+    srcF.y = (float)_TilePadY + ((float)id.y + 0.5f) * (float)_TileCoreH / (float)_BlitH - 0.5f;
+
+    int2 src0 = (int2)floor(srcF);
+    int2 src1 = src0 + 1;
+    float2 t = srcF - (float2)src0;
+
+    int2 srcLimit = int2(_TileW - 1, _TileH - 1);
+    src0 = clamp(src0, int2(0, 0), srcLimit);
+    src1 = clamp(src1, int2(0, 0), srcLimit);
+
+    float4 v00 = _NcnnInArr[int3(src0.x, src0.y, 0)];
+    //float4 v10 = _NcnnInArr[int3(src1.x, src0.y, 0)];
+    //float4 v01 = _NcnnInArr[int3(src0.x, src1.y, 0)];
+    //float4 v11 = _NcnnInArr[int3(src1.x, src1.y, 0)];
+
+    float4 v = v00;//lerp(lerp(v00, v10, t.x), lerp(v01, v11, t.x), t.y);
     v.w = 1.0;
     _NcnnOut[Dst] = v;
 }

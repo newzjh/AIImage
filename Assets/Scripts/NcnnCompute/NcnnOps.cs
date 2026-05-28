@@ -417,44 +417,50 @@ namespace NcnnCompute
             Dispatch2D(_kBufToTex3, output.width, output.height, 8, 8);
         }
 
-        public void BlitTileToDst(RenderTexture tileOut, RenderTexture dst, int dstX, int dstY, int tileOutOriginX, int tileOutOriginY, int w, int h, float dstToSrcScale)
+        public void BlitTileToDst(RenderTexture tileOut, RenderTexture dst, int dstX, int dstY, int dstW, int dstH, int tilePadX, int tilePadY, int tileCoreW, int tileCoreH, int tileW, int tileH)
         {
             if (tileOut == null) throw new ArgumentNullException(nameof(tileOut));
             if (dst == null) throw new ArgumentNullException(nameof(dst));
-            if (w <= 0 || h <= 0) return;
-            if (dstX < 0 || dstY < 0 || dstX + w > dst.width || dstY + h > dst.height)
+            if (dstW <= 0 || dstH <= 0) return;
+            if (dstX < 0 || dstY < 0 || dstX + dstW > dst.width || dstY + dstH > dst.height)
                 throw new ArgumentOutOfRangeException(nameof(dstX), "dst rect out of range");
 
-            _cs.SetInt("_BlitW", w);
-            _cs.SetInt("_BlitH", h);
+            _cs.SetInt("_BlitW", dstW);
+            _cs.SetInt("_BlitH", dstH);
             _cs.SetInt("_DstX", dstX);
             _cs.SetInt("_DstY", dstY);
-            _cs.SetInt("_TileOutX", tileOutOriginX);
-            _cs.SetInt("_TileOutY", tileOutOriginY);
-            _cs.SetFloat("_BlitScale", dstToSrcScale);
+            _cs.SetInt("_TilePadX", tilePadX);
+            _cs.SetInt("_TilePadY", tilePadY);
+            _cs.SetInt("_TileCoreW", tileCoreW);
+            _cs.SetInt("_TileCoreH", tileCoreH);
+            _cs.SetInt("_TileW", tileW);
+            _cs.SetInt("_TileH", tileH);
             _cs.SetTexture(_kBlitTileToDst, "_NcnnInArr", tileOut);
             _cs.SetTexture(_kBlitTileToDst, "_NcnnOut", dst);
-            Dispatch2D(_cs, _kBlitTileToDst, w, h, 32, 32);
+            Dispatch2D(_cs, _kBlitTileToDst, dstW, dstH, 32, 32);
         }
 
-        public void BlitTileToDst(CommandBuffer cmd, ComputeTexture tileOut, RenderTexture dst, int dstX, int dstY, int tileOutOriginX, int tileOutOriginY, int w, int h, float dstToSrcScale)
+        public void BlitTileToDst(CommandBuffer cmd, ComputeTexture tileOut, RenderTexture dst, int dstX, int dstY, int dstW, int dstH, int tilePadX, int tilePadY, int tileCoreW, int tileCoreH, int tileW, int tileH)
         {
             if (tileOut == null) throw new ArgumentNullException(nameof(tileOut));
             if (dst == null) throw new ArgumentNullException(nameof(dst));
-            if (w <= 0 || h <= 0) return;
-            if (dstX < 0 || dstY < 0 || dstX + w > dst.width || dstY + h > dst.height)
+            if (dstW <= 0 || dstH <= 0) return;
+            if (dstX < 0 || dstY < 0 || dstX + dstW > dst.width || dstY + dstH > dst.height)
                 throw new ArgumentOutOfRangeException(nameof(dstX), "dst rect out of range");
 
-            cmd.SetComputeIntParam(_cs, "_BlitW", w);
-            cmd.SetComputeIntParam(_cs, "_BlitH", h);
+            cmd.SetComputeIntParam(_cs, "_BlitW", dstW);
+            cmd.SetComputeIntParam(_cs, "_BlitH", dstH);
             cmd.SetComputeIntParam(_cs, "_DstX", dstX);
             cmd.SetComputeIntParam(_cs, "_DstY", dstY);
-            cmd.SetComputeIntParam(_cs, "_TileOutX", tileOutOriginX);
-            cmd.SetComputeIntParam(_cs, "_TileOutY", tileOutOriginY);
-            cmd.SetComputeFloatParam(_cs, "_BlitScale", dstToSrcScale);
+            cmd.SetComputeIntParam(_cs, "_TilePadX", tilePadX);
+            cmd.SetComputeIntParam(_cs, "_TilePadY", tilePadY);
+            cmd.SetComputeIntParam(_cs, "_TileCoreW", tileCoreW);
+            cmd.SetComputeIntParam(_cs, "_TileCoreH", tileCoreH);
+            cmd.SetComputeIntParam(_cs, "_TileW", tileW);
+            cmd.SetComputeIntParam(_cs, "_TileH", tileH);
             cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_NcnnInArr", tileOut.nameID);
             cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_NcnnOut", dst);
-            Dispatch2D(cmd, _cs, _kBlitTileToDst, w, h, 32, 32);
+            Dispatch2D(cmd, _cs, _kBlitTileToDst, dstW, dstH, 32, 32);
         }
 
 
