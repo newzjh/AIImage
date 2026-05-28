@@ -258,9 +258,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         Texture2D scaled = null;
         Texture2D faceMask = null;
         Texture2D faceCrop = null;
-        Texture2D face512 = null;
-        Texture2D restored512 = null;
-        Texture2D restoredCrop = null;
+        RenderTexture face512 = null;
+        Texture restored512 = null;
+        RenderTexture restoredCrop = null;
         RenderTexture composed = null;
         try
         {
@@ -269,6 +269,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             if (maxSide > limit)
             {
                 ReportProgress(0.02f, "缩小到2k以内");
+                await UniTask.Yield();
                 scaleDown = (float)limit / maxSide;
                 var sw = Mathf.Max(1, Mathf.RoundToInt(originalW * scaleDown));
                 var sh = Mathf.Max(1, Mathf.RoundToInt(originalH * scaleDown));
@@ -279,6 +280,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             }
 
             ReportProgress(0.06f, "生成脸部区域");
+            await UniTask.Yield();
             var fm = GetComponent<FaceMaskGenerator>();
             if (fm != null)
             {
@@ -293,20 +295,23 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 rect = new RectInt(inputTex.width / 4, inputTex.height / 4, inputTex.width / 2, inputTex.height / 2);
 
             ReportProgress(0.10f, "裁剪脸部");
+            await UniTask.Yield();
             faceCrop = CropTexture(inputTex, rect);
             if (faceCrop == null)
                 return Finish(new GfpganResult { error = "裁剪失败" });
 
-            face512 = ResizeTextureBilinear(faceCrop, 512, 512);
+            face512 = ResizeTextureBilinear((Texture)faceCrop, 512, 512);
             if (face512 == null)
                 return Finish(new GfpganResult { error = "resize到512失败" });
 
             ReportProgress(0.15f, "推理中…");
+            await UniTask.Yield();
             restored512 = await RunGfpgan512Async(face512, ct);
             if (restored512 == null)
                 return Finish(new GfpganResult { error = "GFPGAN(复刻) 推理失败" });
 
             ReportProgress(0.85f, "回贴到原图");
+            await UniTask.Yield();
             restoredCrop = ResizeTextureBilinear(restored512, rect.width, rect.height);
             if (restoredCrop == null)
                 return Finish(new GfpganResult { error = "回贴缩放失败" });
@@ -323,6 +328,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             if (Mathf.Abs(scaleDown - 1f) > 1e-6f)
             {
                 ReportProgress(0.95f, "回缩放到原分辨率");
+                await UniTask.Yield();
                 var resized = ResizeTextureBilinear(finalTex, originalW, originalH);
                 Destroy(finalTex);
                 finalTex = resized;
@@ -334,6 +340,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             finalTex.filterMode = FilterMode.Bilinear;
             finalTex.name = "GFPGAN_Repro";
             ReportProgress(1f, "完成");
+            await UniTask.Yield();
             return Finish(new GfpganResult { texture = finalTex });
         }
         catch (Exception e)
@@ -357,7 +364,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private async UniTask<Texture2D> RunGfpgan512Async(Texture2D face512, CancellationToken ct)
+    private async UniTask<Texture> RunGfpgan512Async(Texture face512, CancellationToken ct)
     {
         if (face512 == null || face512.width != 512 || face512.height != 512)
             return null;
@@ -369,15 +376,12 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         RenderTexture skip = null;
         RenderTexture tmp = null;
         RenderTexture skipClip = null;
-        RenderTexture rgb = null;
-        Texture2D outTex = null;
+        RenderTexture outTex = null;
 
         try
         {
-            await UniTask.Yield();
-
             inArr = RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
-            _ops.PackRgbToPack4Gfpgan(face512, 0, 0, inArr);
+            _ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, inArr);
 
             var styles = RunEncoderForGfpgan(inArr, out cond);
             if (styles == null || styles.Length < 512)
@@ -391,6 +395,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             outFeat = RunStyleConv(constIn, styles, 0, _styleConv[14], 0, true);
 
             skip = RunToRgb(outFeat, styles, 1, _toRgb[7], null);
+
+            await UniTask.Yield();
 
             var j = 0;
             for (var i = 1; i < 14; i += 2)
@@ -406,21 +412,27 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
                 skip = RunToRgb(outFeat, styles, i + 2, _toRgb[j], skip);
                 j++;
+
+                ReportProgress(0.15f + (float)i / 14.0f * 0.8f, "推理分块 " + i + "/" + 14);
+                await UniTask.Yield();
             }
 
             skipClip = RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
             _ops.ClipPack4(skip, -1f, 1f, 1, skipClip);
 
-            rgb = new RenderTexture(512, 512, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-            rgb.enableRandomWrite = true;
-            rgb.Create();
-            _ops.Pack4ToRgb01(skipClip, rgb);
-
-            outTex = RenderTextureToTexture2D(rgb, 512, 512);
-            if (outTex == null)
-                return null;
+            outTex = new RenderTexture(512, 512, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            outTex.enableRandomWrite = true;
             outTex.wrapMode = TextureWrapMode.Clamp;
             outTex.filterMode = FilterMode.Bilinear;
+            outTex.Create();
+            _ops.Pack4ToRgb01(skipClip, outTex);
+
+
+            //outTex = RenderTextureToTexture2D(rgb, 512, 512);
+            //if (outTex == null)
+            //    return null;
+            //outTex.wrapMode = TextureWrapMode.Clamp;
+            //outTex.filterMode = FilterMode.Bilinear;
             return outTex;
         }
         catch
@@ -441,7 +453,6 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             if (skip != null) ReturnTempArray(skip);
             if (tmp != null) ReturnTempArray(tmp);
             if (skipClip != null) ReturnTempArray(skipClip);
-            if (rgb != null) { rgb.Release(); Destroy(rgb); }
         }
     }
 
@@ -1017,7 +1028,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return new RectInt(x0, y0, Mathf.Max(1, x1 - x0), Mathf.Max(1, y1 - y0));
     }
 
-    private static RenderTexture ComposeWithMask(Texture2D baseTex, Texture2D overlayCrop, Texture2D mask, RectInt rect)
+    private static RenderTexture ComposeWithMask(Texture2D baseTex, Texture overlayCrop, Texture2D mask, RectInt rect)
     {
         if (baseTex == null || overlayCrop == null)
             return null;
@@ -1616,6 +1627,14 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         dst.wrapMode = TextureWrapMode.Clamp;
         dst.filterMode = FilterMode.Bilinear;
         return dst;
+    }
+
+    private static RenderTexture ResizeTextureBilinear(Texture src, int w, int h)
+    {
+        RenderTexture ret = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32);
+        ret.Create();
+        Graphics.Blit(src, ret);
+        return ret;
     }
 
     private static Texture2D ResizeTextureBilinear(Texture2D src, int w, int h)

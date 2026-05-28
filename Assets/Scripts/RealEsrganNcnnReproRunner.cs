@@ -403,10 +403,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private bool ShouldUseWinograd23(ConvPack pack, int srcW, int srcH)
     {
+        //return enableWinograd23
+        //       && pack != null
+        //       && pack.useWinograd23
+        //       && NcnnWinograd23.ShouldPreferForShape(srcW, srcH, pack.inPacks, pack.outPacks);
         return enableWinograd23
                && pack != null
-               && pack.useWinograd23
-               && NcnnWinograd23.ShouldPreferForShape(srcW, srcH, pack.inPacks, pack.outPacks);
+               && pack.useWinograd23;
     }
 
     private void RecordGpuLayerProfile(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
@@ -711,7 +714,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         TryInitDirectConvOptDebug();
         ResetGpuLayerProfileStats();
 
-        Texture2D runInput = null;
+        //Texture runInput = null;
         var ownsRunInput = false;
         RenderTexture scaledOutRt = null;
         RenderTexture outRt = null;
@@ -730,17 +733,20 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         Stopwatch swTileAll = default;
         try
         {
-            if (runInW != originalW || runInH != originalH)
-            {
-                runInput = ResizeTextureBilinear(src, runInW, runInH);
-                ownsRunInput = true;
-                if (runInput == null)
-                    return new RealEsrganResult { error = "resize input failed" };
-            }
-            else
-            {
-                runInput = src;
-            }
+            //if (runInW != originalW || runInH != originalH)
+            //{
+            //    runInput = ResizeTextureBilinear(src, runInW, runInH);
+            //    ownsRunInput = true;
+            //    if (runInput == null)
+            //        return new RealEsrganResult { error = "resize input failed" };
+            //}
+            //else
+            //{
+            //    runInput = src;
+            //}
+
+            float sx = (float)originalW / (float)runInW;
+            float sy = (float)originalH / (float)runInH;
 
             var scaledOutW = runInW * runFactor;
             var scaledOutH = runInH * runFactor;
@@ -789,7 +795,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 {
                     rowCmd = new CommandBuffer();
                     rowCmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
-                    rowCmd.name = "TileRow_" + ty;
+                    rowCmd.name = "CmdTileRow_" + ty;
                 }
 
                 for (var tx = 0; tx < runInW; tx += Mathf.Max(1, effectiveTileSize))
@@ -818,9 +824,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     {
                         var swPack = Stopwatch.StartNew();
                         if (_useCmdThisRun)
-                            _ops.PackRgbToPack4(rowCmd, runInput, ox, oy, inArr2);
+                            _ops.PackRgbToPack4(rowCmd, src, ox, oy, sx, sy, inArr2);
                         else
-                            _ops.PackRgbToPack4(runInput, ox, oy, inArr);
+                            _ops.PackRgbToPack4(src, ox, oy, sx, sy, inArr);
                         packMs += swPack.ElapsedMilliseconds;
                         if (probeInBuf != null)
                         {
@@ -1058,7 +1064,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         finally
         {
             FlushGpuLayerProfileSummary(profileOutcome, originalW, originalH, runInW, runInH, effectiveTileSize, effectiveTilePad, packMs, forwardMs, blitMs, rentMs, returnMs, yieldMs, cmdMs, swTileAll.IsRunning ? swTileAll.ElapsedMilliseconds : 0L);
-            if (ownsRunInput && runInput != null) Destroy(runInput);
+            //if (ownsRunInput && runInput != null) Destroy(runInput);
             if (scaledOutRt != null)
             {
                 scaledOutRt.Release();
@@ -1282,17 +1288,20 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
 
                 var outArr = RentTempArray(cmd ,src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
-                var useWinograd23ThisLayer = ShouldUseWinograd23(pack, src.w, src.h);
-                if (useWinograd23ThisLayer)
-                {
-                    // Winograd uses persistent workspace buffers; flush pending cmd work and
-                    // dispatch immediately so buffers are not freed before GPU finishes.
-                    _ops.Conv3x3Pack4Winograd23(cmd, src.t2, pack.inPacks, pack.wTm23, pack.b4, pack.outPacks, pack.biasTerm, pack.activationType, pack.activationSlope, outArr);
-                }
-                else if (_useCmdThisRun)
+                if (_useCmdThisRun)
                 {
                     EnsureCmd();
-                    _ops.Conv3x3Pack4(cmd, src.t2, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                    var useWinograd23ThisLayer = ShouldUseWinograd23(pack, src.w, src.h);
+                    if (useWinograd23ThisLayer)
+                    {
+                        // Winograd uses persistent workspace buffers; flush pending cmd work and
+                        // dispatch immediately so buffers are not freed before GPU finishes.
+                        _ops.Conv3x3Pack4Winograd23(cmd, src.t2, pack.inPacks, pack.wTm23, pack.b4, pack.outPacks, pack.biasTerm, pack.activationType, pack.activationSlope, outArr);
+                    }
+                    else
+                    {
+                        _ops.Conv3x3Pack4(cmd, src.t2, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                    }
                 }
                 blobs[l.topNames[0]] = new TensorRef { t2 = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                 Consume(cmd,blobs, remaining, l.bottomNames);
