@@ -577,7 +577,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (src == null)
             return default;
 
-        EnsureLoaded();
+        await EnsureLoaded();
 
         var originalW = src.width;
         var originalH = src.height;
@@ -1010,7 +1010,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void EnsureLoaded()
+    private async UniTask EnsureLoaded()
     {
         if (_loaded)
             return;
@@ -1019,12 +1019,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var paramPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".param");
         var binPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".bin");
 
-        var paramText = File.ReadAllText(paramPath);
+        var paramText = await File.ReadAllTextAsync(paramPath);
         using (var fs = File.OpenRead(binPath))
         using (var br = new NcnnBinReader(fs))
             _repro.LoadModel(paramText, br);
 
         _loaded = true;
+
     }
 
     

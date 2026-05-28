@@ -137,7 +137,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             return r;
         }
 
-        EnsureLoaded();
+        await EnsureLoaded();
         if (_repro.Model == null)
             return Finish(new GfpganResult { error = "GFPGAN(复刻) 模型不可用" });
 
@@ -819,7 +819,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void EnsureLoaded()
+    private async UniTask EnsureLoaded()
     {
         if (_loaded)
             return;
@@ -834,7 +834,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         if (!File.Exists(stylePath))
             throw new InvalidOperationException("GFPGAN(复刻) style 不存在: " + stylePath);
 
-        var paramText = File.ReadAllText(paramPath);
+        var paramText = await File.ReadAllTextAsync(paramPath);
         using (var fs = File.OpenRead(binPath))
         using (var br = new NcnnBinReader(fs))
         {
