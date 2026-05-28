@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.Rendering;
 
 namespace NcnnCompute
@@ -193,7 +194,7 @@ namespace NcnnCompute
             }
         }
 
-        public abstract class InferResultBase : IDisposable
+        public class InferResultBase : IDisposable
         {
             internal readonly Dictionary<string, TensorRef> Blobs;
             internal readonly NcnnRepro Repro;
@@ -236,13 +237,6 @@ namespace NcnnCompute
             }
         }
 
-        public sealed class RealEsrganInferResult : InferResultBase
-        {
-            internal RealEsrganInferResult(Dictionary<string, TensorRef> blobs, NcnnRepro repro)
-                : base(blobs, repro)
-            {
-            }
-        }
 
         public sealed class GFPGANInferResult : InferResultBase
         {
@@ -334,13 +328,15 @@ namespace NcnnCompute
 
         public NcnnOps Ops => _ops;
 
-        public event Func<string, ConvPack, int, int, bool> SelectWinograd23;
+        public bool enableWinograd23 = false;
+        public bool gpuLayerProfileEnabled = false;
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
 
         private bool ShouldUseWinograd23(ConvPack pack, int srcW, int srcH)
         {
-            var handler = SelectWinograd23;
-            return handler != null && handler(pack == null ? "" : "", pack, srcW, srcH);
+            return enableWinograd23
+                   && pack != null
+                   && pack.useWinograd23;
         }
 
         private void NotifyConvComplete(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
@@ -819,8 +815,7 @@ namespace NcnnCompute
 
             var inputRef = new TensorRef { t1 = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
             blobs[inputBlobName] = inputRef;
-
-            try
+   
             {
                 for (var li = 0; li < Model.layers.Count; li++)
                 {
@@ -975,11 +970,10 @@ namespace NcnnCompute
 
                         var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
                         var swGpu = ShouldUseWinograd23(pack, src.w, src.h);
-                        var profileGpu = OnConvComplete != null;
-                        var swStopwatch = default(System.Diagnostics.Stopwatch);
+                        System.Diagnostics.Stopwatch swStopwatch = null;
                         string convMode;
 
-                        if (profileGpu)
+                        if (gpuLayerProfileEnabled)
                         {
                             _ops.DebugSyncGpu();
                             swStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -999,7 +993,7 @@ namespace NcnnCompute
                             }
                             else
                             {
-                                convMode = "direct";
+                                convMode = "direct3x3";
                                 _ops.Conv3x3Pack4(src.t1, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
                             }
                         }
@@ -1008,7 +1002,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("unsupported kernel size: " + pack.kernel);
                         }
 
-                        if (profileGpu)
+                        if (gpuLayerProfileEnabled)
                         {
                             _ops.DebugSyncGpu();
                             swStopwatch.Stop();
@@ -1236,40 +1230,13 @@ namespace NcnnCompute
                 }
 
                 var result = bufferBlobs != null
-                    ? (InferResultBase)new GFPGANInferResult(blobs, bufferBlobs, this)
-                    : new RealEsrganInferResult(blobs, this);
+                    ? new GFPGANInferResult(blobs, bufferBlobs, this)
+                    : new InferResultBase(blobs, this);
                 if (bufferBlobs != null)
                     ((GFPGANInferResult)result).TempBuffers.AddRange(tempBuffers);
                 return result;
             }
-            catch
-            {
-                var visited = new HashSet<TensorRef>();
-                foreach (var kv in blobs)
-                {
-                    var tr = kv.Value;
-                    if (tr == null || !visited.Add(tr))
-                        continue;
-                    if (tr.owned && tr.t1 != null)
-                        ReturnTempArray(tr.t1);
-                }
-                if (tempBuffers != null)
-                {
-                    for (var i = 0; i < tempBuffers.Count; i++)
-                    {
-                        try { tempBuffers[i]?.Dispose(); } catch { }
-                    }
-                }
-                if (bufferBlobs != null)
-                {
-                    foreach (var kv in bufferBlobs)
-                    {
-                        try { kv.Value?.Dispose(); } catch { }
-                    }
-                    bufferBlobs.Clear();
-                }
-                throw;
-            }
+
         }
 
         public ComputeTexture ForwardPack4(CommandBuffer cmd, ComputeTexture inputPack4, int inputPacks, string inputBlobName = "data", ICollection<string> pinnedNames = null)

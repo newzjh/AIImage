@@ -154,7 +154,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private void Awake()
     {
         _repro = new NcnnRepro(new NcnnOps());
-        _repro.SelectWinograd23 += (name, pack, srcW, srcH) => ShouldUseWinograd23Core(pack, srcW, srcH);
+        _repro.enableWinograd23 = enableWinograd23;
+        _repro.gpuLayerProfileEnabled = _gpuLayerProfileEnabled;
         _repro.OnConvComplete += OnConvCompleteHandler;
     }
 
