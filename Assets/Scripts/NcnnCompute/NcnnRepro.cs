@@ -193,21 +193,17 @@ namespace NcnnCompute
             }
         }
 
-        public sealed class InferResult : IDisposable
+        public abstract class InferResultBase : IDisposable
         {
             internal readonly Dictionary<string, TensorRef> Blobs;
-            internal readonly Dictionary<string, ComputeBuffer> BufferBlobs;
-            internal readonly HashSet<TensorRef> VisitedTextures;
-            internal readonly List<ComputeBuffer> TempBuffers;
             internal readonly NcnnRepro Repro;
+            internal readonly HashSet<TensorRef> VisitedTextures;
 
-            internal InferResult(Dictionary<string, TensorRef> blobs, Dictionary<string, ComputeBuffer> bufferBlobs, NcnnRepro repro)
+            internal InferResultBase(Dictionary<string, TensorRef> blobs, NcnnRepro repro)
             {
                 Blobs = blobs;
-                BufferBlobs = bufferBlobs;
-                VisitedTextures = new HashSet<TensorRef>();
-                TempBuffers = new List<ComputeBuffer>();
                 Repro = repro;
+                VisitedTextures = new HashSet<TensorRef>();
             }
 
             public RenderTexture GetTexture(string name)
@@ -215,6 +211,49 @@ namespace NcnnCompute
                 if (!Blobs.TryGetValue(name, out var tr) || tr == null || tr.t1 == null)
                     throw new InvalidOperationException("blob not found: " + name);
                 return tr.t1;
+            }
+
+            public RenderTexture ExtractTexture(string name)
+            {
+                if (!Blobs.TryGetValue(name, out var tr) || tr == null || tr.t1 == null)
+                    throw new InvalidOperationException("blob not found: " + name);
+                tr.owned = false;
+                var rt = tr.t1;
+                tr.t1 = null;
+                return rt;
+            }
+
+            public virtual void Dispose()
+            {
+                foreach (var kv in Blobs)
+                {
+                    var tr = kv.Value;
+                    if (tr == null || !VisitedTextures.Add(tr))
+                        continue;
+                    if (tr.owned && tr.t1 != null)
+                        try { Repro.ReturnTempArray(tr.t1); } catch { }
+                }
+            }
+        }
+
+        public sealed class RealEsrganInferResult : InferResultBase
+        {
+            internal RealEsrganInferResult(Dictionary<string, TensorRef> blobs, NcnnRepro repro)
+                : base(blobs, repro)
+            {
+            }
+        }
+
+        public sealed class GFPGANInferResult : InferResultBase
+        {
+            internal readonly Dictionary<string, ComputeBuffer> BufferBlobs;
+            internal readonly List<ComputeBuffer> TempBuffers;
+
+            internal GFPGANInferResult(Dictionary<string, TensorRef> blobs, Dictionary<string, ComputeBuffer> bufferBlobs, NcnnRepro repro)
+                : base(blobs, repro)
+            {
+                BufferBlobs = bufferBlobs;
+                TempBuffers = new List<ComputeBuffer>();
             }
 
             public ComputeBuffer GetBuffer(string name)
@@ -232,16 +271,6 @@ namespace NcnnCompute
                 return data;
             }
 
-            public RenderTexture ExtractTexture(string name)
-            {
-                if (!Blobs.TryGetValue(name, out var tr) || tr == null || tr.t1 == null)
-                    throw new InvalidOperationException("blob not found: " + name);
-                tr.owned = false;
-                var rt = tr.t1;
-                tr.t1 = null;
-                return rt;
-            }
-
             public ComputeBuffer ExtractBuffer(string name)
             {
                 if (!BufferBlobs.TryGetValue(name, out var buf) || buf == null)
@@ -250,17 +279,8 @@ namespace NcnnCompute
                 return buf;
             }
 
-            public void Dispose()
+            public override void Dispose()
             {
-                foreach (var kv in Blobs)
-                {
-                    var tr = kv.Value;
-                    if (tr == null || !VisitedTextures.Add(tr))
-                        continue;
-                    if (tr.owned && tr.t1 != null)
-                        try { Repro.ReturnTempArray(tr.t1); } catch { }
-                }
-
                 for (var i = 0; i < TempBuffers.Count; i++)
                 {
                     try { TempBuffers[i]?.Dispose(); } catch { }
@@ -271,6 +291,8 @@ namespace NcnnCompute
                     try { kv.Value?.Dispose(); } catch { }
                 }
                 BufferBlobs.Clear();
+
+                base.Dispose();
             }
         }
 
@@ -538,20 +560,22 @@ namespace NcnnCompute
             }
         }
 
-        public InferResult Infer(RenderTexture inputPack4, int inputPacks, string inputBlobName = "data", ICollection<string> pinnedNames = null)
+        public GFPGANInferResult Infer(RenderTexture inputPack4, int inputPacks, string inputBlobName = "data", ICollection<string> pinnedNames = null)
         {
-            return InferCore(inputPack4, inputPacks, inputBlobName, pinnedNames);
+            var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
+            var tempBuffers = new List<ComputeBuffer>();
+            return (GFPGANInferResult)InferCore(inputPack4, inputPacks, inputBlobName, pinnedNames, bufferBlobs, tempBuffers);
         }
 
         public RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks, string inputBlobName = "data", ICollection<string> pinnedNames = null)
         {
-            var result = InferCore(inputPack4, inputPacks, inputBlobName, pinnedNames);
+            var result = InferCore(inputPack4, inputPacks, inputBlobName, pinnedNames, null, null);
             var rt = result.ExtractTexture("output");
             result.Dispose();
             return rt;
         }
 
-        public InferResult InferFromBuffers(Dictionary<string, ComputeBuffer> inputBuffers, string stopAfterTopName = null)
+        public GFPGANInferResult InferFromBuffers(Dictionary<string, ComputeBuffer> inputBuffers, string stopAfterTopName = null)
         {
             if (inputBuffers == null)
                 throw new ArgumentNullException(nameof(inputBuffers));
@@ -763,7 +787,7 @@ namespace NcnnCompute
                     throw new InvalidOperationException("unsupported buffer layer type: " + l.type);
                 }
 
-                var result = new InferResult(blobs, bufferBlobs, this);
+                var result = new GFPGANInferResult(blobs, bufferBlobs, this);
                 result.TempBuffers.AddRange(tempBuffers);
                 return result;
             }
@@ -788,12 +812,10 @@ namespace NcnnCompute
             }
         }
 
-        private InferResult InferCore(RenderTexture inputPack4, int inputPacks, string inputBlobName, ICollection<string> pinnedNames)
+        private InferResultBase InferCore(RenderTexture inputPack4, int inputPacks, string inputBlobName, ICollection<string> pinnedNames, Dictionary<string, ComputeBuffer> bufferBlobs, List<ComputeBuffer> tempBuffers)
         {
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
             var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
-            var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
-            var tempBuffers = new List<ComputeBuffer>();
 
             var inputRef = new TensorRef { t1 = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
             blobs[inputBlobName] = inputRef;
@@ -1213,8 +1235,11 @@ namespace NcnnCompute
                     throw new InvalidOperationException("unsupported layer type: " + l.type);
                 }
 
-                var result = new InferResult(blobs, bufferBlobs, this);
-                result.TempBuffers.AddRange(tempBuffers);
+                var result = bufferBlobs != null
+                    ? (InferResultBase)new GFPGANInferResult(blobs, bufferBlobs, this)
+                    : new RealEsrganInferResult(blobs, this);
+                if (bufferBlobs != null)
+                    ((GFPGANInferResult)result).TempBuffers.AddRange(tempBuffers);
                 return result;
             }
             catch
@@ -1228,9 +1253,20 @@ namespace NcnnCompute
                     if (tr.owned && tr.t1 != null)
                         ReturnTempArray(tr.t1);
                 }
-                for (var i = 0; i < tempBuffers.Count; i++)
+                if (tempBuffers != null)
                 {
-                    try { tempBuffers[i]?.Dispose(); } catch { }
+                    for (var i = 0; i < tempBuffers.Count; i++)
+                    {
+                        try { tempBuffers[i]?.Dispose(); } catch { }
+                    }
+                }
+                if (bufferBlobs != null)
+                {
+                    foreach (var kv in bufferBlobs)
+                    {
+                        try { kv.Value?.Dispose(); } catch { }
+                    }
+                    bufferBlobs.Clear();
                 }
                 throw;
             }
