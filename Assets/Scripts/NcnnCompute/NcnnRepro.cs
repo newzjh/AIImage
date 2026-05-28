@@ -674,10 +674,8 @@ namespace NcnnCompute
 
                         var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
-                        var statsBuf = new ComputeBuffer(gp.group * 2, sizeof(float), ComputeBufferType.Structured);
-                        _ops.GroupNormStats(outBuf, gp.group, gp.channels, gp.eps, gp.affine, gp.gamma, gp.beta, statsBuf);
-                        _ops.GroupNormApply(outBuf, gp.group, gp.channels, gp.eps, gp.affine, gp.gamma, gp.beta, statsBuf);
-                        statsBuf.Dispose();
+                        var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
+                        _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
                         bufferBlobs[l.topNames[0]] = outBuf;
                         continue;
                     }
@@ -1164,10 +1162,8 @@ namespace NcnnCompute
 
                         var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
-                        var statsBuf = new ComputeBuffer(gp.group * 2, sizeof(float), ComputeBufferType.Structured);
-                        _ops.GroupNormStats(outBuf, gp.group, gp.channels, gp.eps, gp.affine, gp.gamma, gp.beta, statsBuf);
-                        _ops.GroupNormApply(outBuf, gp.group, gp.channels, gp.eps, gp.affine, gp.gamma, gp.beta, statsBuf);
-                        statsBuf.Dispose();
+                        var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
+                        _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
                         bufferBlobs[l.topNames[0]] = outBuf;
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
                         continue;
