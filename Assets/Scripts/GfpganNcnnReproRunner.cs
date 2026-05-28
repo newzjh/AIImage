@@ -11,7 +11,6 @@ using UnityEngine.Rendering;
 
 public sealed class GfpganNcnnReproRunner : MonoBehaviour
 {
-    public bool enableGfpganRepro = true;
     public string paramRelativePath = "GFPGAN/models/encoder.param";
     public string binRelativePath = "GFPGAN/models/encoder.bin";
     public string styleRelativePath = "GFPGAN/models/style.bin";
@@ -19,41 +18,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public float faceMaskThreshold = 0.2f;
     public float faceBoxExpand = 0.35f;
     public bool enableTempPool = false;
-    public bool clearTempPoolAfterRun = true;
     public int maxPooledPerShape = 2;
 
     public event Action<float, string> ProgressChanged;
-
-    private sealed class ConvPack : IDisposable
-    {
-        public int outC;
-        public int inC;
-        public int kernel;
-        public int pad;
-        public int weightSize;
-        public int activationType;
-        public float activationSlope;
-        public int inPacks;
-        public int outPacks;
-        public ComputeBuffer w4;
-        public ComputeBuffer b4;
-
-        public void Dispose()
-        {
-            try { w4?.Dispose(); } catch { }
-            try { b4?.Dispose(); } catch { }
-        }
-    }
-
-    private sealed class TensorRef
-    {
-        public RenderTexture t;
-        public int w;
-        public int h;
-        public int packs;
-        public int refs;
-        public bool owned;
-    }
 
     private sealed class IpPack : IDisposable
     {
@@ -106,8 +73,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
     }
 
+    private NcnnRepro _repro;
     private NcnnParamModel _model;
-    private readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
     private readonly Dictionary<string, IpPack> _ip = new Dictionary<string, IpPack>(StringComparer.Ordinal);
     private StyleConvWeights[] _styleConv;
     private ToRgbWeights[] _toRgb;
@@ -123,63 +90,15 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     private Dictionary<string, int> _blobUseCount;
     private NcnnOps _ops;
     private bool _loaded;
-    private readonly Dictionary<RtKey, Stack<PooledRt>> _rtPool = new Dictionary<RtKey, Stack<PooledRt>>();
-    private bool _useTempPoolThisRun;
-
-    private readonly struct RtKey : IEquatable<RtKey>
-    {
-        public readonly int w;
-        public readonly int h;
-        public readonly int d;
-        public readonly RenderTextureFormat format;
-
-        public RtKey(int w, int h, int d, RenderTextureFormat format)
-        {
-            this.w = w;
-            this.h = h;
-            this.d = d;
-            this.format = format;
-        }
-
-        public bool Equals(RtKey other) => w == other.w && h == other.h && d == other.d && format == other.format;
-        public override bool Equals(object obj) => obj is RtKey other && Equals(other);
-        public override int GetHashCode()
-        {
-            unchecked
-            {
-                var hash = w;
-                hash = (hash * 397) ^ h;
-                hash = (hash * 397) ^ d;
-                hash = (hash * 397) ^ (int)format;
-                return hash;
-            }
-        }
-    }
-
-    private readonly struct PooledRt
-    {
-        public readonly RenderTexture rt;
-        public readonly GraphicsFence fence;
-        public readonly int frame;
-
-        public PooledRt(RenderTexture rt, GraphicsFence fence, int frame)
-        {
-            this.rt = rt;
-            this.fence = fence;
-            this.frame = frame;
-        }
-    }
 
     private void Awake()
     {
         _ops = new NcnnOps();
+        _repro = new NcnnRepro(_ops);
     }
 
     private void OnDestroy()
     {
-        foreach (var kv in _conv)
-            kv.Value?.Dispose();
-        _conv.Clear();
         foreach (var kv in _ip)
             kv.Value?.Dispose();
         _ip.Clear();
@@ -211,24 +130,23 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             try { kv.Value?.Dispose(); } catch { }
         }
         _noiseBuf.Clear();
-        ClearTempPool();
+        _repro?.Release();
         _blobUseCount = null;
         _model = null;
         _loaded = false;
+        try { _repro?.Dispose(); } catch { }
+        _repro = null;
     }
 
     public async UniTask<GfpganResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
-        if (!enableGfpganRepro)
-            return new GfpganResult { error = "GFPGAN(复刻) disabled" };
         if (src == null)
             return default;
 
         var totalSw = Stopwatch.StartNew();
         var originalW0 = src.width;
         var originalH0 = src.height;
-        var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
-        _useTempPoolThisRun = enableTempPool || isVulkan;
+
 
         GfpganResult Finish(GfpganResult r)
         {
@@ -358,9 +276,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             if (restored512 != null) Destroy(restored512);
             if (restoredCrop != null) Destroy(restoredCrop);
             if (composed != null) { composed.Release(); Destroy(composed); }
-            if (_useTempPoolThisRun && clearTempPoolAfterRun)
-                ClearTempPool();
-            _useTempPoolThisRun = false;
+            _repro.ClearTempPool();
         }
     }
 
@@ -380,8 +296,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         try
         {
-            inArr = RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
-            _ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, inArr);
+            inArr = _repro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
+            _repro.Ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, inArr);
 
             var styles = RunEncoderForGfpgan(inArr, out cond);
             if (styles == null || styles.Length < 512)
@@ -389,8 +305,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             if (cond == null || cond.Length != 14)
                 return null;
 
-            constIn = RentTempArray(4, 4, 128, RenderTextureFormat.ARGBHalf);
-            _ops.FillPack4FromBufferCHW(_constInputBuf, 4, 4, 512, constIn);
+            constIn = _repro.RentTempArray(4, 4, 128, RenderTextureFormat.ARGBHalf);
+            _repro.Ops.FillPack4FromBufferCHW(_constInputBuf, 4, 4, 512, constIn);
 
             outFeat = RunStyleConv(constIn, styles, 0, _styleConv[14], 0, true);
 
@@ -402,9 +318,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             for (var i = 1; i < 14; i += 2)
             {
                 outFeat = RunStyleConv(outFeat, styles, i, _styleConv[i - 1], 1, true);
-                tmp = RentTempArray(outFeat.width, outFeat.height, outFeat.volumeDepth, RenderTextureFormat.ARGBHalf);
-                _ops.SftPack4(outFeat, cond[i - 1], cond[i], outFeat.volumeDepth, outFeat.volumeDepth / 2, tmp);
-                ReturnTempArray(outFeat);
+                tmp = _repro.RentTempArray(outFeat.width, outFeat.height, outFeat.volumeDepth, RenderTextureFormat.ARGBHalf);
+                _repro.Ops.SftPack4(outFeat, cond[i - 1], cond[i], outFeat.volumeDepth, outFeat.volumeDepth / 2, tmp);
+                _repro.ReturnTempArray(outFeat);
                 outFeat = tmp;
                 tmp = null;
 
@@ -417,15 +333,15 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 await UniTask.Yield();
             }
 
-            skipClip = RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
-            _ops.ClipPack4(skip, -1f, 1f, 1, skipClip);
+            skipClip = _repro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
+            _repro.Ops.ClipPack4(skip, -1f, 1f, 1, skipClip);
 
             outTex = new RenderTexture(512, 512, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             outTex.enableRandomWrite = true;
             outTex.wrapMode = TextureWrapMode.Clamp;
             outTex.filterMode = FilterMode.Bilinear;
             outTex.Create();
-            _ops.Pack4ToRgb01(skipClip, outTex);
+            _repro.Ops.Pack4ToRgb01(skipClip, outTex);
 
 
             //outTex = RenderTextureToTexture2D(rgb, 512, 512);
@@ -442,17 +358,17 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
         finally
         {
-            if (inArr != null) ReturnTempArray(inArr);
+            if (inArr != null) _repro.ReturnTempArray(inArr);
             if (cond != null)
             {
                 for (var i = 0; i < cond.Length; i++)
-                    if (cond[i] != null) ReturnTempArray(cond[i]);
+                    if (cond[i] != null) _repro.ReturnTempArray(cond[i]);
             }
-            if (constIn != null) ReturnTempArray(constIn);
-            if (outFeat != null) ReturnTempArray(outFeat);
-            if (skip != null) ReturnTempArray(skip);
-            if (tmp != null) ReturnTempArray(tmp);
-            if (skipClip != null) ReturnTempArray(skipClip);
+            if (constIn != null) _repro.ReturnTempArray(constIn);
+            if (outFeat != null) _repro.ReturnTempArray(outFeat);
+            if (skip != null) _repro.ReturnTempArray(skip);
+            if (tmp != null) _repro.ReturnTempArray(tmp);
+            if (skipClip != null) _repro.ReturnTempArray(skipClip);
         }
     }
 
@@ -465,14 +381,14 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         var pinned = new HashSet<string>(condNames, StringComparer.Ordinal);
         var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
-        var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
+        var blobs = new Dictionary<string, NcnnRepro.TensorRef>(StringComparer.Ordinal);
         var ownedBuffers = new List<ComputeBuffer>();
         var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
 
         var inputName = _model.layers.Count > 0 && _model.layers[0].topNames != null && _model.layers[0].topNames.Length > 0
             ? _model.layers[0].topNames[0]
             : "input.1";
-        blobs[inputName] = new TensorRef { t = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = 1, refs = 1, owned = false };
+        blobs[inputName] = new NcnnRepro.TensorRef { t1 = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = 1, refs = 1, owned = false };
 
         conditions = null;
         float[] styles = null;
@@ -518,18 +434,18 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 if (string.Equals(l.type, "InnerProduct", StringComparison.Ordinal))
                 {
                     var ip = _ip[l.name];
-                    if (!blobs.TryGetValue(l.bottomNames[0], out var src) || src == null || src.t == null)
+                    if (!blobs.TryGetValue(l.bottomNames[0], out var src) || src == null || src.t1 == null)
                         throw new InvalidOperationException("InnerProduct expects texture blob: " + l.bottomNames[0]);
                     if (src.w * src.h * src.packs * 4 != ip.inFeatures)
                         throw new InvalidOperationException("InnerProduct inFeatures mismatch for " + l.name);
 
                     var inBuf = new ComputeBuffer(ip.inFeatures, sizeof(float), ComputeBufferType.Structured);
                     ownedBuffers.Add(inBuf);
-                    _ops.Pack4ToBufferCHW(src.t, src.w, src.h, src.packs * 4, inBuf);
+                    _repro.Ops.Pack4ToBufferCHW(src.t1, src.w, src.h, src.packs * 4, inBuf);
 
                     var outBuf = new ComputeBuffer(ip.outFeatures, sizeof(float), ComputeBufferType.Structured);
                     ownedBuffers.Add(outBuf);
-                    _ops.InnerProduct(inBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
+                    _repro.Ops.InnerProduct(inBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
                     bufferBlobs[l.topNames[0]] = outBuf;
                     Consume(blobs, remaining, l.bottomNames, pinned);
                     continue;
@@ -538,16 +454,16 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
                 {
                     var src = Get(blobs, l.bottomNames[0]);
-                    var pack = _conv[l.name];
-                    var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
+                    var pack = _repro.Conv[l.name];
+                    var outArr = _repro.RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
                     if (pack.kernel == 1)
-                        _ops.Conv1x1Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.activationType, pack.activationSlope, outArr);
+                        _repro.Ops.Conv1x1Pack4(src.t1, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.activationType, pack.activationSlope, outArr);
                     else if (pack.kernel == 3)
-                        _ops.Conv3x3Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
+                        _repro.Ops.Conv3x3Pack4(src.t1, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
                     else
                         throw new InvalidOperationException("unsupported kernel size: " + pack.kernel);
 
-                    blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
+                    blobs[l.topNames[0]] = new NcnnRepro.TensorRef { t1 = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
                     Consume(blobs, remaining, l.bottomNames, pinned);
                     continue;
                 }
@@ -558,19 +474,19 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                     var withScalar = l.GetInt(1, 0);
                     var scalarB = l.GetFloat(2, 0f);
                     var a = Get(blobs, l.bottomNames[0]);
-                    var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                    var outArr = _repro.RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
                     if (withScalar != 0)
                     {
-                        _ops.BinaryOpScalarPack4(a.t, scalarB, a.packs, opType, outArr);
+                        _repro.Ops.BinaryOpScalarPack4(a.t1, scalarB, a.packs, opType, outArr);
                     }
                     else
                     {
                         var b = Get(blobs, l.bottomNames[1]);
                         if (a.w != b.w || a.h != b.h || a.packs != b.packs)
                             throw new InvalidOperationException("BinaryOp broadcast not supported: " + l.name);
-                        _ops.BinaryOpPack4(a.t, b.t, a.packs, opType, outArr);
+                        _repro.Ops.BinaryOpPack4(a.t1, b.t1, a.packs, opType, outArr);
                     }
-                    blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                    blobs[l.topNames[0]] = new NcnnRepro.TensorRef { t1 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
                     Consume(blobs, remaining, l.bottomNames, pinned);
                     continue;
                 }
@@ -579,9 +495,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 {
                     var src = Get(blobs, l.bottomNames[0]);
                     var opType = l.GetInt(0, 0);
-                    var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                    _ops.UnaryOpPack4(src.t, src.packs, opType, outArr);
-                    blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                    var outArr = _repro.RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                    _repro.Ops.UnaryOpPack4(src.t1, src.packs, opType, outArr);
+                    blobs[l.topNames[0]] = new NcnnRepro.TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
                     Consume(blobs, remaining, l.bottomNames, pinned);
                     continue;
                 }
@@ -593,23 +509,23 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                     var sx = l.GetFloat(1, 1f);
                     if (Mathf.Abs(sx - 2f) < 1e-3f)
                     {
-                        var outArr = RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
+                        var outArr = _repro.RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
                         if (resizeType == 1)
-                            _ops.Interp2xNearestPack4(src.t, src.packs, outArr);
+                            _repro.Ops.Interp2xNearestPack4(src.t1, src.packs, outArr);
                         else
-                            _ops.Interp2xPack4(src.t, src.packs, outArr);
-                        blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
+                            _repro.Ops.Interp2xPack4(src.t1, src.packs, outArr);
+                        blobs[l.topNames[0]] = new NcnnRepro.TensorRef { t1 = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
                         Consume(blobs, remaining, l.bottomNames, pinned);
                         continue;
                     }
                     if (Mathf.Abs(sx - 0.5f) < 1e-3f)
                     {
-                        var outArr = RentTempArray(src.w / 2, src.h / 2, src.packs, RenderTextureFormat.ARGBHalf);
+                        var outArr = _repro.RentTempArray(src.w / 2, src.h / 2, src.packs, RenderTextureFormat.ARGBHalf);
                         if (resizeType == 1)
-                            _ops.InterpDown2NearestPack4(src.t, src.packs, outArr);
+                            _repro.Ops.InterpDown2NearestPack4(src.t1, src.packs, outArr);
                         else
-                            _ops.InterpDown2Pack4(src.t, src.packs, outArr);
-                        blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w / 2, h = src.h / 2, packs = src.packs, refs = 1, owned = true };
+                            _repro.Ops.InterpDown2Pack4(src.t1, src.packs, outArr);
+                        blobs[l.topNames[0]] = new NcnnRepro.TensorRef { t1 = outArr, w = src.w / 2, h = src.h / 2, packs = src.packs, refs = 1, owned = true };
                         Consume(blobs, remaining, l.bottomNames, pinned);
                         continue;
                     }
@@ -629,24 +545,24 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             for (var i = 0; i < condNames.Length; i++)
             {
                 var n = condNames[i];
-                if (!blobs.TryGetValue(n, out var tr) || tr == null || tr.t == null)
+                if (!blobs.TryGetValue(n, out var tr) || tr == null || tr.t1 == null)
                     throw new InvalidOperationException("condition blob missing: " + n);
                 tr.owned = false;
-                conditions[i] = tr.t;
+                conditions[i] = tr.t1;
             }
 
             return styles;
         }
         finally
         {
-            var visited = new HashSet<TensorRef>();
+            var visited = new HashSet<NcnnRepro.TensorRef>();
             foreach (var kv in blobs)
             {
                 var tr = kv.Value;
                 if (tr == null || !visited.Add(tr))
                     continue;
-                if (tr.owned && tr.t != null)
-                    ReturnTempArray(tr.t);
+                if (tr.owned && tr.t1 != null)
+                    _repro.ReturnTempArray(tr.t1);
             }
 
             for (var i = 0; i < ownedBuffers.Count; i++)
@@ -661,15 +577,15 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         var inArr = x;
         if (sampleMode == 1)
         {
-            var up = RentTempArray(inArr.width * 2, inArr.height * 2, inArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-            _ops.Interp2xPack4(inArr, inArr.volumeDepth, up);
+            var up = _repro.RentTempArray(inArr.width * 2, inArr.height * 2, inArr.volumeDepth, RenderTextureFormat.ARGBHalf);
+            _repro.Ops.Interp2xPack4(inArr, inArr.volumeDepth, up);
             if (inArr != x)
-                ReturnTempArray(inArr);
+                _repro.ReturnTempArray(inArr);
             inArr = up;
         }
 
         var outPacks = (w.numOutput + 3) / 4;
-        var outArr = RentTempArray(inArr.width, inArr.height, outPacks, RenderTextureFormat.ARGBHalf);
+        var outArr = _repro.RentTempArray(inArr.width, inArr.height, outPacks, RenderTextureFormat.ARGBHalf);
 
         var w4Count = outPacks * (w.hidDim / 4) * 9 * 4;
         EnsureDynW4(w4Count);
@@ -680,36 +596,36 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         _dynW4.SetData(_dynW4Host, 0, 0, w4Count);
         var zeroB4 = GetZeroBias4(outPacks);
-        _ops.Conv3x3Pack4(inArr, w.hidDim / 4, _dynW4, zeroB4, outPacks, 1, 0, 0f, outArr);
+        _repro.Ops.Conv3x3Pack4(inArr, w.hidDim / 4, _dynW4, zeroB4, outPacks, 1, 0, 0f, outArr);
 
-        var scaled = RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-        _ops.ScalePack4(outArr, 1.4142135381698608f, outArr.volumeDepth, scaled);
-        ReturnTempArray(outArr);
+        var scaled = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
+        _repro.Ops.ScalePack4(outArr, 1.4142135381698608f, outArr.volumeDepth, scaled);
+        _repro.ReturnTempArray(outArr);
         outArr = scaled;
 
         var noiseWh = outArr.width * outArr.height;
         var noise = GetNoiseBuffer(noiseWh);
         FillNoise(noise, noiseWh);
-        _ops.AddNoiseBroadcastPack4(outArr, noise, w.noiseWeight, outArr.volumeDepth);
+        _repro.Ops.AddNoiseBroadcastPack4(outArr, noise, w.noiseWeight, outArr.volumeDepth);
 
-        var biased = RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-        _ops.AddBiasPack4(outArr, w.bias4, outArr.volumeDepth, biased);
-        ReturnTempArray(outArr);
+        var biased = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
+        _repro.Ops.AddBiasPack4(outArr, w.bias4, outArr.volumeDepth, biased);
+        _repro.ReturnTempArray(outArr);
         outArr = biased;
 
-        var act = RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-        _ops.LeakyReluPack4(outArr, 0.2f, outArr.volumeDepth, act);
-        ReturnTempArray(outArr);
+        var act = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
+        _repro.Ops.LeakyReluPack4(outArr, 0.2f, outArr.volumeDepth, act);
+        _repro.ReturnTempArray(outArr);
         outArr = act;
 
         if (inArr != x)
-            ReturnTempArray(inArr);
+            _repro.ReturnTempArray(inArr);
         return outArr;
     }
 
     private RenderTexture RunToRgb(RenderTexture feat, float[] styles, int styleRow, ToRgbWeights w, RenderTexture skip)
     {
-        var outArr = RentTempArray(feat.width, feat.height, 1, RenderTextureFormat.ARGBHalf);
+        var outArr = _repro.RentTempArray(feat.width, feat.height, 1, RenderTextureFormat.ARGBHalf);
 
         var w4Count = 1 * (w.hidDim / 4) * 4;
         EnsureDynW4(w4Count);
@@ -719,24 +635,24 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _dynW4.SetData(_dynW4Host, 0, 0, w4Count);
 
         var zeroB4 = GetZeroBias4(1);
-        _ops.Conv1x1Pack4(feat, w.hidDim / 4, _dynW4, zeroB4, 1, 0, 0f, outArr);
+        _repro.Ops.Conv1x1Pack4(feat, w.hidDim / 4, _dynW4, zeroB4, 1, 0, 0f, outArr);
 
-        var biased = RentTempArray(outArr.width, outArr.height, 1, RenderTextureFormat.ARGBHalf);
-        _ops.AddBiasPack4(outArr, w.bias4, 1, biased);
-        ReturnTempArray(outArr);
+        var biased = _repro.RentTempArray(outArr.width, outArr.height, 1, RenderTextureFormat.ARGBHalf);
+        _repro.Ops.AddBiasPack4(outArr, w.bias4, 1, biased);
+        _repro.ReturnTempArray(outArr);
         outArr = biased;
 
         if (skip == null)
             return outArr;
 
-        var up = RentTempArray(skip.width * 2, skip.height * 2, 1, RenderTextureFormat.ARGBHalf);
-        _ops.Interp2xPack4(skip, 1, up);
-        ReturnTempArray(skip);
+        var up = _repro.RentTempArray(skip.width * 2, skip.height * 2, 1, RenderTextureFormat.ARGBHalf);
+        _repro.Ops.Interp2xPack4(skip, 1, up);
+        _repro.ReturnTempArray(skip);
 
-        var sum = RentTempArray(up.width, up.height, 1, RenderTextureFormat.ARGBHalf);
-        _ops.AddPack4(outArr, up, 1f, 1f, 1, sum);
-        ReturnTempArray(outArr);
-        ReturnTempArray(up);
+        var sum = _repro.RentTempArray(up.width, up.height, 1, RenderTextureFormat.ARGBHalf);
+        _repro.Ops.AddPack4(outArr, up, 1f, 1f, 1, sum);
+        _repro.ReturnTempArray(outArr);
+        _repro.ReturnTempArray(up);
         return sum;
     }
 
@@ -1083,191 +999,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         {
             RenderTexture.active = prev;
         }
-    }
-
-    private RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks)
-    {
-        var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
-        HashSet<string> pinned = null;
-        var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
-        var ownedBuffers = new List<ComputeBuffer>();
-        var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
-
-        var inputName = _model.layers.Count > 0 && _model.layers[0].topNames != null && _model.layers[0].topNames.Length > 0
-            ? _model.layers[0].topNames[0]
-            : "input.1";
-        blobs[inputName] = new TensorRef { t = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
-
-        try
-        {
-            for (var li = 0; li < _model.layers.Count; li++)
-            {
-                var l = _model.layers[li];
-                if (string.Equals(l.type, "Input", StringComparison.Ordinal))
-                    continue;
-
-                if (string.Equals(l.type, "Split", StringComparison.Ordinal))
-                {
-                    var src = Get(blobs, l.bottomNames[0]);
-                    for (var i = 0; i < l.topNames.Length; i++)
-                    {
-                        blobs[l.topNames[i]] = src;
-                        src.refs++;
-                    }
-                    Consume(blobs, remaining, l.bottomNames, pinned);
-                    continue;
-                }
-
-                if (string.Equals(l.type, "Reshape", StringComparison.Ordinal))
-                {
-                    if (blobs.TryGetValue(l.bottomNames[0], out var srcTex) && srcTex != null)
-                    {
-                        blobs[l.topNames[0]] = srcTex;
-                        srcTex.refs++;
-                        Consume(blobs, remaining, l.bottomNames, pinned);
-                        continue;
-                    }
-                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
-                    {
-                        bufferBlobs[l.topNames[0]] = srcBuf;
-                        Consume(blobs, remaining, l.bottomNames, pinned);
-                        continue;
-                    }
-                    throw new InvalidOperationException("blob not found for Reshape " + l.name);
-                }
-
-                if (string.Equals(l.type, "InnerProduct", StringComparison.Ordinal))
-                {
-                    var ip = _ip[l.name];
-                    if (!blobs.TryGetValue(l.bottomNames[0], out var src) || src == null || src.t == null)
-                        throw new InvalidOperationException("InnerProduct expects texture blob: " + l.bottomNames[0]);
-                    if (src.w * src.h * src.packs * 4 != ip.inFeatures)
-                        throw new InvalidOperationException("InnerProduct inFeatures mismatch for " + l.name + ": got " + (src.w * src.h * src.packs * 4) + " expected " + ip.inFeatures);
-
-                    var inBuf = new ComputeBuffer(ip.inFeatures, sizeof(float), ComputeBufferType.Structured);
-                    ownedBuffers.Add(inBuf);
-                    _ops.Pack4ToBufferCHW(src.t, src.w, src.h, src.packs * 4, inBuf);
-
-                    var outBuf = new ComputeBuffer(ip.outFeatures, sizeof(float), ComputeBufferType.Structured);
-                    ownedBuffers.Add(outBuf);
-                    _ops.InnerProduct(inBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
-                    bufferBlobs[l.topNames[0]] = outBuf;
-                    Consume(blobs, remaining, l.bottomNames, pinned);
-                    continue;
-                }
-
-                if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
-                {
-                    var src = Get(blobs, l.bottomNames[0]);
-                    var pack = _conv[l.name];
-                    if (src.packs != pack.inPacks)
-                        throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + pack.inPacks);
-
-                    var outArr = RentTempArray(src.w, src.h, pack.outPacks, RenderTextureFormat.ARGBHalf);
-                    if (pack.kernel == 1)
-                        _ops.Conv1x1Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.activationType, pack.activationSlope, outArr);
-                    else if (pack.kernel == 3)
-                        _ops.Conv3x3Pack4(src.t, pack.inPacks, pack.w4, pack.b4, pack.outPacks, pack.pad, pack.activationType, pack.activationSlope, outArr);
-                    else
-                        throw new InvalidOperationException("unsupported kernel size: " + pack.kernel);
-
-                    blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = pack.outPacks, refs = 1, owned = true };
-                    Consume(blobs, remaining, l.bottomNames, pinned);
-                    continue;
-                }
-
-                if (string.Equals(l.type, "BinaryOp", StringComparison.Ordinal))
-                {
-                    var opType = l.GetInt(0, 0);
-                    var withScalar = l.GetInt(1, 0);
-                    var scalarB = l.GetFloat(2, 0f);
-                    var a = Get(blobs, l.bottomNames[0]);
-                    var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
-                    if (withScalar != 0)
-                    {
-                        _ops.BinaryOpScalarPack4(a.t, scalarB, a.packs, opType, outArr);
-                    }
-                    else
-                    {
-                        var b = Get(blobs, l.bottomNames[1]);
-                        if (a.w != b.w || a.h != b.h || a.packs != b.packs)
-                            throw new InvalidOperationException("BinaryOp broadcast not supported: " + l.name);
-                        _ops.BinaryOpPack4(a.t, b.t, a.packs, opType, outArr);
-                    }
-                    blobs[l.topNames[0]] = new TensorRef { t = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
-                    Consume(blobs, remaining, l.bottomNames, pinned);
-                    continue;
-                }
-
-                if (string.Equals(l.type, "UnaryOp", StringComparison.Ordinal))
-                {
-                    var src = Get(blobs, l.bottomNames[0]);
-                    var opType = l.GetInt(0, 0);
-                    var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
-                    _ops.UnaryOpPack4(src.t, src.packs, opType, outArr);
-                    blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
-                    Consume(blobs, remaining, l.bottomNames, pinned);
-                    continue;
-                }
-
-                if (string.Equals(l.type, "Interp", StringComparison.Ordinal))
-                {
-                    var src = Get(blobs, l.bottomNames[0]);
-                    var resizeType = l.GetInt(0, 2);
-                    var sx = l.GetFloat(1, 1f);
-                    var sy = l.GetFloat(2, 1f);
-                    if (Mathf.Abs(sx - sy) > 1e-3f)
-                        throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
-
-                    if (Mathf.Abs(sx - 2f) < 1e-3f)
-                    {
-                        var outArr = RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
-                        if (resizeType == 1)
-                            _ops.Interp2xNearestPack4(src.t, src.packs, outArr);
-                        else
-                            _ops.Interp2xPack4(src.t, src.packs, outArr);
-                        blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
-                        Consume(blobs, remaining, l.bottomNames, pinned);
-                        continue;
-                    }
-                    if (Mathf.Abs(sx - 0.5f) < 1e-3f)
-                    {
-                        var outArr = RentTempArray(src.w / 2, src.h / 2, src.packs, RenderTextureFormat.ARGBHalf);
-                        if (resizeType == 1)
-                            _ops.InterpDown2NearestPack4(src.t, src.packs, outArr);
-                        else
-                            _ops.InterpDown2Pack4(src.t, src.packs, outArr);
-                        blobs[l.topNames[0]] = new TensorRef { t = outArr, w = src.w / 2, h = src.h / 2, packs = src.packs, refs = 1, owned = true };
-                        Consume(blobs, remaining, l.bottomNames, pinned);
-                        continue;
-                    }
-
-                    throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture));
-                }
-
-                throw new InvalidOperationException("unsupported layer type: " + l.type + " (" + l.name + ")");
-            }
-        }
-        finally
-        {
-            var visited = new HashSet<TensorRef>();
-            foreach (var kv in blobs)
-            {
-                var tr = kv.Value;
-                if (tr == null || !visited.Add(tr))
-                    continue;
-                if (tr.owned && tr.t != null)
-                    ReturnTempArray(tr.t);
-            }
-
-            for (var i = 0; i < ownedBuffers.Count; i++)
-            {
-                try { ownedBuffers[i].Dispose(); } catch { }
-            }
-        }
-
-        return null;
-    }
+    }
 
     private void EnsureLoaded()
     {
@@ -1286,7 +1018,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         var paramText = File.ReadAllText(paramPath);
         _model = NcnnParamParser.Parse(paramText);
-        _blobUseCount = BuildBlobUseCount(_model);
+        _blobUseCount = NcnnRepro.BuildBlobUseCount(_model);
 
         using (var fs = File.OpenRead(binPath))
         using (var br = new NcnnBinReader(fs))
@@ -1295,14 +1027,14 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             {
                 if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal))
                 {
-                    var pack = new ConvPack();
+                    var pack = new NcnnRepro.ConvPack();
                     pack.outC = layer.GetInt(0, 0);
                     pack.kernel = layer.GetInt(1, 3);
                     pack.pad = layer.GetInt(4, 0);
-                    var biasTerm = layer.GetInt(5, 0);
+                    pack.biasTerm = layer.GetInt(5, 0);
                     pack.weightSize = layer.GetInt(6, 0);
                     pack.activationType = layer.GetInt(9, 0);
-                    pack.activationSlope = ParseLeakySlope(layer);
+                    pack.activationSlope = NcnnRepro.ParseLeakySlope(layer);
                     pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * pack.kernel * pack.kernel));
                     pack.inPacks = (pack.inC + 3) / 4;
                     pack.outPacks = (pack.outC + 3) / 4;
@@ -1312,14 +1044,14 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                         throw new InvalidOperationException("unexpected weight tag at " + br.Position + ": 0x" + tag.ToString("X8", CultureInfo.InvariantCulture));
 
                     var w = br.ReadFp16ArrayAsFloat32(pack.weightSize);
-                    var b = biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
-                    var w4 = PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernel, pack.outPacks, pack.inPacks);
-                    var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
+                    var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
+                    var w4 = NcnnRepro.PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernel, pack.outPacks, pack.inPacks);
+                    var b4 = NcnnRepro.PackBiasToO4(b, pack.outC, pack.outPacks);
                     pack.w4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                     pack.b4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                     pack.w4.SetData(w4);
                     pack.b4.SetData(b4);
-                    _conv[layer.name] = pack;
+                    _repro.Conv[layer.name] = pack;
                     continue;
                 }
 
@@ -1359,14 +1091,14 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         try { ProgressChanged?.Invoke(progress01, text ?? ""); } catch { }
     }
 
-    private static TensorRef Get(Dictionary<string, TensorRef> blobs, string name)
+    private static NcnnRepro.TensorRef Get(Dictionary<string, NcnnRepro.TensorRef> blobs, string name)
     {
-        if (!blobs.TryGetValue(name, out var tr) || tr == null || tr.t == null)
+        if (!blobs.TryGetValue(name, out var tr) || tr == null || tr.t1 == null)
             throw new InvalidOperationException("blob not found: " + name);
         return tr;
     }
 
-    private void Consume(Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames, HashSet<string> pinned)
+    private void Consume(Dictionary<string, NcnnRepro.TensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames, HashSet<string> pinned)
     {
         for (var i = 0; i < bottomNames.Length; i++)
         {
@@ -1385,196 +1117,17 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 tr.refs--;
                 if (tr.refs <= 0)
                 {
-                    if (tr.owned && tr.t != null)
+                    if (tr.owned && tr.t1 != null)
                     {
-                        try { ReturnTempArray(tr.t); } catch { }
+                        try { _repro.ReturnTempArray(tr.t1); } catch { }
                     }
-                    tr.t = null;
+                    tr.t1 = null;
                     tr.owned = false;
                 }
             }
             blobs.Remove(b);
         }
-    }
-
-    private static Dictionary<string, int> BuildBlobUseCount(NcnnParamModel model)
-    {
-        var use = new Dictionary<string, int>(StringComparer.Ordinal);
-        for (var i = 0; i < model.layers.Count; i++)
-        {
-            var l = model.layers[i];
-            if (l.bottomNames == null)
-                continue;
-            for (var b = 0; b < l.bottomNames.Length; b++)
-            {
-                var n = l.bottomNames[b];
-                if (string.IsNullOrEmpty(n))
-                    continue;
-                use.TryGetValue(n, out var c);
-                use[n] = c + 1;
-            }
-        }
-        return use;
-    }
-
-    private static float ParseLeakySlope(NcnnParamModel.Layer layer)
-    {
-        if (layer.intParams == null || !layer.intParams.TryGetValue(-23310, out var s) || string.IsNullOrWhiteSpace(s))
-            return 0.2f;
-        var parts = s.Split(',');
-        if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-            return v;
-        return 0.2f;
-    }
-
-    private static Vector4[] PackBiasToO4(float[] b, int outC, int outPacks)
-    {
-        var r = new Vector4[outPacks];
-        for (var op = 0; op < outPacks; op++)
-        {
-            var oc0 = op * 4 + 0;
-            var oc1 = op * 4 + 1;
-            var oc2 = op * 4 + 2;
-            var oc3 = op * 4 + 3;
-            r[op] = new Vector4(
-                oc0 < outC ? b[oc0] : 0f,
-                oc1 < outC ? b[oc1] : 0f,
-                oc2 < outC ? b[oc2] : 0f,
-                oc3 < outC ? b[oc3] : 0f);
-        }
-        return r;
-    }
-
-    private static Vector4[] PackWeightsToO4I4K(float[] w, int outC, int inC, int k, int outPacks, int inPacks)
-    {
-        var r = new Vector4[outPacks * inPacks * k * k * 4];
-        var idx = 0;
-        for (var op = 0; op < outPacks; op++)
-        {
-            for (var ip = 0; ip < inPacks; ip++)
-            {
-                for (var ky = 0; ky < k; ky++)
-                {
-                    for (var kx = 0; kx < k; kx++)
-                    {
-                        for (var ol = 0; ol < 4; ol++)
-                        {
-                            var oc = op * 4 + ol;
-                            var il0 = ip * 4 + 0;
-                            var il1 = ip * 4 + 1;
-                            var il2 = ip * 4 + 2;
-                            var il3 = ip * 4 + 3;
-                            var kk = ky * k + kx;
-
-                            float GetW(int ic)
-                            {
-                                if (oc >= outC || ic >= inC)
-                                    return 0f;
-                                return w[(oc * inC + ic) * (k * k) + kk];
-                            }
-
-                            r[idx++] = new Vector4(GetW(il0), GetW(il1), GetW(il2), GetW(il3));
-                        }
-                    }
-                }
-            }
-        }
-        return r;
-    }
-
-    private RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
-    {
-        if (!_useTempPoolThisRun)
-            return CreateTempArray(w, h, depth, format);
-
-        var key = new RtKey(w, h, Mathf.Max(1, depth), format);
-        if (_rtPool.TryGetValue(key, out var stack) && stack.Count > 0)
-        {
-            var keep = new Stack<PooledRt>(stack.Count);
-            RenderTexture hit = null;
-            while (stack.Count > 0)
-            {
-                var p = stack.Pop();
-                if (hit == null && p.rt != null && IsFencePassedOrAged(p))
-                {
-                    hit = p.rt;
-                    break;
-                }
-                keep.Push(p);
-            }
-            while (keep.Count > 0)
-                stack.Push(keep.Pop());
-            if (hit != null)
-                return hit;
-        }
-        return CreateTempArray(w, h, depth, format);
-    }
-
-    private static RenderTexture CreateTempArray(int w, int h, int depth, RenderTextureFormat format)
-    {
-        var desc = new RenderTextureDescriptor(w, h, format, 0)
-        {
-            dimension = TextureDimension.Tex2DArray,
-            volumeDepth = Mathf.Max(1, depth),
-            msaaSamples = 1,
-            sRGB = false,
-            enableRandomWrite = true
-        };
-        var rt = RenderTexture.GetTemporary(desc);
-        rt.wrapMode = TextureWrapMode.Clamp;
-        rt.filterMode = FilterMode.Point;
-        rt.Create();
-        if (!rt.IsCreated())
-            throw new InvalidOperationException("failed to create temp array " + w + "x" + h + "x" + depth + " " + format);
-        return rt;
-    }
-
-    private void ReturnTempArray(RenderTexture rt)
-    {
-        if (rt == null)
-            return;
-        if (!_useTempPoolThisRun)
-        {
-            RenderTexture.ReleaseTemporary(rt);
-            return;
-        }
-
-        var key = new RtKey(rt.width, rt.height, rt.volumeDepth, rt.format);
-        if (!_rtPool.TryGetValue(key, out var stack))
-        {
-            stack = new Stack<PooledRt>();
-            _rtPool[key] = stack;
-        }
-        var cap = Mathf.Max(0, maxPooledPerShape);
-        if (stack.Count >= cap)
-        {
-            RenderTexture.ReleaseTemporary(rt);
-            return;
-        }
-        try
-        {
-            var fence = Graphics.CreateGraphicsFence(GraphicsFenceType.AsyncQueueSynchronisation, SynchronisationStageFlags.ComputeProcessing);
-            stack.Push(new PooledRt(rt, fence, Time.frameCount));
-        }
-        catch
-        {
-            RenderTexture.ReleaseTemporary(rt);
-        }
-    }
-
-    private void ClearTempPool()
-    {
-        foreach (var kv in _rtPool)
-        {
-            var stack = kv.Value;
-            while (stack.Count > 0)
-            {
-                var rt = stack.Pop().rt;
-                try { RenderTexture.ReleaseTemporary(rt); } catch { }
-            }
-        }
-        _rtPool.Clear();
-    }
+    }
 
     private static bool IsLikelyVulkanOom(Exception e)
     {
@@ -1584,19 +1137,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         if (msg.IndexOf("out of memory", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         if (msg.IndexOf("failed to create", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         return false;
-    }
-
-    private static bool IsFencePassedOrAged(PooledRt p)
-    {
-        try
-        {
-            return p.fence.passed;
-        }
-        catch
-        {
-            return (Time.frameCount - p.frame) >= 2;
-        }
-    }
+    }
 
     private static RectInt ClampRect(RectInt r, int w, int h)
     {

@@ -1096,6 +1096,27 @@ namespace NcnnCompute
             Dispatch3D(_kConv1x1Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
         }
 
+        public void Conv1x1Pack4(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int activationType, float activationParam, ComputeTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kConv1x1Pack4, "_ConvW4", w4);
+            cmd.SetComputeBufferParam(_cs, _kConv1x1Pack4, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvInArr", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvOutArr", dstPack4.nameID);
+            Dispatch3D(cmd, _kConv1x1Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+        }
+
         public void AddPack4(RenderTexture a, RenderTexture b, float coeffA, float coeffB, int packs, RenderTexture output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -1199,6 +1220,15 @@ namespace NcnnCompute
             Dispatch3D(_kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
         }
 
+        public void InterpDown2Pack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownOutArr", output.nameID);
+            Dispatch3D(cmd, _kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
+        }
+
         public void InterpDown2NearestPack4(RenderTexture input, int packs, RenderTexture output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -1206,6 +1236,15 @@ namespace NcnnCompute
             _cs.SetTexture(_kInterpDown2NearestPack4, "_InterpDownNnInArr", input);
             _cs.SetTexture(_kInterpDown2NearestPack4, "_InterpDownNnOutArr", output);
             Dispatch3D(_kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void InterpDown2NearestPack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnOutArr", output.nameID);
+            Dispatch3D(cmd, _kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
         }
 
         public void Conv3x3Pack4(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, ComputeTexture dstPack4)
