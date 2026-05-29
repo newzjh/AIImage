@@ -238,6 +238,28 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 "lq_feat",
                 "soft_one_hot"
             };
+            if (enableDebugDump)
+            {
+                pinned.Add("1293");
+                pinned.Add("1302");
+                pinned.Add("1305");
+                pinned.Add("1316");
+                pinned.Add("1414");
+                pinned.Add("1451");
+                pinned.Add("1452");
+                pinned.Add("1548");
+                pinned.Add("1549");
+                pinned.Add("1684");
+                pinned.Add("1819");
+                pinned.Add("1954");
+                pinned.Add("2089");
+                pinned.Add("2224");
+                pinned.Add("2359");
+                pinned.Add("2494");
+                pinned.Add("2520");
+                pinned.Add("2531");
+                pinned.Add("2533");
+            }
 
             stage = "encoder inference";
             using (var encoderResult = _encoderRepro.Infer(encoderInput, 1, "input", pinned))
@@ -257,11 +279,38 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 var softOneHot = encoderResult.GetBufferData("soft_one_hot");
                 stage = "convert soft_one_hot to min encoding";
                 minEncodingTensor = ConvertSoftOneHotToMinEncodingTensor(softOneHot);
+
+                if (enableDebugDump)
+                {
+                    dumpDir = CreateDumpDir();
+                    stage = "dump encoder tail";
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "29_enc_1293.png", "1293", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "30_enc_1302.png", "1302", 256, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "31_enc_1305.png", "1305", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "32_enc_1316.png", "1316", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "33_enc_1414.png", "1414", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "33b_enc_1451.png", "1451", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "33c_enc_1452.png", "1452", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "33d_enc_1548.png", "1548", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "34_enc_1549.png", "1549", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "35_enc_1684.png", "1684", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "36_enc_1819.png", "1819", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "37_enc_1954.png", "1954", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "38_enc_2089.png", "2089", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "39_enc_2224.png", "2224", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "40_enc_2359.png", "2359", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "41_enc_2494.png", "2494", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "42_enc_2520.png", "2520", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "43_enc_2531.png", "2531", 512, 256, ct);
+                    await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "44_enc_2533.png", "2533", 1024, 256, ct);
+                    await DumpFloatArrayAsNormalizedImageAsync(dumpDir, "45_soft_one_hot.png", softOneHot, 1024, 256, ct);
+                    AppendMatrixStatsLine(dumpDir, "soft_one_hot", softOneHot, 1024, 256, true);
+                    AppendBinaryPatternStatsLine(dumpDir, "min_encoding", minEncodingTensor, 1024, 256);
+                }
             }
 
             if (enableDebugDump)
             {
-                dumpDir = CreateDumpDir();
                 stage = "dump encoder stages";
                 await DumpRgbTextureAsync(dumpDir, "00_face512.png", face512, ct);
                 await DumpPack4TextureAsync(dumpDir, "01_enc_feat_32.png", encFeat32, ct);
@@ -513,6 +562,266 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         finally
         {
             Destroy(tex);
+        }
+    }
+
+    private async UniTask DumpBufferBlobAsNormalizedImageAsync(NcnnRepro2.InferResult inferResult, string dir, string fileName, string blobName, int width, int height, CancellationToken ct)
+    {
+        if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
+            return;
+
+        try
+        {
+            var data = inferResult.GetBufferData(blobName);
+            await DumpFloatArrayAsNormalizedImageAsync(dir, fileName, data, width, height, ct);
+            AppendStatsLine(dir, blobName, data);
+            AppendMatrixStatsLine(dir, blobName, data, width, height, false);
+        }
+        catch (Exception e)
+        {
+            try { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip buffer " + blobName + " | " + e.Message); } catch { }
+        }
+    }
+
+    private async UniTask DumpFloatArrayAsNormalizedImageAsync(string dir, string fileName, float[] data, int width, int height, CancellationToken ct)
+    {
+        if (!enableDebugDump || string.IsNullOrWhiteSpace(dir) || data == null || data.Length < width * height)
+            return;
+
+        float min = float.PositiveInfinity;
+        float max = float.NegativeInfinity;
+        var finiteCount = 0;
+        for (var i = 0; i < width * height; i++)
+        {
+            var v = data[i];
+            if (float.IsNaN(v) || float.IsInfinity(v))
+                continue;
+            finiteCount++;
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+
+        if (finiteCount == 0)
+            return;
+
+        var scale = Mathf.Abs(max - min) > 1e-12f ? 1f / (max - min) : 0f;
+        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+        try
+        {
+            var pixels = new Color32[width * height];
+            for (var i = 0; i < width * height; i++)
+            {
+                var v = data[i];
+                byte c;
+                if (float.IsNaN(v))
+                    c = 255;
+                else if (float.IsInfinity(v))
+                    c = 255;
+                else
+                    c = (byte)Mathf.Clamp(Mathf.RoundToInt((v - min) * scale * 255f), 0, 255);
+                pixels[i] = new Color32(c, c, c, 255);
+            }
+            tex.SetPixels32(pixels);
+            tex.Apply(false, false);
+            var bytes = tex.EncodeToPNG();
+            await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+        }
+        finally
+        {
+            Destroy(tex);
+        }
+    }
+
+    private static void AppendStatsLine(string dir, string blobName, float[] data)
+    {
+        if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(blobName) || data == null || data.Length == 0)
+            return;
+
+        try
+        {
+            double sum = 0d;
+            double sq = 0d;
+            var finite = 0;
+            var nan = 0;
+            var inf = 0;
+            float min = float.PositiveInfinity;
+            float max = float.NegativeInfinity;
+            for (var i = 0; i < data.Length; i++)
+            {
+                var v = data[i];
+                if (float.IsNaN(v))
+                {
+                    nan++;
+                    continue;
+                }
+                if (float.IsInfinity(v))
+                {
+                    inf++;
+                    continue;
+                }
+                finite++;
+                sum += v;
+                sq += v * v;
+                if (v < min) min = v;
+                if (v > max) max = v;
+            }
+
+            var mean = finite > 0 ? sum / finite : 0d;
+            var var = finite > 0 ? Math.Max(0d, sq / finite - mean * mean) : 0d;
+            var std = Math.Sqrt(var);
+            var line = blobName
+                + " | count=" + data.Length
+                + " finite=" + finite
+                + " nan=" + nan
+                + " inf=" + inf
+                + " min=" + min.ToString("G9")
+                + " max=" + max.ToString("G9")
+                + " mean=" + mean.ToString("G9")
+                + " std=" + std.ToString("G9")
+                + Environment.NewLine;
+            File.AppendAllText(Path.Combine(dir, "encoder_stats.txt"), line);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void AppendMatrixStatsLine(string dir, string blobName, float[] data, int width, int height, bool treatAsProbability)
+    {
+        if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(blobName) || data == null || width <= 0 || height <= 0 || data.Length < width * height)
+            return;
+
+        try
+        {
+            var argmaxCounts = new Dictionary<int, int>();
+            double rowMaxSum = 0d;
+            double rowSecondSum = 0d;
+            double rowGapSum = 0d;
+            double rowEntropySum = 0d;
+            for (var y = 0; y < height; y++)
+            {
+                var rowBase = y * width;
+                var maxIndex = 0;
+                var maxValue = float.NegativeInfinity;
+                var secondValue = float.NegativeInfinity;
+                double entropy = 0d;
+                double rowSum = 0d;
+
+                for (var x = 0; x < width; x++)
+                {
+                    var v = data[rowBase + x];
+                    if (v > maxValue)
+                    {
+                        secondValue = maxValue;
+                        maxValue = v;
+                        maxIndex = x;
+                    }
+                    else if (v > secondValue)
+                    {
+                        secondValue = v;
+                    }
+
+                    if (treatAsProbability && v > 0f && !float.IsNaN(v) && !float.IsInfinity(v))
+                    {
+                        rowSum += v;
+                        entropy -= v * Math.Log(Math.Max(v, 1e-30f));
+                    }
+                }
+
+                if (!argmaxCounts.TryGetValue(maxIndex, out var count))
+                    count = 0;
+                argmaxCounts[maxIndex] = count + 1;
+
+                rowMaxSum += maxValue;
+                rowSecondSum += secondValue;
+                rowGapSum += maxValue - secondValue;
+                if (treatAsProbability)
+                {
+                    if (rowSum > 0d)
+                        rowEntropySum += entropy;
+                }
+            }
+
+            var topBins = new List<KeyValuePair<int, int>>(argmaxCounts);
+            topBins.Sort((a, b) => b.Value != a.Value ? b.Value.CompareTo(a.Value) : a.Key.CompareTo(b.Key));
+            var topSummary = "";
+            var take = Math.Min(8, topBins.Count);
+            for (var i = 0; i < take; i++)
+            {
+                if (i > 0) topSummary += ",";
+                topSummary += topBins[i].Key + ":" + topBins[i].Value;
+            }
+
+            var line = blobName
+                + " | matrix=" + width + "x" + height
+                + " unique_argmax=" + argmaxCounts.Count
+                + " avg_row_max=" + (rowMaxSum / height).ToString("G9")
+                + " avg_row_second=" + (rowSecondSum / height).ToString("G9")
+                + " avg_row_gap=" + (rowGapSum / height).ToString("G9")
+                + (treatAsProbability ? " avg_row_entropy=" + (rowEntropySum / height).ToString("G9") : "")
+                + " top_argmax_bins=" + topSummary
+                + Environment.NewLine;
+            File.AppendAllText(Path.Combine(dir, "encoder_stats.txt"), line);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void AppendBinaryPatternStatsLine(string dir, string blobName, NcnnTensorBuffer tensor, int width, int height)
+    {
+        if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(blobName) || tensor == null || tensor.buffer == null)
+            return;
+
+        try
+        {
+            var data = new float[tensor.buffer.count];
+            tensor.buffer.GetData(data);
+            var activeCount = 0;
+            var activeRows = 0;
+            var activeCols = new HashSet<int>();
+            var topCols = new Dictionary<int, int>();
+            for (var y = 0; y < height; y++)
+            {
+                var rowActive = 0;
+                var rowBase = y * width;
+                for (var x = 0; x < width; x++)
+                {
+                    if (data[rowBase + x] > 0.5f)
+                    {
+                        activeCount++;
+                        rowActive++;
+                        activeCols.Add(x);
+                        if (!topCols.TryGetValue(x, out var count))
+                            count = 0;
+                        topCols[x] = count + 1;
+                    }
+                }
+                if (rowActive > 0)
+                    activeRows++;
+            }
+
+            var bins = new List<KeyValuePair<int, int>>(topCols);
+            bins.Sort((a, b) => b.Value != a.Value ? b.Value.CompareTo(a.Value) : a.Key.CompareTo(b.Key));
+            var topSummary = "";
+            var take = Math.Min(8, bins.Count);
+            for (var i = 0; i < take; i++)
+            {
+                if (i > 0) topSummary += ",";
+                topSummary += bins[i].Key + ":" + bins[i].Value;
+            }
+
+            var line = blobName
+                + " | binary=" + width + "x" + height
+                + " active_count=" + activeCount
+                + " active_rows=" + activeRows
+                + " unique_active_cols=" + activeCols.Count
+                + " top_active_cols=" + topSummary
+                + Environment.NewLine;
+            File.AppendAllText(Path.Combine(dir, "encoder_stats.txt"), line);
+        }
+        catch
+        {
         }
     }
 
