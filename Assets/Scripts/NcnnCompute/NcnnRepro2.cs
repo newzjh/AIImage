@@ -233,19 +233,39 @@ namespace NcnnCompute
 
             public RenderTexture GetTexture(string name)
             {
-                if (!_textureBlobs.TryGetValue(name, out var tr) || tr == null || tr.texture == null)
+                if (_textureBlobs.TryGetValue(name, out var tr) && tr != null && tr.texture != null)
+                    return tr.texture;
+
+                var materialized = _owner.MaterializeTextureFromBuffer(name, _bufferBlobs, _bufferViews);
+                if (materialized == null)
                     throw new InvalidOperationException("blob not found: " + name);
-                return tr.texture;
+
+                _textureBlobs[name] = new TensorRef
+                {
+                    texture = materialized,
+                    width = materialized.width,
+                    height = materialized.height,
+                    packs = materialized.volumeDepth > 0 ? materialized.volumeDepth : 1,
+                    refs = 1,
+                    owned = true
+                };
+                return materialized;
             }
 
             public RenderTexture ExtractTexture(string name)
             {
-                if (!_textureBlobs.TryGetValue(name, out var tr) || tr == null || tr.texture == null)
+                if (_textureBlobs.TryGetValue(name, out var tr) && tr != null && tr.texture != null)
+                {
+                    tr.owned = false;
+                    var rt = tr.texture;
+                    tr.texture = null;
+                    return rt;
+                }
+
+                var materialized = _owner.MaterializeTextureFromBuffer(name, _bufferBlobs, _bufferViews);
+                if (materialized == null)
                     throw new InvalidOperationException("blob not found: " + name);
-                tr.owned = false;
-                var rt = tr.texture;
-                tr.texture = null;
-                return rt;
+                return materialized;
             }
 
             public ComputeBuffer GetBuffer(string name)
@@ -655,7 +675,7 @@ namespace NcnnCompute
                     }
                     else
                     {
-                        var src = GetTexture(textureBlobs, layer.bottomNames[0]);
+                        var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                         var shape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                         for (var i = 0; i < layer.topNames.Length; i++)
                         {
@@ -706,7 +726,7 @@ namespace NcnnCompute
                     }
                     else
                     {
-                        var src = GetTexture(textureBlobs, layer.bottomNames[0]);
+                        var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                         var srcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                         textureBlobs[layer.topNames[0]] = src;
                         textureShapes[layer.topNames[0]] = ResolveReshapeShape(srcShape, layer);
@@ -797,7 +817,7 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "Concat", StringComparison.Ordinal))
                 {
-                    var first = GetTexture(textureBlobs, layer.bottomNames[0]);
+                    var first = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var axis = layer.GetInt(0, 0);
                     if (axis != 0)
                         throw new InvalidOperationException("Concat only supports channel axis for texture tensors: " + layer.name);
@@ -805,7 +825,7 @@ namespace NcnnCompute
                     var totalPacks = 0;
                     for (var i = 0; i < layer.bottomNames.Length; i++)
                     {
-                        var tr = GetTexture(textureBlobs, layer.bottomNames[i]);
+                        var tr = GetOrMaterializeTexture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                         if (tr.width != first.width || tr.height != first.height)
                             throw new InvalidOperationException("Concat shape mismatch: " + layer.name);
                         totalPacks += tr.packs;
@@ -815,7 +835,7 @@ namespace NcnnCompute
                     var packOffset = 0;
                     for (var i = 0; i < layer.bottomNames.Length; i++)
                     {
-                        var part = GetTexture(textureBlobs, layer.bottomNames[i]);
+                        var part = GetOrMaterializeTexture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                         _ops.CopyPack4(part.texture, 0, outRt, packOffset, part.packs);
                         packOffset += part.packs;
                     }
@@ -836,7 +856,7 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "Padding", StringComparison.Ordinal))
                 {
-                    var src = GetTexture(textureBlobs, layer.bottomNames[0]);
+                    var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var top = layer.GetInt(0, 0);
                     var bottom = layer.GetInt(1, 0);
                     var left = layer.GetInt(2, 0);
@@ -862,7 +882,7 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "Pooling", StringComparison.Ordinal))
                 {
-                    var src = GetTexture(textureBlobs, layer.bottomNames[0]);
+                    var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var kernelW = layer.GetInt(1, 0);
                     var kernelH = layer.GetInt(11, kernelW);
                     var strideW = layer.GetInt(2, 1);
@@ -974,10 +994,10 @@ namespace NcnnCompute
 
                     TensorRef src;
                     RenderTexture tempInputTex = null;
-                    if (textureBlobs.TryGetValue(layer.bottomNames[0], out src) && src != null && src.texture != null)
-                    {
-                    }
-                    else
+                        if (textureBlobs.TryGetValue(layer.bottomNames[0], out src) && src != null && src.texture != null)
+                        {
+                        }
+                        else
                     {
                         if (!bufferBlobs.TryGetValue(layer.bottomNames[0], out var convInputBuf) || convInputBuf == null)
                             throw new InvalidOperationException("Convolution source not found: " + layer.name);
@@ -1044,8 +1064,8 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "Eltwise", StringComparison.Ordinal))
                 {
-                    var a = GetTexture(textureBlobs, layer.bottomNames[0]);
-                    var b = GetTexture(textureBlobs, layer.bottomNames[1]);
+                    var a = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                    var b = GetOrMaterializeTexture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     if (a.width != b.width || a.height != b.height || a.packs != b.packs)
                         throw new InvalidOperationException("Eltwise shape mismatch: " + layer.name);
                     var coeff = ParseEltwiseCoeff(layer);
@@ -1171,7 +1191,7 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "Interp", StringComparison.Ordinal))
                 {
-                    var src = GetTexture(textureBlobs, layer.bottomNames[0]);
+                    var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var resizeType = layer.GetInt(0, 2);
                     var sx = layer.GetFloat(1, 1f);
                     var sy = layer.GetFloat(2, 1f);
@@ -1406,6 +1426,57 @@ namespace NcnnCompute
         public void Dispose()
         {
             Release();
+        }
+
+        private RenderTexture MaterializeTextureFromBuffer(
+            string name,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews)
+        {
+            if (!bufferBlobs.TryGetValue(name, out var buffer) || buffer == null)
+                return null;
+            if (!bufferViews.TryGetValue(name, out var view) || view == null)
+                return null;
+            if (view.dims != 3)
+                return null;
+
+            var packs = Mathf.CeilToInt(view.c / 4f);
+            var rt = RentTempArray(view.w, view.h, packs, RenderTextureFormat.ARGBHalf);
+            _ops.FillPack4FromBufferCHW(buffer, view.w, view.h, view.c, rt);
+            return rt;
+        }
+
+        private TensorRef GetOrMaterializeTexture(
+            string name,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews)
+        {
+            if (textureBlobs.TryGetValue(name, out var tr) && tr != null && tr.texture != null)
+                return tr;
+
+            var materialized = MaterializeTextureFromBuffer(name, bufferBlobs, bufferViews);
+            if (materialized == null)
+                throw new InvalidOperationException("blob not found: " + name);
+
+            var packs = materialized.volumeDepth > 0 ? materialized.volumeDepth : 1;
+            var shape = bufferViews.TryGetValue(name, out var view) && view != null
+                ? new BufferShape(3, view.w, view.h, 1, view.c)
+                : new BufferShape(3, materialized.width, materialized.height, 1, packs * 4);
+
+            tr = new TensorRef
+            {
+                texture = materialized,
+                width = materialized.width,
+                height = materialized.height,
+                packs = packs,
+                refs = 1,
+                owned = true
+            };
+            textureBlobs[name] = tr;
+            textureShapes[name] = shape;
+            return tr;
         }
 
         private static int ComputeConvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter)
