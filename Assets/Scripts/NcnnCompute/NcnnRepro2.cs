@@ -768,13 +768,33 @@ namespace NcnnCompute
                         throw new InvalidOperationException("Reduction source not found: " + layer.bottomNames[0]);
 
                     var srcTensor = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                    var axis = layer.GetInt(1, 0);
-                    var coeff = layer.GetFloat(5, 1f);
+                    var reduceAll = layer.GetInt(1, 1) != 0;
+                    var coeff = layer.GetFloat(2, 1f);
+                    var axes = layer.GetInts(-23303, null);
                     var keepDims = layer.GetInt(4, 0) != 0;
 
                     if (srcTensor == null || srcTensor.dims != 2)
                         throw new InvalidOperationException("Reduction currently expects dims=2 buffer input: " + layer.name);
 
+                    if (reduceAll)
+                    {
+                        var outBufAll = new ComputeBuffer(1, sizeof(float), ComputeBufferType.Structured);
+                        _ops.ReductionBuf(srcBuf, srcBuf.count, 1, layer.GetInt(0, 0), coeff, outBufAll);
+                        bufferBlobs[layer.topNames[0]] = outBufAll;
+                        bufferViews[layer.topNames[0]] = keepDims
+                            ? new NcnnTensorBuffer(outBufAll, 2, 1, 1, 1, 1, false)
+                            : new NcnnTensorBuffer(outBufAll, 1, 1, 1, 1, 1, false);
+                        tempOwned.Add(outBufAll);
+                        Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                        continue;
+                    }
+
+                    if (axes == null || axes.Length == 0)
+                        throw new InvalidOperationException("Reduction axes missing: " + layer.name);
+                    if (axes.Length != 1)
+                        throw new InvalidOperationException("Reduction axes length > 1 not supported yet: " + layer.name);
+
+                    var axis = axes[0];
                     var positiveAxis = axis < 0 ? axis + srcTensor.dims : axis;
                     int reduceElems;
                     int outCount;

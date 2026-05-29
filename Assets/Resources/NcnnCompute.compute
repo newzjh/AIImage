@@ -873,62 +873,51 @@ void NcnnMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     int qBase = q * embedDim + head * headDim;
     int kHeadBase = head * headDim;
 
-    float localMax = -3.402823466e+38;
-    for (int j = (int)tid; j < dst; j += 64)
+    // Correctness first: generator attention in CodeFormer uses headDim much larger than 64.
+    // The previous implementation only accumulated the first 64 elements and only wrote the first
+    // 64 output channels, which left most context entries undefined and caused unstable outputs.
+    if (tid == 0)
     {
-        int kBase = j * embedDim + kHeadBase;
-        float s = 0.0;
-        [unroll]
-        for (int l = 0; l < 64; l++)
+        float maxScore = -3.402823466e+38;
+        for (int j = 0; j < dst; j++)
         {
-            if (l >= headDim) break;
-            s += _MhaQ[qBase + l] * _MhaK[kBase + l];
+            int kBase = j * embedDim + kHeadBase;
+            float s = 0.0;
+            for (int l = 0; l < headDim; l++)
+            {
+                s += _MhaQ[qBase + l] * _MhaK[kBase + l];
+            }
+            s *= _MhaScale;
+            _MhaScores[j] = s;
+            maxScore = max(maxScore, s);
         }
-        s *= _MhaScale;
-        _MhaScores[j] = s;
-        localMax = max(localMax, s);
-    }
 
-    red0[tid] = localMax;
+        float sumExp = 0.0;
+        for (int j = 0; j < dst; j++)
+        {
+            float w = exp(_MhaScores[j] - maxScore);
+            _MhaScores[j] = w;
+            sumExp += w;
+        }
+
+        float invSum = 1.0 / max(sumExp, 1e-20);
+        for (int j = 0; j < dst; j++)
+        {
+            _MhaScores[j] *= invSum;
+        }
+    }
     GroupMemoryBarrierWithGroupSync();
-    [unroll]
-    for (uint stM0 = 32u; stM0 > 0u; stM0 >>= 1u)
-    {
-        if (tid < stM0)
-            red0[tid] = max(red0[tid], red0[tid + stM0]);
-        GroupMemoryBarrierWithGroupSync();
-    }
-    float m = red0[0];
 
-    float localSum = 0.0;
-    for (int j = (int)tid; j < dst; j += 64)
+    for (int lane = (int)tid; lane < headDim; lane += 64)
     {
-        float w = exp(_MhaScores[j] - m);
-        _MhaScores[j] = w;
-        localSum += w;
+        float outv = 0.0;
+        int vHeadBase = head * headDim + lane;
+        for (int j = 0; j < dst; j++)
+        {
+            outv += _MhaScores[j] * _MhaV[j * embedDim + vHeadBase];
+        }
+        _MhaOut[q * embedDim + head * headDim + lane] = outv;
     }
-    red0[tid] = localSum;
-    GroupMemoryBarrierWithGroupSync();
-    [unroll]
-    for (uint stM1 = 32u; stM1 > 0u; stM1 >>= 1u)
-    {
-        if (tid < stM1)
-            red0[tid] += red0[tid + stM1];
-        GroupMemoryBarrierWithGroupSync();
-    }
-    float invSum = 1.0 / max(red0[0], 1e-20);
-
-    if ((int)tid >= headDim)
-        return;
-
-    float outv = 0.0;
-    int vHeadBase = head * headDim + (int)tid;
-    for (int j = 0; j < dst; j++)
-    {
-        float w = _MhaScores[j] * invSum;
-        outv += w * _MhaV[j * embedDim + vHeadBase];
-    }
-    _MhaOut[q * embedDim + head * headDim + (int)tid] = outv;
 }
 
 StructuredBuffer<float> _FillIn;

@@ -14,6 +14,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     {
         public Texture texture;
         public string error;
+        public string dumpDir;
     }
 
     public string encoderParamRelativePath = "CodeFormer/models/encoder.param";
@@ -26,6 +27,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     public bool enableTempPool = false;
     public int maxPooledPerShape = 2;
     public bool enableWinograd23 = false;
+    public bool enableDebugDump = false;
 
     public event Action<float, string> ProgressChanged;
 
@@ -35,6 +37,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     private bool _encoderLoaded;
     private bool _generatorLoaded;
     private bool _loaded;
+    private string _lastDumpDir;
 
     private void Awake()
     {
@@ -63,7 +66,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             r.elapsedMs = totalSw.ElapsedMilliseconds;
             try
             {
-                UnityEngine.Debug.Log("[TIMING] CodeFormer(repro2) " + r.elapsedMs + " ms | in=" + originalW0 + "x" + originalH0 + " | err=" + (r.error ?? ""));
+                UnityEngine.Debug.Log("[TIMING] CodeFormer(repro2) " + r.elapsedMs + " ms | in=" + originalW0 + "x" + originalH0 + " | err=" + (r.error ?? "") + " | dump=" + (_lastDumpDir ?? ""));
             }
             catch
             {
@@ -138,6 +141,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 ReportProgress(0.15f, "Run CodeFormer");
                 await UniTask.Yield();
                 var runResult = await RunCodeFormer512Async(face512, ct);
+                _lastDumpDir = runResult.dumpDir;
                 restored512 = runResult.texture;
                 if (restored512 == null)
                     return Finish(new CodeFormerResult { error = string.IsNullOrWhiteSpace(runResult.error) ? "CodeFormer(repro2) inference failed" : runResult.error });
@@ -212,6 +216,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         RenderTexture lqFeat = null;
         NcnnTensorBuffer minEncodingTensor = null;
         var stage = "init";
+        string dumpDir = null;
 
         try
         {
@@ -254,6 +259,19 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 minEncodingTensor = ConvertSoftOneHotToMinEncodingTensor(softOneHot);
             }
 
+            if (enableDebugDump)
+            {
+                dumpDir = CreateDumpDir();
+                stage = "dump encoder stages";
+                await DumpRgbTextureAsync(dumpDir, "00_face512.png", face512, ct);
+                await DumpPack4TextureAsync(dumpDir, "01_enc_feat_32.png", encFeat32, ct);
+                await DumpPack4TextureAsync(dumpDir, "02_enc_feat_64.png", encFeat64, ct);
+                await DumpPack4TextureAsync(dumpDir, "03_enc_feat_128.png", encFeat128, ct);
+                await DumpPack4TextureAsync(dumpDir, "04_enc_feat_256.png", encFeat256, ct);
+                await DumpPack4TextureAsync(dumpDir, "05_lq_feat.png", lqFeat, ct);
+                await DumpBinaryTensorAsImageAsync(dumpDir, "06_min_encoding.png", minEncodingTensor, 1024, 256, ct);
+            }
+
             if (encFeat32 == null || encFeat64 == null || encFeat128 == null || encFeat256 == null || lqFeat == null || minEncodingTensor == null)
             {
                 return new CodeFormer512RunResult
@@ -264,7 +282,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                         + " enc_feat_128=" + BoolText(encFeat128 != null)
                         + " enc_feat_256=" + BoolText(encFeat256 != null)
                         + " lq_feat=" + BoolText(lqFeat != null)
-                        + " min_encoding=" + BoolText(minEncodingTensor != null)
+                        + " min_encoding=" + BoolText(minEncodingTensor != null),
+                    dumpDir = dumpDir
                 };
             }
 
@@ -287,13 +306,46 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             };
 
             stage = "generator inference";
-            using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, bufferInputs, null))
+            HashSet<string> generatorPinned = null;
+            if (enableDebugDump)
             {
+                generatorPinned = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "1028",
+                    "1033",
+                    "1064",
+                    "1246",
+                    "1459",
+                    "out"
+                };
+            }
+
+            using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, bufferInputs, generatorPinned))
+            {
+                if (enableDebugDump)
+                {
+                    stage = "dump generator stages";
+                    try { await DumpBinaryTensorAsImageAsync(dumpDir, "07_input_min_encoding.png", minEncodingTensor, 1024, 256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 07_input_min_encoding | " + e.Message); }
+                    try { await DumpPack4TextureAsync(dumpDir, "08_style_feat_lq.png", lqFeat, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 08_style_feat_lq | " + e.Message); }
+                    try { await DumpPack4TextureAsync(dumpDir, "09_input_enc_feat_256.png", encFeat256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 09_input_enc_feat_256 | " + e.Message); }
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "10_blob_1028.png", "1028", ct);
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "11_blob_1033.png", "1033", ct);
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "12_blob_1064.png", "1064", ct);
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "13_blob_1246.png", "1246", ct);
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "14_blob_1459.png", "1459", ct);
+                }
+
                 stage = "extract generator blob out";
                 var outputTex = generatorResult.ExtractTexture("out");
                 if (outputTex == null)
                 {
-                    return new CodeFormer512RunResult { error = "CodeFormer(repro2) generator output blob 'out' is null" };
+                    return new CodeFormer512RunResult { error = "CodeFormer(repro2) generator output blob 'out' is null", dumpDir = dumpDir };
+                }
+
+                if (enableDebugDump)
+                {
+                    stage = "dump generator output pack4";
+                    await DumpPack4TextureAsync(dumpDir, "15_out_pack4.png", outputTex, ct);
                 }
 
                 stage = "clip generator output";
@@ -308,10 +360,17 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 restored.Create();
                 _ops.Pack4ToRgb01(clipTex, restored);
 
+                if (enableDebugDump)
+                {
+                    stage = "dump generator output rgb";
+                    await DumpRgbTextureAsync(dumpDir, "16_out_rgb.png", restored, ct);
+                    TryOpenFolderInShell(dumpDir);
+                }
+
                 _generatorRepro.ReturnTempArray(clipTex);
             }
 
-            return new CodeFormer512RunResult { texture = restored };
+            return new CodeFormer512RunResult { texture = restored, dumpDir = dumpDir };
         }
         catch (OperationCanceledException)
         {
@@ -331,7 +390,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
             return new CodeFormer512RunResult
             {
-                error = "CodeFormer(repro2) failed at " + stage + " | " + e.GetType().Name + ": " + e.Message
+                error = "CodeFormer(repro2) failed at " + stage + " | " + e.GetType().Name + ": " + e.Message,
+                dumpDir = dumpDir
             };
         }
         finally
@@ -350,6 +410,163 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     {
         return value ? "ok" : "missing";
     }
+
+    private async UniTask DumpInferBlobAsync(NcnnRepro2.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
+    {
+        if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
+            return;
+
+        try
+        {
+            var tex = inferResult.GetTexture(blobName);
+            await DumpPack4TextureAsync(dir, fileName, tex, ct);
+        }
+        catch (Exception e)
+        {
+            try { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip blob " + blobName + " | " + e.Message); } catch { }
+        }
+    }
+
+    private async UniTask DumpPack4TextureAsync(string dir, string fileName, RenderTexture pack4Tex, CancellationToken ct)
+    {
+        if (!enableDebugDump || pack4Tex == null || string.IsNullOrWhiteSpace(dir))
+            return;
+
+        var vis = new RenderTexture(pack4Tex.width, pack4Tex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+        vis.enableRandomWrite = true;
+        vis.wrapMode = TextureWrapMode.Clamp;
+        vis.filterMode = FilterMode.Bilinear;
+        vis.Create();
+        try
+        {
+            _ops.Pack4ToRgb01(pack4Tex, vis);
+            await DumpRgbTextureAsync(dir, fileName, vis, ct);
+        }
+        finally
+        {
+            vis.Release();
+            Destroy(vis);
+        }
+    }
+
+    private async UniTask DumpRgbTextureAsync(string dir, string fileName, Texture texture, CancellationToken ct)
+    {
+        if (!enableDebugDump || texture == null || string.IsNullOrWhiteSpace(dir))
+            return;
+
+        RenderTexture rt = texture as RenderTexture;
+        RenderTexture tempRt = null;
+        try
+        {
+            if (rt == null)
+            {
+                tempRt = new RenderTexture(texture.width, texture.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                tempRt.Create();
+                Graphics.Blit(texture, tempRt);
+                rt = tempRt;
+            }
+
+            var tex2D = await ReadbackTextureAsync(rt, rt.width, rt.height, ct);
+            if (tex2D == null)
+                return;
+            try
+            {
+                var bytes = tex2D.EncodeToPNG();
+                await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+            }
+            finally
+            {
+                Destroy(tex2D);
+            }
+        }
+        finally
+        {
+            if (tempRt != null)
+            {
+                tempRt.Release();
+                Destroy(tempRt);
+            }
+        }
+    }
+
+    private async UniTask DumpBinaryTensorAsImageAsync(string dir, string fileName, NcnnTensorBuffer tensor, int width, int height, CancellationToken ct)
+    {
+        if (!enableDebugDump || tensor == null || tensor.buffer == null || string.IsNullOrWhiteSpace(dir))
+            return;
+
+        var data = new float[tensor.buffer.count];
+        tensor.buffer.GetData(data);
+        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+        try
+        {
+            var pixels = new Color32[width * height];
+            for (var i = 0; i < pixels.Length && i < data.Length; i++)
+            {
+                var v = data[i] > 0.5f ? (byte)255 : (byte)0;
+                pixels[i] = new Color32(v, v, v, 255);
+            }
+            tex.SetPixels32(pixels);
+            tex.Apply(false, false);
+            var bytes = tex.EncodeToPNG();
+            await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+        }
+        finally
+        {
+            Destroy(tex);
+        }
+    }
+
+    private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
+    {
+        var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
+        AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
+        var request = await tcs.Task.AttachExternalCancellation(ct);
+        if (request.hasError)
+            return null;
+
+        var data = request.GetData<byte>();
+        var tex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+        tex.LoadRawTextureData(data);
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
+    }
+
+    private static string CreateDumpDir()
+    {
+        var root = Application.temporaryCachePath;
+        if (string.IsNullOrWhiteSpace(root))
+            root = Path.GetTempPath();
+        var dir = Path.Combine(root, "AIImage_CodeFormerRepro2_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        try { Directory.CreateDirectory(dir); } catch { }
+        return dir;
+    }
+
+#if !UNITY_WEBGL
+    private static void TryOpenFolderInShell(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            return;
+        try
+        {
+            try { Directory.CreateDirectory(directoryPath); } catch { }
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            Process.Start(new ProcessStartInfo { FileName = directoryPath, UseShellExecute = true });
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+            Process.Start(new ProcessStartInfo("open", directoryPath) { UseShellExecute = false });
+#elif UNITY_STANDALONE_LINUX
+            Process.Start(new ProcessStartInfo("xdg-open", directoryPath) { UseShellExecute = false });
+#else
+            var url = "file://" + directoryPath.Replace('\\', '/');
+            Application.OpenURL(url);
+#endif
+        }
+        catch
+        {
+        }
+    }
+#endif
 
     private NcnnTensorBuffer ConvertSoftOneHotToMinEncodingTensor(float[] softOneHot)
     {
