@@ -582,35 +582,35 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private static RenderTexture ComposeWithMask(Texture2D src, RenderTexture restored, Texture2D mask, RectInt rect)
     {
-        var compRt = new RenderTexture(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
-        compRt.wrapMode = TextureWrapMode.Clamp;
-        compRt.filterMode = FilterMode.Bilinear;
-        compRt.Create();
+        if (src == null || restored == null)
+            return null;
 
-        var prev = RenderTexture.active;
-        RenderTexture.active = compRt;
-        GL.Clear(true, true, Color.clear);
-        RenderTexture.active = prev;
+        var cs = Resources.Load<ComputeShader>("ImageProcessing");
+        if (cs == null)
+            return null;
 
-        Graphics.Blit(src, compRt);
+        int kernel;
+        try { kernel = cs.FindKernel("PasteRectWithMask"); } catch { return null; }
+        if (kernel < 0)
+            return null;
 
-        var shader = Shader.Find("Hidden/BlendWithMask");
-        if (shader == null)
-        {
-            Graphics.Blit(restored, compRt, new Vector2((float)rect.width / compRt.width, (float)rect.height / compRt.height), new Vector2((float)rect.x / compRt.width, (float)rect.y / compRt.height));
-            return compRt;
-        }
+        var rt = new RenderTexture(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+        rt.enableRandomWrite = true;
+        rt.wrapMode = TextureWrapMode.Clamp;
+        rt.filterMode = FilterMode.Bilinear;
+        rt.Create();
 
-        var material = new Material(shader);
-        material.SetTexture("_FaceTex", restored);
-        material.SetTexture("_MaskTex", mask != null ? mask : Texture2D.whiteTexture);
-        material.SetVector("_FaceRect", new Vector4((float)rect.x / compRt.width, (float)rect.y / compRt.height, (float)rect.width / compRt.width, (float)rect.height / compRt.height));
+        cs.SetTexture(kernel, "_Source", src);
+        cs.SetTexture(kernel, "_Overlay", restored);
+        cs.SetTexture(kernel, "_Result", rt);
+        cs.SetInts("_CropRect", rect.x, rect.y, rect.width, rect.height);
 
-        var tmp = RenderTexture.GetTemporary(compRt.descriptor);
-        Graphics.Blit(compRt, tmp);
-        Graphics.Blit(tmp, compRt, material);
-        RenderTexture.ReleaseTemporary(tmp);
-        Destroy(material);
-        return compRt;
+        if (mask != null && mask.width == src.width && mask.height == src.height && mask.format == TextureFormat.RHalf)
+            cs.SetTexture(kernel, "_FaceMaskIn", mask);
+        else
+            cs.SetTexture(kernel, "_FaceMaskIn", Texture2D.blackTexture);
+
+        cs.Dispatch(kernel, Mathf.CeilToInt(src.width / 8f), Mathf.CeilToInt(src.height / 8f), 1);
+        return rt;
     }
 }
