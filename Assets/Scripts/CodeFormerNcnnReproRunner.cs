@@ -210,7 +210,9 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
 
         RenderTexture encoderInput = null;
         RenderTexture restored = null;
-        StyleFeatResult? styleFeatResult = null;
+        RenderTexture styleFeatTex = null;
+        RenderTexture styleFeatSplit0Tex = null;
+        RenderTexture styleFeatSplit1Tex = null;
         RenderTexture lqFeatTex = null;
         RenderTexture encFeat32Tex = null;
         RenderTexture encFeat64Tex = null;
@@ -243,11 +245,15 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
                 lqFeatTex = encoderResult.ExtractTexture("lq_feat");
 
                 var softOneHot = encoderResult.GetBufferData("soft_one_hot");
-                styleFeatResult = ConvertSoftOneHotToOneHot(softOneHot);
+                var styleFeat = ConvertSoftOneHotToStyleFeatTex(softOneHot);
+                styleFeatTex = styleFeat.StyleFeat;
+                styleFeatSplit0Tex = styleFeat.Split0;
+                styleFeatSplit1Tex = styleFeat.Split1;
             }
 
             if (encFeat32Tex == null || encFeat64Tex == null || encFeat128Tex == null
-                || encFeat256Tex == null || lqFeatTex == null || styleFeatResult == null || styleFeatResult.Value.StyleFeat == null)
+                || encFeat256Tex == null || lqFeatTex == null || styleFeatTex == null
+                || styleFeatSplit0Tex == null || styleFeatSplit1Tex == null)
                 return null;
 
             ReportProgress(0.35f, "生成器推理…");
@@ -260,15 +266,12 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
                 { "enc_feat_128", encFeat128Tex },
                 { "enc_feat_256", encFeat256Tex },
                 { "input", lqFeatTex },
-            };
-            var bufferInputs = new Dictionary<string, NcnnTensorBuffer>
-            {
-                { "style_feat", styleFeatResult.Value.StyleFeat },
-                { "style_feat_splitncnn_0", styleFeatResult.Value.Split0 },
-                { "style_feat_splitncnn_1", styleFeatResult.Value.Split1 },
+                { "style_feat", styleFeatTex },
+                { "style_feat_splitncnn_0", styleFeatSplit0Tex },
+                { "style_feat_splitncnn_1", styleFeatSplit1Tex },
             };
 
-            using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, bufferInputs))
+            using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, null))
             {
                 var outputTex = generatorResult.ExtractTexture("out");
                 if (outputTex == null)
@@ -304,25 +307,22 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
             if (encFeat256Tex != null) _encoderRepro.ReturnTempArray(encFeat256Tex);
             try
             {
-                if (styleFeatResult != null)
-                {
-                    styleFeatResult.Value.StyleFeat?.Dispose();
-                    styleFeatResult.Value.Split0?.Dispose();
-                    styleFeatResult.Value.Split1?.Dispose();
-                }
+                if (styleFeatTex != null) Destroy(styleFeatTex);
+                if (styleFeatSplit0Tex != null) Destroy(styleFeatSplit0Tex);
+                if (styleFeatSplit1Tex != null) Destroy(styleFeatSplit1Tex);
             }
             catch { }
         }
     }
 
-    private struct StyleFeatResult
+    private struct StyleFeatTexResult
     {
-        public NcnnTensorBuffer StyleFeat;
-        public NcnnTensorBuffer Split0;
-        public NcnnTensorBuffer Split1;
+        public RenderTexture StyleFeat;
+        public RenderTexture Split0;
+        public RenderTexture Split1;
     }
 
-    private StyleFeatResult ConvertSoftOneHotToOneHot(float[] softOneHot)
+    private StyleFeatTexResult ConvertSoftOneHotToStyleFeatTex(float[] softOneHot)
     {
         const int codebookSize = 1024;
         const int numTokens = 256;
@@ -346,30 +346,24 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
             minEncodings[i * codebookSize + maxIdx] = 1f;
         }
 
-        var styleFeatBuf = new NcnnTensorBuffer(codebookSize, numTokens);
-        styleFeatBuf.buffer.SetData(minEncodings);
+        var styleFeatBuf = new ComputeBuffer(codebookSize * numTokens, sizeof(float), ComputeBufferType.Structured);
+        styleFeatBuf.SetData(minEncodings);
 
-        var half = codebookSize / 2;
-        var split0Data = new float[half * numTokens];
-        var split1Data = new float[half * numTokens];
-        for (var i = 0; i < numTokens; i++)
+        var styleFeatTex = _encoderRepro.RentTempArray(1, 256, 256, RenderTextureFormat.ARGBHalf);
+        _ops.FillPack4FromBufferCHW(styleFeatBuf, 1, 256, codebookSize, styleFeatTex);
+
+        var splitPacks = 128;
+        var split0Tex = _encoderRepro.RentTempArray(1, 256, splitPacks, RenderTextureFormat.ARGBHalf);
+        var split1Tex = _encoderRepro.RentTempArray(1, 256, splitPacks, RenderTextureFormat.ARGBHalf);
+        _ops.CopyPack4(styleFeatTex, 0, split0Tex, 0, splitPacks);
+        _ops.CopyPack4(styleFeatTex, splitPacks, split1Tex, 0, splitPacks);
+
+        styleFeatBuf.Dispose();
+        return new StyleFeatTexResult
         {
-            var srcRow = i * codebookSize;
-            var dstRow = i * half;
-            Array.Copy(minEncodings, srcRow, split0Data, dstRow, half);
-            Array.Copy(minEncodings, srcRow + half, split1Data, dstRow, half);
-        }
-
-        var split0Buf = new NcnnTensorBuffer(half, numTokens);
-        split0Buf.buffer.SetData(split0Data);
-        var split1Buf = new NcnnTensorBuffer(half, numTokens);
-        split1Buf.buffer.SetData(split1Data);
-
-        return new StyleFeatResult
-        {
-            StyleFeat = styleFeatBuf,
-            Split0 = split0Buf,
-            Split1 = split1Buf,
+            StyleFeat = styleFeatTex,
+            Split0 = split0Tex,
+            Split1 = split1Tex,
         };
     }
 

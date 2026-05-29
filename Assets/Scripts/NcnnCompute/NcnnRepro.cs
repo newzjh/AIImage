@@ -749,6 +749,11 @@ namespace NcnnCompute
                         var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);
                         var dstLen = kBuf.count / Mathf.Max(1, mp.kdim);
 
+                        if (srcLen <= 0 || dstLen <= 0)
+                            throw new InvalidOperationException("MultiHeadAttention invalid sequence length: " + l.name + " | srcLen=" + srcLen + " dstLen=" + dstLen);
+                        if (srcLen > 65535)
+                            throw new InvalidOperationException("MultiHeadAttention srcLen too large for dispatch: " + l.name + " | srcLen=" + srcLen + " qcount=" + qBuf.count + " qdim=" + mp.qdim);
+
                         var qAff = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
                         var kAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
                         var vAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
@@ -1001,8 +1006,11 @@ namespace NcnnCompute
                             var src = Get(blobs, l.bottomNames[0]);
                             for (var i = 0; i < l.topNames.Length; i++)
                             {
-                                blobs[l.topNames[i]] = src;
-                                src.refs++;
+                                if (!blobs.ContainsKey(l.topNames[i]))
+                                {
+                                    blobs[l.topNames[i]] = src;
+                                    src.refs++;
+                                }
                             }
                         }
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
@@ -1445,45 +1453,7 @@ namespace NcnnCompute
                         var withScalar = l.GetInt(1, 0);
                         var scalarB = l.GetFloat(2, 0f);
 
-                        var aBuf = GetOrConvertToBuffer(l.bottomNames[0]);
-                        var bBufMaybe = withScalar != 0 ? null : GetOrConvertToBuffer(l.bottomNames[1]);
-
-                        if (aBuf != null && (withScalar != 0 || bBufMaybe != null))
-                        {
-                            if (withScalar != 0)
-                            {
-                                var outBuf = new ComputeBuffer(aBuf.count, sizeof(float), ComputeBufferType.Structured);
-                                tempBuffers.Add(outBuf);
-                                _ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
-                                bufferBlobs[l.topNames[0]] = outBuf;
-                            }
-                            else
-                            {
-                                if (bBufMaybe == null)
-                                    throw new InvalidOperationException("BinaryOp second input buffer not found: " + l.name);
-                                var outCount = Math.Max(aBuf.count, bBufMaybe.count);
-                                var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
-                                tempBuffers.Add(outBuf);
-                                if (aBuf.count == bBufMaybe.count)
-                                {
-                                    _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf);
-                                }
-                                else if (aBuf.count < bBufMaybe.count && bBufMaybe.count % aBuf.count == 0)
-                                {
-                                    _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf, 1, aBuf.count);
-                                }
-                                else if (bBufMaybe.count < aBuf.count && aBuf.count % bBufMaybe.count == 0)
-                                {
-                                    _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf, 2, bBufMaybe.count);
-                                }
-                                else
-                                {
-                                    throw new InvalidOperationException("BinaryOp buffer count mismatch: " + l.name + " | " + aBuf.count + " vs " + bBufMaybe.count);
-                                }
-                                bufferBlobs[l.topNames[0]] = outBuf;
-                            }
-                        }
-                        else
+                        if (!useExperimentalIteratePath)
                         {
                             var a = Get(blobs, l.bottomNames[0]);
                             var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
@@ -1499,6 +1469,47 @@ namespace NcnnCompute
                                 _ops.BinaryOpPack4(a.t1, b.t1, a.packs, opType, outArr);
                             }
                             blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                        }
+                        else
+                        {
+                            var aBuf = GetOrConvertToBuffer(l.bottomNames[0]);
+                            var bBufMaybe = withScalar != 0 ? null : GetOrConvertToBuffer(l.bottomNames[1]);
+
+                            if (aBuf != null && (withScalar != 0 || bBufMaybe != null))
+                            {
+                                if (withScalar != 0)
+                                {
+                                    var outBuf = new ComputeBuffer(aBuf.count, sizeof(float), ComputeBufferType.Structured);
+                                    tempBuffers.Add(outBuf);
+                                    _ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
+                                    bufferBlobs[l.topNames[0]] = outBuf;
+                                }
+                                else
+                                {
+                                    if (bBufMaybe == null)
+                                        throw new InvalidOperationException("BinaryOp second input buffer not found: " + l.name);
+                                    var outCount = Math.Max(aBuf.count, bBufMaybe.count);
+                                    var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                                    tempBuffers.Add(outBuf);
+                                    if (aBuf.count == bBufMaybe.count)
+                                    {
+                                        _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf);
+                                    }
+                                    else if (aBuf.count < bBufMaybe.count && bBufMaybe.count % aBuf.count == 0)
+                                    {
+                                        _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf, 1, aBuf.count);
+                                    }
+                                    else if (bBufMaybe.count < aBuf.count && aBuf.count % bBufMaybe.count == 0)
+                                    {
+                                        _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf, 2, bBufMaybe.count);
+                                    }
+                                    else
+                                    {
+                                        throw new InvalidOperationException("BinaryOp buffer count mismatch: " + l.name + " | " + aBuf.count + " vs " + bBufMaybe.count);
+                                    }
+                                    bufferBlobs[l.topNames[0]] = outBuf;
+                                }
+                            }
                         }
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
                         continue;
@@ -1823,6 +1834,38 @@ namespace NcnnCompute
                         {
                             blobs[l.topNames[0]] = srcTex;
                             srcTex.refs++;
+                            var total = srcTex.w * srcTex.h * srcTex.packs * 4;
+                            var outw = l.GetInt(0, -233);
+                            var outh = l.GetInt(1, -233);
+                            var outd = l.GetInt(11, -233);
+                            var outc = l.GetInt(2, -233);
+                            var ndim = 4;
+                            if (outd == -233) ndim = 3;
+                            if (outc == -233) ndim = 2;
+                            if (outh == -233) ndim = 1;
+
+                            int Resolved(int v, int denom)
+                            {
+                                if (v == -1) return Mathf.Max(1, total / Mathf.Max(1, denom));
+                                if (v == 0) return 1;
+                                return Mathf.Max(1, v);
+                            }
+
+                            if (ndim == 2)
+                            {
+                                var rw = outw == -1 ? Mathf.Max(1, total / Mathf.Max(1, outh)) : outw;
+                                var rh = outh == -1 ? Mathf.Max(1, total / Mathf.Max(1, rw)) : outh;
+                                srcTex.w = Mathf.Max(1, rw);
+                                srcTex.h = Mathf.Max(1, rh);
+                                srcTex.packs = 1;
+                            }
+                            else if (ndim == 3)
+                            {
+                                var rc = outc == -1 ? Mathf.Max(1, total / Mathf.Max(1, outw * outh)) : outc;
+                                srcTex.w = Mathf.Max(1, outw);
+                                srcTex.h = Mathf.Max(1, outh);
+                                srcTex.packs = Mathf.CeilToInt(rc / 4f);
+                            }
                         }
                         else if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
                         {
