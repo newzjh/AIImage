@@ -474,7 +474,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return sum;
     }
 
-    private void LoadStyleBin(string stylePath)
+    private async UniTask LoadStyleBin(string stylePath)
     {
         if (_styleConv != null || _toRgb != null)
             return;
@@ -482,8 +482,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _styleConv = new StyleConvWeights[15];
         _toRgb = new ToRgbWeights[8];
 
-        using (var fs = File.OpenRead(stylePath))
-        using (var br = new BinaryReader(fs))
+        var bytes = await File.ReadAllBytesAsync(stylePath);
+        MemoryStream ms = new MemoryStream(bytes);
+        using (var br = new BinaryReader(ms))
         {
             var styleHidDim = new[] { 512,512,512,512,512,512,512,512,512,256,256,128,128,64,512 };
             var styleOutC = new[] { 512,512,512,512,512,512,512,512,256,256,128,128,64,64,512 };
@@ -521,6 +522,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
             _constInput = ReadFloatArray(br, 4 * 4 * 512);
         }
+
+        ms.Dispose();
 
         _constInputBuf = new ComputeBuffer(_constInput.Length, sizeof(float), ComputeBufferType.Structured);
         _constInputBuf.SetData(_constInput);
@@ -834,14 +837,30 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         if (!File.Exists(stylePath))
             throw new InvalidOperationException("GFPGAN(复刻) style 不存在: " + stylePath);
 
+        ReportProgress(0.02f, "Reading Model File...");
+        await UniTask.Yield();
+
         var paramText = await File.ReadAllTextAsync(paramPath);
-        using (var fs = File.OpenRead(binPath))
-        using (var br = new NcnnBinReader(fs))
+        var bytes = await File.ReadAllBytesAsync(binPath);
+
+        ReportProgress(0.06f, "Loading Model...");
+        await UniTask.Yield();
+
+        MemoryStream ms = new MemoryStream(bytes);
+        using (var br = new NcnnBinReader(ms))
         {
             _repro.LoadModel(paramText, br);
         }
+        ms.Dispose();
 
-        LoadStyleBin(stylePath);
+        ReportProgress(0.09f, "Loading Model...");
+        await UniTask.Yield();
+
+        await LoadStyleBin(stylePath);
+
+        ReportProgress(0.1f, "Loading Model...");
+        await UniTask.Yield();
+
         _loaded = true;
     }
 

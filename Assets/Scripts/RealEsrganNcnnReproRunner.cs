@@ -1013,10 +1013,24 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var paramPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".param");
         var binPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".bin");
 
+        ReportProgress(0.02f, "Reading Model File...");
+        await UniTask.Yield();
+
         var paramText = await File.ReadAllTextAsync(paramPath);
-        using (var fs = File.OpenRead(binPath))
-        using (var br = new NcnnBinReader(fs))
+        var bytes = await File.ReadAllBytesAsync(binPath);
+
+        ReportProgress(0.06f, "Loading Model...");
+        await UniTask.Yield();
+
+        MemoryStream ms = new MemoryStream(bytes);
+        using (var br = new NcnnBinReader(ms))
+        {
             _repro.LoadModel(paramText, br);
+        }
+        ms.Dispose();
+
+        ReportProgress(0.1f, "Loading Model...");
+        await UniTask.Yield();
 
         _loaded = true;
 
