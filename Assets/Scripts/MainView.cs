@@ -103,7 +103,7 @@ public class MainView : MonoBehaviour
     private RealEsrganNcnnReproRunner _realEsrganReproRunner;
     private GfpganNcnnNativeRunner _gfpganNativeRunner;
     private GfpganNcnnReproRunner _gfpganReproRunner;
-    private CodeFormerNcnnReproRunner _codeFormerReproRunner;
+    private CodeFormerNcnnReproRunner2 _codeFormerReproRunner;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
@@ -168,9 +168,9 @@ public class MainView : MonoBehaviour
         if (_gfpganReproRunner == null)
             _gfpganReproRunner = gameObject.AddComponent<GfpganNcnnReproRunner>();
 
-        _codeFormerReproRunner = GetComponent<CodeFormerNcnnReproRunner>();
+        _codeFormerReproRunner = GetComponent<CodeFormerNcnnReproRunner2>();
         if (_codeFormerReproRunner == null)
-            _codeFormerReproRunner = gameObject.AddComponent<CodeFormerNcnnReproRunner>();
+            _codeFormerReproRunner = gameObject.AddComponent<CodeFormerNcnnReproRunner2>();
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -1759,7 +1759,7 @@ public class MainView : MonoBehaviour
             await UniTask.NextFrame();
             if (_codeFormerReproRunner == null)
             {
-                ShowToast("找不到CodeFormerNcnnReproRunner", 2200);
+                ShowToast("找不到CodeFormerNcnnReproRunner2", 2200);
                 return;
             }
 

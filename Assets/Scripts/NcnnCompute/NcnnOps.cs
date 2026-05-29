@@ -1633,31 +1633,22 @@ namespace NcnnCompute
             }
             else
             {
+                var host = new float[input.count];
+                input.GetData(host);
+                var reduced = new float[outCount];
+                var useMean = redType == 3 || redType == 5;
                 for (var i = 0; i < outCount; i++)
                 {
-                    var temp = new ComputeBuffer(1, sizeof(float), ComputeBufferType.Structured);
-                    try
+                    var offset = i * elemCount;
+                    double sum = 0.0;
+                    for (var j = 0; j < elemCount; j++)
                     {
-                        _cs.SetInt("_SrcOffset", i * elemCount);
-                        _cs.SetBuffer(_kCopyBufPartial, "_BufA", input);
-                        _cs.SetBuffer(_kCopyBufPartial, "_BufOut", temp);
-                        _cs.SetInt("_Total", elemCount);
-                        Dispatch1D(_kCopyBufPartial, elemCount, 256);
-
-                        var elemTemp = new ComputeBuffer(elemCount, sizeof(float), ComputeBufferType.Structured);
-                        try
-                        {
-                            _cs.SetBuffer(_kCopyBufPartial, "_BufA", temp);
-                            _cs.SetBuffer(_kCopyBufPartial, "_BufOut", elemTemp);
-                            _cs.SetInt("_Total", elemCount);
-                            Dispatch1D(_kCopyBufPartial, elemCount, 256);
-
-                            ReduceAllSumOrMean(elemTemp, elemCount, redType == 3 || redType == 5, output);
-                        }
-                        finally { try { elemTemp?.Dispose(); } catch { } }
+                        sum += host[offset + j];
                     }
-                    finally { try { temp?.Dispose(); } catch { } }
+                    var value = useMean ? (float)(sum / Math.Max(1, elemCount)) : (float)sum;
+                    reduced[i] = value * coeff;
                 }
+                output.SetData(reduced);
             }
         }
 
