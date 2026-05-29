@@ -100,6 +100,8 @@ int _SrcOffset;
 int _BinaryOpType;
 int _BinaryWithScalar;
 float _BinaryScalar;
+int _BinaryBroadcastMode;
+int _BinaryBroadcastSize;
 
 groupshared float red0[256];
 groupshared float red1[256];
@@ -1195,8 +1197,14 @@ void NcnnBinaryOpBuf(uint3 id : SV_DispatchThreadID)
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
 
-    float a = _BufA[idx];
-    float b = _BinaryWithScalar != 0 ? _BinaryScalar : _BufB[idx];
+    float a = _BinaryBroadcastMode == 1 ? _BufA[idx % (uint)max(_BinaryBroadcastSize, 1)] : _BufA[idx];
+    float b = _BinaryWithScalar != 0
+        ? _BinaryScalar
+        : (_BinaryBroadcastMode == 1
+            ? _BufB[idx]
+            : (_BinaryBroadcastMode == 2
+                ? _BufB[idx % (uint)max(_BinaryBroadcastSize, 1)]
+                : _BufB[idx]));
 
     float o = a;
     int t = _BinaryOpType;

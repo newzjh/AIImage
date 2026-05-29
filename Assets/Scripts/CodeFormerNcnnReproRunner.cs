@@ -41,6 +41,8 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
         _ops = new NcnnOps();
         _encoderRepro = new NcnnRepro(_ops);
         _generatorRepro = new NcnnRepro(_ops);
+        _encoderRepro.useExperimentalIteratePath = true;
+        _generatorRepro.useExperimentalIteratePath = true;
     }
 
     private void OnDestroy()
@@ -259,7 +261,7 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
                 { "enc_feat_256", encFeat256Tex },
                 { "input", lqFeatTex },
             };
-            var bufferInputs = new Dictionary<string, ComputeBuffer>
+            var bufferInputs = new Dictionary<string, NcnnTensorBuffer>
             {
                 { "style_feat", styleFeatResult.Value.StyleFeat },
                 { "style_feat_splitncnn_0", styleFeatResult.Value.Split0 },
@@ -315,9 +317,9 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
 
     private struct StyleFeatResult
     {
-        public ComputeBuffer StyleFeat;
-        public ComputeBuffer Split0;
-        public ComputeBuffer Split1;
+        public NcnnTensorBuffer StyleFeat;
+        public NcnnTensorBuffer Split0;
+        public NcnnTensorBuffer Split1;
     }
 
     private StyleFeatResult ConvertSoftOneHotToOneHot(float[] softOneHot)
@@ -344,8 +346,8 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
             minEncodings[i * codebookSize + maxIdx] = 1f;
         }
 
-        var styleFeatBuf = new ComputeBuffer(codebookSize * numTokens, sizeof(float), ComputeBufferType.Structured);
-        styleFeatBuf.SetData(minEncodings);
+        var styleFeatBuf = new NcnnTensorBuffer(codebookSize, numTokens);
+        styleFeatBuf.buffer.SetData(minEncodings);
 
         var half = codebookSize / 2;
         var split0Data = new float[half * numTokens];
@@ -358,10 +360,10 @@ public sealed class CodeFormerNcnnReproRunner : MonoBehaviour
             Array.Copy(minEncodings, srcRow + half, split1Data, dstRow, half);
         }
 
-        var split0Buf = new ComputeBuffer(half * numTokens, sizeof(float), ComputeBufferType.Structured);
-        split0Buf.SetData(split0Data);
-        var split1Buf = new ComputeBuffer(half * numTokens, sizeof(float), ComputeBufferType.Structured);
-        split1Buf.SetData(split1Data);
+        var split0Buf = new NcnnTensorBuffer(half, numTokens);
+        split0Buf.buffer.SetData(split0Data);
+        var split1Buf = new NcnnTensorBuffer(half, numTokens);
+        split1Buf.buffer.SetData(split1Data);
 
         return new StyleFeatResult
         {

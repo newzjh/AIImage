@@ -1661,7 +1661,7 @@ namespace NcnnCompute
             }
         }
 
-        public void BinaryOpBuf(ComputeBuffer a, ComputeBuffer b, int total, int opType, ComputeBuffer output)
+        public void BinaryOpBuf(ComputeBuffer a, ComputeBuffer b, int total, int opType, ComputeBuffer output, int broadcastMode = 0, int broadcastSize = 0)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
@@ -1673,13 +1673,15 @@ namespace NcnnCompute
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 0);
             _cs.SetFloat("_BinaryScalar", 0f);
+            _cs.SetInt("_BinaryBroadcastMode", broadcastMode);
+            _cs.SetInt("_BinaryBroadcastSize", broadcastSize);
             _cs.SetBuffer(_kBinaryOpBuf, "_BufA", a);
             _cs.SetBuffer(_kBinaryOpBuf, "_BufB", b);
             _cs.SetBuffer(_kBinaryOpBuf, "_BufOut", output);
             Dispatch1D(_kBinaryOpBuf, total, 256);
         }
 
-        public void BinaryOpScalarBuf(ComputeBuffer a, float scalarB, int total, int opType, ComputeBuffer output)
+        public void BinaryOpScalarBuf(ComputeBuffer a, float scalarB, int total, int opType, ComputeBuffer output, int broadcastMode = 0, int broadcastSize = 0)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -1690,6 +1692,8 @@ namespace NcnnCompute
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 1);
             _cs.SetFloat("_BinaryScalar", scalarB);
+            _cs.SetInt("_BinaryBroadcastMode", broadcastMode);
+            _cs.SetInt("_BinaryBroadcastSize", broadcastSize);
             _cs.SetBuffer(_kBinaryOpBuf, "_BufA", a);
             _cs.SetBuffer(_kBinaryOpBuf, "_BufB", a);
             _cs.SetBuffer(_kBinaryOpBuf, "_BufOut", output);
@@ -1781,6 +1785,9 @@ namespace NcnnCompute
             if (outContext == null) throw new ArgumentNullException(nameof(outContext));
             if (srcLen <= 0) throw new ArgumentOutOfRangeException(nameof(srcLen));
             if (dstLen <= 0) throw new ArgumentOutOfRangeException(nameof(dstLen));
+            if (srcLen > 65535) throw new ArgumentOutOfRangeException(nameof(srcLen), "srcLen exceeds Unity compute dispatch limit: " + srcLen);
+            if (numHeads > 65535) throw new ArgumentOutOfRangeException(nameof(numHeads), "numHeads exceeds Unity compute dispatch limit: " + numHeads);
+            if (dstLen > 4096) throw new ArgumentOutOfRangeException(nameof(dstLen), "dstLen exceeds current shader shared-memory limit: " + dstLen);
             if (embedDim <= 0) throw new ArgumentOutOfRangeException(nameof(embedDim));
             if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
             if ((embedDim % numHeads) != 0) throw new ArgumentOutOfRangeException(nameof(embedDim), "embedDim must be divisible by numHeads");

@@ -53,9 +53,18 @@ namespace NcnnCompute
                     var parts = v.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length == 0)
                         return Array.Empty<int>();
-                    var arr = new int[parts.Length];
-                    for (var i = 0; i < parts.Length; i++)
-                        arr[i] = int.Parse(parts[i], NumberStyles.Integer, CultureInfo.InvariantCulture);
+                    var start = 0;
+                    if (key <= -23300
+                        && parts.Length >= 2
+                        && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var count)
+                        && count == parts.Length - 1)
+                    {
+                        start = 1;
+                    }
+
+                    var arr = new int[parts.Length - start];
+                    for (var i = start; i < parts.Length; i++)
+                        arr[i - start] = int.Parse(parts[i], NumberStyles.Integer, CultureInfo.InvariantCulture);
                     return arr;
                 }
                 return defaultValue;
@@ -68,9 +77,18 @@ namespace NcnnCompute
                     var parts = v.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length == 0)
                         return Array.Empty<float>();
-                    var arr = new float[parts.Length];
-                    for (var i = 0; i < parts.Length; i++)
-                        arr[i] = float.Parse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture);
+                    var start = 0;
+                    if (key <= -23300
+                        && parts.Length >= 2
+                        && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var count)
+                        && count == parts.Length - 1)
+                    {
+                        start = 1;
+                    }
+
+                    var arr = new float[parts.Length - start];
+                    for (var i = start; i < parts.Length; i++)
+                        arr[i - start] = float.Parse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture);
                     return arr;
                 }
                 return defaultValue;

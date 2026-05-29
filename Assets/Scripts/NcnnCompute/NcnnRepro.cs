@@ -330,6 +330,7 @@ namespace NcnnCompute
 
         public bool enableWinograd23 = false;
         public bool gpuLayerProfileEnabled = false;
+        public bool useExperimentalIteratePath = false;
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
 
         private bool ShouldUseWinograd23(ConvPack pack, int srcW, int srcH)
@@ -563,7 +564,7 @@ namespace NcnnCompute
             return (GFPGANInferResult)InferCore(inputPack4, inputPacks, inputBlobName, pinnedNames, bufferBlobs, tempBuffers);
         }
 
-        public GFPGANInferResult InferWithMultiInputs(Dictionary<string, RenderTexture> textureInputs, Dictionary<string, ComputeBuffer> bufferInputs, ICollection<string> pinnedNames = null)
+        public GFPGANInferResult InferWithMultiInputs(Dictionary<string, RenderTexture> textureInputs, Dictionary<string, NcnnTensorBuffer> bufferInputs, ICollection<string> pinnedNames = null)
         {
             if (textureInputs == null && bufferInputs == null)
                 throw new ArgumentNullException(nameof(textureInputs));
@@ -572,7 +573,12 @@ namespace NcnnCompute
 
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
             var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
-            var bufferBlobs = new Dictionary<string, ComputeBuffer>(bufferInputs ?? new Dictionary<string, ComputeBuffer>(), StringComparer.Ordinal);
+            var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
+            if (bufferInputs != null)
+            {
+                foreach (var kv in bufferInputs)
+                    bufferBlobs[kv.Key] = kv.Value?.buffer;
+            }
             var tempBuffers = new List<ComputeBuffer>();
 
             if (textureInputs != null)
@@ -839,10 +845,116 @@ namespace NcnnCompute
 
         private InferResultBase InferCoreIterate(Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, Dictionary<string, ComputeBuffer> bufferBlobs, List<ComputeBuffer> tempBuffers, ICollection<string> pinnedNames)
         {
+
             if (bufferBlobs == null)
                 bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
             if (tempBuffers == null)
                 tempBuffers = new List<ComputeBuffer>();
+
+            var bufferTensorViews = new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal);
+            foreach (var kv in bufferBlobs)
+            {
+                if (kv.Value != null)
+                    bufferTensorViews[kv.Key] = new NcnnTensorBuffer(kv.Value, 1, kv.Value.count, 1, 1, 1, false);
+            }
+
+            void SetBufferView(string name, NcnnTensorBuffer tensor)
+            {
+                if (tensor == null || tensor.buffer == null)
+                    throw new ArgumentNullException(nameof(tensor));
+                bufferBlobs[name] = tensor.buffer;
+                bufferTensorViews[name] = tensor;
+            }
+
+            NcnnTensorBuffer GetBufferView(string name)
+            {
+                if (bufferTensorViews.TryGetValue(name, out var tensor) && tensor != null && tensor.buffer != null)
+                    return tensor;
+                if (bufferBlobs.TryGetValue(name, out var buf) && buf != null)
+                {
+                    tensor = new NcnnTensorBuffer(buf, 1, buf.count, 1, 1, 1, false);
+                    bufferTensorViews[name] = tensor;
+                    return tensor;
+                }
+                return null;
+            }
+
+            NcnnTensorBuffer AllocTensorLike(int dims, int w, int h, int d, int c)
+            {
+                return dims switch
+                {
+                    1 => new NcnnTensorBuffer(w),
+                    2 => new NcnnTensorBuffer(w, h),
+                    3 => new NcnnTensorBuffer(w, h, c),
+                    4 => new NcnnTensorBuffer(w, h, d, c),
+                    _ => throw new InvalidOperationException("unsupported dims: " + dims)
+                };
+            }
+
+            static int PositiveAxis(int axis, int dims)
+            {
+                return axis < 0 ? axis + dims : axis;
+            }
+
+            static int SafeDiv(int a, int b, string reason)
+            {
+                if (b == 0 || (a % b) != 0)
+                    throw new InvalidOperationException(reason + " | " + a + " / " + b);
+                return a / b;
+            }
+
+            NcnnTensorBuffer ResolveReshapeTensor(NcnnTensorBuffer src, NcnnParamModel.Layer layer)
+            {
+                if (src == null)
+                    throw new ArgumentNullException(nameof(src));
+
+                var outw = layer.GetInt(0, -233);
+                var outh = layer.GetInt(1, -233);
+                var outd = layer.GetInt(11, -233);
+                var outc = layer.GetInt(2, -233);
+                var ndim = 4;
+                if (outd == -233) ndim = 3;
+                if (outc == -233) ndim = 2;
+                if (outh == -233) ndim = 1;
+
+                var total = src.elementCount;
+                if (ndim == 1)
+                {
+                    if (outw == 0) outw = src.w;
+                    if (outw == -1) outw = total;
+                    return src.Reshape(1, outw);
+                }
+
+                if (ndim == 2)
+                {
+                    if (outw == 0) outw = src.w;
+                    if (outh == 0) outh = src.h;
+                    if (outw == -1) outw = SafeDiv(total, outh, "Reshape outw");
+                    if (outh == -1) outh = SafeDiv(total, outw, "Reshape outh");
+                    return src.Reshape(2, outw, outh);
+                }
+
+                if (ndim == 3)
+                {
+                    if (outw == 0) outw = src.w;
+                    if (outh == 0) outh = src.h;
+                    if (outc == 0) outc = src.c;
+                    if (outw == -1) outw = SafeDiv(total, Mathf.Max(1, outc) * Mathf.Max(1, outh), "Reshape outw");
+                    if (outh == -1) outh = SafeDiv(total, Mathf.Max(1, outc) * Mathf.Max(1, outw), "Reshape outh");
+                    if (outc == -1) outc = SafeDiv(total, Mathf.Max(1, outw) * Mathf.Max(1, outh), "Reshape outc");
+                    return src.Reshape(3, outw, outh, 1, outc);
+                }
+
+                if (outw == 0) outw = src.w;
+                if (outh == 0) outh = src.h;
+                if (outd == 0) outd = src.d;
+                if (outc == 0) outc = src.c;
+                if (outw == -1) outw = SafeDiv(total, Mathf.Max(1, outc) * Mathf.Max(1, outd) * Mathf.Max(1, outh), "Reshape outw");
+                if (outh == -1) outh = SafeDiv(total, Mathf.Max(1, outc) * Mathf.Max(1, outd) * Mathf.Max(1, outw), "Reshape outh");
+                if (outd == -1) outd = SafeDiv(total, Mathf.Max(1, outc) * Mathf.Max(1, outw) * Mathf.Max(1, outh), "Reshape outd");
+                if (outc == -1) outc = SafeDiv(total, Mathf.Max(1, outd) * Mathf.Max(1, outw) * Mathf.Max(1, outh), "Reshape outc");
+                return src.Reshape(4, outw, outh, outd, outc);
+            }
 
             ComputeBuffer GetOrConvertToBuffer(string name)
             {
@@ -873,10 +985,15 @@ namespace NcnnCompute
                     {
                         if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
                         {
+                            var srcTensor = GetBufferView(l.bottomNames[0]);
                             for (var i = 0; i < l.topNames.Length; i++)
                             {
                                 if (!bufferBlobs.ContainsKey(l.topNames[i]))
+                                {
                                     bufferBlobs[l.topNames[i]] = srcBuf;
+                                    if (srcTensor != null)
+                                        bufferTensorViews[l.topNames[i]] = srcTensor;
+                                }
                             }
                         }
                         else
@@ -894,24 +1011,91 @@ namespace NcnnCompute
 
                     if (string.Equals(l.type, "Permute", StringComparison.Ordinal))
                     {
-                        if (!bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) || srcBuf == null)
-                            throw new InvalidOperationException("Permute input buffer not found: " + l.name);
+                        var srcBuf = GetOrConvertToBuffer(l.bottomNames[0]);
+                        if (srcBuf == null)
+                            throw new InvalidOperationException("Permute input blob not found: " + l.name);
+
+                        var srcTensor = GetBufferView(l.bottomNames[0]);
+                        if (srcTensor == null)
+                            throw new InvalidOperationException("Permute shape not resolved: " + l.name + " (no tensor view)");
+
                         var orderType = l.GetInt(0, 0);
-                        var srcCount = srcBuf.count;
-                        int srcW = 1, srcH = 1, srcD = 1, srcC = 1;
-                        var param = l.GetFloats(-23303, null);
-                        if (param != null && param.Length >= 3)
+
+                        var dims = Mathf.Clamp(srcTensor.dims, 2, 4);
+                        Vector4Int axes;
+                        if (dims == 2)
                         {
-                            srcC = (int)param[0];
+                            axes = orderType switch
+                            {
+                                0 => new Vector4Int(0, 1, 0, 0),
+                                1 => new Vector4Int(1, 0, 0, 0),
+                                _ => throw new InvalidOperationException("unsupported permute dims=2 orderType: " + orderType + " | " + l.name)
+                            };
                         }
-                        var sizes = new List<int>();
-                        if (param != null && param.Length >= 1) sizes.Add((int)param[0]);
-                        if (srcW * srcH * srcD * srcC == 0)
-                            throw new InvalidOperationException("Permute shape not resolved: " + l.name);
-                        var outBuf = new ComputeBuffer(srcCount, sizeof(float), ComputeBufferType.Structured);
+                        else if (dims == 3)
+                        {
+                            axes = orderType switch
+                            {
+                                0 => new Vector4Int(0, 1, 2, 0),
+                                1 => new Vector4Int(1, 0, 2, 0),
+                                2 => new Vector4Int(0, 2, 1, 0),
+                                3 => new Vector4Int(2, 0, 1, 0),
+                                4 => new Vector4Int(1, 2, 0, 0),
+                                5 => new Vector4Int(2, 1, 0, 0),
+                                _ => throw new InvalidOperationException("unsupported permute dims=3 orderType: " + orderType + " | " + l.name)
+                            };
+                        }
+                        else
+                        {
+                            axes = orderType switch
+                            {
+                                0 => new Vector4Int(0, 1, 2, 3),
+                                1 => new Vector4Int(1, 0, 2, 3),
+                                2 => new Vector4Int(0, 2, 1, 3),
+                                3 => new Vector4Int(2, 0, 1, 3),
+                                4 => new Vector4Int(1, 2, 0, 3),
+                                5 => new Vector4Int(2, 1, 0, 3),
+                                6 => new Vector4Int(0, 1, 3, 2),
+                                7 => new Vector4Int(1, 0, 3, 2),
+                                8 => new Vector4Int(0, 3, 1, 2),
+                                9 => new Vector4Int(3, 0, 1, 2),
+                                10 => new Vector4Int(1, 3, 0, 2),
+                                11 => new Vector4Int(3, 1, 0, 2),
+                                12 => new Vector4Int(0, 2, 3, 1),
+                                13 => new Vector4Int(2, 0, 3, 1),
+                                14 => new Vector4Int(0, 3, 2, 1),
+                                15 => new Vector4Int(3, 0, 2, 1),
+                                16 => new Vector4Int(2, 3, 0, 1),
+                                17 => new Vector4Int(3, 2, 0, 1),
+                                18 => new Vector4Int(1, 2, 3, 0),
+                                19 => new Vector4Int(2, 1, 3, 0),
+                                20 => new Vector4Int(1, 3, 2, 0),
+                                21 => new Vector4Int(3, 1, 2, 0),
+                                22 => new Vector4Int(2, 3, 1, 0),
+                                23 => new Vector4Int(3, 2, 1, 0),
+                                _ => throw new InvalidOperationException("unsupported permute dims=4 orderType: " + orderType + " | " + l.name)
+                            };
+                        }
+
+                        int GetAxisSize(int axis)
+                        {
+                            if (axis == 0) return srcTensor.w;
+                            if (axis == 1) return srcTensor.h;
+                            if (axis == 2) return dims == 4 ? srcTensor.d : srcTensor.c;
+                            if (axis == 3) return srcTensor.c;
+                            throw new InvalidOperationException("invalid permute axis " + axis + " | " + l.name);
+                        }
+
+                        var outW = GetAxisSize(axes.x);
+                        var outH = GetAxisSize(axes.y);
+                        var outD = dims == 4 ? GetAxisSize(axes.z) : 1;
+                        var outC = dims == 2 ? 1 : GetAxisSize(dims == 4 ? axes.w : axes.z);
+                        var outCount = outW * outH * outD * outC;
+                        var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
                         tempBuffers.Add(outBuf);
-                        _ops.Permute(srcBuf, 4, srcW, srcH, srcD, srcC, orderType, outBuf);
+                        _ops.Permute(srcBuf, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
+                        bufferTensorViews[l.topNames[0]] = new NcnnTensorBuffer(outBuf, dims, outW, outH, outD, outC, false);
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
                         continue;
                     }
@@ -919,7 +1103,18 @@ namespace NcnnCompute
                     if (string.Equals(l.type, "ExpandDims", StringComparison.Ordinal))
                     {
                         if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                        {
                             bufferBlobs[l.topNames[0]] = srcBuf;
+                            var srcTensor = GetBufferView(l.bottomNames[0]);
+                            var axes = l.GetInts(3, null);
+                            if (srcTensor != null && axes != null)
+                            {
+                                var expanded = srcTensor;
+                                for (var i = 0; i < axes.Length; i++)
+                                    expanded = expanded.ExpandDims(axes[i]);
+                                bufferTensorViews[l.topNames[0]] = expanded;
+                            }
+                        }
                         else if (blobs.TryGetValue(l.bottomNames[0], out var srcTex) && srcTex != null)
                         {
                             blobs[l.topNames[0]] = srcTex;
@@ -1097,17 +1292,15 @@ namespace NcnnCompute
                             var axis = l.GetInt(0, 0);
                             if (axis != 1 && axis != -1)
                                 throw new InvalidOperationException("Softmax buffer axis not supported: " + axis);
-                            int rows = 1, cols = srcBuf.count;
-                            var param = l.GetFloats(-23303, null);
-                            if (param != null && param.Length >= 2)
-                            {
-                                cols = (int)param[param.Length - 1];
-                                rows = srcBuf.count / cols;
-                            }
+                            var srcTensor = GetBufferView(l.bottomNames[0]);
+                            var rows = srcTensor != null && srcTensor.dims >= 2 ? srcTensor.h : 1;
+                            var cols = srcTensor != null && srcTensor.dims >= 2 ? srcTensor.w : srcBuf.count;
                             var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
                             tempBuffers.Add(outBuf);
                             _ops.Softmax2D(srcBuf, outBuf, rows, cols);
                             bufferBlobs[l.topNames[0]] = outBuf;
+                            if (srcTensor != null)
+                                bufferTensorViews[l.topNames[0]] = new NcnnTensorBuffer(outBuf, srcTensor.dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, false);
                         }
                         else
                         {
@@ -1128,10 +1321,18 @@ namespace NcnnCompute
                         if (bufferBlobs.TryGetValue(l.bottomNames[0], out var ipInput) && ipInput != null)
                         {
                             var ip = _innerProduct[l.name];
-                            var outBuf = new ComputeBuffer(ip.outFeatures, sizeof(float), ComputeBufferType.Structured);
+                            var inTensor = GetBufferView(l.bottomNames[0]);
+                            var rows = inTensor != null && inTensor.dims == 2 && inTensor.w == ip.inFeatures ? inTensor.h : 1;
+                            var outBuf = new ComputeBuffer(ip.outFeatures * rows, sizeof(float), ComputeBufferType.Structured);
                             tempBuffers.Add(outBuf);
-                            _ops.InnerProduct(ipInput, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
+                            if (rows > 1)
+                                _ops.InnerProduct2D(ipInput, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
+                            else
+                                _ops.InnerProduct(ipInput, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
                             bufferBlobs[l.topNames[0]] = outBuf;
+                            bufferTensorViews[l.topNames[0]] = rows > 1
+                                ? new NcnnTensorBuffer(outBuf, 2, ip.outFeatures, rows, 1, 1, false)
+                                : new NcnnTensorBuffer(outBuf, 1, ip.outFeatures, 1, 1, 1, false);
                         }
                         else
                         {
@@ -1244,22 +1445,41 @@ namespace NcnnCompute
                         var withScalar = l.GetInt(1, 0);
                         var scalarB = l.GetFloat(2, 0f);
 
-                        if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                        var aBuf = GetOrConvertToBuffer(l.bottomNames[0]);
+                        var bBufMaybe = withScalar != 0 ? null : GetOrConvertToBuffer(l.bottomNames[1]);
+
+                        if (aBuf != null && (withScalar != 0 || bBufMaybe != null))
                         {
                             if (withScalar != 0)
                             {
-                                var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                                var outBuf = new ComputeBuffer(aBuf.count, sizeof(float), ComputeBufferType.Structured);
                                 tempBuffers.Add(outBuf);
-                                _ops.BinaryOpScalarBuf(srcBuf, scalarB, srcBuf.count, opType, outBuf);
+                                _ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
                                 bufferBlobs[l.topNames[0]] = outBuf;
                             }
                             else
                             {
-                                if (!bufferBlobs.TryGetValue(l.bottomNames[1], out var bBuf) || bBuf == null)
+                                if (bBufMaybe == null)
                                     throw new InvalidOperationException("BinaryOp second input buffer not found: " + l.name);
-                                var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                                var outCount = Math.Max(aBuf.count, bBufMaybe.count);
+                                var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
                                 tempBuffers.Add(outBuf);
-                                _ops.BinaryOpBuf(srcBuf, bBuf, srcBuf.count, opType, outBuf);
+                                if (aBuf.count == bBufMaybe.count)
+                                {
+                                    _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf);
+                                }
+                                else if (aBuf.count < bBufMaybe.count && bBufMaybe.count % aBuf.count == 0)
+                                {
+                                    _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf, 1, aBuf.count);
+                                }
+                                else if (bBufMaybe.count < aBuf.count && aBuf.count % bBufMaybe.count == 0)
+                                {
+                                    _ops.BinaryOpBuf(aBuf, bBufMaybe, outCount, opType, outBuf, 2, bBufMaybe.count);
+                                }
+                                else
+                                {
+                                    throw new InvalidOperationException("BinaryOp buffer count mismatch: " + l.name + " | " + aBuf.count + " vs " + bBufMaybe.count);
+                                }
                                 bufferBlobs[l.topNames[0]] = outBuf;
                             }
                         }
@@ -1432,15 +1652,21 @@ namespace NcnnCompute
                         if (!_layerNorm.TryGetValue(l.name, out var lp))
                             throw new InvalidOperationException("LayerNorm not found: " + l.name);
 
-                        ComputeBuffer srcBuf;
-                        if (!bufferBlobs.TryGetValue(l.bottomNames[0], out srcBuf) || srcBuf == null)
-                            throw new InvalidOperationException("LayerNorm input buffer not found: " + l.bottomNames[0]);
+                        var srcBuf = GetOrConvertToBuffer(l.bottomNames[0]);
+                        if (srcBuf == null)
+                            throw new InvalidOperationException("LayerNorm input blob not found: " + l.bottomNames[0]);
 
+                        var srcTensor = GetBufferView(l.bottomNames[0]);
+                        var rows = srcTensor != null && srcTensor.dims == 2 && srcTensor.w == lp.affineSize
+                            ? srcTensor.h
+                            : srcBuf.count / Mathf.Max(1, lp.affineSize);
                         var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
                         tempBuffers.Add(outBuf);
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
-                        _ops.LayerNorm2DInplace(outBuf, srcBuf.count / Mathf.Max(1, lp.affineSize), lp.affineSize, lp.eps, lp.affine, lp.gamma, lp.beta);
+                        _ops.LayerNorm2DInplace(outBuf, rows, lp.affineSize, lp.eps, lp.affine, lp.gamma, lp.beta);
                         bufferBlobs[l.topNames[0]] = outBuf;
+                        if (srcTensor != null)
+                            bufferTensorViews[l.topNames[0]] = new NcnnTensorBuffer(outBuf, srcTensor.dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, false);
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
                         continue;
                     }
@@ -1450,9 +1676,9 @@ namespace NcnnCompute
                         if (!_groupNorm.TryGetValue(l.name, out var gp))
                             throw new InvalidOperationException("GroupNorm not found: " + l.name);
 
-                        ComputeBuffer srcBuf;
-                        if (!bufferBlobs.TryGetValue(l.bottomNames[0], out srcBuf) || srcBuf == null)
-                            throw new InvalidOperationException("GroupNorm input buffer not found: " + l.bottomNames[0]);
+                        var srcBuf = GetOrConvertToBuffer(l.bottomNames[0]);
+                        if (srcBuf == null)
+                            throw new InvalidOperationException("GroupNorm input blob not found: " + l.bottomNames[0]);
 
                         var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
                         tempBuffers.Add(outBuf);
@@ -1502,6 +1728,7 @@ namespace NcnnCompute
                         _ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
 
                         bufferBlobs[l.topNames[0]] = outBuf;
+                        bufferTensorViews[l.topNames[0]] = new NcnnTensorBuffer(outBuf, 2, mp.qdim, srcLen, 1, 1, false);
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
                         continue;
                     }
@@ -1512,6 +1739,7 @@ namespace NcnnCompute
             catch(Exception e)
             {
                 Debug.LogError(e);
+                throw;
             }
 
             var result = bufferBlobs != null
@@ -1529,7 +1757,9 @@ namespace NcnnCompute
 
             var inputRef = new TensorRef { t1 = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
             blobs[inputBlobName] = inputRef;
-            return InferCoreIterate(blobs, remaining, bufferBlobs, tempBuffers, pinnedNames);
+            return useExperimentalIteratePath
+                ? InferCoreIterate(blobs, remaining, bufferBlobs, tempBuffers, pinnedNames)
+                : InferCoreLegacy(inputPack4, inputPacks, inputBlobName, pinnedNames, bufferBlobs, tempBuffers);
         }
 
         private InferResultBase InferCoreLegacy(RenderTexture inputPack4, int inputPacks, string inputBlobName, ICollection<string> pinnedNames, Dictionary<string, ComputeBuffer> bufferBlobs, List<ComputeBuffer> tempBuffers)
