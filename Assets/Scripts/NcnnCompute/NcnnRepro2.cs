@@ -1218,7 +1218,7 @@ namespace NcnnCompute
                     if (srcBuf == null)
                         throw new InvalidOperationException("GELU source not found: " + layer.name);
                     var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
-                    _ops.UnaryOpBuf(srcBuf, srcBuf.count, 15, outBuf);
+                    _ops.GeluBuf(srcBuf, srcBuf.count, outBuf);
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     if (srcView != null)
                         bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);

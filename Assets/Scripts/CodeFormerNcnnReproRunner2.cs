@@ -378,10 +378,15 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     try { await DumpPack4TextureAsync(dumpDir, "08_style_feat_lq.png", lqFeat, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 08_style_feat_lq | " + e.Message); }
                     try { await DumpPack4TextureAsync(dumpDir, "09_input_enc_feat_256.png", encFeat256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 09_input_enc_feat_256 | " + e.Message); }
                     await DumpInferBlobAsync(generatorResult, dumpDir, "10_blob_1028.png", "1028", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1028");
                     await DumpInferBlobAsync(generatorResult, dumpDir, "11_blob_1033.png", "1033", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1033");
                     await DumpInferBlobAsync(generatorResult, dumpDir, "12_blob_1064.png", "1064", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1064");
                     await DumpInferBlobAsync(generatorResult, dumpDir, "13_blob_1246.png", "1246", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1246");
                     await DumpInferBlobAsync(generatorResult, dumpDir, "14_blob_1459.png", "1459", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1459");
                 }
 
                 stage = "extract generator blob out";
@@ -395,6 +400,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 {
                     stage = "dump generator output pack4";
                     await DumpPack4TextureAsync(dumpDir, "15_out_pack4.png", outputTex, ct);
+                    await AppendPack4TextureStatsAsync(dumpDir, "out_pack4", outputTex);
                 }
 
                 stage = "clip generator output";
@@ -476,6 +482,22 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
+    private async UniTask DumpInferBlobStatsAsync(NcnnRepro2.InferResult inferResult, string dir, string blobName)
+    {
+        if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
+            return;
+
+        try
+        {
+            var tex = inferResult.GetTexture(blobName);
+            await AppendPack4TextureStatsAsync(dir, blobName, tex);
+        }
+        catch (Exception e)
+        {
+            try { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip blob stats " + blobName + " | " + e.Message); } catch { }
+        }
+    }
+
     private async UniTask DumpPack4TextureAsync(string dir, string fileName, RenderTexture pack4Tex, CancellationToken ct)
     {
         if (!enableDebugDump || pack4Tex == null || string.IsNullOrWhiteSpace(dir))
@@ -495,6 +517,28 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         {
             vis.Release();
             Destroy(vis);
+        }
+    }
+
+    private async UniTask AppendPack4TextureStatsAsync(string dir, string blobName, RenderTexture pack4Tex)
+    {
+        if (!enableDebugDump || pack4Tex == null || string.IsNullOrWhiteSpace(dir))
+            return;
+
+        var channels = (pack4Tex.volumeDepth > 0 ? pack4Tex.volumeDepth : 1) * 4;
+        var total = pack4Tex.width * pack4Tex.height * channels;
+        var buffer = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
+        try
+        {
+            _ops.Pack4ToBufferCHW(pack4Tex, pack4Tex.width, pack4Tex.height, channels, buffer);
+            var data = new float[total];
+            buffer.GetData(data);
+            AppendStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data);
+            AppendMatrixStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data, pack4Tex.width * channels, pack4Tex.height, false);
+        }
+        finally
+        {
+            buffer.Dispose();
         }
     }
 
@@ -686,6 +730,60 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
+    private static void AppendStatsLineTo(string path, string blobName, float[] data)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(blobName) || data == null || data.Length == 0)
+            return;
+
+        try
+        {
+            double sum = 0d;
+            double sq = 0d;
+            var finite = 0;
+            var nan = 0;
+            var inf = 0;
+            float min = float.PositiveInfinity;
+            float max = float.NegativeInfinity;
+            for (var i = 0; i < data.Length; i++)
+            {
+                var v = data[i];
+                if (float.IsNaN(v))
+                {
+                    nan++;
+                    continue;
+                }
+                if (float.IsInfinity(v))
+                {
+                    inf++;
+                    continue;
+                }
+                finite++;
+                sum += v;
+                sq += v * v;
+                if (v < min) min = v;
+                if (v > max) max = v;
+            }
+
+            var mean = finite > 0 ? sum / finite : 0d;
+            var var = finite > 0 ? Math.Max(0d, sq / finite - mean * mean) : 0d;
+            var std = Math.Sqrt(var);
+            var line = blobName
+                + " | count=" + data.Length
+                + " finite=" + finite
+                + " nan=" + nan
+                + " inf=" + inf
+                + " min=" + min.ToString("G9")
+                + " max=" + max.ToString("G9")
+                + " mean=" + mean.ToString("G9")
+                + " std=" + std.ToString("G9")
+                + Environment.NewLine;
+            File.AppendAllText(path, line);
+        }
+        catch
+        {
+        }
+    }
+
     private static void AppendMatrixStatsLine(string dir, string blobName, float[] data, int width, int height, bool treatAsProbability)
     {
         if (string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(blobName) || data == null || width <= 0 || height <= 0 || data.Length < width * height)
@@ -762,6 +860,85 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 + " top_argmax_bins=" + topSummary
                 + Environment.NewLine;
             File.AppendAllText(Path.Combine(dir, "encoder_stats.txt"), line);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void AppendMatrixStatsLineTo(string path, string blobName, float[] data, int width, int height, bool treatAsProbability)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(blobName) || data == null || width <= 0 || height <= 0 || data.Length < width * height)
+            return;
+
+        try
+        {
+            var argmaxCounts = new Dictionary<int, int>();
+            double rowMaxSum = 0d;
+            double rowSecondSum = 0d;
+            double rowGapSum = 0d;
+            double rowEntropySum = 0d;
+            for (var y = 0; y < height; y++)
+            {
+                var rowBase = y * width;
+                var maxIndex = 0;
+                var maxValue = float.NegativeInfinity;
+                var secondValue = float.NegativeInfinity;
+                double entropy = 0d;
+                double rowSum = 0d;
+
+                for (var x = 0; x < width; x++)
+                {
+                    var v = data[rowBase + x];
+                    if (v > maxValue)
+                    {
+                        secondValue = maxValue;
+                        maxValue = v;
+                        maxIndex = x;
+                    }
+                    else if (v > secondValue)
+                    {
+                        secondValue = v;
+                    }
+
+                    if (treatAsProbability && v > 0f && !float.IsNaN(v) && !float.IsInfinity(v))
+                    {
+                        rowSum += v;
+                        entropy -= v * Math.Log(Math.Max(v, 1e-30f));
+                    }
+                }
+
+                if (!argmaxCounts.TryGetValue(maxIndex, out var count))
+                    count = 0;
+                argmaxCounts[maxIndex] = count + 1;
+
+                rowMaxSum += maxValue;
+                rowSecondSum += secondValue;
+                rowGapSum += maxValue - secondValue;
+                if (treatAsProbability && rowSum > 0d)
+                    rowEntropySum += entropy;
+            }
+
+            var topBins = new List<KeyValuePair<int, int>>(argmaxCounts);
+            topBins.Sort((a, b) => b.Value != a.Value ? b.Value.CompareTo(a.Value) : a.Key.CompareTo(b.Key));
+            var topSummary = "";
+            var take = Math.Min(8, topBins.Count);
+            for (var i = 0; i < take; i++)
+            {
+                if (i > 0) topSummary += ",";
+                topSummary += topBins[i].Key + ":" + topBins[i].Value;
+            }
+
+            var line = blobName
+                + " | matrix=" + width + "x" + height
+                + " unique_argmax=" + argmaxCounts.Count
+                + " avg_row_max=" + (rowMaxSum / height).ToString("G9")
+                + " avg_row_second=" + (rowSecondSum / height).ToString("G9")
+                + " avg_row_gap=" + (rowGapSum / height).ToString("G9")
+                + (treatAsProbability ? " avg_row_entropy=" + (rowEntropySum / height).ToString("G9") : "")
+                + " top_argmax_bins=" + topSummary
+                + Environment.NewLine;
+            File.AppendAllText(path, line);
         }
         catch
         {
