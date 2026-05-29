@@ -1132,6 +1132,24 @@ namespace NcnnCompute
                         if (bBuf == null)
                             throw new InvalidOperationException("BinaryOp second source not found: " + layer.name);
 
+                        // ncnn reduction + binary-op chains in CodeFormer frequently mix [h,w] with [1,w] or [h,1].
+                        // Expanding the smaller 2d tensor explicitly avoids ambiguous modulo-based broadcasting.
+                        if (aView != null && bView != null && aView.dims == 2 && bView.dims == 2 && aBuf.count != bBuf.count)
+                        {
+                            if (TryExpand2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
+                            {
+                                bBuf = expandedB;
+                                bView = expandedBView;
+                                tempOwned.Add(expandedB);
+                            }
+                            else if (TryExpand2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
+                            {
+                                aBuf = expandedA;
+                                aView = expandedAView;
+                                tempOwned.Add(expandedA);
+                            }
+                        }
+
                         var broadcast = ResolveBinaryBroadcast(aView, bView, aBuf.count, bBuf.count, layer.name);
                         var outBuf = new ComputeBuffer(broadcast.total, sizeof(float), ComputeBufferType.Structured);
                         _ops.BinaryOpBuf(aBuf, bBuf, broadcast.total, opType, outBuf, broadcast.mode, broadcast.size);
@@ -1801,9 +1819,16 @@ namespace NcnnCompute
 
             if (aView != null && bView != null && aView.dims == 2 && bView.dims == 2)
             {
-                if (aView.w == bView.w && bView.h == 1)
+                // row-wise broadcast: [h,w] op [1,w]
+                if (aView.w == bView.w && bView.h == 1 && aView.h > 1)
                     return (2, bCount, aCount, aView);
-                if (aView.w == bView.w && aView.h == 1)
+                if (aView.w == bView.w && aView.h == 1 && bView.h > 1)
+                    return (1, aCount, bCount, bView);
+
+                // column-wise broadcast: [h,w] op [h,1]
+                if (aView.h == bView.h && bView.w == 1 && aView.w > 1)
+                    return (2, bCount, aCount, aView);
+                if (aView.h == bView.h && aView.w == 1 && bView.w > 1)
                     return (1, aCount, bCount, bView);
             }
 
@@ -1813,6 +1838,57 @@ namespace NcnnCompute
                 return (2, bCount, aCount, aView);
 
             throw new InvalidOperationException("BinaryOp broadcast not supported: " + layerName + " | " + aCount + " vs " + bCount);
+        }
+
+        private static bool TryExpand2DBroadcastBuffer(
+            ComputeBuffer sourceBuffer,
+            NcnnTensorBuffer sourceView,
+            NcnnTensorBuffer targetView,
+            out ComputeBuffer expandedBuffer,
+            out NcnnTensorBuffer expandedView)
+        {
+            expandedBuffer = null;
+            expandedView = null;
+
+            if (sourceBuffer == null || sourceView == null || targetView == null)
+                return false;
+            if (sourceView.dims != 2 || targetView.dims != 2)
+                return false;
+            if (sourceView.w == targetView.w && sourceView.h == targetView.h)
+                return false;
+
+            bool isRowVector = sourceView.h == 1 && sourceView.w == targetView.w && targetView.h > 1;
+            bool isColumnVector = sourceView.w == 1 && sourceView.h == targetView.h && targetView.w > 1;
+            if (!isRowVector && !isColumnVector)
+                return false;
+
+            var srcData = new float[sourceBuffer.count];
+            sourceBuffer.GetData(srcData);
+
+            var expandedData = new float[targetView.w * targetView.h];
+            if (isRowVector)
+            {
+                for (var y = 0; y < targetView.h; y++)
+                {
+                    var rowBase = y * targetView.w;
+                    Array.Copy(srcData, 0, expandedData, rowBase, targetView.w);
+                }
+            }
+            else
+            {
+                for (var y = 0; y < targetView.h; y++)
+                {
+                    var value = srcData[y];
+                    var rowBase = y * targetView.w;
+                    for (var x = 0; x < targetView.w; x++)
+                        expandedData[rowBase + x] = value;
+                }
+            }
+
+            expandedBuffer = new ComputeBuffer(expandedData.Length, sizeof(float), ComputeBufferType.Structured);
+            expandedBuffer.SetData(expandedData);
+            expandedView = new NcnnTensorBuffer(expandedBuffer, 2, targetView.w, targetView.h, 1, 1, false);
+            return true;
         }
 
         public static Dictionary<string, int> BuildBlobUseCount(NcnnParamModel model)
