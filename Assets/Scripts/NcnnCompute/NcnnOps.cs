@@ -254,6 +254,7 @@ namespace NcnnCompute
         private readonly int _kLeakyReluBuf;
         private readonly int _kAddWeighted;
         private readonly int _kCopyBuf;
+        private readonly int _kCopyBufPartial;
         private readonly int _kBinaryOpBuf;
         private readonly int _kUnaryOpBuf;
         private readonly int _kSigmoidBuf;
@@ -317,6 +318,7 @@ namespace NcnnCompute
         private readonly int _kTouchU32;
         private readonly int _kInnerProduct2D;
         private readonly int _kMhaAttention;
+        private readonly int _kReorgPack4;
 
         public NcnnOps()
         {
@@ -329,6 +331,7 @@ namespace NcnnCompute
             _kLeakyReluBuf = _cs.FindKernel("NcnnLeakyReluBuf");
             _kAddWeighted = _cs.FindKernel("NcnnAddWeighted");
             _kCopyBuf = _cs.FindKernel("NcnnCopyBuf");
+            _kCopyBufPartial = _cs.FindKernel("NcnnCopyBufPartial");
             _kBinaryOpBuf = _cs.FindKernel("NcnnBinaryOpBuf");
             _kUnaryOpBuf = _cs.FindKernel("NcnnUnaryOpBuf");
             _kSigmoidBuf = _cs.FindKernel("NcnnSigmoidBuf");
@@ -385,6 +388,7 @@ namespace NcnnCompute
             _kTouchU32 = _cs.FindKernel("NcnnTouchU32");
             _kInnerProduct2D = _cs.FindKernel("NcnnInnerProduct2D");
             _kMhaAttention = _cs.FindKernel("NcnnMhaAttention");
+            _kReorgPack4 = _cs.FindKernel("NcnnReorgPack4");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -1600,6 +1604,63 @@ namespace NcnnCompute
             Dispatch1D(_kCopyBuf, total, 256);
         }
 
+        public void CopyBufPartial(ComputeBuffer src, int srcOffset, ComputeBuffer dst, int total)
+        {
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            if (total < 0) throw new ArgumentOutOfRangeException(nameof(total));
+            if (total == 0) return;
+
+            _cs.SetInt("_Total", total);
+            _cs.SetInt("_SrcOffset", srcOffset);
+            _cs.SetBuffer(_kCopyBufPartial, "_BufA", src);
+            _cs.SetBuffer(_kCopyBufPartial, "_BufOut", dst);
+            Dispatch1D(_kCopyBufPartial, total, 256);
+        }
+
+        public void ReductionBuf(ComputeBuffer input, int elemCount, int outCount, int redType, float coeff, ComputeBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (elemCount <= 0) throw new ArgumentOutOfRangeException(nameof(elemCount));
+            if (outCount <= 0) throw new ArgumentOutOfRangeException(nameof(outCount));
+
+            if (outCount == 1)
+            {
+                ReduceAllSumOrMean(input, elemCount, redType == 3 || redType == 5, output);
+                if (coeff != 1f)
+                    MulScalarInplace(output, coeff, 1);
+            }
+            else
+            {
+                for (var i = 0; i < outCount; i++)
+                {
+                    var temp = new ComputeBuffer(1, sizeof(float), ComputeBufferType.Structured);
+                    try
+                    {
+                        _cs.SetInt("_SrcOffset", i * elemCount);
+                        _cs.SetBuffer(_kCopyBufPartial, "_BufA", input);
+                        _cs.SetBuffer(_kCopyBufPartial, "_BufOut", temp);
+                        _cs.SetInt("_Total", elemCount);
+                        Dispatch1D(_kCopyBufPartial, elemCount, 256);
+
+                        var elemTemp = new ComputeBuffer(elemCount, sizeof(float), ComputeBufferType.Structured);
+                        try
+                        {
+                            _cs.SetBuffer(_kCopyBufPartial, "_BufA", temp);
+                            _cs.SetBuffer(_kCopyBufPartial, "_BufOut", elemTemp);
+                            _cs.SetInt("_Total", elemCount);
+                            Dispatch1D(_kCopyBufPartial, elemCount, 256);
+
+                            ReduceAllSumOrMean(elemTemp, elemCount, redType == 3 || redType == 5, output);
+                        }
+                        finally { try { elemTemp?.Dispose(); } catch { } }
+                    }
+                    finally { try { temp?.Dispose(); } catch { } }
+                }
+            }
+        }
+
         public void BinaryOpBuf(ComputeBuffer a, ComputeBuffer b, int total, int opType, ComputeBuffer output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -2275,6 +2336,16 @@ namespace NcnnCompute
             var gx = Mathf.CeilToInt(w / (float)tx);
             var gy = Mathf.CeilToInt(h / (float)ty);
             cmd.DispatchCompute(_cs, kernel, Mathf.Max(1, gx), Mathf.Max(1, gy), Mathf.Max(1, z));
+        }
+
+        public void ReorgPack4(RenderTexture input, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var outPacks = packs * 4;
+            _cs.SetTexture(_kReorgPack4, "_ReorgInArr", input);
+            _cs.SetTexture(_kReorgPack4, "_ReorgOutArr", output);
+            Dispatch3D(_kReorgPack4, output.width, output.height, outPacks, 8, 8);
         }
 
         private void Dispatch1D(int kernel, int total, int threadsPerGroup)

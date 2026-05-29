@@ -56,6 +56,7 @@
 #pragma kernel NcnnGroupNormApply
 #pragma kernel NcnnTouchU32
 #pragma kernel NcnnCopyBuf
+#pragma kernel NcnnCopyBufPartial
 #pragma kernel NcnnBinaryOpBuf
 #pragma kernel NcnnUnaryOpBuf
 #pragma kernel NcnnSigmoidBuf
@@ -63,6 +64,7 @@
 #pragma kernel NcnnGeluBuf
 #pragma kernel NcnnInnerProduct2D
 #pragma kernel NcnnMhaAttention
+#pragma kernel NcnnReorgPack4
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -94,6 +96,7 @@ RWStructuredBuffer<uint> _TouchOut;
 int _TouchValue;
 
 int _UnaryOpType;
+int _SrcOffset;
 int _BinaryOpType;
 int _BinaryWithScalar;
 float _BinaryScalar;
@@ -1176,6 +1179,14 @@ void NcnnCopyBuf(uint3 id : SV_DispatchThreadID)
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
     _BufOut[idx] = _BufA[idx];
+}
+
+[numthreads(256,1,1)]
+void NcnnCopyBufPartial(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    if (idx >= (uint)_Total) return;
+    _BufOut[idx] = _BufA[idx + (uint)_SrcOffset];
 }
 
 [numthreads(256,1,1)]
@@ -2383,6 +2394,27 @@ void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThread
         sum += acc * _MatAlpha;
         _MatOut[row * _MatN + col] = sum;
     }
+}
+
+Texture2DArray<float4> _ReorgInArr;
+RWTexture2DArray<float4> _ReorgOutArr;
+
+[numthreads(8,8,1)]
+void NcnnReorgPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _ReorgOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    int srcP = p / 4;
+    int off = p % 4;
+
+    int srcX = (int)id.x * 2 + (off % 2);
+    int srcY = (int)id.y * 2 + (off / 2);
+
+    _ReorgOutArr[int3((int)id.x, (int)id.y, p)] = _ReorgInArr[int3(srcX, srcY, srcP)];
 }
 
 [numthreads(8,8,1)]

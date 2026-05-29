@@ -563,6 +563,34 @@ namespace NcnnCompute
             return (GFPGANInferResult)InferCore(inputPack4, inputPacks, inputBlobName, pinnedNames, bufferBlobs, tempBuffers);
         }
 
+        public GFPGANInferResult InferWithMultiInputs(Dictionary<string, RenderTexture> textureInputs, Dictionary<string, ComputeBuffer> bufferInputs, ICollection<string> pinnedNames = null)
+        {
+            if (textureInputs == null && bufferInputs == null)
+                throw new ArgumentNullException(nameof(textureInputs));
+            if (Model == null || _blobUseCount == null)
+                throw new InvalidOperationException("model not loaded");
+
+            var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+            var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
+            var bufferBlobs = new Dictionary<string, ComputeBuffer>(bufferInputs ?? new Dictionary<string, ComputeBuffer>(), StringComparer.Ordinal);
+            var tempBuffers = new List<ComputeBuffer>();
+
+            if (textureInputs != null)
+            {
+                foreach (var kv in textureInputs)
+                {
+                    if (kv.Value == null)
+                        throw new ArgumentNullException("textureInputs[\"" + kv.Key + "\"]");
+                    var rt = kv.Value;
+                    var packs = rt.volumeDepth > 0 ? rt.volumeDepth : 1;
+                    var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
+                    blobs[kv.Key] = new TensorRef { t1 = rt, w = rt.width, h = rt.height, packs = packs, refs = useCount, owned = false };
+                }
+            }
+
+            return (GFPGANInferResult)InferCoreIterate(blobs, remaining, bufferBlobs, tempBuffers, pinnedNames);
+        }
+
         public RenderTexture ForwardPack4(RenderTexture inputPack4, int inputPacks, string inputBlobName = "data", ICollection<string> pinnedNames = null)
         {
             var result = InferCore(inputPack4, inputPacks, inputBlobName, pinnedNames, null, null);
@@ -674,7 +702,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("LayerNorm not found: " + l.name);
 
                         if (!bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) || srcBuf == null)
-                            throw new InvalidOperationException("LayerNorm input buffer not found: " + l.bottomNames[0]);
+                            throw new InvalidOperationException("LayerNorm input blob not found: " + l.bottomNames[0]);
 
                         var rows = srcBuf.count / Mathf.Max(1, lp.affineSize);
                         var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
@@ -690,7 +718,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("GroupNorm not found: " + l.name);
 
                         if (!bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) || srcBuf == null)
-                            throw new InvalidOperationException("GroupNorm input buffer not found: " + l.bottomNames[0]);
+                            throw new InvalidOperationException("GroupNorm input blob not found: " + l.bottomNames[0]);
 
                         var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
@@ -710,7 +738,7 @@ namespace NcnnCompute
                         var kOk = bufferBlobs.TryGetValue(l.bottomNames.Length > 1 ? l.bottomNames[1] : l.bottomNames[0], out kBuf) && kBuf != null;
                         var vOk = bufferBlobs.TryGetValue(l.bottomNames.Length > 2 ? l.bottomNames[2] : l.bottomNames[0], out vBuf) && vBuf != null;
                         if (!qOk || !kOk || !vOk)
-                            throw new InvalidOperationException("MultiHeadAttention input buffer not found: " + l.name);
+                            throw new InvalidOperationException("MultiHeadAttention input blob not found: " + l.name);
 
                         var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);
                         var dstLen = kBuf.count / Mathf.Max(1, mp.kdim);
@@ -774,7 +802,8 @@ namespace NcnnCompute
                             if (len <= 0)
                                 throw new InvalidOperationException("Slice invalid range for " + l.name);
                             var sliceBuf = new ComputeBuffer(len, sizeof(float), ComputeBufferType.Structured);
-                            _ops.CopyBuf(srcBuf, sliceBuf, len);
+                            tempBuffers.Add(sliceBuf);
+                            _ops.CopyBufPartial(srcBuf, start, sliceBuf, len);
                             bufferBlobs[l.topNames[t]] = sliceBuf;
                         }
                         continue;
@@ -808,7 +837,694 @@ namespace NcnnCompute
             }
         }
 
+        private InferResultBase InferCoreIterate(Dictionary<string, TensorRef> blobs, Dictionary<string, int> remaining, Dictionary<string, ComputeBuffer> bufferBlobs, List<ComputeBuffer> tempBuffers, ICollection<string> pinnedNames)
+        {
+            if (bufferBlobs == null)
+                bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
+            if (tempBuffers == null)
+                tempBuffers = new List<ComputeBuffer>();
+
+            ComputeBuffer GetOrConvertToBuffer(string name)
+            {
+                if (bufferBlobs.TryGetValue(name, out var b) && b != null)
+                    return b;
+                if (!blobs.TryGetValue(name, out var tr) || tr == null)
+                    return null;
+                var w = tr.w;
+                var h = tr.h;
+                var c = tr.packs * 4;
+                var total = w * h * c;
+                var buf = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
+                tempBuffers.Add(buf);
+                _ops.Pack4ToBufferCHW(tr.t1, w, h, c, buf);
+                bufferBlobs[name] = buf;
+                return buf;
+            }
+            for (var li = 0; li < Model.layers.Count; li++)
+            {
+                var l = Model.layers[li];
+                if (string.Equals(l.type, "Input", StringComparison.Ordinal))
+                    continue;
+
+                if (string.Equals(l.type, "Split", StringComparison.Ordinal))
+                {
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                    {
+                        for (var i = 0; i < l.topNames.Length; i++)
+                        {
+                            if (!bufferBlobs.ContainsKey(l.topNames[i]))
+                                bufferBlobs[l.topNames[i]] = srcBuf;
+                        }
+                    }
+                    else
+                    {
+                        var src = Get(blobs, l.bottomNames[0]);
+                        for (var i = 0; i < l.topNames.Length; i++)
+                        {
+                            blobs[l.topNames[i]] = src;
+                            src.refs++;
+                        }
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Permute", StringComparison.Ordinal))
+                {
+                    if (!bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) || srcBuf == null)
+                        throw new InvalidOperationException("Permute input buffer not found: " + l.name);
+                    var orderType = l.GetInt(0, 0);
+                    var srcCount = srcBuf.count;
+                    int srcW = 1, srcH = 1, srcD = 1, srcC = 1;
+                    var param = l.GetFloats(-23303, null);
+                    if (param != null && param.Length >= 3)
+                    {
+                        srcC = (int)param[0];
+                    }
+                    var sizes = new List<int>();
+                    if (param != null && param.Length >= 1) sizes.Add((int)param[0]);
+                    if (srcW * srcH * srcD * srcC == 0)
+                        throw new InvalidOperationException("Permute shape not resolved: " + l.name);
+                    var outBuf = new ComputeBuffer(srcCount, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(outBuf);
+                    _ops.Permute(srcBuf, 4, srcW, srcH, srcD, srcC, orderType, outBuf);
+                    bufferBlobs[l.topNames[0]] = outBuf;
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "ExpandDims", StringComparison.Ordinal))
+                {
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                        bufferBlobs[l.topNames[0]] = srcBuf;
+                    else if (blobs.TryGetValue(l.bottomNames[0], out var srcTex) && srcTex != null)
+                    {
+                        blobs[l.topNames[0]] = srcTex;
+                        srcTex.refs++;
+                    }
+                    else
+                        throw new InvalidOperationException("blob not found for ExpandDims " + l.name);
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Reduction", StringComparison.Ordinal))
+                {
+                    var srcBuf = GetOrConvertToBuffer(l.bottomNames[0]);
+                    if (srcBuf == null)
+                        throw new InvalidOperationException("Reduction input buffer not found: " + l.name);
+                    var redType = l.GetInt(0, 0);
+                    var redAll = l.GetInt(4, 0);
+                    var coeff = l.GetFloat(5, 1f);
+                    int count = srcBuf.count;
+                    var param = l.GetFloats(-23303, null);
+                    int[] shape = null;
+                    if (param != null && param.Length >= 1)
+                    {
+                        shape = new int[param.Length];
+                        for (var i = 0; i < param.Length; i++)
+                            shape[i] = (int)param[i];
+                    }
+                    int elems = count;
+                    if (shape != null && shape.Length > 0)
+                    {
+                        elems = 1;
+                        for (var i = 0; i < shape.Length; i++)
+                            elems *= shape[i];
+                    }
+                    var outCount = redAll != 0 ? 1 : (count / elems);
+                    var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(outBuf);
+                    _ops.ReductionBuf(srcBuf, elems, outCount, redType, coeff, outBuf);
+                    bufferBlobs[l.topNames[0]] = outBuf;
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Slice", StringComparison.Ordinal))
+                {
+                    if (!bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) || srcBuf == null)
+                        throw new InvalidOperationException("Slice input buffer not found: " + l.name);
+                    var param = l.GetFloats(-23303, null);
+                    var axis = l.GetInt(1, 0);
+                    var sbegin = l.GetInt(2, 0);
+                    var send = l.GetInt(3, srcBuf.count);
+                    var outCount = send - sbegin;
+                    var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(outBuf);
+                    if (sbegin == 0)
+                        _ops.CopyBuf(srcBuf, outBuf, outCount);
+                    else
+                        _ops.CopyBufPartial(srcBuf, sbegin, outBuf, outCount);
+                    bufferBlobs[l.topNames[0]] = outBuf;
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Concat", StringComparison.Ordinal))
+                {
+                    var parts = new TensorRef[l.bottomNames.Length];
+                    var sumP = 0;
+                    var w = 0;
+                    var h = 0;
+                    for (var i = 0; i < l.bottomNames.Length; i++)
+                    {
+                        var tr = Get(blobs, l.bottomNames[i]);
+                        parts[i] = tr;
+                        w = tr.w;
+                        h = tr.h;
+                        sumP += tr.packs;
+                    }
+                    var outArr = RentTempArray(w, h, sumP, RenderTextureFormat.ARGBHalf);
+                    var off = 0;
+                    for (var i = 0; i < parts.Length; i++)
+                    {
+                        _ops.CopyPack4(parts[i].t1, 0, outArr, off, parts[i].packs);
+                        off += parts[i].packs;
+                    }
+                    blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = w, h = h, packs = sumP, refs = 1, owned = true };
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Reshape", StringComparison.Ordinal))
+                {
+                    if (blobs.TryGetValue(l.bottomNames[0], out var srcTex) && srcTex != null)
+                    {
+                        blobs[l.topNames[0]] = srcTex;
+                        srcTex.refs++;
+                    }
+                    else if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                    {
+                        bufferBlobs[l.topNames[0]] = srcBuf;
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException("blob not found for Reshape " + l.name);
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Reorg", StringComparison.Ordinal))
+                {
+                    var src = Get(blobs, l.bottomNames[0]);
+                    var stride = l.GetInt(0, 0);
+                    if (stride != 2)
+                        throw new InvalidOperationException("Reorg stride not supported: " + stride);
+                    var outArr = RentTempArray(src.w / 2, src.h / 2, src.packs * 4, RenderTextureFormat.ARGBHalf);
+                    _ops.ReorgPack4(src.t1, src.packs, outArr);
+                    blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w / 2, h = src.h / 2, packs = src.packs * 4, refs = 1, owned = true };
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Padding", StringComparison.Ordinal))
+                {
+                    var src = Get(blobs, l.bottomNames[0]);
+                    var top = l.GetInt(0, 0);
+                    var bottom = l.GetInt(1, 0);
+                    var left = l.GetInt(2, 0);
+                    var right = l.GetInt(3, 0);
+                    var type = l.GetInt(4, 0);
+                    var value = l.GetFloat(5, 0f);
+
+                    var outW = src.w + left + right;
+                    var outH = src.h + top + bottom;
+                    if (outW <= 0 || outH <= 0)
+                        throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
+
+                    var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                    _ops.PaddingPack4(src.t1, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
+                    blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Pooling", StringComparison.Ordinal))
+                {
+                    var src = Get(blobs, l.bottomNames[0]);
+                    var poolingType = l.GetInt(0, 0);
+                    var kernelW = l.GetInt(1, 0);
+                    var kernelH = l.GetInt(11, kernelW);
+                    var strideW = l.GetInt(2, 1);
+                    var strideH = l.GetInt(12, strideW);
+                    var padLeft = l.GetInt(3, 0);
+                    var padTop = l.GetInt(13, padLeft);
+                    var globalPooling = l.GetInt(4, 0);
+                    var adaptivePooling = l.GetInt(7, 0);
+                    if (globalPooling != 0 || adaptivePooling != 0)
+                        throw new InvalidOperationException("Pooling(global/adaptive) not supported");
+
+                    var outW = (src.w + padLeft * 2 - kernelW) / strideW + 1;
+                    var outH = (src.h + padTop * 2 - kernelH) / strideH + 1;
+                    outW = Mathf.Max(1, outW);
+                    outH = Mathf.Max(1, outH);
+                    var outArr = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                    _ops.PoolingPack4(src.t1, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                    blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = outW, h = outH, packs = src.packs, refs = 1, owned = true };
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Softmax", StringComparison.Ordinal))
+                {
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                    {
+                        var axis = l.GetInt(0, 0);
+                        if (axis != 1 && axis != -1)
+                            throw new InvalidOperationException("Softmax buffer axis not supported: " + axis);
+                        int rows = 1, cols = srcBuf.count;
+                        var param = l.GetFloats(-23303, null);
+                        if (param != null && param.Length >= 2)
+                        {
+                            cols = (int)param[param.Length - 1];
+                            rows = srcBuf.count / cols;
+                        }
+                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        tempBuffers.Add(outBuf);
+                        _ops.Softmax2D(srcBuf, outBuf, rows, cols);
+                        bufferBlobs[l.topNames[0]] = outBuf;
+                    }
+                    else
+                    {
+                        var src = Get(blobs, l.bottomNames[0]);
+                        var axis = l.GetInt(0, 0);
+                        if (axis != 0)
+                            throw new InvalidOperationException("Softmax axis not supported: " + axis);
+                        var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.SoftmaxChannelPack4(src.t1, src.packs, outArr);
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "InnerProduct", StringComparison.Ordinal))
+                {
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var ipInput) && ipInput != null)
+                    {
+                        var ip = _innerProduct[l.name];
+                        var outBuf = new ComputeBuffer(ip.outFeatures, sizeof(float), ComputeBufferType.Structured);
+                        tempBuffers.Add(outBuf);
+                        _ops.InnerProduct(ipInput, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
+                        bufferBlobs[l.topNames[0]] = outBuf;
+                    }
+                    else
+                    {
+                        var ip = _innerProduct[l.name];
+                        var src = Get(blobs, l.bottomNames[0]);
+                        if (src.w * src.h * src.packs * 4 != ip.inFeatures)
+                            throw new InvalidOperationException("InnerProduct inFeatures mismatch for " + l.name);
+                        var inBuf = new ComputeBuffer(ip.inFeatures, sizeof(float), ComputeBufferType.Structured);
+                        tempBuffers.Add(inBuf);
+                        _ops.Pack4ToBufferCHW(src.t1, src.w, src.h, src.packs * 4, inBuf);
+                        var outBuf = new ComputeBuffer(ip.outFeatures, sizeof(float), ComputeBufferType.Structured);
+                        _ops.InnerProduct(inBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
+                        bufferBlobs[l.topNames[0]] = outBuf;
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
+                {
+                    TensorRef src;
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var convSrcBuf) && convSrcBuf != null)
+                    {
+                        var pack = _conv[l.name];
+                        var totalChannels = convSrcBuf.count;
+                        var spatialArea = totalChannels / Mathf.Max(1, pack.inC);
+                        var spatialDim = Mathf.RoundToInt(Mathf.Sqrt(spatialArea));
+                        if (spatialDim * spatialDim != spatialArea)
+                            spatialDim = Mathf.Max(1, totalChannels / (pack.inPacks * 4));
+                        var srcW = spatialDim;
+                        var srcH = spatialDim;
+                        var packs = totalChannels / (srcW * srcH * 4);
+                        if (packs <= 0) packs = totalChannels / 4;
+                        if (packs <= 0) packs = 1;
+                        var convTex = RentTempArray(srcW, srcH, packs, RenderTextureFormat.ARGBHalf);
+                        _ops.FillPack4FromBufferCHW(convSrcBuf, srcW, srcH, packs * 4, convTex);
+                        src = new TensorRef { t1 = convTex, w = srcW, h = srcH, packs = packs, refs = 1, owned = true };
+                    }
+                    else
+                    {
+                        src = Get(blobs, l.bottomNames[0]);
+                    }
+
+                    var convPack = _conv[l.name];
+                    if (src.packs != convPack.inPacks)
+                        throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + convPack.inPacks);
+
+                    var outArr = RentTempArray(src.w, src.h, convPack.outPacks, RenderTextureFormat.ARGBHalf);
+                    var swGpu = ShouldUseWinograd23(convPack, src.w, src.h);
+
+                    System.Diagnostics.Stopwatch swStopwatch = null;
+                    string convMode;
+
+                    if (gpuLayerProfileEnabled)
+                    {
+                        _ops.DebugSyncGpu();
+                        swStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    }
+
+                    if (convPack.kernel == 1)
+                    {
+                        convMode = "direct1x1";
+                        _ops.Conv1x1Pack4(src.t1, convPack.inPacks, convPack.w4, convPack.b4, convPack.outPacks, convPack.activationType, convPack.activationSlope, outArr);
+                    }
+                    else if (convPack.kernel == 3)
+                    {
+                        if (swGpu)
+                        {
+                            convMode = "winograd23";
+                            _ops.Conv3x3Pack4Winograd23(src.t1, convPack.inPacks, convPack.wTm23, convPack.b4, convPack.outPacks, convPack.biasTerm, convPack.activationType, convPack.activationSlope, outArr);
+                        }
+                        else
+                        {
+                            convMode = "direct3x3";
+                            _ops.Conv3x3Pack4(src.t1, convPack.inPacks, convPack.w4, convPack.b4, convPack.outPacks, convPack.pad, convPack.activationType, convPack.activationSlope, outArr);
+                        }
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException("unsupported kernel size: " + convPack.kernel);
+                    }
+
+                    if (gpuLayerProfileEnabled)
+                    {
+                        _ops.DebugSyncGpu();
+                        swStopwatch.Stop();
+                        NotifyConvComplete(l.name, convMode, src.w, src.h, convPack.inPacks, convPack.outPacks, swStopwatch.Elapsed.TotalMilliseconds);
+                    }
+
+                    blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = convPack.outPacks, refs = 1, owned = true };
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Eltwise", StringComparison.Ordinal))
+                {
+                    var a = Get(blobs, l.bottomNames[0]);
+                    var b = Get(blobs, l.bottomNames[1]);
+                    var coeff = ParseEltwiseCoeff(l);
+                    var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                    _ops.AddPack4(a.t1, b.t1, coeff.coeffA, coeff.coeffB, a.packs, outArr);
+                    blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "BinaryOp", StringComparison.Ordinal))
+                {
+                    var opType = l.GetInt(0, 0);
+                    var withScalar = l.GetInt(1, 0);
+                    var scalarB = l.GetFloat(2, 0f);
+
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                    {
+                        if (withScalar != 0)
+                        {
+                            var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            tempBuffers.Add(outBuf);
+                            _ops.BinaryOpScalarBuf(srcBuf, scalarB, srcBuf.count, opType, outBuf);
+                            bufferBlobs[l.topNames[0]] = outBuf;
+                        }
+                        else
+                        {
+                            if (!bufferBlobs.TryGetValue(l.bottomNames[1], out var bBuf) || bBuf == null)
+                                throw new InvalidOperationException("BinaryOp second input buffer not found: " + l.name);
+                            var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            tempBuffers.Add(outBuf);
+                            _ops.BinaryOpBuf(srcBuf, bBuf, srcBuf.count, opType, outBuf);
+                            bufferBlobs[l.topNames[0]] = outBuf;
+                        }
+                    }
+                    else
+                    {
+                        var a = Get(blobs, l.bottomNames[0]);
+                        var outArr = RentTempArray(a.w, a.h, a.packs, RenderTextureFormat.ARGBHalf);
+                        if (withScalar != 0)
+                        {
+                            _ops.BinaryOpScalarPack4(a.t1, scalarB, a.packs, opType, outArr);
+                        }
+                        else
+                        {
+                            var b = Get(blobs, l.bottomNames[1]);
+                            if (a.w != b.w || a.h != b.h || a.packs != b.packs)
+                                throw new InvalidOperationException("BinaryOp broadcast not supported: " + l.name);
+                            _ops.BinaryOpPack4(a.t1, b.t1, a.packs, opType, outArr);
+                        }
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = a.w, h = a.h, packs = a.packs, refs = 1, owned = true };
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "UnaryOp", StringComparison.Ordinal))
+                {
+                    var opType = l.GetInt(0, 0);
+
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
+                    {
+                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        tempBuffers.Add(outBuf);
+                        _ops.UnaryOpBuf(srcBuf, srcBuf.count, opType, outBuf);
+                        bufferBlobs[l.topNames[0]] = outBuf;
+                    }
+                    else
+                    {
+                        var src = Get(blobs, l.bottomNames[0]);
+                        var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.UnaryOpPack4(src.t1, src.packs, opType, outArr);
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Swish", StringComparison.Ordinal))
+                {
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var swishBuf) && swishBuf != null)
+                    {
+                        var outBuf = new ComputeBuffer(swishBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        tempBuffers.Add(outBuf);
+                        _ops.SwishBuf(swishBuf, swishBuf.count, outBuf);
+                        bufferBlobs[l.topNames[0]] = outBuf;
+                    }
+                    else
+                    {
+                        var src = Get(blobs, l.bottomNames[0]);
+                        var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.SwishPack4(src.t1, src.packs, outArr);
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Sigmoid", StringComparison.Ordinal))
+                {
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var sigBuf) && sigBuf != null)
+                    {
+                        var outBuf = new ComputeBuffer(sigBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        tempBuffers.Add(outBuf);
+                        _ops.SigmoidBuf(sigBuf, sigBuf.count, outBuf);
+                        bufferBlobs[l.topNames[0]] = outBuf;
+                    }
+                    else
+                    {
+                        var src = Get(blobs, l.bottomNames[0]);
+                        var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.SigmoidPack4(src.t1, src.packs, outArr);
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "GELU", StringComparison.Ordinal))
+                {
+                    if (bufferBlobs.TryGetValue(l.bottomNames[0], out var geluBuf) && geluBuf != null)
+                    {
+                        var outBuf = new ComputeBuffer(geluBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        tempBuffers.Add(outBuf);
+                        _ops.UnaryOpBuf(geluBuf, geluBuf.count, 15, outBuf);
+                        bufferBlobs[l.topNames[0]] = outBuf;
+                    }
+                    else
+                    {
+                        var src = Get(blobs, l.bottomNames[0]);
+                        var fast = l.GetInt(0, 0) != 0;
+                        var outArr = RentTempArray(src.w, src.h, src.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.GeluPack4(src.t1, src.packs, fast, outArr);
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w, h = src.h, packs = src.packs, refs = 1, owned = true };
+                    }
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Interp", StringComparison.Ordinal))
+                {
+                    var src = Get(blobs, l.bottomNames[0]);
+                    var resizeType = l.GetInt(0, 2);
+                    var sx = l.GetFloat(1, 1f);
+                    var sy = l.GetFloat(2, 1f);
+
+                    if (Mathf.Abs(sx - 2f) < 1e-3f && Mathf.Abs(sy - 2f) < 1e-3f)
+                    {
+                        var outArr = RentTempArray(src.w * 2, src.h * 2, src.packs, RenderTextureFormat.ARGBHalf);
+                        if (resizeType == 1)
+                            _ops.Interp2xNearestPack4(src.t1, src.packs, outArr);
+                        else
+                            _ops.Interp2xPack4(src.t1, src.packs, outArr);
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w * 2, h = src.h * 2, packs = src.packs, refs = 1, owned = true };
+                        Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                        continue;
+                    }
+
+                    if (Mathf.Abs(sx - 0.5f) < 1e-3f && Mathf.Abs(sy - 0.5f) < 1e-3f)
+                    {
+                        var outArr = RentTempArray(src.w / 2, src.h / 2, src.packs, RenderTextureFormat.ARGBHalf);
+                        if (resizeType == 1)
+                            _ops.InterpDown2NearestPack4(src.t1, src.packs, outArr);
+                        else
+                            _ops.InterpDown2Pack4(src.t1, src.packs, outArr);
+                        blobs[l.topNames[0]] = new TensorRef { t1 = outArr, w = src.w / 2, h = src.h / 2, packs = src.packs, refs = 1, owned = true };
+                        Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                        continue;
+                    }
+
+                    throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
+                }
+
+                if (string.Equals(l.type, "MemoryData", StringComparison.Ordinal))
+                {
+                    if (!_memoryData.TryGetValue(l.name, out var mp) || mp.data == null)
+                        throw new InvalidOperationException("MemoryData not found: " + l.name);
+                    bufferBlobs[l.topNames[0]] = mp.data;
+                    continue;
+                }
+
+                if (string.Equals(l.type, "Embed", StringComparison.Ordinal))
+                {
+                    if (!_embed.TryGetValue(l.name, out var ep) || ep.w == null)
+                        throw new InvalidOperationException("Embed not found: " + l.name);
+
+                    ComputeBuffer indicesBuf;
+                    if (!bufferBlobs.TryGetValue(l.bottomNames[0], out indicesBuf) || indicesBuf == null)
+                        throw new InvalidOperationException("Embed input buffer not found: " + l.bottomNames[0]);
+
+                    var words = indicesBuf.count;
+                    var outBuf = new ComputeBuffer(words * ep.numOutput, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(outBuf);
+                    _ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outBuf);
+                    bufferBlobs[l.topNames[0]] = outBuf;
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "LayerNorm", StringComparison.Ordinal))
+                {
+                    if (!_layerNorm.TryGetValue(l.name, out var lp))
+                        throw new InvalidOperationException("LayerNorm not found: " + l.name);
+
+                    ComputeBuffer srcBuf;
+                    if (!bufferBlobs.TryGetValue(l.bottomNames[0], out srcBuf) || srcBuf == null)
+                        throw new InvalidOperationException("LayerNorm input buffer not found: " + l.bottomNames[0]);
+
+                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(outBuf);
+                    _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
+                    _ops.LayerNorm2DInplace(outBuf, srcBuf.count / Mathf.Max(1, lp.affineSize), lp.affineSize, lp.eps, lp.affine, lp.gamma, lp.beta);
+                    bufferBlobs[l.topNames[0]] = outBuf;
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "GroupNorm", StringComparison.Ordinal))
+                {
+                    if (!_groupNorm.TryGetValue(l.name, out var gp))
+                        throw new InvalidOperationException("GroupNorm not found: " + l.name);
+
+                    ComputeBuffer srcBuf;
+                    if (!bufferBlobs.TryGetValue(l.bottomNames[0], out srcBuf) || srcBuf == null)
+                        throw new InvalidOperationException("GroupNorm input buffer not found: " + l.bottomNames[0]);
+
+                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(outBuf);
+                    _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
+                    var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
+                    _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
+                    bufferBlobs[l.topNames[0]] = outBuf;
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(l.type, "MultiHeadAttention", StringComparison.Ordinal))
+                {
+                    if (!_multiHeadAttention.TryGetValue(l.name, out var mp) || mp.qW == null)
+                        throw new InvalidOperationException("MultiHeadAttention not found: " + l.name);
+
+                    ComputeBuffer qBuf, kBuf, vBuf;
+                    var qOk = bufferBlobs.TryGetValue(l.bottomNames[0], out qBuf) && qBuf != null;
+                    var kOk = bufferBlobs.TryGetValue(l.bottomNames.Length > 1 ? l.bottomNames[1] : l.bottomNames[0], out kBuf) && kBuf != null;
+                    var vOk = bufferBlobs.TryGetValue(l.bottomNames.Length > 2 ? l.bottomNames[2] : l.bottomNames[0], out vBuf) && vBuf != null;
+                    if (!qOk || !kOk || !vOk)
+                        throw new InvalidOperationException("MultiHeadAttention input buffer not found: " + l.name);
+
+                    var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);
+                    var dstLen = kBuf.count / Mathf.Max(1, mp.kdim);
+
+                    var qAff = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    var kAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    var vAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(qAff);
+                    tempBuffers.Add(kAff);
+                    tempBuffers.Add(vAff);
+                    _ops.InnerProduct2D(qBuf, srcLen, mp.qdim, mp.qW, mp.qB, mp.embedDim, qAff);
+                    _ops.InnerProduct2D(kBuf, dstLen, mp.kdim, mp.kW, mp.kB, mp.embedDim, kAff);
+                    _ops.InnerProduct2D(vBuf, dstLen, mp.vdim, mp.vW, mp.vB, mp.embedDim, vAff);
+
+                    var qScaled = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(qScaled);
+                    _ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
+
+                    var ctx = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(ctx);
+                    _ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx);
+
+                    var outBuf = new ComputeBuffer(srcLen * mp.qdim, sizeof(float), ComputeBufferType.Structured);
+                    tempBuffers.Add(outBuf);
+                    _ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
+
+                    bufferBlobs[l.topNames[0]] = outBuf;
+                    Consume(blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                throw new InvalidOperationException("unsupported layer type: " + l.type);
+            }
+
+            var result = bufferBlobs != null
+                ? new GFPGANInferResult(blobs, bufferBlobs, this)
+                : new InferResultBase(blobs, this);
+            if (bufferBlobs != null)
+                ((GFPGANInferResult)result).TempBuffers.AddRange(tempBuffers);
+            return result;
+        }
+
         private InferResultBase InferCore(RenderTexture inputPack4, int inputPacks, string inputBlobName, ICollection<string> pinnedNames, Dictionary<string, ComputeBuffer> bufferBlobs, List<ComputeBuffer> tempBuffers)
+        {
+            var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+            var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
+
+            var inputRef = new TensorRef { t1 = inputPack4, w = inputPack4.width, h = inputPack4.height, packs = inputPacks, refs = 1, owned = false };
+            blobs[inputBlobName] = inputRef;
+            return InferCoreIterate(blobs, remaining, bufferBlobs, tempBuffers, pinnedNames);
+        }
+
+        private InferResultBase InferCoreLegacy(RenderTexture inputPack4, int inputPacks, string inputBlobName, ICollection<string> pinnedNames, Dictionary<string, ComputeBuffer> bufferBlobs, List<ComputeBuffer> tempBuffers)
         {
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
             var blobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
