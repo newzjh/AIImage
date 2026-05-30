@@ -32,7 +32,7 @@ namespace NcnnCompute
             "Add_904"
         };
 
-        private readonly struct BufferShape
+        internal readonly struct BufferShape
         {
             public readonly int dims;
             public readonly int w;
@@ -235,6 +235,7 @@ namespace NcnnCompute
         public sealed class InferResult : IDisposable
         {
             private readonly Dictionary<string, TensorRef> _textureBlobs;
+            private readonly Dictionary<string, BufferShape> _textureShapes;
             private readonly Dictionary<string, ComputeBuffer> _bufferBlobs;
             private readonly Dictionary<string, NcnnTensorBuffer> _bufferViews;
             private readonly List<IDisposable> _tempOwned;
@@ -243,12 +244,14 @@ namespace NcnnCompute
 
             internal InferResult(
                 Dictionary<string, TensorRef> textureBlobs,
+                Dictionary<string, BufferShape> textureShapes,
                 Dictionary<string, ComputeBuffer> bufferBlobs,
                 Dictionary<string, NcnnTensorBuffer> bufferViews,
                 List<IDisposable> tempOwned,
                 NcnnRepro2 owner)
             {
                 _textureBlobs = textureBlobs;
+                _textureShapes = textureShapes;
                 _bufferBlobs = bufferBlobs;
                 _bufferViews = bufferViews;
                 _tempOwned = tempOwned;
@@ -314,6 +317,36 @@ namespace NcnnCompute
                 if (_bufferBlobs.TryGetValue(name, out var buf) && buf != null)
                     return new NcnnTensorBuffer(buf, 1, buf.count, 1, 1, 1, false);
                 throw new InvalidOperationException("buffer view not found: " + name);
+            }
+
+            public bool TryGetLogicalShape(string name, out int dims, out int w, out int h, out int d, out int c)
+            {
+                if (_bufferViews.TryGetValue(name, out var view) && view != null && view.buffer != null)
+                {
+                    dims = view.dims;
+                    w = view.w;
+                    h = view.h;
+                    d = view.d;
+                    c = view.c;
+                    return true;
+                }
+
+                if (_textureShapes.TryGetValue(name, out var shape))
+                {
+                    dims = shape.dims;
+                    w = shape.w;
+                    h = shape.h;
+                    d = shape.d;
+                    c = shape.c;
+                    return true;
+                }
+
+                dims = 0;
+                w = 0;
+                h = 0;
+                d = 0;
+                c = 0;
+                return false;
             }
 
             public ComputeBuffer ExtractBuffer(string name)
@@ -1451,7 +1484,7 @@ namespace NcnnCompute
                 throw new InvalidOperationException("unsupported layer type: " + layer.type);
             }
 
-            return new InferResult(textureBlobs, bufferBlobs, bufferViews, tempOwned, this);
+            return new InferResult(textureBlobs, textureShapes, bufferBlobs, bufferViews, tempOwned, this);
         }
 
         public RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)

@@ -534,14 +534,30 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         {
             try
             {
-                var view = inferResult.GetBufferView(blobName);
-                var data = inferResult.GetBufferData(blobName);
-                AppendStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data);
+                if (inferResult.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
+                {
+                    var path = Path.Combine(dir, "generator_stats.txt");
+                    File.AppendAllText(path, blobName + " | view=dims" + dims + " w=" + w + " h=" + h + " d=" + d + " c=" + c + Environment.NewLine);
 
-                if (view.dims == 2)
-                    AppendMatrixStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data, view.w, view.h, false);
-                else if (view.dims == 3)
-                    AppendMatrixStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data, view.w * view.c, view.h, false);
+                    if (dims == 1 || inferResult.GetBuffer(blobName) != null)
+                    {
+                        var data = inferResult.GetBufferData(blobName);
+                        AppendStatsLineTo(path, blobName, data);
+                        if (dims == 1)
+                            AppendMatrixStatsLineTo(path, blobName, data, w, 1, false);
+                        else if (dims == 2)
+                            AppendMatrixStatsLineTo(path, blobName, data, w, h, false);
+                        else if (dims == 3)
+                            AppendMatrixStatsLineTo(path, blobName, data, w * c, h, false);
+                        else
+                            AppendMatrixStatsLineTo(path, blobName, data, w * c, h * d, false);
+                    }
+                    else
+                    {
+                        var tex = inferResult.GetTexture(blobName);
+                        await AppendPack4TextureStatsAsync(dir, blobName, tex, dims, w, h, d, c);
+                    }
+                }
                 else
                 {
                     var tex = inferResult.GetTexture(blobName);
@@ -584,6 +600,11 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private async UniTask AppendPack4TextureStatsAsync(string dir, string blobName, RenderTexture pack4Tex)
     {
+        await AppendPack4TextureStatsAsync(dir, blobName, pack4Tex, 3, pack4Tex.width, pack4Tex.height, 1, (pack4Tex.volumeDepth > 0 ? pack4Tex.volumeDepth : 1) * 4);
+    }
+
+    private async UniTask AppendPack4TextureStatsAsync(string dir, string blobName, RenderTexture pack4Tex, int dims, int logicalW, int logicalH, int logicalD, int logicalC)
+    {
         if (!enableDebugDump || pack4Tex == null || string.IsNullOrWhiteSpace(dir))
             return;
 
@@ -595,8 +616,16 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             _ops.Pack4ToBufferCHW(pack4Tex, pack4Tex.width, pack4Tex.height, channels, buffer);
             var data = new float[total];
             buffer.GetData(data);
-            AppendStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data);
-            AppendMatrixStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data, pack4Tex.width * channels, pack4Tex.height, false);
+            var path = Path.Combine(dir, "generator_stats.txt");
+            AppendStatsLineTo(path, blobName, data);
+            if (dims == 1)
+                AppendMatrixStatsLineTo(path, blobName, data, logicalW, 1, false);
+            else if (dims == 2)
+                AppendMatrixStatsLineTo(path, blobName, data, logicalW, logicalH, false);
+            else if (dims == 3)
+                AppendMatrixStatsLineTo(path, blobName, data, logicalW * logicalC, logicalH, false);
+            else
+                AppendMatrixStatsLineTo(path, blobName, data, logicalW * logicalC, logicalH * logicalD, false);
         }
         finally
         {
