@@ -8,6 +8,30 @@ namespace NcnnCompute
 {
     public sealed class NcnnRepro2 : IDisposable
     {
+        private static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Mul_581",
+            "Mul_687",
+            "Mul_794",
+            "Mul_900"
+        };
+
+        private static readonly HashSet<string> CodeFormerSftAddLayers = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Add_582",
+            "Add_688",
+            "Add_795",
+            "Add_901"
+        };
+
+        private static readonly HashSet<string> CodeFormerSftResidualLayers = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Add_585",
+            "Add_691",
+            "Add_798",
+            "Add_904"
+        };
+
         private readonly struct BufferShape
         {
             public readonly int dims;
@@ -283,6 +307,15 @@ namespace NcnnCompute
                 return data;
             }
 
+            public NcnnTensorBuffer GetBufferView(string name)
+            {
+                if (_bufferViews.TryGetValue(name, out var view) && view != null && view.buffer != null)
+                    return view;
+                if (_bufferBlobs.TryGetValue(name, out var buf) && buf != null)
+                    return new NcnnTensorBuffer(buf, 1, buf.count, 1, 1, 1, false);
+                throw new InvalidOperationException("buffer view not found: " + name);
+            }
+
             public ComputeBuffer ExtractBuffer(string name)
             {
                 if (!_bufferBlobs.TryGetValue(name, out var buf) || buf == null)
@@ -353,6 +386,12 @@ namespace NcnnCompute
         }
 
         public bool EnableWinograd23 { get; set; }
+        public float CodeFormerSftMulScale { get; set; } = 1f;
+        public float CodeFormerSftAddScale { get; set; } = 1f;
+        public bool CodeFormerBypassSftMul { get; set; }
+        public string CodeFormerTargetSftMulLayer { get; set; }
+        public string CodeFormerTargetSftAddLayer { get; set; }
+        public string CodeFormerTargetSftResidualLayer { get; set; }
 
         public NcnnRepro2(NcnnOps ops)
         {
@@ -1089,6 +1128,11 @@ namespace NcnnCompute
                     if (a.width != b.width || a.height != b.height || a.packs != b.packs)
                         throw new InvalidOperationException("Eltwise shape mismatch: " + layer.name);
                     var coeff = ParseEltwiseCoeff(layer);
+                    var isTargetSftResidualLayer = string.IsNullOrEmpty(CodeFormerTargetSftResidualLayer)
+                        ? CodeFormerSftResidualLayers.Contains(layer.name)
+                        : string.Equals(layer.name, CodeFormerTargetSftResidualLayer, StringComparison.Ordinal);
+                    if (CodeFormerSftMulScale != 1f && isTargetSftResidualLayer)
+                        coeff = (coeff.coeffA, coeff.coeffB * CodeFormerSftMulScale);
                     var outRt = RentTempArray(a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
                     _ops.AddPack4(a.texture, b.texture, coeff.coeffA, coeff.coeffB, a.packs, outRt);
                     textureBlobs[layer.topNames[0]] = new TensorRef
@@ -1149,10 +1193,56 @@ namespace NcnnCompute
                                 tempOwned.Add(expandedA);
                             }
                         }
+                        else if (aView != null && bView != null && aView.dims == 1 && bView.dims == 2)
+                        {
+                            if (TryExpand1DTo2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
+                            {
+                                aBuf = expandedA;
+                                aView = expandedAView;
+                                tempOwned.Add(expandedA);
+                            }
+                        }
+                        else if (aView != null && bView != null && aView.dims == 2 && bView.dims == 1)
+                        {
+                            if (TryExpand1DTo2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
+                            {
+                                bBuf = expandedB;
+                                bView = expandedBView;
+                                tempOwned.Add(expandedB);
+                            }
+                        }
 
+                        var isTargetSftAddLayer = string.IsNullOrEmpty(CodeFormerTargetSftAddLayer)
+                            ? CodeFormerSftAddLayers.Contains(layer.name)
+                            : string.Equals(layer.name, CodeFormerTargetSftAddLayer, StringComparison.Ordinal);
+
+                        if (CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
+                        {
+                            var scaledB = new ComputeBuffer(bBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            _ops.CopyBuf(bBuf, scaledB, bBuf.count);
+                            _ops.MulScalarInplace(scaledB, CodeFormerSftAddScale, scaledB.count);
+                            bBuf = scaledB;
+                            tempOwned.Add(scaledB);
+                        }
+
+                        var isTargetSftMulLayer = string.IsNullOrEmpty(CodeFormerTargetSftMulLayer)
+                            ? CodeFormerSftMulLayers.Contains(layer.name)
+                            : string.Equals(layer.name, CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
+                        var isCodeFormerSftMul = opType == 2 && isTargetSftMulLayer;
                         var broadcast = ResolveBinaryBroadcast(aView, bView, aBuf.count, bBuf.count, layer.name);
                         var outBuf = new ComputeBuffer(broadcast.total, sizeof(float), ComputeBufferType.Structured);
                         _ops.BinaryOpBuf(aBuf, bBuf, broadcast.total, opType, outBuf, broadcast.mode, broadcast.size);
+                        if (isCodeFormerSftMul)
+                        {
+                            if (CodeFormerBypassSftMul)
+                            {
+                                _ops.CopyBuf(aBuf, outBuf, broadcast.total);
+                            }
+                            else if (CodeFormerSftMulScale != 1f)
+                            {
+                                _ops.MulScalarInplace(outBuf, CodeFormerSftMulScale, outBuf.count);
+                            }
+                        }
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (broadcast.outputView != null)
                             bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, broadcast.outputView.dims, broadcast.outputView.w, broadcast.outputView.h, broadcast.outputView.d, broadcast.outputView.c, false);
@@ -1882,6 +1972,60 @@ namespace NcnnCompute
                     var rowBase = y * targetView.w;
                     for (var x = 0; x < targetView.w; x++)
                         expandedData[rowBase + x] = value;
+                }
+            }
+
+            expandedBuffer = new ComputeBuffer(expandedData.Length, sizeof(float), ComputeBufferType.Structured);
+            expandedBuffer.SetData(expandedData);
+            expandedView = new NcnnTensorBuffer(expandedBuffer, 2, targetView.w, targetView.h, 1, 1, false);
+            return true;
+        }
+
+        private static bool TryExpand1DTo2DBroadcastBuffer(
+            ComputeBuffer sourceBuffer,
+            NcnnTensorBuffer sourceView,
+            NcnnTensorBuffer targetView,
+            out ComputeBuffer expandedBuffer,
+            out NcnnTensorBuffer expandedView)
+        {
+            expandedBuffer = null;
+            expandedView = null;
+
+            if (sourceBuffer == null || sourceView == null || targetView == null)
+                return false;
+            if (sourceView.dims != 1 || targetView.dims != 2)
+                return false;
+            if (sourceView.w != targetView.w && sourceView.w != targetView.h)
+                return false;
+
+            // Match ncnn binaryop.cpp behavior:
+            // if vec length == other.h -> reshape(1, len) => column broadcast
+            // else reshape(len, 1) => row broadcast
+            bool columnVector = sourceView.w == targetView.h;
+            bool rowVector = !columnVector && sourceView.w == targetView.w;
+            if (!columnVector && !rowVector)
+                return false;
+
+            var srcData = new float[sourceBuffer.count];
+            sourceBuffer.GetData(srcData);
+            var expandedData = new float[targetView.w * targetView.h];
+
+            if (columnVector)
+            {
+                for (var y = 0; y < targetView.h; y++)
+                {
+                    var value = srcData[y];
+                    var rowBase = y * targetView.w;
+                    for (var x = 0; x < targetView.w; x++)
+                        expandedData[rowBase + x] = value;
+                }
+            }
+            else
+            {
+                for (var y = 0; y < targetView.h; y++)
+                {
+                    var rowBase = y * targetView.w;
+                    Array.Copy(srcData, 0, expandedData, rowBase, targetView.w);
                 }
             }
 

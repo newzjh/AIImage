@@ -28,6 +28,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     public int maxPooledPerShape = 2;
     public bool enableWinograd23 = false;
     public bool enableDebugDump = false;
+    [Range(0f, 1f)] public float codeFormerSftMulScale = 1f;
+    [Range(0f, 1f)] public float codeFormerSftAddScale = 1f;
+    public bool codeFormerBypassSftMul = false;
+    public bool codeFormerOnlyTargetLastSftBlock = true;
 
     public event Action<float, string> ProgressChanged;
 
@@ -360,6 +364,24 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             {
                 generatorPinned = new HashSet<string>(StringComparer.Ordinal)
                 {
+                    "548",
+                    "549",
+                    "554",
+                    "556",
+                    "564",
+                    "579",
+                    "683",
+                    "698",
+                    "1383",
+                    "1383_splitncnn_1",
+                    "1425",
+                    "1425_splitncnn_0",
+                    "1454",
+                    "1417",
+                    "1420",
+                    "1421",
+                    "1422",
+                    "1453",
                     "1028",
                     "1033",
                     "1064",
@@ -377,6 +399,27 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     try { await DumpBinaryTensorAsImageAsync(dumpDir, "07_input_min_encoding.png", minEncodingTensor, 1024, 256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 07_input_min_encoding | " + e.Message); }
                     try { await DumpPack4TextureAsync(dumpDir, "08_style_feat_lq.png", lqFeat, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 08_style_feat_lq | " + e.Message); }
                     try { await DumpPack4TextureAsync(dumpDir, "09_input_enc_feat_256.png", encFeat256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 09_input_enc_feat_256 | " + e.Message); }
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "548");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "549");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "554");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "556");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "564");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "579");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "683");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "698");
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "09b_blob_1383.png", "1383", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1383");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1383_splitncnn_1");
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "09c_blob_1425.png", "1425", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1425");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1425_splitncnn_0");
+                    await DumpInferBlobAsync(generatorResult, dumpDir, "09d_blob_1454.png", "1454", ct);
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1454");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1417");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1420");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1421");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1422");
+                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1453");
                     await DumpInferBlobAsync(generatorResult, dumpDir, "10_blob_1028.png", "1028", ct);
                     await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1028");
                     await DumpInferBlobAsync(generatorResult, dumpDir, "11_blob_1033.png", "1033", ct);
@@ -489,8 +532,27 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         try
         {
-            var tex = inferResult.GetTexture(blobName);
-            await AppendPack4TextureStatsAsync(dir, blobName, tex);
+            try
+            {
+                var view = inferResult.GetBufferView(blobName);
+                var data = inferResult.GetBufferData(blobName);
+                AppendStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data);
+
+                if (view.dims == 2)
+                    AppendMatrixStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data, view.w, view.h, false);
+                else if (view.dims == 3)
+                    AppendMatrixStatsLineTo(Path.Combine(dir, "generator_stats.txt"), blobName, data, view.w * view.c, view.h, false);
+                else
+                {
+                    var tex = inferResult.GetTexture(blobName);
+                    await AppendPack4TextureStatsAsync(dir, blobName, tex);
+                }
+            }
+            catch
+            {
+                var tex = inferResult.GetTexture(blobName);
+                await AppendPack4TextureStatsAsync(dir, blobName, tex);
+            }
         }
         catch (Exception e)
         {
@@ -1095,6 +1157,18 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _generatorRepro.MaxPooledPerShape = maxPooledPerShape;
         _encoderRepro.EnableWinograd23 = enableWinograd23;
         _generatorRepro.EnableWinograd23 = enableWinograd23;
+        _encoderRepro.CodeFormerSftMulScale = 1f;
+        _generatorRepro.CodeFormerSftMulScale = Mathf.Clamp01(codeFormerSftMulScale);
+        _encoderRepro.CodeFormerSftAddScale = 1f;
+        _generatorRepro.CodeFormerSftAddScale = Mathf.Clamp01(codeFormerSftAddScale);
+        _encoderRepro.CodeFormerBypassSftMul = false;
+        _generatorRepro.CodeFormerBypassSftMul = codeFormerBypassSftMul;
+        _encoderRepro.CodeFormerTargetSftMulLayer = null;
+        _encoderRepro.CodeFormerTargetSftAddLayer = null;
+        _encoderRepro.CodeFormerTargetSftResidualLayer = null;
+        _generatorRepro.CodeFormerTargetSftMulLayer = codeFormerOnlyTargetLastSftBlock ? "Mul_900" : null;
+        _generatorRepro.CodeFormerTargetSftAddLayer = codeFormerOnlyTargetLastSftBlock ? "Add_901" : null;
+        _generatorRepro.CodeFormerTargetSftResidualLayer = codeFormerOnlyTargetLastSftBlock ? "Add_904" : null;
     }
 
     private async UniTask EnsureLoaded()
