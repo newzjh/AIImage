@@ -90,6 +90,13 @@ namespace NcnnCompute
             public bool owned;
         }
 
+        internal sealed class BufferRef
+        {
+            public ComputeBuffer buffer;
+            public int refs;
+            public bool owned;
+        }
+
         public sealed class ConvPack : IDisposable
         {
             public int outC;
@@ -117,6 +124,7 @@ namespace NcnnCompute
             public ComputeBuffer packedWeight4;
             public ComputeBuffer packedBias4;
             public ComputeBuffer packedWeightTm23;
+            public ComputeBuffer packedDepthWiseWeight4;
             public ComputeBuffer rawWeight;
             public ComputeBuffer rawBias;
 
@@ -125,6 +133,7 @@ namespace NcnnCompute
                 try { packedWeight4?.Dispose(); } catch { }
                 try { packedBias4?.Dispose(); } catch { }
                 try { packedWeightTm23?.Dispose(); } catch { }
+                try { packedDepthWiseWeight4?.Dispose(); } catch { }
                 try { rawWeight?.Dispose(); } catch { }
                 try { rawBias?.Dispose(); } catch { }
             }
@@ -244,15 +253,18 @@ namespace NcnnCompute
             private readonly Dictionary<string, TensorRef> _textureBlobs;
             private readonly Dictionary<string, BufferShape> _textureShapes;
             private readonly Dictionary<string, ComputeBuffer> _bufferBlobs;
+            private readonly Dictionary<string, BufferRef> _bufferRefs;
             private readonly Dictionary<string, NcnnTensorBuffer> _bufferViews;
             private readonly List<IDisposable> _tempOwned;
             private readonly NcnnRepro2 _owner;
             private readonly HashSet<TensorRef> _visitedTextures = new HashSet<TensorRef>();
+            private readonly HashSet<ComputeBuffer> _visitedBuffers = new HashSet<ComputeBuffer>();
 
             internal InferResult(
                 Dictionary<string, TensorRef> textureBlobs,
                 Dictionary<string, BufferShape> textureShapes,
                 Dictionary<string, ComputeBuffer> bufferBlobs,
+                Dictionary<string, BufferRef> bufferRefs,
                 Dictionary<string, NcnnTensorBuffer> bufferViews,
                 List<IDisposable> tempOwned,
                 NcnnRepro2 owner)
@@ -260,6 +272,7 @@ namespace NcnnCompute
                 _textureBlobs = textureBlobs;
                 _textureShapes = textureShapes;
                 _bufferBlobs = bufferBlobs;
+                _bufferRefs = bufferRefs;
                 _bufferViews = bufferViews;
                 _tempOwned = tempOwned;
                 _owner = owner;
@@ -361,6 +374,7 @@ namespace NcnnCompute
                 if (!_bufferBlobs.TryGetValue(name, out var buf) || buf == null)
                     throw new InvalidOperationException("buffer blob not found: " + name);
                 _bufferBlobs.Remove(name);
+                _bufferRefs.Remove(name);
                 _bufferViews.Remove(name);
                 return buf;
             }
@@ -382,7 +396,17 @@ namespace NcnnCompute
                 {
                     try { owned?.Dispose(); } catch { }
                 }
+
+                foreach (var kv in _bufferRefs)
+                {
+                    var br = kv.Value;
+                    if (br == null || !br.owned || br.buffer == null || !_visitedBuffers.Add(br.buffer))
+                        continue;
+                    try { br.buffer.Dispose(); } catch { }
+                }
+
                 _bufferBlobs.Clear();
+                _bufferRefs.Clear();
                 _bufferViews.Clear();
                 _tempOwned.Clear();
             }
@@ -417,6 +441,10 @@ namespace NcnnCompute
         }
 
         public bool EnableWinograd23 { get; set; }
+        public bool PreferTexturePathForFaceDetector { get; set; }
+        public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        public ISet<string> DebugCompareTextureLayers { get; set; }
+        public Action<string> DebugLog { get; set; }
         public float CodeFormerSftMulScale { get; set; } = 1f;
         public float CodeFormerSftAddScale { get; set; } = 1f;
         public bool CodeFormerBypassSftMul { get; set; }
@@ -518,6 +546,24 @@ namespace NcnnCompute
                             pack.packedWeightTm23 = new ComputeBuffer(wTm.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                             pack.packedWeightTm23.SetData(wTm);
                         }
+                    }
+                    else if (pack.isDepthWise
+                             && pack.group == pack.inC
+                             && pack.outC == pack.inC
+                             && pack.kernelW == 3
+                             && pack.kernelH == 3
+                             && pack.dilationW == 1
+                             && pack.dilationH == 1
+                             && pack.padLeft == pack.padRight
+                             && pack.padTop == pack.padBottom
+                             && pack.padLeft == pack.padTop)
+                    {
+                        var w4 = PackDepthWiseWeightsToP4K4(w, pack.outC, pack.kernelW, pack.outPacks);
+                        var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
+                        pack.packedDepthWiseWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                        pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                        pack.packedDepthWiseWeight4.SetData(w4);
+                        pack.packedBias4.SetData(b4);
                     }
 
                     _conv[layer.name] = pack;
@@ -711,6 +757,7 @@ namespace NcnnCompute
             var textureBlobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
             var textureShapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal);
             var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
+            var bufferRefs = new Dictionary<string, BufferRef>(StringComparer.Ordinal);
             var bufferViews = new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal);
             var tempOwned = new List<IDisposable>();
 
@@ -744,6 +791,12 @@ namespace NcnnCompute
                     if (kv.Value == null || kv.Value.buffer == null)
                         throw new ArgumentNullException("bufferInputs[\"" + kv.Key + "\"]");
                     bufferBlobs[kv.Key] = kv.Value.buffer;
+                    bufferRefs[kv.Key] = new BufferRef
+                    {
+                        buffer = kv.Value.buffer,
+                        refs = 1,
+                        owned = false
+                    };
                     bufferViews[kv.Key] = kv.Value;
                 }
             }
@@ -762,6 +815,11 @@ namespace NcnnCompute
                         for (var i = 0; i < layer.topNames.Length; i++)
                         {
                             bufferBlobs[layer.topNames[i]] = srcBuf;
+                            if (bufferRefs.TryGetValue(layer.bottomNames[0], out var srcRef) && srcRef != null)
+                            {
+                                bufferRefs[layer.topNames[i]] = srcRef;
+                                srcRef.refs++;
+                            }
                             if (srcTensor != null)
                                 bufferViews[layer.topNames[i]] = srcTensor;
                         }
@@ -778,7 +836,7 @@ namespace NcnnCompute
                         }
                     }
 
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -787,6 +845,12 @@ namespace NcnnCompute
                     if (!_memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
                         throw new InvalidOperationException("MemoryData not found: " + layer.name);
                     bufferBlobs[layer.topNames[0]] = mp.data;
+                    bufferRefs[layer.topNames[0]] = new BufferRef
+                    {
+                        buffer = mp.data,
+                        refs = 1,
+                        owned = false
+                    };
                     bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false);
                     continue;
                 }
@@ -802,9 +866,9 @@ namespace NcnnCompute
                     var outBuf = new ComputeBuffer(words * ep.numOutput, sizeof(float), ComputeBufferType.Structured);
                     _ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outBuf);
                     bufferBlobs[layer.topNames[0]] = outBuf;
+                    bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf);
                     bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 2, ep.numOutput, words, 1, 1, false);
-                    tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -813,6 +877,11 @@ namespace NcnnCompute
                     if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var reshapeBuf) && reshapeBuf != null)
                     {
                         bufferBlobs[layer.topNames[0]] = reshapeBuf;
+                        if (bufferRefs.TryGetValue(layer.bottomNames[0], out var reshapeRef) && reshapeRef != null)
+                        {
+                            bufferRefs[layer.topNames[0]] = reshapeRef;
+                            reshapeRef.refs++;
+                        }
                         var srcTensor = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                         if (srcTensor != null)
                             bufferViews[layer.topNames[0]] = ResolveReshapeTensor(srcTensor, layer);
@@ -842,7 +911,7 @@ namespace NcnnCompute
                         }
                     }
 
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -855,9 +924,9 @@ namespace NcnnCompute
 
                     var outBuf = ShuffleChannelCpu(srcBuf, srcView, layer.GetInt(0, 1), layer.GetInt(1, 0) != 0);
                     bufferBlobs[layer.topNames[0]] = outBuf.buffer;
+                    bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf.buffer);
                     bufferViews[layer.topNames[0]] = outBuf;
-                    tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -879,9 +948,9 @@ namespace NcnnCompute
                     _ops.Permute(srcBuf, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outBuf);
 
                     bufferBlobs[layer.topNames[0]] = outBuf;
+                    bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf);
                     bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, false);
-                    tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -894,8 +963,9 @@ namespace NcnnCompute
 
                     var cropResult = ApplyCropSlices(srcBuf, srcView, layer, tempOwned);
                     bufferBlobs[layer.topNames[0]] = cropResult.buffer;
+                    bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], cropResult.buffer);
                     bufferViews[layer.topNames[0]] = cropResult;
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -923,7 +993,7 @@ namespace NcnnCompute
                             ? new NcnnTensorBuffer(outBufAll, 2, 1, 1, 1, 1, false)
                             : new NcnnTensorBuffer(outBufAll, 1, 1, 1, 1, 1, false);
                         tempOwned.Add(outBufAll);
-                        Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                        Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                         continue;
                     }
 
@@ -969,7 +1039,7 @@ namespace NcnnCompute
                             ? new NcnnTensorBuffer(outBuf, 2, srcTensor.w, 1, 1, 1, false)
                             : new NcnnTensorBuffer(outBuf, 1, srcTensor.w, 1, 1, 1, false));
                     tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1011,7 +1081,7 @@ namespace NcnnCompute
                         owned = true
                     };
                     textureShapes[layer.topNames[0]] = new BufferShape(3, first.width, first.height, 1, totalLogicalChannels);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1038,7 +1108,7 @@ namespace NcnnCompute
                     };
                     var srcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                     textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, srcShape.c);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1067,7 +1137,7 @@ namespace NcnnCompute
                     };
                     var poolSrcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                     textureShapes[layer.topNames[0]] = new BufferShape(3, outW, outH, 1, poolSrcShape.c);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1102,7 +1172,7 @@ namespace NcnnCompute
                         var softShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                         textureShapes[layer.topNames[0]] = new BufferShape(3, src.width, src.height, 1, softShape.c);
                     }
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1128,7 +1198,7 @@ namespace NcnnCompute
                         ? new NcnnTensorBuffer(outBuf, 2, ip.outFeatures, rows, 1, 1, false)
                         : new NcnnTensorBuffer(outBuf, 1, ip.outFeatures, 1, 1, 1, false);
                     tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1138,8 +1208,27 @@ namespace NcnnCompute
                     if (!_conv.TryGetValue(layer.name, out var conv))
                         throw new InvalidOperationException("Convolution not found: " + layer.name);
 
-                    if (conv.useBufferPath)
+                    var canUseDepthWiseTexturePath = conv.isDepthWise
+                                                    && conv.group == conv.inC
+                                                    && conv.outC == conv.inC
+                                                    && conv.packedDepthWiseWeight4 != null
+                                                    && conv.packedBias4 != null;
+
+                    if (conv.useBufferPath && !canUseDepthWiseTexturePath)
                     {
+                        if (PreferTexturePathForFaceDetector
+                            && string.Equals(layer.bottomNames[0], "images", StringComparison.Ordinal) == false
+                            && layer.name.StartsWith("Conv_", StringComparison.Ordinal)
+                            && conv.kernelW == 3
+                            && conv.kernelH == 3
+                            && conv.dilationW == 1
+                            && conv.dilationH == 1
+                            && conv.group == conv.inC
+                            && conv.outC == conv.inC)
+                        {
+                            goto TextureConvPath;
+                        }
+
                         var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                         var srcTensor = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                         if (srcBuf == null || srcTensor == null || srcTensor.dims != 3)
@@ -1176,10 +1265,11 @@ namespace NcnnCompute
                         bufferBlobs[layer.topNames[0]] = outTensor.buffer;
                         bufferViews[layer.topNames[0]] = outTensor;
                         tempOwned.Add(outTensor);
-                        Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                        Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                         continue;
                     }
 
+TextureConvPath:
                     TensorRef src;
                     RenderTexture tempInputTex = null;
                         if (textureBlobs.TryGetValue(layer.bottomNames[0], out src) && src != null && src.texture != null)
@@ -1216,6 +1306,14 @@ namespace NcnnCompute
                             throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
                         _ops.Conv1x1Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outRt);
                     }
+                    else if (canUseDepthWiseTexturePath)
+                    {
+                        _ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
+                        if (DebugCompareTextureLayers != null && DebugCompareTextureLayers.Contains(layer.name))
+                        {
+                            CompareDepthWiseTexturePath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                        }
+                    }
                     else if (conv.kernelW == 3
                              && conv.kernelH == 3
                              && conv.strideW == 1
@@ -1246,7 +1344,7 @@ namespace NcnnCompute
                     textureShapes[layer.topNames[0]] = new BufferShape(3, outWTex, outHTex, 1, conv.outC);
                     if (tempInputTex != null)
                         ReturnTempArray(tempInputTex);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1275,7 +1373,7 @@ namespace NcnnCompute
                     };
                     var aShape = GetTextureShape(textureShapes, a, layer.bottomNames[0]);
                     textureShapes[layer.topNames[0]] = new BufferShape(3, a.width, a.height, 1, aShape.c);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1285,165 +1383,262 @@ namespace NcnnCompute
                     var withScalar = layer.GetInt(1, 0);
                     var scalarB = layer.GetFloat(2, 0f);
 
-                    var aBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                    var aView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                    if (aBuf == null)
-                        throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
-
                     if (withScalar != 0)
                     {
-                        var outBuf = new ComputeBuffer(aBuf.count, sizeof(float), ComputeBufferType.Structured);
-                        _ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
-                        bufferBlobs[layer.topNames[0]] = outBuf;
-                        if (aView != null)
-                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, aView.dims, aView.w, aView.h, aView.d, aView.c, false);
-                        tempOwned.Add(outBuf);
+                        if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aTexShape))
+                        {
+                            var outRt = RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
+                            _ops.BinaryOpScalarPack4(aTex.texture, scalarB, aTex.packs, opType, outRt);
+                            SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, aTexShape);
+                        }
+                        else
+                        {
+                            var aBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                            var aView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                            if (aBuf == null)
+                                throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
+
+                            var outBuf = new ComputeBuffer(aBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            _ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
+                            bufferBlobs[layer.topNames[0]] = outBuf;
+                            if (aView != null)
+                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, aView.dims, aView.w, aView.h, aView.d, aView.c, false);
+                            tempOwned.Add(outBuf);
+                        }
                     }
                     else
                     {
-                        var bBuf = GetOrConvertToBuffer(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                        var bView = TryGetBufferView(layer.bottomNames[1], bufferBlobs, bufferViews);
-                        if (bBuf == null)
-                            throw new InvalidOperationException("BinaryOp second source not found: " + layer.name);
-
-                        // ncnn reduction + binary-op chains in CodeFormer frequently mix [h,w] with [1,w] or [h,1].
-                        // Expanding the smaller 2d tensor explicitly avoids ambiguous modulo-based broadcasting.
-                        if (aView != null && bView != null && aView.dims == 2 && bView.dims == 2 && aBuf.count != bBuf.count)
-                        {
-                            if (TryExpand2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
-                            {
-                                bBuf = expandedB;
-                                bView = expandedBView;
-                                tempOwned.Add(expandedB);
-                            }
-                            else if (TryExpand2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
-                            {
-                                aBuf = expandedA;
-                                aView = expandedAView;
-                                tempOwned.Add(expandedA);
-                            }
-                        }
-                        else if (aView != null && bView != null && aView.dims == 1 && bView.dims == 2)
-                        {
-                            if (TryExpand1DTo2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
-                            {
-                                aBuf = expandedA;
-                                aView = expandedAView;
-                                tempOwned.Add(expandedA);
-                            }
-                        }
-                        else if (aView != null && bView != null && aView.dims == 2 && bView.dims == 1)
-                        {
-                            if (TryExpand1DTo2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
-                            {
-                                bBuf = expandedB;
-                                bView = expandedBView;
-                                tempOwned.Add(expandedB);
-                            }
-                        }
-
                         var isTargetSftAddLayer = string.IsNullOrEmpty(CodeFormerTargetSftAddLayer)
                             ? CodeFormerSftAddLayers.Contains(layer.name)
                             : string.Equals(layer.name, CodeFormerTargetSftAddLayer, StringComparison.Ordinal);
-
-                        if (CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
-                        {
-                            var scaledB = new ComputeBuffer(bBuf.count, sizeof(float), ComputeBufferType.Structured);
-                            _ops.CopyBuf(bBuf, scaledB, bBuf.count);
-                            _ops.MulScalarInplace(scaledB, CodeFormerSftAddScale, scaledB.count);
-                            bBuf = scaledB;
-                            tempOwned.Add(scaledB);
-                        }
-
                         var isTargetSftMulLayer = string.IsNullOrEmpty(CodeFormerTargetSftMulLayer)
                             ? CodeFormerSftMulLayers.Contains(layer.name)
                             : string.Equals(layer.name, CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
                         var isCodeFormerSftMul = opType == 2 && isTargetSftMulLayer;
-                        var broadcast = ResolveBinaryBroadcast(aView, bView, aBuf.count, bBuf.count, layer.name);
-                        var outBuf = new ComputeBuffer(broadcast.total, sizeof(float), ComputeBufferType.Structured);
-                        _ops.BinaryOpBuf(aBuf, bBuf, broadcast.total, opType, outBuf, broadcast.mode, broadcast.size);
-                        if (isCodeFormerSftMul)
+
+                        if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aTexShape)
+                            && TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var bTex, out var bTexShape)
+                            && CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
                         {
-                            if (CodeFormerBypassSftMul)
+                            RenderTexture scaledBTexture = null;
+                            RenderTexture finalTexture = null;
+                            try
                             {
-                                _ops.CopyBuf(aBuf, outBuf, broadcast.total);
+                                var rhsTexture = bTex.texture;
+                                if (CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
+                                {
+                                    scaledBTexture = RentTempArray(bTex.width, bTex.height, bTex.packs, RenderTextureFormat.ARGBHalf);
+                                    _ops.ScalePack4(bTex.texture, CodeFormerSftAddScale, bTex.packs, scaledBTexture);
+                                    rhsTexture = scaledBTexture;
+                                }
+
+                                finalTexture = RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
+                                if (isCodeFormerSftMul && CodeFormerBypassSftMul)
+                                {
+                                    _ops.CopyPack4(aTex.texture, 0, finalTexture, 0, aTex.packs);
+                                }
+                                else
+                                {
+                                    _ops.BinaryOpPack4(aTex.texture, rhsTexture, aTex.packs, opType, finalTexture);
+                                    if (isCodeFormerSftMul && CodeFormerSftMulScale != 1f)
+                                    {
+                                        var scaledOutTexture = RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
+                                        _ops.ScalePack4(finalTexture, CodeFormerSftMulScale, aTex.packs, scaledOutTexture);
+                                        ReturnTempArray(finalTexture);
+                                        finalTexture = scaledOutTexture;
+                                    }
+                                }
+
+                                SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, aTexShape);
+                                finalTexture = null;
                             }
-                            else if (CodeFormerSftMulScale != 1f)
+                            finally
                             {
-                                _ops.MulScalarInplace(outBuf, CodeFormerSftMulScale, outBuf.count);
+                                if (scaledBTexture != null)
+                                    ReturnTempArray(scaledBTexture);
+                                if (finalTexture != null)
+                                    ReturnTempArray(finalTexture);
                             }
                         }
-                        bufferBlobs[layer.topNames[0]] = outBuf;
-                        if (broadcast.outputView != null)
-                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, broadcast.outputView.dims, broadcast.outputView.w, broadcast.outputView.h, broadcast.outputView.d, broadcast.outputView.c, false);
-                        tempOwned.Add(outBuf);
+                        else
+                        {
+                            var aBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                            var aView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                            if (aBuf == null)
+                                throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
+
+                            var bBuf = GetOrConvertToBuffer(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                            var bView = TryGetBufferView(layer.bottomNames[1], bufferBlobs, bufferViews);
+                            if (bBuf == null)
+                                throw new InvalidOperationException("BinaryOp second source not found: " + layer.name);
+
+                            // ncnn reduction + binary-op chains in CodeFormer frequently mix [h,w] with [1,w] or [h,1].
+                            // Expanding the smaller 2d tensor explicitly avoids ambiguous modulo-based broadcasting.
+                            if (aView != null && bView != null && aView.dims == 2 && bView.dims == 2 && aBuf.count != bBuf.count)
+                            {
+                                if (TryExpand2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
+                                {
+                                    bBuf = expandedB;
+                                    bView = expandedBView;
+                                    tempOwned.Add(expandedB);
+                                }
+                                else if (TryExpand2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
+                                {
+                                    aBuf = expandedA;
+                                    aView = expandedAView;
+                                    tempOwned.Add(expandedA);
+                                }
+                            }
+                            else if (aView != null && bView != null && aView.dims == 1 && bView.dims == 2)
+                            {
+                                if (TryExpand1DTo2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
+                                {
+                                    aBuf = expandedA;
+                                    aView = expandedAView;
+                                    tempOwned.Add(expandedA);
+                                }
+                            }
+                            else if (aView != null && bView != null && aView.dims == 2 && bView.dims == 1)
+                            {
+                                if (TryExpand1DTo2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
+                                {
+                                    bBuf = expandedB;
+                                    bView = expandedBView;
+                                    tempOwned.Add(expandedB);
+                                }
+                            }
+
+                            if (CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
+                            {
+                                var scaledB = new ComputeBuffer(bBuf.count, sizeof(float), ComputeBufferType.Structured);
+                                _ops.CopyBuf(bBuf, scaledB, bBuf.count);
+                                _ops.MulScalarInplace(scaledB, CodeFormerSftAddScale, scaledB.count);
+                                bBuf = scaledB;
+                                tempOwned.Add(scaledB);
+                            }
+
+                            var broadcast = ResolveBinaryBroadcast(aView, bView, aBuf.count, bBuf.count, layer.name);
+                            var outBuf = new ComputeBuffer(broadcast.total, sizeof(float), ComputeBufferType.Structured);
+                            _ops.BinaryOpBuf(aBuf, bBuf, broadcast.total, opType, outBuf, broadcast.mode, broadcast.size);
+                            if (isCodeFormerSftMul)
+                            {
+                                if (CodeFormerBypassSftMul)
+                                {
+                                    _ops.CopyBuf(aBuf, outBuf, broadcast.total);
+                                }
+                                else if (CodeFormerSftMulScale != 1f)
+                                {
+                                    _ops.MulScalarInplace(outBuf, CodeFormerSftMulScale, outBuf.count);
+                                }
+                            }
+                            bufferBlobs[layer.topNames[0]] = outBuf;
+                            if (broadcast.outputView != null)
+                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, broadcast.outputView.dims, broadcast.outputView.w, broadcast.outputView.h, broadcast.outputView.d, broadcast.outputView.c, false);
+                            tempOwned.Add(outBuf);
+                        }
                     }
 
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
                 if (string.Equals(layer.type, "UnaryOp", StringComparison.Ordinal))
                 {
-                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                    var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                    if (srcBuf == null)
-                        throw new InvalidOperationException("UnaryOp source not found: " + layer.name);
-                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
-                    _ops.UnaryOpBuf(srcBuf, srcBuf.count, layer.GetInt(0, 0), outBuf);
-                    bufferBlobs[layer.topNames[0]] = outBuf;
-                    if (srcView != null)
-                        bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
-                    tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                    {
+                        var outRt = RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.UnaryOpPack4(srcTex.texture, srcTex.packs, layer.GetInt(0, 0), outRt);
+                        SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                    }
+                    else
+                    {
+                        var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                        var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                        if (srcBuf == null)
+                            throw new InvalidOperationException("UnaryOp source not found: " + layer.name);
+                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        _ops.UnaryOpBuf(srcBuf, srcBuf.count, layer.GetInt(0, 0), outBuf);
+                        bufferBlobs[layer.topNames[0]] = outBuf;
+                        if (srcView != null)
+                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
+                        tempOwned.Add(outBuf);
+                    }
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
                 if (string.Equals(layer.type, "Swish", StringComparison.Ordinal))
                 {
-                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                    var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                    if (srcBuf == null)
-                        throw new InvalidOperationException("Swish source not found: " + layer.name);
-                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
-                    _ops.SwishBuf(srcBuf, srcBuf.count, outBuf);
-                    bufferBlobs[layer.topNames[0]] = outBuf;
-                    if (srcView != null)
-                        bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
-                    tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                    {
+                        var outRt = RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.SwishPack4(srcTex.texture, srcTex.packs, outRt);
+                        SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                    }
+                    else
+                    {
+                        var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                        var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                        if (srcBuf == null)
+                            throw new InvalidOperationException("Swish source not found: " + layer.name);
+                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        _ops.SwishBuf(srcBuf, srcBuf.count, outBuf);
+                        bufferBlobs[layer.topNames[0]] = outBuf;
+                        if (srcView != null)
+                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
+                        tempOwned.Add(outBuf);
+                    }
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
                 if (string.Equals(layer.type, "Sigmoid", StringComparison.Ordinal))
                 {
-                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                    var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                    if (srcBuf == null)
-                        throw new InvalidOperationException("Sigmoid source not found: " + layer.name);
-                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
-                    _ops.SigmoidBuf(srcBuf, srcBuf.count, outBuf);
-                    bufferBlobs[layer.topNames[0]] = outBuf;
-                    if (srcView != null)
-                        bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
-                    tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                    {
+                        var outRt = RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.SigmoidPack4(srcTex.texture, srcTex.packs, outRt);
+                        SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                    }
+                    else
+                    {
+                        var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                        var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                        if (srcBuf == null)
+                            throw new InvalidOperationException("Sigmoid source not found: " + layer.name);
+                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        _ops.SigmoidBuf(srcBuf, srcBuf.count, outBuf);
+                        bufferBlobs[layer.topNames[0]] = outBuf;
+                        if (srcView != null)
+                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
+                        tempOwned.Add(outBuf);
+                    }
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
                 if (string.Equals(layer.type, "GELU", StringComparison.Ordinal))
                 {
-                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                    var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                    if (srcBuf == null)
-                        throw new InvalidOperationException("GELU source not found: " + layer.name);
-                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
-                    _ops.GeluBuf(srcBuf, srcBuf.count, outBuf);
-                    bufferBlobs[layer.topNames[0]] = outBuf;
-                    if (srcView != null)
-                        bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
-                    tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                    {
+                        var outRt = RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                        _ops.GeluPack4(srcTex.texture, srcTex.packs, false, outRt);
+                        SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                    }
+                    else
+                    {
+                        var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                        var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                        if (srcBuf == null)
+                            throw new InvalidOperationException("GELU source not found: " + layer.name);
+                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        _ops.GeluBuf(srcBuf, srcBuf.count, outBuf);
+                        bufferBlobs[layer.topNames[0]] = outBuf;
+                        if (srcView != null)
+                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
+                        tempOwned.Add(outBuf);
+                    }
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1472,7 +1667,7 @@ namespace NcnnCompute
                         };
                         var interpShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                         textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, interpShape.c);
-                        Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                        Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                         continue;
                     }
 
@@ -1494,7 +1689,7 @@ namespace NcnnCompute
                         };
                         var interpDownShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                         textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, interpDownShape.c);
-                        Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                        Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                         continue;
                     }
 
@@ -1515,7 +1710,7 @@ namespace NcnnCompute
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
                     tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1534,7 +1729,7 @@ namespace NcnnCompute
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
                     tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
@@ -1576,14 +1771,14 @@ namespace NcnnCompute
                     tempOwned.Add(qScaled);
                     tempOwned.Add(ctx);
                     tempOwned.Add(outBuf);
-                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
 
                 throw new InvalidOperationException("unsupported layer type: " + layer.type);
             }
 
-            return new InferResult(textureBlobs, textureShapes, bufferBlobs, bufferViews, tempOwned, this);
+            return new InferResult(textureBlobs, textureShapes, bufferBlobs, bufferRefs, bufferViews, tempOwned, this);
         }
 
         public RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
@@ -1591,6 +1786,8 @@ namespace NcnnCompute
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
             depth = Mathf.Max(1, depth);
+            if (format == RenderTextureFormat.ARGBHalf)
+                format = TensorTextureFormat;
 
             var key = new RtKey(w, h, depth, format);
             if (_useTempPool && _rtPool.TryGetValue(key, out var pool))
@@ -1599,7 +1796,10 @@ namespace NcnnCompute
                 {
                     var rt = pool.Pop();
                     if (rt != null)
+                    {
+                        NcnnGpuResourceTracker.RegisterTexture(rt, "NcnnRepro2.RentTempArray(pool)");
                         return rt;
+                    }
                 }
             }
 
@@ -1610,7 +1810,9 @@ namespace NcnnCompute
                 enableRandomWrite = true,
                 msaaSamples = 1,
             };
-            return RenderTexture.GetTemporary(desc);
+            var allocated = RenderTexture.GetTemporary(desc);
+            NcnnGpuResourceTracker.RegisterTexture(allocated, "NcnnRepro2.RentTempArray(new)");
+            return allocated;
 
        
         }
@@ -1622,6 +1824,7 @@ namespace NcnnCompute
 
             if (!_useTempPool || _maxPooledPerShape <= 0)
             {
+                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro2.ReturnTempArray");
                 RenderTexture.ReleaseTemporary(rt);
                 return;
             }
@@ -1635,6 +1838,7 @@ namespace NcnnCompute
 
             if (pool.Count >= _maxPooledPerShape)
             {
+                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro2.ReturnTempArray(pool-full)");
                 RenderTexture.ReleaseTemporary(rt);
                 return;
             }
@@ -1652,8 +1856,8 @@ namespace NcnnCompute
                     var rt = pool.Pop();
                     if (rt == null)
                         continue;
-                    try { rt.Release(); } catch { }
-                    UnityEngine.Object.Destroy(rt);
+                    NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro2.ClearTempPool");
+                    try { RenderTexture.ReleaseTemporary(rt); } catch { }
                 }
             }
             _rtPool.Clear();
@@ -1737,6 +1941,70 @@ namespace NcnnCompute
             return tr;
         }
 
+        private bool TryGetPack4Texture(
+            string name,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out TensorRef texture,
+            out BufferShape shape)
+        {
+            texture = null;
+            shape = default;
+
+            try
+            {
+                texture = GetOrMaterializeTexture(name, textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                if (texture == null || texture.texture == null)
+                    return false;
+
+                shape = GetTextureShape(textureShapes, texture, name);
+                return shape.dims == 3;
+            }
+            catch
+            {
+                texture = null;
+                shape = default;
+                return false;
+            }
+        }
+
+        private static void SetTextureBlob(
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            string name,
+            RenderTexture texture,
+            BufferShape logicalShape)
+        {
+            textureBlobs[name] = new TensorRef
+            {
+                texture = texture,
+                width = texture.width,
+                height = texture.height,
+                packs = texture.volumeDepth > 0 ? texture.volumeDepth : 1,
+                refs = 1,
+                owned = true
+            };
+            textureShapes[name] = new BufferShape(3, logicalShape.w, logicalShape.h, 1, logicalShape.c);
+        }
+
+        private static bool CanUseExactPack4BinaryPath(TensorRef a, BufferShape aShape, TensorRef b, BufferShape bShape)
+        {
+            return a != null
+                && b != null
+                && a.texture != null
+                && b.texture != null
+                && aShape.dims == 3
+                && bShape.dims == 3
+                && aShape.w == bShape.w
+                && aShape.h == bShape.h
+                && aShape.c == bShape.c
+                && a.width == b.width
+                && a.height == b.height
+                && a.packs == b.packs;
+        }
+
         private static int ComputeConvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter)
         {
             var kernelExtent = dilation * (kernel - 1) + 1;
@@ -1748,6 +2016,18 @@ namespace NcnnCompute
             var buf = new ComputeBuffer(data.Length, sizeof(float), ComputeBufferType.Structured);
             buf.SetData(data);
             return buf;
+        }
+
+        private BufferRef NewOwnedBufferRef(string name, ComputeBuffer buffer)
+        {
+            if (buffer == null)
+                throw new ArgumentNullException(nameof(buffer));
+            return new BufferRef
+            {
+                buffer = buffer,
+                refs = 1,
+                owned = true
+            };
         }
 
         private static TensorRef GetTexture(Dictionary<string, TensorRef> blobs, string name)
@@ -1793,6 +2073,7 @@ namespace NcnnCompute
             if (physicalCount == logicalCount)
             {
                 var convertedExact = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(convertedExact, logicalCount, sizeof(float), "NcnnRepro2.GetOrConvertToBuffer.exact");
                 _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, convertedExact);
                 bufferBlobs[name] = convertedExact;
                 bufferViews[name] = new NcnnTensorBuffer(convertedExact, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
@@ -1803,10 +2084,12 @@ namespace NcnnCompute
             if (logicalCount > 0 && logicalCount < physicalCount)
             {
                 var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(physicalBuffer, physicalCount, sizeof(float), "NcnnRepro2.GetOrConvertToBuffer.physical");
                 _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, physicalBuffer);
                 tempOwned.Add(physicalBuffer);
 
                 var converted = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(converted, logicalCount, sizeof(float), "NcnnRepro2.GetOrConvertToBuffer.trimmed");
                 _ops.CopyBufPartial(physicalBuffer, 0, converted, logicalCount);
 
                 bufferBlobs[name] = converted;
@@ -1840,8 +2123,65 @@ namespace NcnnCompute
                 if (textureBlobs.TryGetValue(name, out var tr) && tr != null)
                 {
                     tr.refs--;
+                    if (tr.refs <= 0 && tr.owned && tr.texture != null)
+                    {
+                        NcnnGpuResourceTracker.ReleaseTexture(tr.texture, "NcnnRepro2.Consume(texture)");
+                        try { RenderTexture.ReleaseTemporary(tr.texture); } catch { }
+                        tr.texture = null;
+                    }
                 }
                 textureBlobs.Remove(name);
+            }
+        }
+
+        private static void Consume(
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, BufferRef> bufferRefs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            Dictionary<string, int> remaining,
+            string[] bottomNames,
+            ICollection<string> pinnedNames)
+        {
+            for (var i = 0; i < bottomNames.Length; i++)
+            {
+                var name = bottomNames[i];
+                if (!remaining.TryGetValue(name, out var count))
+                    continue;
+
+                count--;
+                remaining[name] = count;
+                if (count > 0)
+                    continue;
+                if (pinnedNames != null && pinnedNames.Contains(name))
+                    continue;
+
+                if (textureBlobs.TryGetValue(name, out var tr) && tr != null)
+                {
+                    tr.refs--;
+                    if (tr.refs <= 0 && tr.owned && tr.texture != null)
+                    {
+                        NcnnGpuResourceTracker.ReleaseTexture(tr.texture, "NcnnRepro2.Consume(texture+buffer)");
+                        try { RenderTexture.ReleaseTemporary(tr.texture); } catch { }
+                        tr.texture = null;
+                    }
+                }
+
+                if (bufferRefs != null && bufferRefs.TryGetValue(name, out var br) && br != null)
+                {
+                    br.refs--;
+                    if (br.refs <= 0 && br.owned && br.buffer != null)
+                    {
+                        NcnnGpuResourceTracker.ReleaseBuffer(br.buffer, "NcnnRepro2.Consume(buffer)");
+                        try { br.buffer.Dispose(); } catch { }
+                        br.buffer = null;
+                    }
+                    bufferRefs.Remove(name);
+                }
+
+                textureBlobs.Remove(name);
+                bufferViews?.Remove(name);
+                bufferBlobs?.Remove(name);
             }
         }
 
@@ -2428,6 +2768,134 @@ namespace NcnnCompute
                 }
             }
             return packed;
+        }
+
+        public static Vector4[] PackDepthWiseWeightsToP4K4(float[] w, int channels, int k, int packs)
+        {
+            var packed = new Vector4[packs * k * k];
+            for (var p = 0; p < packs; p++)
+            {
+                for (var ky = 0; ky < k; ky++)
+                {
+                    for (var kx = 0; kx < k; kx++)
+                    {
+                        var baseIndex = (p * k + ky) * k + kx;
+                        var v = Vector4.zero;
+                        for (var lane = 0; lane < 4; lane++)
+                        {
+                            var c = p * 4 + lane;
+                            if (c < channels)
+                            {
+                                var srcIndex = ((c * k + ky) * k + kx);
+                                v[lane] = w[srcIndex];
+                            }
+                        }
+                        packed[baseIndex] = v;
+                    }
+                }
+            }
+            return packed;
+        }
+
+        private void CompareDepthWiseTexturePath(
+            string layerName,
+            string bottomName,
+            ConvPack conv,
+            int outW,
+            int outH,
+            RenderTexture textureOutput,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            List<IDisposable> tempOwned)
+        {
+            try
+            {
+                var srcBuf = GetOrConvertToBuffer(bottomName, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                var srcTensor = TryGetBufferView(bottomName, bufferBlobs, bufferViews);
+                if (srcBuf == null || srcTensor == null)
+                {
+                    DebugLog?.Invoke(layerName + " | compare skipped: source buffer unavailable");
+                    return;
+                }
+
+                using var refTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
+                _ops.ConvDepthWise(
+                    srcTensor,
+                    conv.rawWeight,
+                    conv.rawBias,
+                    conv.outC,
+                    conv.group,
+                    conv.kernelW,
+                    conv.kernelH,
+                    conv.strideW,
+                    conv.strideH,
+                    conv.padLeft,
+                    conv.padTop,
+                    conv.dilationW,
+                    conv.dilationH,
+                    conv.activationType,
+                    conv.activationSlope,
+                    refTensor);
+
+                var logicalCount = outW * outH * conv.outC;
+                var physicalCount = outW * outH * conv.outPacks * 4;
+                using var texturePhysical = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(textureOutput, outW, outH, conv.outPacks * 4, texturePhysical);
+
+                var refData = new float[logicalCount];
+                refTensor.buffer.GetData(refData);
+
+                var texPhysicalData = new float[physicalCount];
+                texturePhysical.GetData(texPhysicalData);
+
+                double sumAbs = 0d;
+                float maxAbs = 0f;
+                var validCount = 0;
+                var refNanCount = 0;
+                var texNanCount = 0;
+                var preview = new List<string>(8);
+                var compareCount = Mathf.Min(logicalCount, texPhysicalData.Length);
+                for (var i = 0; i < compareCount; i++)
+                {
+                    var rv = refData[i];
+                    var tv = texPhysicalData[i];
+                    var refFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
+                    var texFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
+                    if (!refFinite) refNanCount++;
+                    if (!texFinite) texNanCount++;
+                    if (!refFinite || !texFinite)
+                    {
+                        if (preview.Count < 8)
+                            preview.Add(i + ": ref=" + rv.ToString("G9", CultureInfo.InvariantCulture) + " tex=" + tv.ToString("G9", CultureInfo.InvariantCulture));
+                        continue;
+                    }
+
+                    var diff = Mathf.Abs(rv - tv);
+                    sumAbs += diff;
+                    if (diff > maxAbs)
+                        maxAbs = diff;
+                    validCount++;
+                    if (preview.Count < 8)
+                        preview.Add(i + ": ref=" + rv.ToString("G9", CultureInfo.InvariantCulture) + " tex=" + tv.ToString("G9", CultureInfo.InvariantCulture));
+                }
+
+                var meanAbs = validCount > 0 ? (float)(sumAbs / validCount) : float.NaN;
+                DebugLog?.Invoke(layerName
+                    + " | texture_vs_buffer mean_abs=" + meanAbs.ToString("G9", CultureInfo.InvariantCulture)
+                    + " | max_abs=" + maxAbs.ToString("G9", CultureInfo.InvariantCulture)
+                    + " | count=" + compareCount
+                    + " | valid=" + validCount
+                    + " | ref_nan=" + refNanCount
+                    + " | tex_nan=" + texNanCount);
+                for (var i = 0; i < preview.Count; i++)
+                    DebugLog?.Invoke(layerName + " | sample[" + i + "] " + preview[i]);
+            }
+            catch (Exception e)
+            {
+                DebugLog?.Invoke(layerName + " | compare failed: " + e.Message);
+            }
         }
     }
 }

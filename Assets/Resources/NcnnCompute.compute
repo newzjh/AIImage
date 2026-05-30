@@ -12,6 +12,7 @@
 #pragma kernel NcnnPackRgbToPack4
 #pragma kernel NcnnUnpackPack4ToRgb
 #pragma kernel NcnnConv3x3Pack4
+#pragma kernel NcnnConvDepthWisePack4
 #pragma kernel NcnnWinograd23TransformInputPack4
 #pragma kernel NcnnWinograd23GemmPack4
 #pragma kernel NcnnWinograd23TransformOutputPack4
@@ -197,6 +198,8 @@ void NcnnUnpackPack4ToRgb(uint3 id : SV_DispatchThreadID)
 
 StructuredBuffer<float4> _ConvW4;
 StructuredBuffer<float4> _ConvB4;
+StructuredBuffer<float4> _DwConvW4;
+StructuredBuffer<float4> _DwConvB4;
 RWTexture2DArray<float4> _ConvOutArr;
 Texture2DArray<float4> _ConvInArr;
 int _InPacks;
@@ -337,7 +340,21 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
         GroupMemoryBarrierWithGroupSync();
     }
 
-    if (_ActType == 2)
+    if (_ActType == 1)
+    {
+        sum00 = max(sum00, 0.0);
+        sum01 = max(sum01, 0.0);
+        sum10 = max(sum10, 0.0);
+        sum11 = max(sum11, 0.0);
+        if (hasOp1)
+        {
+            sum20 = max(sum20, 0.0);
+            sum21 = max(sum21, 0.0);
+            sum30 = max(sum30, 0.0);
+            sum31 = max(sum31, 0.0);
+        }
+    }
+    else if (_ActType == 2)
     {
         sum00 = max(sum00, 0.0) + min(sum00, 0.0) * _ActParam;
         sum01 = max(sum01, 0.0) + min(sum01, 0.0) * _ActParam;
@@ -386,10 +403,10 @@ int _WinoBiasTerm;
 
 float4 NcnnApplyActivation(float4 v)
 {
-    if (_ActType == 2)
+    if (_ActType == 1)
+        v = max(v, 0.0);
+    else if (_ActType == 2)
         v = max(v, 0.0) + min(v, 0.0) * _ActParam;
-    else if (_ActType == 1)
-        v = v + min(v, 0.0) * _ActParam;
     return v;
 }
 
@@ -633,10 +650,47 @@ void NcnnConv1x1Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
         sum.w += dot(inV, w3);
     }
 
-    if (_ActType == 2)
+    if (_ActType == 1)
+        sum = max(sum, 0.0);
+    else if (_ActType == 2)
         sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
 
     _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+}
+
+[numthreads(8,8,1)]
+void NcnnConvDepthWisePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int pack = (int)id.z;
+    if (pack < 0 || pack >= _OutPacks) return;
+
+    float4 sum = _DwConvB4[pack];
+
+    for (int ky = 0; ky < _KernelHVar; ky++)
+    {
+        int iy = (int)id.y * _StrideHVar - _PadTopVar + ky * _DilationHVar;
+        if (iy < 0 || iy >= _InH) continue;
+
+        for (int kx = 0; kx < _KernelWVar; kx++)
+        {
+            int ix = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
+            if (ix < 0 || ix >= _InW) continue;
+
+            float4 v = _ConvInArr[int3(ix, iy, pack)];
+            float4 w = _DwConvW4[(pack * _KernelHVar + ky) * _KernelWVar + kx];
+            sum += v * w;
+        }
+    }
+
+    if (_ActType == 2)
+        sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
+    else if (_ActType == 1)
+        sum = max(sum, 0.0);
+
+    _ConvOutArr[int3((int)id.x, (int)id.y, pack)] = sum;
 }
 
 RWTexture2DArray<float4> _AddOutArr;
@@ -1114,7 +1168,9 @@ void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    if (_ActType == 2)
+    if (_ActType == 1)
+        sum = sum >= 0.0 ? sum : 0.0;
+    else if (_ActType == 2)
         sum = sum >= 0.0 ? sum : sum * _ActParam;
 
     uint outIndex = (uint)((oc * outH + oy) * outW + ox);
@@ -1123,10 +1179,10 @@ void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
 
 float NcnnApplyActivationScalar(float v)
 {
-    if (_ActType == 2)
+    if (_ActType == 1)
+        v = v >= 0.0 ? v : 0.0;
+    else if (_ActType == 2)
         v = v >= 0.0 ? v : v * _ActParam;
-    else if (_ActType == 1)
-        v = v >= 0.0 ? v : v + v * _ActParam;
     return v;
 }
 

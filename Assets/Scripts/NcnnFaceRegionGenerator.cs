@@ -8,6 +8,7 @@ using Cysharp.Threading.Tasks;
 using NcnnCompute;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Debug = UnityEngine.Debug;
 
 public struct FaceRegionResult
 {
@@ -67,6 +68,24 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 a * p.x - b * p.y + tx,
                 b * p.x + a * p.y + ty);
         }
+
+        public bool TryInverseTransform(Vector2 p, out Vector2 result)
+        {
+            var det = a * a + b * b;
+            if (!valid || det < 1e-8f)
+            {
+                result = default;
+                return false;
+            }
+
+            var dx = p.x - tx;
+            var dy = p.y - ty;
+            var inv = 1f / det;
+            result = new Vector2(
+                (a * dx + b * dy) * inv,
+                (-b * dx + a * dy) * inv);
+            return true;
+        }
     }
 
     private static readonly Vector2[] CanonicalFivePointTemplate =
@@ -77,6 +96,10 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         new Vector2(201.26117f, 371.41043f),
         new Vector2(313.08905f, 371.15118f)
     };
+
+    private static readonly Vector2 CanonicalFaceCenter = new Vector2(256f, 278f);
+    private const float CanonicalFaceRadiusX = 160f;
+    private const float CanonicalFaceRadiusY = 205f;
 
     private static readonly int[] YoloV7StrideValues = { 8, 16, 32 };
     private static readonly float[][] YoloV7Anchors =
@@ -96,6 +119,10 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public float maskSoftness = 0.10f;
     public float faceRectThreshold = 0.18f;
     public bool autoOpenDumpDir = false;
+    public bool enableDetailedProposalDump = true;
+    public bool useArgbFloatForDetector = true;
+    [Range(0.05f, 0.95f)] public float maxFaceAreaRatio = 0.45f;
+    [Range(0.2f, 3f)] public float maxFaceAspectRatio = 1.6f;
 
     private NcnnOps _ops;
     private NcnnRepro2 _repro;
@@ -103,8 +130,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
     private void Awake()
     {
-        _ops = new NcnnOps();
-        _repro = new NcnnRepro2(_ops);
+        EnsureRuntimeObjects();
     }
 
     private void OnDestroy()
@@ -121,6 +147,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             return new FaceRegionResult { error = "NcnnFaceRegion disabled" };
         if (src == null)
             return default;
+        EnsureRuntimeObjects();
 
         await EnsureLoaded(ct);
         if (_repro == null || _repro.Model == null)
@@ -129,23 +156,69 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         Texture2D letterbox = null;
         RenderTexture inputPack4 = null;
         string dumpDir = null;
+        List<string> debugLines = null;
         try
         {
             ct.ThrowIfCancellationRequested();
+            NcnnGpuResourceTracker.Enabled = dumpDebug;
+            if (dumpDebug)
+                NcnnGpuResourceTracker.Reset("NcnnFaceRegionGenerator");
 
             var prep = BuildLetterbox(src, Mathf.Max(64, inputSize));
             letterbox = prep.texture;
             if (letterbox == null)
                 return new FaceRegionResult { error = "Face detector letterbox build failed" };
 
-            inputPack4 = _repro.RentTempArray(letterbox.width, letterbox.height, 1, RenderTextureFormat.ARGBHalf);
+            if (dumpDebug && enableDetailedProposalDump)
+            {
+                debugLines = new List<string>(128)
+                {
+                    "src=" + src.width + "x" + src.height,
+                    "letterbox=" + letterbox.width + "x" + letterbox.height,
+                    "scale=" + prep.scale.ToString("F6", CultureInfo.InvariantCulture),
+                    "padLeft=" + prep.padLeft,
+                    "padTop=" + prep.padTop,
+                    "probThreshold=" + probThreshold.ToString("F4", CultureInfo.InvariantCulture),
+                    "nmsThreshold=" + nmsThreshold.ToString("F4", CultureInfo.InvariantCulture)
+                };
+                _repro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "Conv_3",
+                    "Conv_8",
+                    "Conv_92",
+                    "Conv_281",
+                    "Conv_326",
+                    "Conv_336",
+                    "Conv_340",
+                    "Conv_345",
+                    "Conv_349",
+                    "Conv_354"
+                };
+                _repro.DebugLog = line =>
+                {
+                    if (debugLines.Count < 512)
+                        debugLines.Add(line);
+                };
+            }
+            else
+            {
+                _repro.DebugCompareTextureLayers = null;
+                _repro.DebugLog = null;
+            }
+
+            inputPack4 = _repro.RentTempArray(letterbox.width, letterbox.height, 1, useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
+            // Texture2D<float4> sampling from RGBA32 already yields normalized 0..1 values.
+            // _ScaleX/_ScaleY here are spatial sampling scale, not color normalization.
             _ops.PackRgbToPack4(letterbox, 0, 0, 1f, 1f, inputPack4);
 
             var pinned = new HashSet<string>(StringComparer.Ordinal)
             {
                 "stride_8",
                 "stride_16",
-                "stride_32"
+                "stride_32",
+                "842",
+                "870",
+                "898"
             };
 
             var proposals = new List<FaceProposal>();
@@ -160,6 +233,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                         continue;
 
                     var data = infer.GetBufferData(blobName);
+                    var strideProposalStart = proposals.Count;
                     DecodeYoloV7LiteE(
                         proposals,
                         data,
@@ -168,12 +242,34 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                         outC,
                         YoloV7StrideValues[i],
                         YoloV7Anchors[i],
+                        letterbox.width,
+                        letterbox.height,
                         prep.scale,
                         prep.padLeft,
                         prep.padTop,
                         src.width,
                         src.height,
                         Mathf.Max(0.01f, probThreshold));
+
+                    if (debugLines != null)
+                    {
+                        var added = proposals.Count - strideProposalStart;
+                        debugLines.Add(blobName
+                            + " | logical_w=" + outW
+                            + " | logical_h=" + outH
+                            + " | logical_c=" + outC
+                            + " | proposals=" + added);
+                    }
+                }
+
+                if (debugLines != null)
+                {
+                    AppendBlobMatrixPreview(infer, debugLines, "842", 16);
+                    AppendBlobMatrixPreview(infer, debugLines, "870", 16);
+                    AppendBlobMatrixPreview(infer, debugLines, "898", 16);
+                    AppendBlobMatrixPreview(infer, debugLines, "stride_8", 16);
+                    AppendBlobMatrixPreview(infer, debugLines, "stride_16", 16);
+                    AppendBlobMatrixPreview(infer, debugLines, "stride_32", 16);
                 }
             }
 
@@ -185,7 +281,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             if (picked.Count == 0)
                 return new FaceRegionResult { error = "No face left after NMS" };
 
-            FaceProposal best = PickBestFace(proposals, picked);
+            FaceProposal best = PickBestFace(proposals, picked, src.width, src.height, Mathf.Clamp(maxFaceAreaRatio, 0.05f, 0.95f), Mathf.Max(1f, maxFaceAspectRatio));
             var mask = BuildMask(src.width, src.height, best, out var faceRect);
             if (mask == null)
                 return new FaceRegionResult { error = "Face mask build failed" };
@@ -193,8 +289,16 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             if (dumpDebug)
             {
                 dumpDir = CreateDumpDir();
+                if (debugLines != null)
+                {
+                    AppendProposalSummary(debugLines, proposals, picked, best, src.width, src.height);
+                    debugLines.Add(NcnnGpuResourceTracker.BuildSummary());
+                }
                 DumpMaskPng(mask, dumpDir, "ncnn_face_mask.png");
-                DumpLandmarkOverlay(src, best, dumpDir, "ncnn_face_landmarks.png");
+                DumpLandmarkOverlay(src, best, faceRect, dumpDir, "ncnn_face_landmarks.png");
+                if (debugLines != null)
+                    File.WriteAllLines(Path.Combine(dumpDir, "ncnn_face_debug.txt"), debugLines);
+                NcnnGpuResourceTracker.WriteReport(dumpDir, "ncnn_face_gpu_resources.txt");
                 if (autoOpenDumpDir && !string.IsNullOrWhiteSpace(dumpDir))
                     TryOpenFolderInShell(dumpDir);
             }
@@ -216,7 +320,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         }
         catch (Exception e)
         {
-            UnityEngine.Debug.LogException(e);
+            Debug.LogException(e);
             return new FaceRegionResult { error = e.Message };
         }
         finally
@@ -322,6 +426,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         int featC,
         int stride,
         float[] anchors,
+        int inputW,
+        int inputH,
         float scale,
         int padLeft,
         int padTop,
@@ -338,13 +444,31 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
         var numAnchors = anchors.Length / 2;
         var numGrid = featH;
-        var inputSize = stride * Mathf.RoundToInt(Mathf.Sqrt(numGrid));
-        var numGridX = Mathf.Max(1, inputSize / stride);
-        var numGridY = Mathf.Max(1, numGrid / numGridX);
+        if (inputW <= 0 || inputH <= 0)
+            return;
+
+        int numGridX;
+        int numGridY;
+        if (inputW > inputH)
+        {
+            numGridX = Mathf.Max(1, inputW / stride);
+            numGridY = Mathf.Max(1, numGrid / numGridX);
+        }
+        else
+        {
+            numGridY = Mathf.Max(1, inputH / stride);
+            numGridX = Mathf.Max(1, numGrid / numGridY);
+        }
+
         if (numGridX * numGridY != numGrid)
         {
-            numGridX = Mathf.Max(1, numGridX);
-            numGridY = Mathf.Max(1, numGrid / numGridX);
+            numGridX = Mathf.Max(1, inputW / stride);
+            numGridY = Mathf.Max(1, inputH / stride);
+            if (numGridX * numGridY != numGrid)
+            {
+                numGridX = Mathf.Max(1, numGridX);
+                numGridY = Mathf.Max(1, numGrid / numGridX);
+            }
         }
 
         for (var q = 0; q < numAnchors; q++)
@@ -451,49 +575,161 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         return picked;
     }
 
-    private static FaceProposal PickBestFace(List<FaceProposal> proposals, List<int> picked)
+    private static FaceProposal PickBestFace(List<FaceProposal> proposals, List<int> picked, int imgW, int imgH, float maxAreaRatio, float maxAspectRatio)
     {
-        var best = proposals[picked[0]];
-        var bestValue = ScoreFace(best);
-        for (var i = 1; i < picked.Count; i++)
+        var filtered = new List<FaceProposal>(picked.Count);
+        for (var i = 0; i < picked.Count; i++)
         {
             var candidate = proposals[picked[i]];
-            var value = ScoreFace(candidate);
-            if (value > bestValue)
+            if (IsFaceProposalReasonable(candidate, imgW, imgH, maxAreaRatio, maxAspectRatio))
+                filtered.Add(candidate);
+        }
+
+        var source = filtered.Count > 0 ? filtered : null;
+        var best = source != null ? source[0] : proposals[picked[0]];
+        var count = source != null ? source.Count : picked.Count;
+        var bestRefRect = GetProposalReferenceRect(best, imgW, imgH);
+        var bestPriority = ComputeProposalPriority(best, bestRefRect, imgW, imgH);
+        for (var i = 1; i < count; i++)
+        {
+            var candidate = source != null ? source[i] : proposals[picked[i]];
+            var candidateRefRect = GetProposalReferenceRect(candidate, imgW, imgH);
+            var candidatePriority = ComputeProposalPriority(candidate, candidateRefRect, imgW, imgH);
+            if (candidatePriority > bestPriority + 1e-6f)
             {
                 best = candidate;
-                bestValue = value;
+                bestRefRect = candidateRefRect;
+                bestPriority = candidatePriority;
             }
         }
         return best;
     }
 
+    private static bool IsFaceProposalReasonable(FaceProposal proposal, int imgW, int imgH, float maxAreaRatio, float maxAspectRatio)
+    {
+        var referenceRect = GetProposalReferenceRect(proposal, imgW, imgH);
+        var area = Mathf.Max(1f, referenceRect.width * referenceRect.height);
+        var imageArea = Mathf.Max(1f, imgW * imgH);
+        if (area / imageArea > maxAreaRatio)
+            return false;
+
+        var aspect = referenceRect.width / Mathf.Max(1f, referenceRect.height);
+        if (aspect > maxAspectRatio || aspect < 1f / maxAspectRatio)
+            return false;
+
+        return true;
+    }
+
+    private void EnsureRuntimeObjects()
+    {
+        if (_ops == null)
+            _ops = new NcnnOps();
+        if (_repro == null)
+            _repro = new NcnnRepro2(_ops);
+        _repro.PreferTexturePathForFaceDetector = true;
+        _repro.TensorTextureFormat = useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+    }
+
+    private static void AppendProposalSummary(List<string> lines, List<FaceProposal> proposals, List<int> picked, FaceProposal best, int imgW, int imgH)
+    {
+        if (lines == null)
+            return;
+
+        lines.Add("proposal_count=" + proposals.Count);
+        lines.Add("picked_count=" + (picked != null ? picked.Count : 0));
+
+        var sorted = new List<FaceProposal>(proposals);
+        SortProposals(sorted);
+        var topN = Mathf.Min(12, sorted.Count);
+        for (var i = 0; i < topN; i++)
+        {
+            var p = sorted[i];
+            var areaRatio = (p.rect.width * p.rect.height) / Mathf.Max(1f, imgW * imgH);
+            lines.Add("top_proposal[" + i + "]"
+                + " | score=" + p.score.ToString("F6", CultureInfo.InvariantCulture)
+                + " | rect=" + RectToString(p.rect)
+                + " | area_ratio=" + areaRatio.ToString("F6", CultureInfo.InvariantCulture));
+        }
+
+        var bestAreaRatio = (best.rect.width * best.rect.height) / Mathf.Max(1f, imgW * imgH);
+        lines.Add("best"
+            + " | score=" + best.score.ToString("F6", CultureInfo.InvariantCulture)
+            + " | rect=" + RectToString(best.rect)
+            + " | area_ratio=" + bestAreaRatio.ToString("F6", CultureInfo.InvariantCulture));
+    }
+
+    private static void AppendBlobMatrixPreview(NcnnRepro2.InferResult infer, List<string> lines, string blobName, int previewCount)
+    {
+        if (infer == null || lines == null || string.IsNullOrWhiteSpace(blobName))
+            return;
+
+        try
+        {
+            if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
+            {
+                lines.Add(blobName + " | shape=missing");
+                return;
+            }
+
+            var data = infer.GetBufferData(blobName);
+            lines.Add(blobName + " | dims=" + dims + " | w=" + w + " | h=" + h + " | d=" + d + " | c=" + c + " | count=" + (data != null ? data.Length : 0));
+            if (data == null || data.Length == 0)
+                return;
+
+            var take = Mathf.Min(previewCount, data.Length);
+            var parts = new string[take];
+            for (var i = 0; i < take; i++)
+                parts[i] = data[i].ToString("G9", CultureInfo.InvariantCulture);
+            lines.Add(blobName + " | first=" + string.Join(",", parts));
+        }
+        catch (Exception e)
+        {
+            lines.Add(blobName + " | preview_error=" + e.Message);
+        }
+    }
+
+    private static string RectToString(Rect rect)
+    {
+        return rect.xMin.ToString("F2", CultureInfo.InvariantCulture)
+            + ","
+            + rect.yMin.ToString("F2", CultureInfo.InvariantCulture)
+            + ","
+            + rect.width.ToString("F2", CultureInfo.InvariantCulture)
+            + ","
+            + rect.height.ToString("F2", CultureInfo.InvariantCulture);
+    }
+
     private Texture2D BuildMask(int width, int height, FaceProposal best, out RectInt faceRect)
     {
         var bytes = new byte[width * height * 2];
-        var searchRect = ExpandRect(RoundRect(best.rect), width, height, Mathf.Clamp(maskRectExpand, 0f, 0.6f));
         var transform = SolveSimilarityTransform(best.landmarks, CanonicalFivePointTemplate);
         var threshold = Mathf.Clamp01(faceRectThreshold);
         var softness = Mathf.Clamp(maskSoftness, 0.01f, 0.35f);
+        var searchRect = ExpandRect(RoundRect(best.rect), width, height, Mathf.Clamp(maskRectExpand, 0f, 0.6f));
+        var hasLandmarkRect = TryEstimateLandmarkFaceRect(best, width, height, out var landmarkRect);
+        if (hasLandmarkRect)
+            searchRect = ExpandRect(RoundRect(landmarkRect), width, height, Mathf.Clamp(maskRectExpand, 0f, 0.45f));
+        else if (TryGetTransformedEllipseRect(transform, width, height, 1f + softness, out var landmarkSupportRect))
+            searchRect = ExpandRect(RoundRect(landmarkSupportRect), width, height, Mathf.Clamp(maskRectExpand, 0f, 0.6f));
         var minX = width;
         var minY = height;
         var maxX = -1;
         var maxY = -1;
-
-        var canonicalCenter = new Vector2(256f, 278f);
-        var radiusX = 160f;
-        var radiusY = 205f;
 
         for (var y = searchRect.yMin; y < searchRect.yMax; y++)
         {
             for (var x = searchRect.xMin; x < searchRect.xMax; x++)
             {
                 float value;
-                if (transform.valid)
+                if (hasLandmarkRect)
+                {
+                    value = EvaluateFallbackEllipse(landmarkRect, x + 0.5f, y + 0.5f, softness);
+                }
+                else if (transform.valid)
                 {
                     var q = transform.Transform(new Vector2(x + 0.5f, y + 0.5f));
-                    var dx = (q.x - canonicalCenter.x) / radiusX;
-                    var dy = (q.y - canonicalCenter.y) / radiusY;
+                    var dx = (q.x - CanonicalFaceCenter.x) / CanonicalFaceRadiusX;
+                    var dy = (q.y - CanonicalFaceCenter.y) / CanonicalFaceRadiusY;
                     var d = Mathf.Sqrt(dx * dx + dy * dy);
                     value = Mathf.Clamp01((1f + softness - d) / (softness * 2f));
                 }
@@ -520,9 +756,22 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             }
         }
 
-        faceRect = maxX >= minX && maxY >= minY
-            ? new RectInt(minX, minY, maxX - minX + 1, maxY - minY + 1)
-            : ExpandRect(RoundRect(best.rect), width, height, 0.12f);
+        if (maxX >= minX && maxY >= minY)
+        {
+            faceRect = new RectInt(minX, minY, maxX - minX + 1, maxY - minY + 1);
+        }
+        else if (hasLandmarkRect)
+        {
+            faceRect = ClampRectToImage(RoundRect(landmarkRect), width, height);
+        }
+        else if (TryGetTransformedEllipseRect(transform, width, height, Mathf.Max(0.75f, 1f + softness - threshold * softness * 2f), out var landmarkFaceRect))
+        {
+            faceRect = ClampRectToImage(RoundRect(landmarkFaceRect), width, height);
+        }
+        else
+        {
+            faceRect = ExpandRect(RoundRect(best.rect), width, height, 0.12f);
+        }
 
         var tex = new Texture2D(width, height, TextureFormat.RHalf, false, true);
         tex.LoadRawTextureData(bytes);
@@ -531,6 +780,166 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         tex.filterMode = FilterMode.Bilinear;
         tex.name = "NcnnFaceMask";
         return tex;
+    }
+
+    private static Rect GetProposalReferenceRect(FaceProposal proposal, int imgW, int imgH)
+    {
+        if (TryEstimateLandmarkFaceRect(proposal, imgW, imgH, out var landmarkRect))
+            return landmarkRect;
+        if (TryGetTransformedEllipseRect(SolveSimilarityTransform(proposal.landmarks, CanonicalFivePointTemplate), imgW, imgH, 1.02f, out landmarkRect))
+            return landmarkRect;
+        return proposal.rect;
+    }
+
+    private static bool TryEstimateLandmarkFaceRect(FaceProposal proposal, int imgW, int imgH, out Rect rect)
+    {
+        rect = default;
+        var landmarks = proposal.landmarks;
+        if (landmarks == null || landmarks.Length < 5)
+            return false;
+
+        var leftEye = landmarks[0];
+        var rightEye = landmarks[1];
+        var mouthLeft = landmarks[3];
+        var mouthRight = landmarks[4];
+        var eyeCenter = (leftEye + rightEye) * 0.5f;
+        var mouthCenter = (mouthLeft + mouthRight) * 0.5f;
+
+        var eyeDist = Vector2.Distance(leftEye, rightEye);
+        var mouthDist = Vector2.Distance(mouthLeft, mouthRight);
+        var eyeToMouth = Vector2.Distance(eyeCenter, mouthCenter);
+        if (eyeDist < 4f || eyeToMouth < 4f)
+            return false;
+
+        var centroid = Vector2.zero;
+        for (var i = 0; i < landmarks.Length; i++)
+            centroid += landmarks[i];
+        centroid /= landmarks.Length;
+
+        var outlierIndex = -1;
+        var maxDistSq = float.NegativeInfinity;
+        for (var i = 0; i < landmarks.Length; i++)
+        {
+            var distSq = (landmarks[i] - centroid).sqrMagnitude;
+            if (distSq > maxDistSq)
+            {
+                maxDistSq = distSq;
+                outlierIndex = i;
+            }
+        }
+
+        var minX = float.PositiveInfinity;
+        var minY = float.PositiveInfinity;
+        var maxX = float.NegativeInfinity;
+        var maxY = float.NegativeInfinity;
+        for (var i = 0; i < landmarks.Length; i++)
+        {
+            if (i == outlierIndex)
+                continue;
+            minX = Mathf.Min(minX, landmarks[i].x);
+            minY = Mathf.Min(minY, landmarks[i].y);
+            maxX = Mathf.Max(maxX, landmarks[i].x);
+            maxY = Mathf.Max(maxY, landmarks[i].y);
+        }
+
+        var spanX = Mathf.Max(eyeDist, maxX - minX);
+        var spanY = Mathf.Max(eyeToMouth, maxY - minY);
+        var faceWidth = Mathf.Max(spanX * 2.05f, mouthDist * 2.35f, eyeDist * 2.45f);
+        var faceHeight = Mathf.Max(spanY * 3.15f, eyeToMouth * 2.8f, faceWidth * 1.15f);
+        var center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f - spanY * 0.20f);
+
+        var x0 = center.x - faceWidth * 0.5f;
+        var y0 = center.y - faceHeight * 0.46f;
+        rect = Rect.MinMaxRect(
+            Mathf.Clamp(x0, 0f, Mathf.Max(0f, imgW - 1f)),
+            Mathf.Clamp(y0, 0f, Mathf.Max(0f, imgH - 1f)),
+            Mathf.Clamp(x0 + faceWidth, 0f, Mathf.Max(0f, imgW - 1f)),
+            Mathf.Clamp(y0 + faceHeight, 0f, Mathf.Max(0f, imgH - 1f)));
+
+        return rect.width > 8f && rect.height > 8f;
+    }
+
+    private static bool TryGetTransformedEllipseRect(SimilarityTransform transform, int width, int height, float ellipseScale, out Rect rect)
+    {
+        rect = default;
+        if (!transform.valid || ellipseScale <= 0f)
+            return false;
+
+        var minX = float.PositiveInfinity;
+        var minY = float.PositiveInfinity;
+        var maxX = float.NegativeInfinity;
+        var maxY = float.NegativeInfinity;
+
+        for (var i = 0; i < 48; i++)
+        {
+            var t = i * Mathf.PI * 2f / 48f;
+            var canonical = new Vector2(
+                CanonicalFaceCenter.x + Mathf.Cos(t) * CanonicalFaceRadiusX * ellipseScale,
+                CanonicalFaceCenter.y + Mathf.Sin(t) * CanonicalFaceRadiusY * ellipseScale);
+            if (!transform.TryInverseTransform(canonical, out var imagePoint))
+                return false;
+
+            minX = Mathf.Min(minX, imagePoint.x);
+            minY = Mathf.Min(minY, imagePoint.y);
+            maxX = Mathf.Max(maxX, imagePoint.x);
+            maxY = Mathf.Max(maxY, imagePoint.y);
+        }
+
+        if (float.IsNaN(minX) || float.IsInfinity(minX)
+            || float.IsNaN(minY) || float.IsInfinity(minY)
+            || float.IsNaN(maxX) || float.IsInfinity(maxX)
+            || float.IsNaN(maxY) || float.IsInfinity(maxY))
+            return false;
+
+        minX = Mathf.Clamp(minX, 0f, Mathf.Max(0f, width - 1f));
+        minY = Mathf.Clamp(minY, 0f, Mathf.Max(0f, height - 1f));
+        maxX = Mathf.Clamp(maxX, 0f, Mathf.Max(0f, width - 1f));
+        maxY = Mathf.Clamp(maxY, 0f, Mathf.Max(0f, height - 1f));
+        if (maxX <= minX || maxY <= minY)
+            return false;
+
+        rect = Rect.MinMaxRect(minX, minY, maxX, maxY);
+        return true;
+    }
+
+    private static float ComputeNormalizedCenterDistance(Rect rect, int imgW, int imgH)
+    {
+        var dx = (rect.center.x - imgW * 0.5f) / Mathf.Max(1f, imgW);
+        var dy = (rect.center.y - imgH * 0.5f) / Mathf.Max(1f, imgH);
+        return dx * dx + dy * dy;
+    }
+
+    private static float ComputeProposalPriority(FaceProposal proposal, Rect rect, int imgW, int imgH)
+    {
+        var centerDist = Mathf.Sqrt(ComputeNormalizedCenterDistance(rect, imgW, imgH));
+        var centerBonus = 1f - Mathf.Clamp01(centerDist * 2f);
+        var borderPenalty = TouchesImageBorder(rect, imgW, imgH) ? 0.06f : 0f;
+        var sizePenalty = 0f;
+        if (proposal.landmarks != null && proposal.landmarks.Length >= 5)
+        {
+            var eyeDist = Vector2.Distance(proposal.landmarks[0], proposal.landmarks[1]);
+            var mouthCenter = (proposal.landmarks[3] + proposal.landmarks[4]) * 0.5f;
+            var eyeCenter = (proposal.landmarks[0] + proposal.landmarks[1]) * 0.5f;
+            var eyeToMouth = Vector2.Distance(eyeCenter, mouthCenter);
+            if (proposal.rect.width < eyeDist * 0.85f)
+                sizePenalty += 0.10f;
+            if (proposal.rect.height < eyeToMouth * 1.15f)
+                sizePenalty += 0.10f;
+            if (proposal.rect.width > eyeDist * 5.0f)
+                sizePenalty += 0.05f;
+            if (proposal.rect.height > eyeToMouth * 5.2f)
+                sizePenalty += 0.05f;
+        }
+
+        return proposal.score * 0.88f + centerBonus * 0.18f - borderPenalty - sizePenalty;
+    }
+
+    private static bool TouchesImageBorder(Rect rect, int imgW, int imgH)
+    {
+        return rect.xMin <= 1f
+            || rect.yMin <= 1f
+            || rect.xMax >= imgW - 1f
+            || rect.yMax >= imgH - 1f;
     }
 
     private static float EvaluateFallbackEllipse(Rect rect, float x, float y, float softness)
@@ -641,12 +1050,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         return true;
     }
 
-    private static float ScoreFace(FaceProposal proposal)
-    {
-        var area = Mathf.Max(1f, proposal.rect.width * proposal.rect.height);
-        return proposal.score * Mathf.Sqrt(area);
-    }
-
     private static RectInt RoundRect(Rect rect)
     {
         var x0 = Mathf.FloorToInt(rect.xMin);
@@ -664,6 +1067,15 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         var y0 = Mathf.Clamp(rect.y - dh, 0, Mathf.Max(0, height - 1));
         var x1 = Mathf.Clamp(rect.xMax + dw, 0, width);
         var y1 = Mathf.Clamp(rect.yMax + dh, 0, height);
+        return new RectInt(x0, y0, Mathf.Max(1, x1 - x0), Mathf.Max(1, y1 - y0));
+    }
+
+    private static RectInt ClampRectToImage(RectInt rect, int width, int height)
+    {
+        var x0 = Mathf.Clamp(rect.xMin, 0, Mathf.Max(0, width - 1));
+        var y0 = Mathf.Clamp(rect.yMin, 0, Mathf.Max(0, height - 1));
+        var x1 = Mathf.Clamp(rect.xMax, 0, width);
+        var y1 = Mathf.Clamp(rect.yMax, 0, height);
         return new RectInt(x0, y0, Mathf.Max(1, x1 - x0), Mathf.Max(1, y1 - y0));
     }
 
@@ -730,7 +1142,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         }
     }
 
-    private static void DumpLandmarkOverlay(Texture2D src, FaceProposal proposal, string dir, string fileName)
+    private static void DumpLandmarkOverlay(Texture2D src, FaceProposal proposal, RectInt faceRect, string dir, string fileName)
     {
         if (src == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -738,7 +1150,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         {
             var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
             tex.SetPixels32(src.GetPixels32());
-            DrawRect(tex, RoundRect(proposal.rect), new Color32(0, 255, 0, 255));
+            DrawRect(tex, ClampRectToImage(faceRect, src.width, src.height), new Color32(0, 255, 0, 255));
+            DrawRect(tex, ClampRectToImage(RoundRect(proposal.rect), src.width, src.height), new Color32(255, 220, 32, 255));
             if (proposal.landmarks != null)
             {
                 for (var i = 0; i < proposal.landmarks.Length; i++)

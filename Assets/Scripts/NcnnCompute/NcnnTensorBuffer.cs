@@ -26,6 +26,7 @@ namespace NcnnCompute
             ownsBuffer = true;
             var count = checked(w * h * c);
             buffer = new ComputeBuffer(count, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, count, sizeof(float), "NcnnTensorBuffer(3d)");
         }
 
         public NcnnTensorBuffer(int w)
@@ -38,6 +39,7 @@ namespace NcnnCompute
             this.c = 1;
             ownsBuffer = true;
             buffer = new ComputeBuffer(w, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, w, sizeof(float), "NcnnTensorBuffer(1d)");
         }
 
         public NcnnTensorBuffer(int w, int h)
@@ -51,6 +53,7 @@ namespace NcnnCompute
             this.c = 1;
             ownsBuffer = true;
             buffer = new ComputeBuffer(checked(w * h), sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, checked(w * h), sizeof(float), "NcnnTensorBuffer(2d)");
         }
 
         public NcnnTensorBuffer(int w, int h, int d, int c)
@@ -66,6 +69,7 @@ namespace NcnnCompute
             this.c = c;
             ownsBuffer = true;
             buffer = new ComputeBuffer(checked(w * h * d * c), sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, checked(w * h * d * c), sizeof(float), "NcnnTensorBuffer(4d)");
         }
 
         internal NcnnTensorBuffer(ComputeBuffer existing, int dims, int w, int h, int d, int c, bool ownsBuffer)
@@ -139,6 +143,7 @@ namespace NcnnCompute
         public void Dispose()
         {
             if (!ownsBuffer) return;
+            NcnnGpuResourceTracker.ReleaseBuffer(buffer, "NcnnTensorBuffer.Dispose");
             try { buffer?.Dispose(); } catch { }
         }
     }

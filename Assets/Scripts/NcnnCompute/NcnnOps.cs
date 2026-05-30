@@ -265,6 +265,7 @@ namespace NcnnCompute
         private readonly int _kBlitTileToDst;
         private readonly int _kPackRgbToPack4;
         private readonly int _kConv3x3Pack4;
+        private readonly int _kConvDepthWisePack4;
         private readonly int _kWinograd23TransformInput;
         private readonly int _kWinograd23Gemm;
         private readonly int _kWinograd23TransformOutput;
@@ -344,6 +345,7 @@ namespace NcnnCompute
             _kBlitTileToDst = _cs.FindKernel("NcnnBlitTileToDst");
             _kPackRgbToPack4 = _cs.FindKernel("NcnnPackRgbToPack4");
             _kConv3x3Pack4 = _cs.FindKernel("NcnnConv3x3Pack4");
+            _kConvDepthWisePack4 = _cs.FindKernel("NcnnConvDepthWisePack4");
             _kWinograd23TransformInput = _cs.FindKernel("NcnnWinograd23TransformInputPack4");
             _kWinograd23Gemm = _cs.FindKernel("NcnnWinograd23GemmPack4");
             _kWinograd23TransformOutput = _cs.FindKernel("NcnnWinograd23TransformOutputPack4");
@@ -883,6 +885,36 @@ namespace NcnnCompute
             Dispatch3D(_kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
         }
 
+        public void ConvDepthWisePack4(RenderTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+
+            _cs.SetInt("_InW", srcPack4.width);
+            _cs.SetInt("_InH", srcPack4.height);
+            _cs.SetInt("_OutW", dstPack4.width);
+            _cs.SetInt("_OutH", dstPack4.height);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_OutPacks", packs);
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kConvDepthWisePack4, "_DwConvW4", w4);
+            _cs.SetBuffer(_kConvDepthWisePack4, "_DwConvB4", b4);
+            _cs.SetTexture(_kConvDepthWisePack4, "_ConvInArr", srcPack4);
+            _cs.SetTexture(_kConvDepthWisePack4, "_ConvOutArr", dstPack4);
+            Dispatch3D(_kConvDepthWisePack4, dstPack4.width, dstPack4.height, packs, 8, 8);
+        }
+
         public void Conv3x3Pack4Winograd23(RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4)
         {
             if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
@@ -1162,13 +1194,12 @@ namespace NcnnCompute
             if (packs <= 0) return;
             if (src.width != dst.width || src.height != dst.height)
                 throw new InvalidOperationException("CopyPack4 requires same width/height");
-
-            for (var p = 0; p < packs; p++)
-            {
-                var sp = srcPackOffset + p;
-                var dp = dstPackOffset + p;
-                Graphics.CopyTexture(src, sp, 0, 0, 0, src.width, src.height, dst, dp, 0, 0, 0);
-            }
+            _cs.SetInt("_CopyInOffset", srcPackOffset);
+            _cs.SetInt("_CopyOutOffset", dstPackOffset);
+            _cs.SetInt("_CopyPacks", packs);
+            _cs.SetTexture(_kCopyPack4, "_CopyInArr", src);
+            _cs.SetTexture(_kCopyPack4, "_CopyOutArr", dst);
+            Dispatch3D(_kCopyPack4, dst.width, dst.height, packs, 8, 8);
         }
 
         public void CopyPack4(CommandBuffer cmd, ComputeTexture src, int srcPackOffset, ComputeTexture dst, int dstPackOffset, int packs)

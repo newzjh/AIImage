@@ -49,13 +49,11 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     private bool _generatorLoaded;
     private bool _loaded;
     private string _lastDumpDir;
+    public string LastDumpDir => _lastDumpDir;
 
     private void Awake()
     {
-        _ops = new NcnnOps();
-        _encoderRepro = new NcnnRepro2(_ops);
-        _generatorRepro = new NcnnRepro2(_ops);
-        ApplyReproOptions();
+        EnsureRuntimeObjects();
     }
 
     private void OnDestroy()
@@ -87,7 +85,13 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         try
         {
+            EnsureRuntimeObjects();
             ApplyReproOptions();
+            if (enableDebugDump)
+            {
+                NcnnGpuResourceTracker.Enabled = true;
+                NcnnGpuResourceTracker.Reset("CodeFormerNcnnReproRunner2");
+            }
             await EnsureLoaded();
             if (_encoderRepro.Model == null || _generatorRepro.Model == null)
                 return Finish(new CodeFormerResult { error = "CodeFormer(repro2) model unavailable" });
@@ -210,14 +214,13 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 if (scaled != null) Destroy(scaled);
                 if (faceMask != null) Destroy(faceMask);
                 if (faceCrop != null) Destroy(faceCrop);
-                if (face512 != null) Destroy(face512);
-                if (restored512 != null) Destroy(restored512);
-                if (restoredCrop != null) Destroy(restoredCrop);
+                if (face512 != null) ReleaseTemporaryRt(face512);
+                if (restored512 != null) ReleaseTextureIfTemporary(restored512);
+                if (restoredCrop != null) ReleaseTemporaryRt(restoredCrop);
                 if (composed != null)
-                {
-                    composed.Release();
-                    Destroy(composed);
-                }
+                    ReleaseTemporaryRt(composed);
+                if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                    NcnnGpuResourceTracker.WriteReport(_lastDumpDir, "codeformer_gpu_resources.txt");
                 _encoderRepro?.ClearTempPool();
                 _generatorRepro?.ClearTempPool();
             }
@@ -473,11 +476,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex);
 
                 stage = "convert output to RGB";
-                restored = new RenderTexture(outputTex.width, outputTex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-                restored.enableRandomWrite = true;
-                restored.wrapMode = TextureWrapMode.Clamp;
-                restored.filterMode = FilterMode.Bilinear;
-                restored.Create();
+                restored = GetTemporaryRt(outputTex.width, outputTex.height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, true);
                 _ops.Pack4ToRgb01(clipTex, restored);
 
                 if (enableDebugDump)
@@ -494,12 +493,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
         catch (OperationCanceledException)
         {
-            if (restored != null) Destroy(restored);
+            if (restored != null) ReleaseTemporaryRt(restored);
             return default;
         }
         catch (Exception e)
         {
-            if (restored != null) Destroy(restored);
+            if (restored != null) ReleaseTemporaryRt(restored);
             try
             {
                 UnityEngine.Debug.LogError("[CodeFormer(repro2)] stage failed: " + stage);
@@ -603,11 +602,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         if (!enableDebugDump || pack4Tex == null || string.IsNullOrWhiteSpace(dir))
             return;
 
-        var vis = new RenderTexture(pack4Tex.width, pack4Tex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-        vis.enableRandomWrite = true;
-        vis.wrapMode = TextureWrapMode.Clamp;
-        vis.filterMode = FilterMode.Bilinear;
-        vis.Create();
+        var vis = GetTemporaryRt(pack4Tex.width, pack4Tex.height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, true);
         try
         {
             _ops.Pack4ToRgb01(pack4Tex, vis);
@@ -615,8 +610,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
         finally
         {
-            vis.Release();
-            Destroy(vis);
+            ReleaseTemporaryRt(vis);
         }
     }
 
@@ -666,8 +660,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         {
             if (rt == null)
             {
-                tempRt = new RenderTexture(texture.width, texture.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-                tempRt.Create();
+                tempRt = GetTemporaryRt(texture.width, texture.height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, false);
                 Graphics.Blit(texture, tempRt);
                 rt = tempRt;
             }
@@ -688,10 +681,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         finally
         {
             if (tempRt != null)
-            {
-                tempRt.Release();
-                Destroy(tempRt);
-            }
+                ReleaseTemporaryRt(tempRt);
         }
     }
 
@@ -1236,6 +1226,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     {
         if (_encoderLoaded)
             return;
+        EnsureRuntimeObjects();
 
         var paramPath = Path.Combine(Application.streamingAssetsPath, encoderParamRelativePath);
         var binPath = Path.Combine(Application.streamingAssetsPath, encoderBinRelativePath);
@@ -1261,6 +1252,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     {
         if (_generatorLoaded)
             return;
+        EnsureRuntimeObjects();
 
         var paramPath = Path.Combine(Application.streamingAssetsPath, generatorParamRelativePath);
         var binPath = Path.Combine(Application.streamingAssetsPath, generatorBinRelativePath);
@@ -1291,6 +1283,17 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _loaded = false;
         _encoderLoaded = false;
         _generatorLoaded = false;
+    }
+
+    private void EnsureRuntimeObjects()
+    {
+        if (_ops == null)
+            _ops = new NcnnOps();
+        if (_encoderRepro == null)
+            _encoderRepro = new NcnnRepro2(_ops);
+        if (_generatorRepro == null)
+            _generatorRepro = new NcnnRepro2(_ops);
+        ApplyReproOptions();
     }
 
     private void ReportProgress(float progress01, string text)
@@ -1376,8 +1379,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private static RenderTexture ResizeTextureBilinear(Texture src, int w, int h)
     {
-        var ret = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32);
-        ret.Create();
+        var ret = GetTemporaryRt(w, h, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default, false);
         Graphics.Blit(src, ret);
         return ret;
     }
@@ -1388,8 +1390,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             return null;
         var rt = ResizeTextureBilinear((Texture)src, w, h);
         var result = RenderTextureToTexture2D(rt, w, h);
-        rt.Release();
-        Destroy(rt);
+        ReleaseTemporaryRt(rt);
         return result;
     }
 
@@ -1422,11 +1423,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         if (kernel < 0)
             return null;
 
-        var rt = new RenderTexture(src.width, src.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
-        rt.enableRandomWrite = true;
-        rt.wrapMode = TextureWrapMode.Clamp;
-        rt.filterMode = FilterMode.Bilinear;
-        rt.Create();
+        var rt = GetTemporaryRt(src.width, src.height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB, true);
 
         cs.SetTexture(kernel, "_Source", src);
         cs.SetTexture(kernel, "_Overlay", restored);
@@ -1440,5 +1437,32 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         cs.Dispatch(kernel, Mathf.CeilToInt(src.width / 8f), Mathf.CeilToInt(src.height / 8f), 1);
         return rt;
+    }
+
+    private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, RenderTextureReadWrite readWrite, bool randomWrite)
+    {
+        var desc = new RenderTextureDescriptor(Mathf.Max(1, width), Mathf.Max(1, height), format, 0)
+        {
+            msaaSamples = 1,
+            sRGB = readWrite != RenderTextureReadWrite.Linear,
+            enableRandomWrite = randomWrite
+        };
+        var rt = RenderTexture.GetTemporary(desc);
+        rt.wrapMode = TextureWrapMode.Clamp;
+        rt.filterMode = FilterMode.Bilinear;
+        return rt;
+    }
+
+    private static void ReleaseTemporaryRt(RenderTexture rt)
+    {
+        if (rt == null)
+            return;
+        try { RenderTexture.ReleaseTemporary(rt); } catch { }
+    }
+
+    private static void ReleaseTextureIfTemporary(Texture texture)
+    {
+        if (texture is RenderTexture rt)
+            ReleaseTemporaryRt(rt);
     }
 }
