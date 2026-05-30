@@ -401,7 +401,7 @@ namespace NcnnCompute
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
 
         private readonly NcnnOps _ops;
-        private bool _useTempPool;
+        private bool _useTempPool = false;
         private int _maxPooledPerShape = 2;
 
         public bool EnableTempPool
@@ -1603,16 +1603,16 @@ namespace NcnnCompute
                 }
             }
 
-            var created = new RenderTexture(w, h, 0, format, RenderTextureReadWrite.Linear)
+            var desc = new RenderTextureDescriptor(w, h, format, 0)
             {
-                volumeDepth = depth,
                 dimension = TextureDimension.Tex2DArray,
+                volumeDepth = depth,
                 enableRandomWrite = true,
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear
+                msaaSamples = 1,
             };
-            created.Create();
-            return created;
+            return RenderTexture.GetTemporary(desc);
+
+       
         }
 
         public void ReturnTempArray(RenderTexture rt)
@@ -1622,8 +1622,7 @@ namespace NcnnCompute
 
             if (!_useTempPool || _maxPooledPerShape <= 0)
             {
-                try { rt.Release(); } catch { }
-                UnityEngine.Object.Destroy(rt);
+                RenderTexture.ReleaseTemporary(rt);
                 return;
             }
 
@@ -1636,8 +1635,7 @@ namespace NcnnCompute
 
             if (pool.Count >= _maxPooledPerShape)
             {
-                try { rt.Release(); } catch { }
-                UnityEngine.Object.Destroy(rt);
+                RenderTexture.ReleaseTemporary(rt);
                 return;
             }
 
