@@ -13,28 +13,15 @@ public sealed class FaceMaskGenerator : MonoBehaviour
     public Texture2D currentImageFaceMask;
     public Texture2D maleFaceMask;
     public Texture2D femaleFaceMask;
-    public bool preferNcnnFaceRegion = false;
 
     private ComputeShader _cs;
     private readonly Dictionary<string, int> _kernelIds = new Dictionary<string, int>(StringComparer.Ordinal);
-    private NcnnFaceRegionGenerator _ncnnFaceRegion;
-    private RectInt _currentFaceRect;
-    private bool _hasCurrentFaceRect;
 
     public ComputeShader GetComputeShader()
     {
         if (_cs == null)
             _cs = Resources.Load<ComputeShader>("FaceMask");
         return _cs;
-    }
-
-    public NcnnFaceRegionGenerator GetFaceRegionGenerator()
-    {
-        if (_ncnnFaceRegion == null)
-            _ncnnFaceRegion = GetComponent<NcnnFaceRegionGenerator>();
-        if (_ncnnFaceRegion == null && preferNcnnFaceRegion)
-            _ncnnFaceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
-        return _ncnnFaceRegion;
     }
 
     public int GetKernel(string kernelName)
@@ -63,8 +50,6 @@ public sealed class FaceMaskGenerator : MonoBehaviour
         if (currentImageFaceMask != null)
             Destroy(currentImageFaceMask);
         currentImageFaceMask = null;
-        _currentFaceRect = default;
-        _hasCurrentFaceRect = false;
     }
 
     public void ClearMaleMask()
@@ -96,12 +81,6 @@ public sealed class FaceMaskGenerator : MonoBehaviour
             return r;
         currentImageFaceMask = r.mask;
         return r;
-    }
-
-    public bool TryGetCurrentFaceRect(out RectInt rect)
-    {
-        rect = _currentFaceRect;
-        return _hasCurrentFaceRect && rect.width > 0 && rect.height > 0;
     }
 
     public async UniTask<FaceMaskTextureResult> GenerateForMaleAsync(Texture2D src, bool dumpDebug, CancellationToken ct)

@@ -382,15 +382,6 @@ namespace NcnnCompute
                 {
                     try { owned?.Dispose(); } catch { }
                 }
-
-                var seenBuffers = new HashSet<ComputeBuffer>();
-                foreach (var kv in _bufferBlobs)
-                {
-                    var buf = kv.Value;
-                    if (buf == null || !seenBuffers.Add(buf))
-                        continue;
-                    try { buf.Dispose(); } catch { }
-                }
                 _bufferBlobs.Clear();
                 _bufferViews.Clear();
                 _tempOwned.Clear();

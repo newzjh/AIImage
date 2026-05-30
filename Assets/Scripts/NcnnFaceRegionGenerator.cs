@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Diagnostics;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
@@ -14,6 +15,7 @@ public struct FaceRegionResult
     public RectInt faceRect;
     public Vector2[] landmarks;
     public float score;
+    public string dumpDir;
     public string error;
 }
 
@@ -93,6 +95,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public float maskRectExpand = 0.18f;
     public float maskSoftness = 0.10f;
     public float faceRectThreshold = 0.18f;
+    public bool autoOpenDumpDir = false;
 
     private NcnnOps _ops;
     private NcnnRepro2 _repro;
@@ -125,6 +128,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
         Texture2D letterbox = null;
         RenderTexture inputPack4 = null;
+        string dumpDir = null;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -186,6 +190,15 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             if (mask == null)
                 return new FaceRegionResult { error = "Face mask build failed" };
 
+            if (dumpDebug)
+            {
+                dumpDir = CreateDumpDir();
+                DumpMaskPng(mask, dumpDir, "ncnn_face_mask.png");
+                DumpLandmarkOverlay(src, best, dumpDir, "ncnn_face_landmarks.png");
+                if (autoOpenDumpDir && !string.IsNullOrWhiteSpace(dumpDir))
+                    TryOpenFolderInShell(dumpDir);
+            }
+
             return new FaceRegionResult
             {
                 mask = mask,
@@ -193,7 +206,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     ? faceRect
                     : ExpandRect(RoundRect(best.rect), src.width, src.height, 0.12f),
                 landmarks = best.landmarks,
-                score = best.score
+                score = best.score,
+                dumpDir = dumpDir
             };
         }
         catch (OperationCanceledException)
@@ -202,7 +216,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogException(e);
+            UnityEngine.Debug.LogException(e);
             return new FaceRegionResult { error = e.Message };
         }
         finally
@@ -687,4 +701,136 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
         return (ushort)(sign | (exp << 10) | ((mantissa + 0x00001000) >> 13));
     }
+
+    private static void DumpMaskPng(Texture2D mask, string dir, string fileName)
+    {
+        if (mask == null || string.IsNullOrWhiteSpace(dir))
+            return;
+        try
+        {
+            var outTex = new Texture2D(mask.width, mask.height, TextureFormat.RGBA32, false, true);
+            var raw = mask.GetRawTextureData<byte>();
+            var colors = new Color32[mask.width * mask.height];
+            for (var i = 0; i < colors.Length; i++)
+            {
+                var lo = raw[i * 2 + 0];
+                var hi = raw[i * 2 + 1];
+                var half = (ushort)(lo | (hi << 8));
+                var v = HalfToFloat(half);
+                var b = (byte)Mathf.Clamp(Mathf.RoundToInt(v * 255f), 0, 255);
+                colors[i] = new Color32(b, b, b, 255);
+            }
+            outTex.SetPixels32(colors);
+            outTex.Apply(false, false);
+            File.WriteAllBytes(Path.Combine(dir, fileName), outTex.EncodeToPNG());
+            Destroy(outTex);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void DumpLandmarkOverlay(Texture2D src, FaceProposal proposal, string dir, string fileName)
+    {
+        if (src == null || string.IsNullOrWhiteSpace(dir))
+            return;
+        try
+        {
+            var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
+            tex.SetPixels32(src.GetPixels32());
+            DrawRect(tex, RoundRect(proposal.rect), new Color32(0, 255, 0, 255));
+            if (proposal.landmarks != null)
+            {
+                for (var i = 0; i < proposal.landmarks.Length; i++)
+                    DrawPoint(tex, Mathf.RoundToInt(proposal.landmarks[i].x), Mathf.RoundToInt(proposal.landmarks[i].y), new Color32(255, 64, 64, 255), 3);
+            }
+            tex.Apply(false, false);
+            File.WriteAllBytes(Path.Combine(dir, fileName), tex.EncodeToPNG());
+            Destroy(tex);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void DrawRect(Texture2D tex, RectInt rect, Color32 color)
+    {
+        for (var x = rect.xMin; x < rect.xMax; x++)
+        {
+            SetPixelSafe(tex, x, rect.yMin, color);
+            SetPixelSafe(tex, x, rect.yMax - 1, color);
+        }
+        for (var y = rect.yMin; y < rect.yMax; y++)
+        {
+            SetPixelSafe(tex, rect.xMin, y, color);
+            SetPixelSafe(tex, rect.xMax - 1, y, color);
+        }
+    }
+
+    private static void DrawPoint(Texture2D tex, int cx, int cy, Color32 color, int radius)
+    {
+        for (var y = -radius; y <= radius; y++)
+        {
+            for (var x = -radius; x <= radius; x++)
+            {
+                if (x * x + y * y > radius * radius)
+                    continue;
+                SetPixelSafe(tex, cx + x, cy + y, color);
+            }
+        }
+    }
+
+    private static void SetPixelSafe(Texture2D tex, int x, int y, Color32 color)
+    {
+        if (tex == null || x < 0 || y < 0 || x >= tex.width || y >= tex.height)
+            return;
+        tex.SetPixel(x, y, color);
+    }
+
+    private static float HalfToFloat(ushort h)
+    {
+        uint sign = (uint)(h >> 15) & 1u;
+        uint exp = (uint)(h >> 10) & 0x1Fu;
+        uint mant = (uint)h & 0x3FFu;
+        if (exp == 0)
+        {
+            if (mant == 0) return sign == 0 ? 0f : -0f;
+            var v = mant / 1024f;
+            v *= Mathf.Pow(2f, -14f);
+            return sign == 0 ? v : -v;
+        }
+        if (exp == 31)
+        {
+            if (mant == 0) return sign == 0 ? float.PositiveInfinity : float.NegativeInfinity;
+            return float.NaN;
+        }
+        var value = 1f + mant / 1024f;
+        value *= Mathf.Pow(2f, (int)exp - 15);
+        return sign == 0 ? value : -value;
+    }
+
+    private static string CreateDumpDir()
+    {
+        var root = Application.temporaryCachePath;
+        if (string.IsNullOrWhiteSpace(root))
+            root = Path.GetTempPath();
+        var dir = Path.Combine(root, "AIImage_NcnnFaceRegion_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        try { Directory.CreateDirectory(dir); } catch { }
+        return dir;
+    }
+
+#if !UNITY_WEBGL
+    private static void TryOpenFolderInShell(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            return;
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = directoryPath, UseShellExecute = true });
+        }
+        catch
+        {
+        }
+    }
+#endif
 }

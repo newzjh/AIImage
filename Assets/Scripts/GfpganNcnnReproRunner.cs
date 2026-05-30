@@ -19,6 +19,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public float faceBoxExpand = 0.35f;
     public bool enableTempPool = false;
     public int maxPooledPerShape = 2;
+    public bool enableFaceRegionDebugDump = false;
 
     public event Action<float, string> ProgressChanged;
 
@@ -149,7 +150,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         ReportProgress(0f, "准备输入");
         await UniTask.Yield();
 
-        FaceMaskGenerator fm = null;
+        NcnnFaceRegionGenerator faceRegion = null;
         Texture2D scaled = null;
         Texture2D faceMask = null;
         Texture2D faceCrop = null;
@@ -176,37 +177,24 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
             ReportProgress(0.06f, "生成脸部区域");
             await UniTask.Yield();
-            fm = GetComponent<FaceMaskGenerator>();
+            faceRegion = GetComponent<NcnnFaceRegionGenerator>();
+            if (faceRegion == null)
+                faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
             RectInt rect = default;
-            if (fm != null)
+            if (faceRegion != null && faceRegion.enabled)
             {
-                var mr = await fm.GenerateForCurrentAsync(inputTex, false, ct);
-                if (string.IsNullOrWhiteSpace(mr.error) && mr.mask != null)
-                    faceMask = mr.mask;
-
-                if (fm.TryGetCurrentFaceRect(out var cachedRect))
+                var rr = await faceRegion.GenerateAsync(inputTex, enableFaceRegionDebugDump, ct);
+                if (string.IsNullOrWhiteSpace(rr.error) && rr.faceRect.width > 0 && rr.faceRect.height > 0)
                 {
-                    rect = cachedRect;
+                    faceMask = rr.mask;
+                    rect = rr.faceRect;
+                    if (enableFaceRegionDebugDump && !string.IsNullOrWhiteSpace(rr.dumpDir))
+                        UnityEngine.Debug.Log("[GFPGAN Repro] face region dump: " + rr.dumpDir);
                 }
                 else
                 {
-                    var region = fm.GetFaceRegionGenerator();
-                    if (region != null && region.enabled)
-                    {
-                        var rr = await region.GenerateAsync(inputTex, false, ct);
-                        if (string.IsNullOrWhiteSpace(rr.error) && rr.faceRect.width > 0 && rr.faceRect.height > 0)
-                        {
-                            if (faceMask == null && rr.mask != null)
-                                faceMask = rr.mask;
-                            else if (rr.mask != null && !ReferenceEquals(rr.mask, faceMask))
-                                Destroy(rr.mask);
-                            rect = rr.faceRect;
-                        }
-                        else if (rr.mask != null && !ReferenceEquals(rr.mask, faceMask))
-                        {
-                            Destroy(rr.mask);
-                        }
-                    }
+                    if (rr.mask != null)
+                        Destroy(rr.mask);
                 }
             }
 
@@ -274,8 +262,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         finally
         {
             if (scaled != null) Destroy(scaled);
-            var sharedMask = fm != null ? fm.currentImageFaceMask : null;
-            if (faceMask != null && !ReferenceEquals(faceMask, sharedMask)) Destroy(faceMask);
+            if (faceMask != null) Destroy(faceMask);
             if (faceCrop != null) Destroy(faceCrop);
             if (face512 != null) Destroy(face512);
             if (restored512 != null) Destroy(restored512);
