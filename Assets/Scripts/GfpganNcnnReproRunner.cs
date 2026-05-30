@@ -149,6 +149,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         ReportProgress(0f, "准备输入");
         await UniTask.Yield();
 
+        FaceMaskGenerator fm = null;
         Texture2D scaled = null;
         Texture2D faceMask = null;
         Texture2D faceCrop = null;
@@ -175,15 +176,42 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
             ReportProgress(0.06f, "生成脸部区域");
             await UniTask.Yield();
-            var fm = GetComponent<FaceMaskGenerator>();
+            fm = GetComponent<FaceMaskGenerator>();
+            RectInt rect = default;
             if (fm != null)
             {
                 var mr = await fm.GenerateForCurrentAsync(inputTex, false, ct);
                 if (string.IsNullOrWhiteSpace(mr.error) && mr.mask != null)
                     faceMask = mr.mask;
+
+                if (fm.TryGetCurrentFaceRect(out var cachedRect))
+                {
+                    rect = cachedRect;
+                }
+                else
+                {
+                    var region = fm.GetFaceRegionGenerator();
+                    if (region != null && region.enabled)
+                    {
+                        var rr = await region.GenerateAsync(inputTex, false, ct);
+                        if (string.IsNullOrWhiteSpace(rr.error) && rr.faceRect.width > 0 && rr.faceRect.height > 0)
+                        {
+                            if (faceMask == null && rr.mask != null)
+                                faceMask = rr.mask;
+                            else if (rr.mask != null && !ReferenceEquals(rr.mask, faceMask))
+                                Destroy(rr.mask);
+                            rect = rr.faceRect;
+                        }
+                        else if (rr.mask != null && !ReferenceEquals(rr.mask, faceMask))
+                        {
+                            Destroy(rr.mask);
+                        }
+                    }
+                }
             }
 
-            var rect = FindFaceRect(faceMask, inputTex.width, inputTex.height, faceMaskThreshold);
+            if (rect.width <= 0 || rect.height <= 0)
+                rect = FindFaceRect(faceMask, inputTex.width, inputTex.height, faceMaskThreshold);
             rect = ExpandRect(rect, inputTex.width, inputTex.height, faceBoxExpand);
             if (rect.width <= 8 || rect.height <= 8)
                 rect = new RectInt(inputTex.width / 4, inputTex.height / 4, inputTex.width / 2, inputTex.height / 2);
@@ -246,7 +274,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         finally
         {
             if (scaled != null) Destroy(scaled);
-            if (faceMask != null) Destroy(faceMask);
+            var sharedMask = fm != null ? fm.currentImageFaceMask : null;
+            if (faceMask != null && !ReferenceEquals(faceMask, sharedMask)) Destroy(faceMask);
             if (faceCrop != null) Destroy(faceCrop);
             if (face512 != null) Destroy(face512);
             if (restored512 != null) Destroy(restored512);

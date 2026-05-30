@@ -94,6 +94,7 @@ namespace NcnnCompute
         {
             public int outC;
             public int inC;
+            public int group;
             public int outPacks;
             public int inPacks;
             public int kernelW;
@@ -112,6 +113,7 @@ namespace NcnnCompute
             public float activationSlope;
             public bool useBufferPath;
             public bool useWinograd23;
+            public bool isDepthWise;
             public ComputeBuffer packedWeight4;
             public ComputeBuffer packedBias4;
             public ComputeBuffer packedWeightTm23;
@@ -147,6 +149,11 @@ namespace NcnnCompute
         public sealed class MemoryDataPack : IDisposable
         {
             public ComputeBuffer data;
+            public int dims;
+            public int w;
+            public int h;
+            public int d;
+            public int c;
 
             public void Dispose()
             {
@@ -440,10 +447,12 @@ namespace NcnnCompute
 
             foreach (var layer in Model.layers)
             {
-                if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal))
+                if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
+                    || string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
                 {
                     var pack = new ConvPack();
                     pack.outC = layer.GetInt(0, 0);
+                    pack.group = Mathf.Max(1, layer.GetInt(7, 1));
                     pack.kernelW = layer.GetInt(1, 0);
                     pack.kernelH = layer.GetInt(11, pack.kernelW);
                     pack.dilationW = layer.GetInt(2, 1);
@@ -458,20 +467,29 @@ namespace NcnnCompute
                     pack.weightSize = layer.GetInt(6, 0);
                     pack.activationType = layer.GetInt(9, 0);
                     pack.activationSlope = ParseLeakySlope(layer);
+                    pack.isDepthWise = string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal);
 
                     var kernelArea = Mathf.Max(1, pack.kernelW * pack.kernelH);
-                    pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * kernelArea));
+                    if (pack.isDepthWise)
+                    {
+                        pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
+                        pack.useBufferPath = true;
+                    }
+                    else
+                    {
+                        pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * kernelArea));
+                        pack.useBufferPath = pack.strideW != 1
+                                             || pack.strideH != 1
+                                             || pack.kernelW != 1 && pack.kernelW != 3
+                                             || pack.kernelH != pack.kernelW
+                                             || pack.dilationW != 1
+                                             || pack.dilationH != 1
+                                             || pack.padLeft != pack.padRight
+                                             || pack.padTop != pack.padBottom
+                                             || pack.kernelW != 3 && pack.kernelW != 1;
+                    }
                     pack.inPacks = (pack.inC + 3) / 4;
                     pack.outPacks = (pack.outC + 3) / 4;
-                    pack.useBufferPath = pack.strideW != 1
-                                         || pack.strideH != 1
-                                         || pack.kernelW != 1 && pack.kernelW != 3
-                                         || pack.kernelH != pack.kernelW
-                                         || pack.dilationW != 1
-                                         || pack.dilationH != 1
-                                         || pack.padLeft != pack.padRight
-                                         || pack.padTop != pack.padBottom
-                                         || pack.kernelW != 3 && pack.kernelW != 1;
 
                     var tag = br.ReadInt32();
                     if (tag != 0x01306B47)
@@ -485,7 +503,7 @@ namespace NcnnCompute
                     pack.rawWeight.SetData(w);
                     pack.rawBias.SetData(b);
 
-                    if (!pack.useBufferPath)
+                    if (!pack.useBufferPath && !pack.isDepthWise && pack.group == 1)
                     {
                         var w4 = PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
                         var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
@@ -548,7 +566,18 @@ namespace NcnnCompute
                     var a = br.ReadNcnnMatAsFloat32(w, h, d, c, loadType);
                     var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
                     buf.SetData(a);
-                    _memoryData[layer.name] = new MemoryDataPack { data = buf };
+                    var dims = 1;
+                    if (h > 0) dims = 2;
+                    if (c > 0) dims = d > 0 ? 4 : 3;
+                    _memoryData[layer.name] = new MemoryDataPack
+                    {
+                        data = buf,
+                        dims = dims,
+                        w = Mathf.Max(1, w),
+                        h = Mathf.Max(1, h),
+                        d = Mathf.Max(1, d),
+                        c = Mathf.Max(1, c)
+                    };
                     continue;
                 }
 
@@ -703,6 +732,7 @@ namespace NcnnCompute
                     var rt = kv.Value;
                     var packs = rt.volumeDepth > 0 ? rt.volumeDepth : 1;
                     var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
+                    var logicalChannels = ResolveInputLogicalChannels(kv.Key, packs * 4);
                     textureBlobs[kv.Key] = new TensorRef
                     {
                         texture = rt,
@@ -712,7 +742,7 @@ namespace NcnnCompute
                         refs = useCount,
                         owned = false
                     };
-                    textureShapes[kv.Key] = new BufferShape(3, rt.width, rt.height, 1, packs * 4);
+                    textureShapes[kv.Key] = new BufferShape(3, rt.width, rt.height, 1, logicalChannels);
                 }
             }
 
@@ -766,7 +796,7 @@ namespace NcnnCompute
                     if (!_memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
                         throw new InvalidOperationException("MemoryData not found: " + layer.name);
                     bufferBlobs[layer.topNames[0]] = mp.data;
-                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(mp.data, 1, mp.data.count, 1, 1, 1, false);
+                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false);
                     continue;
                 }
 
@@ -800,11 +830,42 @@ namespace NcnnCompute
                     {
                         var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                         var srcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                        textureBlobs[layer.topNames[0]] = src;
-                        textureShapes[layer.topNames[0]] = ResolveReshapeShape(srcShape, layer);
-                        src.refs++;
+                        var outShape = ResolveReshapeShape(srcShape, layer);
+
+                        // If logical channels do not fill whole pack4 lanes, keeping the texture view
+                        // would preserve padded channels and break later buffer consumers such as Permute.
+                        if (srcShape.dims == 3 && (srcShape.c % 4) != 0)
+                        {
+                            var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                            if (srcBuf == null)
+                                throw new InvalidOperationException("Reshape source not found: " + layer.bottomNames[0]);
+                            bufferBlobs[layer.topNames[0]] = srcBuf;
+                            if (TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews) is { } srcTensor)
+                                bufferViews[layer.topNames[0]] = ResolveReshapeTensor(srcTensor, layer);
+                        }
+                        else
+                        {
+                            textureBlobs[layer.topNames[0]] = src;
+                            textureShapes[layer.topNames[0]] = outShape;
+                            src.refs++;
+                        }
                     }
 
+                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(layer.type, "ShuffleChannel", StringComparison.Ordinal))
+                {
+                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                    var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                    if (srcBuf == null || srcView == null)
+                        throw new InvalidOperationException("ShuffleChannel source not found: " + layer.name);
+
+                    var outBuf = ShuffleChannelCpu(srcBuf, srcView, layer.GetInt(0, 1), layer.GetInt(1, 0) != 0);
+                    bufferBlobs[layer.topNames[0]] = outBuf.buffer;
+                    bufferViews[layer.topNames[0]] = outBuf;
+                    tempOwned.Add(outBuf);
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
@@ -829,6 +890,20 @@ namespace NcnnCompute
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, false);
                     tempOwned.Add(outBuf);
+                    Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(layer.type, "Crop", StringComparison.Ordinal))
+                {
+                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                    var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                    if (srcBuf == null || srcView == null)
+                        throw new InvalidOperationException("Crop source not found: " + layer.name);
+
+                    var cropResult = ApplyCropSlices(srcBuf, srcView, layer, tempOwned);
+                    bufferBlobs[layer.topNames[0]] = cropResult.buffer;
+                    bufferViews[layer.topNames[0]] = cropResult;
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
@@ -915,12 +990,15 @@ namespace NcnnCompute
                         throw new InvalidOperationException("Concat only supports channel axis for texture tensors: " + layer.name);
 
                     var totalPacks = 0;
+                    var totalLogicalChannels = 0;
                     for (var i = 0; i < layer.bottomNames.Length; i++)
                     {
                         var tr = GetOrMaterializeTexture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                         if (tr.width != first.width || tr.height != first.height)
                             throw new InvalidOperationException("Concat shape mismatch: " + layer.name);
                         totalPacks += tr.packs;
+                        var logicalShape = GetTextureShape(textureShapes, tr, layer.bottomNames[i]);
+                        totalLogicalChannels += logicalShape.c;
                     }
 
                     var outRt = RentTempArray(first.width, first.height, totalPacks, RenderTextureFormat.ARGBHalf);
@@ -941,7 +1019,7 @@ namespace NcnnCompute
                         refs = 1,
                         owned = true
                     };
-                    textureShapes[layer.topNames[0]] = new BufferShape(3, first.width, first.height, 1, totalPacks * 4);
+                    textureShapes[layer.topNames[0]] = new BufferShape(3, first.width, first.height, 1, totalLogicalChannels);
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
@@ -967,7 +1045,8 @@ namespace NcnnCompute
                         refs = 1,
                         owned = true
                     };
-                    textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, src.packs * 4);
+                    var srcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                    textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, srcShape.c);
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
@@ -995,7 +1074,8 @@ namespace NcnnCompute
                         refs = 1,
                         owned = true
                     };
-                    textureShapes[layer.topNames[0]] = new BufferShape(3, outW, outH, 1, src.packs * 4);
+                    var poolSrcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                    textureShapes[layer.topNames[0]] = new BufferShape(3, outW, outH, 1, poolSrcShape.c);
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
@@ -1028,7 +1108,8 @@ namespace NcnnCompute
                             refs = 1,
                             owned = true
                         };
-                        textureShapes[layer.topNames[0]] = new BufferShape(3, src.width, src.height, 1, src.packs * 4);
+                        var softShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                        textureShapes[layer.topNames[0]] = new BufferShape(3, src.width, src.height, 1, softShape.c);
                     }
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
@@ -1060,7 +1141,8 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal))
+                if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
+                    || string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
                 {
                     if (!_conv.TryGetValue(layer.name, out var conv))
                         throw new InvalidOperationException("Convolution not found: " + layer.name);
@@ -1075,7 +1157,30 @@ namespace NcnnCompute
                         var outW = ComputeConvOut(srcTensor.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
                         var outH = ComputeConvOut(srcTensor.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
                         var outTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
-                        _ops.Conv3x3(srcTensor, conv.rawWeight, conv.rawBias, conv.outC, conv.strideW, conv.padLeft, conv.activationType, conv.activationSlope, outTensor);
+                        if (conv.isDepthWise || conv.group > 1 || conv.kernelW != 3 || conv.kernelH != 3 || conv.strideW != conv.strideH || conv.padLeft != conv.padTop)
+                        {
+                            _ops.ConvDepthWise(
+                                srcTensor,
+                                conv.rawWeight,
+                                conv.rawBias,
+                                conv.outC,
+                                conv.group,
+                                conv.kernelW,
+                                conv.kernelH,
+                                conv.strideW,
+                                conv.strideH,
+                                conv.padLeft,
+                                conv.padTop,
+                                conv.dilationW,
+                                conv.dilationH,
+                                conv.activationType,
+                                conv.activationSlope,
+                                outTensor);
+                        }
+                        else
+                        {
+                            _ops.Conv3x3(srcTensor, conv.rawWeight, conv.rawBias, conv.outC, conv.strideW, conv.padLeft, conv.activationType, conv.activationSlope, outTensor);
+                        }
 
                         bufferBlobs[layer.topNames[0]] = outTensor.buffer;
                         bufferViews[layer.topNames[0]] = outTensor;
@@ -1147,7 +1252,7 @@ namespace NcnnCompute
                         refs = 1,
                         owned = true
                     };
-                    textureShapes[layer.topNames[0]] = new BufferShape(3, outWTex, outHTex, 1, conv.outPacks * 4);
+                    textureShapes[layer.topNames[0]] = new BufferShape(3, outWTex, outHTex, 1, conv.outC);
                     if (tempInputTex != null)
                         ReturnTempArray(tempInputTex);
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
@@ -1177,7 +1282,8 @@ namespace NcnnCompute
                         refs = 1,
                         owned = true
                     };
-                    textureShapes[layer.topNames[0]] = new BufferShape(3, a.width, a.height, 1, a.packs * 4);
+                    var aShape = GetTextureShape(textureShapes, a, layer.bottomNames[0]);
+                    textureShapes[layer.topNames[0]] = new BufferShape(3, a.width, a.height, 1, aShape.c);
                     Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
@@ -1373,7 +1479,8 @@ namespace NcnnCompute
                             refs = 1,
                             owned = true
                         };
-                        textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, src.packs * 4);
+                        var interpShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                        textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, interpShape.c);
                         Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                         continue;
                     }
@@ -1394,7 +1501,8 @@ namespace NcnnCompute
                             refs = 1,
                             owned = true
                         };
-                        textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, src.packs * 4);
+                        var interpDownShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                        textureShapes[layer.topNames[0]] = new BufferShape(3, outRt.width, outRt.height, 1, interpDownShape.c);
                         Consume(textureBlobs, remaining, layer.bottomNames, pinnedNames);
                         continue;
                     }
@@ -1693,15 +1801,32 @@ namespace NcnnCompute
             var physicalChannels = tr.packs * 4;
             var physicalCount = tr.width * tr.height * physicalChannels;
             var logicalCount = shape.w * shape.h * shape.d * shape.c;
-            if (physicalCount != logicalCount)
-                throw new InvalidOperationException("texture logical shape mismatch: " + name + " | physical=" + physicalCount + " logical=" + logicalCount);
+            if (physicalCount == logicalCount)
+            {
+                var convertedExact = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, convertedExact);
+                bufferBlobs[name] = convertedExact;
+                bufferViews[name] = new NcnnTensorBuffer(convertedExact, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
+                tempOwned.Add(convertedExact);
+                return convertedExact;
+            }
 
-            var converted = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
-            _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, converted);
-            bufferBlobs[name] = converted;
-            bufferViews[name] = new NcnnTensorBuffer(converted, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
-            tempOwned.Add(converted);
-            return converted;
+            if (logicalCount > 0 && logicalCount < physicalCount)
+            {
+                var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, physicalBuffer);
+                tempOwned.Add(physicalBuffer);
+
+                var converted = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.CopyBufPartial(physicalBuffer, 0, converted, logicalCount);
+
+                bufferBlobs[name] = converted;
+                bufferViews[name] = new NcnnTensorBuffer(converted, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
+                tempOwned.Add(converted);
+                return converted;
+            }
+
+            throw new InvalidOperationException("texture logical shape mismatch: " + name + " | physical=" + physicalCount + " logical=" + logicalCount);
         }
 
         private static void Consume(
@@ -1854,6 +1979,28 @@ namespace NcnnCompute
             return new BufferShape(3, tr.width, tr.height, 1, tr.packs * 4);
         }
 
+        private int ResolveInputLogicalChannels(string inputBlobName, int fallbackChannels)
+        {
+            if (Model?.layers == null || string.IsNullOrWhiteSpace(inputBlobName))
+                return fallbackChannels;
+
+            for (var i = 0; i < Model.layers.Count; i++)
+            {
+                var layer = Model.layers[i];
+                if (layer?.bottomNames == null || layer.bottomNames.Length == 0)
+                    continue;
+                if (!string.Equals(layer.bottomNames[0], inputBlobName, StringComparison.Ordinal))
+                    continue;
+                if (!string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
+                    && !string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
+                    continue;
+                if (_conv.TryGetValue(layer.name, out var conv) && conv != null && conv.inC > 0)
+                    return conv.inC;
+            }
+
+            return fallbackChannels;
+        }
+
         private static Vector4Int ResolvePermuteAxes(int dims, int orderType, string layerName)
         {
             if (dims == 2)
@@ -1926,6 +2073,141 @@ namespace NcnnCompute
             var outD = dims == 4 ? GetAxisSize(axes.z) : 1;
             var outC = dims == 2 ? 1 : GetAxisSize(dims == 4 ? axes.w : axes.z);
             return new BufferShape(dims, outW, outH, outD, outC);
+        }
+
+        private static int MapNcnnAxisToTensorAxis(int dims, int axis)
+        {
+            if (dims == 1)
+                return 0;
+            if (dims == 2)
+                return axis == 0 ? 1 : 0;
+            if (dims == 3)
+            {
+                if (axis == 0) return 2;
+                if (axis == 1) return 1;
+                return 0;
+            }
+
+            if (axis == 0) return 3;
+            if (axis == 1) return 2;
+            if (axis == 2) return 1;
+            return 0;
+        }
+
+        private static int GetAxisSize(int dims, int w, int h, int d, int c, int axis)
+        {
+            if (axis == 0) return w;
+            if (axis == 1) return h;
+            if (axis == 2) return dims == 4 ? d : c;
+            if (axis == 3) return c;
+            throw new ArgumentOutOfRangeException(nameof(axis));
+        }
+
+        private NcnnTensorBuffer ApplyCropSlices(
+            ComputeBuffer srcBuf,
+            NcnnTensorBuffer srcView,
+            NcnnParamModel.Layer layer,
+            List<IDisposable> tempOwned)
+        {
+            var starts = layer.GetInts(-23309, null);
+            var ends = layer.GetInts(-23310, null);
+            var axes = layer.GetInts(-23311, null);
+
+            if (starts == null || ends == null || starts.Length == 0 || ends.Length == 0)
+            {
+                throw new InvalidOperationException("Crop without starts/ends arrays is not supported yet: " + layer.name);
+            }
+
+            if (axes == null || axes.Length == 0)
+            {
+                axes = new int[starts.Length];
+                for (var i = 0; i < axes.Length; i++)
+                    axes[i] = i;
+            }
+
+            var currentBuf = srcBuf;
+            var currentView = srcView;
+
+            for (var i = 0; i < starts.Length; i++)
+            {
+                var ncnnAxis = axes[Mathf.Min(i, axes.Length - 1)];
+                if (ncnnAxis < 0)
+                    ncnnAxis += currentView.dims;
+                var axis = MapNcnnAxisToTensorAxis(currentView.dims, ncnnAxis);
+
+                var begin = starts[i];
+                var end = ends[Mathf.Min(i, ends.Length - 1)];
+                var axisSize = GetAxisSize(currentView.dims, currentView.w, currentView.h, currentView.d, currentView.c, axis);
+                if (begin == -233) begin = 0;
+                if (end == -233) end = axisSize;
+                if (begin < 0) begin = axisSize + begin;
+                if (end <= 0) end = axisSize + end;
+                begin = Mathf.Clamp(begin, 0, axisSize);
+                end = Mathf.Clamp(end, begin, axisSize);
+                var outSize = Mathf.Max(0, end - begin);
+                if (outSize <= 0)
+                    throw new InvalidOperationException("Crop produced empty output: " + layer.name);
+
+                var outW = currentView.w;
+                var outH = currentView.h;
+                var outD = currentView.d;
+                var outC = currentView.c;
+                if (axis == 0) outW = outSize;
+                else if (axis == 1) outH = outSize;
+                else if (axis == 2 && currentView.dims == 4) outD = outSize;
+                else if (axis == 2 || axis == 3) outC = outSize;
+
+                var outCount = outW * outH * outD * outC;
+                var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Slice(currentBuf, currentView.dims, currentView.w, currentView.h, currentView.d, currentView.c, axis, begin, outW, outH, outD, outC, outBuf);
+                var outView = new NcnnTensorBuffer(outBuf, currentView.dims, outW, outH, outD, outC, false);
+
+                if (!ReferenceEquals(currentBuf, srcBuf))
+                    tempOwned.Add(currentBuf);
+                tempOwned.Add(outBuf);
+                currentBuf = outBuf;
+                currentView = outView;
+            }
+
+            return currentView;
+        }
+
+        private static NcnnTensorBuffer ShuffleChannelCpu(ComputeBuffer srcBuffer, NcnnTensorBuffer srcView, int group, bool reverse)
+        {
+            if (srcBuffer == null)
+                throw new ArgumentNullException(nameof(srcBuffer));
+            if (srcView == null)
+                throw new ArgumentNullException(nameof(srcView));
+            if (srcView.dims < 3)
+                throw new InvalidOperationException("ShuffleChannel expects dims>=3");
+
+            var channels = srcView.c;
+            if (channels <= 0)
+                throw new InvalidOperationException("ShuffleChannel invalid channels");
+            if (channels % Mathf.Max(1, group) != 0)
+                throw new InvalidOperationException("ShuffleChannel invalid group: " + group + " for c=" + channels);
+
+            var actualGroup = reverse ? channels / Mathf.Max(1, group) : Mathf.Max(1, group);
+            var channelsPerGroup = channels / actualGroup;
+            var featureSize = srcView.w * srcView.h * srcView.d;
+
+            var srcData = new float[srcBuffer.count];
+            srcBuffer.GetData(srcData);
+            var dstData = new float[srcData.Length];
+
+            for (var i = 0; i < actualGroup; i++)
+            {
+                for (var j = 0; j < channelsPerGroup; j++)
+                {
+                    var srcChannel = channelsPerGroup * i + j;
+                    var dstChannel = actualGroup * j + i;
+                    Array.Copy(srcData, srcChannel * featureSize, dstData, dstChannel * featureSize, featureSize);
+                }
+            }
+
+            var outBuffer = new ComputeBuffer(dstData.Length, sizeof(float), ComputeBufferType.Structured);
+            outBuffer.SetData(dstData);
+            return new NcnnTensorBuffer(outBuffer, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
         }
 
         private static (int mode, int size, int total, NcnnTensorBuffer outputView) ResolveBinaryBroadcast(

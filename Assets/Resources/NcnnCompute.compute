@@ -1,6 +1,7 @@
 #pragma kernel NcnnPassthrough
 #pragma kernel NcnnLeakyRelu
 #pragma kernel NcnnConv3x3
+#pragma kernel NcnnConvDepthWise
 #pragma kernel NcnnTexToBuf3
 #pragma kernel NcnnBufToTex3
 #pragma kernel NcnnLeakyReluBuf
@@ -134,6 +135,15 @@ int _OutW;
 int _OutH;
 int _Stride;
 int _Pad;
+int _KernelWVar;
+int _KernelHVar;
+int _StrideWVar;
+int _StrideHVar;
+int _PadLeftVar;
+int _PadTopVar;
+int _DilationWVar;
+int _DilationHVar;
+int _ConvGroup;
 
 int _OffsetX;
 int _OffsetY;
@@ -1109,6 +1119,57 @@ void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
 
     uint outIndex = (uint)((oc * outH + oy) * outW + ox);
     _ConvOut[outIndex] = sum;
+}
+
+float NcnnApplyActivationScalar(float v)
+{
+    if (_ActType == 2)
+        v = v >= 0.0 ? v : v * _ActParam;
+    else if (_ActType == 1)
+        v = v >= 0.0 ? v : v + v * _ActParam;
+    return v;
+}
+
+[numthreads(8,8,1)]
+void NcnnConvDepthWise(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _OutW || (int)id.y >= _OutH || (int)id.z >= _OutC) return;
+
+    int group = max(1, _ConvGroup);
+    int inch_g = max(1, _InC / group);
+    int outch_g = max(1, _OutC / group);
+    int kernelArea = _KernelWVar * _KernelHVar;
+    int oc = (int)id.z;
+    int g = min(group - 1, oc / outch_g);
+    int ocLocal = oc - g * outch_g;
+
+    float sum = _ConvB[oc];
+    int weightBase = ((g * outch_g + ocLocal) * inch_g) * kernelArea;
+
+    for (int icLocal = 0; icLocal < inch_g; icLocal++)
+    {
+        int ic = g * inch_g + icLocal;
+        int kernelBase = weightBase + icLocal * kernelArea;
+
+        for (int ky = 0; ky < _KernelHVar; ky++)
+        {
+            int sy = (int)id.y * _StrideHVar - _PadTopVar + ky * _DilationHVar;
+            if (sy < 0 || sy >= _InH) continue;
+
+            for (int kx = 0; kx < _KernelWVar; kx++)
+            {
+                int sx = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
+                if (sx < 0 || sx >= _InW) continue;
+
+                int inputIndex = (ic * _InH + sy) * _InW + sx;
+                int weightIndex = kernelBase + ky * _KernelWVar + kx;
+                sum += _ConvIn[inputIndex] * _ConvW[weightIndex];
+            }
+        }
+    }
+
+    int outIndex = (oc * _OutH + (int)id.y) * _OutW + (int)id.x;
+    _ConvOut[outIndex] = NcnnApplyActivationScalar(sum);
 }
 
 [numthreads(256,1,1)]

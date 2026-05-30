@@ -487,6 +487,10 @@ public class MainView : MonoBehaviour
         panel.Add(_progressDetail);
 
         root.Add(_progressOverlay);
+        if (_maleFaceTexture != null)
+            PrepareFaceMaskForReferenceAsync(_maleFaceTexture, true).Forget();
+        if (_femaleFaceTexture != null)
+            PrepareFaceMaskForReferenceAsync(_femaleFaceTexture, false).Forget();
     }
 
     private void ShowProgress(string title)
@@ -2315,7 +2319,6 @@ public class MainView : MonoBehaviour
         TryRestoreReference(PrefKeyMaleFacePath, _maleFaceButton, "点击设置男人脸", tex => _maleFaceTexture = tex, () => _maleFaceTexture, p => _maleFacePath = p);
         TryRestoreReference(PrefKeyFemaleFacePath, _femaleFaceButton, "点击设置女人脸", tex => _femaleFaceTexture = tex, () => _femaleFaceTexture, p => _femaleFacePath = p);
         TryRestoreReference(PrefKeyBackgroundPath, _backgroundButton, "点击设置背景图", tex => _backgroundTexture = tex, () => _backgroundTexture, p => _backgroundPath = p);
-
         if (_maleFaceTexture != null)
             PrepareFaceMaskForReferenceAsync(_maleFaceTexture, true).Forget();
         if (_femaleFaceTexture != null)
@@ -2707,7 +2710,6 @@ public class MainView : MonoBehaviour
             ResetHistoryWithOriginal(tex, entry.fileName, entry.fullPath);
             CopySelectionToClipboardAsync(entry.fullPath, tex).Forget();
             PrepareFaceMaskForSelectedImageAsync(entry.fullPath, tex, _gpuSharpenDumpStages).Forget();
-
             PlayerPrefs.SetString(PrefKeyLastImagePath, entry.fullPath);
             PlayerPrefs.Save();
         }
@@ -2878,6 +2880,7 @@ public class MainView : MonoBehaviour
             PrepareFaceMaskForReferenceAsync(tex, true).Forget();
         if (ReferenceEquals(button, _femaleFaceButton))
             PrepareFaceMaskForReferenceAsync(tex, false).Forget();
+
     }
 
     private static void CancelAndDisposeCts(ref System.Threading.CancellationTokenSource cts)

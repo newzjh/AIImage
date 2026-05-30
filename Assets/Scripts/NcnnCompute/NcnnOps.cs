@@ -319,6 +319,7 @@ namespace NcnnCompute
         private readonly int _kInnerProduct2D;
         private readonly int _kMhaAttention;
         private readonly int _kReorgPack4;
+        private readonly int _kConvDepthWise;
 
         public NcnnOps()
         {
@@ -326,6 +327,7 @@ namespace NcnnCompute
             if (_cs == null)
                 throw new InvalidOperationException("ComputeShader not found: Resources/NcnnCompute.compute");
             _kConv3x3 = _cs.FindKernel("NcnnConv3x3");
+            _kConvDepthWise = _cs.FindKernel("NcnnConvDepthWise");
             _kTexToBuf3 = _cs.FindKernel("NcnnTexToBuf3");
             _kBufToTex3 = _cs.FindKernel("NcnnBufToTex3");
             _kLeakyReluBuf = _cs.FindKernel("NcnnLeakyReluBuf");
@@ -2235,6 +2237,56 @@ namespace NcnnCompute
             _cs.SetBuffer(_kConv3x3, "_ConvOut", output.buffer);
 
             Dispatch3D(_kConv3x3, output.w, output.h, outC, 8, 8);
+        }
+
+        public void ConvDepthWise(
+            NcnnTensorBuffer input,
+            ComputeBuffer weightsOihw,
+            ComputeBuffer biasO,
+            int outC,
+            int group,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            int dilationW,
+            int dilationH,
+            int activationType,
+            float activationParam,
+            NcnnTensorBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsOihw == null) throw new ArgumentNullException(nameof(weightsOihw));
+            if (biasO == null) throw new ArgumentNullException(nameof(biasO));
+            if (outC <= 0) throw new ArgumentOutOfRangeException(nameof(outC));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            _cs.SetInt("_InW", input.w);
+            _cs.SetInt("_InH", input.h);
+            _cs.SetInt("_InC", input.c);
+            _cs.SetInt("_OutC", outC);
+            _cs.SetInt("_OutW", output.w);
+            _cs.SetInt("_OutH", output.h);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_ConvGroup", group);
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kConvDepthWise, "_ConvIn", input.buffer);
+            _cs.SetBuffer(_kConvDepthWise, "_ConvW", weightsOihw);
+            _cs.SetBuffer(_kConvDepthWise, "_ConvB", biasO);
+            _cs.SetBuffer(_kConvDepthWise, "_ConvOut", output.buffer);
+            Dispatch3D(_kConvDepthWise, output.w, output.h, outC, 8, 8);
         }
 
         public void LeakyReluInplace(NcnnTensorBuffer t, float slope)
