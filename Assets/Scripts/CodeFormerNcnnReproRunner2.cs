@@ -8,6 +8,12 @@ using NcnnCompute;
 using UnityEngine;
 using UnityEngine.Rendering;
 
+public struct CodeFormerResult
+{
+    public Texture2D texture;
+    public string error;
+    public long elapsedMs;
+}
 public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 {
     private struct CodeFormer512RunResult
