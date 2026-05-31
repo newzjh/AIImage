@@ -1637,7 +1637,7 @@ namespace NcnnCompute
             Dispatch1D(_kCopyBuf, total, 256);
         }
 
-        public void CopyBufPartial(ComputeBuffer src, int srcOffset, ComputeBuffer dst, int total)
+        public void CopyBufPartial(ComputeBuffer src, int srcOffset, ComputeBuffer dst, int total, int dstOffset = 0)
         {
             if (src == null) throw new ArgumentNullException(nameof(src));
             if (dst == null) throw new ArgumentNullException(nameof(dst));
@@ -1646,6 +1646,7 @@ namespace NcnnCompute
 
             _cs.SetInt("_Total", total);
             _cs.SetInt("_SrcOffset", srcOffset);
+            _cs.SetInt("_DstOffset", dstOffset);
             _cs.SetBuffer(_kCopyBufPartial, "_BufA", src);
             _cs.SetBuffer(_kCopyBufPartial, "_BufOut", dst);
             Dispatch1D(_kCopyBufPartial, total, 256);

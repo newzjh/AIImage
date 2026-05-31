@@ -35,14 +35,16 @@ namespace NcnnCompute
             return a;
         }
 
-        public float[] ReadFp16ArrayAsFloat32(int count)
+        public float[] ReadFp16ArrayAsFloat32(int count, bool align4 = false)
         {
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
+            var readCount = align4 ? Align4(count * 2) : count * 2;
+            var bytes = ReadBytesChecked(readCount);
             var a = new float[count];
             for (var i = 0; i < count; i++)
             {
-                var h = _br.ReadUInt16();
+                var h = (ushort)(bytes[i * 2 + 0] | (bytes[i * 2 + 1] << 8));
                 a[i] = HalfToSingle(h);
             }
             return a;

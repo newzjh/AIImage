@@ -380,7 +380,7 @@ namespace NcnnCompute
                     if (tag != 0x01306B47)
                         throw new InvalidOperationException("unexpected weight tag at " + br.Position + ": 0x" + tag.ToString("X8", CultureInfo.InvariantCulture));
 
-                    var w = br.ReadFp16ArrayAsFloat32(pack.weightSize);
+                    var w = br.ReadFp16ArrayAsFloat32(pack.weightSize, true);
                     var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
                     var w4 = PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernel, pack.outPacks, pack.inPacks);
                     var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
@@ -415,7 +415,7 @@ namespace NcnnCompute
                     if (tag != 0x01306B47)
                         throw new InvalidOperationException("unexpected weight tag at " + br.Position + ": 0x" + tag.ToString("X8", CultureInfo.InvariantCulture));
 
-                    var w = br.ReadFp16ArrayAsFloat32(ip.weightSize);
+                    var w = br.ReadFp16ArrayAsFloat32(ip.weightSize, true);
                     var b = ip.biasTerm != 0 ? br.ReadFloat32Array(ip.outFeatures) : new float[ip.outFeatures];
                     ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
                     ip.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
@@ -454,7 +454,7 @@ namespace NcnnCompute
                     var sum = (byte)(flag & 0xFF) + (byte)((flag >> 8) & 0xFF) + (byte)((flag >> 16) & 0xFF) + (byte)((flag >> 24) & 0xFF);
                     if (flag == 0x01306B47)
                     {
-                        var w = br.ReadFp16ArrayAsFloat32(ep.weightSize);
+                        var w = br.ReadFp16ArrayAsFloat32(ep.weightSize, true);
                         ep.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
                         ep.w.SetData(w);
                     }

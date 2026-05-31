@@ -99,6 +99,7 @@ int _TouchValue;
 
 int _UnaryOpType;
 int _SrcOffset;
+int _DstOffset;
 int _BinaryOpType;
 int _BinaryWithScalar;
 float _BinaryScalar;
@@ -1294,7 +1295,7 @@ void NcnnCopyBufPartial(uint3 id : SV_DispatchThreadID)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    _BufOut[idx] = _BufA[idx + (uint)_SrcOffset];
+    _BufOut[idx + (uint)_DstOffset] = _BufA[idx + (uint)_SrcOffset];
 }
 
 [numthreads(256,1,1)]

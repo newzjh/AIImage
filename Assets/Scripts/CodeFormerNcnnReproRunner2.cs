@@ -16,6 +16,64 @@ public struct CodeFormerResult
 }
 public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 {
+    private readonly struct Affine2D
+    {
+        public readonly float m00;
+        public readonly float m01;
+        public readonly float m02;
+        public readonly float m10;
+        public readonly float m11;
+        public readonly float m12;
+        public readonly bool valid;
+
+        public Affine2D(float m00, float m01, float m02, float m10, float m11, float m12, bool valid)
+        {
+            this.m00 = m00;
+            this.m01 = m01;
+            this.m02 = m02;
+            this.m10 = m10;
+            this.m11 = m11;
+            this.m12 = m12;
+            this.valid = valid;
+        }
+
+        public Vector2 Transform(Vector2 p)
+        {
+            return new Vector2(
+                m00 * p.x + m01 * p.y + m02,
+                m10 * p.x + m11 * p.y + m12);
+        }
+
+        public bool TryInverse(out Affine2D inverse)
+        {
+            var det = m00 * m11 - m01 * m10;
+            if (!valid || Mathf.Abs(det) < 1e-8f)
+            {
+                inverse = default;
+                return false;
+            }
+
+            var inv = 1f / det;
+            var i00 = m11 * inv;
+            var i01 = -m01 * inv;
+            var i10 = -m10 * inv;
+            var i11 = m00 * inv;
+            var i02 = -(i00 * m02 + i01 * m12);
+            var i12 = -(i10 * m02 + i11 * m12);
+            inverse = new Affine2D(i00, i01, i02, i10, i11, i12, true);
+            return true;
+        }
+    }
+
+    private static readonly Vector2[] CanonicalFivePointTemplate =
+    {
+        new Vector2(192.98138f, 239.94708f),
+        new Vector2(318.90277f, 240.1936f),
+        new Vector2(256.63416f, 314.01935f),
+        new Vector2(201.26117f, 371.41043f),
+        new Vector2(313.08905f, 371.15118f)
+    };
+
     private struct CodeFormer512RunResult
     {
         public Texture texture;
@@ -106,12 +164,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
             NcnnFaceRegionGenerator faceRegion = null;
             Texture2D scaled = null;
-            Texture2D faceMask = null;
-            Texture2D faceCrop = null;
-            RenderTexture face512 = null;
-            Texture restored512 = null;
-            RenderTexture restoredCrop = null;
-            RenderTexture composed = null;
+            Texture2D workingTex = null;
             try
             {
                 var inputTex = src;
@@ -134,69 +187,85 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 faceRegion = GetComponent<NcnnFaceRegionGenerator>();
                 if (faceRegion == null)
                     faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
-                RectInt rect = default;
+                FaceRegionFace[] faces = null;
                 if (faceRegion != null && faceRegion.enabled)
                 {
                     var rr = await faceRegion.GenerateAsync(inputTex, enableFaceRegionDebugDump, ct);
-                    if (string.IsNullOrWhiteSpace(rr.error) && rr.faceRect.width > 0 && rr.faceRect.height > 0)
+                    if (string.IsNullOrWhiteSpace(rr.error) && rr.faces != null && rr.faces.Length > 0)
                     {
-                        faceMask = rr.mask;
-                        rect = rr.faceRect;
+                        faces = rr.faces;
                         if (enableFaceRegionDebugDump && !string.IsNullOrWhiteSpace(rr.dumpDir))
                             UnityEngine.Debug.Log("[CodeFormer Repro] face region dump: " + rr.dumpDir);
                     }
-                    else
+                }
+
+                if (faces == null || faces.Length == 0)
+                    return Finish(new CodeFormerResult { error = "No face detected" });
+
+                workingTex = CopyTexture(inputTex);
+                if (workingTex == null)
+                    return Finish(new CodeFormerResult { error = "Working texture copy failed" });
+
+                var restoredFaceCount = 0;
+                for (var i = 0; i < faces.Length; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var face = faces[i];
+                    ReportProgress(0.12f + 0.70f * ((float)i / Mathf.Max(1, faces.Length)), "Restore face " + (i + 1) + "/" + faces.Length);
+                    await UniTask.Yield();
+
+                    Texture2D alignedFaceTex = null;
+                    RenderTexture alignedFaceRt = null;
+                    Texture restoredFaceGpu = null;
+                    Texture2D restoredFaceTex = null;
+                    try
                     {
-                        if (rr.mask != null)
-                            Destroy(rr.mask);
+                        alignedFaceTex = AlignFaceToTemplate(inputTex, face.landmarks);
+                        if (alignedFaceTex == null)
+                            continue;
+
+                        alignedFaceRt = ResizeTextureBilinear((Texture)alignedFaceTex, 512, 512);
+                        if (alignedFaceRt == null)
+                            continue;
+
+                        var runResult = await RunCodeFormer512Async(alignedFaceRt, ct);
+                        if (!string.IsNullOrWhiteSpace(runResult.dumpDir))
+                            _lastDumpDir = runResult.dumpDir;
+                        restoredFaceGpu = runResult.texture;
+                        if (restoredFaceGpu == null)
+                        {
+                            if (!string.IsNullOrWhiteSpace(runResult.error))
+                                UnityEngine.Debug.LogWarning("[CodeFormer Repro] face " + i + " failed: " + runResult.error);
+                            continue;
+                        }
+
+                        restoredFaceTex = TextureToTexture2D(restoredFaceGpu, 512, 512);
+                        if (restoredFaceTex == null)
+                            continue;
+
+                        PasteAlignedFaceInPlace(workingTex, restoredFaceTex, face);
+                        restoredFaceCount++;
+                    }
+                    finally
+                    {
+                        DestroyObjectSafe(alignedFaceTex);
+                        if (alignedFaceRt != null) ReleaseTemporaryRt(alignedFaceRt);
+                        if (restoredFaceGpu != null) ReleaseTextureIfTemporary(restoredFaceGpu);
+                        DestroyObjectSafe(restoredFaceTex);
                     }
                 }
 
-                if (rect.width <= 0 || rect.height <= 0)
-                    rect = FindFaceRect(faceMask, inputTex.width, inputTex.height, faceMaskThreshold);
-                rect = ExpandRect(rect, inputTex.width, inputTex.height, faceBoxExpand);
-                if (rect.width <= 8 || rect.height <= 8)
-                    rect = new RectInt(inputTex.width / 4, inputTex.height / 4, inputTex.width / 2, inputTex.height / 2);
+                if (restoredFaceCount == 0)
+                    return Finish(new CodeFormerResult { error = "CodeFormer(repro2) inference failed for all faces" });
 
-                ReportProgress(0.1f, "Crop face");
-                await UniTask.Yield();
-                faceCrop = CropTexture(inputTex, rect);
-                if (faceCrop == null)
-                    return Finish(new CodeFormerResult { error = "Crop failed" });
-
-                face512 = ResizeTextureBilinear((Texture)faceCrop, 512, 512);
-                if (face512 == null)
-                    return Finish(new CodeFormerResult { error = "Resize to 512 failed" });
-
-                ReportProgress(0.15f, "Run CodeFormer");
-                await UniTask.Yield();
-                var runResult = await RunCodeFormer512Async(face512, ct);
-                _lastDumpDir = runResult.dumpDir;
-                restored512 = runResult.texture;
-                if (restored512 == null)
-                    return Finish(new CodeFormerResult { error = string.IsNullOrWhiteSpace(runResult.error) ? "CodeFormer(repro2) inference failed" : runResult.error });
-
-                ReportProgress(0.85f, "Paste back");
-                await UniTask.Yield();
-                restoredCrop = ResizeTextureBilinear(restored512, rect.width, rect.height);
-                if (restoredCrop == null)
-                    return Finish(new CodeFormerResult { error = "Resize restored crop failed" });
-
-                composed = ComposeWithMask(inputTex, restoredCrop, faceMask, rect);
-                if (composed == null)
-                    return Finish(new CodeFormerResult { error = "Compose failed" });
-
-                var composedTex = RenderTextureToTexture2D(composed, inputTex.width, inputTex.height);
-                if (composedTex == null)
-                    return Finish(new CodeFormerResult { error = "Readback failed" });
-
-                Texture2D finalTex = composedTex;
+                Texture2D finalTex = workingTex;
+                workingTex = null;
                 if (Mathf.Abs(scaleDown - 1f) > 1e-6f)
                 {
                     ReportProgress(0.95f, "Restore original size");
                     await UniTask.Yield();
                     var resized = ResizeTextureBilinear(finalTex, originalW, originalH);
-                    Destroy(finalTex);
+                    DestroyObjectSafe(finalTex);
                     finalTex = resized;
                     if (finalTex == null)
                         return Finish(new CodeFormerResult { error = "Upscale to original size failed" });
@@ -211,14 +280,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
             finally
             {
-                if (scaled != null) Destroy(scaled);
-                if (faceMask != null) Destroy(faceMask);
-                if (faceCrop != null) Destroy(faceCrop);
-                if (face512 != null) ReleaseTemporaryRt(face512);
-                if (restored512 != null) ReleaseTextureIfTemporary(restored512);
-                if (restoredCrop != null) ReleaseTemporaryRt(restoredCrop);
-                if (composed != null)
-                    ReleaseTemporaryRt(composed);
+                DestroyObjectSafe(scaled);
+                DestroyObjectSafe(workingTex);
                 if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                     NcnnGpuResourceTracker.WriteReport(_lastDumpDir, "codeformer_gpu_resources.txt");
                 _encoderRepro?.ClearTempPool();
@@ -675,7 +738,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
             finally
             {
-                Destroy(tex2D);
+                DestroyObjectSafe(tex2D);
             }
         }
         finally
@@ -708,7 +771,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
         finally
         {
-            Destroy(tex);
+            DestroyObjectSafe(tex);
         }
     }
 
@@ -775,7 +838,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
         finally
         {
-            Destroy(tex);
+            DestroyObjectSafe(tex);
         }
     }
 
@@ -1301,6 +1364,237 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         try { ProgressChanged?.Invoke(Mathf.Clamp01(progress01), text ?? ""); } catch { }
     }
 
+    private static Texture2D CopyTexture(Texture2D src)
+    {
+        if (src == null)
+            return null;
+        var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
+        tex.SetPixels32(src.GetPixels32());
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
+    }
+
+    private static void DestroyObjectSafe(UnityEngine.Object obj)
+    {
+        if (obj == null)
+            return;
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
+    }
+
+    private static Texture2D AlignFaceToTemplate(Texture2D src, Vector2[] landmarks)
+    {
+        if (src == null || landmarks == null || landmarks.Length < 5)
+            return null;
+        var srcPixels = src.GetPixels32();
+        if (!SolveSimilarityTransform(landmarks, CanonicalFivePointTemplate, out var sourceToAligned))
+            return null;
+        if (!sourceToAligned.TryInverse(out var alignedToSource))
+            return null;
+
+        var dst = new Texture2D(512, 512, TextureFormat.RGBA32, false, true);
+        var dstPixels = new Color32[512 * 512];
+        var border = new Color32(135, 133, 132, 255);
+        for (var y = 0; y < 512; y++)
+        {
+            for (var x = 0; x < 512; x++)
+            {
+                var sourcePos = alignedToSource.Transform(new Vector2(x + 0.5f, y + 0.5f));
+                dstPixels[y * 512 + x] = BilinearSampleClamp(srcPixels, src.width, src.height, sourcePos.x - 0.5f, sourcePos.y - 0.5f, border);
+            }
+        }
+
+        dst.SetPixels32(dstPixels);
+        dst.Apply(false, false);
+        dst.wrapMode = TextureWrapMode.Clamp;
+        dst.filterMode = FilterMode.Bilinear;
+        return dst;
+    }
+
+    private static void PasteAlignedFaceInPlace(Texture2D baseTex, Texture2D restoredFace, FaceRegionFace face)
+    {
+        if (baseTex == null || restoredFace == null || face.landmarks == null || face.landmarks.Length < 5)
+            return;
+        if (!SolveSimilarityTransform(face.landmarks, CanonicalFivePointTemplate, out var sourceToAligned))
+            return;
+
+        var basePixels = baseTex.GetPixels32();
+        var facePixels = restoredFace.GetPixels32();
+        var bounds = ExpandRect(face.rectInt, baseTex.width, baseTex.height, 0.28f);
+        var faceArea = Mathf.Max(1f, face.rect.width * face.rect.height);
+        var wEdge = Mathf.Max(1f, Mathf.Sqrt(faceArea) / 20f);
+        var erosionRadius = wEdge * 2f;
+        var blurRadius = Mathf.Max(1f, wEdge * 2f);
+
+        for (var y = bounds.yMin; y < bounds.yMax; y++)
+        {
+            for (var x = bounds.xMin; x < bounds.xMax; x++)
+            {
+                var q = sourceToAligned.Transform(new Vector2(x + 0.5f, y + 0.5f));
+                if (q.x < 0f || q.y < 0f || q.x >= 511.5f || q.y >= 511.5f)
+                    continue;
+
+                var edgeDistance = Mathf.Min(Mathf.Min(q.x, 511f - q.x), Mathf.Min(q.y, 511f - q.y));
+                var alpha = Mathf.Clamp01((edgeDistance - erosionRadius) / blurRadius);
+                if (alpha <= 0f)
+                    continue;
+
+                var faceColor = BilinearSampleClamp(facePixels, restoredFace.width, restoredFace.height, q.x, q.y, new Color32(0, 0, 0, 255));
+                var idx = y * baseTex.width + x;
+                basePixels[idx] = LerpColor(basePixels[idx], faceColor, alpha);
+            }
+        }
+
+        baseTex.SetPixels32(basePixels);
+        baseTex.Apply(false, false);
+    }
+
+    private static bool SolveSimilarityTransform(IReadOnlyList<Vector2> src, IReadOnlyList<Vector2> dst, out Affine2D transform)
+    {
+        transform = default;
+        if (src == null || dst == null || src.Count < 2 || src.Count != dst.Count)
+            return false;
+
+        var ata = new float[4, 4];
+        var atb = new float[4];
+        for (var i = 0; i < src.Count; i++)
+        {
+            var x = src[i].x;
+            var y = src[i].y;
+            var u = dst[i].x;
+            var v = dst[i].y;
+
+            var r0 = new[] { x, -y, 1f, 0f };
+            var r1 = new[] { y, x, 0f, 1f };
+            AccumulateNormalEquation(ata, atb, r0, u);
+            AccumulateNormalEquation(ata, atb, r1, v);
+        }
+
+        if (!SolveLinear4x4(ata, atb, out var s))
+            return false;
+
+        transform = new Affine2D(s[0], -s[1], s[2], s[1], s[0], s[3], true);
+        return true;
+    }
+
+    private static void AccumulateNormalEquation(float[,] ata, float[] atb, float[] row, float value)
+    {
+        for (var i = 0; i < 4; i++)
+        {
+            atb[i] += row[i] * value;
+            for (var j = 0; j < 4; j++)
+                ata[i, j] += row[i] * row[j];
+        }
+    }
+
+    private static bool SolveLinear4x4(float[,] a, float[] b, out float[] x)
+    {
+        x = new float[4];
+        var m = new float[4, 5];
+        for (var r = 0; r < 4; r++)
+        {
+            for (var c = 0; c < 4; c++)
+                m[r, c] = a[r, c];
+            m[r, 4] = b[r];
+        }
+
+        for (var col = 0; col < 4; col++)
+        {
+            var pivot = col;
+            var pivotAbs = Mathf.Abs(m[pivot, col]);
+            for (var row = col + 1; row < 4; row++)
+            {
+                var v = Mathf.Abs(m[row, col]);
+                if (v > pivotAbs)
+                {
+                    pivot = row;
+                    pivotAbs = v;
+                }
+            }
+
+            if (pivotAbs < 1e-6f)
+                return false;
+
+            if (pivot != col)
+            {
+                for (var c = col; c < 5; c++)
+                {
+                    var tmp = m[col, c];
+                    m[col, c] = m[pivot, c];
+                    m[pivot, c] = tmp;
+                }
+            }
+
+            var inv = 1f / m[col, col];
+            for (var c = col; c < 5; c++)
+                m[col, c] *= inv;
+
+            for (var row = 0; row < 4; row++)
+            {
+                if (row == col)
+                    continue;
+                var factor = m[row, col];
+                if (Mathf.Abs(factor) < 1e-6f)
+                    continue;
+                for (var c = col; c < 5; c++)
+                    m[row, c] -= factor * m[col, c];
+            }
+        }
+
+        for (var i = 0; i < 4; i++)
+            x[i] = m[i, 4];
+        return true;
+    }
+
+    private static Color32 BilinearSampleClamp(Color32[] src, int srcW, int srcH, float x, float y, Color32 border)
+    {
+        if (src == null || src.Length == 0 || srcW <= 0 || srcH <= 0)
+            return border;
+        if (x < 0f || y < 0f || x > srcW - 1f || y > srcH - 1f)
+            return border;
+
+        var x0 = Mathf.Clamp(Mathf.FloorToInt(x), 0, srcW - 1);
+        var y0 = Mathf.Clamp(Mathf.FloorToInt(y), 0, srcH - 1);
+        var x1 = Mathf.Clamp(x0 + 1, 0, srcW - 1);
+        var y1 = Mathf.Clamp(y0 + 1, 0, srcH - 1);
+        var tx = Mathf.Clamp01(x - x0);
+        var ty = Mathf.Clamp01(y - y0);
+
+        var c00 = src[y0 * srcW + x0];
+        var c10 = src[y0 * srcW + x1];
+        var c01 = src[y1 * srcW + x0];
+        var c11 = src[y1 * srcW + x1];
+
+        var r0 = Mathf.Lerp(c00.r, c10.r, tx);
+        var g0 = Mathf.Lerp(c00.g, c10.g, tx);
+        var b0 = Mathf.Lerp(c00.b, c10.b, tx);
+        var a0 = Mathf.Lerp(c00.a, c10.a, tx);
+        var r1 = Mathf.Lerp(c01.r, c11.r, tx);
+        var g1 = Mathf.Lerp(c01.g, c11.g, tx);
+        var b1 = Mathf.Lerp(c01.b, c11.b, tx);
+        var a1 = Mathf.Lerp(c01.a, c11.a, tx);
+
+        return new Color32(
+            (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(r0, r1, ty)), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(g0, g1, ty)), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(b0, b1, ty)), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(a0, a1, ty)), 0, 255));
+    }
+
+    private static Color32 LerpColor(Color32 a, Color32 b, float t)
+    {
+        t = Mathf.Clamp01(t);
+        return new Color32(
+            (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(a.r, b.r, t)), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(a.g, b.g, t)), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(a.b, b.b, t)), 0, 255),
+            255);
+    }
+
     private static RectInt ClampRect(RectInt r, int w, int h)
     {
         var x0 = Mathf.Clamp(r.x, 0, Mathf.Max(0, w));
@@ -1407,6 +1701,21 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         tex.filterMode = FilterMode.Bilinear;
         RenderTexture.active = prev;
         return tex;
+    }
+
+    private static Texture2D TextureToTexture2D(Texture texture, int w, int h)
+    {
+        if (texture == null)
+            return null;
+        if (texture is Texture2D tex2D && tex2D.width == w && tex2D.height == h)
+            return CopyTexture(tex2D);
+        if (texture is RenderTexture rt)
+            return RenderTextureToTexture2D(rt, w, h);
+
+        var tmp = ResizeTextureBilinear(texture, w, h);
+        var result = RenderTextureToTexture2D(tmp, w, h);
+        ReleaseTemporaryRt(tmp);
+        return result;
     }
 
     private static RenderTexture ComposeWithMask(Texture2D src, RenderTexture restored, Texture2D mask, RectInt rect)

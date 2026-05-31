@@ -16,8 +16,17 @@ public struct FaceRegionResult
     public RectInt faceRect;
     public Vector2[] landmarks;
     public float score;
+    public FaceRegionFace[] faces;
     public string dumpDir;
     public string error;
+}
+
+public struct FaceRegionFace
+{
+    public Rect rect;
+    public RectInt rectInt;
+    public Vector2[] landmarks;
+    public float score;
 }
 
 public sealed class NcnnFaceRegionGenerator : MonoBehaviour
@@ -121,6 +130,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public bool autoOpenDumpDir = false;
     public bool enableDetailedProposalDump = true;
     public bool useArgbFloatForDetector = true;
+    public int maxDetectedFaces = 5;
     [Range(0.05f, 0.95f)] public float maxFaceAreaRatio = 0.45f;
     [Range(0.2f, 3f)] public float maxFaceAspectRatio = 1.6f;
 
@@ -183,10 +193,21 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 };
                 _repro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
                 {
+                    "Conv_0",
                     "Conv_3",
                     "Conv_8",
                     "Conv_92",
                     "Conv_281",
+                    "Conv_338",
+                    "Conv_347",
+                    "Conv_356",
+                    "Conv_338",
+                    "Conv_361",
+                    "Conv_365",
+                    "Conv_385",
+                    "Conv_389",
+                    "Conv_409",
+                    "Conv_413",
                     "Conv_326",
                     "Conv_336",
                     "Conv_340",
@@ -218,7 +239,49 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 "stride_32",
                 "842",
                 "870",
-                "898"
+                "898",
+                "817",
+                "818",
+                "819",
+                "821",
+                "822",
+                "823",
+                "824",
+                "393",
+                "394",
+                "464",
+                "452",
+                "463",
+                "930",
+                "469",
+                "492",
+                "497",
+                "771",
+                "774",
+                "775",
+                "777",
+                "782",
+                "783",
+                "786",
+                "789",
+                "799",
+                "802",
+                "812",
+                "815",
+                "845",
+                "846",
+                "847",
+                "849",
+                "850",
+                "851",
+                "852",
+                "873",
+                "874",
+                "875",
+                "877",
+                "878",
+                "879",
+                "880"
             };
 
             var proposals = new List<FaceProposal>();
@@ -264,12 +327,54 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
                 if (debugLines != null)
                 {
-                    AppendBlobMatrixPreview(infer, debugLines, "842", 16);
-                    AppendBlobMatrixPreview(infer, debugLines, "870", 16);
-                    AppendBlobMatrixPreview(infer, debugLines, "898", 16);
-                    AppendBlobMatrixPreview(infer, debugLines, "stride_8", 16);
-                    AppendBlobMatrixPreview(infer, debugLines, "stride_16", 16);
-                    AppendBlobMatrixPreview(infer, debugLines, "stride_32", 16);
+                    AppendBlobPreview(infer, debugLines, "817", 16);
+                    AppendBlobPreview(infer, debugLines, "818", 16);
+                    AppendBlobPreview(infer, debugLines, "819", 16);
+                    AppendBlobPreview(infer, debugLines, "821", 16);
+                    AppendBlobPreview(infer, debugLines, "822", 16);
+                    AppendBlobPreview(infer, debugLines, "823", 16);
+                    AppendBlobPreview(infer, debugLines, "824", 16);
+                    AppendBlobPreview(infer, debugLines, "393", 16);
+                    AppendBlobPreview(infer, debugLines, "394", 16);
+                    AppendBlobPreview(infer, debugLines, "464", 16);
+                    AppendBlobPreview(infer, debugLines, "452", 16);
+                    AppendBlobPreview(infer, debugLines, "463", 16);
+                    AppendBlobPreview(infer, debugLines, "930", 16);
+                    AppendBlobPreview(infer, debugLines, "469", 16);
+                    AppendBlobPreview(infer, debugLines, "492", 16);
+                    AppendBlobPreview(infer, debugLines, "497", 16);
+                    AppendBlobPreview(infer, debugLines, "771", 16);
+                    AppendBlobPreview(infer, debugLines, "774", 16);
+                    AppendBlobPreview(infer, debugLines, "775", 16);
+                    AppendBlobPreview(infer, debugLines, "777", 16);
+                    AppendBlobPreview(infer, debugLines, "782", 16);
+                    AppendBlobPreview(infer, debugLines, "783", 16);
+                    AppendBlobPreview(infer, debugLines, "786", 16);
+                    AppendBlobPreview(infer, debugLines, "789", 16);
+                    AppendBlobPreview(infer, debugLines, "799", 16);
+                    AppendBlobPreview(infer, debugLines, "802", 16);
+                    AppendBlobPreview(infer, debugLines, "812", 16);
+                    AppendBlobPreview(infer, debugLines, "815", 16);
+                    AppendBlobPreview(infer, debugLines, "842", 16);
+                    AppendBlobPreview(infer, debugLines, "845", 16);
+                    AppendBlobPreview(infer, debugLines, "846", 16);
+                    AppendBlobPreview(infer, debugLines, "847", 16);
+                    AppendBlobPreview(infer, debugLines, "849", 16);
+                    AppendBlobPreview(infer, debugLines, "850", 16);
+                    AppendBlobPreview(infer, debugLines, "851", 16);
+                    AppendBlobPreview(infer, debugLines, "852", 16);
+                    AppendBlobPreview(infer, debugLines, "870", 16);
+                    AppendBlobPreview(infer, debugLines, "873", 16);
+                    AppendBlobPreview(infer, debugLines, "874", 16);
+                    AppendBlobPreview(infer, debugLines, "875", 16);
+                    AppendBlobPreview(infer, debugLines, "877", 16);
+                    AppendBlobPreview(infer, debugLines, "878", 16);
+                    AppendBlobPreview(infer, debugLines, "879", 16);
+                    AppendBlobPreview(infer, debugLines, "880", 16);
+                    AppendBlobPreview(infer, debugLines, "898", 16);
+                    AppendBlobPreview(infer, debugLines, "stride_8", 16);
+                    AppendBlobPreview(infer, debugLines, "stride_16", 16);
+                    AppendBlobPreview(infer, debugLines, "stride_32", 16);
                 }
             }
 
@@ -281,8 +386,13 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             if (picked.Count == 0)
                 return new FaceRegionResult { error = "No face left after NMS" };
 
-            FaceProposal best = PickBestFace(proposals, picked, src.width, src.height, Mathf.Clamp(maxFaceAreaRatio, 0.05f, 0.95f), Mathf.Max(1f, maxFaceAspectRatio));
-            var mask = BuildMask(src.width, src.height, best, out var faceRect);
+            var faces = BuildFaces(proposals, picked, src.width, src.height, Mathf.Max(1, maxDetectedFaces));
+            if (faces == null || faces.Length == 0)
+                return new FaceRegionResult { error = "No face left after postprocess" };
+
+            var primary = faces[0];
+            var primaryProposal = proposals[picked[0]];
+            var mask = BuildMask(src.width, src.height, primaryProposal, out var maskRect);
             if (mask == null)
                 return new FaceRegionResult { error = "Face mask build failed" };
 
@@ -291,11 +401,11 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 dumpDir = CreateDumpDir();
                 if (debugLines != null)
                 {
-                    AppendProposalSummary(debugLines, proposals, picked, best, src.width, src.height);
+                    AppendProposalSummary(debugLines, proposals, picked, primaryProposal, src.width, src.height);
                     debugLines.Add(NcnnGpuResourceTracker.BuildSummary());
                 }
                 DumpMaskPng(mask, dumpDir, "ncnn_face_mask.png");
-                DumpLandmarkOverlay(src, best, faceRect, dumpDir, "ncnn_face_landmarks.png");
+                DumpLandmarkOverlay(src, primaryProposal, primary.rectInt, dumpDir, "ncnn_face_landmarks.png");
                 if (debugLines != null)
                     File.WriteAllLines(Path.Combine(dumpDir, "ncnn_face_debug.txt"), debugLines);
                 NcnnGpuResourceTracker.WriteReport(dumpDir, "ncnn_face_gpu_resources.txt");
@@ -306,11 +416,12 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             return new FaceRegionResult
             {
                 mask = mask,
-                faceRect = faceRect.width > 0 && faceRect.height > 0
-                    ? faceRect
-                    : ExpandRect(RoundRect(best.rect), src.width, src.height, 0.12f),
-                landmarks = best.landmarks,
-                score = best.score,
+                faceRect = primary.rectInt.width > 0 && primary.rectInt.height > 0
+                    ? primary.rectInt
+                    : (maskRect.width > 0 && maskRect.height > 0 ? maskRect : ClampRectToImage(RoundRect(primary.rect), src.width, src.height)),
+                landmarks = primary.landmarks,
+                score = primary.score,
+                faces = faces,
                 dumpDir = dumpDir
             };
         }
@@ -575,6 +686,27 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         return picked;
     }
 
+    private static FaceRegionFace[] BuildFaces(List<FaceProposal> proposals, List<int> picked, int imgW, int imgH, int maxFaces)
+    {
+        if (proposals == null || picked == null || picked.Count == 0)
+            return Array.Empty<FaceRegionFace>();
+
+        var count = maxFaces > 0 ? Mathf.Min(maxFaces, picked.Count) : picked.Count;
+        var faces = new FaceRegionFace[count];
+        for (var i = 0; i < count; i++)
+        {
+            var proposal = proposals[picked[i]];
+            faces[i] = new FaceRegionFace
+            {
+                rect = proposal.rect,
+                rectInt = ClampRectToImage(RoundRect(proposal.rect), imgW, imgH),
+                landmarks = proposal.landmarks,
+                score = proposal.score
+            };
+        }
+        return faces;
+    }
+
     private static FaceProposal PickBestFace(List<FaceProposal> proposals, List<int> picked, int imgW, int imgH, float maxAreaRatio, float maxAspectRatio)
     {
         var filtered = new List<FaceProposal>(picked.Count);
@@ -658,7 +790,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             + " | area_ratio=" + bestAreaRatio.ToString("F6", CultureInfo.InvariantCulture));
     }
 
-    private static void AppendBlobMatrixPreview(NcnnRepro2.InferResult infer, List<string> lines, string blobName, int previewCount)
+    private void AppendBlobPreview(NcnnRepro2.InferResult infer, List<string> lines, string blobName, int previewCount)
     {
         if (infer == null || lines == null || string.IsNullOrWhiteSpace(blobName))
             return;
@@ -667,12 +799,49 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         {
             if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
             {
-                lines.Add(blobName + " | shape=missing");
-                return;
+                    lines.Add(blobName + " | shape=missing");
+                    return;
+                }
+
+            float[] data;
+            string sourceKind;
+            try
+            {
+                data = infer.GetBufferData(blobName);
+                sourceKind = "buffer";
+            }
+            catch
+            {
+                var tex = infer.GetTexture(blobName);
+                if (tex == null)
+                {
+                    lines.Add(blobName + " | preview_error=texture missing");
+                    return;
+                }
+
+                var packs = tex.volumeDepth > 0 ? tex.volumeDepth : 1;
+                var physicalChannels = packs * 4;
+                using var tempBuffer = new ComputeBuffer(tex.width * tex.height * physicalChannels, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, physicalChannels, tempBuffer);
+                data = new float[tempBuffer.count];
+                tempBuffer.GetData(data);
+                sourceKind = "texture";
             }
 
-            var data = infer.GetBufferData(blobName);
-            lines.Add(blobName + " | dims=" + dims + " | w=" + w + " | h=" + h + " | d=" + d + " | c=" + c + " | count=" + (data != null ? data.Length : 0));
+            var finiteCount = 0;
+            var nonFiniteCount = 0;
+            if (data != null)
+            {
+                for (var i = 0; i < data.Length; i++)
+                {
+                    if (float.IsNaN(data[i]) || float.IsInfinity(data[i]))
+                        nonFiniteCount++;
+                    else
+                        finiteCount++;
+                }
+            }
+
+            lines.Add(blobName + " | source=" + sourceKind + " | dims=" + dims + " | w=" + w + " | h=" + h + " | d=" + d + " | c=" + c + " | count=" + (data != null ? data.Length : 0) + " | finite=" + finiteCount + " | nonfinite=" + nonFiniteCount);
             if (data == null || data.Length == 0)
                 return;
 
