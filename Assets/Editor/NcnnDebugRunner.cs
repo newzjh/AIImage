@@ -1,10 +1,16 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Profiling;
+using Debug = UnityEngine.Debug;
 
 public static class NcnnDebugRunner
 {
@@ -12,6 +18,8 @@ public static class NcnnDebugRunner
     private const string FaceBufferPathEnvVar = "AIIMAGE_FACE_BUFFER_PATH";
     private const string FaceProbThresholdEnvVar = "AIIMAGE_FACE_PROB_THRESHOLD";
     private const string FaceNmsThresholdEnvVar = "AIIMAGE_FACE_NMS_THRESHOLD";
+    private const string StressCountEnvVar = "AIIMAGE_STRESS_COUNT";
+    private const string StressInputDirEnvVar = "AIIMAGE_STRESS_INPUT_DIR";
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
 
@@ -37,6 +45,12 @@ public static class NcnnDebugRunner
     public static void RunGfpganDebugMenu()
     {
         RunGfpganDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run CodeFormer Stress (60x)")]
+    public static void RunCodeFormerStressMenu()
+    {
+        RunCodeFormerStressBatch();
     }
 
     public static async UniTaskVoid RunFaceDebug()
@@ -183,6 +197,23 @@ public static class NcnnDebugRunner
         }
     }
 
+    public static async void RunCodeFormerStressBatch()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunCodeFormerStressBatch start");
+            await RunCodeFormerStressInternal();
+            Debug.Log("[NcnnDebugRunner] RunCodeFormerStressBatch done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunCodeFormerStressBatch failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
     private static async UniTask RunFaceDebugInternal()
     {
         var inputPath = ResolveInputPath(DefaultFaceDebugImagePath);
@@ -267,6 +298,89 @@ public static class NcnnDebugRunner
         }
     }
 
+    private static async UniTask RunCodeFormerStressInternal()
+    {
+        var inputPaths = ResolveStressInputPaths(DefaultCodeFormerDebugImagePath);
+        if (inputPaths.Count == 0)
+            throw new InvalidOperationException("No stress inputs resolved");
+
+        var iterations = ResolveStressCount(inputPaths.Count);
+        var dumpDir = CreateGenericDumpDir("AIImage_CodeFormerStress");
+        var logPath = Path.Combine(dumpDir, "stress_summary.txt");
+        var lines = new List<string>(iterations + 8)
+        {
+            "iterations=" + iterations.ToString(CultureInfo.InvariantCulture),
+            "inputs=" + string.Join(" | ", inputPaths)
+        };
+
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("CodeFormerStress");
+
+        var go = new GameObject("CodeFormerStressRunner");
+        try
+        {
+            var runner = go.AddComponent<CodeFormerNcnnReproRunner2>();
+            runner.enableDebugDump = false;
+            runner.enableFaceRegionDebugDump = false;
+
+            for (var i = 0; i < iterations; i++)
+            {
+                var inputPath = inputPaths[i % inputPaths.Count];
+                var tex = LoadTexture(inputPath);
+                if (tex == null)
+                    throw new InvalidOperationException("Failed to load stress input: " + inputPath);
+
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    var result = await runner.ProcessAsync(tex, CancellationToken.None);
+                    sw.Stop();
+
+                    var privateMb = Process.GetCurrentProcess().PrivateMemorySize64 / (1024.0 * 1024.0);
+                    var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+                    var gfxMb = Profiler.GetAllocatedMemoryForGraphicsDriver() / (1024.0 * 1024.0);
+                    lines.Add(
+                        "iter=" + (i + 1).ToString(CultureInfo.InvariantCulture)
+                        + " | file=" + Path.GetFileName(inputPath)
+                        + " | elapsed_ms=" + sw.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture)
+                        + " | err=" + (result.error ?? "")
+                        + " | private_mb=" + privateMb.ToString("F3", CultureInfo.InvariantCulture)
+                        + " | managed_mb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
+                        + " | gfx_mb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
+                        + " | " + NcnnCompute.NcnnGpuResourceTracker.BuildSummary());
+
+                    if (result.texture != null)
+                        UnityEngine.Object.DestroyImmediate(result.texture);
+                }
+                finally
+                {
+                    UnityEngine.Object.DestroyImmediate(tex);
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "stress_gpu_resources.txt");
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                File.WriteAllLines(logPath, lines);
+            }
+            catch
+            {
+            }
+
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            UnityEngine.Object.DestroyImmediate(go);
+        }
+    }
+
     private static string ResolveInputPath(string fallbackPath)
     {
         try
@@ -279,6 +393,58 @@ public static class NcnnDebugRunner
         {
         }
         return fallbackPath;
+    }
+
+    private static List<string> ResolveStressInputPaths(string fallbackPath)
+    {
+        try
+        {
+            var envDir = Environment.GetEnvironmentVariable(StressInputDirEnvVar);
+            if (!string.IsNullOrWhiteSpace(envDir) && Directory.Exists(envDir))
+            {
+                var files = Directory.GetFiles(envDir)
+                    .Where(IsImagePath)
+                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (files.Count > 0)
+                    return files;
+            }
+        }
+        catch
+        {
+        }
+
+        return new List<string> { ResolveInputPath(fallbackPath) };
+    }
+
+    private static int ResolveStressCount(int inputCount)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(StressCountEnvVar);
+            if (!string.IsNullOrWhiteSpace(env)
+                && int.TryParse(env.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                && parsed > 0)
+                return parsed;
+        }
+        catch
+        {
+        }
+
+        return Mathf.Max(60, inputCount);
+    }
+
+    private static bool IsImagePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        var ext = Path.GetExtension(path);
+        return string.Equals(ext, ".png", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, ".jpg", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, ".jpeg", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, ".bmp", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ext, ".webp", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ResolveFacePreferTexturePath()

@@ -37,19 +37,19 @@ public static class NcnnFaceRegionPaster
         if (baseTex == null || restoredFace == null)
             return;
 
-        var shifted = new AffineCoeffs(
+        var alignedToSource = new AffineCoeffs(
             alignedToSourceM00,
             alignedToSourceM01,
-            alignedToSourceM02 + 1f,
+            alignedToSourceM02,
             alignedToSourceM10,
             alignedToSourceM11,
-            alignedToSourceM12 + 1f);
-        if (!TryInvert(shifted, out var pasteSampleTransform))
+            alignedToSourceM12);
+        if (!TryInvert(alignedToSource, out var pasteSampleTransform))
             return;
 
         var imageW = baseTex.width;
         var imageH = baseTex.height;
-        var warpedBounds = ComputeWarpedAlignedBounds(shifted, imageW, imageH);
+        var warpedBounds = ComputeWarpedAlignedBounds(alignedToSource, imageW, imageH);
         if (warpedBounds.width <= 0 || warpedBounds.height <= 0)
             return;
 
