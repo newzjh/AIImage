@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -309,7 +310,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             return new CodeFormer512RunResult { error = "Invalid face input: expected 512x512 render texture" };
 
         RenderTexture encoderInput = null;
-        RenderTexture restored = null;
+        Texture restored = null;
         RenderTexture encFeat32 = null;
         RenderTexture encFeat64 = null;
         RenderTexture encFeat128 = null;
@@ -328,7 +329,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             await UniTask.Yield();
 
             encoderInput = _encoderRepro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
-            _ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, encoderInput);
+            _ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, encoderInput, true);
 
             var pinned = new HashSet<string>(StringComparer.Ordinal)
             {
@@ -341,7 +342,24 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             };
             if (enableDebugDump)
             {
+                dumpDir ??= CreateDumpDir();
+                _encoderRepro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "Conv_759"
+                };
+                _encoderRepro.DebugLog = line =>
+                {
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(dumpDir))
+                            File.AppendAllText(Path.Combine(dumpDir, "encoder_compare.txt"), line + Environment.NewLine);
+                    }
+                    catch
+                    {
+                    }
+                };
                 pinned.Add("1293");
+                pinned.Add("1274");
                 pinned.Add("1302");
                 pinned.Add("1305");
                 pinned.Add("1316");
@@ -383,8 +401,16 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
                 if (enableDebugDump)
                 {
-                    dumpDir = CreateDumpDir();
                     stage = "dump encoder tail";
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "enc_feat_32");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "enc_feat_64");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "enc_feat_128");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "enc_feat_256");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "lq_feat");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "1274");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "1302");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "1451");
+                    TryAppendInferBufferPreview(encoderResult, dumpDir, "1452");
                     await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "29_enc_1293.png", "1293", 512, 256, ct);
                     await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "30_enc_1302.png", "1302", 256, 256, ct);
                     await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "31_enc_1305.png", "1305", 512, 256, ct);
@@ -420,6 +446,11 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 await DumpPack4TextureAsync(dumpDir, "04_enc_feat_256.png", encFeat256, ct);
                 await DumpPack4TextureAsync(dumpDir, "05_lq_feat.png", lqFeat, ct);
                 await DumpBinaryTensorAsImageAsync(dumpDir, "06_min_encoding.png", minEncodingTensor, 1024, 256, ct);
+                await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_32_input", encFeat32, 3, 256, 256, 1, 128);
+                await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_64_input", encFeat64, 3, 128, 128, 1, 128);
+                await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_128_input", encFeat128, 3, 64, 64, 1, 256);
+                await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_256_input", encFeat256, 3, 32, 32, 1, 256);
+                await AppendPack4TextureStatsAsync(dumpDir, "style_feat_input", lqFeat, 3, 16, 16, 1, 256);
             }
 
             if (encFeat32 == null || encFeat64 == null || encFeat128 == null || encFeat256 == null || lqFeat == null || minEncodingTensor == null)
@@ -459,6 +490,26 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             HashSet<string> generatorPinned = null;
             if (enableDebugDump)
             {
+                _generatorRepro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "Conv_939",
+                    "Conv_953",
+                    "Conv_967",
+                    "Conv_983",
+                    "Conv_997",
+                    "Conv_1010"
+                };
+                _generatorRepro.DebugLog = line =>
+                {
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(dumpDir))
+                            File.AppendAllText(Path.Combine(dumpDir, "generator_compare.txt"), line + Environment.NewLine);
+                    }
+                    catch
+                    {
+                    }
+                };
                 generatorPinned = new HashSet<string>(StringComparer.Ordinal)
                 {
                     "548",
@@ -486,6 +537,11 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     "1459",
                     "out"
                 };
+            }
+            else
+            {
+                _generatorRepro.DebugCompareTextureLayers = null;
+                _generatorRepro.DebugLog = null;
             }
 
             using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, bufferInputs, generatorPinned))
@@ -548,8 +604,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex);
 
                 stage = "convert output to RGB";
-                restored = GetTemporaryRt(outputTex.width, outputTex.height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, true);
-                _ops.Pack4ToRgb01(clipTex, restored);
+                restored = ConvertClippedPack4ToTexture2D(clipTex, outputTex.width, outputTex.height, dumpDir);
+                if (restored == null)
+                    return new CodeFormer512RunResult { error = "CodeFormer(repro2) output conversion failed", dumpDir = dumpDir };
 
                 if (enableDebugDump)
                 {
@@ -565,12 +622,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
         catch (OperationCanceledException)
         {
-            if (restored != null) ReleaseTemporaryRt(restored);
+            if (restored != null) DestroyObjectSafe(restored);
             return default;
         }
         catch (Exception e)
         {
-            if (restored != null) ReleaseTemporaryRt(restored);
+            if (restored != null) DestroyObjectSafe(restored);
             try
             {
                 UnityEngine.Debug.LogError("[CodeFormer(repro2)] stage failed: " + stage);
@@ -594,12 +651,70 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             if (encFeat256 != null) _encoderRepro.ReturnTempArray(encFeat256);
             if (lqFeat != null) _encoderRepro.ReturnTempArray(lqFeat);
             minEncodingTensor?.Dispose();
+            _encoderRepro.DebugCompareTextureLayers = null;
+            _encoderRepro.DebugLog = null;
+            _generatorRepro.DebugCompareTextureLayers = null;
+            _generatorRepro.DebugLog = null;
         }
     }
 
     private static string BoolText(bool value)
     {
         return value ? "ok" : "missing";
+    }
+
+    private Texture2D ConvertClippedPack4ToTexture2D(RenderTexture clipTex, int width, int height, string dumpDir)
+    {
+        if (clipTex == null || width <= 0 || height <= 0 || _ops == null)
+            return null;
+
+        var pixelCount = width * height;
+        var total = pixelCount * 4;
+        using var buffer = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
+        _ops.Pack4ToBufferCHW(clipTex, width, height, 4, buffer);
+
+        var data = new float[total];
+        buffer.GetData(data);
+        if (enableDebugDump && !string.IsNullOrWhiteSpace(dumpDir))
+        {
+            try
+            {
+                var previewCount = Mathf.Min(32, data.Length);
+                var preview = new string[previewCount];
+                for (var i = 0; i < previewCount; i++)
+                    preview[i] = data[i].ToString("G9", CultureInfo.InvariantCulture);
+                File.WriteAllText(Path.Combine(dumpDir, "16_out_chw_preview.txt"), string.Join(",", preview));
+            }
+            catch
+            {
+            }
+        }
+        var plane = pixelCount;
+        var pixels = new Color32[pixelCount];
+        for (var y = 0; y < height; y++)
+        {
+            var srcRow = (height - 1 - y) * width;
+            var dstRow = y * width;
+            for (var x = 0; x < width; x++)
+            {
+                var srcIndex = srcRow + x;
+                var r = Mathf.Clamp01(data[srcIndex] * 0.5f + 0.5f);
+                var g = Mathf.Clamp01(data[plane + srcIndex] * 0.5f + 0.5f);
+                var b = Mathf.Clamp01(data[plane * 2 + srcIndex] * 0.5f + 0.5f);
+                pixels[dstRow + x] = new Color32(
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(r * 255f), 0, 255),
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(g * 255f), 0, 255),
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(b * 255f), 0, 255),
+                    255);
+            }
+        }
+
+        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+        tex.SetPixels32(pixels);
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
     }
 
     private async UniTask DumpInferBlobAsync(NcnnRepro2.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
@@ -706,6 +821,14 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             buffer.GetData(data);
             var path = Path.Combine(dir, "generator_stats.txt");
             AppendStatsLineTo(path, blobName, data);
+            var previewCount = Mathf.Min(16, data.Length);
+            if (previewCount > 0)
+            {
+                var preview = new string[previewCount];
+                for (var i = 0; i < previewCount; i++)
+                    preview[i] = data[i].ToString("G9", CultureInfo.InvariantCulture);
+                File.AppendAllText(path, blobName + " | first=" + string.Join(",", preview) + Environment.NewLine);
+            }
             if (dims == 1)
                 AppendMatrixStatsLineTo(path, blobName, data, logicalW, 1, false);
             else if (dims == 2)
@@ -725,6 +848,13 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     {
         if (!enableDebugDump || texture == null || string.IsNullOrWhiteSpace(dir))
             return;
+
+        if (texture is Texture2D srcTex2D)
+        {
+            var bytes = srcTex2D.EncodeToPNG();
+            await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+            return;
+        }
 
         RenderTexture rt = texture as RenderTexture;
         RenderTexture tempRt = null;
@@ -794,6 +924,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             var data = inferResult.GetBufferData(blobName);
             await DumpFloatArrayAsNormalizedImageAsync(dir, fileName, data, width, height, ct);
             AppendStatsLine(dir, blobName, data);
+            AppendPreviewLine(Path.Combine(dir, "encoder_stats.txt"), blobName, data, 16);
             AppendMatrixStatsLine(dir, blobName, data, width, height, false);
         }
         catch (Exception e)
@@ -1590,6 +1721,39 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             atb[i] += row[i] * value;
             for (var j = 0; j < 4; j++)
                 ata[i, j] += row[i] * row[j];
+        }
+    }
+
+    private static void AppendPreviewLine(string path, string blobName, float[] data, int maxCount)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(blobName) || data == null || data.Length == 0 || maxCount <= 0)
+            return;
+
+        try
+        {
+            var previewCount = Mathf.Min(maxCount, data.Length);
+            var preview = new string[previewCount];
+            for (var i = 0; i < previewCount; i++)
+                preview[i] = data[i].ToString("G9", CultureInfo.InvariantCulture);
+            File.AppendAllText(path, blobName + " | first=" + string.Join(",", preview) + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryAppendInferBufferPreview(NcnnRepro2.InferResult inferResult, string dir, string blobName, int maxCount = 16)
+    {
+        if (inferResult == null || string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(blobName))
+            return;
+
+        try
+        {
+            var data = inferResult.GetBufferData(blobName);
+            AppendPreviewLine(Path.Combine(dir, "encoder_stats.txt"), blobName, data, maxCount);
+        }
+        catch
+        {
         }
     }
 

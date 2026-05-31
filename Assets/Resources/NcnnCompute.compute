@@ -153,6 +153,7 @@ int _ActType;
 float _ActParam;
 float _ScaleX;
 float _ScaleY;
+int _FlipY;
 
 [numthreads(32,32,1)]
 void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
@@ -182,6 +183,8 @@ void NcnnPackRgbToPack4Gfpgan(uint3 id : SV_DispatchThreadID)
     int sy = (int) (id.y + _OffsetY) * _ScaleY;
     sx = clamp(sx, 0, (int)tw - 1);
     sy = clamp(sy, 0, (int)th - 1);
+    if (_FlipY != 0)
+        sy = (int)th - 1 - sy;
     float4 v = _NcnnIn[int2(sx, sy)];
     v.xyz = v.xyz * 2.0 - 1.0;
     _NcnnOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
