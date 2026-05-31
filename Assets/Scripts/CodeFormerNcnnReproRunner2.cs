@@ -74,6 +74,15 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         new Vector2(313.08905f, 371.15118f)
     };
 
+    private static readonly Vector2[] CanonicalFivePointTemplateBottomOrigin =
+    {
+        new Vector2(192.98138f, 271.05292f),
+        new Vector2(318.90277f, 270.8064f),
+        new Vector2(256.63416f, 196.98065f),
+        new Vector2(201.26117f, 139.58957f),
+        new Vector2(313.08905f, 139.84882f)
+    };
+
     private struct CodeFormer512RunResult
     {
         public Texture texture;
@@ -220,7 +229,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     Texture2D restoredFaceTex = null;
                     try
                     {
-                        alignedFaceTex = AlignFaceToTemplate(inputTex, face.landmarks);
+                        alignedFaceTex = AlignFaceToTemplate(inputTex, face);
                         if (alignedFaceTex == null)
                             continue;
 
@@ -1386,12 +1395,15 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             DestroyImmediate(obj);
     }
 
-    private static Texture2D AlignFaceToTemplate(Texture2D src, Vector2[] landmarks)
+    private static Texture2D AlignFaceToTemplate(Texture2D src, FaceRegionFace face)
     {
-        if (src == null || landmarks == null || landmarks.Length < 5)
+        if (src == null)
             return null;
         var srcPixels = src.GetPixels32();
-        if (!SolveSimilarityTransform(landmarks, CanonicalFivePointTemplate, out var sourceToAligned))
+        var sourceLandmarks = ResolveAlignmentLandmarks(face, src.width, src.height);
+        if (sourceLandmarks == null || sourceLandmarks.Length < 5)
+            return null;
+        if (!SolveRobustSimilarityTransform(sourceLandmarks, CanonicalFivePointTemplateBottomOrigin, out var sourceToAligned))
             return null;
         if (!sourceToAligned.TryInverse(out var alignedToSource))
             return null;
@@ -1417,9 +1429,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private static void PasteAlignedFaceInPlace(Texture2D baseTex, Texture2D restoredFace, FaceRegionFace face)
     {
-        if (baseTex == null || restoredFace == null || face.landmarks == null || face.landmarks.Length < 5)
+        if (baseTex == null || restoredFace == null)
             return;
-        if (!SolveSimilarityTransform(face.landmarks, CanonicalFivePointTemplate, out var sourceToAligned))
+        var sourceLandmarks = ResolveAlignmentLandmarks(face, baseTex.width, baseTex.height);
+        if (sourceLandmarks == null || sourceLandmarks.Length < 5)
+            return;
+        if (!SolveRobustSimilarityTransform(sourceLandmarks, CanonicalFivePointTemplateBottomOrigin, out var sourceToAligned))
             return;
 
         var basePixels = baseTex.GetPixels32();
@@ -1453,7 +1468,83 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         baseTex.Apply(false, false);
     }
 
-    private static bool SolveSimilarityTransform(IReadOnlyList<Vector2> src, IReadOnlyList<Vector2> dst, out Affine2D transform)
+    private static Vector2[] ResolveAlignmentLandmarks(FaceRegionFace face, int imgW, int imgH)
+    {
+        if (face.landmarks == null || face.landmarks.Length < 5)
+            return BuildFallbackLandmarks(face.rectInt, imgW, imgH);
+
+        if (!SolveRobustSimilarityTransform(face.landmarks, CanonicalFivePointTemplateBottomOrigin, out var sourceToAligned))
+            return BuildFallbackLandmarks(face.rectInt, imgW, imgH);
+
+        if (IsAlignmentTransformReasonable(sourceToAligned, face.rect))
+            return face.landmarks;
+
+        return BuildFallbackLandmarks(face.rectInt, imgW, imgH);
+    }
+
+    private static bool IsAlignmentTransformReasonable(Affine2D sourceToAligned, Rect faceRect)
+    {
+        if (!sourceToAligned.valid || faceRect.width <= 1f || faceRect.height <= 1f)
+            return false;
+
+        var scale = Mathf.Sqrt(sourceToAligned.m00 * sourceToAligned.m00 + sourceToAligned.m10 * sourceToAligned.m10);
+        var referenceFaceSize = Mathf.Max(8f, Mathf.Max(faceRect.width, faceRect.height));
+        var expectedScale = 512f / referenceFaceSize;
+        return scale <= expectedScale * 1.35f;
+    }
+
+    private static Vector2[] BuildFallbackLandmarks(RectInt rect, int imgW, int imgH)
+    {
+        if (rect.width <= 1 || rect.height <= 1)
+            return null;
+
+        var expanded = ExpandRect(rect, imgW, imgH, 0.08f);
+        var x = expanded.xMin;
+        var y = expanded.yMin;
+        var w = Mathf.Max(1, expanded.width);
+        var h = Mathf.Max(1, expanded.height);
+
+        return new[]
+        {
+            new Vector2(x + w * 0.35f, y + h * 0.62f),
+            new Vector2(x + w * 0.65f, y + h * 0.62f),
+            new Vector2(x + w * 0.50f, y + h * 0.46f),
+            new Vector2(x + w * 0.39f, y + h * 0.27f),
+            new Vector2(x + w * 0.61f, y + h * 0.27f)
+        };
+    }
+
+    private static bool SolveRobustSimilarityTransform(IReadOnlyList<Vector2> src, IReadOnlyList<Vector2> dst, out Affine2D transform)
+    {
+        transform = default;
+        if (src == null || dst == null || src.Count < 2 || src.Count != dst.Count)
+            return false;
+
+        var bestScore = float.PositiveInfinity;
+        var bestMean = float.PositiveInfinity;
+        var found = false;
+        for (var skipIndex = -1; skipIndex < src.Count; skipIndex++)
+        {
+            if (!SolveSimilarityTransformLeastSquares(src, dst, skipIndex, out var candidate))
+                continue;
+
+            EvaluateTransformFit(candidate, src, dst, out var medianSqError, out var meanSqError);
+            if (!found
+                || medianSqError < bestScore - 1e-4f
+                || (Mathf.Abs(medianSqError - bestScore) <= 1e-4f && meanSqError < bestMean - 1e-4f)
+                || (Mathf.Abs(medianSqError - bestScore) <= 1e-4f && Mathf.Abs(meanSqError - bestMean) <= 1e-4f && skipIndex < 0))
+            {
+                bestScore = medianSqError;
+                bestMean = meanSqError;
+                transform = candidate;
+                found = true;
+            }
+        }
+
+        return found;
+    }
+
+    private static bool SolveSimilarityTransformLeastSquares(IReadOnlyList<Vector2> src, IReadOnlyList<Vector2> dst, int skipIndex, out Affine2D transform)
     {
         transform = default;
         if (src == null || dst == null || src.Count < 2 || src.Count != dst.Count)
@@ -1461,8 +1552,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         var ata = new float[4, 4];
         var atb = new float[4];
+        var usedCount = 0;
         for (var i = 0; i < src.Count; i++)
         {
+            if (i == skipIndex)
+                continue;
+
             var x = src[i].x;
             var y = src[i].y;
             var u = dst[i].x;
@@ -1472,13 +1567,38 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             var r1 = new[] { y, x, 0f, 1f };
             AccumulateNormalEquation(ata, atb, r0, u);
             AccumulateNormalEquation(ata, atb, r1, v);
+            usedCount++;
         }
 
+        if (usedCount < 2)
+            return false;
         if (!SolveLinear4x4(ata, atb, out var s))
             return false;
 
         transform = new Affine2D(s[0], -s[1], s[2], s[1], s[0], s[3], true);
         return true;
+    }
+
+    private static void EvaluateTransformFit(Affine2D transform, IReadOnlyList<Vector2> src, IReadOnlyList<Vector2> dst, out float medianSqError, out float meanSqError)
+    {
+        medianSqError = float.PositiveInfinity;
+        meanSqError = float.PositiveInfinity;
+        if (!transform.valid || src == null || dst == null || src.Count == 0 || src.Count != dst.Count)
+            return;
+
+        var errors = new float[src.Count];
+        var sum = 0f;
+        for (var i = 0; i < src.Count; i++)
+        {
+            var delta = transform.Transform(src[i]) - dst[i];
+            var errSq = delta.sqrMagnitude;
+            errors[i] = errSq;
+            sum += errSq;
+        }
+
+        Array.Sort(errors);
+        medianSqError = errors[errors.Length / 2];
+        meanSqError = sum / errors.Length;
     }
 
     private static void AccumulateNormalEquation(float[,] ata, float[] atb, float[] row, float value)

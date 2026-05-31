@@ -119,6 +119,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     };
 
     public bool enableNcnnFaceRegion = true;
+    public bool preferTexturePathForFaceDetector = true;
     public string paramRelativePath = "CodeFormer/models/yolov7-lite-e.param";
     public string binRelativePath = "CodeFormer/models/yolov7-lite-e.bin";
     public int inputSize = 640;
@@ -758,7 +759,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             _ops = new NcnnOps();
         if (_repro == null)
             _repro = new NcnnRepro2(_ops);
-        _repro.PreferTexturePathForFaceDetector = true;
+        _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;
         _repro.TensorTextureFormat = useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
     }
 
@@ -780,14 +781,50 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             lines.Add("top_proposal[" + i + "]"
                 + " | score=" + p.score.ToString("F6", CultureInfo.InvariantCulture)
                 + " | rect=" + RectToString(p.rect)
-                + " | area_ratio=" + areaRatio.ToString("F6", CultureInfo.InvariantCulture));
+                + " | area_ratio=" + areaRatio.ToString("F6", CultureInfo.InvariantCulture)
+                + " | landmarks=" + LandmarksToString(p.landmarks));
         }
 
         var bestAreaRatio = (best.rect.width * best.rect.height) / Mathf.Max(1f, imgW * imgH);
         lines.Add("best"
             + " | score=" + best.score.ToString("F6", CultureInfo.InvariantCulture)
             + " | rect=" + RectToString(best.rect)
-            + " | area_ratio=" + bestAreaRatio.ToString("F6", CultureInfo.InvariantCulture));
+            + " | area_ratio=" + bestAreaRatio.ToString("F6", CultureInfo.InvariantCulture)
+            + " | landmarks=" + LandmarksToString(best.landmarks));
+
+        if (picked == null)
+            return;
+
+        for (var i = 0; i < picked.Count; i++)
+        {
+            var index = picked[i];
+            if (index < 0 || index >= proposals.Count)
+                continue;
+            var p = proposals[index];
+            lines.Add("picked[" + i + "]"
+                + " | proposal_index=" + index
+                + " | score=" + p.score.ToString("F6", CultureInfo.InvariantCulture)
+                + " | rect=" + RectToString(p.rect)
+                + " | landmarks=" + LandmarksToString(p.landmarks));
+        }
+    }
+
+    private static string LandmarksToString(IReadOnlyList<Vector2> landmarks)
+    {
+        if (landmarks == null || landmarks.Count == 0)
+            return "[]";
+
+        var parts = new string[landmarks.Count];
+        for (var i = 0; i < landmarks.Count; i++)
+        {
+            parts[i] = "("
+                + landmarks[i].x.ToString("F2", CultureInfo.InvariantCulture)
+                + ","
+                + landmarks[i].y.ToString("F2", CultureInfo.InvariantCulture)
+                + ")";
+        }
+
+        return "[" + string.Join(" ", parts) + "]";
     }
 
     private void AppendBlobPreview(NcnnRepro2.InferResult infer, List<string> lines, string blobName, int previewCount)
