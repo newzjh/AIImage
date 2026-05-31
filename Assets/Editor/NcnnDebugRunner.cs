@@ -22,6 +22,8 @@ public static class NcnnDebugRunner
     private const string StressInputDirEnvVar = "AIIMAGE_STRESS_INPUT_DIR";
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
+    private static readonly string DefaultMattingDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_img.jpg");
+    private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
 
     [MenuItem("Tools/AIImage/Run NCNN Face Debug")]
     public static void RunFaceDebugMenu()
@@ -45,6 +47,12 @@ public static class NcnnDebugRunner
     public static void RunGfpganDebugMenu()
     {
         RunGfpganDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run Matting Debug")]
+    public static void RunMattingDebugMenu()
+    {
+        RunMattingDebug().Forget();
     }
 
     [MenuItem("Tools/AIImage/Run CodeFormer Stress (60x)")]
@@ -155,6 +163,64 @@ public static class NcnnDebugRunner
                 TryWriteTexturePng(result.texture, dir, "17_full_output.png");
                 UnityEngine.Object.DestroyImmediate(result.texture);
             }
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    public static async UniTaskVoid RunMattingDebug()
+    {
+        await RunMattingDebugInternal();
+    }
+
+    public static async void RunMattingDebugBatch()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunMattingDebugBatch start");
+            await RunMattingDebugInternal();
+            Debug.Log("[NcnnDebugRunner] RunMattingDebugBatch done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunMattingDebugBatch failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
+    private static async UniTask RunMattingDebugInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultMattingDebugImagePath);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+        {
+            Debug.LogError("Failed to load debug input: " + inputPath);
+            return;
+        }
+
+        var go = new GameObject("MattingDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<MatterNcnnReproRunner>();
+            var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            Debug.Log("Matting Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs);
+            if (!string.IsNullOrWhiteSpace(result.error))
+                return;
+
+            var dir = CreateGenericDumpDir("AIImage_MattingRepro");
+            TryWriteTexturePng(result.texture, dir, "17_composite.png");
+            TryWriteTexturePng(result.matte, dir, "18_matte.png");
+            TryCompareTextureWithReference(result.texture, DefaultMattingReferencePath);
+
+            if (result.texture != null)
+                UnityEngine.Object.DestroyImmediate(result.texture);
+            if (result.matte != null)
+                UnityEngine.Object.DestroyImmediate(result.matte);
         }
         finally
         {
@@ -510,6 +576,46 @@ public static class NcnnDebugRunner
         catch (Exception e)
         {
             Debug.LogWarning("Failed to write debug texture: " + e.Message);
+        }
+    }
+
+    private static void TryCompareTextureWithReference(Texture2D candidate, string referencePath)
+    {
+        if (candidate == null || string.IsNullOrWhiteSpace(referencePath) || !File.Exists(referencePath))
+            return;
+
+        var reference = LoadTexture(referencePath);
+        if (reference == null)
+            return;
+
+        try
+        {
+            if (candidate.width != reference.width || candidate.height != reference.height)
+            {
+                Debug.Log("Matting Debug compare skipped | size mismatch " + candidate.width + "x" + candidate.height + " vs " + reference.width + "x" + reference.height);
+                return;
+            }
+
+            var a = candidate.GetPixels32();
+            var b = reference.GetPixels32();
+            double sumAbs = 0d;
+            var maxAbs = 0;
+            var count = a.Length * 3;
+            for (var i = 0; i < a.Length; i++)
+            {
+                var dr = Mathf.Abs(a[i].r - b[i].r);
+                var dg = Mathf.Abs(a[i].g - b[i].g);
+                var db = Mathf.Abs(a[i].b - b[i].b);
+                sumAbs += dr + dg + db;
+                maxAbs = Mathf.Max(maxAbs, Mathf.Max(dr, Mathf.Max(dg, db)));
+            }
+
+            var meanAbs = count > 0 ? sumAbs / count : 0d;
+            Debug.Log("Matting Debug compare | ref=" + referencePath + " | mean_abs_rgb=" + meanAbs.ToString("F4", CultureInfo.InvariantCulture) + " | max_abs_rgb=" + maxAbs.ToString(CultureInfo.InvariantCulture));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(reference);
         }
     }
 

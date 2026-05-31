@@ -19,6 +19,7 @@
 #pragma kernel NcnnConv1x1Pack4
 #pragma kernel NcnnAddPack4
 #pragma kernel NcnnCopyPack4
+#pragma kernel NcnnInterpPack4
 #pragma kernel NcnnInterp2xPack4
 #pragma kernel NcnnInterp2xNearestPack4
 #pragma kernel NcnnInterpDown2Pack4
@@ -38,6 +39,8 @@
 #pragma kernel NcnnProbeSeams
 #pragma kernel NcnnPaddingPack4
 #pragma kernel NcnnPoolingPack4
+#pragma kernel NcnnMaxPoolingIndPack4
+#pragma kernel NcnnMaxUnPoolingPack4
 #pragma kernel NcnnSoftmaxChannelPack4
 #pragma kernel NcnnUnaryOpPack4
 #pragma kernel NcnnBinaryOpPack4
@@ -153,6 +156,8 @@ int _ActType;
 float _ActParam;
 float _ScaleX;
 float _ScaleY;
+float _InterpScaleFactorX;
+float _InterpScaleFactorY;
 int _FlipY;
 
 [numthreads(32,32,1)]
@@ -344,33 +349,16 @@ void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID
         GroupMemoryBarrierWithGroupSync();
     }
 
-    if (_ActType == 1)
+    sum00 = NcnnApplyActivation(sum00);
+    sum01 = NcnnApplyActivation(sum01);
+    sum10 = NcnnApplyActivation(sum10);
+    sum11 = NcnnApplyActivation(sum11);
+    if (hasOp1)
     {
-        sum00 = max(sum00, 0.0);
-        sum01 = max(sum01, 0.0);
-        sum10 = max(sum10, 0.0);
-        sum11 = max(sum11, 0.0);
-        if (hasOp1)
-        {
-            sum20 = max(sum20, 0.0);
-            sum21 = max(sum21, 0.0);
-            sum30 = max(sum30, 0.0);
-            sum31 = max(sum31, 0.0);
-        }
-    }
-    else if (_ActType == 2)
-    {
-        sum00 = max(sum00, 0.0) + min(sum00, 0.0) * _ActParam;
-        sum01 = max(sum01, 0.0) + min(sum01, 0.0) * _ActParam;
-        sum10 = max(sum10, 0.0) + min(sum10, 0.0) * _ActParam;
-        sum11 = max(sum11, 0.0) + min(sum11, 0.0) * _ActParam;
-        if (hasOp1)
-        {
-            sum20 = max(sum20, 0.0) + min(sum20, 0.0) * _ActParam;
-            sum21 = max(sum21, 0.0) + min(sum21, 0.0) * _ActParam;
-            sum30 = max(sum30, 0.0) + min(sum30, 0.0) * _ActParam;
-            sum31 = max(sum31, 0.0) + min(sum31, 0.0) * _ActParam;
-        }
+        sum20 = NcnnApplyActivation(sum20);
+        sum21 = NcnnApplyActivation(sum21);
+        sum30 = NcnnApplyActivation(sum30);
+        sum31 = NcnnApplyActivation(sum31);
     }
 
     if (active)
@@ -411,6 +399,8 @@ float4 NcnnApplyActivation(float4 v)
         v = max(v, 0.0);
     else if (_ActType == 2)
         v = max(v, 0.0) + min(v, 0.0) * _ActParam;
+    else if (_ActType == 4)
+        v = 1.0 / (1.0 + exp(-v));
     return v;
 }
 
@@ -654,10 +644,7 @@ void NcnnConv1x1Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
         sum.w += dot(inV, w3);
     }
 
-    if (_ActType == 1)
-        sum = max(sum, 0.0);
-    else if (_ActType == 2)
-        sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
+    sum = NcnnApplyActivation(sum);
 
     _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
 }
@@ -689,10 +676,7 @@ void NcnnConvDepthWisePack4(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    if (_ActType == 2)
-        sum = max(sum, 0.0) + min(sum, 0.0) * _ActParam;
-    else if (_ActType == 1)
-        sum = max(sum, 0.0);
+    sum = NcnnApplyActivation(sum);
 
     _ConvOutArr[int3((int)id.x, (int)id.y, pack)] = sum;
 }
@@ -736,6 +720,70 @@ void NcnnCopyPack4(uint3 id : SV_DispatchThreadID)
 
 RWTexture2DArray<float4> _InterpOutArr;
 Texture2DArray<float4> _InterpInArr;
+
+[numthreads(8,8,1)]
+void NcnnInterpPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _InterpOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _InterpInArr.GetDimensions(iw, ih, idd);
+
+    if (iw == 0 || ih == 0)
+    {
+        _InterpOutArr[int3((int)id.x, (int)id.y, p)] = 0.0;
+        return;
+    }
+
+    float sxScale = max(_InterpScaleFactorX, 1e-6);
+    float syScale = max(_InterpScaleFactorY, 1e-6);
+    float fx = ((float)id.x + 0.5) / sxScale - 0.5;
+    float fy = ((float)id.y + 0.5) / syScale - 0.5;
+    int x0 = (int)floor(fx);
+    int y0 = (int)floor(fy);
+    float tx = fx - x0;
+    float ty = fy - y0;
+
+    int x1;
+    if (iw <= 1)
+    {
+        x0 = 0;
+        x1 = 0;
+        tx = 0.0;
+    }
+    else
+    {
+        if (x0 < 0) { x0 = 0; tx = 0.0; }
+        if (x0 >= (int)iw - 1) { x0 = max(0, (int)iw - 2); tx = 1.0; }
+        x1 = x0 + 1;
+    }
+
+    int y1;
+    if (ih <= 1)
+    {
+        y0 = 0;
+        y1 = 0;
+        ty = 0.0;
+    }
+    else
+    {
+        if (y0 < 0) { y0 = 0; ty = 0.0; }
+        if (y0 >= (int)ih - 1) { y0 = max(0, (int)ih - 2); ty = 1.0; }
+        y1 = y0 + 1;
+    }
+
+    float4 v00 = _InterpInArr[int3(x0, y0, p)];
+    float4 v10 = _InterpInArr[int3(x1, y0, p)];
+    float4 v01 = _InterpInArr[int3(x0, y1, p)];
+    float4 v11 = _InterpInArr[int3(x1, y1, p)];
+    float4 vx0 = lerp(v00, v10, tx);
+    float4 vx1 = lerp(v01, v11, tx);
+    _InterpOutArr[int3((int)id.x, (int)id.y, p)] = lerp(vx0, vx1, ty);
+}
 
 [numthreads(8,8,1)]
 void NcnnInterp2xPack4(uint3 id : SV_DispatchThreadID)
@@ -1172,10 +1220,7 @@ void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    if (_ActType == 1)
-        sum = sum >= 0.0 ? sum : 0.0;
-    else if (_ActType == 2)
-        sum = sum >= 0.0 ? sum : sum * _ActParam;
+    sum = NcnnApplyActivationScalar(sum);
 
     uint outIndex = (uint)((oc * outH + oy) * outW + ox);
     _ConvOut[outIndex] = sum;
@@ -1187,6 +1232,8 @@ float NcnnApplyActivationScalar(float v)
         v = v >= 0.0 ? v : 0.0;
     else if (_ActType == 2)
         v = v >= 0.0 ? v : v * _ActParam;
+    else if (_ActType == 4)
+        v = 1.0 / (1.0 + exp(-v));
     return v;
 }
 
@@ -1830,6 +1877,120 @@ void NcnnPoolingPack4(uint3 id : SV_DispatchThreadID)
     }
 
     _PoolOutArr[int3(ox, oy, p)] = acc;
+}
+
+RWTexture2DArray<float4> _MaxPoolOutArr;
+RWTexture2DArray<float4> _MaxPoolIndicesArr;
+Texture2DArray<float4> _MaxPoolInArr;
+
+[numthreads(8,8,1)]
+void NcnnMaxPoolingIndPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _MaxPoolOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _MaxPoolInArr.GetDimensions(iw, ih, idd);
+    int ox = (int)id.x;
+    int oy = (int)id.y;
+
+    int sx0 = ox * _PoolStrideW - _PoolPadLeft;
+    int sy0 = oy * _PoolStrideH - _PoolPadTop;
+    int sx1 = sx0 + _PoolKernelW;
+    int sy1 = sy0 + _PoolKernelH;
+
+    float4 bestValue = float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38);
+    float4 bestIndex = float4(-1.0, -1.0, -1.0, -1.0);
+
+    for (int yy = sy0; yy < sy1; yy++)
+    {
+        for (int xx = sx0; xx < sx1; xx++)
+        {
+            if (xx < 0 || yy < 0 || xx >= (int)iw || yy >= (int)ih) continue;
+            if (p >= (int)idd) continue;
+
+            float4 v = _MaxPoolInArr[int3(xx, yy, p)];
+            float idxv = (float)(yy * (int)iw + xx);
+
+            if (v.x > bestValue.x) { bestValue.x = v.x; bestIndex.x = idxv; }
+            if (v.y > bestValue.y) { bestValue.y = v.y; bestIndex.y = idxv; }
+            if (v.z > bestValue.z) { bestValue.z = v.z; bestIndex.z = idxv; }
+            if (v.w > bestValue.w) { bestValue.w = v.w; bestIndex.w = idxv; }
+        }
+    }
+
+    _MaxPoolOutArr[int3(ox, oy, p)] = bestValue;
+    _MaxPoolIndicesArr[int3(ox, oy, p)] = bestIndex;
+}
+
+Texture2DArray<float4> _MaxUnpoolInArr;
+Texture2DArray<float4> _MaxUnpoolIndicesArr;
+RWTexture2DArray<float4> _MaxUnpoolOutArr;
+
+[numthreads(8,8,1)]
+void NcnnMaxUnPoolingPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _MaxUnpoolOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _MaxUnpoolInArr.GetDimensions(iw, ih, idd);
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int targetIndex = y * (int)ow + x;
+    int strideW = max(1, _PoolStrideW);
+    int strideH = max(1, _PoolStrideH);
+    int oxMin = (int)ceil(((float)(x + _PoolPadLeft - _PoolKernelW + 1)) / (float)strideW);
+    int oxMax = (int)floor(((float)(x + _PoolPadLeft)) / (float)strideW);
+    int oyMin = (int)ceil(((float)(y + _PoolPadTop - _PoolKernelH + 1)) / (float)strideH);
+    int oyMax = (int)floor(((float)(y + _PoolPadTop)) / (float)strideH);
+
+    oxMin = clamp(oxMin, 0, max(0, (int)iw - 1));
+    oxMax = clamp(oxMax, 0, max(0, (int)iw - 1));
+    oyMin = clamp(oyMin, 0, max(0, (int)ih - 1));
+    oyMax = clamp(oyMax, 0, max(0, (int)ih - 1));
+
+    float4 outValue = 0.0;
+    int4 hasMatch = 0;
+
+    for (int oy = oyMin; oy <= oyMax; oy++)
+    {
+        for (int ox = oxMin; ox <= oxMax; ox++)
+        {
+            float4 pooled = _MaxUnpoolInArr[int3(ox, oy, p)];
+            float4 indices = _MaxUnpoolIndicesArr[int3(ox, oy, p)];
+
+            if (abs(indices.x - (float)targetIndex) < 0.5)
+            {
+                outValue.x = hasMatch.x != 0 ? max(outValue.x, pooled.x) : pooled.x;
+                hasMatch.x = 1;
+            }
+            if (abs(indices.y - (float)targetIndex) < 0.5)
+            {
+                outValue.y = hasMatch.y != 0 ? max(outValue.y, pooled.y) : pooled.y;
+                hasMatch.y = 1;
+            }
+            if (abs(indices.z - (float)targetIndex) < 0.5)
+            {
+                outValue.z = hasMatch.z != 0 ? max(outValue.z, pooled.z) : pooled.z;
+                hasMatch.z = 1;
+            }
+            if (abs(indices.w - (float)targetIndex) < 0.5)
+            {
+                outValue.w = hasMatch.w != 0 ? max(outValue.w, pooled.w) : pooled.w;
+                hasMatch.w = 1;
+            }
+        }
+    }
+
+    _MaxUnpoolOutArr[int3(x, y, p)] = outValue;
 }
 
 [numthreads(8,8,1)]
