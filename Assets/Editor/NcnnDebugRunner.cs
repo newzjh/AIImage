@@ -33,6 +33,12 @@ public static class NcnnDebugRunner
         RunCodeFormerDebug().Forget();
     }
 
+    [MenuItem("Tools/AIImage/Run GFPGAN Debug")]
+    public static void RunGfpganDebugMenu()
+    {
+        RunGfpganDebug().Forget();
+    }
+
     public static async UniTaskVoid RunFaceDebug()
     {
         var inputPath = ResolveInputPath(DefaultFaceDebugImagePath);
@@ -112,6 +118,37 @@ public static class NcnnDebugRunner
         }
     }
 
+    public static async UniTaskVoid RunGfpganDebug()
+    {
+        var inputPath = ResolveInputPath(DefaultCodeFormerDebugImagePath);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+        {
+            Debug.LogError("Failed to load debug input: " + inputPath);
+            return;
+        }
+
+        var go = new GameObject("GfpganDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<GfpganNcnnReproRunner>();
+            runner.enableFaceRegionDebugDump = true;
+            var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            Debug.Log("GFPGAN Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs);
+            if (result.texture != null)
+            {
+                var dir = CreateGenericDumpDir("AIImage_GfpganRepro");
+                TryWriteTexturePng(result.texture, dir, "17_full_output.png");
+                UnityEngine.Object.DestroyImmediate(result.texture);
+            }
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
     public static async void RunCodeFormerDebugBatch()
     {
         try
@@ -124,6 +161,23 @@ public static class NcnnDebugRunner
         catch (Exception e)
         {
             Debug.Log("[NcnnDebugRunner] RunCodeFormerDebugBatch failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
+    public static async void RunGfpganDebugBatch()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunGfpganDebugBatch start");
+            await RunGfpganDebugInternal();
+            Debug.Log("[NcnnDebugRunner] RunGfpganDebugBatch done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunGfpganDebugBatch failed: " + e.Message);
             Debug.LogException(e);
             EditorApplication.Exit(1);
         }
@@ -175,6 +229,34 @@ public static class NcnnDebugRunner
             if (result.texture != null)
             {
                 TryWriteTexturePng(result.texture, runner.LastDumpDir, "17_full_output.png");
+                UnityEngine.Object.DestroyImmediate(result.texture);
+            }
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    private static async UniTask RunGfpganDebugInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultCodeFormerDebugImagePath);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+            throw new InvalidOperationException("Failed to load debug input: " + inputPath);
+
+        var go = new GameObject("GfpganDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<GfpganNcnnReproRunner>();
+            runner.enableFaceRegionDebugDump = true;
+            var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            Debug.Log("GFPGAN Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs);
+            if (result.texture != null)
+            {
+                var dir = CreateGenericDumpDir("AIImage_GfpganRepro");
+                TryWriteTexturePng(result.texture, dir, "17_full_output.png");
                 UnityEngine.Object.DestroyImmediate(result.texture);
             }
         }
@@ -263,6 +345,15 @@ public static class NcnnDebugRunner
         {
             Debug.LogWarning("Failed to write debug texture: " + e.Message);
         }
+    }
+
+    private static string CreateGenericDumpDir(string prefix)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "YanQi", "AIImage");
+        Directory.CreateDirectory(root);
+        var dir = Path.Combine(root, prefix + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        Directory.CreateDirectory(dir);
+        return dir;
     }
     private static Texture2D LoadTexture(string path)
     {
