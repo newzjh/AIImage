@@ -123,7 +123,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public string paramRelativePath = "CodeFormer/models/yolov7-lite-e.param";
     public string binRelativePath = "CodeFormer/models/yolov7-lite-e.bin";
     public int inputSize = 640;
-    public float probThreshold = 0.35f;
+    public float probThreshold = 0.5f;
     public float nmsThreshold = 0.65f;
     public float maskRectExpand = 0.18f;
     public float maskSoftness = 0.10f;
@@ -494,7 +494,10 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 var x0 = Mathf.Clamp((int)sx, 0, srcW - 1);
                 var x1 = Mathf.Clamp(x0 + 1, 0, srcW - 1);
                 var tx = sx - x0;
-                dstPixels[(padTop + y) * targetSize + padLeft + x] = BilinearSample(srcPixels, srcW, srcH, x0, y0, x1, y1, tx, ty);
+                // Unity CPU pixel arrays are bottom-origin, while the compute texture sampling path used
+                // by the detector behaves like top-origin. Writing rows upside down here keeps the effective
+                // detector input aligned with the original image orientation and the official ncnn path.
+                dstPixels[(targetSize - 1 - (padTop + y)) * targetSize + padLeft + x] = BilinearSample(srcPixels, srcW, srcH, x0, y0, x1, y1, tx, ty);
             }
         }
 
@@ -622,25 +625,28 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     var pbH = Mathf.Pow(dh * 2f, 2f) * anchorH;
 
                     var x0 = (pbCx - pbW * 0.5f - padLeft) / scale;
-                    var y0 = (pbCy - pbH * 0.5f - padTop) / scale;
+                    var topY0 = (pbCy - pbH * 0.5f - padTop) / scale;
                     var x1 = (pbCx + pbW * 0.5f - padLeft) / scale;
-                    var y1 = (pbCy + pbH * 0.5f - padTop) / scale;
+                    var topY1 = (pbCy + pbH * 0.5f - padTop) / scale;
 
                     x0 = Mathf.Clamp(x0, 0f, Mathf.Max(0f, imgW - 1f));
-                    y0 = Mathf.Clamp(y0, 0f, Mathf.Max(0f, imgH - 1f));
+                    topY0 = Mathf.Clamp(topY0, 0f, Mathf.Max(0f, imgH - 1f));
                     x1 = Mathf.Clamp(x1, 0f, Mathf.Max(0f, imgW - 1f));
-                    y1 = Mathf.Clamp(y1, 0f, Mathf.Max(0f, imgH - 1f));
-                    if (x1 <= x0 || y1 <= y0)
+                    topY1 = Mathf.Clamp(topY1, 0f, Mathf.Max(0f, imgH - 1f));
+                    if (x1 <= x0 || topY1 <= topY0)
                         continue;
+
+                    var y0 = Mathf.Clamp((imgH - 1f) - topY1, 0f, Mathf.Max(0f, imgH - 1f));
+                    var y1 = Mathf.Clamp((imgH - 1f) - topY0, 0f, Mathf.Max(0f, imgH - 1f));
 
                     var lm = new Vector2[5];
                     for (var l = 0; l < 5; l++)
                     {
                         var lx = ((data[offset + 6 + l * 3] * 2f - 0.5f + gx) * stride - padLeft) / scale;
-                        var ly = ((data[offset + 7 + l * 3] * 2f - 0.5f + gy) * stride - padTop) / scale;
+                        var topLy = ((data[offset + 7 + l * 3] * 2f - 0.5f + gy) * stride - padTop) / scale;
                         lm[l] = new Vector2(
                             Mathf.Clamp(lx, 0f, Mathf.Max(0f, imgW - 1f)),
-                            Mathf.Clamp(ly, 0f, Mathf.Max(0f, imgH - 1f)));
+                            Mathf.Clamp((imgH - 1f) - topLy, 0f, Mathf.Max(0f, imgH - 1f)));
                     }
 
                     proposals.Add(new FaceProposal
