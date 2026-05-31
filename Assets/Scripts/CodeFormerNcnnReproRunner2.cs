@@ -329,6 +329,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             await UniTask.Yield();
 
             encoderInput = _encoderRepro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
+            NcnnGpuResourceTracker.UpdateTextureLabel(encoderInput, "CodeFormer.encoderInput");
             _ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, encoderInput, true);
 
             var pinned = new HashSet<string>(StringComparer.Ordinal)
@@ -589,6 +590,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
                 stage = "extract generator blob out";
                 outputTex = generatorResult.ExtractTexture("out");
+                NcnnGpuResourceTracker.UpdateTextureLabel(outputTex, "CodeFormer.generatorOut");
                 if (outputTex == null)
                 {
                     return new CodeFormer512RunResult { error = "CodeFormer(repro2) generator output blob 'out' is null", dumpDir = dumpDir };
@@ -603,6 +605,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
                 stage = "clip generator output";
                 clipTex = _generatorRepro.RentTempArray(outputTex.width, outputTex.height, 1, RenderTextureFormat.ARGBHalf);
+                NcnnGpuResourceTracker.UpdateTextureLabel(clipTex, "CodeFormer.clipTex");
                 _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex);
 
                 stage = "convert output to RGB";

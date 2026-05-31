@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -1911,13 +1912,21 @@ TextureConvPath:
             return new InferResult(textureBlobs, textureShapes, bufferBlobs, bufferRefs, bufferViews, tempOwned, this);
         }
 
-        public RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
+        public RenderTexture RentTempArray(
+            int w,
+            int h,
+            int depth,
+            RenderTextureFormat format,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
         {
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
             depth = Mathf.Max(1, depth);
             if (format == RenderTextureFormat.ARGBHalf)
                 format = TensorTextureFormat;
+
+            var allocLabel = "NcnnRepro2.RentTempArray(" + (callerMember ?? "?") + ":" + callerLine.ToString(CultureInfo.InvariantCulture) + ")";
 
             var key = new RtKey(w, h, depth, format);
             if (_useTempPool && _rtPool.TryGetValue(key, out var pool))
@@ -1927,7 +1936,7 @@ TextureConvPath:
                     var rt = pool.Pop();
                     if (rt != null)
                     {
-                        NcnnGpuResourceTracker.RegisterTexture(rt, "NcnnRepro2.RentTempArray(pool)");
+                        NcnnGpuResourceTracker.RegisterTexture(rt, allocLabel + "|pool");
                         return rt;
                     }
                 }
@@ -1941,7 +1950,7 @@ TextureConvPath:
                 msaaSamples = 1,
             };
             var allocated = RenderTexture.GetTemporary(desc);
-            NcnnGpuResourceTracker.RegisterTexture(allocated, "NcnnRepro2.RentTempArray(new)");
+            NcnnGpuResourceTracker.RegisterTexture(allocated, allocLabel + "|new");
             return allocated;
 
        

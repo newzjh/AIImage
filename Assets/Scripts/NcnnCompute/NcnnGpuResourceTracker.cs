@@ -136,6 +136,18 @@ namespace NcnnCompute
             AddTimeline("free_rt", label ?? info.label, info.bytes, info.width + "x" + info.height + "x" + info.depth + " " + info.format);
         }
 
+        public static void UpdateTextureLabel(RenderTexture texture, string label)
+        {
+            if (!Enabled || texture == null)
+                return;
+
+            var id = texture.GetHashCode();
+            if (!Textures.TryGetValue(id, out var info) || info == null)
+                return;
+
+            info.label = label ?? "";
+        }
+
         public static void ReportLowMemoryWarning(string message)
         {
             if (!Enabled)
