@@ -1436,36 +1436,349 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             return;
         if (!SolveRobustSimilarityTransform(sourceLandmarks, CanonicalFivePointTemplateBottomOrigin, out var sourceToAligned))
             return;
+        if (!sourceToAligned.TryInverse(out var alignedToSource))
+            return;
+
+        // Match the official paste path's one-pixel translation tweak before warping back.
+        var alignedToSourceShifted = new Affine2D(
+            alignedToSource.m00,
+            alignedToSource.m01,
+            alignedToSource.m02 + 1f,
+            alignedToSource.m10,
+            alignedToSource.m11,
+            alignedToSource.m12 + 1f,
+            true);
+        if (!alignedToSourceShifted.TryInverse(out var pasteSampleTransform))
+            return;
 
         var basePixels = baseTex.GetPixels32();
         var facePixels = restoredFace.GetPixels32();
-        var bounds = ExpandRect(face.rectInt, baseTex.width, baseTex.height, 0.28f);
-        var faceArea = Mathf.Max(1f, face.rect.width * face.rect.height);
-        var wEdge = Mathf.Max(1f, Mathf.Sqrt(faceArea) / 20f);
-        var erosionRadius = wEdge * 2f;
-        var blurRadius = Mathf.Max(1f, wEdge * 2f);
+        var imageW = baseTex.width;
+        var imageH = baseTex.height;
+        var warpedBounds = ComputeWarpedAlignedBounds(alignedToSourceShifted, imageW, imageH);
+        if (warpedBounds.width <= 0 || warpedBounds.height <= 0)
+            return;
+
+        var invRestored = new Color32[imageW * imageH];
+        var invMask = new byte[imageW * imageH];
+        FillWarpedFaceAndMask(facePixels, restoredFace.width, restoredFace.height, pasteSampleTransform, warpedBounds, imageW, imageH, invRestored, invMask);
+
+        var invMaskErosion = new byte[imageW * imageH];
+        var firstErodeBounds = ExpandRectPixels(warpedBounds, imageW, imageH, 4);
+        ErodeMask(invMask, invMaskErosion, imageW, imageH, BuildEllipseKernelOffsets(4, 4), firstErodeBounds);
+
+        var totalFaceArea = CountNonZero(invMaskErosion, firstErodeBounds, imageW);
+        if (totalFaceArea <= 0)
+            return;
+
+        var pastedFace = new Color32[imageW * imageH];
+        MaskFace(invRestored, invMaskErosion, pastedFace, firstErodeBounds, imageW);
+
+        var wEdge = Mathf.Max(0, Mathf.FloorToInt(Mathf.Sqrt(totalFaceArea) / 20f));
+        var erosionRadius = wEdge * 2;
+        var invMaskCenter = new byte[imageW * imageH];
+        if (erosionRadius >= 2)
+        {
+            var centerBounds = ExpandRectPixels(warpedBounds, imageW, imageH, erosionRadius + 2);
+            ErodeMask(invMaskErosion, invMaskCenter, imageW, imageH, BuildEllipseKernelOffsets(erosionRadius, erosionRadius), centerBounds);
+        }
+        else
+        {
+            Array.Copy(invMaskErosion, invMaskCenter, invMaskErosion.Length);
+        }
+
+        var blurSize = wEdge * 2;
+        var blurKernelSize = Mathf.Max(1, blurSize + 1);
+        if ((blurKernelSize & 1) == 0)
+            blurKernelSize += 1;
+        var blurRadius = blurKernelSize / 2;
+        var blendBounds = ExpandRectPixels(warpedBounds, imageW, imageH, blurRadius * 2 + 4);
+        var invSoftMask = new float[imageW * imageH];
+        GaussianBlurMaskToFloat(invMaskCenter, imageW, imageH, blurKernelSize, blendBounds, invSoftMask);
+
+        BlendPastedFace(basePixels, pastedFace, invSoftMask, blendBounds, imageW);
+
+        baseTex.SetPixels32(basePixels);
+        baseTex.Apply(false, false);
+    }
+
+    private static RectInt ComputeWarpedAlignedBounds(Affine2D alignedToSource, int imageW, int imageH)
+    {
+        var corners = new[]
+        {
+            alignedToSource.Transform(new Vector2(0f, 0f)),
+            alignedToSource.Transform(new Vector2(511f, 0f)),
+            alignedToSource.Transform(new Vector2(0f, 511f)),
+            alignedToSource.Transform(new Vector2(511f, 511f))
+        };
+
+        var minX = float.PositiveInfinity;
+        var minY = float.PositiveInfinity;
+        var maxX = float.NegativeInfinity;
+        var maxY = float.NegativeInfinity;
+        for (var i = 0; i < corners.Length; i++)
+        {
+            minX = Mathf.Min(minX, corners[i].x);
+            minY = Mathf.Min(minY, corners[i].y);
+            maxX = Mathf.Max(maxX, corners[i].x);
+            maxY = Mathf.Max(maxY, corners[i].y);
+        }
+
+        var rect = new RectInt(
+            Mathf.FloorToInt(minX) - 2,
+            Mathf.FloorToInt(minY) - 2,
+            Mathf.CeilToInt(maxX) - Mathf.FloorToInt(minX) + 4,
+            Mathf.CeilToInt(maxY) - Mathf.FloorToInt(minY) + 4);
+        return ClampRect(rect, imageW, imageH);
+    }
+
+    private static void FillWarpedFaceAndMask(
+        Color32[] facePixels,
+        int faceW,
+        int faceH,
+        Affine2D pasteSampleTransform,
+        RectInt bounds,
+        int imageW,
+        int imageH,
+        Color32[] invRestored,
+        byte[] invMask)
+    {
+        if (facePixels == null || invRestored == null || invMask == null)
+            return;
 
         for (var y = bounds.yMin; y < bounds.yMax; y++)
         {
             for (var x = bounds.xMin; x < bounds.xMax; x++)
             {
-                var q = sourceToAligned.Transform(new Vector2(x + 0.5f, y + 0.5f));
-                if (q.x < 0f || q.y < 0f || q.x >= 511.5f || q.y >= 511.5f)
+                var alignedPos = pasteSampleTransform.Transform(new Vector2(x + 0.5f, y + 0.5f));
+                var sampleX = alignedPos.x - 0.5f;
+                var sampleY = alignedPos.y - 0.5f;
+                if (sampleX < 0f || sampleY < 0f || sampleX > faceW - 1f || sampleY > faceH - 1f)
                     continue;
 
-                var edgeDistance = Mathf.Min(Mathf.Min(q.x, 511f - q.x), Mathf.Min(q.y, 511f - q.y));
-                var alpha = Mathf.Clamp01((edgeDistance - erosionRadius) / blurRadius);
-                if (alpha <= 0f)
-                    continue;
+                var idx = y * imageW + x;
+                invMask[idx] = 255;
+                invRestored[idx] = BilinearSampleClamp(facePixels, faceW, faceH, sampleX, sampleY, new Color32(0, 0, 0, 255));
+            }
+        }
+    }
 
-                var faceColor = BilinearSampleClamp(facePixels, restoredFace.width, restoredFace.height, q.x, q.y, new Color32(0, 0, 0, 255));
-                var idx = y * baseTex.width + x;
-                basePixels[idx] = LerpColor(basePixels[idx], faceColor, alpha);
+    private static void MaskFace(Color32[] invRestored, byte[] invMask, Color32[] pastedFace, RectInt bounds, int imageW)
+    {
+        if (invRestored == null || invMask == null || pastedFace == null)
+            return;
+
+        for (var y = bounds.yMin; y < bounds.yMax; y++)
+        {
+            for (var x = bounds.xMin; x < bounds.xMax; x++)
+            {
+                var idx = y * imageW + x;
+                if (invMask[idx] > 0)
+                    pastedFace[idx] = invRestored[idx];
+            }
+        }
+    }
+
+    private static RectInt ExpandRectPixels(RectInt rect, int imageW, int imageH, int padding)
+    {
+        if (rect.width <= 0 || rect.height <= 0)
+            return rect;
+        return ClampRect(
+            new RectInt(rect.x - padding, rect.y - padding, rect.width + padding * 2, rect.height + padding * 2),
+            imageW,
+            imageH);
+    }
+
+    private static Vector2Int[] BuildEllipseKernelOffsets(int kernelW, int kernelH)
+    {
+        if (kernelW <= 0 || kernelH <= 0)
+            return Array.Empty<Vector2Int>();
+
+        var offsets = new List<Vector2Int>(kernelW * kernelH);
+        var originX = kernelW / 2;
+        var originY = kernelH / 2;
+        var halfW = Mathf.Max(0.5f, kernelW * 0.5f);
+        var halfH = Mathf.Max(0.5f, kernelH * 0.5f);
+        for (var y = 0; y < kernelH; y++)
+        {
+            for (var x = 0; x < kernelW; x++)
+            {
+                var dx = (x + 0.5f - halfW) / halfW;
+                var dy = (y + 0.5f - halfH) / halfH;
+                if (dx * dx + dy * dy <= 1f)
+                    offsets.Add(new Vector2Int(x - originX, y - originY));
             }
         }
 
-        baseTex.SetPixels32(basePixels);
-        baseTex.Apply(false, false);
+        return offsets.Count > 0 ? offsets.ToArray() : new[] { Vector2Int.zero };
+    }
+
+    private static void ErodeMask(byte[] src, byte[] dst, int imageW, int imageH, Vector2Int[] kernelOffsets, RectInt bounds)
+    {
+        if (src == null || dst == null || kernelOffsets == null || bounds.width <= 0 || bounds.height <= 0)
+            return;
+
+        for (var y = bounds.yMin; y < bounds.yMax; y++)
+        {
+            for (var x = bounds.xMin; x < bounds.xMax; x++)
+            {
+                var keep = true;
+                for (var i = 0; i < kernelOffsets.Length; i++)
+                {
+                    var sx = x + kernelOffsets[i].x;
+                    var sy = y + kernelOffsets[i].y;
+                    if (sx < 0 || sy < 0 || sx >= imageW || sy >= imageH || src[sy * imageW + sx] == 0)
+                    {
+                        keep = false;
+                        break;
+                    }
+                }
+
+                dst[y * imageW + x] = keep ? (byte)255 : (byte)0;
+            }
+        }
+    }
+
+    private static int CountNonZero(byte[] src, RectInt bounds, int imageW)
+    {
+        if (src == null || bounds.width <= 0 || bounds.height <= 0)
+            return 0;
+
+        var count = 0;
+        for (var y = bounds.yMin; y < bounds.yMax; y++)
+        {
+            for (var x = bounds.xMin; x < bounds.xMax; x++)
+            {
+                if (src[y * imageW + x] != 0)
+                    count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static void GaussianBlurMaskToFloat(byte[] src, int imageW, int imageH, int kernelSize, RectInt bounds, float[] dst)
+    {
+        if (src == null || dst == null || bounds.width <= 0 || bounds.height <= 0)
+            return;
+
+        if (kernelSize <= 1)
+        {
+            for (var y = bounds.yMin; y < bounds.yMax; y++)
+            {
+                for (var x = bounds.xMin; x < bounds.xMax; x++)
+                    dst[y * imageW + x] = src[y * imageW + x] / 255f;
+            }
+            return;
+        }
+
+        var radius = kernelSize / 2;
+        var kernel = BuildGaussianKernel1D(kernelSize);
+        var temp = new float[imageW * imageH];
+        var tempBounds = ExpandRectPixels(bounds, imageW, imageH, radius);
+
+        for (var y = tempBounds.yMin; y < tempBounds.yMax; y++)
+        {
+            for (var x = bounds.xMin; x < bounds.xMax; x++)
+            {
+                float sum = 0f;
+                for (var k = -radius; k <= radius; k++)
+                {
+                    var sx = Reflect101Index(x + k, imageW);
+                    sum += src[y * imageW + sx] * kernel[k + radius];
+                }
+
+                temp[y * imageW + x] = sum;
+            }
+        }
+
+        for (var y = bounds.yMin; y < bounds.yMax; y++)
+        {
+            for (var x = bounds.xMin; x < bounds.xMax; x++)
+            {
+                float sum = 0f;
+                for (var k = -radius; k <= radius; k++)
+                {
+                    var sy = Reflect101Index(y + k, imageH);
+                    sum += temp[sy * imageW + x] * kernel[k + radius];
+                }
+
+                dst[y * imageW + x] = sum / 255f;
+            }
+        }
+    }
+
+    private static float[] BuildGaussianKernel1D(int kernelSize)
+    {
+        var kernel = new float[kernelSize];
+        if (kernelSize <= 1)
+        {
+            kernel[0] = 1f;
+            return kernel;
+        }
+
+        var radius = kernelSize / 2;
+        var sigma = 0.3f * ((kernelSize - 1) * 0.5f - 1f) + 0.8f;
+        sigma = Mathf.Max(1e-3f, sigma);
+        var invTwoSigmaSq = 1f / (2f * sigma * sigma);
+        var sum = 0f;
+        for (var i = 0; i < kernelSize; i++)
+        {
+            var x = i - radius;
+            var w = Mathf.Exp(-(x * x) * invTwoSigmaSq);
+            kernel[i] = w;
+            sum += w;
+        }
+
+        if (sum > 1e-8f)
+        {
+            var inv = 1f / sum;
+            for (var i = 0; i < kernel.Length; i++)
+                kernel[i] *= inv;
+        }
+
+        return kernel;
+    }
+
+    private static int Reflect101Index(int index, int size)
+    {
+        if (size <= 1)
+            return 0;
+
+        while (index < 0 || index >= size)
+        {
+            if (index < 0)
+                index = -index;
+            else
+                index = size * 2 - index - 2;
+        }
+
+        return index;
+    }
+
+    private static void BlendPastedFace(Color32[] basePixels, Color32[] pastedFace, float[] softMask, RectInt bounds, int imageW)
+    {
+        if (basePixels == null || pastedFace == null || softMask == null)
+            return;
+
+        for (var y = bounds.yMin; y < bounds.yMax; y++)
+        {
+            for (var x = bounds.xMin; x < bounds.xMax; x++)
+            {
+                var idx = y * imageW + x;
+                var alpha = Mathf.Clamp01(softMask[idx]);
+                if (alpha <= 1e-5f)
+                    continue;
+
+                var face = pastedFace[idx];
+                var src = basePixels[idx];
+                basePixels[idx] = new Color32(
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(src.r * (1f - alpha) + face.r * alpha), 0, 255),
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(src.g * (1f - alpha) + face.g * alpha), 0, 255),
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(src.b * (1f - alpha) + face.b * alpha), 0, 255),
+                    255);
+            }
+        }
     }
 
     private static Vector2[] ResolveAlignmentLandmarks(FaceRegionFace face, int imgW, int imgH)
