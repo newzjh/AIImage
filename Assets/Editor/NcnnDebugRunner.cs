@@ -10,6 +10,8 @@ public static class NcnnDebugRunner
 {
     private const string DebugInputEnvVar = "AIIMAGE_DEBUG_INPUT";
     private const string FaceBufferPathEnvVar = "AIIMAGE_FACE_BUFFER_PATH";
+    private const string FaceProbThresholdEnvVar = "AIIMAGE_FACE_PROB_THRESHOLD";
+    private const string FaceNmsThresholdEnvVar = "AIIMAGE_FACE_NMS_THRESHOLD";
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
 
@@ -47,6 +49,7 @@ public static class NcnnDebugRunner
             var face = go.AddComponent<NcnnFaceRegionGenerator>();
             face.enableNcnnFaceRegion = true;
             face.preferTexturePathForFaceDetector = ResolveFacePreferTexturePath();
+            ApplyFaceThresholdOverrides(face);
             face.enableDetailedProposalDump = true;
             face.autoOpenDumpDir = false;
             var result = await face.GenerateAsync(tex, true, CancellationToken.None);
@@ -139,6 +142,7 @@ public static class NcnnDebugRunner
             var face = go.AddComponent<NcnnFaceRegionGenerator>();
             face.enableNcnnFaceRegion = true;
             face.preferTexturePathForFaceDetector = ResolveFacePreferTexturePath();
+            ApplyFaceThresholdOverrides(face);
             face.enableDetailedProposalDump = true;
             face.autoOpenDumpDir = false;
             var result = await face.GenerateAsync(tex, true, CancellationToken.None);
@@ -216,6 +220,33 @@ public static class NcnnDebugRunner
         catch
         {
             return true;
+        }
+    }
+
+    private static void ApplyFaceThresholdOverrides(NcnnFaceRegionGenerator face)
+    {
+        if (face == null)
+            return;
+
+        if (TryReadFloatEnv(FaceProbThresholdEnvVar, out var prob))
+            face.probThreshold = Mathf.Clamp(prob, 0.01f, 0.99f);
+        if (TryReadFloatEnv(FaceNmsThresholdEnvVar, out var nms))
+            face.nmsThreshold = Mathf.Clamp01(nms);
+    }
+
+    private static bool TryReadFloatEnv(string envName, out float value)
+    {
+        value = 0f;
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(env))
+                return false;
+            return float.TryParse(env.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value);
+        }
+        catch
+        {
+            return false;
         }
     }
 

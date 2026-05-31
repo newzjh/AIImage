@@ -123,7 +123,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public string paramRelativePath = "CodeFormer/models/yolov7-lite-e.param";
     public string binRelativePath = "CodeFormer/models/yolov7-lite-e.bin";
     public int inputSize = 640;
-    public float probThreshold = 0.5f;
+    public float probThreshold = 0.35f;
     public float nmsThreshold = 0.65f;
     public float maskRectExpand = 0.18f;
     public float maskSoftness = 0.10f;
