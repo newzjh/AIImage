@@ -171,9 +171,11 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         try
         {
             ct.ThrowIfCancellationRequested();
-            NcnnGpuResourceTracker.Enabled = dumpDebug;
             if (dumpDebug)
+            {
+                NcnnGpuResourceTracker.Enabled = true;
                 NcnnGpuResourceTracker.Reset("NcnnFaceRegionGenerator");
+            }
 
             var prep = BuildLetterbox(src, Mathf.Max(64, inputSize));
             letterbox = prep.texture;
@@ -438,7 +440,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         finally
         {
             if (letterbox != null)
-                Destroy(letterbox);
+                DestroyObjectSafe(letterbox);
             if (inputPack4 != null)
                 _repro?.ReturnTempArray(inputPack4);
             _repro?.ClearTempPool();
@@ -1347,7 +1349,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             outTex.SetPixels32(colors);
             outTex.Apply(false, false);
             File.WriteAllBytes(Path.Combine(dir, fileName), outTex.EncodeToPNG());
-            Destroy(outTex);
+            DestroyObjectSafe(outTex);
         }
         catch
         {
@@ -1371,11 +1373,21 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             }
             tex.Apply(false, false);
             File.WriteAllBytes(Path.Combine(dir, fileName), tex.EncodeToPNG());
-            Destroy(tex);
+            DestroyObjectSafe(tex);
         }
         catch
         {
         }
+    }
+
+    private static void DestroyObjectSafe(UnityEngine.Object obj)
+    {
+        if (obj == null)
+            return;
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
     }
 
     private static void DrawRect(Texture2D tex, RectInt rect, Color32 color)

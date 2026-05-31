@@ -394,7 +394,15 @@ namespace NcnnCompute
 
                 foreach (var owned in _tempOwned)
                 {
-                    try { owned?.Dispose(); } catch { }
+                    try
+                    {
+                        if (owned is ComputeBuffer tempBuffer)
+                            NcnnGpuResourceTracker.ReleaseBuffer(tempBuffer, "NcnnRepro2.InferResult.Dispose(tempOwned)");
+                        owned?.Dispose();
+                    }
+                    catch
+                    {
+                    }
                 }
 
                 foreach (var kv in _bufferRefs)

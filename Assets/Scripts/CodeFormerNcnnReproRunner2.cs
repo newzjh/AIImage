@@ -546,6 +546,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
             using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, bufferInputs, generatorPinned))
             {
+                RenderTexture outputTex = null;
+                RenderTexture clipTex = null;
                 if (enableDebugDump)
                 {
                     stage = "dump generator stages";
@@ -586,7 +588,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 }
 
                 stage = "extract generator blob out";
-                var outputTex = generatorResult.ExtractTexture("out");
+                outputTex = generatorResult.ExtractTexture("out");
                 if (outputTex == null)
                 {
                     return new CodeFormer512RunResult { error = "CodeFormer(repro2) generator output blob 'out' is null", dumpDir = dumpDir };
@@ -600,7 +602,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 }
 
                 stage = "clip generator output";
-                var clipTex = _generatorRepro.RentTempArray(outputTex.width, outputTex.height, 1, RenderTextureFormat.ARGBHalf);
+                clipTex = _generatorRepro.RentTempArray(outputTex.width, outputTex.height, 1, RenderTextureFormat.ARGBHalf);
                 _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex);
 
                 stage = "convert output to RGB";
@@ -615,7 +617,16 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     TryOpenFolderInShell(dumpDir);
                 }
 
-                _generatorRepro.ReturnTempArray(clipTex);
+                if (clipTex != null)
+                {
+                    _generatorRepro.ReturnTempArray(clipTex);
+                    clipTex = null;
+                }
+                if (outputTex != null)
+                {
+                    _generatorRepro.ReturnTempArray(outputTex);
+                    outputTex = null;
+                }
             }
 
             return new CodeFormer512RunResult { texture = restored, dumpDir = dumpDir };
