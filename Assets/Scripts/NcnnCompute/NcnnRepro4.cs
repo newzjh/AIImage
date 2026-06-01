@@ -171,6 +171,8 @@ namespace NcnnCompute
             public int broadcastTypeC;
             public ComputeBuffer bData;
             public ComputeBuffer cData;
+            public float[] bDataCpu;
+            public float[] cDataCpu;
 
             public void Dispose()
             {
@@ -458,6 +460,8 @@ namespace NcnnCompute
         }
 
         public NcnnParamModel Model { get; private set; }
+        public bool ForceBufferBinaryOpAll { get; set; }
+        public bool ForceBufferGeluAll { get; set; }
 
         private readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
         private readonly Dictionary<string, InnerProductPack> _innerProduct = new Dictionary<string, InnerProductPack>(StringComparer.Ordinal);
@@ -489,6 +493,7 @@ namespace NcnnCompute
 
         public bool EnableWinograd23 { get; set; }
         public bool PreferTexturePathForFaceDetector { get; set; }
+        public bool ForceBufferConvolutionAll { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
         public ISet<string> DebugCompareTextureLayers { get; set; }
         public Action<string> DebugLog { get; set; }
@@ -657,6 +662,7 @@ namespace NcnnCompute
                     var bw = gp.transB ? gp.constantK : gp.constantN;
                     var bh = gp.transB ? gp.constantN : gp.constantK;
                     var b = ReadClipMatAsFloat32(br, bw, bh, 0, 0, 0);
+                    gp.bDataCpu = b;
                     gp.bData = NewBuffer(b);
 
                     if (gp.constantC && gp.broadcastTypeC != -1)
@@ -675,6 +681,7 @@ namespace NcnnCompute
                         }
 
                         var c = ReadClipMatAsFloat32(br, cw, ch, 0, 0, 0);
+                        gp.cDataCpu = c;
                         gp.cData = NewBuffer(c);
                     }
 
@@ -1617,7 +1624,8 @@ namespace NcnnCompute
                         throw new InvalidOperationException("Gemm input K mismatch: " + layer.name + " | " + k + " vs " + gp.constantK);
 
                     var outBuf = new ComputeBuffer(m * n, sizeof(float), ComputeBufferType.Structured);
-                    _ops.Gemm2D(srcBuf, gp.bData, gp.cData, m, n, k, gp.transB, gp.alpha, gp.beta, gp.constantC && gp.broadcastTypeC != -1, gp.broadcastTypeC, outBuf);
+                    var outData = RunGemmCpu(srcBuf, srcView, gp);
+                    outBuf.SetData(outData);
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf);
                     bufferViews[layer.topNames[0]] = m == 1 && srcView.dims == 1
@@ -1682,7 +1690,7 @@ namespace NcnnCompute
                                                     && conv.packedDepthWiseWeight4 != null
                                                     && conv.packedBias4 != null;
 
-                    if (conv.useBufferPath && !canUseDepthWiseTexturePath)
+                    if (ForceBufferConvolutionAll || (conv.useBufferPath && !canUseDepthWiseTexturePath))
                     {
                         if (PreferTexturePathForFaceDetector
                             && string.Equals(layer.bottomNames[0], "images", StringComparison.Ordinal) == false
@@ -1892,7 +1900,8 @@ TextureConvPath:
                             : string.Equals(layer.name, CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
                         var isCodeFormerSftMul = opType == 2 && isTargetSftMulLayer;
 
-                        if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aTexShape)
+                        if (!ForceBufferBinaryOpAll
+                            && TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aTexShape)
                             && TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var bTex, out var bTexShape)
                             && CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
                         {
@@ -1981,6 +1990,21 @@ TextureConvPath:
                                     bBuf = expandedB;
                                     bView = expandedBView;
                                     tempOwned.Add(expandedB);
+                                }
+                            }
+                            else if (aView != null && bView != null && aView.dims == 3 && bView.dims == 3)
+                            {
+                                if (TryExpand3DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
+                                {
+                                    bBuf = expandedB;
+                                    bView = expandedBView;
+                                    tempOwned.Add(expandedB);
+                                }
+                                else if (TryExpand3DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
+                                {
+                                    aBuf = expandedA;
+                                    aView = expandedAView;
+                                    tempOwned.Add(expandedA);
                                 }
                             }
 
@@ -2095,7 +2119,8 @@ TextureConvPath:
 
                 if (string.Equals(layer.type, "GELU", StringComparison.Ordinal))
                 {
-                    if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                    if (!ForceBufferGeluAll
+                        && TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
                     {
                         var outRt = RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
                         _ops.GeluPack4(srcTex.texture, srcTex.packs, false, outRt);
@@ -2108,7 +2133,15 @@ TextureConvPath:
                         if (srcBuf == null)
                             throw new InvalidOperationException("GELU source not found: " + layer.name);
                         var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
-                        _ops.GeluBuf(srcBuf, srcBuf.count, outBuf);
+                        var srcData = ReadFloatBuffer(srcBuf);
+                        var outData = new float[srcData.Length];
+                        for (var i = 0; i < srcData.Length; i++)
+                        {
+                            var x = srcData[i];
+                            var t = 0.7978845608f * (x + 0.044715f * x * x * x);
+                            outData[i] = 0.5f * x * (1f + (float)Math.Tanh(t));
+                        }
+                        outBuf.SetData(outData);
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (srcView != null)
                             bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
@@ -2671,6 +2704,70 @@ TextureConvPath:
             }
         }
 
+        private static float[] ReadFloatBuffer(ComputeBuffer buffer)
+        {
+            if (buffer == null)
+                throw new ArgumentNullException(nameof(buffer));
+            var data = new float[buffer.count];
+            buffer.GetData(data);
+            return data;
+        }
+
+        private static float[] RunGemmCpu(ComputeBuffer aBuf, NcnnTensorBuffer aView, GemmPack gp)
+        {
+            if (aBuf == null)
+                throw new ArgumentNullException(nameof(aBuf));
+            if (aView == null)
+                throw new ArgumentNullException(nameof(aView));
+            if (gp == null || gp.bDataCpu == null)
+                throw new ArgumentNullException(nameof(gp));
+
+            var m = aView.dims == 1 ? 1 : aView.h;
+            var k = aView.w;
+            var n = gp.constantN;
+            var a = ReadFloatBuffer(aBuf);
+            var b = gp.bDataCpu;
+            var c = gp.cDataCpu;
+            var output = new float[m * n];
+
+            for (var row = 0; row < m; row++)
+            {
+                var aBase = row * k;
+                for (var col = 0; col < n; col++)
+                {
+                    double sum = 0.0;
+                    for (var kk = 0; kk < k; kk++)
+                    {
+                        var aValue = a[aBase + kk];
+                        var bValue = gp.transB
+                            ? b[col * k + kk]
+                            : b[kk * n + col];
+                        sum += (double)aValue * bValue;
+                    }
+
+                    var value = gp.alpha * (float)sum;
+                    if (gp.constantC && c != null && gp.broadcastTypeC != -1)
+                    {
+                        float cValue;
+                        switch (gp.broadcastTypeC)
+                        {
+                            case 0: cValue = c[0]; break;
+                            case 1: cValue = c[row]; break;
+                            case 2: cValue = c[row]; break;
+                            case 3: cValue = c[row * n + col]; break;
+                            case 4: cValue = c[col]; break;
+                            default: cValue = 0f; break;
+                        }
+                        value += gp.beta * cValue;
+                    }
+
+                    output[row * n + col] = value;
+                }
+            }
+
+            return output;
+        }
+
         private NcnnTensorBuffer RunMatMulLayer(ComputeBuffer aBuf, NcnnTensorBuffer aView, ComputeBuffer bBuf, NcnnTensorBuffer bView, bool transB)
         {
             static void GetMatrixShape(NcnnTensorBuffer view, out int rows, out int cols)
@@ -2709,31 +2806,62 @@ TextureConvPath:
             if (batchB != 1 && batchB != batch)
                 throw new InvalidOperationException("MatMul batchB mismatch: " + batchB + " vs " + batch);
 
-            if (batch == 1)
-            {
-                var outTensor2D = new NcnnTensorBuffer(n, aRows);
-                _ops.MatMul2D(aBuf, bBuf, aRows, n, k, transB, outTensor2D.buffer);
-                return outTensor2D;
-            }
-
+            var a = ReadFloatBuffer(aBuf);
+            var b = ReadFloatBuffer(bBuf);
             var aCount = aRows * aCols;
             var bCount = bRows * bCols;
             var outCount = aRows * n;
-            var outTensor = new NcnnTensorBuffer(n, aRows, batch);
 
-            using var aSlice = new ComputeBuffer(aCount, sizeof(float), ComputeBufferType.Structured);
-            using var bSlice = new ComputeBuffer(bCount, sizeof(float), ComputeBufferType.Structured);
-            using var outSlice = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+            if (batch == 1)
+            {
+                var outTensor2D = new NcnnTensorBuffer(n, aRows);
+                var outData2D = new float[outCount];
+                for (var row = 0; row < aRows; row++)
+                {
+                    var aBase = row * aCols;
+                    for (var col = 0; col < n; col++)
+                    {
+                        double sum = 0.0;
+                        for (var kk = 0; kk < k; kk++)
+                        {
+                            var aValue = a[aBase + kk];
+                            var bValue = transB
+                                ? b[col * bCols + kk]
+                                : b[kk * bCols + col];
+                            sum += (double)aValue * bValue;
+                        }
+                        outData2D[row * n + col] = (float)sum;
+                    }
+                }
+                outTensor2D.buffer.SetData(outData2D);
+                return outTensor2D;
+            }
+
+            var outTensor = new NcnnTensorBuffer(n, aRows, batch);
+            var outData = new float[outCount * batch];
             for (var p = 0; p < batch; p++)
             {
                 var aOffset = (batchA == 1 ? 0 : p) * aCount;
                 var bOffset = (batchB == 1 ? 0 : p) * bCount;
-                _ops.CopyBufPartial(aBuf, aOffset, aSlice, aCount);
-                _ops.CopyBufPartial(bBuf, bOffset, bSlice, bCount);
-                _ops.MatMul2D(aSlice, bSlice, aRows, n, k, transB, outSlice);
-                _ops.CopyBufPartial(outSlice, 0, outTensor.buffer, outCount, p * outCount);
+                for (var row = 0; row < aRows; row++)
+                {
+                    var aBase = aOffset + row * aCols;
+                    for (var col = 0; col < n; col++)
+                    {
+                        double sum = 0.0;
+                        for (var kk = 0; kk < k; kk++)
+                        {
+                            var aValue = a[aBase + kk];
+                            var bIndex = transB
+                                ? bOffset + col * bCols + kk
+                                : bOffset + kk * bCols + col;
+                            sum += (double)aValue * b[bIndex];
+                        }
+                        outData[p * outCount + row * n + col] = (float)sum;
+                    }
+                }
             }
-
+            outTensor.buffer.SetData(outData);
             return outTensor;
         }
 
@@ -3315,6 +3443,45 @@ TextureConvPath:
             return true;
         }
 
+        private static bool TryExpand3DBroadcastBuffer(
+            ComputeBuffer sourceBuffer,
+            NcnnTensorBuffer sourceView,
+            NcnnTensorBuffer targetView,
+            out ComputeBuffer expandedBuffer,
+            out NcnnTensorBuffer expandedView)
+        {
+            expandedBuffer = null;
+            expandedView = null;
+
+            if (sourceBuffer == null || sourceView == null || targetView == null)
+                return false;
+            if (sourceView.dims != 3 || targetView.dims != 3)
+                return false;
+            if (sourceView.w == targetView.w && sourceView.h == targetView.h && sourceView.c == targetView.c)
+                return false;
+
+            // Common CLIP image path broadcast: [1,1,C] op [W,H,C].
+            if (!(sourceView.w == 1 && sourceView.h == 1 && sourceView.c == targetView.c))
+                return false;
+
+            var srcData = new float[sourceBuffer.count];
+            sourceBuffer.GetData(srcData);
+            var expandedData = new float[targetView.w * targetView.h * targetView.c];
+            var plane = targetView.w * targetView.h;
+            for (var c = 0; c < targetView.c; c++)
+            {
+                var value = srcData[c];
+                var dstBase = c * plane;
+                for (var i = 0; i < plane; i++)
+                    expandedData[dstBase + i] = value;
+            }
+
+            expandedBuffer = new ComputeBuffer(expandedData.Length, sizeof(float), ComputeBufferType.Structured);
+            expandedBuffer.SetData(expandedData);
+            expandedView = new NcnnTensorBuffer(expandedBuffer, 3, targetView.w, targetView.h, 1, targetView.c, false);
+            return true;
+        }
+
         public static Dictionary<string, int> BuildBlobUseCount(NcnnParamModel model)
         {
             var use = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -3456,6 +3623,10 @@ TextureConvPath:
                     return;
                 }
 
+                LogBufferStats(layerName, "src", srcBuf, srcTensor.w * srcTensor.h * srcTensor.d * srcTensor.c);
+                LogBufferStats(layerName, "weight", conv.rawWeight, conv.weightSize);
+                LogBufferStats(layerName, "bias", conv.rawBias, conv.outC);
+
                 using var refTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
                 if (conv.isDepthWise || conv.group > 1 || conv.kernelW != 3 || conv.kernelH != 3 || conv.strideW != conv.strideH || conv.padLeft != conv.padTop)
                 {
@@ -3539,6 +3710,59 @@ TextureConvPath:
             {
                 DebugLog?.Invoke(layerName + " | compare failed: " + e.Message);
             }
+        }
+
+        private void LogBufferStats(string layerName, string kind, ComputeBuffer buffer, int logicalCount)
+        {
+            if (DebugLog == null || buffer == null)
+                return;
+
+            var count = logicalCount > 0 ? Mathf.Min(logicalCount, buffer.count) : buffer.count;
+            if (count <= 0)
+            {
+                DebugLog(layerName + " | " + kind + " count=0");
+                return;
+            }
+
+            var data = new float[count];
+            buffer.GetData(data, 0, 0, count);
+
+            var finite = 0;
+            var nan = 0;
+            var inf = 0;
+            var min = float.PositiveInfinity;
+            var max = float.NegativeInfinity;
+            var preview = new List<string>(4);
+            for (var i = 0; i < data.Length; i++)
+            {
+                var v = data[i];
+                if (float.IsNaN(v))
+                {
+                    nan++;
+                }
+                else if (float.IsInfinity(v))
+                {
+                    inf++;
+                }
+                else
+                {
+                    finite++;
+                    if (v < min) min = v;
+                    if (v > max) max = v;
+                }
+
+                if (preview.Count < 4)
+                    preview.Add(v.ToString("G9", CultureInfo.InvariantCulture));
+            }
+
+            DebugLog(layerName
+                + " | " + kind
+                + " finite=" + finite
+                + " nan=" + nan
+                + " inf=" + inf
+                + " min=" + (finite > 0 ? min.ToString("G9", CultureInfo.InvariantCulture) : "NaN")
+                + " max=" + (finite > 0 ? max.ToString("G9", CultureInfo.InvariantCulture) : "NaN")
+                + " sample=" + string.Join(",", preview));
         }
     }
 }

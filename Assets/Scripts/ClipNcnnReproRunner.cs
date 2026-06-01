@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
+using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
 using UnityEngine;
@@ -43,6 +44,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private const string InputBlobName = "in0";
     private const string OutputBlobName = "out0";
     private const int EmbeddingSize = 512;
+    private static readonly string[] DebugTextBlobNames = { "1", "3", "6", "7", "17", "18", "19", "22", "23", "24", "26", "27", "28", "29", "30", "57", "84", "111", "138", "165", "192", "219", "246", "273", "300", "320", "327", "out0" };
+    private static readonly string[] DebugImageBlobNames = { "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140", "141", "142", "143", "144", "145", "146", "147", "148", "149", "150", "151", "152", "153", "154", "155", "156", "157", "158", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "170", "171", "172", "173", "177", "178", "179", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189", "190", "191", "341", "343", "348", "349", "350", "351", "352", "353", "354", "355", "356", "357", "358", "359", "360", "361", "363", "366", "367", "368", "369", "370", "371", "372", "373", "376", "377", "378", "379", "380", "381", "382", "383", "384", "385", "386", "387", "388", "389", "390", "391", "392", "393", "396", "397", "398", "399", "414", "434", "449", "469", "484", "504", "519", "541", "out0" };
+    private static readonly string[] DebugImageCompareLayers = { "convdw_253", "convdw_254", "conv_41", "conv_42", "convdw_255", "convdw_256", "conv_43", "conv_44", "convdw_257", "convdw_258", "conv_45", "conv_46", "convdw_259", "convrelu_0", "convsigmoid_3", "conv_49", "convdw_260", "convdw_261", "conv_50", "conv_51", "convdw_294", "convdw_295", "conv_84", "conv_85", "convdw_296", "convdw_297", "conv_86", "conv_87", "convdw_298", "convdw_299", "conv_88", "conv_89", "convdw_300" };
 
     public ClipModelLevel modelLevel = ClipModelLevel.S1;
     public string clipRootRelativePath = "Clip";
@@ -73,6 +77,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private ClipLabelScore[] _cachedTextScores;
     private float[][] _cachedTextEmbeddings;
     private string _lastDumpDir;
+    private List<string> _imageCompareLines;
 
     public string LastDumpDir => _lastDumpDir;
 
@@ -106,6 +111,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         {
             EnsureRuntimeObjects();
             ApplyReproOptions();
+            if (enableDebugDump && string.IsNullOrWhiteSpace(_lastDumpDir))
+                _lastDumpDir = CreateDumpDir();
             await EnsureLoaded(ct);
             if (_cachedTextEmbeddings == null || _cachedTextEmbeddings.Length == 0)
                 return Finish(new ClipClassificationResult { error = "CLIP text embeddings unavailable" });
@@ -127,14 +134,25 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             ct.ThrowIfCancellationRequested();
 
             float[] imageEmbedding;
-            using (var infer = _imageRepro.Infer(inputPack4, 1, InputBlobName))
+            System.Collections.Generic.HashSet<string> pinnedImage = null;
+            if (enableDebugDump)
+                pinnedImage = new System.Collections.Generic.HashSet<string>(DebugImageBlobNames, StringComparer.Ordinal);
+
+            using (var infer = _imageRepro.Infer(inputPack4, 1, InputBlobName, pinnedImage))
             {
+                if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                {
+                    for (var i = 0; i < DebugImageBlobNames.Length; i++)
+                        TryDumpAnyBlob(infer, DebugImageBlobNames[i], Path.Combine(_lastDumpDir, "image_blob_" + DebugImageBlobNames[i] + ".txt"));
+                }
                 imageEmbedding = infer.GetBufferData(OutputBlobName);
             }
 
             if (imageEmbedding == null || imageEmbedding.Length != EmbeddingSize)
                 return Finish(new ClipClassificationResult { error = "Image embedding missing or invalid" });
             NormalizeInPlace(imageEmbedding);
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpVector(_lastDumpDir, "image_embedding.txt", imageEmbedding);
 
             ReportProgress(0.72f, "Score labels");
             await UniTask.Yield();
@@ -161,10 +179,11 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
             Array.Sort(scores, (a, b) => b.probability.CompareTo(a.probability));
 
-            if (enableDebugDump)
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             {
-                _lastDumpDir = CreateDumpDir();
                 DumpScores(_lastDumpDir, modelLevel, scores);
+                if (_imageCompareLines != null && _imageCompareLines.Count > 0)
+                    File.WriteAllLines(Path.Combine(_lastDumpDir, "image_conv_compare.txt"), _imageCompareLines);
             }
 
             ReportProgress(1f, string.Empty);
@@ -206,6 +225,29 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ApplyOptions(_imageRepro);
         ApplyOptions(_textRepro);
         ApplyOptions(_projectionRepro);
+        if (_imageRepro != null)
+        {
+            _imageRepro.EnableWinograd23 = false;
+            _imageRepro.ForceBufferConvolutionAll = enableDebugDump;
+            _imageRepro.ForceBufferBinaryOpAll = enableDebugDump;
+            _imageRepro.ForceBufferGeluAll = enableDebugDump;
+            if (enableDebugDump)
+            {
+                _imageRepro.DebugCompareTextureLayers = new HashSet<string>(DebugImageCompareLayers, StringComparer.Ordinal);
+                _imageCompareLines = new List<string>();
+                _imageRepro.DebugLog = line =>
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
+                        _imageCompareLines.Add(line);
+                };
+            }
+            else
+            {
+                _imageRepro.DebugCompareTextureLayers = null;
+                _imageRepro.DebugLog = null;
+                _imageCompareLines = null;
+            }
+        }
     }
 
     private void ApplyOptions(NcnnRepro4 repro)
@@ -214,6 +256,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             return;
         repro.EnableTempPool = enableTempPool;
         repro.MaxPooledPerShape = maxPooledPerShape;
+        repro.ForceBufferConvolutionAll = false;
     }
 
     private async UniTask EnsureLoaded(CancellationToken ct)
@@ -255,6 +298,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             await UniTask.Yield();
             _cachedTextScores[i] = new ClipLabelScore { label = def.label.Trim(), prompt = def.prompt.Trim() };
             _cachedTextEmbeddings[i] = await EncodeTextAsync(def.prompt.Trim(), ct);
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpVector(_lastDumpDir, "text_embedding_" + SanitizeFileName(def.label.Trim()) + ".txt", _cachedTextEmbeddings[i]);
         }
     }
 
@@ -266,10 +311,20 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         using var tokenBuffer = new ComputeBuffer(tokens.Length, sizeof(int), ComputeBufferType.Structured);
         tokenBuffer.SetData(tokens);
         var tokenView = new NcnnTensorBuffer(tokenBuffer, 1, tokens.Length, 1, 1, 1, false);
+        System.Collections.Generic.HashSet<string> pinned = null;
+        if (enableDebugDump)
+            pinned = new System.Collections.Generic.HashSet<string>(DebugTextBlobNames, StringComparer.Ordinal);
+
         using var infer = _textRepro.InferWithMultiInputs(null, new System.Collections.Generic.Dictionary<string, NcnnTensorBuffer>
         {
             { InputBlobName, tokenView }
-        });
+        }, pinned);
+
+        if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+        {
+            for (var i = 0; i < DebugTextBlobNames.Length; i++)
+                TryDumpAnyBlob(infer, DebugTextBlobNames[i], Path.Combine(_lastDumpDir, "text_blob_" + DebugTextBlobNames[i] + ".txt"));
+        }
 
         var textOutput = infer.GetBufferData(OutputBlobName);
         if (textOutput == null || textOutput.Length != EmbeddingSize * tokens.Length)
@@ -417,6 +472,98 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 + scores[i].probability.ToString("0.000000", CultureInfo.InvariantCulture) + "\t"
                 + scores[i].similarity.ToString("0.000000", CultureInfo.InvariantCulture) + "\t"
                 + scores[i].prompt);
+        }
+    }
+
+    private static void DumpVector(string dumpDir, string fileName, float[] values)
+    {
+        if (string.IsNullOrWhiteSpace(dumpDir) || string.IsNullOrWhiteSpace(fileName) || values == null)
+            return;
+
+        using var sw = new StreamWriter(Path.Combine(dumpDir, fileName), false);
+        var finiteCount = 0;
+        var nanCount = 0;
+        var infCount = 0;
+        var min = float.PositiveInfinity;
+        var max = float.NegativeInfinity;
+        for (var i = 0; i < values.Length; i++)
+        {
+            var v = values[i];
+            if (float.IsNaN(v))
+            {
+                nanCount++;
+                continue;
+            }
+            if (float.IsInfinity(v))
+            {
+                infCount++;
+                continue;
+            }
+            finiteCount++;
+            min = Mathf.Min(min, v);
+            max = Mathf.Max(max, v);
+        }
+
+        sw.WriteLine("count=" + values.Length);
+        sw.WriteLine("finite=" + finiteCount);
+        sw.WriteLine("nan=" + nanCount);
+        sw.WriteLine("inf=" + infCount);
+        sw.WriteLine("min=" + (finiteCount > 0 ? min.ToString("R", CultureInfo.InvariantCulture) : "NaN"));
+        sw.WriteLine("max=" + (finiteCount > 0 ? max.ToString("R", CultureInfo.InvariantCulture) : "NaN"));
+        for (var i = 0; i < values.Length; i++)
+            sw.WriteLine(i.ToString(CultureInfo.InvariantCulture) + "\t" + values[i].ToString("R", CultureInfo.InvariantCulture));
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "unnamed";
+        var s = value;
+        foreach (var ch in Path.GetInvalidFileNameChars())
+            s = s.Replace(ch, '_');
+        return s.Replace(' ', '_');
+    }
+
+    private void TryDumpAnyBlob(NcnnRepro4.InferResult infer, string blobName, string path)
+    {
+        if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
+            return;
+        try
+        {
+            float[] values = null;
+            try
+            {
+                values = infer.GetBufferData(blobName);
+            }
+            catch
+            {
+                if (infer.TryGetLogicalShape(blobName, out _, out var w, out var h, out var d, out var c))
+                {
+                    var texture = infer.GetTexture(blobName);
+                    if (texture != null)
+                    {
+                        var packs = texture.volumeDepth > 0 ? texture.volumeDepth : 1;
+                        var physicalChannels = packs * 4;
+                        var physicalCount = texture.width * texture.height * physicalChannels;
+                        using var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
+                        _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, physicalChannels, physicalBuffer);
+                        var physical = new float[physicalCount];
+                        physicalBuffer.GetData(physical);
+                        var logicalCount = w * h * d * c;
+                        values = new float[Mathf.Min(logicalCount, physicalCount)];
+                        Array.Copy(physical, values, values.Length);
+                    }
+                }
+            }
+            if (values == null)
+                return;
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+            DumpVector(dir, Path.GetFileName(path), values);
+        }
+        catch
+        {
         }
     }
 

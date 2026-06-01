@@ -2182,12 +2182,8 @@ void NcnnGeluPack4(uint3 id : SV_DispatchThreadID)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
     float4 x = _ActInArr[int3((int)id.x, (int)id.y, p)];
-    float4 y = x;
-    if (_GeluFast != 0)
-    {
-        float4 x3 = x * x * x;
-        y = 0.5 * x * (1.0 + tanh(0.79788452 * (x + 0.044715 * x3)));
-    }
+    float4 x3 = x * x * x;
+    float4 y = 0.5 * x * (1.0 + tanh(0.79788452 * (x + 0.044715 * x3)));
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
