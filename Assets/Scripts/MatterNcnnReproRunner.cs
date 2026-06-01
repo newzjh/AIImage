@@ -26,12 +26,17 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public int refSize = 512;
     public bool preserveAspectRatioInput = false;
     public bool useArgbFloatTensor = true;
-    public bool forceBufferConvolution = true;
+    public bool forceBufferConvolution = false;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
-    public bool enableWinograd23 = true;
+    public bool enableWinograd23 = false;
+    public bool enableForegroundCleanup = true;
+    [Range(0f, 1f)] public float foregroundCleanupThreshold = 0.05f;
+    [Range(0, 4)] public int foregroundCleanupCloseRadius = 2;
     public Color32 compositeBackgroundColor = new Color32(120, 255, 155, 255);
     public bool enableDebugDump = false;
+    public bool enableTextureConvCompare = false;
+    public bool enableMaxPoolingCompare = false;
     public string[] debugBlobNames =
     {
         "500", "523", "554", "599", "623", "632",
@@ -40,6 +45,14 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         "637", "651", "677", "703", "722",
         "741", "762", "791", "820", "846",
         "local"
+    };
+    public string[] debugCompareTextureConvLayers =
+    {
+        "*"
+    };
+    public string[] debugCompareMaxPoolingLayers =
+    {
+        "MaxPool_19", "MaxPool_41"
     };
 
     public event Action<float, string> ProgressChanged;
@@ -81,6 +94,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         RenderTexture matteFullResPack4 = null;
         Texture2D readableSrc = null;
         _lastDumpDir = null;
+        List<string> textureConvCompareLines = null;
 
         try
         {
@@ -112,14 +126,57 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 pinned.Add(OutputBlobName);
             }
 
+            if (enableDebugDump)
+            {
+                _lastDumpDir = CreateDumpDir();
+            }
+
+            if (enableTextureConvCompare && !forceBufferConvolution)
+            {
+                textureConvCompareLines = new List<string>();
+                _repro.DebugCompareTextureConvLayers = new HashSet<string>(debugCompareTextureConvLayers ?? Array.Empty<string>(), StringComparer.Ordinal);
+                _repro.DebugLog = line =>
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
+                        textureConvCompareLines.Add(line);
+                };
+            }
+            else
+            {
+                _repro.DebugCompareTextureConvLayers = null;
+                _repro.DebugLog = null;
+            }
+
+            if (enableMaxPoolingCompare)
+            {
+                _repro.DebugCompareMaxPoolingLayers = new HashSet<string>(debugCompareMaxPoolingLayers ?? Array.Empty<string>(), StringComparer.Ordinal);
+                if (_repro.DebugLog == null)
+                {
+                    textureConvCompareLines ??= new List<string>();
+                    _repro.DebugLog = line =>
+                    {
+                        if (!string.IsNullOrWhiteSpace(line))
+                            textureConvCompareLines.Add(line);
+                    };
+                }
+            }
+            else
+            {
+                _repro.DebugCompareMaxPoolingLayers = null;
+            }
+
             using (var infer = _repro.Infer(inputPack4, 1, "input", pinned))
             {
                 if (enableDebugDump && pinned != null && pinned.Count > 0)
                 {
-                    _lastDumpDir = CreateDumpDir();
                     DumpPinnedBlobStats(infer, _lastDumpDir, pinned);
                 }
                 mattePack4 = infer.ExtractTexture(OutputBlobName);
+            }
+
+            if (enableDebugDump && textureConvCompareLines != null && textureConvCompareLines.Count > 0 && !string.IsNullOrWhiteSpace(_lastDumpDir))
+            {
+                File.WriteAllLines(Path.Combine(_lastDumpDir, "conv_compare.txt"), textureConvCompareLines);
             }
 
             if (mattePack4 == null)
@@ -146,6 +203,11 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             var alpha = ReadbackSingleChannel(matteFullResPack4, originalW, originalH);
             if (alpha == null || alpha.Length != originalW * originalH)
                 return Finish(new MattingResult { error = "Read alpha failed" });
+
+            if (enableForegroundCleanup)
+            {
+                ApplyLargestForegroundCleanup(alpha, originalW, originalH, foregroundCleanupThreshold, foregroundCleanupCloseRadius);
+            }
 
             readableSrc = EnsureReadable(src);
             if (readableSrc == null)
@@ -175,6 +237,12 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _repro?.ReturnTempArray(matteFullResPack4);
             if (readableSrc != null && readableSrc != src)
                 Destroy(readableSrc);
+            if (_repro != null)
+            {
+                _repro.DebugCompareTextureConvLayers = null;
+                _repro.DebugCompareMaxPoolingLayers = null;
+                _repro.DebugLog = null;
+            }
             ReportProgress(1f, string.Empty);
         }
     }
@@ -477,6 +545,141 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         var dir = Path.Combine(root, "AIImage_MattingBlobDump_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         Directory.CreateDirectory(dir);
         return dir;
+    }
+
+    private static void ApplyLargestForegroundCleanup(float[] alpha, int width, int height, float threshold, int closeRadius)
+    {
+        if (alpha == null || alpha.Length != width * height || width <= 0 || height <= 0)
+            return;
+
+        var binary = new bool[alpha.Length];
+        for (var i = 0; i < alpha.Length; i++)
+            binary[i] = alpha[i] >= threshold;
+
+        var labels = new int[alpha.Length];
+        var queue = new int[alpha.Length];
+        var bestLabel = 0;
+        var bestArea = 0;
+        var nextLabel = 1;
+
+        for (var start = 0; start < binary.Length; start++)
+        {
+            if (!binary[start] || labels[start] != 0)
+                continue;
+
+            var head = 0;
+            var tail = 0;
+            queue[tail++] = start;
+            labels[start] = nextLabel;
+            var area = 0;
+
+            while (head < tail)
+            {
+                var index = queue[head++];
+                area++;
+                var x = index % width;
+                var y = index / width;
+
+                for (var ny = Mathf.Max(0, y - 1); ny <= Mathf.Min(height - 1, y + 1); ny++)
+                {
+                    var row = ny * width;
+                    for (var nx = Mathf.Max(0, x - 1); nx <= Mathf.Min(width - 1, x + 1); nx++)
+                    {
+                        var ni = row + nx;
+                        if (!binary[ni] || labels[ni] != 0)
+                            continue;
+                        labels[ni] = nextLabel;
+                        queue[tail++] = ni;
+                    }
+                }
+            }
+
+            if (area > bestArea)
+            {
+                bestArea = area;
+                bestLabel = nextLabel;
+            }
+
+            nextLabel++;
+        }
+
+        if (bestLabel == 0)
+            return;
+
+        var keep = new bool[alpha.Length];
+        for (var i = 0; i < keep.Length; i++)
+            keep[i] = labels[i] == bestLabel;
+
+        if (closeRadius > 0)
+            keep = MorphClose(keep, width, height, closeRadius);
+
+        for (var i = 0; i < alpha.Length; i++)
+        {
+            if (!keep[i])
+                alpha[i] = 0f;
+        }
+    }
+
+    private static bool[] MorphClose(bool[] mask, int width, int height, int radius)
+    {
+        var dilated = MorphDilate(mask, width, height, radius);
+        return MorphErode(dilated, width, height, radius);
+    }
+
+    private static bool[] MorphDilate(bool[] mask, int width, int height, int radius)
+    {
+        var result = new bool[mask.Length];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var set = false;
+                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius) && !set; ny++)
+                {
+                    var row = ny * width;
+                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
+                    {
+                        if (mask[row + nx])
+                        {
+                            set = true;
+                            break;
+                        }
+                    }
+                }
+
+                result[y * width + x] = set;
+            }
+        }
+
+        return result;
+    }
+
+    private static bool[] MorphErode(bool[] mask, int width, int height, int radius)
+    {
+        var result = new bool[mask.Length];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var keep = true;
+                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius) && keep; ny++)
+                {
+                    var row = ny * width;
+                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
+                    {
+                        if (!mask[row + nx])
+                        {
+                            keep = false;
+                            break;
+                        }
+                    }
+                }
+
+                result[y * width + x] = keep;
+            }
+        }
+
+        return result;
     }
 
     private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, RenderTextureReadWrite readWrite, bool randomWrite)

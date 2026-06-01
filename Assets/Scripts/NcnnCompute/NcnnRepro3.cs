@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -189,6 +190,9 @@ namespace NcnnCompute
         public bool EnableWinograd23 { get; set; }
         public bool ForceBufferConvolution { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        public ISet<string> DebugCompareTextureConvLayers { get; set; }
+        public ISet<string> DebugCompareMaxPoolingLayers { get; set; }
+        public Action<string> DebugLog { get; set; }
 
         public bool EnableTempPool
         {
@@ -381,6 +385,12 @@ namespace NcnnCompute
                         {
                             _ops.Conv3x3Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outRt);
                         }
+
+                        if (DebugCompareTextureConvLayers != null
+                            && (DebugCompareTextureConvLayers.Contains(layer.name) || DebugCompareTextureConvLayers.Contains("*")))
+                        {
+                            CompareTextureConvPath(layer.name, src, srcShape, conv, outRt, outW, outH);
+                        }
                     }
                     else
                     {
@@ -485,7 +495,14 @@ namespace NcnnCompute
                     var outH = Mathf.Max(1, (src.height + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
                     var outRt = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
                     var idxRt = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
-                    _ops.MaxPoolingIndPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outRt, idxRt);
+                    ApplyMaxPoolingIndCpu(src, srcShape, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH, outRt, idxRt);
+
+                    if (DebugCompareMaxPoolingLayers != null
+                        && (DebugCompareMaxPoolingLayers.Contains(layer.name) || DebugCompareMaxPoolingLayers.Contains("*")))
+                    {
+                        CompareMaxPoolingIndPath(layer.name, src, srcShape, outRt, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH);
+                    }
+
                     SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new TensorShape(outW, outH, srcShape.c));
                     indexBlobs[layer.topNames[1]] = new IndexRef
                     {
@@ -535,7 +552,7 @@ namespace NcnnCompute
                     var padTop = layer.GetInt(13, padLeft);
 
                     var outRt = RentTempArray(idx.sourceWidth, idx.sourceHeight, src.packs, RenderTextureFormat.ARGBHalf);
-                    _ops.MaxUnPoolingPack4(src.texture, idx.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outRt);
+                    ApplyMaxUnPoolingCpu(src, srcShape, idx, idx.sourceWidth, idx.sourceHeight, outRt);
                     SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new TensorShape(idx.sourceWidth, idx.sourceHeight, srcShape.c));
                     Consume(textureBlobs, indexBlobs, remaining, layer.bottomNames, pinnedNames);
                     continue;
@@ -791,6 +808,273 @@ namespace NcnnCompute
             var buffer = new ComputeBuffer(data.Length, sizeof(float), ComputeBufferType.Structured);
             buffer.SetData(data);
             return buffer;
+        }
+
+        private void CompareTextureConvPath(string layerName, TensorRef src, TensorShape srcShape, ConvPack conv, RenderTexture textureOutput, int outW, int outH)
+        {
+            try
+            {
+                var srcLogicalCount = srcShape.w * srcShape.h * srcShape.c;
+                using var srcBuffer = new ComputeBuffer(srcLogicalCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
+                var srcTensor = new NcnnTensorBuffer(srcBuffer, 3, srcShape.w, srcShape.h, 1, srcShape.c, false);
+
+                using var refTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
+                _ops.ConvDepthWise(
+                    srcTensor,
+                    conv.rawWeight,
+                    conv.rawBias,
+                    conv.outC,
+                    conv.group,
+                    conv.kernelW,
+                    conv.kernelH,
+                    conv.strideW,
+                    conv.strideH,
+                    conv.padLeft,
+                    conv.padTop,
+                    conv.dilationW,
+                    conv.dilationH,
+                    conv.activationType,
+                    conv.activationSlope,
+                    refTensor);
+
+                var logicalCount = outW * outH * conv.outC;
+                using var textureBuffer = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(textureOutput, outW, outH, conv.outC, textureBuffer);
+
+                var refData = new float[logicalCount];
+                var texData = new float[logicalCount];
+                refTensor.buffer.GetData(refData);
+                textureBuffer.GetData(texData);
+
+                double sumAbs = 0d;
+                float maxAbs = 0f;
+                var validCount = 0;
+                var refNan = 0;
+                var texNan = 0;
+                for (var i = 0; i < logicalCount; i++)
+                {
+                    var rv = refData[i];
+                    var tv = texData[i];
+                    var refFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
+                    var texFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
+                    if (!refFinite) refNan++;
+                    if (!texFinite) texNan++;
+                    if (!refFinite || !texFinite)
+                        continue;
+
+                    var diff = Mathf.Abs(rv - tv);
+                    sumAbs += diff;
+                    if (diff > maxAbs)
+                        maxAbs = diff;
+                    validCount++;
+                }
+
+                var meanAbs = validCount > 0 ? (float)(sumAbs / validCount) : float.NaN;
+                var message = new StringBuilder();
+                message.Append(layerName)
+                    .Append(" | conv_compare mean_abs=").Append(meanAbs.ToString("G9", CultureInfo.InvariantCulture))
+                    .Append(" | max_abs=").Append(maxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                    .Append(" | valid=").Append(validCount.ToString(CultureInfo.InvariantCulture))
+                    .Append(" | ref_nonfinite=").Append(refNan.ToString(CultureInfo.InvariantCulture))
+                    .Append(" | tex_nonfinite=").Append(texNan.ToString(CultureInfo.InvariantCulture))
+                    .Append(" | shape=").Append(srcShape.w).Append("x").Append(srcShape.h).Append("x").Append(srcShape.c)
+                    .Append(" -> ").Append(outW).Append("x").Append(outH).Append("x").Append(conv.outC)
+                    .Append(" | k=").Append(conv.kernelW).Append(" s=").Append(conv.strideW).Append(" p=").Append(conv.padLeft);
+                DebugLog?.Invoke(message.ToString());
+            }
+            catch (Exception e)
+            {
+                DebugLog?.Invoke(layerName + " | conv_compare failed: " + e.Message);
+            }
+        }
+
+        private void CompareMaxPoolingIndPath(string layerName, TensorRef src, TensorShape srcShape, RenderTexture textureOutput, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH)
+        {
+            try
+            {
+                var srcCount = srcShape.w * srcShape.h * srcShape.c;
+                using var srcBuffer = new ComputeBuffer(srcCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
+                var srcData = new float[srcCount];
+                srcBuffer.GetData(srcData);
+
+                var refData = new float[outW * outH * srcShape.c];
+                var srcPlane = srcShape.w * srcShape.h;
+                var outPlane = outW * outH;
+                for (var c = 0; c < srcShape.c; c++)
+                {
+                    var srcBase = c * srcPlane;
+                    var dstBase = c * outPlane;
+                    for (var oy = 0; oy < outH; oy++)
+                    {
+                        var sy0 = oy * strideH - padTop;
+                        for (var ox = 0; ox < outW; ox++)
+                        {
+                            var sx0 = ox * strideW - padLeft;
+                            var best = float.NegativeInfinity;
+                            for (var ky = 0; ky < kernelH; ky++)
+                            {
+                                var sy = sy0 + ky;
+                                if (sy < 0 || sy >= srcShape.h)
+                                    continue;
+                                for (var kx = 0; kx < kernelW; kx++)
+                                {
+                                    var sx = sx0 + kx;
+                                    if (sx < 0 || sx >= srcShape.w)
+                                        continue;
+                                    var v = srcData[srcBase + sy * srcShape.w + sx];
+                                    if (v > best)
+                                        best = v;
+                                }
+                            }
+
+                            refData[dstBase + oy * outW + ox] = best;
+                        }
+                    }
+                }
+
+                var logicalCount = outW * outH * srcShape.c;
+                using var texBuffer = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(textureOutput, outW, outH, srcShape.c, texBuffer);
+                var texData = new float[logicalCount];
+                texBuffer.GetData(texData);
+
+                double sumAbs = 0d;
+                float maxAbs = 0f;
+                var valid = 0;
+                var refNonFinite = 0;
+                var texNonFinite = 0;
+                for (var i = 0; i < logicalCount; i++)
+                {
+                    var rv = refData[i];
+                    var tv = texData[i];
+                    var rFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
+                    var tFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
+                    if (!rFinite) refNonFinite++;
+                    if (!tFinite) texNonFinite++;
+                    if (!rFinite || !tFinite)
+                        continue;
+                    var diff = Mathf.Abs(rv - tv);
+                    sumAbs += diff;
+                    if (diff > maxAbs)
+                        maxAbs = diff;
+                    valid++;
+                }
+
+                var meanAbs = valid > 0 ? (float)(sumAbs / valid) : float.NaN;
+                DebugLog?.Invoke(layerName
+                    + " | maxpool_compare mean_abs=" + meanAbs.ToString("G9", CultureInfo.InvariantCulture)
+                    + " | max_abs=" + maxAbs.ToString("G9", CultureInfo.InvariantCulture)
+                    + " | valid=" + valid.ToString(CultureInfo.InvariantCulture)
+                    + " | ref_nonfinite=" + refNonFinite.ToString(CultureInfo.InvariantCulture)
+                    + " | tex_nonfinite=" + texNonFinite.ToString(CultureInfo.InvariantCulture)
+                    + " | shape=" + srcShape.w + "x" + srcShape.h + "x" + srcShape.c
+                    + " -> " + outW + "x" + outH + "x" + srcShape.c);
+            }
+            catch (Exception e)
+            {
+                DebugLog?.Invoke(layerName + " | maxpool_compare failed: " + e.Message);
+            }
+        }
+
+        private void ApplyMaxPoolingIndCpu(TensorRef src, TensorShape srcShape, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH, RenderTexture outRt, RenderTexture idxRt)
+        {
+            var srcCount = srcShape.w * srcShape.h * srcShape.c;
+            using var srcBuffer = new ComputeBuffer(srcCount, sizeof(float), ComputeBufferType.Structured);
+            _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
+            var srcData = new float[srcCount];
+            srcBuffer.GetData(srcData);
+
+            var outCount = outW * outH * srcShape.c;
+            var valueData = new float[outCount];
+            var indexData = new float[outCount];
+            var srcPlane = srcShape.w * srcShape.h;
+            var outPlane = outW * outH;
+
+            for (var c = 0; c < srcShape.c; c++)
+            {
+                var srcBase = c * srcPlane;
+                var dstBase = c * outPlane;
+                for (var oy = 0; oy < outH; oy++)
+                {
+                    var sy0 = oy * strideH - padTop;
+                    for (var ox = 0; ox < outW; ox++)
+                    {
+                        var sx0 = ox * strideW - padLeft;
+                        var best = float.NegativeInfinity;
+                        var bestIndex = 0;
+                        for (var ky = 0; ky < kernelH; ky++)
+                        {
+                            var sy = sy0 + ky;
+                            if (sy < 0 || sy >= srcShape.h)
+                                continue;
+                            for (var kx = 0; kx < kernelW; kx++)
+                            {
+                                var sx = sx0 + kx;
+                                if (sx < 0 || sx >= srcShape.w)
+                                    continue;
+                                var linear = sy * srcShape.w + sx;
+                                var v = srcData[srcBase + linear];
+                                if (v > best)
+                                {
+                                    best = v;
+                                    bestIndex = linear;
+                                }
+                            }
+                        }
+
+                        var dstIndex = dstBase + oy * outW + ox;
+                        valueData[dstIndex] = best;
+                        indexData[dstIndex] = bestIndex;
+                    }
+                }
+            }
+
+            using var valueBuffer = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+            using var indexBuffer = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+            valueBuffer.SetData(valueData);
+            indexBuffer.SetData(indexData);
+            _ops.FillPack4FromBufferCHW(valueBuffer, outW, outH, srcShape.c, outRt);
+            _ops.FillPack4FromBufferCHW(indexBuffer, outW, outH, srcShape.c, idxRt);
+        }
+
+        private void ApplyMaxUnPoolingCpu(TensorRef src, TensorShape srcShape, IndexRef idx, int outW, int outH, RenderTexture outRt)
+        {
+            var pooledCount = src.width * src.height * srcShape.c;
+            using var pooledBuffer = new ComputeBuffer(pooledCount, sizeof(float), ComputeBufferType.Structured);
+            _ops.Pack4ToBufferCHW(src.texture, src.width, src.height, srcShape.c, pooledBuffer);
+            var pooledData = new float[pooledCount];
+            pooledBuffer.GetData(pooledData);
+
+            using var indexBuffer = new ComputeBuffer(src.width * src.height * srcShape.c, sizeof(float), ComputeBufferType.Structured);
+            _ops.Pack4ToBufferCHW(idx.texture, idx.width, idx.height, srcShape.c, indexBuffer);
+            var indexData = new float[indexBuffer.count];
+            indexBuffer.GetData(indexData);
+
+            var outPlane = outW * outH;
+            var pooledPlane = src.width * src.height;
+            var outData = new float[outPlane * srcShape.c];
+            for (var i = 0; i < outData.Length; i++)
+                outData[i] = 0f;
+
+            for (var c = 0; c < srcShape.c; c++)
+            {
+                var pooledBase = c * pooledPlane;
+                var outBase = c * outPlane;
+                for (var i = 0; i < pooledPlane; i++)
+                {
+                    var dstIndex = Mathf.RoundToInt(indexData[pooledBase + i]);
+                    if (dstIndex < 0 || dstIndex >= outPlane)
+                        continue;
+                    var value = pooledData[pooledBase + i];
+                    outData[outBase + dstIndex] = value;
+                }
+            }
+
+            using var outBuffer = new ComputeBuffer(outData.Length, sizeof(float), ComputeBufferType.Structured);
+            outBuffer.SetData(outData);
+            _ops.FillPack4FromBufferCHW(outBuffer, outW, outH, srcShape.c, outRt);
         }
     }
 }
