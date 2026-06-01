@@ -27,7 +27,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public bool preserveAspectRatioInput = false;
     public bool useArgbFloatTensor = true;
     public bool forceBufferConvolution = false;
-    public bool useTextureMaxPoolingInd = false;
+    public bool useTextureMaxPoolingInd = true;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
     public bool enableWinograd23 = false;
@@ -609,6 +609,9 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 interiorSupport[i] = interiorSupport[i] && keep[i];
             ApplyGrayCloseInMask(alpha, interiorSupport, width, height, interiorRadius);
         }
+
+        RemoveSmallForegroundIslands(alpha, width, height, Mathf.Clamp01(threshold + 0.03f), 8);
+        FillSmallInteriorAlphaDips(alpha, width, height, 0.65f, 320, 16, 3);
     }
 
     private static void ApplyLegacyForegroundCleanup(float[] alpha, int width, int height, float threshold, int closeRadius)
@@ -632,6 +635,9 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
         if (closeRadius > 0)
             ApplyGrayCloseInMask(alpha, keep, width, height, closeRadius);
+
+        RemoveSmallForegroundIslands(alpha, width, height, Mathf.Clamp01(threshold + 0.03f), 8);
+        FillSmallInteriorAlphaDips(alpha, width, height, 0.65f, 120, 12, 2);
     }
 
     private static bool[] KeepLargestConnectedComponent(bool[] mask, int width, int height)
@@ -775,6 +781,182 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         }
 
         return false;
+    }
+
+    private static void RemoveSmallForegroundIslands(float[] alpha, int width, int height, float threshold, int maxArea)
+    {
+        if (alpha == null || alpha.Length != width * height || maxArea <= 0)
+            return;
+
+        var mask = new bool[alpha.Length];
+        for (var i = 0; i < alpha.Length; i++)
+            mask[i] = alpha[i] >= threshold;
+
+        var labels = new int[mask.Length];
+        var queue = new int[mask.Length];
+        var areas = new Dictionary<int, int>();
+        var nextLabel = 1;
+
+        for (var start = 0; start < mask.Length; start++)
+        {
+            if (!mask[start] || labels[start] != 0)
+                continue;
+
+            var area = FloodLabel(mask, width, height, start, nextLabel, labels, queue);
+            areas[nextLabel] = area;
+            nextLabel++;
+        }
+
+        if (areas.Count <= 1)
+            return;
+
+        for (var i = 0; i < alpha.Length; i++)
+        {
+            var label = labels[i];
+            if (label == 0)
+                continue;
+            if (areas.TryGetValue(label, out var area) && area <= maxArea)
+                alpha[i] = 0f;
+        }
+    }
+
+    private static void FillSmallInteriorAlphaDips(float[] alpha, int width, int height, float lowAlphaThreshold, int maxArea, int boundaryBoxMax, int radius)
+    {
+        if (alpha == null || alpha.Length != width * height || width <= 0 || height <= 0 || maxArea <= 0 || radius <= 0)
+            return;
+
+        var support = new bool[alpha.Length];
+        for (var i = 0; i < alpha.Length; i++)
+            support[i] = alpha[i] > 0.02f;
+
+        var boundary = new bool[alpha.Length];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var index = y * width + x;
+                if (!support[index])
+                    continue;
+
+                if (x == 0 || y == 0 || x == width - 1 || y == height - 1)
+                {
+                    boundary[index] = true;
+                    continue;
+                }
+
+                var touchesOutside = false;
+                for (var ny = y - 1; ny <= y + 1 && !touchesOutside; ny++)
+                {
+                    var row = ny * width;
+                    for (var nx = x - 1; nx <= x + 1; nx++)
+                    {
+                        if (!support[row + nx])
+                        {
+                            touchesOutside = true;
+                            break;
+                        }
+                    }
+                }
+
+                boundary[index] = touchesOutside;
+            }
+        }
+
+        var lowMask = new bool[alpha.Length];
+        for (var i = 0; i < alpha.Length; i++)
+            lowMask[i] = support[i] && alpha[i] < lowAlphaThreshold;
+
+        var labels = new int[alpha.Length];
+        var queue = new int[alpha.Length];
+        var nextLabel = 1;
+        var labelArea = new Dictionary<int, int>();
+        var labelMinX = new Dictionary<int, int>();
+        var labelMaxX = new Dictionary<int, int>();
+        var labelMinY = new Dictionary<int, int>();
+        var labelMaxY = new Dictionary<int, int>();
+        var labelTouchesBoundary = new Dictionary<int, bool>();
+
+        for (var start = 0; start < lowMask.Length; start++)
+        {
+            if (!lowMask[start] || labels[start] != 0)
+                continue;
+
+            var head = 0;
+            var tail = 0;
+            queue[tail++] = start;
+            labels[start] = nextLabel;
+            var area = 0;
+            var minX = width;
+            var maxX = -1;
+            var minY = height;
+            var maxY = -1;
+            var touchesBoundary = false;
+
+            while (head < tail)
+            {
+                var index = queue[head++];
+                area++;
+                var x = index % width;
+                var y = index / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+                if (boundary[index])
+                    touchesBoundary = true;
+
+                for (var ny = Mathf.Max(0, y - 1); ny <= Mathf.Min(height - 1, y + 1); ny++)
+                {
+                    var row = ny * width;
+                    for (var nx = Mathf.Max(0, x - 1); nx <= Mathf.Min(width - 1, x + 1); nx++)
+                    {
+                        var ni = row + nx;
+                        if (!lowMask[ni] || labels[ni] != 0)
+                            continue;
+                        labels[ni] = nextLabel;
+                        queue[tail++] = ni;
+                    }
+                }
+            }
+
+            labelArea[nextLabel] = area;
+            labelMinX[nextLabel] = minX;
+            labelMaxX[nextLabel] = maxX;
+            labelMinY[nextLabel] = minY;
+            labelMaxY[nextLabel] = maxY;
+            labelTouchesBoundary[nextLabel] = touchesBoundary;
+            nextLabel++;
+        }
+
+        for (var i = 0; i < alpha.Length; i++)
+        {
+            var label = labels[i];
+            if (label == 0)
+                continue;
+            if (!labelArea.TryGetValue(label, out var area) || area > maxArea)
+                continue;
+
+            var boxW = labelMaxX[label] - labelMinX[label] + 1;
+            var boxH = labelMaxY[label] - labelMinY[label] + 1;
+            if (labelTouchesBoundary[label] && (boxW > boundaryBoxMax || boxH > boundaryBoxMax))
+                continue;
+
+            var x = i % width;
+            var y = i / width;
+            var best = alpha[i];
+            for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius); ny++)
+            {
+                var row = ny * width;
+                for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
+                {
+                    var v = alpha[row + nx];
+                    if (v > best)
+                        best = v;
+                }
+            }
+
+            alpha[i] = best;
+        }
     }
 
     private static bool[] MorphClose(bool[] mask, int width, int height, int radius)

@@ -500,7 +500,8 @@ namespace NcnnCompute
                     var idxRt = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
                     if (UseTextureMaxPoolingInd)
                     {
-                        _ops.MaxPoolingIndPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outRt, idxRt);
+                        _ops.PoolingPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outRt);
+                        _ops.MaxPoolingIndicesFromValuePack4(src.texture, outRt, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, idxRt);
                     }
                     else
                         ApplyMaxPoolingIndCpu(src, srcShape, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH, outRt, idxRt);
@@ -508,7 +509,7 @@ namespace NcnnCompute
                     if (DebugCompareMaxPoolingLayers != null
                         && (DebugCompareMaxPoolingLayers.Contains(layer.name) || DebugCompareMaxPoolingLayers.Contains("*")))
                     {
-                        CompareMaxPoolingIndPath(layer.name, src, srcShape, outRt, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH);
+                        CompareMaxPoolingIndPath(layer.name, src, srcShape, outRt, idxRt, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH);
                     }
 
                     SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new TensorShape(outW, outH, srcShape.c));
@@ -905,7 +906,7 @@ namespace NcnnCompute
             }
         }
 
-        private void CompareMaxPoolingIndPath(string layerName, TensorRef src, TensorShape srcShape, RenderTexture textureOutput, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH)
+        private void CompareMaxPoolingIndPath(string layerName, TensorRef src, TensorShape srcShape, RenderTexture textureOutput, RenderTexture textureIndices, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH)
         {
             try
             {
@@ -916,6 +917,7 @@ namespace NcnnCompute
                 srcBuffer.GetData(srcData);
 
                 var refData = new float[outW * outH * srcShape.c];
+                var refIndexData = new float[outW * outH * srcShape.c];
                 var srcPlane = srcShape.w * srcShape.h;
                 var outPlane = outW * outH;
                 for (var c = 0; c < srcShape.c; c++)
@@ -929,6 +931,7 @@ namespace NcnnCompute
                         {
                             var sx0 = ox * strideW - padLeft;
                             var best = float.NegativeInfinity;
+                            var bestIndex = 0;
                             for (var ky = 0; ky < kernelH; ky++)
                             {
                                 var sy = sy0 + ky;
@@ -939,13 +942,19 @@ namespace NcnnCompute
                                     var sx = sx0 + kx;
                                     if (sx < 0 || sx >= srcShape.w)
                                         continue;
-                                    var v = srcData[srcBase + sy * srcShape.w + sx];
+                                    var linear = sy * srcShape.w + sx;
+                                    var v = srcData[srcBase + linear];
                                     if (v > best)
+                                    {
                                         best = v;
+                                        bestIndex = linear;
+                                    }
                                 }
                             }
 
-                            refData[dstBase + oy * outW + ox] = best;
+                            var dstIndex = dstBase + oy * outW + ox;
+                            refData[dstIndex] = best;
+                            refIndexData[dstIndex] = bestIndex;
                         }
                     }
                 }
@@ -956,11 +965,24 @@ namespace NcnnCompute
                 var texData = new float[logicalCount];
                 texBuffer.GetData(texData);
 
+                float[] texIndexData = null;
+                if (textureIndices != null)
+                {
+                    using var idxBuffer = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
+                    _ops.Pack4ToBufferCHW(textureIndices, outW, outH, srcShape.c, idxBuffer);
+                    texIndexData = new float[logicalCount];
+                    idxBuffer.GetData(texIndexData);
+                }
+
                 double sumAbs = 0d;
                 float maxAbs = 0f;
                 var valid = 0;
                 var refNonFinite = 0;
                 var texNonFinite = 0;
+                double sumIdxAbs = 0d;
+                float maxIdxAbs = 0f;
+                var idxValid = 0;
+                var firstLargeValueMismatch = -1;
                 for (var i = 0; i < logicalCount; i++)
                 {
                     var rv = refData[i];
@@ -975,18 +997,55 @@ namespace NcnnCompute
                     sumAbs += diff;
                     if (diff > maxAbs)
                         maxAbs = diff;
+                    if (firstLargeValueMismatch < 0 && diff > 1e20f)
+                        firstLargeValueMismatch = i;
                     valid++;
+
+                    if (texIndexData != null)
+                    {
+                        var idxDiff = Mathf.Abs(refIndexData[i] - texIndexData[i]);
+                        sumIdxAbs += idxDiff;
+                        if (idxDiff > maxIdxAbs)
+                            maxIdxAbs = idxDiff;
+                        idxValid++;
+                    }
                 }
 
                 var meanAbs = valid > 0 ? (float)(sumAbs / valid) : float.NaN;
-                DebugLog?.Invoke(layerName
-                    + " | maxpool_compare mean_abs=" + meanAbs.ToString("G9", CultureInfo.InvariantCulture)
-                    + " | max_abs=" + maxAbs.ToString("G9", CultureInfo.InvariantCulture)
-                    + " | valid=" + valid.ToString(CultureInfo.InvariantCulture)
-                    + " | ref_nonfinite=" + refNonFinite.ToString(CultureInfo.InvariantCulture)
-                    + " | tex_nonfinite=" + texNonFinite.ToString(CultureInfo.InvariantCulture)
-                    + " | shape=" + srcShape.w + "x" + srcShape.h + "x" + srcShape.c
-                    + " -> " + outW + "x" + outH + "x" + srcShape.c);
+                var meanIdxAbs = idxValid > 0 ? (float)(sumIdxAbs / idxValid) : float.NaN;
+                var message = new StringBuilder();
+                message.Append(layerName)
+                    .Append(" | maxpool_compare mean_abs=").Append(meanAbs.ToString("G9", CultureInfo.InvariantCulture))
+                    .Append(" | max_abs=").Append(maxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                    .Append(" | idx_mean_abs=").Append(meanIdxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                    .Append(" | idx_max_abs=").Append(maxIdxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                    .Append(" | valid=").Append(valid.ToString(CultureInfo.InvariantCulture))
+                    .Append(" | ref_nonfinite=").Append(refNonFinite.ToString(CultureInfo.InvariantCulture))
+                    .Append(" | tex_nonfinite=").Append(texNonFinite.ToString(CultureInfo.InvariantCulture))
+                    .Append(" | shape=").Append(srcShape.w).Append("x").Append(srcShape.h).Append("x").Append(srcShape.c)
+                    .Append(" -> ").Append(outW).Append("x").Append(outH).Append("x").Append(srcShape.c);
+
+                if (firstLargeValueMismatch >= 0)
+                {
+                    var plane = outW * outH;
+                    var c = firstLargeValueMismatch / plane;
+                    var rem = firstLargeValueMismatch - c * plane;
+                    var y = rem / outW;
+                    var x = rem - y * outW;
+                    message.Append(" | first_large_value_mismatch=(")
+                        .Append(x.ToString(CultureInfo.InvariantCulture)).Append(",")
+                        .Append(y.ToString(CultureInfo.InvariantCulture)).Append(",")
+                        .Append(c.ToString(CultureInfo.InvariantCulture)).Append(")")
+                        .Append(" ref=").Append(refData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture))
+                        .Append(" tex=").Append(texData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture));
+                    if (texIndexData != null)
+                    {
+                        message.Append(" ref_idx=").Append(refIndexData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture))
+                            .Append(" tex_idx=").Append(texIndexData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture));
+                    }
+                }
+
+                DebugLog?.Invoke(message.ToString());
             }
             catch (Exception e)
             {

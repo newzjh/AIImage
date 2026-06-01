@@ -1854,10 +1854,14 @@ void NcnnPoolingPack4(uint3 id : SV_DispatchThreadID)
         acc = 0.0;
 
     int count = 0;
-    for (int yy = sy0; yy < sy1; yy++)
+    for (int ky = 0; ky < _PoolKernelH; ky++)
     {
-        for (int xx = sx0; xx < sx1; xx++)
+        int yy = sy0 + ky;
+        if (yy < 0 || yy >= (int)ih) continue;
+
+        for (int kx = 0; kx < _PoolKernelW; kx++)
         {
+            int xx = sx0 + kx;
             if (xx < 0 || yy < 0 || xx >= (int)iw || yy >= (int)ih) continue;
             if (p >= (int)idd) continue;
             float4 v = _PoolInArr[int3(xx, yy, p)];
@@ -1901,16 +1905,17 @@ void NcnnMaxPoolingIndPack4(uint3 id : SV_DispatchThreadID)
 
     int sx0 = ox * _PoolStrideW - _PoolPadLeft;
     int sy0 = oy * _PoolStrideH - _PoolPadTop;
-    int sx1 = sx0 + _PoolKernelW;
-    int sy1 = sy0 + _PoolKernelH;
-
     float4 bestValue = float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38);
     float4 bestIndex = float4(-1.0, -1.0, -1.0, -1.0);
 
-    for (int yy = sy0; yy < sy1; yy++)
+    for (int ky = 0; ky < _PoolKernelH; ky++)
     {
-        for (int xx = sx0; xx < sx1; xx++)
+        int yy = sy0 + ky;
+        if (yy < 0 || yy >= (int)ih) continue;
+
+        for (int kx = 0; kx < _PoolKernelW; kx++)
         {
+            int xx = sx0 + kx;
             if (xx < 0 || yy < 0 || xx >= (int)iw || yy >= (int)ih) continue;
             if (p >= (int)idd) continue;
 
@@ -1944,16 +1949,17 @@ void NcnnMaxPoolingIndicesFromValuePack4(uint3 id : SV_DispatchThreadID)
 
     int sx0 = ox * _PoolStrideW - _PoolPadLeft;
     int sy0 = oy * _PoolStrideH - _PoolPadTop;
-    int sx1 = sx0 + _PoolKernelW;
-    int sy1 = sy0 + _PoolKernelH;
-
     float4 bestValue = float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38);
     float4 bestIndex = float4(-1.0, -1.0, -1.0, -1.0);
 
-    for (int yy = sy0; yy < sy1; yy++)
+    for (int ky = 0; ky < _PoolKernelH; ky++)
     {
-        for (int xx = sx0; xx < sx1; xx++)
+        int yy = sy0 + ky;
+        if (yy < 0 || yy >= (int)ih) continue;
+
+        for (int kx = 0; kx < _PoolKernelW; kx++)
         {
+            int xx = sx0 + kx;
             if (xx < 0 || yy < 0 || xx >= (int)iw || yy >= (int)ih) continue;
             if (p >= (int)idd) continue;
 
