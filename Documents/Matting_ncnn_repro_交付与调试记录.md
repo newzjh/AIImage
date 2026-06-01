@@ -1,57 +1,75 @@
-# Matting NCNN Repro 交付与调试记录
+# Matting NCNN Repro Handoff
 
-更新时间：2026-06-01
+Updated: 2026-06-01
 
-## 1. 目标
+## Goal
 
-当前工作目标是基于：
+Reproduce the matting pipeline from:
 
 - `ref/ncnn_matting-main`
 - `ref/MODNet-master`
 
-在 Unity 中复刻一条可运行、可调试、可对照官方结果的 matting 流程。
+inside Unity with a separable compute path, while:
 
-约束：
+- not touching `NcnnRepro` / `NcnnRepro2`
+- using new `MatterNcnnReproRunner` / `NcnnRepro3`
+- preferring `pack4 RenderTexture` where correctness allows
 
-- 不改现有 `NcnnRepro` / `NcnnRepro2`
-- 新增独立实现 `MatterNcnnReproRunner` / `NcnnRepro3`
-- 优先走 `pack4 RenderTexture`
-- 如结果正确性与 pack4 texture 路径冲突，先保证正确性，再逐步把子模块切回 texture 版
+## Current Key Files
 
-## 2. 当前关键文件
-
-核心运行：
+Runtime:
 
 - `Assets/Scripts/MatterNcnnReproRunner.cs`
 - `Assets/Scripts/NcnnCompute/NcnnRepro3.cs`
 - `Assets/Scripts/NcnnCompute/NcnnOps.cs`
 - `Assets/Resources/NcnnCompute.compute`
 
-调试入口：
+Debug entry:
 
 - `Assets/Editor/NcnnDebugRunner.cs`
   - `RunMattingDebugMenu`
   - `RunMattingDebugBatch`
 
-模型与样例：
+Models and samples:
 
 - `Assets/StreamingAssets/Matting/matting.param`
 - `Assets/StreamingAssets/Matting/matting.bin`
 - `ref/ncnn_matting-main/test_img.jpg`
 - `ref/ncnn_matting-main/test_result.jpg`
 - `ref/ncnn_matting-main/windows/matting.dll`
-- `ref/ncnn_matting-main/windows/matting_gui.exe`
+- `ref/ncnn_matting-main/windows/seg_out.jpg`
+- `ref/CodeFormer-ncnn-main/data/03.jpg`
 
-## 3. 已完成工作
+## Official Windows DLL Notes
 
-### 3.1 新建独立 runner 与图执行器
+`ref/ncnn_matting-main/windows/matting.dll` exports:
 
-已新增：
+- `Init`
+- `MakeUpFile`
 
-- `MatterNcnnReproRunner`
-- `NcnnRepro3`
+It can be called silently with Python `ctypes`:
 
-`NcnnRepro3` 当前只覆盖这份 matting 模型实际用到的 layer 集合：
+```python
+import os, ctypes
+root = r"E:\Projects\AIImage\ref\ncnn_matting-main\windows"
+os.chdir(root)
+os.add_dll_directory(root)
+dll = ctypes.WinDLL(os.path.join(root, "matting.dll"))
+dll.Init()
+dll.MakeUpFile(r"E:\Projects\AIImage\ref\ncnn_matting-main\test_img.jpg".encode("utf-8"))
+```
+
+Output is written to:
+
+- `ref/ncnn_matting-main/windows/seg_out.jpg`
+
+Important: the Windows reference path is CPU `float32` style, not a Vulkan/half path.
+
+## What Has Been Implemented
+
+### New isolated graph runner
+
+`NcnnRepro3` covers the layer set used by this matting model:
 
 - `Input`
 - `Split`
@@ -64,150 +82,130 @@
 - `Interp`
 - `Concat`
 
-### 3.2 补齐底层算子与 shader 能力
+### Added compute capabilities
 
-已在 `NcnnOps.cs` / `NcnnCompute.compute` 增量补充：
+Incremental additions in `NcnnOps.cs` / `NcnnCompute.compute`:
 
-- 卷积内置 `sigmoid`
-- 通用 pack4 `Interp`
+- convolution builtin `sigmoid`
+- generic pack4 `Interp`
 - `MaxPoolingIndPack4`
+- `MaxPoolingIndicesFromValuePack4`
 - `MaxUnPoolingPack4`
 
-注意：
+### Runner defaults for best correctness
 
-- 这些新增 kernel 目前并不都在默认路径中使用
-- 默认路径会优先选择“已验证正确”的实现
+Current default values in `MatterNcnnReproRunner`:
 
-### 3.3 前处理与后处理
-
-`MatterNcnnReproRunner` 当前默认：
-
-- 固定输入到 `512x512`
+- `preserveAspectRatioInput = false`
 - `useArgbFloatTensor = true`
-- `enableWinograd23 = false`
 - `forceBufferConvolution = false`
 - `useTextureMaxPoolingInd = false`
-- 启用前景清理：
-  - 最大前景连通域
-  - 小半径闭运算
+- `enableWinograd23 = false`
+- foreground cleanup enabled
 
-背景合成色与官方示例对齐：
+Foreground cleanup currently does:
 
-- `Color32(120, 255, 155, 255)`
+1. largest foreground connected component from alpha threshold
+2. small binary close on that support
+3. gray alpha close inside the retained support
 
-### 3.4 官方 DLL 静默对照链路已打通
+## Current Best Correctness Path
 
-已确认 `ref/ncnn_matting-main/windows/matting.dll` 可直接静默调用：
+The current best stable path is:
 
-- 导出函数：
-  - `Init`
-  - `MakeUpFile`
+- `MaxPooling`: pack4 texture
+- `MaxPoolingInd`: CPU/buffer reference implementation
+- `MaxUnPooling`: CPU/buffer reference implementation
+- `Convolution`: pack4 texture
+- `Winograd23`: off
+- `TensorTextureFormat`: `ARGBFloat`
 
-Python/ctypes 可直接跑：
+This is intentional. It is the most correct path found so far.
 
-```python
-import os, ctypes
-root = r"E:\Projects\AIImage\ref\ncnn_matting-main\windows"
-os.chdir(root)
-os.add_dll_directory(root)
-dll = ctypes.WinDLL(os.path.join(root, "matting.dll"))
-dll.Init()
-dll.MakeUpFile(r"E:\Projects\AIImage\ref\ncnn_matting-main\test_img.jpg".encode("utf-8"))
-```
+## Verified Results
 
-输出固定写到：
+### `test_img.jpg`
+
+Best recent stable result against `ref/ncnn_matting-main/test_result.jpg`:
+
+- `mean_abs_rgb ~= 3.11`
+- `max_abs_rgb ~= 215`
+
+This is the current baseline to preserve.
+
+Background dirty blobs are largely gone.
+
+### `03.jpg`
+
+Official reference for comparison is the DLL-generated:
 
 - `ref/ncnn_matting-main/windows/seg_out.jpg`
 
-## 4. 当前最优结果配置
+Current Unity result for `03.jpg` is still much worse than official.
+Observed error was around:
 
-截至本记录，默认正确性最优配置是：
+- `mean_abs ~= 27.8` with fixed-square input path
+- `mean_abs ~= 23.5` when temporarily testing aspect-preserving input
 
-- `ARGBFloat`
-- `enableWinograd23 = false`
-- `forceBufferConvolution = false`
-- `useTextureMaxPoolingInd = false`
-- `MaxPoolingInd` 使用 CPU/buffer 参考实现
-- `MaxUnPooling` 使用 CPU/buffer 参考实现
-- 最终 alpha 启用前景清理
+So `03.jpg` is still not aligned.
 
-最新静默批跑结果：
+## Important Conclusions Already Proven
 
-- 对 `ref/ncnn_matting-main/test_result.jpg`
-  - `mean_abs_rgb = 3.1120`
-  - `max_abs_rgb = 215`
+### 1. `Winograd23` hurts this model
 
-说明：
+On this matting graph, enabling Winograd degrades results badly.
 
-- 背景脏块已基本压下
-- 主干卷积 pack4 texture 路径在关闭 winograd 后可对齐
-- 剩余 texture 版问题集中在 `MaxPoolingInd`
+Conclusion:
 
-## 5. 已定位出的关键结论
+- keep `enableWinograd23 = false`
 
-### 5.1 Winograd23 会显著拉坏这份 matting 模型
+### 2. `ARGBFloat` is currently required for alignment
 
-在这份图上，`enableWinograd23=true` 会导致结果恶化。
+Half precision previously caused saturation and background corruption.
 
-结论：
+Conclusion:
 
-- matting 默认应固定 `false`
+- do not switch back to `ARGBHalf` yet
+- only revisit after the remaining graph mismatches are fixed
 
-### 5.2 `ARGBFloat` 是当前对齐官方所需
+### 3. Pack4 convolution path is basically aligned on the good path
 
-这份模型在 `ARGBHalf` 下曾出现明显饱和和背景脏块。
+Using `conv_compare`, many convolution layers match the float buffer reference at roughly `1e-6` or better when the stable path is used.
 
-结论：
+Conclusion:
 
-- 在完全对齐官方前，不要回切 `ARGBHalf`
-- 等 texture `MaxPoolingInd` 修好后，再做 half 回归
+- the main remaining problem is no longer the bulk convolution trunk
 
-### 5.3 当前 pack4 卷积主链基本已对齐
+### 4. CPU `MaxPoolingInd` is correct
 
-通过 `conv_compare` 做过逐层对照：
-
-- 前半段 `Conv_20/22/23/...`
-- 后半段 `Conv_153 ... Conv_236`
-
-在最佳配置下，很多层已收敛到 `1e-6` 量级。
-
-结论：
-
-- 当前主要误差不再是主干卷积
-
-### 5.4 `MaxPoolingInd` 的 CPU 参考实现是对的
-
-`maxpool_compare` 已验证：
+`maxpool_compare` has shown:
 
 - `MaxPool_19`
 - `MaxPool_41`
 
-CPU 参考版输出与 reference 一致。
+can match reference exactly under the CPU/buffer implementation.
 
-### 5.5 texture 版 `MaxPoolingInd` 目前仍不正确
+### 5. Texture `MaxPoolingInd` is not yet ready to replace CPU
 
-已经试过两类 texture 方案：
+Tried variants:
 
-1. 单 kernel 直接同时求 pooled value 和 indices
-2. 两阶段：
+1. single-pass texture pooled value + indices
+2. two-pass:
    - `PoolingPack4`
    - `MaxPoolingIndicesFromValuePack4`
+3. split SRV/UAV style index lookup pass
 
-两类方案在当前工程里都会导致结果明显退化：
+These variants still regressed strongly in full-run validation.
+The full image error would jump back toward `58.x`.
 
-- `mean_abs_rgb` 会回到大约 `58.x`
+Conclusion:
 
-并且 `maxpool_compare` 明确显示：
+- keep default `useTextureMaxPoolingInd = false`
+- texture `MaxPoolingInd` is still an active debug branch, not production-ready
 
-- `MaxPool_19` / `MaxPool_41` 输出本身就和 CPU 参考大幅偏离
+## Debug Methods
 
-结论：
-
-- 目前还不能把 `MaxPoolingInd` 默认切回 texture 版
-
-## 6. 现有调试方法
-
-### 6.1 Unity 静默批跑
+### Unity headless batch
 
 ```powershell
 $env:AIIMAGE_DEBUG_INPUT='E:\Projects\AIImage\ref\ncnn_matting-main\test_img.jpg'
@@ -218,101 +216,102 @@ $env:AIIMAGE_DEBUG_INPUT='E:\Projects\AIImage\ref\ncnn_matting-main\test_img.jpg
   -logFile 'E:\Projects\AIImage\Logs\matting-test.log'
 ```
 
-关键日志关注：
+For `03.jpg`:
 
-- `Matting Debug result`
-- `Matting Debug compare`
-- `dump=...`
+```powershell
+$env:AIIMAGE_DEBUG_INPUT='E:\Projects\AIImage\ref\CodeFormer-ncnn-main\data\03.jpg'
+& 'C:\Program Files\Unity 6000.2.7f2\Editor\Unity.exe' `
+  -batchmode `
+  -projectPath 'E:\Projects\AIImage' `
+  -executeMethod NcnnDebugRunner.RunMattingDebugBatch `
+  -logFile 'E:\Projects\AIImage\Logs\matting-03.log'
+```
 
-### 6.2 批跑产物目录
+### Output locations
 
-合成结果目录：
+Result images:
 
 - `%LOCALAPPDATA%\Temp\YanQi\AIImage\AIImage_MattingRepro_*`
 
-中间 blob 统计目录：
+Intermediate dumps:
 
 - `%LOCALAPPDATA%\Temp\YanQi\AIImage\AIImage_MattingBlobDump_*`
 
-其中常见文件：
+Useful files:
 
 - `17_composite.png`
 - `18_matte.png`
 - `blob_stats.txt`
 - `conv_compare.txt`
 
-### 6.3 官方 DLL 对照
+### Existing compare tools in runner
 
-官方静默输出：
+`MatterNcnnReproRunner` already supports:
 
-- `ref/ncnn_matting-main/windows/seg_out.jpg`
+- blob dumps
+- texture-conv compare
+- maxpool compare
 
-可以直接和 Unity 输出做图像差异对照。
+These are useful when temporarily enabled from `NcnnDebugRunner`.
 
-### 6.4 常用离线分析
+## Current Open Problems
 
-当前用过且有效的离线分析包括：
+### Problem A: `03.jpg` still differs strongly from official
 
-- 从官方 `test_result.jpg` 反推 alpha 近似真值
-- 比较 `our alpha` 与 `official estimated alpha`
-- `largest connected component`
-- 二值 support 清理
-- 灰度 alpha 闭运算试验
+The current cleanup that helps `test_img.jpg` does not solve `03.jpg`.
+This means the remaining issue is not just simple blob cleanup.
 
-## 7. 当前实现状态
+Strong suspicion:
 
-### 默认正确性路径
+- there is still an algorithmic mismatch versus the official graph behavior on more complex portraits
+- likely around later decoder behavior / unpool semantics / input policy interactions
 
-- `MaxPooling`：pack4 texture
-- `MaxPoolingInd`：CPU 参考实现
-- `MaxUnPooling`：CPU 参考实现
-- `Convolution`：pack4 texture
-- `Winograd23`：关闭
-- `TensorTextureFormat`：`ARGBFloat`
+### Problem B: texture `MaxPoolingInd` still not aligned
 
-### 已实现但暂不默认启用
+Even after multiple attempts, the texture path still causes catastrophic regression in end-to-end runs.
 
-- texture `MaxPoolingInd`
-- texture `MaxUnPooling`
-- 全层 `conv_compare`
-- `maxpool_compare`
+This is the main unresolved pack4 item.
 
-这些能力保留用于继续调试。
+## Recommended Next Steps
 
-## 8. 下一步建议
+### 1. Focus on `03.jpg` with full graph compare
 
-下一步最值得做的是只专攻一件事：
+Run the good path on `03.jpg` with:
 
-### 修正 texture `MaxPoolingInd`
+- `enableTextureConvCompare = true`
+- `enableMaxPoolingCompare = true`
 
-建议顺序：
+and determine whether intermediate layers still match reference.
 
-1. 给 `PoolingPack4` 单独补一个对照路径，确认是 pool value 本身错，还是只在 `MaxPoolingInd` 组合使用时错
-2. 如确认是 pool value 错，单独重写 pack4 max-pooling shader
-3. 修好后再把 `MaxPoolingIndicesFromValuePack4` 接回去
-4. 让 `maxpool_compare mean_abs=0`
-5. 再观察最终误差是否仍维持在 `3.x`
+If intermediate graph still matches well, the remaining gap is likely final alpha shaping / unpool semantics.
 
-只有 texture `MaxPoolingInd` 对齐后，才建议继续做：
+### 2. Continue rebuilding texture `MaxPoolingInd`
 
-### 回切 `ARGBHalf`
+Recommended order:
 
-回切顺序建议：
+1. add standalone compare for `PoolingPack4` itself
+2. verify whether pooled values are correct independently of indices
+3. then compare only the texture index lookup pass versus CPU indices
+4. only switch default to texture once `maxpool_compare mean_abs = 0`
+   and end-to-end error stays around the current good baseline
 
-1. 保持 `Winograd23=false`
-2. 只把 `TensorTextureFormat` 改成 `ARGBHalf`
-3. 跑同一张 `test_img.jpg`
-4. 如果误差明显反弹或背景噪点回归，则不能直接回切
+### 3. Only after graph alignment, revisit `ARGBHalf`
 
-## 9. 需要明确给下一个对话/IDE 工具的事实
+Suggested rollback test:
 
-1. 当前“结果最正确”的版本已经存在，不要误以为工程还停留在 `58.x` 的错误状态。
-2. `enableWinograd23` 已固定不应开启。
-3. `ARGBFloat` 当前不是随意选择，而是为了对齐官方。
-4. `MaxPoolingInd` 的 texture 版已经尝试过两种做法，但仍未对齐，当前默认不能切回。
-5. 如果继续做 texture `MaxPoolingInd`，必须优先依赖现有的：
-   - `maxpool_compare`
-   - `conv_compare`
-   - Unity batch debug
-   否则很容易反复退化到 `58.x`。
+1. keep `Winograd23 = false`
+2. keep the same graph path otherwise
+3. switch `TensorTextureFormat` from `ARGBFloat` to `ARGBHalf`
+4. re-run both:
+   - `test_img.jpg`
+   - `03.jpg`
+5. reject the change if dirty blobs / local miscuts return
 
+## Critical Facts For Next Agent / IDE
+
+1. The project does have a good stable path already. Do not assume it is still stuck at `58.x`.
+2. `enableWinograd23` should stay `false`.
+3. `ARGBFloat` is currently deliberate, not accidental.
+4. `MaxPooling` is already pack4 texture and correct.
+5. `MaxPoolingInd` texture path is still not validated and must not replace CPU by default yet.
+6. `03.jpg` is the current best discriminator for remaining algorithm mismatch.
