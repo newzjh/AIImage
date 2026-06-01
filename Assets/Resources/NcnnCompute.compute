@@ -214,6 +214,28 @@ Texture2DArray<float4> _ConvInArr;
 int _InPacks;
 int _OutPacks;
 
+float4 NcnnApplyActivation(float4 v)
+{
+    if (_ActType == 1)
+        v = max(v, 0.0);
+    else if (_ActType == 2)
+        v = max(v, 0.0) + min(v, 0.0) * _ActParam;
+    else if (_ActType == 4)
+        v = 1.0 / (1.0 + exp(-v));
+    return v;
+}
+
+float NcnnApplyActivationScalar(float v)
+{
+    if (_ActType == 1)
+        v = v >= 0.0 ? v : 0.0;
+    else if (_ActType == 2)
+        v = v >= 0.0 ? v : v * _ActParam;
+    else if (_ActType == 4)
+        v = 1.0 / (1.0 + exp(-v));
+    return v;
+}
+
 groupshared float4 _ConvTile[18 * 18];
 groupshared float4 _ConvWeight0[9 * 4];
 groupshared float4 _ConvWeight1[9 * 4];
@@ -392,17 +414,6 @@ int _WinoBlockY;
 int _WinoOutW;
 int _WinoOutH;
 int _WinoBiasTerm;
-
-float4 NcnnApplyActivation(float4 v)
-{
-    if (_ActType == 1)
-        v = max(v, 0.0);
-    else if (_ActType == 2)
-        v = max(v, 0.0) + min(v, 0.0) * _ActParam;
-    else if (_ActType == 4)
-        v = 1.0 / (1.0 + exp(-v));
-    return v;
-}
 
 // ncnn pack4 winograd23 transform_input: local_size 8x8x1, 2x2 output tile per block.
 [numthreads(8,8,1)]
@@ -1224,17 +1235,6 @@ void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
 
     uint outIndex = (uint)((oc * outH + oy) * outW + ox);
     _ConvOut[outIndex] = sum;
-}
-
-float NcnnApplyActivationScalar(float v)
-{
-    if (_ActType == 1)
-        v = v >= 0.0 ? v : 0.0;
-    else if (_ActType == 2)
-        v = v >= 0.0 ? v : v * _ActParam;
-    else if (_ActType == 4)
-        v = 1.0 / (1.0 + exp(-v));
-    return v;
 }
 
 [numthreads(8,8,1)]

@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
@@ -21,16 +24,31 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public string modelParamRelativePath = "Matting/matting.param";
     public string modelBinRelativePath = "Matting/matting.bin";
     public int refSize = 512;
+    public bool preserveAspectRatioInput = false;
+    public bool useArgbFloatTensor = true;
+    public bool forceBufferConvolution = true;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
     public bool enableWinograd23 = true;
     public Color32 compositeBackgroundColor = new Color32(120, 255, 155, 255);
+    public bool enableDebugDump = false;
+    public string[] debugBlobNames =
+    {
+        "500", "523", "554", "599", "623", "632",
+        "736", "757", "786", "815", "841",
+        "501", "502", "524", "555", "600",
+        "637", "651", "677", "703", "722",
+        "741", "762", "791", "820", "846",
+        "local"
+    };
 
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
     private NcnnRepro3 _repro;
     private bool _loaded;
+    private string _lastDumpDir;
+    public string LastDumpDir => _lastDumpDir;
 
     private void Awake()
     {
@@ -62,6 +80,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         RenderTexture mattePack4 = null;
         RenderTexture matteFullResPack4 = null;
         Texture2D readableSrc = null;
+        _lastDumpDir = null;
 
         try
         {
@@ -75,7 +94,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             ReportProgress(0.05f, "Prepare input");
             await UniTask.Yield();
 
-            var (inputW, inputH) = ComputeModelInputSize(originalW, originalH, refSize);
+            var (inputW, inputH) = ComputeModelInputSize(originalW, originalH, refSize, preserveAspectRatioInput);
             resizedInput = ResizeTextureBilinear(src, inputW, inputH);
             if (resizedInput == null)
                 return Finish(new MattingResult { error = "Resize input failed" });
@@ -86,8 +105,20 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             ReportProgress(0.30f, "Run matting");
             await UniTask.Yield();
 
-            using (var infer = _repro.Infer(inputPack4, 1, "input"))
+            HashSet<string> pinned = null;
+            if (enableDebugDump && debugBlobNames != null && debugBlobNames.Length > 0)
             {
+                pinned = new HashSet<string>(debugBlobNames.Where(s => !string.IsNullOrWhiteSpace(s)), StringComparer.Ordinal);
+                pinned.Add(OutputBlobName);
+            }
+
+            using (var infer = _repro.Infer(inputPack4, 1, "input", pinned))
+            {
+                if (enableDebugDump && pinned != null && pinned.Count > 0)
+                {
+                    _lastDumpDir = CreateDumpDir();
+                    DumpPinnedBlobStats(infer, _lastDumpDir, pinned);
+                }
                 mattePack4 = infer.ExtractTexture(OutputBlobName);
             }
 
@@ -163,6 +194,8 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.EnableWinograd23 = enableWinograd23;
+        _repro.ForceBufferConvolution = forceBufferConvolution;
+        _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
     }
 
     private async UniTask EnsureLoaded()
@@ -194,8 +227,14 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         _ops = null;
     }
 
-    private static (int width, int height) ComputeModelInputSize(int srcW, int srcH, int refSize)
+    private static (int width, int height) ComputeModelInputSize(int srcW, int srcH, int refSize, bool preserveAspectRatio)
     {
+        if (!preserveAspectRatio)
+        {
+            var fixedSize = Mathf.Max(32, refSize);
+            return (fixedSize, fixedSize);
+        }
+
         var rw = srcW;
         var rh = srcH;
         if (Mathf.Max(srcH, srcW) < refSize || Mathf.Min(srcH, srcW) > refSize)
@@ -321,6 +360,123 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     private void ReportProgress(float progress01, string text)
     {
         try { ProgressChanged?.Invoke(Mathf.Clamp01(progress01), text ?? string.Empty); } catch { }
+    }
+
+    private void DumpPinnedBlobStats(NcnnRepro3.InferResult infer, string dir, ICollection<string> blobNames)
+    {
+        if (infer == null || string.IsNullOrWhiteSpace(dir) || blobNames == null || blobNames.Count == 0)
+            return;
+
+        Directory.CreateDirectory(dir);
+        var sb = new StringBuilder();
+        foreach (var name in blobNames)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            RenderTexture tex = null;
+            try
+            {
+                tex = infer.GetTexture(name);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (tex == null)
+                continue;
+
+            var physicalChannels = Mathf.Max(1, (tex.volumeDepth > 0 ? tex.volumeDepth : 1) * 4);
+            using var buffer = new ComputeBuffer(tex.width * tex.height * physicalChannels, sizeof(float), ComputeBufferType.Structured);
+            var data = new float[buffer.count];
+            _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, physicalChannels, buffer);
+            buffer.GetData(data);
+
+            var min = float.PositiveInfinity;
+            var max = float.NegativeInfinity;
+            double sum = 0d;
+            var finiteCount = 0;
+            var nanCount = 0;
+            var infCount = 0;
+            foreach (var value in data)
+            {
+                if (float.IsNaN(value))
+                {
+                    nanCount++;
+                    continue;
+                }
+                if (float.IsInfinity(value))
+                {
+                    infCount++;
+                    continue;
+                }
+                if (value < min) min = value;
+                if (value > max) max = value;
+                sum += value;
+                finiteCount++;
+            }
+
+            var mean = finiteCount > 0 ? (float)(sum / finiteCount) : float.NaN;
+            sb.AppendLine(name + " | size=" + tex.width + "x" + tex.height + "x" + physicalChannels + " | min=" + min.ToString("G9") + " | max=" + max.ToString("G9") + " | mean=" + mean.ToString("G9") + " | nan=" + nanCount + " | inf=" + infCount);
+
+            var previewPath = Path.Combine(dir, name + "_c0.png");
+            TryWriteFirstChannelPreview(data, tex.width, tex.height, physicalChannels, previewPath);
+        }
+
+        File.WriteAllText(Path.Combine(dir, "blob_stats.txt"), sb.ToString());
+    }
+
+    private static void TryWriteFirstChannelPreview(float[] chw, int width, int height, int channels, string path)
+    {
+        if (chw == null || chw.Length == 0 || width <= 0 || height <= 0 || channels <= 0 || string.IsNullOrWhiteSpace(path))
+            return;
+
+        var planeSize = width * height;
+        if (chw.Length < planeSize)
+            return;
+
+        var min = float.PositiveInfinity;
+        var max = float.NegativeInfinity;
+        for (var i = 0; i < planeSize; i++)
+        {
+            var v = chw[i];
+            if (float.IsNaN(v) || float.IsInfinity(v))
+                continue;
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+
+        var scale = max > min ? 1f / (max - min) : 0f;
+        var pixels = new Color32[planeSize];
+        for (var i = 0; i < planeSize; i++)
+        {
+            var v = chw[i];
+            var n = scale > 0f ? Mathf.Clamp01((v - min) * scale) : 0f;
+            var b = (byte)Mathf.Clamp(Mathf.RoundToInt(n * 255f), 0, 255);
+            pixels[i] = new Color32(b, b, b, 255);
+        }
+
+        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+        tex.SetPixels32(pixels);
+        tex.Apply(false, false);
+        try
+        {
+            File.WriteAllBytes(path, tex.EncodeToPNG());
+        }
+        finally
+        {
+            DestroyImmediate(tex);
+        }
+    }
+
+    private static string CreateDumpDir()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "YanQi", "AIImage");
+        Directory.CreateDirectory(root);
+        var dir = Path.Combine(root, "AIImage_MattingBlobDump_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        Directory.CreateDirectory(dir);
+        return dir;
     }
 
     private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, RenderTextureReadWrite readWrite, bool randomWrite)

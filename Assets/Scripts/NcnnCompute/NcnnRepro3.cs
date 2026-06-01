@@ -187,6 +187,7 @@ namespace NcnnCompute
 
         public NcnnParamModel Model { get; private set; }
         public bool EnableWinograd23 { get; set; }
+        public bool ForceBufferConvolution { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
 
         public bool EnableTempPool
@@ -358,7 +359,8 @@ namespace NcnnCompute
                     var outH = ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
                     var outRt = RentTempArray(outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
 
-                    var canUseTexturePath = conv.group == 1
+                    var canUseTexturePath = !ForceBufferConvolution
+                                            && conv.group == 1
                                             && conv.dilationW == 1
                                             && conv.dilationH == 1
                                             && ((conv.kernelW == 1 && conv.kernelH == 1 && conv.strideW == 1 && conv.strideH == 1)
