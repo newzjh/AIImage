@@ -27,6 +27,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public bool preserveAspectRatioInput = false;
     public bool useArgbFloatTensor = true;
     public bool forceBufferConvolution = false;
+    public bool useTextureMaxPoolingInd = false;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
     public bool enableWinograd23 = false;
@@ -263,6 +264,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.EnableWinograd23 = enableWinograd23;
         _repro.ForceBufferConvolution = forceBufferConvolution;
+        _repro.UseTextureMaxPoolingInd = useTextureMaxPoolingInd;
         _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
     }
 
@@ -618,6 +620,9 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             if (!keep[i])
                 alpha[i] = 0f;
         }
+
+        if (closeRadius > 0)
+            ApplyGrayCloseInMask(alpha, keep, width, height, closeRadius);
     }
 
     private static bool[] MorphClose(bool[] mask, int width, int height, int radius)
@@ -680,6 +685,71 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         }
 
         return result;
+    }
+
+    private static void ApplyGrayCloseInMask(float[] alpha, bool[] keep, int width, int height, int radius)
+    {
+        var dilated = new float[alpha.Length];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var index = y * width + x;
+                if (!keep[index])
+                    continue;
+
+                var best = 0f;
+                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius); ny++)
+                {
+                    var row = ny * width;
+                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
+                    {
+                        var ni = row + nx;
+                        if (!keep[ni])
+                            continue;
+                        if (alpha[ni] > best)
+                            best = alpha[ni];
+                    }
+                }
+
+                dilated[index] = best;
+            }
+        }
+
+        var closed = new float[alpha.Length];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var index = y * width + x;
+                if (!keep[index])
+                    continue;
+
+                var best = 1f;
+                var hasValue = false;
+                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius); ny++)
+                {
+                    var row = ny * width;
+                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
+                    {
+                        var ni = row + nx;
+                        if (!keep[ni])
+                            continue;
+                        if (!hasValue || dilated[ni] < best)
+                            best = dilated[ni];
+                        hasValue = true;
+                    }
+                }
+
+                closed[index] = hasValue ? best : alpha[index];
+            }
+        }
+
+        for (var i = 0; i < alpha.Length; i++)
+        {
+            if (keep[i])
+                alpha[i] = Mathf.Clamp01(closed[i]);
+        }
     }
 
     private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, RenderTextureReadWrite readWrite, bool randomWrite)

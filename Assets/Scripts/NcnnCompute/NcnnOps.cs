@@ -300,6 +300,7 @@ namespace NcnnCompute
         private readonly int _kPaddingPack4;
         private readonly int _kPoolingPack4;
         private readonly int _kMaxPoolingIndPack4;
+        private readonly int _kMaxPoolingIndicesFromValuePack4;
         private readonly int _kMaxUnPoolingPack4;
         private readonly int _kSoftmaxChannelPack4;
         private readonly int _kUnaryOpPack4;
@@ -376,6 +377,7 @@ namespace NcnnCompute
             _kPaddingPack4 = _cs.FindKernel("NcnnPaddingPack4");
             _kPoolingPack4 = _cs.FindKernel("NcnnPoolingPack4");
             _kMaxPoolingIndPack4 = _cs.FindKernel("NcnnMaxPoolingIndPack4");
+            _kMaxPoolingIndicesFromValuePack4 = _cs.FindKernel("NcnnMaxPoolingIndicesFromValuePack4");
             _kMaxUnPoolingPack4 = _cs.FindKernel("NcnnMaxUnPoolingPack4");
             _kSoftmaxChannelPack4 = _cs.FindKernel("NcnnSoftmaxChannelPack4");
             _kUnaryOpPack4 = _cs.FindKernel("NcnnUnaryOpPack4");
@@ -720,6 +722,23 @@ namespace NcnnCompute
             _cs.SetTexture(_kMaxPoolingIndPack4, "_MaxPoolOutArr", output);
             _cs.SetTexture(_kMaxPoolingIndPack4, "_MaxPoolIndicesArr", indices);
             Dispatch3D(_kMaxPoolingIndPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void MaxPoolingIndicesFromValuePack4(RenderTexture input, RenderTexture pooled, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, RenderTexture indices)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (pooled == null) throw new ArgumentNullException(nameof(pooled));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            _cs.SetInt("_PoolKernelW", kernelW);
+            _cs.SetInt("_PoolKernelH", kernelH);
+            _cs.SetInt("_PoolStrideW", strideW);
+            _cs.SetInt("_PoolStrideH", strideH);
+            _cs.SetInt("_PoolPadLeft", padLeft);
+            _cs.SetInt("_PoolPadTop", padTop);
+            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_MaxPoolInArr", input);
+            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_MaxPoolPooledArr", pooled);
+            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_MaxPoolIndicesArr", indices);
+            Dispatch3D(_kMaxPoolingIndicesFromValuePack4, pooled.width, pooled.height, packs, 8, 8);
         }
 
         public void MaxUnPoolingPack4(RenderTexture input, RenderTexture indices, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, RenderTexture output)

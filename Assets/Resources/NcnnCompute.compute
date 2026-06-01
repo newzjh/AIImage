@@ -40,6 +40,7 @@
 #pragma kernel NcnnPaddingPack4
 #pragma kernel NcnnPoolingPack4
 #pragma kernel NcnnMaxPoolingIndPack4
+#pragma kernel NcnnMaxPoolingIndicesFromValuePack4
 #pragma kernel NcnnMaxUnPoolingPack4
 #pragma kernel NcnnSoftmaxChannelPack4
 #pragma kernel NcnnUnaryOpPack4
@@ -1882,6 +1883,7 @@ void NcnnPoolingPack4(uint3 id : SV_DispatchThreadID)
 RWTexture2DArray<float4> _MaxPoolOutArr;
 RWTexture2DArray<float4> _MaxPoolIndicesArr;
 Texture2DArray<float4> _MaxPoolInArr;
+Texture2DArray<float4> _MaxPoolPooledArr;
 
 [numthreads(8,8,1)]
 void NcnnMaxPoolingIndPack4(uint3 id : SV_DispatchThreadID)
@@ -1922,7 +1924,50 @@ void NcnnMaxPoolingIndPack4(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    _MaxPoolOutArr[int3(ox, oy, p)] = bestValue;
+    _MaxPoolIndicesArr[int3(ox, oy, p)] = bestIndex;
+}
+
+[numthreads(8,8,1)]
+void NcnnMaxPoolingIndicesFromValuePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _MaxPoolIndicesArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _MaxPoolInArr.GetDimensions(iw, ih, idd);
+    int ox = (int)id.x;
+    int oy = (int)id.y;
+
+    int sx0 = ox * _PoolStrideW - _PoolPadLeft;
+    int sy0 = oy * _PoolStrideH - _PoolPadTop;
+    int sx1 = sx0 + _PoolKernelW;
+    int sy1 = sy0 + _PoolKernelH;
+
+    float4 pooledValue = _MaxPoolPooledArr[int3(ox, oy, p)];
+    float4 bestIndex = float4(-1.0, -1.0, -1.0, -1.0);
+    int4 found = int4(0, 0, 0, 0);
+
+    for (int yy = sy0; yy < sy1; yy++)
+    {
+        for (int xx = sx0; xx < sx1; xx++)
+        {
+            if (xx < 0 || yy < 0 || xx >= (int)iw || yy >= (int)ih) continue;
+            if (p >= (int)idd) continue;
+
+            float4 v = _MaxPoolInArr[int3(xx, yy, p)];
+            float idxv = (float)(yy * (int)iw + xx);
+            float4 diff = abs(v - pooledValue);
+            float4 eps = max(abs(pooledValue), 1.0) * 1e-6;
+            if (found.x == 0 && diff.x <= eps.x) { bestIndex.x = idxv; found.x = 1; }
+            if (found.y == 0 && diff.y <= eps.y) { bestIndex.y = idxv; found.y = 1; }
+            if (found.z == 0 && diff.z <= eps.z) { bestIndex.z = idxv; found.z = 1; }
+            if (found.w == 0 && diff.w <= eps.w) { bestIndex.w = idxv; found.w = 1; }
+        }
+    }
+
     _MaxPoolIndicesArr[int3(ox, oy, p)] = bestIndex;
 }
 

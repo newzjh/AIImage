@@ -189,6 +189,7 @@ namespace NcnnCompute
         public NcnnParamModel Model { get; private set; }
         public bool EnableWinograd23 { get; set; }
         public bool ForceBufferConvolution { get; set; }
+        public bool UseTextureMaxPoolingInd { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
         public ISet<string> DebugCompareTextureConvLayers { get; set; }
         public ISet<string> DebugCompareMaxPoolingLayers { get; set; }
@@ -495,7 +496,13 @@ namespace NcnnCompute
                     var outH = Mathf.Max(1, (src.height + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
                     var outRt = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
                     var idxRt = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
-                    ApplyMaxPoolingIndCpu(src, srcShape, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH, outRt, idxRt);
+                    if (UseTextureMaxPoolingInd)
+                    {
+                        _ops.PoolingPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outRt);
+                        _ops.MaxPoolingIndicesFromValuePack4(src.texture, outRt, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, idxRt);
+                    }
+                    else
+                        ApplyMaxPoolingIndCpu(src, srcShape, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH, outRt, idxRt);
 
                     if (DebugCompareMaxPoolingLayers != null
                         && (DebugCompareMaxPoolingLayers.Contains(layer.name) || DebugCompareMaxPoolingLayers.Contains("*")))

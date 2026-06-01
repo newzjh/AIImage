@@ -104,6 +104,7 @@ public class MainView : MonoBehaviour
     private GfpganNcnnNativeRunner _gfpganNativeRunner;
     private GfpganNcnnReproRunner _gfpganReproRunner;
     private CodeFormerNcnnReproRunner2 _codeFormerReproRunner;
+    private MatterNcnnReproRunner _mattingReproRunner;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
@@ -171,6 +172,10 @@ public class MainView : MonoBehaviour
         _codeFormerReproRunner = GetComponent<CodeFormerNcnnReproRunner2>();
         if (_codeFormerReproRunner == null)
             _codeFormerReproRunner = gameObject.AddComponent<CodeFormerNcnnReproRunner2>();
+
+        _mattingReproRunner = GetComponent<MatterNcnnReproRunner>();
+        if (_mattingReproRunner == null)
+            _mattingReproRunner = gameObject.AddComponent<MatterNcnnReproRunner>();
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -930,10 +935,11 @@ public class MainView : MonoBehaviour
         var realEsrganNativeButton = new Button(OnRealEsrganNative) { text = "ESRGAN 2" };
         row0.Add(realEsrganNativeButton);
 
-        var gfpganNativeButton = new Button(OnGfpganNative) { text = "GFPGAN" };
-        row0.Add(gfpganNativeButton);
-
 #endif
+
+
+        var mattingReproButton = new Button(OnMattingRepro) { text = "Matting(复刻)" };
+        row0.Add(mattingReproButton);
 
         var gfpganReproButton = new Button(OnGfpganRepro) { text = "GFPGAN(复刻)" };
         row0.Add(gfpganReproButton);
@@ -1530,6 +1536,11 @@ public class MainView : MonoBehaviour
         ApplyRealEsrganReproAsync().Forget();
     }
 
+    private void OnMattingRepro()
+    {
+        ApplyMattingReproAsync().Forget();
+    }
+
     private void OnGfpganRepro()
     {
         ApplyGfpganReproAsync().Forget();
@@ -1692,6 +1703,53 @@ public class MainView : MonoBehaviour
         }
     }
 
+    private async UniTaskVoid ApplyMattingReproAsync()
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        StopPreview();
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        _adjustRunning = true;
+        HideBusy();
+        ShowProgress("Matting(复刻)");
+        try
+        {
+            await UniTask.NextFrame();
+            if (_mattingReproRunner == null)
+            {
+                ShowToast("找不到MattingNcnnReproRunner", 2200);
+                return;
+            }
+
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            _mattingReproRunner.ProgressChanged -= OnProgress;
+            _mattingReproRunner.ProgressChanged += OnProgress;
+            var r = await _mattingReproRunner.ProcessAsync(src, _lifetimeCts.Token);
+            _mattingReproRunner.ProgressChanged -= OnProgress;
+            if (!string.IsNullOrWhiteSpace(r.error))
+            {
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
+                return;
+            }
+            if (r.texture != null)
+                AddHistory(r.texture, "Matting(复刻)");
+            if (r.elapsedMs > 0)
+                ShowToast("Matting(复刻) 耗时 " + r.elapsedMs + " ms", 1800);
+        }
+        finally
+        {
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
 
 
     private async UniTaskVoid ApplyGfpganReproAsync()
