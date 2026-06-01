@@ -290,6 +290,7 @@ namespace NcnnCompute
         private readonly int _kFillPack4FromBufferChw;
         private readonly int _kScalePack4;
         private readonly int _kAddBiasPack4;
+        private readonly int _kBatchNormPack4;
         private readonly int _kLeakyReluPack4;
         private readonly int _kAddNoiseBroadcastPack4;
         private readonly int _kClipPack4;
@@ -367,6 +368,7 @@ namespace NcnnCompute
             _kFillPack4FromBufferChw = _cs.FindKernel("NcnnFillPack4FromBufferCHW");
             _kScalePack4 = _cs.FindKernel("NcnnScalePack4");
             _kAddBiasPack4 = _cs.FindKernel("NcnnAddBiasPack4");
+            _kBatchNormPack4 = _cs.FindKernel("NcnnBatchNormPack4");
             _kLeakyReluPack4 = _cs.FindKernel("NcnnLeakyReluPack4");
             _kAddNoiseBroadcastPack4 = _cs.FindKernel("NcnnAddNoiseBroadcastPack4");
             _kClipPack4 = _cs.FindKernel("NcnnClipPack4");
@@ -552,6 +554,19 @@ namespace NcnnCompute
             _cs.SetTexture(_kAddBiasPack4, "_BiasInArr", input);
             _cs.SetTexture(_kAddBiasPack4, "_BiasOutArr", output);
             Dispatch3D(_kAddBiasPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void BatchNormPack4(RenderTexture input, ComputeBuffer biasA4, ComputeBuffer scaleB4, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (biasA4 == null) throw new ArgumentNullException(nameof(biasA4));
+            if (scaleB4 == null) throw new ArgumentNullException(nameof(scaleB4));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetBuffer(_kBatchNormPack4, "_BatchNormA4", biasA4);
+            _cs.SetBuffer(_kBatchNormPack4, "_BatchNormB4", scaleB4);
+            _cs.SetTexture(_kBatchNormPack4, "_BatchNormInArr", input);
+            _cs.SetTexture(_kBatchNormPack4, "_BatchNormOutArr", output);
+            Dispatch3D(_kBatchNormPack4, output.width, output.height, packs, 8, 8);
         }
 
         public void LeakyReluPack4(RenderTexture input, float slope, int packs, RenderTexture output)

@@ -126,7 +126,8 @@ namespace NcnnCompute
                 return;
             }
 
-            Skip((long)count * 4);
+            if (count > 0)
+                Skip((long)(count - 1) * 4);
         }
 
         public byte[] ReadBytes(int count)
@@ -237,7 +238,15 @@ namespace NcnnCompute
                 return a;
             }
 
-            return ReadFloat32Array(count);
+            var plain = new float[count];
+            if (count == 0)
+                return plain;
+
+            var firstBytes = BitConverter.GetBytes(flag);
+            plain[0] = BitConverter.ToSingle(firstBytes, 0);
+            for (var i = 1; i < count; i++)
+                plain[i] = _br.ReadSingle();
+            return plain;
         }
 
         public uint ReadUInt32()

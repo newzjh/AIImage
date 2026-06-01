@@ -30,6 +30,7 @@
 #pragma kernel NcnnFillPack4FromBufferCHW
 #pragma kernel NcnnScalePack4
 #pragma kernel NcnnAddBiasPack4
+#pragma kernel NcnnBatchNormPack4
 #pragma kernel NcnnLeakyReluPack4
 #pragma kernel NcnnAddNoiseBroadcastPack4
 #pragma kernel NcnnClipPack4
@@ -1109,6 +1110,25 @@ void NcnnAddBiasPack4(uint3 id : SV_DispatchThreadID)
     float4 v = _BiasInArr[int3((int)id.x, (int)id.y, p)];
     float4 b = _Bias4[p];
     _BiasOutArr[int3((int)id.x, (int)id.y, p)] = v + b;
+}
+
+Texture2DArray<float4> _BatchNormInArr;
+RWTexture2DArray<float4> _BatchNormOutArr;
+StructuredBuffer<float4> _BatchNormA4;
+StructuredBuffer<float4> _BatchNormB4;
+
+[numthreads(8,8,1)]
+void NcnnBatchNormPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _BatchNormOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    float4 v = _BatchNormInArr[int3((int)id.x, (int)id.y, p)];
+    float4 a = _BatchNormA4[p];
+    float4 b = _BatchNormB4[p];
+    _BatchNormOutArr[int3((int)id.x, (int)id.y, p)] = v * b + a;
 }
 
 Texture2DArray<float4> _LreluInArr;

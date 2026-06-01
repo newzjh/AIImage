@@ -22,6 +22,7 @@ public static class NcnnDebugRunner
     private const string StressInputDirEnvVar = "AIIMAGE_STRESS_INPUT_DIR";
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
+    private static readonly string DefaultClipDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultMattingDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_img.jpg");
     private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
 
@@ -41,6 +42,12 @@ public static class NcnnDebugRunner
     public static void RunCodeFormerDebugMenu()
     {
         RunCodeFormerDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run CLIP Debug")]
+    public static void RunClipDebugMenu()
+    {
+        RunClipDebug().Forget();
     }
 
     [MenuItem("Tools/AIImage/Run GFPGAN Debug")]
@@ -132,6 +139,36 @@ public static class NcnnDebugRunner
                 TryWriteTexturePng(result.texture, runner.LastDumpDir, "17_full_output.png");
                 UnityEngine.Object.DestroyImmediate(result.texture);
             }
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    public static async UniTaskVoid RunClipDebug()
+    {
+        await RunClipDebugInternal();
+    }
+
+    private static async UniTask RunClipDebugInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultClipDebugImagePath);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+        {
+            Debug.LogError("Failed to load debug input: " + inputPath);
+            return;
+        }
+
+        var go = new GameObject("ClipDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<ClipNcnnReproRunner>();
+            runner.enableDebugDump = true;
+            var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            Debug.Log("CLIP Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | best=" + (result.bestLabel ?? "") + " | prob=" + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture) + " | dump=" + (runner.LastDumpDir ?? ""));
         }
         finally
         {
@@ -244,6 +281,23 @@ public static class NcnnDebugRunner
         catch (Exception e)
         {
             Debug.Log("[NcnnDebugRunner] RunCodeFormerDebugBatch failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
+    public static async void RunClipDebugBatch()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunClipDebugBatch start");
+            await RunClipDebugInternal();
+            Debug.Log("[NcnnDebugRunner] RunClipDebugBatch done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunClipDebugBatch failed: " + e.Message);
             Debug.LogException(e);
             EditorApplication.Exit(1);
         }
