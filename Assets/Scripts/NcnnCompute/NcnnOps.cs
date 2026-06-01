@@ -482,26 +482,28 @@ namespace NcnnCompute
         }
 
 
-        public void PackRgbToPack4(Texture src, int offsetX, int offsetY, float sx, float sy, RenderTexture dstPack4)
+        public void PackRgbToPack4(Texture src, int offsetX, int offsetY, float sx, float sy, RenderTexture dstPack4, bool flipY = false)
         {
             if (src == null) throw new ArgumentNullException(nameof(src));
             _cs.SetInt("_OffsetX", offsetX);
             _cs.SetInt("_OffsetY", offsetY);
             _cs.SetFloat("_ScaleX", sx);
             _cs.SetFloat("_ScaleY", sy);
+            _cs.SetInt("_FlipY", flipY ? 1 : 0);
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnIn", src);
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnOutArr", dstPack4);
             Dispatch2D(_cs, _kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);
         }
 
 
-        public void PackRgbToPack4(CommandBuffer cmd, Texture src, int offsetX, int offsetY, float sx, float sy, ComputeTexture dstPack4)
+        public void PackRgbToPack4(CommandBuffer cmd, Texture src, int offsetX, int offsetY, float sx, float sy, ComputeTexture dstPack4, bool flipY = false)
         {
             if (src == null) throw new ArgumentNullException(nameof(src));
             cmd.SetComputeIntParams(_cs, "_OffsetX", offsetX);
             cmd.SetComputeIntParams(_cs, "_OffsetY", offsetY);
             cmd.SetComputeFloatParam(_cs, "_ScaleX", sx);
             cmd.SetComputeFloatParam(_cs, "_ScaleY", sy);
+            cmd.SetComputeIntParam(_cs, "_FlipY", flipY ? 1 : 0);
             cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_NcnnIn", src);
             cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_NcnnOutArr", dstPack4.nameID);
             Dispatch2D(cmd, _cs, _kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);

@@ -45,7 +45,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private const string OutputBlobName = "out0";
     private const int EmbeddingSize = 512;
     private static readonly string[] DebugTextBlobNames = { "1", "3", "6", "7", "17", "18", "19", "22", "23", "24", "26", "27", "28", "29", "30", "57", "84", "111", "138", "165", "192", "219", "246", "273", "300", "320", "327", "out0" };
-    private static readonly string[] DebugImageBlobNames = { "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140", "141", "142", "143", "144", "145", "146", "147", "148", "149", "150", "151", "152", "153", "154", "155", "156", "157", "158", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "170", "171", "172", "173", "177", "178", "179", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189", "190", "191", "341", "343", "348", "349", "350", "351", "352", "353", "354", "355", "356", "357", "358", "359", "360", "361", "363", "366", "367", "368", "369", "370", "371", "372", "373", "376", "377", "378", "379", "380", "381", "382", "383", "384", "385", "386", "387", "388", "389", "390", "391", "392", "393", "396", "397", "398", "399", "414", "434", "449", "469", "484", "504", "519", "541", "out0" };
+    private static readonly string[] DebugImageBlobNames = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140", "141", "142", "143", "144", "145", "146", "147", "148", "149", "150", "151", "152", "153", "154", "155", "156", "157", "158", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "170", "171", "172", "173", "177", "178", "179", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189", "190", "191", "341", "343", "348", "349", "350", "351", "352", "353", "354", "355", "356", "357", "358", "359", "360", "361", "363", "366", "367", "368", "369", "370", "371", "372", "373", "376", "377", "378", "379", "380", "381", "382", "383", "384", "385", "386", "387", "388", "389", "390", "391", "392", "393", "396", "397", "398", "399", "414", "434", "449", "469", "484", "504", "519", "541", "out0" };
     private static readonly string[] DebugImageCompareLayers = { "convdw_253", "convdw_254", "conv_41", "conv_42", "convdw_255", "convdw_256", "conv_43", "conv_44", "convdw_257", "convdw_258", "conv_45", "conv_46", "convdw_259", "convrelu_0", "convsigmoid_3", "conv_49", "convdw_260", "convdw_261", "conv_50", "conv_51", "convdw_294", "convdw_295", "conv_84", "conv_85", "convdw_296", "convdw_297", "conv_86", "conv_87", "convdw_298", "convdw_299", "conv_88", "conv_89", "convdw_300" };
 
     public ClipModelLevel modelLevel = ClipModelLevel.S1;
@@ -127,7 +127,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 return Finish(new ClipClassificationResult { error = "Resize input failed" });
 
             inputPack4 = _imageRepro.RentTempArray(targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
-            _ops.PackRgbToPack4(resized, 0, 0, 1f, 1f, inputPack4);
+            _ops.PackRgbToPack4(resized, 0, 0, 1f, 1f, inputPack4, true);
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpPack4TextureLogical(inputPack4, targetSize, targetSize, 3, Path.Combine(_lastDumpDir, "image_blob_in0.txt"));
 
             ReportProgress(0.35f, "Encode image");
             await UniTask.Yield();
@@ -228,9 +230,11 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         if (_imageRepro != null)
         {
             _imageRepro.EnableWinograd23 = false;
-            _imageRepro.ForceBufferConvolutionAll = enableDebugDump;
-            _imageRepro.ForceBufferBinaryOpAll = enableDebugDump;
-            _imageRepro.ForceBufferGeluAll = enableDebugDump;
+            _imageRepro.ForceBufferConvolutionAll = true;
+            _imageRepro.ForceBufferBinaryOpAll = true;
+            _imageRepro.ForceBufferGeluAll = true;
+            _imageRepro.EnableDepthWiseTextureConvolution = false;
+            _imageRepro.EnableConv1x1TextureConvolution = false;
             if (enableDebugDump)
             {
                 _imageRepro.DebugCompareTextureLayers = new HashSet<string>(DebugImageCompareLayers, StringComparer.Ordinal);
@@ -522,6 +526,26 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         foreach (var ch in Path.GetInvalidFileNameChars())
             s = s.Replace(ch, '_');
         return s.Replace(' ', '_');
+    }
+
+    private void DumpPack4TextureLogical(RenderTexture texture, int width, int height, int channels, string path)
+    {
+        if (texture == null || width <= 0 || height <= 0 || channels <= 0 || string.IsNullOrWhiteSpace(path))
+            return;
+
+        var physicalChannels = Mathf.Max(4, ((channels + 3) / 4) * 4);
+        var physicalCount = width * height * physicalChannels;
+        using var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
+        _ops.Pack4ToBufferCHW(texture, width, height, physicalChannels, physicalBuffer);
+        var physical = new float[physicalCount];
+        physicalBuffer.GetData(physical);
+        var logicalCount = width * height * channels;
+        var logical = new float[logicalCount];
+        Array.Copy(physical, logical, logicalCount);
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(dir))
+            Directory.CreateDirectory(dir);
+        DumpVector(dir, Path.GetFileName(path), logical);
     }
 
     private void TryDumpAnyBlob(NcnnRepro4.InferResult infer, string blobName, string path)

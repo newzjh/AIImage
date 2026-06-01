@@ -126,8 +126,11 @@ namespace NcnnCompute
                 return;
             }
 
-            if (count > 0)
-                Skip((long)(count - 1) * 4);
+            if (f0 == 0)
+            {
+                Skip((long)count * 4);
+                return;
+            }
         }
 
         public byte[] ReadBytes(int count)
@@ -238,15 +241,10 @@ namespace NcnnCompute
                 return a;
             }
 
-            var plain = new float[count];
-            if (count == 0)
-                return plain;
+            if (f0 == 0)
+                return ReadFloat32Array(count);
 
-            var firstBytes = BitConverter.GetBytes(flag);
-            plain[0] = BitConverter.ToSingle(firstBytes, 0);
-            for (var i = 1; i < count; i++)
-                plain[i] = _br.ReadSingle();
-            return plain;
+            throw new InvalidDataException("unsupported ncnn weight encoding flag: 0x" + flag.ToString("X8"));
         }
 
         public uint ReadUInt32()

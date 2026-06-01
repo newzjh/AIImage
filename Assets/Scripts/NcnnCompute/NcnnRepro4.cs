@@ -462,6 +462,8 @@ namespace NcnnCompute
         public NcnnParamModel Model { get; private set; }
         public bool ForceBufferBinaryOpAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
+        public bool EnableDepthWiseTextureConvolution { get; set; } = true;
+        public bool EnableConv1x1TextureConvolution { get; set; } = true;
 
         private readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
         private readonly Dictionary<string, InnerProductPack> _innerProduct = new Dictionary<string, InnerProductPack>(StringComparer.Ordinal);
@@ -1684,13 +1686,18 @@ namespace NcnnCompute
                     if (!_conv.TryGetValue(layer.name, out var conv))
                         throw new InvalidOperationException("Convolution not found: " + layer.name);
 
-                    var canUseDepthWiseTexturePath = conv.isDepthWise
+                    var canUseDepthWiseTexturePath = EnableDepthWiseTextureConvolution
+                                                    && conv.isDepthWise
                                                     && conv.group == conv.inC
                                                     && conv.outC == conv.inC
                                                     && conv.packedDepthWiseWeight4 != null
                                                     && conv.packedBias4 != null;
 
-                    if (ForceBufferConvolutionAll || (conv.useBufferPath && !canUseDepthWiseTexturePath))
+                    var forceBufferThisConv = ForceBufferConvolutionAll
+                                              || (conv.useBufferPath && !canUseDepthWiseTexturePath)
+                                              || (conv.kernelW == 1 && conv.kernelH == 1 && !EnableConv1x1TextureConvolution);
+
+                    if (forceBufferThisConv)
                     {
                         if (PreferTexturePathForFaceDetector
                             && string.Equals(layer.bottomNames[0], "images", StringComparison.Ordinal) == false
@@ -1776,7 +1783,7 @@ TextureConvPath:
                     var outHTex = ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
                     var outRt = RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
 
-                    if (conv.kernelW == 1 && conv.kernelH == 1)
+                    if (conv.kernelW == 1 && conv.kernelH == 1 && EnableConv1x1TextureConvolution)
                     {
                         if (src.width != outWTex || src.height != outHTex)
                             throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
@@ -2645,33 +2652,9 @@ TextureConvPath:
                 throw new ArgumentNullException(nameof(br));
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
-            if (loadType == 1)
-                return br.ReadFloat32Array(count);
-            if (loadType != 0)
-                throw new NotSupportedException("unsupported CLIP loadType: " + loadType);
             if (count == 0)
                 return Array.Empty<float>();
-
-            var header = br.ReadUInt32();
-            if (header == 0x01306B47)
-                return br.ReadFp16ArrayAsFloat32(count, true);
-            if (header == 0x0002C056)
-                return br.ReadFloat32Array(count);
-            if (header == 0x000D4B38)
-            {
-                var bytes = br.ReadBytes(count);
-                var arr = new float[count];
-                for (var i = 0; i < count; i++)
-                    arr[i] = unchecked((sbyte)bytes[i]);
-                return arr;
-            }
-
-            var data = new float[count];
-            var firstBytes = BitConverter.GetBytes(header);
-            data[0] = BitConverter.ToSingle(firstBytes, 0);
-            for (var i = 1; i < count; i++)
-                data[i] = br.ReadFloat32Array(1)[0];
-            return data;
+            return br.ReadNcnnMatAsFloat32(count, 0, 0, 0, loadType);
         }
 
         private static float[] ReadClipMatAsFloat32(NcnnBinReader br, int w, int h, int d, int c, int loadType)
