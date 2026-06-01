@@ -105,6 +105,7 @@ public class MainView : MonoBehaviour
     private GfpganNcnnReproRunner _gfpganReproRunner;
     private CodeFormerNcnnReproRunner2 _codeFormerReproRunner;
     private MatterNcnnReproRunner _mattingReproRunner;
+    private ClipNcnnReproRunner _clipNcnnReproRunner;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
@@ -176,6 +177,10 @@ public class MainView : MonoBehaviour
         _mattingReproRunner = GetComponent<MatterNcnnReproRunner>();
         if (_mattingReproRunner == null)
             _mattingReproRunner = gameObject.AddComponent<MatterNcnnReproRunner>();
+
+        _clipNcnnReproRunner = GetComponent<ClipNcnnReproRunner>();
+        if (_clipNcnnReproRunner == null)
+            _clipNcnnReproRunner = gameObject.AddComponent<ClipNcnnReproRunner>();
 
         _image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         _image2ImageAI.SelectResultIndex += OnSelectAIResultIndex;
@@ -909,6 +914,9 @@ public class MainView : MonoBehaviour
         var sdClipSmokeButton = new Button(OnSdClipSmoke) { text = "SD-CLIP" };
         row1.Add(sdClipSmokeButton);
 
+        var clipTagButton = new Button(OnClipClassify) { text = "CLIP标签" };
+        row1.Add(clipTagButton);
+
         var sdWeightScanButton = new Button(OnSdWeightScan) { text = "SD权重" };
         row1.Add(sdWeightScanButton);
 
@@ -1048,6 +1056,11 @@ public class MainView : MonoBehaviour
         {
             ShowToast("SD UNetMHA 失败: " + e.Message);
         }
+    }
+
+    private void OnClipClassify()
+    {
+        ApplyClipClassificationAsync().Forget();
     }
 
     private Button collapseBtn;
@@ -1841,6 +1854,63 @@ public class MainView : MonoBehaviour
                 AddHistory(r.texture, "CodeFormer(复刻)");
             if (r.elapsedMs > 0)
                 ShowToast("CodeFormer(复刻) 耗时 " + r.elapsedMs + " ms", 1800);
+        }
+        finally
+        {
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+
+    private async UniTaskVoid ApplyClipClassificationAsync()
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        StopPreview();
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        _adjustRunning = true;
+        HideBusy();
+        ShowProgress("CLIP标签");
+        try
+        {
+            await UniTask.NextFrame();
+            if (_clipNcnnReproRunner == null)
+            {
+                ShowToast("找不到ClipNcnnReproRunner", 2200);
+                return;
+            }
+
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            _clipNcnnReproRunner.ProgressChanged -= OnProgress;
+            _clipNcnnReproRunner.ProgressChanged += OnProgress;
+            var r = await _clipNcnnReproRunner.ProcessAsync(src, _lifetimeCts.Token);
+            _clipNcnnReproRunner.ProgressChanged -= OnProgress;
+            if (!string.IsNullOrWhiteSpace(r.error))
+            {
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
+                return;
+            }
+
+            var top3 = FormatClipTopScores(r.scores, 3);
+            UnityEngine.Debug.Log("[MainView] CLIP result | best=" + (r.bestLabel ?? "")
+                + " | prob=" + r.bestProbability.ToString("0.000000", System.Globalization.CultureInfo.InvariantCulture)
+                + " | elapsedMs=" + r.elapsedMs
+                + " | top3=" + top3
+                + " | dump=" + (_clipNcnnReproRunner.LastDumpDir ?? ""));
+
+            var toast = "CLIP: " + (r.bestLabel ?? "未知")
+                + " " + r.bestProbability.ToString("P1", System.Globalization.CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(top3))
+                toast += " | " + top3;
+            ShowToast(toast, 4000);
         }
         finally
         {
@@ -3115,6 +3185,23 @@ public class MainView : MonoBehaviour
         _historyList.ScrollToItem(1);
 
         _imageViewer.SetSources(entry.texture, GetOriginalHistoryTexture(), entry.label);
+    }
+
+    private static string FormatClipTopScores(ClipLabelScore[] scores, int topN)
+    {
+        if (scores == null || scores.Length == 0 || topN <= 0)
+            return string.Empty;
+
+        var count = Mathf.Min(topN, scores.Length);
+        var parts = new List<string>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var s = scores[i];
+            parts.Add((s.label ?? "")
+                + " "
+                + s.probability.ToString("P1", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        return string.Join(", ", parts);
     }
 
     private void ApplyOperation(ImageOp op)

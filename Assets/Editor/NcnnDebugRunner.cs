@@ -20,6 +20,9 @@ public static class NcnnDebugRunner
     private const string FaceNmsThresholdEnvVar = "AIIMAGE_FACE_NMS_THRESHOLD";
     private const string StressCountEnvVar = "AIIMAGE_STRESS_COUNT";
     private const string StressInputDirEnvVar = "AIIMAGE_STRESS_INPUT_DIR";
+    private const string ClipInputDirEnvVar = "AIIMAGE_CLIP_INPUT_DIR";
+    private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
+    private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultClipDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
@@ -48,6 +51,12 @@ public static class NcnnDebugRunner
     public static void RunClipDebugMenu()
     {
         RunClipDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run CLIP Directory Debug")]
+    public static void RunClipDirectoryDebugMenu()
+    {
+        RunClipDirectoryDebug().Forget();
     }
 
     [MenuItem("Tools/AIImage/Run GFPGAN Debug")]
@@ -150,6 +159,11 @@ public static class NcnnDebugRunner
     public static async UniTaskVoid RunClipDebug()
     {
         await RunClipDebugInternal();
+    }
+
+    public static async UniTaskVoid RunClipDirectoryDebug()
+    {
+        await RunClipDirectoryDebugInternal();
     }
 
     private static async UniTask RunClipDebugInternal()
@@ -305,6 +319,23 @@ public static class NcnnDebugRunner
         }
     }
 
+    public static async void RunClipDirectoryDebugBatch()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunClipDirectoryDebugBatch start");
+            await RunClipDirectoryDebugInternal();
+            Debug.Log("[NcnnDebugRunner] RunClipDirectoryDebugBatch done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunClipDirectoryDebugBatch failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
     public static async void RunGfpganDebugBatch()
     {
         try
@@ -364,6 +395,93 @@ public static class NcnnDebugRunner
         {
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    private static async UniTask RunClipDirectoryDebugInternal()
+    {
+        var inputDir = ResolveClipInputDirectory();
+        if (string.IsNullOrWhiteSpace(inputDir) || !Directory.Exists(inputDir))
+            throw new InvalidOperationException("CLIP input dir not found: " + (inputDir ?? ""));
+
+        var files = EnumerateImageFilesRecursive(inputDir);
+        if (files.Count == 0)
+            throw new InvalidOperationException("No images found under: " + inputDir);
+
+        var outputDir = CreateGenericDumpDir("AIImage_ClipDirBatch");
+        var summaryPath = Path.Combine(outputDir, "summary.tsv");
+
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("clip_dir_batch");
+
+        var go = new GameObject("ClipDirectoryDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<ClipNcnnReproRunner>();
+            runner.enableDebugDump = ResolveBoolEnv(ClipEnableDumpEnvVar, false);
+            runner.enableTempPool = false;
+            runner.maxPooledPerShape = 0;
+            runner.modelLevel = ResolveClipModelLevel();
+
+            using var sw = new StreamWriter(summaryPath, false);
+            sw.WriteLine("image\tstatus\telapsed_ms\tbest_label\tbest_prob\ttop3\tgpu_summary\trt_count\tmanaged_mb\tgfx_driver_mb\tdump");
+
+            for (var i = 0; i < files.Count; i++)
+            {
+                var path = files[i];
+                Texture2D tex = null;
+                try
+                {
+                    tex = LoadTexture(path);
+                    if (tex == null)
+                    {
+                        sw.WriteLine(EscapeTsv(path) + "\tload_failed\t0\t\t0\t\t\t0\t0\t0\t");
+                        continue;
+                    }
+
+                    var result = await runner.ProcessAsync(tex, CancellationToken.None);
+                    var top3 = FormatClipTopScores(result.scores, 3);
+                    var gpuSummary = NcnnCompute.NcnnGpuResourceTracker.BuildSummary();
+                    var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
+                    var managedMb = Profiler.GetTotalAllocatedMemoryLong() / (1024f * 1024f);
+                    var gfxMb = GetGraphicsDriverMemoryMb();
+                    var status = string.IsNullOrWhiteSpace(result.error) ? "ok" : "error";
+                    sw.WriteLine(
+                        EscapeTsv(path) + "\t"
+                        + status + "\t"
+                        + result.elapsedMs.ToString(CultureInfo.InvariantCulture) + "\t"
+                        + EscapeTsv(result.bestLabel ?? "") + "\t"
+                        + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture) + "\t"
+                        + EscapeTsv(top3) + "\t"
+                        + EscapeTsv(gpuSummary) + "\t"
+                        + rtCount.ToString(CultureInfo.InvariantCulture) + "\t"
+                        + managedMb.ToString("0.000", CultureInfo.InvariantCulture) + "\t"
+                        + gfxMb.ToString("0.000", CultureInfo.InvariantCulture) + "\t"
+                        + EscapeTsv(runner.LastDumpDir ?? ""));
+                    sw.Flush();
+
+                    Debug.Log("[CLIP-DIR] " + (i + 1) + "/" + files.Count
+                        + " | " + path
+                        + " | status=" + status
+                        + " | best=" + (result.bestLabel ?? "")
+                        + " | prob=" + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture)
+                        + " | elapsedMs=" + result.elapsedMs
+                        + " | gpu=" + gpuSummary);
+                }
+                finally
+                {
+                    if (tex != null)
+                        UnityEngine.Object.DestroyImmediate(tex);
+                }
+            }
+
+            NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir);
+            Debug.Log("[CLIP-DIR] summary=" + summaryPath);
+        }
+        finally
+        {
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            UnityEngine.Object.DestroyImmediate(go);
         }
     }
 
@@ -520,6 +638,29 @@ public static class NcnnDebugRunner
         return fallbackPath;
     }
 
+    private static string ResolveClipInputDirectory()
+    {
+        try
+        {
+            var envDir = Environment.GetEnvironmentVariable(ClipInputDirEnvVar);
+            if (!string.IsNullOrWhiteSpace(envDir) && Directory.Exists(envDir))
+                return envDir;
+        }
+        catch
+        {
+        }
+
+        var singlePath = ResolveInputPath(DefaultClipDebugImagePath);
+        if (!string.IsNullOrWhiteSpace(singlePath))
+        {
+            var dir = Path.GetDirectoryName(singlePath);
+            if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
+                return dir;
+        }
+
+        return null;
+    }
+
     private static List<string> ResolveStressInputPaths(string fallbackPath)
     {
         try
@@ -542,6 +683,45 @@ public static class NcnnDebugRunner
         return new List<string> { ResolveInputPath(fallbackPath) };
     }
 
+    private static List<string> EnumerateImageFilesRecursive(string rootDir)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(rootDir) || !Directory.Exists(rootDir))
+            return result;
+
+        var pending = new Stack<string>();
+        pending.Push(rootDir);
+        while (pending.Count > 0)
+        {
+            var dir = pending.Pop();
+            try
+            {
+                foreach (var file in Directory.GetFiles(dir))
+                {
+                    if (IsImagePath(file))
+                        result.Add(file);
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var subDirs = Directory.GetDirectories(dir);
+                Array.Sort(subDirs, StringComparer.OrdinalIgnoreCase);
+                for (var i = subDirs.Length - 1; i >= 0; i--)
+                    pending.Push(subDirs[i]);
+            }
+            catch
+            {
+            }
+        }
+
+        result.Sort(StringComparer.OrdinalIgnoreCase);
+        return result;
+    }
+
     private static int ResolveStressCount(int inputCount)
     {
         try
@@ -557,6 +737,81 @@ public static class NcnnDebugRunner
         }
 
         return Mathf.Max(60, inputCount);
+    }
+
+    private static ClipNcnnReproRunner.ClipModelLevel ResolveClipModelLevel()
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(ClipModelEnvVar);
+            if (string.Equals(env, "S0", StringComparison.OrdinalIgnoreCase))
+                return ClipNcnnReproRunner.ClipModelLevel.S0;
+        }
+        catch
+        {
+        }
+
+        return ClipNcnnReproRunner.ClipModelLevel.S1;
+    }
+
+    private static bool ResolveBoolEnv(string envName, bool fallback)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(env))
+                return fallback;
+            env = env.Trim();
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (string.Equals(env, "0", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "false", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "no", StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        catch
+        {
+        }
+
+        return fallback;
+    }
+
+    private static string FormatClipTopScores(ClipLabelScore[] scores, int topN)
+    {
+        if (scores == null || scores.Length == 0 || topN <= 0)
+            return string.Empty;
+
+        var count = Mathf.Min(topN, scores.Length);
+        var parts = new List<string>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var s = scores[i];
+            parts.Add((s.label ?? "")
+                + " "
+                + s.probability.ToString("P1", CultureInfo.InvariantCulture));
+        }
+        return string.Join(", ", parts);
+    }
+
+    private static float GetGraphicsDriverMemoryMb()
+    {
+        try
+        {
+            return Profiler.GetAllocatedMemoryForGraphicsDriver() / (1024f * 1024f);
+        }
+        catch
+        {
+            return 0f;
+        }
+    }
+
+    private static string EscapeTsv(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return string.Empty;
+        return value.Replace("\t", "    ").Replace("\r", " ").Replace("\n", " | ");
     }
 
     private static bool IsImagePath(string path)
