@@ -554,63 +554,72 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         if (alpha == null || alpha.Length != width * height || width <= 0 || height <= 0)
             return;
 
+        if (width * height < 120000)
+        {
+            ApplyLegacyForegroundCleanup(alpha, width, height, threshold, closeRadius);
+            return;
+        }
+
+        var weak = new bool[alpha.Length];
+        for (var i = 0; i < alpha.Length; i++)
+            weak[i] = alpha[i] >= threshold;
+
+        var strongThreshold = Mathf.Clamp01(Mathf.Max(threshold + 0.20f, 0.35f));
+        var strong = new bool[alpha.Length];
+        for (var i = 0; i < alpha.Length; i++)
+            strong[i] = alpha[i] >= strongThreshold;
+
+        var minSeedArea = Mathf.Max(32, Mathf.RoundToInt(width * height * 0.0005f));
+        var seeds = KeepConnectedComponents(strong, width, height, minSeedArea);
+        if (!HasAny(seeds))
+        {
+            seeds = KeepLargestConnectedComponent(weak, width, height);
+        }
+
+        if (!HasAny(seeds))
+            return;
+
+        var keep = GrowWithinMask(seeds, weak, width, height);
+
+        if (closeRadius > 0)
+        {
+            keep = MorphClose(keep, width, height, closeRadius);
+            keep = GrowWithinMask(seeds, keep, width, height);
+        }
+
+        for (var i = 0; i < alpha.Length; i++)
+        {
+            if (!keep[i])
+                alpha[i] = 0f;
+        }
+
+        if (closeRadius > 0)
+            ApplyGrayCloseInMask(alpha, keep, width, height, closeRadius);
+
+        var coreThreshold = Mathf.Clamp01(Mathf.Max(threshold + 0.55f, 0.75f));
+        var core = new bool[alpha.Length];
+        for (var i = 0; i < alpha.Length; i++)
+            core[i] = keep[i] && alpha[i] >= coreThreshold;
+
+        if (HasAny(core))
+        {
+            var interiorRadius = Mathf.Clamp(Mathf.Max(closeRadius, Mathf.RoundToInt(Mathf.Min(width, height) * 0.01f)), 4, 8);
+            var interiorSupport = MorphDilate(core, width, height, interiorRadius);
+            for (var i = 0; i < interiorSupport.Length; i++)
+                interiorSupport[i] = interiorSupport[i] && keep[i];
+            ApplyGrayCloseInMask(alpha, interiorSupport, width, height, interiorRadius);
+        }
+    }
+
+    private static void ApplyLegacyForegroundCleanup(float[] alpha, int width, int height, float threshold, int closeRadius)
+    {
         var binary = new bool[alpha.Length];
         for (var i = 0; i < alpha.Length; i++)
             binary[i] = alpha[i] >= threshold;
 
-        var labels = new int[alpha.Length];
-        var queue = new int[alpha.Length];
-        var bestLabel = 0;
-        var bestArea = 0;
-        var nextLabel = 1;
-
-        for (var start = 0; start < binary.Length; start++)
-        {
-            if (!binary[start] || labels[start] != 0)
-                continue;
-
-            var head = 0;
-            var tail = 0;
-            queue[tail++] = start;
-            labels[start] = nextLabel;
-            var area = 0;
-
-            while (head < tail)
-            {
-                var index = queue[head++];
-                area++;
-                var x = index % width;
-                var y = index / width;
-
-                for (var ny = Mathf.Max(0, y - 1); ny <= Mathf.Min(height - 1, y + 1); ny++)
-                {
-                    var row = ny * width;
-                    for (var nx = Mathf.Max(0, x - 1); nx <= Mathf.Min(width - 1, x + 1); nx++)
-                    {
-                        var ni = row + nx;
-                        if (!binary[ni] || labels[ni] != 0)
-                            continue;
-                        labels[ni] = nextLabel;
-                        queue[tail++] = ni;
-                    }
-                }
-            }
-
-            if (area > bestArea)
-            {
-                bestArea = area;
-                bestLabel = nextLabel;
-            }
-
-            nextLabel++;
-        }
-
-        if (bestLabel == 0)
+        var keep = KeepLargestConnectedComponent(binary, width, height);
+        if (!HasAny(keep))
             return;
-
-        var keep = new bool[alpha.Length];
-        for (var i = 0; i < keep.Length; i++)
-            keep[i] = labels[i] == bestLabel;
 
         if (closeRadius > 0)
             keep = MorphClose(keep, width, height, closeRadius);
@@ -623,6 +632,149 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
         if (closeRadius > 0)
             ApplyGrayCloseInMask(alpha, keep, width, height, closeRadius);
+    }
+
+    private static bool[] KeepLargestConnectedComponent(bool[] mask, int width, int height)
+    {
+        var labels = new int[mask.Length];
+        var queue = new int[mask.Length];
+        var bestLabel = 0;
+        var bestArea = 0;
+        var nextLabel = 1;
+
+        for (var start = 0; start < mask.Length; start++)
+        {
+            if (!mask[start] || labels[start] != 0)
+                continue;
+
+            var area = FloodLabel(mask, width, height, start, nextLabel, labels, queue);
+            if (area > bestArea)
+            {
+                bestArea = area;
+                bestLabel = nextLabel;
+            }
+
+            nextLabel++;
+        }
+
+        if (bestLabel == 0)
+            return new bool[mask.Length];
+
+        var keep = new bool[mask.Length];
+        for (var i = 0; i < keep.Length; i++)
+            keep[i] = labels[i] == bestLabel;
+        return keep;
+    }
+
+    private static bool[] KeepConnectedComponents(bool[] mask, int width, int height, int minArea)
+    {
+        var labels = new int[mask.Length];
+        var queue = new int[mask.Length];
+        var keepLabels = new HashSet<int>();
+        var nextLabel = 1;
+
+        for (var start = 0; start < mask.Length; start++)
+        {
+            if (!mask[start] || labels[start] != 0)
+                continue;
+
+            var area = FloodLabel(mask, width, height, start, nextLabel, labels, queue);
+            if (area >= minArea)
+                keepLabels.Add(nextLabel);
+            nextLabel++;
+        }
+
+        var keep = new bool[mask.Length];
+        if (keepLabels.Count == 0)
+            return keep;
+
+        for (var i = 0; i < keep.Length; i++)
+            keep[i] = keepLabels.Contains(labels[i]);
+        return keep;
+    }
+
+    private static bool[] GrowWithinMask(bool[] seeds, bool[] mask, int width, int height)
+    {
+        var keep = new bool[mask.Length];
+        var queue = new int[mask.Length];
+        var head = 0;
+        var tail = 0;
+
+        for (var i = 0; i < mask.Length; i++)
+        {
+            if (!seeds[i] || !mask[i])
+                continue;
+            keep[i] = true;
+            queue[tail++] = i;
+        }
+
+        while (head < tail)
+        {
+            var index = queue[head++];
+            var x = index % width;
+            var y = index / width;
+
+            for (var ny = Mathf.Max(0, y - 1); ny <= Mathf.Min(height - 1, y + 1); ny++)
+            {
+                var row = ny * width;
+                for (var nx = Mathf.Max(0, x - 1); nx <= Mathf.Min(width - 1, x + 1); nx++)
+                {
+                    var ni = row + nx;
+                    if (!mask[ni] || keep[ni])
+                        continue;
+                    keep[ni] = true;
+                    queue[tail++] = ni;
+                }
+            }
+        }
+
+        return keep;
+    }
+
+    private static int FloodLabel(bool[] mask, int width, int height, int start, int label, int[] labels, int[] queue)
+    {
+        var head = 0;
+        var tail = 0;
+        queue[tail++] = start;
+        labels[start] = label;
+        var area = 0;
+
+        while (head < tail)
+        {
+            var index = queue[head++];
+            area++;
+            var x = index % width;
+            var y = index / width;
+
+            for (var ny = Mathf.Max(0, y - 1); ny <= Mathf.Min(height - 1, y + 1); ny++)
+            {
+                var row = ny * width;
+                for (var nx = Mathf.Max(0, x - 1); nx <= Mathf.Min(width - 1, x + 1); nx++)
+                {
+                    var ni = row + nx;
+                    if (!mask[ni] || labels[ni] != 0)
+                        continue;
+                    labels[ni] = label;
+                    queue[tail++] = ni;
+                }
+            }
+        }
+
+        return area;
+    }
+
+    private static bool HasAny(bool[] mask)
+    {
+        if (mask == null)
+            return false;
+
+        for (var i = 0; i < mask.Length; i++)
+        {
+            if (mask[i])
+                return true;
+        }
+
+        return false;
     }
 
     private static bool[] MorphClose(bool[] mask, int width, int height, int radius)

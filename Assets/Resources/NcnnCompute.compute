@@ -1924,6 +1924,7 @@ void NcnnMaxPoolingIndPack4(uint3 id : SV_DispatchThreadID)
         }
     }
 
+    _MaxPoolOutArr[int3(ox, oy, p)] = bestValue;
     _MaxPoolIndicesArr[int3(ox, oy, p)] = bestIndex;
 }
 
@@ -1946,9 +1947,8 @@ void NcnnMaxPoolingIndicesFromValuePack4(uint3 id : SV_DispatchThreadID)
     int sx1 = sx0 + _PoolKernelW;
     int sy1 = sy0 + _PoolKernelH;
 
-    float4 pooledValue = _MaxPoolPooledArr[int3(ox, oy, p)];
+    float4 bestValue = float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38);
     float4 bestIndex = float4(-1.0, -1.0, -1.0, -1.0);
-    int4 found = int4(0, 0, 0, 0);
 
     for (int yy = sy0; yy < sy1; yy++)
     {
@@ -1959,12 +1959,10 @@ void NcnnMaxPoolingIndicesFromValuePack4(uint3 id : SV_DispatchThreadID)
 
             float4 v = _MaxPoolInArr[int3(xx, yy, p)];
             float idxv = (float)(yy * (int)iw + xx);
-            float4 diff = abs(v - pooledValue);
-            float4 eps = max(abs(pooledValue), 1.0) * 1e-6;
-            if (found.x == 0 && diff.x <= eps.x) { bestIndex.x = idxv; found.x = 1; }
-            if (found.y == 0 && diff.y <= eps.y) { bestIndex.y = idxv; found.y = 1; }
-            if (found.z == 0 && diff.z <= eps.z) { bestIndex.z = idxv; found.z = 1; }
-            if (found.w == 0 && diff.w <= eps.w) { bestIndex.w = idxv; found.w = 1; }
+            if (v.x > bestValue.x) { bestValue.x = v.x; bestIndex.x = idxv; }
+            if (v.y > bestValue.y) { bestValue.y = v.y; bestIndex.y = idxv; }
+            if (v.z > bestValue.z) { bestValue.z = v.z; bestIndex.z = idxv; }
+            if (v.w > bestValue.w) { bestValue.w = v.w; bestIndex.w = idxv; }
         }
     }
 

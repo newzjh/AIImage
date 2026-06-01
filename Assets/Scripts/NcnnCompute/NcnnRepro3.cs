@@ -182,6 +182,7 @@ namespace NcnnCompute
         private readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
         private readonly NcnnOps _ops;
+        private readonly float[] _gpuSyncScratch = new float[1];
         private Dictionary<string, int> _blobUseCount;
         private bool _useTempPool;
         private int _maxPooledPerShape = 2;
@@ -417,6 +418,7 @@ namespace NcnnCompute
                             conv.activationSlope,
                             outTensor);
                         _ops.FillPack4FromBufferCHW(outTensor.buffer, outW, outH, conv.outC, outRt);
+                        SynchronizeGpuBufferUse(outTensor.buffer);
                     }
 
                     SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new TensorShape(outW, outH, conv.outC));
@@ -498,8 +500,7 @@ namespace NcnnCompute
                     var idxRt = RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
                     if (UseTextureMaxPoolingInd)
                     {
-                        _ops.PoolingPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outRt);
-                        _ops.MaxPoolingIndicesFromValuePack4(src.texture, outRt, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, idxRt);
+                        _ops.MaxPoolingIndPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outRt, idxRt);
                     }
                     else
                         ApplyMaxPoolingIndCpu(src, srcShape, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH, outRt, idxRt);
@@ -817,6 +818,14 @@ namespace NcnnCompute
             return buffer;
         }
 
+        private void SynchronizeGpuBufferUse(ComputeBuffer buffer)
+        {
+            if (buffer == null || buffer.count <= 0)
+                return;
+
+            buffer.GetData(_gpuSyncScratch, 0, 0, 1);
+        }
+
         private void CompareTextureConvPath(string layerName, TensorRef src, TensorShape srcShape, ConvPack conv, RenderTexture textureOutput, int outW, int outH)
         {
             try
@@ -1044,6 +1053,7 @@ namespace NcnnCompute
             indexBuffer.SetData(indexData);
             _ops.FillPack4FromBufferCHW(valueBuffer, outW, outH, srcShape.c, outRt);
             _ops.FillPack4FromBufferCHW(indexBuffer, outW, outH, srcShape.c, idxRt);
+            SynchronizeGpuBufferUse(indexBuffer);
         }
 
         private void ApplyMaxUnPoolingCpu(TensorRef src, TensorShape srcShape, IndexRef idx, int outW, int outH, RenderTexture outRt)
@@ -1082,6 +1092,7 @@ namespace NcnnCompute
             using var outBuffer = new ComputeBuffer(outData.Length, sizeof(float), ComputeBufferType.Structured);
             outBuffer.SetData(outData);
             _ops.FillPack4FromBufferCHW(outBuffer, outW, outH, srcShape.c, outRt);
+            SynchronizeGpuBufferUse(outBuffer);
         }
     }
 }
