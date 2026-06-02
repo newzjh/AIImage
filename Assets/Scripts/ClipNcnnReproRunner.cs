@@ -229,12 +229,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ApplyOptions(_projectionRepro);
         if (_imageRepro != null)
         {
-            _imageRepro.EnableWinograd23 = false;
-            _imageRepro.ForceBufferConvolutionAll = true;
-            _imageRepro.ForceBufferBinaryOpAll = true;
-            _imageRepro.ForceBufferGeluAll = true;
-            _imageRepro.EnableDepthWiseTextureConvolution = false;
-            _imageRepro.EnableConv1x1TextureConvolution = false;
+            ConfigureClipRepro(_imageRepro, true);
             if (enableDebugDump)
             {
                 _imageRepro.DebugCompareTextureLayers = new HashSet<string>(DebugImageCompareLayers, StringComparer.Ordinal);
@@ -252,6 +247,14 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 _imageCompareLines = null;
             }
         }
+        if (_textRepro != null)
+        {
+            ConfigureClipRepro(_textRepro, modelLevel == ClipModelLevel.S0);
+        }
+        if (_projectionRepro != null)
+        {
+            ConfigureClipRepro(_projectionRepro, false);
+        }
     }
 
     private void ApplyOptions(NcnnRepro4 repro)
@@ -261,6 +264,19 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         repro.EnableTempPool = enableTempPool;
         repro.MaxPooledPerShape = maxPooledPerShape;
         repro.ForceBufferConvolutionAll = false;
+    }
+
+    private static void ConfigureClipRepro(NcnnRepro4 repro, bool strictReference)
+    {
+        if (repro == null)
+            return;
+
+        repro.EnableWinograd23 = false;
+        repro.ForceBufferConvolutionAll = strictReference;
+        repro.ForceBufferBinaryOpAll = strictReference;
+        repro.ForceBufferGeluAll = strictReference;
+        repro.EnableDepthWiseTextureConvolution = !strictReference;
+        repro.EnableConv1x1TextureConvolution = !strictReference;
     }
 
     private async UniTask EnsureLoaded(CancellationToken ct)

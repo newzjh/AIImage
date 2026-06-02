@@ -191,6 +191,7 @@ public static class NcnnDebugRunner
             runner.enableDebugDump = true;
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
+            runner.modelLevel = ResolveClipModelLevel();
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("CLIP Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | best=" + (result.bestLabel ?? "") + " | prob=" + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture) + " | dump=" + (runner.LastDumpDir ?? ""));
         }

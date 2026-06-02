@@ -1058,7 +1058,9 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "ExpandDims", StringComparison.Ordinal))
                 {
-                    var axes = layer.GetInts(3, Array.Empty<int>());
+                    var axes = layer.GetInts(-23303, null);
+                    if (axes == null || axes.Length == 0)
+                        axes = layer.GetInts(3, Array.Empty<int>());
                     if (axes == null || axes.Length != 1 || axes[0] != 1)
                         throw new InvalidOperationException("ExpandDims currently only supports axes=[1]: " + layer.name);
 
@@ -1094,7 +1096,9 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "Squeeze", StringComparison.Ordinal))
                 {
-                    var axes = layer.GetInts(3, Array.Empty<int>());
+                    var axes = layer.GetInts(-23303, null);
+                    if (axes == null || axes.Length == 0)
+                        axes = layer.GetInts(3, Array.Empty<int>());
                     if (axes == null || axes.Length != 1 || axes[0] != 1)
                         throw new InvalidOperationException("Squeeze currently only supports axes=[1]: " + layer.name);
 
