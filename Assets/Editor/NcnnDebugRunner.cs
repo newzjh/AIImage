@@ -25,6 +25,14 @@ public static class NcnnDebugRunner
     private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
     private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
     private const string ReproTempPoolEnvVar = "AIIMAGE_REPRO_TEMP_POOL";
+    private const string SdWidthEnvVar = "AIIMAGE_SD_WIDTH";
+    private const string SdHeightEnvVar = "AIIMAGE_SD_HEIGHT";
+    private const string SdStepsEnvVar = "AIIMAGE_SD_STEPS";
+    private const string SdSeedEnvVar = "AIIMAGE_SD_SEED";
+    private const string SdStrengthEnvVar = "AIIMAGE_SD_STRENGTH";
+    private const string SdPositivePromptEnvVar = "AIIMAGE_SD_POSITIVE_PROMPT";
+    private const string SdNegativePromptEnvVar = "AIIMAGE_SD_NEGATIVE_PROMPT";
+    private const string SdInitImageEnvVar = "AIIMAGE_SD_INIT_IMAGE";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -35,6 +43,8 @@ public static class NcnnDebugRunner
     private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
     private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
     private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
+    private static readonly string DefaultSdPositivePrompt = "floating hair, portrait, ((loli)), ((one girl)), cute face, hidden hands, asymmetrical bangs, beautiful detailed eyes, eye shadow, hair ornament, ribbons, bowties, buttons, pleated skirt, (((masterpiece))), ((best quality)), colorful";
+    private static readonly string DefaultSdNegativePrompt = "((part of the head)), ((((mutated hands and fingers)))), deformed, blurry, bad anatomy, disfigured, poorly drawn face, mutation, mutated, extra limb, ugly, poorly drawn hands, missing limb, blurry, floating limbs, disconnected limbs, malformed hands, blur, out of focus, long neck, long body, Octane renderer, lowres, bad anatomy, bad hands, text";
     private static bool _autoBatchScheduled;
 
     [InitializeOnLoadMethod]
@@ -88,6 +98,9 @@ public static class NcnnDebugRunner
             case nameof(RunYoloSegDebugBatch):
                 RunYoloSegDebugBatch();
                 return;
+            case nameof(RunStableDiffusionDebugBatch):
+                RunStableDiffusionDebugBatch();
+                return;
             case nameof(RunCodeFormerStressBatch):
                 RunCodeFormerStressBatch();
                 return;
@@ -139,6 +152,12 @@ public static class NcnnDebugRunner
     public static void RunYoloSegDebugMenu()
     {
         RunYoloSegDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run Stable Diffusion Debug")]
+    public static void RunStableDiffusionDebugMenu()
+    {
+        RunStableDiffusionDebug().Forget();
     }
 
     [MenuItem("Tools/AIImage/Run CodeFormer Stress (60x)")]
@@ -297,9 +316,16 @@ public static class NcnnDebugRunner
         await RunYoloSegDebugInternal();
     }
 
+    public static async UniTaskVoid RunStableDiffusionDebug()
+    {
+        await RunStableDiffusionDebugInternal();
+    }
+
     public static void RunMattingDebugBatch() => RunBatchBlocking(nameof(RunMattingDebugBatch), RunMattingDebugInternal);
 
     public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
+
+    public static void RunStableDiffusionDebugBatch() => RunBatchBlocking(nameof(RunStableDiffusionDebugBatch), RunStableDiffusionDebugInternal, TimeSpan.FromHours(4));
 
     private static async UniTask RunMattingDebugInternal()
     {
@@ -390,6 +416,65 @@ public static class NcnnDebugRunner
         {
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    private static async UniTask RunStableDiffusionDebugInternal()
+    {
+        var width = ResolvePositiveIntEnv(SdWidthEnvVar, 256);
+        var height = ResolvePositiveIntEnv(SdHeightEnvVar, 256);
+        var steps = ResolvePositiveIntEnv(SdStepsEnvVar, 15);
+        var seed = ResolveIntEnvAllowZero(SdSeedEnvVar, 42);
+        var strength = ResolveFloatEnvOrDefault(SdStrengthEnvVar, 0.75f);
+        var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, DefaultSdPositivePrompt);
+        var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, DefaultSdNegativePrompt);
+        var initPath = ResolveOptionalExistingFile(SdInitImageEnvVar);
+        Texture2D initTex = null;
+
+        if (!string.IsNullOrWhiteSpace(initPath))
+        {
+            initTex = LoadTexture(initPath);
+            if (initTex == null)
+                throw new InvalidOperationException("Failed to load SD init image: " + initPath);
+        }
+
+        var go = new GameObject("StableDiffusionDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<SDNcnnReproRunner>();
+            runner.enableDebugDump = true;
+            runner.enableTempPool = false;
+            runner.maxPooledPerShape = 0;
+            runner.ProgressChanged += (value, message) =>
+            {
+                Debug.Log("[SD-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+            };
+
+            var result = initTex != null
+                ? await runner.Img2ImgAsync(initTex, positivePrompt, negativePrompt, width, height, steps, seed, strength, CancellationToken.None)
+                : await runner.Txt2ImgAsync(positivePrompt, negativePrompt, width, height, steps, seed, CancellationToken.None);
+
+            Debug.Log(
+                "Stable Diffusion Debug result | error=" + (result.error ?? "")
+                + " | elapsedMs=" + result.elapsedMs
+                + " | seed=" + result.seed.ToString(CultureInfo.InvariantCulture)
+                + " | mode=" + (initTex != null ? "img2img" : "txt2img")
+                + " | dump=" + (runner.LastDumpDir ?? ""));
+
+            if (result.texture != null)
+            {
+                var dir = !string.IsNullOrWhiteSpace(runner.LastDumpDir)
+                    ? runner.LastDumpDir
+                    : CreateGenericDumpDir("AIImage_SD_NcnnRepro");
+                TryWriteTexturePng(result.texture, dir, "final_output.png");
+                UnityEngine.Object.DestroyImmediate(result.texture);
+            }
+        }
+        finally
+        {
+            if (initTex != null)
+                UnityEngine.Object.DestroyImmediate(initTex);
+            UnityEngine.Object.DestroyImmediate(go);
         }
     }
 
@@ -1154,6 +1239,22 @@ public static class NcnnDebugRunner
         return Mathf.Max(1, fallback);
     }
 
+    private static int ResolveIntEnvAllowZero(string envName, int fallback)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env)
+                && int.TryParse(env.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                return parsed;
+        }
+        catch
+        {
+        }
+
+        return fallback;
+    }
+
     private static ClipNcnnReproRunner.ClipModelLevel ResolveClipModelLevel()
     {
         try
@@ -1197,6 +1298,43 @@ public static class NcnnDebugRunner
         }
 
         return fallback;
+    }
+
+    private static float ResolveFloatEnvOrDefault(string envName, float fallback)
+    {
+        if (TryReadFloatEnv(envName, out var value))
+            return value;
+        return fallback;
+    }
+
+    private static string ResolveStringEnv(string envName, string fallback)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env))
+                return env;
+        }
+        catch
+        {
+        }
+
+        return fallback;
+    }
+
+    private static string ResolveOptionalExistingFile(string envName)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
+                return env;
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     private static string FormatClipTopScores(ClipLabelScore[] scores, int topN)

@@ -1961,7 +1961,7 @@ namespace NcnnCompute
             if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
             if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
-            if (k > 2048) throw new ArgumentOutOfRangeException(nameof(k), "k too large for current tiled kernel (MATK_MAX=2048): " + k);
+            if (k > 8192) throw new ArgumentOutOfRangeException(nameof(k), "k too large for current tiled kernel (MATK_MAX=8192): " + k);
 
             _cs.SetInt("_MatM", m);
             _cs.SetInt("_MatN", n);

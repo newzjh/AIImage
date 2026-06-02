@@ -26,6 +26,40 @@ namespace NcnnCompute
                         do
                         {
                                                 var firstBufferView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                                                if (firstBufferView != null && firstBufferView.dims == 1)
+                                                {
+                                                    var concatAxis = layer.GetInt(0, 0);
+                                                    if (concatAxis != 0)
+                                                        throw new InvalidOperationException("Concat dims=1 only supports axis=0: " + layer.name);
+
+                                                    var totalCount = 0;
+                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
+                                                    {
+                                                        var partView = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
+                                                        if (partView == null || partView.dims != 1)
+                                                            throw new InvalidOperationException("Concat dims=1 source missing: " + layer.name + " | " + layer.bottomNames[i]);
+                                                        totalCount += partView.w;
+                                                    }
+
+                                                    var outBuf = owner.RentTempBuffer(totalCount, sizeof(float));
+                                                    var dstOffset = 0;
+                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
+                                                    {
+                                                        var partBuf = owner.GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                        var partView = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
+                                                        if (partBuf == null || partView == null)
+                                                            throw new InvalidOperationException("Concat dims=1 buffer source missing: " + layer.name + " | " + layer.bottomNames[i]);
+                                                        owner.Ops.CopyBufPartial(partBuf, 0, outBuf, partView.w, dstOffset);
+                                                        dstOffset += partView.w;
+                                                    }
+
+                                                    bufferBlobs[layer.topNames[0]] = outBuf;
+                                                    bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
+                                                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 1, totalCount, 1, 1, 1, false);
+                                                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                                                    continue;
+                                                }
+
                                                 if (firstBufferView != null && firstBufferView.dims == 2)
                                                 {
                                                     var concatAxis = layer.GetInt(0, 0);

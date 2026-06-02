@@ -2681,7 +2681,7 @@ void NcnnGroupNormApply(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gro
 }
 
 #define TILE 8
-#define MATK_MAX 2048
+#define MATK_MAX 8192
 groupshared float _MatAs[64];
 groupshared float _MatBs[64];
 

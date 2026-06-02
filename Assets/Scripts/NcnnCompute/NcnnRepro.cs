@@ -3864,8 +3864,6 @@ TextureConvPath:
             if (batchB != 1 && batchB != batch)
                 throw new InvalidOperationException("MatMul batchB mismatch: " + batchB + " vs " + batch);
 
-            var a = ReadFloatBuffer(aBuf);
-            var b = ReadFloatBuffer(bBuf);
             var aCount = aRows * aCols;
             var bCount = bRows * bCols;
             var outCount = aRows * n;
@@ -3873,53 +3871,45 @@ TextureConvPath:
             if (batch == 1)
             {
                 var outTensor2D = RentTempTensorBuffer(2, n, aRows);
-                var outData2D = new float[outCount];
-                for (var row = 0; row < aRows; row++)
-                {
-                    var aBase = row * aCols;
-                    for (var col = 0; col < n; col++)
-                    {
-                        double sum = 0.0;
-                        for (var kk = 0; kk < k; kk++)
-                        {
-                            var aValue = a[aBase + kk];
-                            var bValue = transB
-                                ? b[col * bCols + kk]
-                                : b[kk * bCols + col];
-                            sum += (double)aValue * bValue;
-                        }
-                        outData2D[row * n + col] = (float)sum;
-                    }
-                }
-                outTensor2D.buffer.SetData(outData2D);
+                Ops.MatMul2D(aBuf, bBuf, aRows, n, k, transB, outTensor2D.buffer);
                 return outTensor2D;
             }
 
             var outTensor = RentTempTensorBuffer(3, n, aRows, 1, batch);
-            var outData = new float[outCount * batch];
-            for (var p = 0; p < batch; p++)
+            var tempA = batchA == 1 ? null : RentTempBuffer(aCount, sizeof(float));
+            var tempB = batchB == 1 ? null : RentTempBuffer(bCount, sizeof(float));
+            var tempOut = RentTempBuffer(outCount, sizeof(float));
+            try
             {
-                var aOffset = (batchA == 1 ? 0 : p) * aCount;
-                var bOffset = (batchB == 1 ? 0 : p) * bCount;
-                for (var row = 0; row < aRows; row++)
+                for (var p = 0; p < batch; p++)
                 {
-                    var aBase = aOffset + row * aCols;
-                    for (var col = 0; col < n; col++)
+                    var aSrc = aBuf;
+                    var bSrc = bBuf;
+                    if (batchA != 1)
                     {
-                        double sum = 0.0;
-                        for (var kk = 0; kk < k; kk++)
-                        {
-                            var aValue = a[aBase + kk];
-                            var bIndex = transB
-                                ? bOffset + col * bCols + kk
-                                : bOffset + kk * bCols + col;
-                            sum += (double)aValue * b[bIndex];
-                        }
-                        outData[p * outCount + row * n + col] = (float)sum;
+                        Ops.CopyBufPartial(aBuf, p * aCount, tempA, aCount);
+                        aSrc = tempA;
                     }
+
+                    if (batchB != 1)
+                    {
+                        Ops.CopyBufPartial(bBuf, p * bCount, tempB, bCount);
+                        bSrc = tempB;
+                    }
+
+                    Ops.MatMul2D(aSrc, bSrc, aRows, n, k, transB, tempOut);
+                    Ops.CopyBufPartial(tempOut, 0, outTensor.buffer, outCount, p * outCount);
                 }
             }
-            outTensor.buffer.SetData(outData);
+            finally
+            {
+                if (tempA != null)
+                    ReturnTempBuffer(tempA);
+                if (tempB != null)
+                    ReturnTempBuffer(tempB);
+                ReturnTempBuffer(tempOut);
+            }
+
             return outTensor;
         }
 

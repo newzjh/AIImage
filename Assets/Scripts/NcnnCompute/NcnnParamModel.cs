@@ -97,6 +97,7 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey Swish = NcnnLayerTypeKey.FromString("Swish");
         public static readonly NcnnLayerTypeKey Sigmoid = NcnnLayerTypeKey.FromString("Sigmoid");
         public static readonly NcnnLayerTypeKey GELU = NcnnLayerTypeKey.FromString("GELU");
+        public static readonly NcnnLayerTypeKey Clip = NcnnLayerTypeKey.FromString("Clip");
         public static readonly NcnnLayerTypeKey Softmax = NcnnLayerTypeKey.FromString("Softmax");
         public static readonly NcnnLayerTypeKey Padding = NcnnLayerTypeKey.FromString("Padding");
         public static readonly NcnnLayerTypeKey Pooling = NcnnLayerTypeKey.FromString("Pooling");

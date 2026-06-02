@@ -28,8 +28,84 @@ namespace NcnnCompute
                                                 var axes = layer.GetInts(-23303, null);
                                                 if (axes == null || axes.Length == 0)
                                                     axes = layer.GetInts(3, Array.Empty<int>());
-                                                if (axes == null || axes.Length != 1 || axes[0] != 1)
-                                                    throw new InvalidOperationException("ExpandDims currently only supports axes=[1]: " + layer.name);
+                                                if (axes == null || axes.Length == 0)
+                                                    throw new InvalidOperationException("ExpandDims missing axes: " + layer.name);
+
+                                                static NcnnTensorBuffer ExpandBufferView(NcnnTensorBuffer input, int[] expandAxes)
+                                                {
+                                                    if (input == null)
+                                                        throw new ArgumentNullException(nameof(input));
+
+                                                    var current = input;
+                                                    for (var i = 0; i < expandAxes.Length; i++)
+                                                    {
+                                                        var outDims = current.dims + 1;
+                                                        if (outDims > 4)
+                                                            throw new InvalidOperationException("ExpandDims would exceed dims=4");
+
+                                                        var ncnnAxis = expandAxes[i];
+                                                        if (ncnnAxis < 0)
+                                                            ncnnAxis += outDims;
+                                                        if (ncnnAxis < 0 || ncnnAxis >= outDims)
+                                                            throw new InvalidOperationException("ExpandDims axis out of range");
+
+                                                        var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(outDims, ncnnAxis);
+                                                        current = current.ExpandDims(tensorAxis);
+                                                    }
+
+                                                    return current;
+                                                }
+
+                                                static NcnnRepro.BufferShape ExpandTextureShape(NcnnRepro.BufferShape input, int[] expandAxes)
+                                                {
+                                                    var dims = input.dims;
+                                                    var w = input.w;
+                                                    var h = input.h;
+                                                    var d = input.d;
+                                                    var c = input.c;
+
+                                                    for (var i = 0; i < expandAxes.Length; i++)
+                                                    {
+                                                        var outDims = dims + 1;
+                                                        if (outDims > 4)
+                                                            throw new InvalidOperationException("ExpandDims would exceed dims=4");
+
+                                                        var ncnnAxis = expandAxes[i];
+                                                        if (ncnnAxis < 0)
+                                                            ncnnAxis += outDims;
+                                                        if (ncnnAxis < 0 || ncnnAxis >= outDims)
+                                                            throw new InvalidOperationException("ExpandDims axis out of range");
+
+                                                        var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(outDims, ncnnAxis);
+                                                        var sizes = new[] { w, h, dims == 4 ? d : c, dims == 4 ? c : 1 };
+                                                        var expanded = new[] { 1, 1, 1, 1 };
+                                                        for (var axisIndex = 0; axisIndex < outDims; axisIndex++)
+                                                        {
+                                                            if (axisIndex < tensorAxis)
+                                                                expanded[axisIndex] = sizes[axisIndex];
+                                                            else if (axisIndex == tensorAxis)
+                                                                expanded[axisIndex] = 1;
+                                                            else
+                                                                expanded[axisIndex] = sizes[axisIndex - 1];
+                                                        }
+
+                                                        dims = outDims;
+                                                        w = expanded[0];
+                                                        h = expanded[1];
+                                                        if (dims == 3)
+                                                        {
+                                                            d = 1;
+                                                            c = expanded[2];
+                                                        }
+                                                        else
+                                                        {
+                                                            d = expanded[2];
+                                                            c = expanded[3];
+                                                        }
+                                                    }
+
+                                                    return new NcnnRepro.BufferShape(dims, w, h, d, c);
+                                                }
 
                                                 if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var expandBuf) && expandBuf != null)
                                                 {
@@ -41,19 +117,17 @@ namespace NcnnCompute
                                                     }
 
                                                     var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (srcTensor == null || srcTensor.dims != 2)
-                                                        throw new InvalidOperationException("ExpandDims expects dims=2 buffer input: " + layer.name);
-                                                    bufferViews[layer.topNames[0]] = srcTensor.View(3, srcTensor.w, 1, 1, srcTensor.h);
+                                                    if (srcTensor == null)
+                                                        throw new InvalidOperationException("ExpandDims expects buffer input: " + layer.name);
+                                                    bufferViews[layer.topNames[0]] = ExpandBufferView(srcTensor, axes);
                                                 }
                                                 else
                                                 {
                                                     var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                                                     var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                                                    if (srcShape.dims != 2)
-                                                        throw new InvalidOperationException("ExpandDims expects dims=2 texture input: " + layer.name);
 
                                                     textureBlobs[layer.topNames[0]] = src;
-                                                    textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, srcShape.w, 1, 1, srcShape.h);
+                                                    textureShapes[layer.topNames[0]] = ExpandTextureShape(srcShape, axes);
                                                     src.refs++;
                                                 }
 
