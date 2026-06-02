@@ -408,6 +408,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 _repro?.ReturnTempArray(corePack4);
             if (inputPack4 != null)
                 _repro?.ReturnTempArray(inputPack4);
+            _repro?.ClearTempPool();
             if (readableSrc != null && readableSrc != src)
                 Destroy(readableSrc);
             ReportProgress(1f, string.Empty);

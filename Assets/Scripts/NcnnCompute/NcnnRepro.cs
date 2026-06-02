@@ -2772,32 +2772,6 @@ namespace NcnnCompute
 
         public RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
         {
-            if (!_useTempPool)
-                return CreateTempArray(w, h, depth, format);
-
-            var key = new RtKey(w, h, Mathf.Max(1, depth), format);
-            if (_rtPool.TryGetValue(key, out var stack) && stack.Count > 0)
-            {
-                var keep = new Stack<PooledRt>(stack.Count);
-                RenderTexture hit = null;
-                while (stack.Count > 0)
-                {
-                    var p = stack.Pop();
-                    if (hit == null && p.rt != null && IsFencePassedOrAged(p))
-                    {
-                        hit = p.rt;
-                        break;
-                    }
-                    keep.Push(p);
-                }
-                while (keep.Count > 0)
-                    stack.Push(keep.Pop());
-                if (hit != null)
-                {
-                    NcnnGpuResourceTracker.ReuseTexture(hit, "NcnnRepro.RentTempArray|pool");
-                    return hit;
-                }
-            }
             return CreateTempArray(w, h, depth, format);
         }
 
@@ -2842,36 +2816,9 @@ namespace NcnnCompute
         {
             if (rt == null)
                 return;
-            if (!_useTempPool)
-            {
-                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray");
-                RenderTexture.ReleaseTemporary(rt);
-                return;
-            }
 
-            var key = new RtKey(rt.width, rt.height, rt.volumeDepth, rt.format);
-            if (!_rtPool.TryGetValue(key, out var stack))
-            {
-                stack = new Stack<PooledRt>();
-                _rtPool[key] = stack;
-            }
-            var cap = Mathf.Max(0, _maxPooledPerShape);
-            if (stack.Count >= cap)
-            {
-                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray(pool-full)");
-                RenderTexture.ReleaseTemporary(rt);
-                return;
-            }
-            try
-            {
-                var fence = Graphics.CreateGraphicsFence(GraphicsFenceType.AsyncQueueSynchronisation, SynchronisationStageFlags.ComputeProcessing);
-                stack.Push(new PooledRt(rt, fence, Time.frameCount));
-            }
-            catch
-            {
-                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray(fence-failed)");
-                RenderTexture.ReleaseTemporary(rt);
-            }
+            NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray");
+            RenderTexture.ReleaseTemporary(rt);
         }
 
         public void ReturnTempArray(CommandBuffer cmd, ComputeTexture t)

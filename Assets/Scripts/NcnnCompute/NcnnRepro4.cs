@@ -2771,20 +2771,6 @@ TextureConvPath:
 
             var allocLabel = "NcnnRepro4.RentTempArray(" + (callerMember ?? "?") + ":" + callerLine.ToString(CultureInfo.InvariantCulture) + ")";
 
-            var key = new RtKey(w, h, depth, format);
-            if (_useTempPool && _rtPool.TryGetValue(key, out var pool))
-            {
-                while (pool.Count > 0)
-                {
-                    var rt = pool.Pop();
-                    if (rt != null)
-                    {
-                        NcnnGpuResourceTracker.ReuseTexture(rt, allocLabel + "|pool");
-                        return rt;
-                    }
-                }
-            }
-
             var desc = new RenderTextureDescriptor(w, h, format, 0)
             {
                 dimension = TextureDimension.Tex2DArray,
@@ -2804,28 +2790,8 @@ TextureConvPath:
             if (rt == null)
                 return;
 
-            if (!_useTempPool || _maxPooledPerShape <= 0)
-            {
-                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro4.ReturnTempArray");
-                RenderTexture.ReleaseTemporary(rt);
-                return;
-            }
-
-            var key = new RtKey(rt.width, rt.height, rt.volumeDepth > 0 ? rt.volumeDepth : 1, rt.format);
-            if (!_rtPool.TryGetValue(key, out var pool))
-            {
-                pool = new Stack<RenderTexture>();
-                _rtPool[key] = pool;
-            }
-
-            if (pool.Count >= _maxPooledPerShape)
-            {
-                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro4.ReturnTempArray(pool-full)");
-                RenderTexture.ReleaseTemporary(rt);
-                return;
-            }
-
-            pool.Push(rt);
+            NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro4.ReturnTempArray");
+            RenderTexture.ReleaseTemporary(rt);
         }
 
         public void ClearTempPool()

@@ -242,6 +242,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _repro.DebugCompareTextureConvLayers = null;
                 _repro.DebugCompareMaxPoolingLayers = null;
                 _repro.DebugLog = null;
+                _repro.ClearTempPool();
             }
             ReportProgress(1f, string.Empty);
         }

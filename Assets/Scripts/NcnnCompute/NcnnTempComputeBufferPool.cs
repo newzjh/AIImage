@@ -33,14 +33,21 @@ namespace NcnnCompute
         {
             public ComputeBuffer buffer;
             public int lastUsedFrame;
+            public int count;
+            public int stride;
+            public long bytes;
+            public int id;
         }
 
         private readonly Dictionary<BufferKey, Stack<BufferEntry>> _freeBuffers = new Dictionary<BufferKey, Stack<BufferEntry>>();
         private readonly HashSet<int> _pooledIds = new HashSet<int>();
+        private long _pooledBytes;
 
         public bool Enabled { get; set; }
         public int MaxPooledPerShape { get; set; } = 2;
         public int GarbageCollectFrames { get; set; } = 2;
+        public long MaxSingleBufferBytes { get; set; } = 16L * 1024L * 1024L;
+        public long MaxTotalPooledBytes { get; set; } = 128L * 1024L * 1024L;
 
         public ComputeBuffer Rent(int count, int stride, ComputeBufferType type, string label)
         {
@@ -56,9 +63,22 @@ namespace NcnnCompute
                     var entry = pool.Pop();
                     var pooled = entry?.buffer;
                     if (pooled == null)
+                    {
+                        if (entry != null)
+                            _pooledBytes = Math.Max(0L, _pooledBytes - entry.bytes);
                         continue;
+                    }
 
-                    _pooledIds.Remove(pooled.GetHashCode());
+                    if (!IsBufferUsable(pooled))
+                    {
+                        _pooledIds.Remove(entry.id);
+                        _pooledBytes = Math.Max(0L, _pooledBytes - entry.bytes);
+                        ReleaseSilently(pooled, "NcnnTempComputeBufferPool.Rent(dead)");
+                        continue;
+                    }
+
+                    _pooledIds.Remove(entry.id);
+                    _pooledBytes = Math.Max(0L, _pooledBytes - entry.bytes);
                     NcnnGpuResourceTracker.ReuseBuffer(pooled, label + "|pool");
                     return pooled;
                 }
@@ -80,22 +100,29 @@ namespace NcnnCompute
                 return;
             }
 
+            if (!TryGetBufferInfo(buffer, out var count, out var stride, out var bytes, out var id))
+            {
+                ReleaseSilently(buffer, label + "(invalid)");
+                return;
+            }
+
             GarbageCollect();
 
-            var key = new BufferKey(buffer.count, buffer.stride);
+            var key = new BufferKey(count, stride);
             if (!_freeBuffers.TryGetValue(key, out var pool))
             {
                 pool = new Stack<BufferEntry>();
                 _freeBuffers[key] = pool;
             }
 
-            if (pool.Count >= MaxPooledPerShape)
+            if (pool.Count >= MaxPooledPerShape
+                || bytes > MaxSingleBufferBytes
+                || _pooledBytes + bytes > MaxTotalPooledBytes)
             {
                 Release(buffer, label + "(pool-full)");
                 return;
             }
 
-            var id = buffer.GetHashCode();
             if (!_pooledIds.Add(id))
             {
                 Release(buffer, label + "(duplicate)");
@@ -105,8 +132,13 @@ namespace NcnnCompute
             pool.Push(new BufferEntry
             {
                 buffer = buffer,
-                lastUsedFrame = Time.frameCount
+                lastUsedFrame = Time.frameCount,
+                count = count,
+                stride = stride,
+                bytes = bytes,
+                id = id
             });
+            _pooledBytes += bytes;
         }
 
         public void Clear(string label)
@@ -120,13 +152,15 @@ namespace NcnnCompute
                     if (entry?.buffer == null)
                         continue;
 
-                    _pooledIds.Remove(entry.buffer.GetHashCode());
+                    _pooledIds.Remove(entry.id);
+                    _pooledBytes = Math.Max(0L, _pooledBytes - entry.bytes);
                     Release(entry.buffer, label);
                 }
             }
 
             _freeBuffers.Clear();
             _pooledIds.Clear();
+            _pooledBytes = 0L;
         }
 
         public void GarbageCollect()
@@ -152,16 +186,21 @@ namespace NcnnCompute
                     {
                         var entry = pool.Pop();
                         if (entry?.buffer == null)
+                        {
+                            if (entry != null)
+                                _pooledBytes = Math.Max(0L, _pooledBytes - entry.bytes);
                             continue;
+                        }
 
                         var frameDiff = currentFrame - entry.lastUsedFrame;
-                        if (frameDiff >= 0 && frameDiff <= GarbageCollectFrames)
+                        if (frameDiff >= 0 && frameDiff <= GarbageCollectFrames && IsBufferUsable(entry.buffer))
                         {
                             keep.Push(entry);
                             continue;
                         }
 
-                        _pooledIds.Remove(entry.buffer.GetHashCode());
+                        _pooledIds.Remove(entry.id);
+                        _pooledBytes = Math.Max(0L, _pooledBytes - entry.bytes);
                         Release(entry.buffer, "NcnnTempComputeBufferPool.GarbageCollect");
                     }
 
@@ -185,6 +224,56 @@ namespace NcnnCompute
         {
             NcnnGpuResourceTracker.ReleaseBuffer(buffer, label);
             try { buffer.Dispose(); } catch { }
+        }
+
+        private static void ReleaseSilently(ComputeBuffer buffer, string label)
+        {
+            try { NcnnGpuResourceTracker.ReleaseBuffer(buffer, label); } catch { }
+            try { buffer.Dispose(); } catch { }
+        }
+
+        private static long EstimateBytes(int count, int stride)
+        {
+            return Math.Max(0L, (long)count * Math.Max(1, stride));
+        }
+
+        private static bool TryGetBufferInfo(ComputeBuffer buffer, out int count, out int stride, out long bytes, out int id)
+        {
+            count = 0;
+            stride = 0;
+            bytes = 0L;
+            id = 0;
+
+            if (buffer == null)
+                return false;
+
+            try
+            {
+                count = buffer.count;
+                stride = buffer.stride;
+                id = buffer.GetHashCode();
+                bytes = EstimateBytes(count, stride);
+                return count > 0 && stride > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsBufferUsable(ComputeBuffer buffer)
+        {
+            if (buffer == null)
+                return false;
+
+            try
+            {
+                return buffer.count > 0 && buffer.stride > 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static class ListPool<T>

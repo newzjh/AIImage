@@ -992,6 +992,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outRt.Release();
                 Destroy(outRt);
             }
+            _repro?.ClearTempPool();
             try { probeBuf?.Dispose(); } catch { }
             try { probeInBuf?.Dispose(); } catch { }
         }
