@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Diagnostics;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -491,6 +494,7 @@ namespace NcnnCompute
         }
 
         public NcnnParamModel Model { get; private set; }
+        public ModelLoadProfile LastLoadProfile { get; private set; }
         public bool ForceBufferBinaryOpAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
         public bool EnableDepthWiseTextureConvolution { get; set; } = true;
@@ -543,374 +547,604 @@ namespace NcnnCompute
             _ops = ops ?? throw new ArgumentNullException(nameof(ops));
         }
 
-        public void LoadModel(string paramText, NcnnBinReader br)
+        public void LoadModel(string paramText, NcnnBinReader br, Action<LoadProgress> onProgress = null)
         {
-            Release();
-
-            Model = NcnnParamParser.Parse(paramText);
-            _blobUseCount = BuildBlobUseCount(Model);
-
-            foreach (var layer in Model.layers)
+            try
             {
-                if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
-                    || string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
+                foreach (var progress in EnumerateModelLoad(paramText, br))
+                    onProgress?.Invoke(progress);
+            }
+            catch
+            {
+                try { Release(); } catch { }
+                throw;
+            }
+        }
+
+        public async UniTask LoadModelAsync(
+            string paramText,
+            NcnnBinReader br,
+            Action<LoadProgress> onProgress = null,
+            CancellationToken ct = default,
+            int yieldEveryLayers = 6)
+        {
+            yieldEveryLayers = Mathf.Max(1, yieldEveryLayers);
+            var nextYieldLayer = yieldEveryLayers;
+
+            try
+            {
+                foreach (var progress in EnumerateModelLoad(paramText, br))
                 {
-                    var pack = new ConvPack();
-                    pack.outC = layer.GetInt(0, 0);
-                    pack.group = Mathf.Max(1, layer.GetInt(7, 1));
-                    pack.kernelW = layer.GetInt(1, 0);
-                    pack.kernelH = layer.GetInt(11, pack.kernelW);
-                    pack.dilationW = layer.GetInt(2, 1);
-                    pack.dilationH = layer.GetInt(12, pack.dilationW);
-                    pack.strideW = layer.GetInt(3, 1);
-                    pack.strideH = layer.GetInt(13, pack.strideW);
-                    pack.padLeft = layer.GetInt(4, 0);
-                    pack.padRight = layer.GetInt(15, pack.padLeft);
-                    pack.padTop = layer.GetInt(14, pack.padLeft);
-                    pack.padBottom = layer.GetInt(16, pack.padTop);
-                    pack.biasTerm = layer.GetInt(5, 0);
-                    pack.weightSize = layer.GetInt(6, 0);
-                    pack.activationType = layer.GetInt(9, 0);
-                    pack.activationSlope = ParseLeakySlope(layer);
-                    pack.isDepthWise = string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal);
+                    onProgress?.Invoke(progress);
 
-                    var kernelArea = Mathf.Max(1, pack.kernelW * pack.kernelH);
-                    if (pack.isDepthWise)
+                    var shouldYield = false;
+                    if (!string.Equals(progress.stage, "layer", StringComparison.Ordinal))
                     {
-                        pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
-                        pack.useBufferPath = true;
+                        shouldYield = true;
                     }
-                    else
+                    else if (progress.layerIndex >= nextYieldLayer || progress.layerIndex >= progress.layerCount)
                     {
-                        pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * kernelArea));
-                        pack.useBufferPath = pack.strideW != 1
-                                             || pack.strideH != 1
-                                             || pack.kernelW != 1 && pack.kernelW != 3
-                                             || pack.kernelH != pack.kernelW
-                                             || pack.dilationW != 1
-                                             || pack.dilationH != 1
-                                             || pack.padLeft != pack.padRight
-                                             || pack.padTop != pack.padBottom
-                                             || pack.kernelW != 3 && pack.kernelW != 1;
-                    }
-                    pack.inPacks = (pack.inC + 3) / 4;
-                    pack.outPacks = (pack.outC + 3) / 4;
-
-                    var w = ReadPackedOrRawWeightArray(br, pack.weightSize, layer.name);
-                    var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
-
-                    pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-                    pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-                    pack.rawWeight.SetData(w);
-                    pack.rawBias.SetData(b);
-
-                    if (!pack.useBufferPath && !pack.isDepthWise && pack.group == 1)
-                    {
-                        var w4 = PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
-                        var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
-                        pack.packedWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
-                        pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
-                        pack.packedWeight4.SetData(w4);
-                        pack.packedBias4.SetData(b4);
-
-                        if (pack.kernelW == 3
-                            && pack.kernelH == 3
-                            && pack.strideW == 1
-                            && pack.strideH == 1
-                            && pack.padLeft == 1
-                            && pack.padRight == 1
-                            && pack.padTop == 1
-                            && pack.padBottom == 1
-                            && NcnnWinograd23.CanUse(pack.kernelW, pack.padLeft, pack.inPacks, pack.outPacks))
-                        {
-                            pack.useWinograd23 = true;
-                            var wTm = NcnnWinograd23.PackWeightTm23(w, pack.outC, pack.inC, pack.outPacks, pack.inPacks);
-                            pack.packedWeightTm23 = new ComputeBuffer(wTm.Length, sizeof(float) * 4, ComputeBufferType.Structured);
-                            pack.packedWeightTm23.SetData(wTm);
-                        }
-                    }
-                    else if (pack.isDepthWise
-                             && pack.group == pack.inC
-                             && pack.outC == pack.inC
-                             && pack.kernelW == 3
-                             && pack.kernelH == 3
-                             && pack.dilationW == 1
-                             && pack.dilationH == 1
-                             && pack.padLeft == pack.padRight
-                             && pack.padTop == pack.padBottom
-                             && pack.padLeft == pack.padTop)
-                    {
-                        var w4 = PackDepthWiseWeightsToP4K4(w, pack.outC, pack.kernelW, pack.outPacks);
-                        var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
-                        pack.packedDepthWiseWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
-                        pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
-                        pack.packedDepthWiseWeight4.SetData(w4);
-                        pack.packedBias4.SetData(b4);
+                        shouldYield = true;
+                        nextYieldLayer = progress.layerIndex + yieldEveryLayers;
                     }
 
-                    _conv[layer.name] = pack;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "Deconvolution", StringComparison.Ordinal))
-                {
-                    var pack = new DeconvPack();
-                    pack.outC = layer.GetInt(0, 0);
-                    pack.group = Mathf.Max(1, layer.GetInt(7, 1));
-                    pack.kernelW = layer.GetInt(1, 0);
-                    pack.kernelH = layer.GetInt(11, pack.kernelW);
-                    pack.dilationW = layer.GetInt(2, 1);
-                    pack.dilationH = layer.GetInt(12, pack.dilationW);
-                    pack.strideW = layer.GetInt(3, 1);
-                    pack.strideH = layer.GetInt(13, pack.strideW);
-                    pack.padLeft = layer.GetInt(4, 0);
-                    pack.padRight = layer.GetInt(15, pack.padLeft);
-                    pack.padTop = layer.GetInt(14, pack.padLeft);
-                    pack.padBottom = layer.GetInt(16, pack.padTop);
-                    pack.outputPadRight = layer.GetInt(18, 0);
-                    pack.outputPadBottom = layer.GetInt(19, pack.outputPadRight);
-                    pack.biasTerm = layer.GetInt(5, 0);
-                    pack.weightSize = layer.GetInt(6, 0);
-                    pack.activationType = layer.GetInt(9, 0);
-                    pack.activationSlope = ParseLeakySlope(layer);
-
-                    var kernelArea = Mathf.Max(1, pack.kernelW * pack.kernelH);
-                    pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
-
-                    var w = ReadPackedOrRawWeightArray(br, pack.weightSize, layer.name);
-                    var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
-
-                    pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-                    pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-                    pack.rawWeight.SetData(w);
-                    pack.rawBias.SetData(b);
-                    _deconv[layer.name] = pack;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "InnerProduct", StringComparison.Ordinal))
-                {
-                    var ip = new InnerProductPack();
-                    ip.outFeatures = layer.GetInt(0, 0);
-                    ip.biasTerm = layer.GetInt(1, 0);
-                    ip.weightSize = layer.GetInt(2, 0);
-                    ip.inFeatures = ip.outFeatures > 0 ? ip.weightSize / ip.outFeatures : 0;
-
-                    var w = ReadPackedOrRawWeightArray(br, ip.weightSize, layer.name);
-                    var b = ip.biasTerm != 0 ? br.ReadFloat32Array(ip.outFeatures) : new float[ip.outFeatures];
-
-                    ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-                    ip.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-                    ip.w.SetData(w);
-                    ip.b.SetData(b);
-                    _innerProduct[layer.name] = ip;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "Gemm", StringComparison.Ordinal))
-                {
-                    var gp = new GemmPack
-                    {
-                        alpha = layer.GetFloat(0, 1f),
-                        beta = layer.GetFloat(1, 1f),
-                        transA = layer.GetInt(2, 0) != 0,
-                        transB = layer.GetInt(3, 0) != 0,
-                        constantA = layer.GetInt(4, 0) != 0,
-                        constantB = layer.GetInt(5, 0) != 0,
-                        constantC = layer.GetInt(6, 0) != 0,
-                        constantM = layer.GetInt(7, 0),
-                        constantN = layer.GetInt(8, 0),
-                        constantK = layer.GetInt(9, 0),
-                        broadcastTypeC = layer.GetInt(10, 0)
-                    };
-
-                    if (gp.constantA)
-                        throw new InvalidOperationException("Gemm constantA is not supported in NcnnRepro4: " + layer.name);
-                    if (!gp.constantB)
-                        throw new InvalidOperationException("Gemm currently expects constantB=1: " + layer.name);
-
-                    var bw = gp.transB ? gp.constantK : gp.constantN;
-                    var bh = gp.transB ? gp.constantN : gp.constantK;
-                    var b = ReadClipMatAsFloat32(br, bw, bh, 0, 0, 0);
-                    gp.bDataCpu = b;
-                    gp.bData = NewBuffer(b);
-
-                    if (gp.constantC && gp.broadcastTypeC != -1)
-                    {
-                        int cw;
-                        int ch;
-                        switch (gp.broadcastTypeC)
-                        {
-                            case 0: cw = 1; ch = 0; break;
-                            case 1: cw = gp.constantM; ch = 0; break;
-                            case 2: cw = 1; ch = gp.constantM; break;
-                            case 3: cw = gp.constantN; ch = gp.constantM; break;
-                            case 4: cw = gp.constantN; ch = 1; break;
-                            default:
-                                throw new InvalidOperationException("Gemm broadcast_type_C unsupported: " + gp.broadcastTypeC + " | " + layer.name);
-                        }
-
-                        var c = ReadClipMatAsFloat32(br, cw, ch, 0, 0, 0);
-                        gp.cDataCpu = c;
-                        gp.cData = NewBuffer(c);
-                    }
-
-                    _gemm[layer.name] = gp;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "MemoryData", StringComparison.Ordinal))
-                {
-                    var w = layer.GetInt(0, 0);
-                    var h = layer.GetInt(1, 0);
-                    var d = layer.GetInt(11, 0);
-                    var c = layer.GetInt(2, 0);
-                    var loadType = layer.GetInt(21, 1);
-                    var a = ReadClipMatAsFloat32(br, w, h, d, c, loadType);
-                    var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
-                    buf.SetData(a);
-                    var dims = 1;
-                    if (h > 0) dims = 2;
-                    if (c > 0) dims = d > 0 ? 4 : 3;
-                    _memoryData[layer.name] = new MemoryDataPack
-                    {
-                        data = buf,
-                        dims = dims,
-                        w = Mathf.Max(1, w),
-                        h = Mathf.Max(1, h),
-                        d = Mathf.Max(1, d),
-                        c = Mathf.Max(1, c)
-                    };
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "Embed", StringComparison.Ordinal))
-                {
-                    var ep = new EmbedPack();
-                    ep.numOutput = layer.GetInt(0, 0);
-                    ep.inputDim = layer.GetInt(1, 0);
-                    ep.biasTerm = layer.GetInt(2, 0);
-                    ep.weightSize = layer.GetInt(3, 0);
-
-                    var w = ReadClipArrayAsFloat32(br, ep.weightSize, 0);
-
-                    ep.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-                    ep.w.SetData(w);
-
-                    if (ep.biasTerm != 0)
-                    {
-                        var b = br.ReadNcnnMatAsFloat32(ep.numOutput, 0, 0, 0, 1);
-                        ep.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-                        ep.b.SetData(b);
-                    }
-
-                    _embed[layer.name] = ep;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "LayerNorm", StringComparison.Ordinal))
-                {
-                    var lp = new LayerNormPack();
-                    lp.affineSize = layer.GetInt(0, 0);
-                    lp.eps = layer.GetFloat(1, 1e-5f);
-                    lp.affine = layer.GetInt(2, 1) != 0;
-                    if (lp.affine && lp.affineSize > 0)
-                    {
-                        var gamma = br.ReadNcnnMatAsFloat32(lp.affineSize, 0, 0, 0, 1);
-                        var beta = br.ReadNcnnMatAsFloat32(lp.affineSize, 0, 0, 0, 1);
-                        lp.gamma = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
-                        lp.beta = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
-                        lp.gamma.SetData(gamma);
-                        lp.beta.SetData(beta);
-                    }
-                    _layerNorm[layer.name] = lp;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "GroupNorm", StringComparison.Ordinal))
-                {
-                    var gp = new GroupNormPack();
-                    gp.group = layer.GetInt(0, 1);
-                    gp.channels = layer.GetInt(1, 0);
-                    gp.eps = layer.GetFloat(2, 1e-5f);
-                    gp.affine = layer.GetInt(3, 1) != 0;
-                    if (gp.affine && gp.channels > 0)
-                    {
-                        var gamma = br.ReadNcnnMatAsFloat32(gp.channels, 0, 0, 0, 1);
-                        var beta = br.ReadNcnnMatAsFloat32(gp.channels, 0, 0, 0, 1);
-                        gp.gamma = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
-                        gp.beta = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
-                        gp.gamma.SetData(gamma);
-                        gp.beta.SetData(beta);
-                    }
-                    _groupNorm[layer.name] = gp;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "BatchNorm", StringComparison.Ordinal))
-                {
-                    var bp = new BatchNormPack();
-                    bp.channels = layer.GetInt(0, 0);
-
-                    var slope = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
-                    var mean = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
-                    var variance = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
-                    var bias = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
-                    var eps = layer.GetFloat(1, 0f);
-
-                    var a = new float[bp.channels];
-                    var b = new float[bp.channels];
-                    for (var i = 0; i < bp.channels; i++)
-                    {
-                        var sqrtVar = Mathf.Sqrt(variance[i] + eps);
-                        if (Mathf.Abs(sqrtVar) < 1e-8f)
-                            sqrtVar = 1e-4f;
-                        b[i] = slope[i] / sqrtVar;
-                        a[i] = bias[i] - slope[i] * mean[i] / sqrtVar;
-                    }
-
-                    var packs = (bp.channels + 3) / 4;
-                    var a4 = PackBiasToO4(a, bp.channels, packs);
-                    var b4 = PackBiasToO4(b, bp.channels, packs);
-                    bp.biasA4 = new ComputeBuffer(a4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
-                    bp.scaleB4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
-                    bp.biasA4.SetData(a4);
-                    bp.scaleB4.SetData(b4);
-                    _batchNorm[layer.name] = bp;
-                    continue;
-                }
-
-                if (string.Equals(layer.type, "MultiHeadAttention", StringComparison.Ordinal))
-                {
-                    var mp = new MultiHeadAttentionPack();
-                    mp.embedDim = layer.GetInt(0, 0);
-                    mp.numHeads = layer.GetInt(1, 1);
-                    mp.weightDataSize = layer.GetInt(2, 0);
-                    mp.kdim = layer.GetInt(3, mp.embedDim);
-                    mp.vdim = layer.GetInt(4, mp.embedDim);
-                    mp.scale = layer.GetFloat(6, 1f / Mathf.Sqrt(Mathf.Max(1, mp.embedDim / Mathf.Max(1, mp.numHeads))));
-                    mp.qdim = mp.embedDim > 0 ? mp.weightDataSize / Mathf.Max(1, mp.embedDim) : 0;
-
-                    var qW = ReadClipMatAsFloat32(br, mp.embedDim * mp.qdim, 0, 0, 0, 0);
-                    var qB = br.ReadNcnnMatAsFloat32(mp.embedDim, 0, 0, 0, 1);
-                    var kW = ReadClipMatAsFloat32(br, mp.embedDim * mp.kdim, 0, 0, 0, 0);
-                    var kB = br.ReadNcnnMatAsFloat32(mp.embedDim, 0, 0, 0, 1);
-                    var vW = ReadClipMatAsFloat32(br, mp.embedDim * mp.vdim, 0, 0, 0, 0);
-                    var vB = br.ReadNcnnMatAsFloat32(mp.embedDim, 0, 0, 0, 1);
-                    var oW = ReadClipMatAsFloat32(br, mp.qdim * mp.embedDim, 0, 0, 0, 0);
-                    var oB = br.ReadNcnnMatAsFloat32(mp.qdim, 0, 0, 0, 1);
-
-                    mp.qW = NewBuffer(qW);
-                    mp.qB = NewBuffer(qB);
-                    mp.kW = NewBuffer(kW);
-                    mp.kB = NewBuffer(kB);
-                    mp.vW = NewBuffer(vW);
-                    mp.vB = NewBuffer(vB);
-                    mp.oW = NewBuffer(oW);
-                    mp.oB = NewBuffer(oB);
-                    _multiHeadAttention[layer.name] = mp;
+                    ct.ThrowIfCancellationRequested();
+                    if (shouldYield)
+                        await UniTask.Yield();
                 }
             }
+            catch
+            {
+                try { Release(); } catch { }
+                throw;
+            }
+        }
+
+        private IEnumerable<LoadProgress> EnumerateModelLoad(string paramText, NcnnBinReader br)
+        {
+            if (paramText == null)
+                throw new ArgumentNullException(nameof(paramText));
+            if (br == null)
+                throw new ArgumentNullException(nameof(br));
+
+            var stageSw = Stopwatch.StartNew();
+            var profile = new ModelLoadProfile();
+            LastLoadProfile = profile;
+            long totalLoadMs = 0;
+
+            Release();
+            stageSw.Stop();
+            profile.releaseMs = stageSw.ElapsedMilliseconds;
+            totalLoadMs += profile.releaseMs;
+            yield return new LoadProgress("release", 0, 0, null, null, 0.01f);
+
+            stageSw.Restart();
+            Model = NcnnParamParser.Parse(paramText);
+            stageSw.Stop();
+            profile.parseParamMs = stageSw.ElapsedMilliseconds;
+            totalLoadMs += profile.parseParamMs;
+            profile.modelMagic = Model?.magic;
+            profile.layerCount = Model?.layers?.Count ?? 0;
+            yield return new LoadProgress("parse", 0, profile.layerCount, null, null, 0.03f);
+
+            stageSw.Restart();
+            _blobUseCount = BuildBlobUseCount(Model);
+            stageSw.Stop();
+            profile.buildBlobUseCountMs = stageSw.ElapsedMilliseconds;
+            totalLoadMs += profile.buildBlobUseCountMs;
+            yield return new LoadProgress("build-blobs", 0, profile.layerCount, null, null, 0.05f);
+
+            var totalLayers = Model?.layers?.Count ?? 0;
+            for (var i = 0; i < totalLayers; i++)
+            {
+                var layer = Model.layers[i];
+                var layerSw = Stopwatch.StartNew();
+                var metrics = LoadLayer(layer, br);
+                layerSw.Stop();
+                totalLoadMs += layerSw.ElapsedMilliseconds;
+
+                AccumulateLayerProfile(profile, layer?.type, metrics, layerSw.ElapsedMilliseconds);
+
+                var progress01 = totalLayers > 0
+                    ? 0.05f + 0.94f * ((float)(i + 1) / totalLayers)
+                    : 0.99f;
+                yield return new LoadProgress("layer", i + 1, totalLayers, layer?.name, layer?.type, progress01);
+            }
+
+            profile.totalMs = totalLoadMs;
+            yield return new LoadProgress("complete", totalLayers, totalLayers, null, null, 1f);
+        }
+
+        private LayerLoadMetrics LoadLayer(NcnnParamModel.Layer layer, NcnnBinReader br)
+        {
+            if (layer == null)
+                return default;
+
+            var bytesStart = br.Position;
+            long readMs = 0;
+            long uploadMs = 0;
+            long packMs = 0;
+            var phaseSw = new Stopwatch();
+
+            if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
+                || string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
+            {
+                var pack = new ConvPack();
+                pack.outC = layer.GetInt(0, 0);
+                pack.group = Mathf.Max(1, layer.GetInt(7, 1));
+                pack.kernelW = layer.GetInt(1, 0);
+                pack.kernelH = layer.GetInt(11, pack.kernelW);
+                pack.dilationW = layer.GetInt(2, 1);
+                pack.dilationH = layer.GetInt(12, pack.dilationW);
+                pack.strideW = layer.GetInt(3, 1);
+                pack.strideH = layer.GetInt(13, pack.strideW);
+                pack.padLeft = layer.GetInt(4, 0);
+                pack.padRight = layer.GetInt(15, pack.padLeft);
+                pack.padTop = layer.GetInt(14, pack.padLeft);
+                pack.padBottom = layer.GetInt(16, pack.padTop);
+                pack.biasTerm = layer.GetInt(5, 0);
+                pack.weightSize = layer.GetInt(6, 0);
+                pack.activationType = layer.GetInt(9, 0);
+                pack.activationSlope = ParseLeakySlope(layer);
+                pack.isDepthWise = string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal);
+
+                var kernelArea = Mathf.Max(1, pack.kernelW * pack.kernelH);
+                if (pack.isDepthWise)
+                {
+                    pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
+                    pack.useBufferPath = true;
+                }
+                else
+                {
+                    pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * kernelArea));
+                    pack.useBufferPath = pack.strideW != 1
+                                         || pack.strideH != 1
+                                         || pack.kernelW != 1 && pack.kernelW != 3
+                                         || pack.kernelH != pack.kernelW
+                                         || pack.dilationW != 1
+                                         || pack.dilationH != 1
+                                         || pack.padLeft != pack.padRight
+                                         || pack.padTop != pack.padBottom
+                                         || pack.kernelW != 3 && pack.kernelW != 1;
+                }
+                pack.inPacks = (pack.inC + 3) / 4;
+                pack.outPacks = (pack.outC + 3) / 4;
+
+                phaseSw.Restart();
+                var w = ReadPackedOrRawWeightArray(br, pack.weightSize, layer.name);
+                var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                pack.rawWeight.SetData(w);
+                pack.rawBias.SetData(b);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+
+                var needGeneralTexturePack = !ForceBufferConvolutionAll
+                                             && !pack.useBufferPath
+                                             && !pack.isDepthWise
+                                             && pack.group == 1
+                                             && !(pack.kernelW == 1 && pack.kernelH == 1 && !EnableConv1x1TextureConvolution);
+                var needDepthWiseTexturePack = !ForceBufferConvolutionAll
+                                               && EnableDepthWiseTextureConvolution
+                                               && pack.isDepthWise
+                                               && pack.group == pack.inC
+                                               && pack.outC == pack.inC
+                                               && pack.kernelW == 3
+                                               && pack.kernelH == 3
+                                               && pack.dilationW == 1
+                                               && pack.dilationH == 1
+                                               && pack.padLeft == pack.padRight
+                                               && pack.padTop == pack.padBottom
+                                               && pack.padLeft == pack.padTop;
+
+                if (needGeneralTexturePack)
+                {
+                    phaseSw.Restart();
+                    var w4 = PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
+                    var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
+                    pack.packedWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    pack.packedWeight4.SetData(w4);
+                    pack.packedBias4.SetData(b4);
+
+                    if (EnableWinograd23
+                        && pack.kernelW == 3
+                        && pack.kernelH == 3
+                        && pack.strideW == 1
+                        && pack.strideH == 1
+                        && pack.padLeft == 1
+                        && pack.padRight == 1
+                        && pack.padTop == 1
+                        && pack.padBottom == 1
+                        && NcnnWinograd23.CanUse(pack.kernelW, pack.padLeft, pack.inPacks, pack.outPacks))
+                    {
+                        pack.useWinograd23 = true;
+                        var wTm = NcnnWinograd23.PackWeightTm23(w, pack.outC, pack.inC, pack.outPacks, pack.inPacks);
+                        pack.packedWeightTm23 = new ComputeBuffer(wTm.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                        pack.packedWeightTm23.SetData(wTm);
+                    }
+                    phaseSw.Stop();
+                    packMs += phaseSw.ElapsedMilliseconds;
+                }
+                else if (needDepthWiseTexturePack)
+                {
+                    phaseSw.Restart();
+                    var w4 = PackDepthWiseWeightsToP4K4(w, pack.outC, pack.kernelW, pack.outPacks);
+                    var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
+                    pack.packedDepthWiseWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    pack.packedDepthWiseWeight4.SetData(w4);
+                    pack.packedBias4.SetData(b4);
+                    phaseSw.Stop();
+                    packMs += phaseSw.ElapsedMilliseconds;
+                }
+
+                _conv[layer.name] = pack;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "Deconvolution", StringComparison.Ordinal))
+            {
+                var pack = new DeconvPack();
+                pack.outC = layer.GetInt(0, 0);
+                pack.group = Mathf.Max(1, layer.GetInt(7, 1));
+                pack.kernelW = layer.GetInt(1, 0);
+                pack.kernelH = layer.GetInt(11, pack.kernelW);
+                pack.dilationW = layer.GetInt(2, 1);
+                pack.dilationH = layer.GetInt(12, pack.dilationW);
+                pack.strideW = layer.GetInt(3, 1);
+                pack.strideH = layer.GetInt(13, pack.strideW);
+                pack.padLeft = layer.GetInt(4, 0);
+                pack.padRight = layer.GetInt(15, pack.padLeft);
+                pack.padTop = layer.GetInt(14, pack.padLeft);
+                pack.padBottom = layer.GetInt(16, pack.padTop);
+                pack.outputPadRight = layer.GetInt(18, 0);
+                pack.outputPadBottom = layer.GetInt(19, pack.outputPadRight);
+                pack.biasTerm = layer.GetInt(5, 0);
+                pack.weightSize = layer.GetInt(6, 0);
+                pack.activationType = layer.GetInt(9, 0);
+                pack.activationSlope = ParseLeakySlope(layer);
+
+                var kernelArea = Mathf.Max(1, pack.kernelW * pack.kernelH);
+                pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
+
+                phaseSw.Restart();
+                var w = ReadPackedOrRawWeightArray(br, pack.weightSize, layer.name);
+                var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                pack.rawWeight.SetData(w);
+                pack.rawBias.SetData(b);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+
+                _deconv[layer.name] = pack;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "InnerProduct", StringComparison.Ordinal))
+            {
+                var ip = new InnerProductPack();
+                ip.outFeatures = layer.GetInt(0, 0);
+                ip.biasTerm = layer.GetInt(1, 0);
+                ip.weightSize = layer.GetInt(2, 0);
+                ip.inFeatures = ip.outFeatures > 0 ? ip.weightSize / ip.outFeatures : 0;
+
+                phaseSw.Restart();
+                var w = ReadPackedOrRawWeightArray(br, ip.weightSize, layer.name);
+                var b = ip.biasTerm != 0 ? br.ReadFloat32Array(ip.outFeatures) : new float[ip.outFeatures];
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                ip.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                ip.w.SetData(w);
+                ip.b.SetData(b);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+
+                _innerProduct[layer.name] = ip;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "Gemm", StringComparison.Ordinal))
+            {
+                var gp = new GemmPack
+                {
+                    alpha = layer.GetFloat(0, 1f),
+                    beta = layer.GetFloat(1, 1f),
+                    transA = layer.GetInt(2, 0) != 0,
+                    transB = layer.GetInt(3, 0) != 0,
+                    constantA = layer.GetInt(4, 0) != 0,
+                    constantB = layer.GetInt(5, 0) != 0,
+                    constantC = layer.GetInt(6, 0) != 0,
+                    constantM = layer.GetInt(7, 0),
+                    constantN = layer.GetInt(8, 0),
+                    constantK = layer.GetInt(9, 0),
+                    broadcastTypeC = layer.GetInt(10, 0)
+                };
+
+                if (gp.constantA)
+                    throw new InvalidOperationException("Gemm constantA is not supported in NcnnRepro4: " + layer.name);
+                if (!gp.constantB)
+                    throw new InvalidOperationException("Gemm currently expects constantB=1: " + layer.name);
+
+                var bw = gp.transB ? gp.constantK : gp.constantN;
+                var bh = gp.transB ? gp.constantN : gp.constantK;
+
+                phaseSw.Restart();
+                var b = ReadClipMatAsFloat32(br, bw, bh, 0, 0, 0);
+                gp.bDataCpu = b;
+                if (gp.constantC && gp.broadcastTypeC != -1)
+                {
+                    int cw;
+                    int ch;
+                    switch (gp.broadcastTypeC)
+                    {
+                        case 0: cw = 1; ch = 0; break;
+                        case 1: cw = gp.constantM; ch = 0; break;
+                        case 2: cw = 1; ch = gp.constantM; break;
+                        case 3: cw = gp.constantN; ch = gp.constantM; break;
+                        case 4: cw = gp.constantN; ch = 1; break;
+                        default:
+                            throw new InvalidOperationException("Gemm broadcast_type_C unsupported: " + gp.broadcastTypeC + " | " + layer.name);
+                    }
+
+                    var c = ReadClipMatAsFloat32(br, cw, ch, 0, 0, 0);
+                    gp.cDataCpu = c;
+                }
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                gp.bData = NewBuffer(gp.bDataCpu);
+                if (gp.cDataCpu != null)
+                    gp.cData = NewBuffer(gp.cDataCpu);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+
+                _gemm[layer.name] = gp;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "MemoryData", StringComparison.Ordinal))
+            {
+                var w = layer.GetInt(0, 0);
+                var h = layer.GetInt(1, 0);
+                var d = layer.GetInt(11, 0);
+                var c = layer.GetInt(2, 0);
+                var loadType = layer.GetInt(21, 1);
+
+                phaseSw.Restart();
+                var a = ReadClipMatAsFloat32(br, w, h, d, c, loadType);
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
+                buf.SetData(a);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+
+                var dims = 1;
+                if (h > 0) dims = 2;
+                if (c > 0) dims = d > 0 ? 4 : 3;
+                _memoryData[layer.name] = new MemoryDataPack
+                {
+                    data = buf,
+                    dims = dims,
+                    w = Mathf.Max(1, w),
+                    h = Mathf.Max(1, h),
+                    d = Mathf.Max(1, d),
+                    c = Mathf.Max(1, c)
+                };
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "Embed", StringComparison.Ordinal))
+            {
+                var ep = new EmbedPack();
+                ep.numOutput = layer.GetInt(0, 0);
+                ep.inputDim = layer.GetInt(1, 0);
+                ep.biasTerm = layer.GetInt(2, 0);
+                ep.weightSize = layer.GetInt(3, 0);
+
+                phaseSw.Restart();
+                var w = ReadClipArrayAsFloat32(br, ep.weightSize, 0);
+                float[] b = null;
+                if (ep.biasTerm != 0)
+                    b = br.ReadNcnnMatAsFloat32(ep.numOutput, 0, 0, 0, 1);
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                ep.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                ep.w.SetData(w);
+                if (b != null)
+                {
+                    ep.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                    ep.b.SetData(b);
+                }
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+
+                _embed[layer.name] = ep;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "LayerNorm", StringComparison.Ordinal))
+            {
+                var lp = new LayerNormPack();
+                lp.affineSize = layer.GetInt(0, 0);
+                lp.eps = layer.GetFloat(1, 1e-5f);
+                lp.affine = layer.GetInt(2, 1) != 0;
+
+                float[] gamma = null;
+                float[] beta = null;
+                if (lp.affine && lp.affineSize > 0)
+                {
+                    phaseSw.Restart();
+                    gamma = br.ReadNcnnMatAsFloat32(lp.affineSize, 0, 0, 0, 1);
+                    beta = br.ReadNcnnMatAsFloat32(lp.affineSize, 0, 0, 0, 1);
+                    phaseSw.Stop();
+                    readMs += phaseSw.ElapsedMilliseconds;
+
+                    phaseSw.Restart();
+                    lp.gamma = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
+                    lp.beta = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
+                    lp.gamma.SetData(gamma);
+                    lp.beta.SetData(beta);
+                    phaseSw.Stop();
+                    uploadMs += phaseSw.ElapsedMilliseconds;
+                }
+
+                _layerNorm[layer.name] = lp;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "GroupNorm", StringComparison.Ordinal))
+            {
+                var gp = new GroupNormPack();
+                gp.group = layer.GetInt(0, 1);
+                gp.channels = layer.GetInt(1, 0);
+                gp.eps = layer.GetFloat(2, 1e-5f);
+                gp.affine = layer.GetInt(3, 1) != 0;
+
+                float[] gamma = null;
+                float[] beta = null;
+                if (gp.affine && gp.channels > 0)
+                {
+                    phaseSw.Restart();
+                    gamma = br.ReadNcnnMatAsFloat32(gp.channels, 0, 0, 0, 1);
+                    beta = br.ReadNcnnMatAsFloat32(gp.channels, 0, 0, 0, 1);
+                    phaseSw.Stop();
+                    readMs += phaseSw.ElapsedMilliseconds;
+
+                    phaseSw.Restart();
+                    gp.gamma = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
+                    gp.beta = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
+                    gp.gamma.SetData(gamma);
+                    gp.beta.SetData(beta);
+                    phaseSw.Stop();
+                    uploadMs += phaseSw.ElapsedMilliseconds;
+                }
+
+                _groupNorm[layer.name] = gp;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "BatchNorm", StringComparison.Ordinal))
+            {
+                var bp = new BatchNormPack();
+                bp.channels = layer.GetInt(0, 0);
+
+                phaseSw.Restart();
+                var slope = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
+                var mean = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
+                var variance = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
+                var bias = br.ReadNcnnMatAsFloat32(bp.channels, 0, 0, 0, 1);
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                var eps = layer.GetFloat(1, 0f);
+                var a = new float[bp.channels];
+                var b = new float[bp.channels];
+                for (var i = 0; i < bp.channels; i++)
+                {
+                    var sqrtVar = Mathf.Sqrt(variance[i] + eps);
+                    if (Mathf.Abs(sqrtVar) < 1e-8f)
+                        sqrtVar = 1e-4f;
+                    b[i] = slope[i] / sqrtVar;
+                    a[i] = bias[i] - slope[i] * mean[i] / sqrtVar;
+                }
+
+                phaseSw.Restart();
+                var packs = (bp.channels + 3) / 4;
+                var a4 = PackBiasToO4(a, bp.channels, packs);
+                var b4 = PackBiasToO4(b, bp.channels, packs);
+                bp.biasA4 = new ComputeBuffer(a4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                bp.scaleB4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                bp.biasA4.SetData(a4);
+                bp.scaleB4.SetData(b4);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+                packMs += phaseSw.ElapsedMilliseconds;
+
+                _batchNorm[layer.name] = bp;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            if (string.Equals(layer.type, "MultiHeadAttention", StringComparison.Ordinal))
+            {
+                var mp = new MultiHeadAttentionPack();
+                mp.embedDim = layer.GetInt(0, 0);
+                mp.numHeads = layer.GetInt(1, 1);
+                mp.weightDataSize = layer.GetInt(2, 0);
+                mp.kdim = layer.GetInt(3, mp.embedDim);
+                mp.vdim = layer.GetInt(4, mp.embedDim);
+                mp.scale = layer.GetFloat(6, 1f / Mathf.Sqrt(Mathf.Max(1, mp.embedDim / Mathf.Max(1, mp.numHeads))));
+                mp.qdim = mp.embedDim > 0 ? mp.weightDataSize / Mathf.Max(1, mp.embedDim) : 0;
+
+                phaseSw.Restart();
+                var qW = ReadClipMatAsFloat32(br, mp.embedDim * mp.qdim, 0, 0, 0, 0);
+                var qB = br.ReadNcnnMatAsFloat32(mp.embedDim, 0, 0, 0, 1);
+                var kW = ReadClipMatAsFloat32(br, mp.embedDim * mp.kdim, 0, 0, 0, 0);
+                var kB = br.ReadNcnnMatAsFloat32(mp.embedDim, 0, 0, 0, 1);
+                var vW = ReadClipMatAsFloat32(br, mp.embedDim * mp.vdim, 0, 0, 0, 0);
+                var vB = br.ReadNcnnMatAsFloat32(mp.embedDim, 0, 0, 0, 1);
+                var oW = ReadClipMatAsFloat32(br, mp.qdim * mp.embedDim, 0, 0, 0, 0);
+                var oB = br.ReadNcnnMatAsFloat32(mp.qdim, 0, 0, 0, 1);
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                mp.qW = NewBuffer(qW);
+                mp.qB = NewBuffer(qB);
+                mp.kW = NewBuffer(kW);
+                mp.kB = NewBuffer(kB);
+                mp.vW = NewBuffer(vW);
+                mp.vB = NewBuffer(vB);
+                mp.oW = NewBuffer(oW);
+                mp.oB = NewBuffer(oB);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+
+                _multiHeadAttention[layer.name] = mp;
+                return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+            }
+
+            return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+        }
+
+        private static void AccumulateLayerProfile(ModelLoadProfile profile, string layerType, LayerLoadMetrics metrics, long totalMs)
+        {
+            if (profile == null)
+                return;
+
+            profile.totalBytesRead += metrics.bytesRead;
+            layerType = string.IsNullOrWhiteSpace(layerType) ? "Unknown" : layerType;
+            if (!profile.layerTypes.TryGetValue(layerType, out var typeProfile) || typeProfile == null)
+            {
+                typeProfile = new LayerTypeLoadProfile();
+                profile.layerTypes[layerType] = typeProfile;
+            }
+
+            typeProfile.count++;
+            typeProfile.totalMs += totalMs;
+            typeProfile.bytesRead += metrics.bytesRead;
+            typeProfile.readMs += metrics.readMs;
+            typeProfile.uploadMs += metrics.uploadMs;
+            typeProfile.packMs += metrics.packMs;
         }
 
         public InferResult Infer(RenderTexture inputPack4, int inputPacks, string inputBlobName = "input", ICollection<string> pinnedNames = null)
@@ -2668,6 +2902,64 @@ TextureConvPath:
                 texture = null;
                 shape = default;
                 return false;
+            }
+        }
+
+        public sealed class LayerTypeLoadProfile
+        {
+            public int count;
+            public long totalMs;
+            public long bytesRead;
+            public long readMs;
+            public long uploadMs;
+            public long packMs;
+        }
+
+        public sealed class ModelLoadProfile
+        {
+            public string modelMagic;
+            public int layerCount;
+            public long releaseMs;
+            public long parseParamMs;
+            public long buildBlobUseCountMs;
+            public long totalMs;
+            public long totalBytesRead;
+            public readonly Dictionary<string, LayerTypeLoadProfile> layerTypes = new Dictionary<string, LayerTypeLoadProfile>(StringComparer.Ordinal);
+        }
+
+        public readonly struct LoadProgress
+        {
+            public readonly string stage;
+            public readonly int layerIndex;
+            public readonly int layerCount;
+            public readonly string layerName;
+            public readonly string layerType;
+            public readonly float progress01;
+
+            public LoadProgress(string stage, int layerIndex, int layerCount, string layerName, string layerType, float progress01)
+            {
+                this.stage = stage;
+                this.layerIndex = layerIndex;
+                this.layerCount = layerCount;
+                this.layerName = layerName;
+                this.layerType = layerType;
+                this.progress01 = progress01;
+            }
+        }
+
+        private readonly struct LayerLoadMetrics
+        {
+            public readonly long bytesRead;
+            public readonly long readMs;
+            public readonly long uploadMs;
+            public readonly long packMs;
+
+            public LayerLoadMetrics(long bytesRead, long readMs, long uploadMs, long packMs)
+            {
+                this.bytesRead = bytesRead;
+                this.readMs = readMs;
+                this.uploadMs = uploadMs;
+                this.packMs = packMs;
             }
         }
 

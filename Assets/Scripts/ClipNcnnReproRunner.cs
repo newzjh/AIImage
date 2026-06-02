@@ -41,9 +41,25 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         public string prompt;
     }
 
+    [Serializable]
+    private sealed class ClipTextEmbeddingCache
+    {
+        public string modelKey;
+        public ClipTextEmbeddingCacheEntry[] entries;
+    }
+
+    [Serializable]
+    private sealed class ClipTextEmbeddingCacheEntry
+    {
+        public string label;
+        public string prompt;
+        public float[] embedding;
+    }
+
     private const string InputBlobName = "in0";
     private const string OutputBlobName = "out0";
     private const int EmbeddingSize = 512;
+    private const string TextEmbeddingCacheSuffix = ".label_embeddings.json";
     private static readonly string[] DebugTextBlobNames = { "1", "3", "6", "7", "17", "18", "19", "22", "23", "24", "26", "27", "28", "29", "30", "57", "84", "111", "138", "165", "192", "219", "246", "273", "300", "320", "327", "out0" };
     private static readonly string[] DebugImageBlobNames = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140", "141", "142", "143", "144", "145", "146", "147", "148", "149", "150", "151", "152", "153", "154", "155", "156", "157", "158", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "170", "171", "172", "173", "177", "178", "179", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189", "190", "191", "341", "343", "348", "349", "350", "351", "352", "353", "354", "355", "356", "357", "358", "359", "360", "361", "363", "366", "367", "368", "369", "370", "371", "372", "373", "376", "377", "378", "379", "380", "381", "382", "383", "384", "385", "386", "387", "388", "389", "390", "391", "392", "393", "396", "397", "398", "399", "414", "434", "449", "469", "484", "504", "519", "541", "out0" };
     private static readonly string[] DebugImageCompareLayers = { "convdw_253", "convdw_254", "conv_41", "conv_42", "convdw_255", "convdw_256", "conv_43", "conv_44", "convdw_257", "convdw_258", "conv_45", "conv_46", "convdw_259", "convrelu_0", "convsigmoid_3", "conv_49", "convdw_260", "convdw_261", "conv_50", "conv_51", "convdw_294", "convdw_295", "conv_84", "conv_85", "convdw_296", "convdw_297", "conv_86", "conv_87", "convdw_298", "convdw_299", "conv_88", "conv_89", "convdw_300" };
@@ -74,6 +90,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private NcnnRepro4 _projectionRepro;
     private MobileClipSimpleTokenizer _tokenizer;
     private string _loadedModelKey;
+    private string _lastTextEmbeddingSource;
     private ClipLabelScore[] _cachedTextScores;
     private float[][] _cachedTextEmbeddings;
     private string _lastDumpDir;
@@ -107,18 +124,24 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
         RenderTexture resized = null;
         RenderTexture inputPack4 = null;
+        long loadMs = 0;
+        long imageInferMs = 0;
+        long scoreMs = 0;
         try
         {
             EnsureRuntimeObjects();
             ApplyReproOptions();
             if (enableDebugDump && string.IsNullOrWhiteSpace(_lastDumpDir))
                 _lastDumpDir = CreateDumpDir();
+            var ensureSw = Stopwatch.StartNew();
             await EnsureLoaded(ct);
+            ensureSw.Stop();
+            loadMs = ensureSw.ElapsedMilliseconds;
             if (_cachedTextEmbeddings == null || _cachedTextEmbeddings.Length == 0)
                 return Finish(new ClipClassificationResult { error = "CLIP text embeddings unavailable" });
 
             var targetSize = 256;
-            ReportProgress(0.08f, "Prepare input");
+            ReportProgress(0.72f, "Prepare input");
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
 
@@ -131,7 +154,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                 DumpPack4TextureLogical(inputPack4, targetSize, targetSize, 3, Path.Combine(_lastDumpDir, "image_blob_in0.txt"));
 
-            ReportProgress(0.35f, "Encode image");
+            ReportProgress(0.84f, "Encode image");
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
 
@@ -140,6 +163,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (enableDebugDump)
                 pinnedImage = new System.Collections.Generic.HashSet<string>(DebugImageBlobNames, StringComparer.Ordinal);
 
+            var imageInferSw = Stopwatch.StartNew();
             using (var infer = _imageRepro.Infer(inputPack4, 1, InputBlobName, pinnedImage))
             {
                 if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
@@ -149,6 +173,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 }
                 imageEmbedding = infer.GetBufferData(OutputBlobName);
             }
+            imageInferSw.Stop();
+            imageInferMs = imageInferSw.ElapsedMilliseconds;
 
             if (imageEmbedding == null || imageEmbedding.Length != EmbeddingSize)
                 return Finish(new ClipClassificationResult { error = "Image embedding missing or invalid" });
@@ -156,10 +182,11 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                 DumpVector(_lastDumpDir, "image_embedding.txt", imageEmbedding);
 
-            ReportProgress(0.72f, "Score labels");
+            ReportProgress(0.96f, "Score labels");
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
 
+            var scoreSw = Stopwatch.StartNew();
             var scores = new ClipLabelScore[_cachedTextEmbeddings.Length];
             var logits = new float[_cachedTextEmbeddings.Length];
             for (var i = 0; i < _cachedTextEmbeddings.Length; i++)
@@ -180,6 +207,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             }
 
             Array.Sort(scores, (a, b) => b.probability.CompareTo(a.probability));
+            scoreSw.Stop();
+            scoreMs = scoreSw.ElapsedMilliseconds;
 
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             {
@@ -187,6 +216,14 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 if (_imageCompareLines != null && _imageCompareLines.Count > 0)
                     File.WriteAllLines(Path.Combine(_lastDumpDir, "image_conv_compare.txt"), _imageCompareLines);
             }
+
+            UnityEngine.Debug.Log("[CLIP] Run | model=" + ResolveModelKey()
+                + " | textSource=" + (_lastTextEmbeddingSource ?? "none")
+                + " | loadMs=" + loadMs
+                + " | imageInferMs=" + imageInferMs
+                + " | scoreMs=" + scoreMs
+                + " | totalMs=" + totalSw.ElapsedMilliseconds
+                + " | best=" + (scores.Length > 0 ? scores[0].label : ""));
 
             ReportProgress(1f, string.Empty);
             return Finish(new ClipClassificationResult
@@ -218,8 +255,32 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     {
         _ops ??= new NcnnOps();
         _imageRepro ??= new NcnnRepro4(_ops);
+    }
+
+    private void EnsureTextRuntimeObjects()
+    {
+        _ops ??= new NcnnOps();
         _textRepro ??= new NcnnRepro4(_ops);
         _projectionRepro ??= new NcnnRepro4(_ops);
+    }
+
+    private void EnsureTokenizer(string clipRoot)
+    {
+        if (_tokenizer != null)
+            return;
+
+        _tokenizer = new MobileClipSimpleTokenizer(
+            Path.Combine(clipRoot, "vocab.txt"),
+            Path.Combine(clipRoot, "bpe_simple_vocab_16e6.txt"));
+    }
+
+    private void ReleaseTextRuntime()
+    {
+        try { _textRepro?.Dispose(); } catch { }
+        try { _projectionRepro?.Dispose(); } catch { }
+        _textRepro = null;
+        _projectionRepro = null;
+        _tokenizer = null;
     }
 
     private void ApplyReproOptions()
@@ -281,26 +342,117 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
     private async UniTask EnsureLoaded(CancellationToken ct)
     {
-        var modelKey = modelLevel == ClipModelLevel.S0 ? "mobileclip_s0_export" : "mobileclip_s1_export";
-        if (string.Equals(_loadedModelKey, modelKey, StringComparison.Ordinal) && _cachedTextEmbeddings != null)
+        var modelKey = ResolveModelKey();
+        if (string.Equals(_loadedModelKey, modelKey, StringComparison.Ordinal)
+            && _cachedTextEmbeddings != null
+            && _cachedTextEmbeddings.Length > 0
+            && _imageRepro?.Model != null)
             return;
+
+        _cachedTextEmbeddings = null;
+        _cachedTextScores = null;
+        _loadedModelKey = null;
+        _lastTextEmbeddingSource = null;
 
         var clipRoot = Path.Combine(Application.streamingAssetsPath, clipRootRelativePath);
         var modelRoot = Path.Combine(clipRoot, modelKey);
-        var vocabPath = Path.Combine(clipRoot, "vocab.txt");
-        var bpePath = Path.Combine(clipRoot, "bpe_simple_vocab_16e6.txt");
 
-        _tokenizer = new MobileClipSimpleTokenizer(vocabPath, bpePath);
-        await LoadModel(_imageRepro, Path.Combine(modelRoot, "image_encoder.ncnn.param"), Path.Combine(modelRoot, "image_encoder.ncnn.bin"));
-        await LoadModel(_textRepro, Path.Combine(modelRoot, "text_encoder.ncnn.param"), Path.Combine(modelRoot, "text_encoder.ncnn.bin"));
-        await LoadModel(_projectionRepro, Path.Combine(modelRoot, "projection_layer.ncnn.param"), Path.Combine(modelRoot, "projection_layer.ncnn.bin"));
+        var warmupSw = Stopwatch.StartNew();
+        long imageLoadMs = 0;
+        long textLoadMs = 0;
+        long projectionLoadMs = 0;
+        long buildTextMs = 0;
+        NcnnRepro4.ModelLoadProfile imageProfile = null;
+        NcnnRepro4.ModelLoadProfile textProfile = null;
+        NcnnRepro4.ModelLoadProfile projectionProfile = null;
 
-        ReportProgress(0.12f, "Encode text labels");
-        await BuildTextEmbeddingsAsync(ct);
+        ReportProgress(0.02f, "Warm up CLIP");
+        await UniTask.Yield();
+        ct.ThrowIfCancellationRequested();
+
+        var stageSw = Stopwatch.StartNew();
+        await LoadReproModelAsync(
+            _imageRepro,
+            Path.Combine(modelRoot, "image_encoder.ncnn.param"),
+            Path.Combine(modelRoot, "image_encoder.ncnn.bin"),
+            "image encoder",
+            0.04f,
+            0.36f,
+            ct);
+        stageSw.Stop();
+        imageLoadMs = stageSw.ElapsedMilliseconds;
+        imageProfile = _imageRepro?.LastLoadProfile;
+
+        ct.ThrowIfCancellationRequested();
+        if (TryLoadTextEmbeddingCache(clipRoot, modelKey, out var cacheSource))
+        {
+            _lastTextEmbeddingSource = cacheSource;
+            TryWriteTextEmbeddingCache(modelKey);
+            ReportProgress(0.50f, "Load label cache");
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpCachedTextEmbeddings();
+            ReleaseTextRuntime();
+        }
+        else
+        {
+            EnsureTextRuntimeObjects();
+            ApplyReproOptions();
+            EnsureTokenizer(clipRoot);
+
+            stageSw.Restart();
+            await LoadReproModelAsync(
+                _textRepro,
+                Path.Combine(modelRoot, "text_encoder.ncnn.param"),
+                Path.Combine(modelRoot, "text_encoder.ncnn.bin"),
+                "text encoder",
+                0.36f,
+                0.50f,
+                ct);
+            stageSw.Stop();
+            textLoadMs = stageSw.ElapsedMilliseconds;
+            textProfile = _textRepro?.LastLoadProfile;
+
+            stageSw.Restart();
+            await LoadReproModelAsync(
+                _projectionRepro,
+                Path.Combine(modelRoot, "projection_layer.ncnn.param"),
+                Path.Combine(modelRoot, "projection_layer.ncnn.bin"),
+                "projection",
+                0.50f,
+                0.56f,
+                ct);
+            stageSw.Stop();
+            projectionLoadMs = stageSw.ElapsedMilliseconds;
+            projectionProfile = _projectionRepro?.LastLoadProfile;
+
+            stageSw.Restart();
+            await BuildTextEmbeddingsAsync(0.56f, 0.06f, ct);
+            stageSw.Stop();
+            buildTextMs = stageSw.ElapsedMilliseconds;
+
+            _lastTextEmbeddingSource = "computed";
+            TryWriteTextEmbeddingCache(modelKey);
+            ReleaseTextRuntime();
+        }
+
         _loadedModelKey = modelKey;
+        warmupSw.Stop();
+        UnityEngine.Debug.Log("[CLIP] Warmup | model=" + modelKey
+            + " | textSource=" + (_lastTextEmbeddingSource ?? "none")
+            + " | imageLoadMs=" + imageLoadMs
+            + " | textLoadMs=" + textLoadMs
+            + " | projectionLoadMs=" + projectionLoadMs
+            + " | buildTextMs=" + buildTextMs
+            + " | totalMs=" + warmupSw.ElapsedMilliseconds);
+        LogLoadProfile("image encoder", imageProfile);
+        if (textProfile != null)
+            LogLoadProfile("text encoder", textProfile);
+        if (projectionProfile != null)
+            LogLoadProfile("projection", projectionProfile);
+        ReportProgress(0.62f, "CLIP warmup ready");
     }
 
-    private async UniTask BuildTextEmbeddingsAsync(CancellationToken ct)
+    private async UniTask BuildTextEmbeddingsAsync(float progressStart, float progressSpan, CancellationToken ct)
     {
         if (labelDefinitions == null || labelDefinitions.Length < 8)
             throw new InvalidOperationException("CLIP labelDefinitions must contain at least 8 labels.");
@@ -314,13 +466,15 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (def == null || string.IsNullOrWhiteSpace(def.label) || string.IsNullOrWhiteSpace(def.prompt))
                 throw new InvalidOperationException("CLIP label definition is incomplete at index " + i);
 
-            ReportProgress(0.12f + 0.18f * ((float)i / Math.Max(1, labelDefinitions.Length)), "Encode text " + (i + 1) + "/" + labelDefinitions.Length);
+            ReportProgress(progressStart + progressSpan * ((float)i / Math.Max(1, labelDefinitions.Length)), "Encode text " + (i + 1) + "/" + labelDefinitions.Length);
             await UniTask.Yield();
             _cachedTextScores[i] = new ClipLabelScore { label = def.label.Trim(), prompt = def.prompt.Trim() };
             _cachedTextEmbeddings[i] = await EncodeTextAsync(def.prompt.Trim(), ct);
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                 DumpVector(_lastDumpDir, "text_embedding_" + SanitizeFileName(def.label.Trim()) + ".txt", _cachedTextEmbeddings[i]);
         }
+
+        ReportProgress(progressStart + progressSpan, "Text embeddings ready");
     }
 
     private async UniTask<float[]> EncodeTextAsync(string prompt, CancellationToken ct)
@@ -373,7 +527,14 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         return embedding;
     }
 
-    private static async UniTask LoadModel(NcnnRepro4 repro, string paramPath, string binPath)
+    private async UniTask LoadReproModelAsync(
+        NcnnRepro4 repro,
+        string paramPath,
+        string binPath,
+        string modelLabel,
+        float progressStart,
+        float progressEnd,
+        CancellationToken ct)
     {
         if (repro == null)
             throw new ArgumentNullException(nameof(repro));
@@ -382,30 +543,346 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         if (!File.Exists(binPath))
             throw new FileNotFoundException("Model bin not found", binPath);
 
-        var paramText = File.ReadAllText(paramPath);
-        var bytes = await File.ReadAllBytesAsync(binPath);
+        ReportProgress(progressStart, "Read " + modelLabel);
+        var paramText = await File.ReadAllTextAsync(paramPath, ct);
+        ct.ThrowIfCancellationRequested();
 
         await UniTask.Yield();
 
-        MemoryStream ms = new MemoryStream(bytes);
-        using var br = new NcnnBinReader(ms);
-        repro.LoadModel(paramText, br);
-        ms.Dispose();
+        using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, false);
+        using var br = new NcnnBinReader(fs);
+        await repro.LoadModelAsync(paramText, br, progress => ReportLoadProgress(modelLabel, progressStart, progressEnd, progress), ct);
 
-        await UniTask.Yield();
+        ReportProgress(progressEnd, modelLabel + " ready");
     }
 
     private void Release()
     {
         try { _imageRepro?.Dispose(); } catch { }
-        try { _textRepro?.Dispose(); } catch { }
-        try { _projectionRepro?.Dispose(); } catch { }
         _imageRepro = null;
-        _textRepro = null;
-        _projectionRepro = null;
+        ReleaseTextRuntime();
         _cachedTextEmbeddings = null;
         _cachedTextScores = null;
         _loadedModelKey = null;
+        _lastTextEmbeddingSource = null;
+    }
+
+    private string ResolveModelKey()
+    {
+        return modelLevel == ClipModelLevel.S0 ? "mobileclip_s0_export" : "mobileclip_s1_export";
+    }
+
+    private bool TryLoadTextEmbeddingCache(string clipRoot, string modelKey, out string source)
+    {
+        source = null;
+        if (string.IsNullOrWhiteSpace(clipRoot) || string.IsNullOrWhiteSpace(modelKey))
+            return false;
+
+        var candidates = new[]
+        {
+            new KeyValuePair<string, string>(Path.Combine(clipRoot, modelKey + TextEmbeddingCacheSuffix), "streaming-cache"),
+            new KeyValuePair<string, string>(Path.Combine(Application.persistentDataPath, clipRootRelativePath, modelKey + TextEmbeddingCacheSuffix), "persistent-cache")
+        };
+
+        for (var i = 0; i < candidates.Length; i++)
+        {
+            var path = candidates[i].Key;
+            if (!File.Exists(path))
+                continue;
+
+            try
+            {
+                var cache = JsonUtility.FromJson<ClipTextEmbeddingCache>(File.ReadAllText(path));
+                if (TryApplyTextEmbeddingCache(modelKey, cache))
+                {
+                    source = candidates[i].Value;
+                    return true;
+                }
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning("[CLIP] Failed to load text embedding cache: " + path + " | " + e.Message);
+            }
+        }
+
+        if (TryLoadTextEmbeddingLogCache(modelKey))
+        {
+            source = "log-dump-cache";
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryApplyTextEmbeddingCache(string modelKey, ClipTextEmbeddingCache cache)
+    {
+        if (cache == null)
+            return false;
+        if (!string.IsNullOrWhiteSpace(cache.modelKey)
+            && !string.Equals(cache.modelKey, modelKey, StringComparison.Ordinal))
+            return false;
+        if (cache.entries == null || labelDefinitions == null || cache.entries.Length != labelDefinitions.Length)
+            return false;
+
+        var scores = new ClipLabelScore[cache.entries.Length];
+        var embeddings = new float[cache.entries.Length][];
+        for (var i = 0; i < cache.entries.Length; i++)
+        {
+            var def = labelDefinitions[i];
+            var entry = cache.entries[i];
+            if (def == null || entry == null)
+                return false;
+
+            var label = def.label?.Trim();
+            var prompt = def.prompt?.Trim();
+            if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(prompt))
+                return false;
+            if (!string.Equals(entry.label?.Trim(), label, StringComparison.Ordinal))
+                return false;
+            if (!string.Equals(entry.prompt?.Trim(), prompt, StringComparison.Ordinal))
+                return false;
+            if (entry.embedding == null || entry.embedding.Length != EmbeddingSize)
+                return false;
+
+            var normalized = (float[])entry.embedding.Clone();
+            NormalizeInPlace(normalized);
+            scores[i] = new ClipLabelScore { label = label, prompt = prompt };
+            embeddings[i] = normalized;
+        }
+
+        _cachedTextScores = scores;
+        _cachedTextEmbeddings = embeddings;
+        return true;
+    }
+
+    private void DumpCachedTextEmbeddings()
+    {
+        if (string.IsNullOrWhiteSpace(_lastDumpDir) || _cachedTextScores == null || _cachedTextEmbeddings == null)
+            return;
+
+        for (var i = 0; i < Mathf.Min(_cachedTextScores.Length, _cachedTextEmbeddings.Length); i++)
+        {
+            if (_cachedTextEmbeddings[i] == null)
+                continue;
+            DumpVector(_lastDumpDir, "text_embedding_" + SanitizeFileName(_cachedTextScores[i].label) + ".txt", _cachedTextEmbeddings[i]);
+        }
+    }
+
+    private bool TryLoadTextEmbeddingLogCache(string modelKey)
+    {
+        var root = Path.Combine(Application.dataPath, "..", "Logs", "ClipNcnnRepro");
+        if (!Directory.Exists(root))
+            return false;
+
+        var expectedModel = modelLevel == ClipModelLevel.S0 ? "model=S0" : "model=S1";
+        var dirs = Directory.GetDirectories(root);
+        Array.Sort(dirs, StringComparer.Ordinal);
+        for (var i = dirs.Length - 1; i >= 0; i--)
+        {
+            var scorePath = Path.Combine(dirs[i], "scores.txt");
+            if (!File.Exists(scorePath))
+                continue;
+
+            string firstLine;
+            try
+            {
+                using var sr = new StreamReader(scorePath);
+                firstLine = sr.ReadLine();
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!string.Equals(firstLine, expectedModel, StringComparison.Ordinal))
+                continue;
+
+            var promptByLabel = new Dictionary<string, string>(StringComparer.Ordinal);
+            try
+            {
+                foreach (var line in File.ReadLines(scorePath))
+                {
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith("model=", StringComparison.Ordinal))
+                        continue;
+
+                    var parts = line.Split('\t');
+                    if (parts.Length >= 4)
+                    {
+                        var label = parts[0]?.Trim();
+                        var prompt = parts[3]?.Trim();
+                        if (!string.IsNullOrWhiteSpace(label) && !string.IsNullOrWhiteSpace(prompt))
+                            promptByLabel[label] = prompt;
+                    }
+                }
+            }
+            catch
+            {
+                continue;
+            }
+
+            var entries = new ClipTextEmbeddingCacheEntry[labelDefinitions.Length];
+            var valid = true;
+            for (var j = 0; j < labelDefinitions.Length; j++)
+            {
+                var def = labelDefinitions[j];
+                if (def == null || string.IsNullOrWhiteSpace(def.label) || string.IsNullOrWhiteSpace(def.prompt))
+                {
+                    valid = false;
+                    break;
+                }
+
+                if (!promptByLabel.TryGetValue(def.label.Trim(), out var promptFromDump))
+                {
+                    valid = false;
+                    break;
+                }
+
+                var dumpPath = Path.Combine(dirs[i], "text_embedding_" + SanitizeFileName(def.label.Trim()) + ".txt");
+                var embedding = TryReadEmbeddingDump(dumpPath);
+                if (embedding == null || embedding.Length != EmbeddingSize)
+                {
+                    valid = false;
+                    break;
+                }
+
+                entries[j] = new ClipTextEmbeddingCacheEntry
+                {
+                    label = def.label.Trim(),
+                    prompt = promptFromDump,
+                    embedding = embedding
+                };
+            }
+
+            if (!valid)
+                continue;
+
+            var cache = new ClipTextEmbeddingCache
+            {
+                modelKey = modelKey,
+                entries = entries
+            };
+            return TryApplyTextEmbeddingCache(modelKey, cache);
+        }
+
+        return false;
+    }
+
+    private static float[] TryReadEmbeddingDump(string path)
+    {
+        if (!File.Exists(path))
+            return null;
+
+        var values = new List<float>(EmbeddingSize);
+        foreach (var line in File.ReadLines(path))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            var tab = line.IndexOf('\t');
+            if (tab <= 0 || tab >= line.Length - 1)
+                continue;
+
+            if (float.TryParse(line.Substring(tab + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                values.Add(v);
+        }
+
+        return values.Count == EmbeddingSize ? values.ToArray() : null;
+    }
+
+    private void TryWriteTextEmbeddingCache(string modelKey)
+    {
+        if (string.IsNullOrWhiteSpace(modelKey) || _cachedTextScores == null || _cachedTextEmbeddings == null)
+            return;
+        if (_cachedTextScores.Length != _cachedTextEmbeddings.Length || labelDefinitions == null || labelDefinitions.Length != _cachedTextScores.Length)
+            return;
+
+        try
+        {
+            var entries = new ClipTextEmbeddingCacheEntry[_cachedTextScores.Length];
+            for (var i = 0; i < entries.Length; i++)
+            {
+                if (_cachedTextEmbeddings[i] == null || _cachedTextEmbeddings[i].Length != EmbeddingSize)
+                    return;
+
+                entries[i] = new ClipTextEmbeddingCacheEntry
+                {
+                    label = _cachedTextScores[i].label,
+                    prompt = _cachedTextScores[i].prompt,
+                    embedding = (float[])_cachedTextEmbeddings[i].Clone()
+                };
+            }
+
+            var cache = new ClipTextEmbeddingCache
+            {
+                modelKey = modelKey,
+                entries = entries
+            };
+
+            var dir = Path.Combine(Application.persistentDataPath, clipRootRelativePath);
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, modelKey + TextEmbeddingCacheSuffix);
+            File.WriteAllText(path, JsonUtility.ToJson(cache, true));
+        }
+        catch (Exception e)
+        {
+            UnityEngine.Debug.LogWarning("[CLIP] Failed to write text embedding cache: " + e.Message);
+        }
+    }
+
+    private void ReportLoadProgress(string modelLabel, float progressStart, float progressEnd, NcnnRepro4.LoadProgress progress)
+    {
+        var progress01 = Mathf.Lerp(progressStart, progressEnd, Mathf.Clamp01(progress.progress01));
+        string text;
+        switch (progress.stage)
+        {
+            case "release":
+                text = "Reset " + modelLabel;
+                break;
+            case "parse":
+                text = "Parse " + modelLabel;
+                break;
+            case "build-blobs":
+                text = "Build " + modelLabel + " graph";
+                break;
+            case "layer":
+                text = "Load " + modelLabel + " " + progress.layerIndex + "/" + progress.layerCount;
+                if (!string.IsNullOrWhiteSpace(progress.layerType))
+                    text += " (" + progress.layerType + ")";
+                break;
+            default:
+                text = "Load " + modelLabel;
+                break;
+        }
+
+        ReportProgress(progress01, text);
+    }
+
+    private static void LogLoadProfile(string label, NcnnRepro4.ModelLoadProfile profile)
+    {
+        if (profile == null)
+            return;
+
+        var items = new List<KeyValuePair<string, NcnnRepro4.LayerTypeLoadProfile>>(profile.layerTypes);
+        items.Sort((a, b) => b.Value.totalMs.CompareTo(a.Value.totalMs));
+        var top = new List<string>();
+        for (var i = 0; i < Math.Min(4, items.Count); i++)
+        {
+            var item = items[i];
+            top.Add(item.Key
+                + ":" + item.Value.totalMs + "ms"
+                + " read=" + item.Value.readMs
+                + " upload=" + item.Value.uploadMs
+                + " pack=" + item.Value.packMs
+                + " count=" + item.Value.count);
+        }
+
+        UnityEngine.Debug.Log("[CLIP] LoadProfile " + label
+            + " | totalMs=" + profile.totalMs
+            + " | releaseMs=" + profile.releaseMs
+            + " | parseMs=" + profile.parseParamMs
+            + " | buildBlobUseMs=" + profile.buildBlobUseCountMs
+            + " | bytesRead=" + profile.totalBytesRead
+            + " | top=" + string.Join(" ; ", top));
     }
 
     private static RenderTexture ResizeTextureBilinear(Texture src, int width, int height)

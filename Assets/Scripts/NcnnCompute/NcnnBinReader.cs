@@ -29,9 +29,19 @@ namespace NcnnCompute
         {
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
+            if (count == 0)
+                return Array.Empty<float>();
+
+            var bytes = ReadBytesChecked(checked(count * sizeof(float)));
             var a = new float[count];
+            if (BitConverter.IsLittleEndian)
+            {
+                Buffer.BlockCopy(bytes, 0, a, 0, bytes.Length);
+                return a;
+            }
+
             for (var i = 0; i < count; i++)
-                a[i] = _br.ReadSingle();
+                a[i] = BitConverter.ToSingle(bytes, i * sizeof(float));
             return a;
         }
 
