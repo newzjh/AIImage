@@ -11,46 +11,41 @@ namespace NcnnCompute
     {
         public NcnnPermuteLayerRepro() : base(NcnnLayerTypes.Permute, supportsBufferPath: true, supportsCommandBufferPath: false) { }
 
-        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context) => owner.ExecutePermuteBufferLayer(layer, context);
-    }
-
-    public partial class NcnnRepro
-    {
-        internal void ExecutePermuteBufferLayer(NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            var textureBlobs = context.textureBlobs;
-            var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferRefs = context.bufferRefs;
-            var bufferViews = context.bufferViews;
-            var indexBlobs = context.indexBlobs;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-            var tempOwned = context.tempOwned;
+                        var textureBlobs = context.textureBlobs;
+                        var textureShapes = context.textureShapes;
+                        var bufferBlobs = context.bufferBlobs;
+                        var bufferRefs = context.bufferRefs;
+                        var bufferViews = context.bufferViews;
+                        var indexBlobs = context.indexBlobs;
+                        var remaining = context.remaining;
+                        var pinnedNames = context.pinnedNames;
+                        var tempOwned = context.tempOwned;
 
-            do
-            {
-                                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                    if (srcBuf == null)
-                                        throw new InvalidOperationException("Permute source not found: " + layer.bottomNames[0]);
+                        do
+                        {
+                                                var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                if (srcBuf == null)
+                                                    throw new InvalidOperationException("Permute source not found: " + layer.bottomNames[0]);
 
-                                    var srcTensor = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                    if (srcTensor == null)
-                                        throw new InvalidOperationException("Permute shape not resolved: " + layer.name);
+                                                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                                                if (srcTensor == null)
+                                                    throw new InvalidOperationException("Permute shape not resolved: " + layer.name);
 
-                                    var orderType = layer.GetInt(0, 0);
-                                    var dims = Mathf.Clamp(srcTensor.dims, 2, 4);
-                                    var axes = ResolvePermuteAxes(dims, orderType, layer.name);
-                                    var outShape = ResolvePermuteShape(srcTensor, dims, axes);
-                                    var outBuf = RentTempBuffer(outShape.w * outShape.h * outShape.d * outShape.c, sizeof(float));
-                                    _ops.Permute(srcBuf, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outBuf);
+                                                var orderType = layer.GetInt(0, 0);
+                                                var dims = Mathf.Clamp(srcTensor.dims, 2, 4);
+                                                var axes = NcnnRepro.ResolvePermuteAxes(dims, orderType, layer.name);
+                                                var outShape = NcnnRepro.ResolvePermuteShape(srcTensor, dims, axes);
+                                                var outBuf = owner.RentTempBuffer(outShape.w * outShape.h * outShape.d * outShape.c, sizeof(float));
+                                                owner.Ops.Permute(srcBuf, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outBuf);
 
-                                    bufferBlobs[layer.topNames[0]] = outBuf;
-                                    bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, false);
-                                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                    continue;
-            } while (false);
+                                                bufferBlobs[layer.topNames[0]] = outBuf;
+                                                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
+                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, false);
+                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                                                continue;
+                        } while (false);
         }
     }
 }

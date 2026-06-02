@@ -130,7 +130,7 @@ namespace NcnnCompute
                     var counts = new Dictionary<string, int>(StringComparer.Ordinal);
                     foreach (var l in model.layers)
                     {
-                        var key = l.type.ToString();
+                        var key = l.typeName ?? l.type.ToString();
                         if (!counts.TryGetValue(key, out var c)) c = 0;
                         counts[key] = c + 1;
                     }

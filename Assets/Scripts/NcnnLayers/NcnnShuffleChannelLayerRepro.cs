@@ -11,37 +11,32 @@ namespace NcnnCompute
     {
         public NcnnShuffleChannelLayerRepro() : base(NcnnLayerTypes.ShuffleChannel, supportsBufferPath: true, supportsCommandBufferPath: false) { }
 
-        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context) => owner.ExecuteShuffleChannelBufferLayer(layer, context);
-    }
-
-    public partial class NcnnRepro
-    {
-        internal void ExecuteShuffleChannelBufferLayer(NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            var textureBlobs = context.textureBlobs;
-            var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferRefs = context.bufferRefs;
-            var bufferViews = context.bufferViews;
-            var indexBlobs = context.indexBlobs;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-            var tempOwned = context.tempOwned;
+                        var textureBlobs = context.textureBlobs;
+                        var textureShapes = context.textureShapes;
+                        var bufferBlobs = context.bufferBlobs;
+                        var bufferRefs = context.bufferRefs;
+                        var bufferViews = context.bufferViews;
+                        var indexBlobs = context.indexBlobs;
+                        var remaining = context.remaining;
+                        var pinnedNames = context.pinnedNames;
+                        var tempOwned = context.tempOwned;
 
-            do
-            {
-                                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                    var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                    if (srcBuf == null || srcView == null)
-                                        throw new InvalidOperationException("ShuffleChannel source not found: " + layer.name);
+                        do
+                        {
+                                                var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                                                if (srcBuf == null || srcView == null)
+                                                    throw new InvalidOperationException("ShuffleChannel source not found: " + layer.name);
 
-                                    var outBuf = ShuffleChannelCpu(srcBuf, srcView, layer.GetInt(0, 1), layer.GetInt(1, 0) != 0);
-                                    bufferBlobs[layer.topNames[0]] = outBuf.buffer;
-                                    bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf.buffer);
-                                    bufferViews[layer.topNames[0]] = outBuf;
-                                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                    continue;
-            } while (false);
+                                                var outBuf = owner.ShuffleChannelCpu(srcBuf, srcView, layer.GetInt(0, 1), layer.GetInt(1, 0) != 0);
+                                                bufferBlobs[layer.topNames[0]] = outBuf.buffer;
+                                                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf.buffer);
+                                                bufferViews[layer.topNames[0]] = outBuf;
+                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                                                continue;
+                        } while (false);
         }
     }
 }

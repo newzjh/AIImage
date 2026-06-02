@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace NcnnCompute
@@ -12,8 +11,7 @@ namespace NcnnCompute
     [StructLayout(LayoutKind.Explicit, Size = 16)]
     public readonly struct NcnnLayerTypeKey : IEquatable<NcnnLayerTypeKey>
     {
-        private static readonly Dictionary<NcnnLayerTypeKey, string> NameMap = new Dictionary<NcnnLayerTypeKey, string>();
-        private static readonly object NameMapLock = new object();
+        public const int MaxChars = 16;
 
         [FieldOffset(0)] public readonly ulong low;
         [FieldOffset(8)] public readonly ulong high;
@@ -28,24 +26,13 @@ namespace NcnnCompute
         {
             if (string.IsNullOrEmpty(value))
                 return default;
-
-            var key = CreateKey(value);
-            lock (NameMapLock)
-            {
-                if (!NameMap.ContainsKey(key))
-                    NameMap[key] = value;
-            }
-            return key;
-        }
-
-        public static implicit operator NcnnLayerTypeKey(string value)
-        {
-            return FromString(value);
-        }
-
-        public static implicit operator string(NcnnLayerTypeKey value)
-        {
-            return value.ToString();
+            var bytes = new byte[16];
+            var ascii = Encoding.ASCII.GetBytes(value);
+            var copyCount = Math.Min(ascii.Length, MaxChars);
+            Buffer.BlockCopy(ascii, 0, bytes, 0, copyCount);
+            return new NcnnLayerTypeKey(
+                BitConverter.ToUInt64(bytes, 0),
+                BitConverter.ToUInt64(bytes, 8));
         }
 
         public bool Equals(NcnnLayerTypeKey other)
@@ -68,14 +55,13 @@ namespace NcnnCompute
 
         public override string ToString()
         {
-            lock (NameMapLock)
-            {
-                if (NameMap.TryGetValue(this, out var value))
-                    return value;
-            }
-
-            return low.ToString("X16", CultureInfo.InvariantCulture)
-                   + high.ToString("X16", CultureInfo.InvariantCulture);
+            var bytes = new byte[16];
+            Buffer.BlockCopy(BitConverter.GetBytes(low), 0, bytes, 0, sizeof(ulong));
+            Buffer.BlockCopy(BitConverter.GetBytes(high), 0, bytes, sizeof(ulong), sizeof(ulong));
+            var length = 0;
+            while (length < bytes.Length && bytes[length] != 0)
+                length++;
+            return Encoding.ASCII.GetString(bytes, 0, length);
         }
 
         public static bool operator ==(NcnnLayerTypeKey left, NcnnLayerTypeKey right)
@@ -86,27 +72,6 @@ namespace NcnnCompute
         public static bool operator !=(NcnnLayerTypeKey left, NcnnLayerTypeKey right)
         {
             return !left.Equals(right);
-        }
-
-        private static NcnnLayerTypeKey CreateKey(string value)
-        {
-            var ascii = Encoding.ASCII.GetBytes(value);
-            if (ascii.Length <= 16)
-            {
-                var direct = new byte[16];
-                Buffer.BlockCopy(ascii, 0, direct, 0, ascii.Length);
-                return new NcnnLayerTypeKey(
-                    BitConverter.ToUInt64(direct, 0),
-                    BitConverter.ToUInt64(direct, 8));
-            }
-
-            using (var md5 = MD5.Create())
-            {
-                var hash = md5.ComputeHash(Encoding.UTF8.GetBytes(value));
-                return new NcnnLayerTypeKey(
-                    BitConverter.ToUInt64(hash, 0),
-                    BitConverter.ToUInt64(hash, 8));
-            }
         }
     }
 
@@ -158,6 +123,7 @@ namespace NcnnCompute
         public sealed class Layer
         {
             public NcnnLayerTypeKey type;
+            public string typeName;
             public string name;
             public int bottoms;
             public int tops;
@@ -291,7 +257,8 @@ namespace NcnnCompute
                     continue;
                 var layer = new NcnnParamModel.Layer
                 {
-                    type = tok[0],
+                    type = NcnnLayerTypeKey.FromString(tok[0]),
+                    typeName = tok[0],
                     name = tok[1],
                     bottoms = int.Parse(tok[2], CultureInfo.InvariantCulture),
                     tops = int.Parse(tok[3], CultureInfo.InvariantCulture)

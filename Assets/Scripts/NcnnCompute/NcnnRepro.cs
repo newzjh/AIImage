@@ -12,7 +12,7 @@ namespace NcnnCompute
 {
     public partial class NcnnRepro : IDisposable
     {
-        private static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
+        internal static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
         {
             "Mul_581",
             "Mul_687",
@@ -20,7 +20,7 @@ namespace NcnnCompute
             "Mul_900"
         };
 
-        private static readonly HashSet<string> CodeFormerSftAddLayers = new HashSet<string>(StringComparer.Ordinal)
+        internal static readonly HashSet<string> CodeFormerSftAddLayers = new HashSet<string>(StringComparer.Ordinal)
         {
             "Add_582",
             "Add_688",
@@ -28,7 +28,7 @@ namespace NcnnCompute
             "Add_901"
         };
 
-        private static readonly HashSet<string> CodeFormerSftResidualLayers = new HashSet<string>(StringComparer.Ordinal)
+        internal static readonly HashSet<string> CodeFormerSftResidualLayers = new HashSet<string>(StringComparer.Ordinal)
         {
             "Add_585",
             "Add_691",
@@ -526,17 +526,17 @@ namespace NcnnCompute
         public bool ForceBufferConvolution { get; set; }
         public bool UseTextureMaxPoolingInd { get; set; }
 
-        private readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, DeconvPack> _deconv = new Dictionary<string, DeconvPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, InnerProductPack> _innerProduct = new Dictionary<string, InnerProductPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, GemmPack> _gemm = new Dictionary<string, GemmPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, MemoryDataPack> _memoryData = new Dictionary<string, MemoryDataPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, EmbedPack> _embed = new Dictionary<string, EmbedPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, LayerNormPack> _layerNorm = new Dictionary<string, LayerNormPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, GroupNormPack> _groupNorm = new Dictionary<string, GroupNormPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, BatchNormPack> _batchNorm = new Dictionary<string, BatchNormPack>(StringComparer.Ordinal);
-        private readonly Dictionary<string, MultiHeadAttentionPack> _multiHeadAttention = new Dictionary<string, MultiHeadAttentionPack>(StringComparer.Ordinal);
-        private Dictionary<string, int> _blobUseCount;
+        internal readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, DeconvPack> _deconv = new Dictionary<string, DeconvPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, InnerProductPack> _innerProduct = new Dictionary<string, InnerProductPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, GemmPack> _gemm = new Dictionary<string, GemmPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, MemoryDataPack> _memoryData = new Dictionary<string, MemoryDataPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, EmbedPack> _embed = new Dictionary<string, EmbedPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, LayerNormPack> _layerNorm = new Dictionary<string, LayerNormPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, GroupNormPack> _groupNorm = new Dictionary<string, GroupNormPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, BatchNormPack> _batchNorm = new Dictionary<string, BatchNormPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, MultiHeadAttentionPack> _multiHeadAttention = new Dictionary<string, MultiHeadAttentionPack>(StringComparer.Ordinal);
+        internal Dictionary<string, int> _blobUseCount;
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
         private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
         private readonly HashSet<ComputeTexture> _cmdSets = new HashSet<ComputeTexture>();
@@ -585,7 +585,7 @@ namespace NcnnCompute
         public bool useExperimentalIteratePath = false;
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
 
-        private void NotifyConvComplete(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
+        internal void NotifyConvComplete(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
         {
             try { OnConvComplete?.Invoke(layerName, mode, srcW, srcH, inPacks, outPacks, gpuMs); } catch { }
         }
@@ -694,12 +694,12 @@ namespace NcnnCompute
                 layerSw.Stop();
                 totalLoadMs += layerSw.ElapsedMilliseconds;
 
-                AccumulateLayerProfile(profile, layer != null ? layer.type.ToString() : null, metrics, layerSw.ElapsedMilliseconds);
+                AccumulateLayerProfile(profile, layer?.typeName, metrics, layerSw.ElapsedMilliseconds);
 
                 var progress01 = totalLayers > 0
                     ? 0.05f + 0.94f * ((float)(i + 1) / totalLayers)
                     : 0.99f;
-                yield return new LoadProgress("layer", i + 1, totalLayers, layer?.name, layer != null ? layer.type.ToString() : null, progress01);
+                yield return new LoadProgress("layer", i + 1, totalLayers, layer?.name, layer?.typeName, progress01);
             }
 
             profile.totalMs = totalLoadMs;
@@ -2902,7 +2902,7 @@ TextureConvPath:
                     continue;
                 }
 
-                throw new InvalidOperationException("unsupported layer type: " + layer.type);
+                throw new InvalidOperationException("unsupported layer type: " + (layer.typeName ?? layer.type.ToString()));
             }
 
             return new InferResult(textureBlobs, textureShapes, bufferBlobs, bufferRefs, bufferViews, tempOwned, this);
@@ -3222,7 +3222,7 @@ TextureConvPath:
                     throw new InvalidOperationException("unsupported interp scale: " + sx.ToString("0.###", CultureInfo.InvariantCulture) + "," + sy.ToString("0.###", CultureInfo.InvariantCulture));
                 }
 
-                throw new InvalidOperationException("unsupported layer type in CommandBuffer path: " + l.type);
+                throw new InvalidOperationException("unsupported layer type in CommandBuffer path: " + (l.typeName ?? l.type.ToString()));
             }
 
             var outBlobName = ResolveDefaultOutputBlobName();
@@ -3244,14 +3244,14 @@ TextureConvPath:
             return keep;
         }
 
-        private static CmdTensorRef GetCmdTensor(Dictionary<string, CmdTensorRef> blobs, string name)
+        internal static CmdTensorRef GetCmdTensor(Dictionary<string, CmdTensorRef> blobs, string name)
         {
             if (!blobs.TryGetValue(name, out var tr) || tr == null)
                 throw new InvalidOperationException("blob not found: " + name);
             return tr;
         }
 
-        private void ConsumeCmd(CommandBuffer cmd, Dictionary<string, CmdTensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames, ICollection<string> pinnedNames)
+        internal void ConsumeCmd(CommandBuffer cmd, Dictionary<string, CmdTensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames, ICollection<string> pinnedNames)
         {
             for (var i = 0; i < bottomNames.Length; i++)
             {
@@ -3285,7 +3285,7 @@ TextureConvPath:
             return "NcnnRepro.RentTempBuffer(" + (member ?? "?") + ":" + line.ToString(CultureInfo.InvariantCulture) + ")";
         }
 
-        private ComputeBuffer RentTempBuffer(
+        internal ComputeBuffer RentTempBuffer(
             int count,
             int stride,
             ComputeBufferType type = ComputeBufferType.Structured,
@@ -3295,12 +3295,12 @@ TextureConvPath:
             return _bufferPool.Rent(count, stride, type, GetTempBufferLabel(callerMember, callerLine));
         }
 
-        private void ReturnTempBuffer(ComputeBuffer buffer)
+        internal void ReturnTempBuffer(ComputeBuffer buffer)
         {
             _bufferPool.Return(buffer, "NcnnRepro.ReturnTempBuffer");
         }
 
-        private NcnnTensorBuffer RentTempTensorBuffer(
+        internal NcnnTensorBuffer RentTempTensorBuffer(
             int dims,
             int w,
             int h = 1,
@@ -3448,7 +3448,7 @@ TextureConvPath:
             Release();
         }
 
-        private RenderTexture MaterializeTextureFromBuffer(
+        internal RenderTexture MaterializeTextureFromBuffer(
             string name,
             Dictionary<string, ComputeBuffer> bufferBlobs,
             Dictionary<string, NcnnTensorBuffer> bufferViews)
@@ -3466,7 +3466,7 @@ TextureConvPath:
             return rt;
         }
 
-        private TensorRef GetOrMaterializeTexture(
+        internal TensorRef GetOrMaterializeTexture(
             string name,
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, BufferShape> textureShapes,
@@ -3499,7 +3499,7 @@ TextureConvPath:
             return tr;
         }
 
-        private bool TryGetPack4Texture(
+        internal bool TryGetPack4Texture(
             string name,
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, BufferShape> textureShapes,
@@ -3586,7 +3586,7 @@ TextureConvPath:
             }
         }
 
-        private static void SetTextureBlob(
+        internal static void SetTextureBlob(
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, BufferShape> textureShapes,
             string name,
@@ -3605,7 +3605,7 @@ TextureConvPath:
             textureShapes[name] = new BufferShape(3, logicalShape.w, logicalShape.h, 1, logicalShape.c);
         }
 
-        private static bool CanUseExactPack4BinaryPath(TensorRef a, BufferShape aShape, TensorRef b, BufferShape bShape)
+        internal static bool CanUseExactPack4BinaryPath(TensorRef a, BufferShape aShape, TensorRef b, BufferShape bShape)
         {
             return a != null
                 && b != null
@@ -3621,27 +3621,27 @@ TextureConvPath:
                 && a.packs == b.packs;
         }
 
-        private static int ComputeConvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter)
+        internal static int ComputeConvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter)
         {
             var kernelExtent = dilation * (kernel - 1) + 1;
             return Mathf.Max(1, (inSize + padBefore + padAfter - kernelExtent) / Mathf.Max(1, stride) + 1);
         }
 
-        private static int ComputeDeconvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter, int outputPadAfter)
+        internal static int ComputeDeconvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter, int outputPadAfter)
         {
             var kernelExtent = dilation * (kernel - 1) + 1;
             var bordered = (inSize - 1) * Mathf.Max(1, stride) + kernelExtent + Mathf.Max(0, outputPadAfter);
             return Mathf.Max(1, bordered - Mathf.Max(0, padBefore) - Mathf.Max(0, padAfter));
         }
 
-        private static ComputeBuffer NewBuffer(float[] data)
+        internal static ComputeBuffer NewBuffer(float[] data)
         {
             var buf = new ComputeBuffer(data.Length, sizeof(float), ComputeBufferType.Structured);
             buf.SetData(data);
             return buf;
         }
 
-        private BufferRef NewOwnedBufferRef(string name, ComputeBuffer buffer)
+        internal BufferRef NewOwnedBufferRef(string name, ComputeBuffer buffer)
         {
             if (buffer == null)
                 throw new ArgumentNullException(nameof(buffer));
@@ -3653,14 +3653,14 @@ TextureConvPath:
             };
         }
 
-        private static TensorRef GetTexture(Dictionary<string, TensorRef> blobs, string name)
+        internal static TensorRef GetTexture(Dictionary<string, TensorRef> blobs, string name)
         {
             if (!blobs.TryGetValue(name, out var tr) || tr == null || tr.texture == null)
                 throw new InvalidOperationException("blob not found: " + name);
             return tr;
         }
 
-        private static NcnnTensorBuffer TryGetBufferView(
+        internal static NcnnTensorBuffer TryGetBufferView(
             string name,
             Dictionary<string, ComputeBuffer> bufferBlobs,
             Dictionary<string, NcnnTensorBuffer> bufferViews)
@@ -3676,7 +3676,7 @@ TextureConvPath:
             return null;
         }
 
-        private ComputeBuffer GetOrConvertToBuffer(
+        internal ComputeBuffer GetOrConvertToBuffer(
             string name,
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, ComputeBuffer> bufferBlobs,
@@ -3721,7 +3721,7 @@ TextureConvPath:
             throw new InvalidOperationException("texture logical shape mismatch: " + name + " | physical=" + physicalCount + " logical=" + logicalCount);
         }
 
-        private static float[] ReadClipArrayAsFloat32(NcnnBinReader br, int count, int loadType)
+        internal static float[] ReadClipArrayAsFloat32(NcnnBinReader br, int count, int loadType)
         {
             if (br == null)
                 throw new ArgumentNullException(nameof(br));
@@ -3732,7 +3732,7 @@ TextureConvPath:
             return br.ReadNcnnMatAsFloat32(count, 0, 0, 0, loadType);
         }
 
-        private static float[] ReadClipMatAsFloat32(NcnnBinReader br, int w, int h, int d, int c, int loadType)
+        internal static float[] ReadClipMatAsFloat32(NcnnBinReader br, int w, int h, int d, int c, int loadType)
         {
             int count;
             if (d != 0) count = checked(w * h * d * c);
@@ -3743,7 +3743,7 @@ TextureConvPath:
             return ReadClipArrayAsFloat32(br, count, loadType);
         }
 
-        private static float[] ReadPackedOrRawWeightArray(NcnnBinReader br, int count, string layerName)
+        internal static float[] ReadPackedOrRawWeightArray(NcnnBinReader br, int count, string layerName)
         {
             if (br == null)
                 throw new ArgumentNullException(nameof(br));
@@ -3762,7 +3762,7 @@ TextureConvPath:
             }
         }
 
-        private static float[] ReadFloatBuffer(ComputeBuffer buffer)
+        internal static float[] ReadFloatBuffer(ComputeBuffer buffer)
         {
             if (buffer == null)
                 throw new ArgumentNullException(nameof(buffer));
@@ -3771,7 +3771,7 @@ TextureConvPath:
             return data;
         }
 
-        private static float[] RunGemmCpu(ComputeBuffer aBuf, NcnnTensorBuffer aView, GemmPack gp)
+        internal static float[] RunGemmCpu(ComputeBuffer aBuf, NcnnTensorBuffer aView, GemmPack gp)
         {
             if (aBuf == null)
                 throw new ArgumentNullException(nameof(aBuf));
@@ -3826,7 +3826,7 @@ TextureConvPath:
             return output;
         }
 
-        private NcnnTensorBuffer RunMatMulLayer(ComputeBuffer aBuf, NcnnTensorBuffer aView, ComputeBuffer bBuf, NcnnTensorBuffer bView, bool transB)
+        internal NcnnTensorBuffer RunMatMulLayer(ComputeBuffer aBuf, NcnnTensorBuffer aView, ComputeBuffer bBuf, NcnnTensorBuffer bView, bool transB)
         {
             static void GetMatrixShape(NcnnTensorBuffer view, out int rows, out int cols)
             {
@@ -3923,7 +3923,7 @@ TextureConvPath:
             return outTensor;
         }
 
-        private void Consume(
+        internal void Consume(
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, int> remaining,
             string[] bottomNames,
@@ -3955,7 +3955,7 @@ TextureConvPath:
             }
         }
 
-        private void Consume(
+        internal void Consume(
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, ComputeBuffer> bufferBlobs,
             Dictionary<string, BufferRef> bufferRefs,
@@ -4004,7 +4004,7 @@ TextureConvPath:
             }
         }
 
-        private void ConsumeIndex(
+        internal void ConsumeIndex(
             Dictionary<string, IndexRef> indexBlobs,
             Dictionary<string, int> remaining,
             string[] bottomNames,
@@ -4039,7 +4039,7 @@ TextureConvPath:
             }
         }
 
-        private static NcnnTensorBuffer ResolveReshapeTensor(NcnnTensorBuffer src, NcnnParamModel.Layer layer)
+        internal static NcnnTensorBuffer ResolveReshapeTensor(NcnnTensorBuffer src, NcnnParamModel.Layer layer)
         {
             var outw = layer.GetInt(0, -233);
             var outh = layer.GetInt(1, -233);
@@ -4097,7 +4097,7 @@ TextureConvPath:
             return src.Reshape(4, outw, outh, outd, outc);
         }
 
-        private static BufferShape ResolveReshapeShape(BufferShape src, NcnnParamModel.Layer layer)
+        internal static BufferShape ResolveReshapeShape(BufferShape src, NcnnParamModel.Layer layer)
         {
             var outw = layer.GetInt(0, -233);
             var outh = layer.GetInt(1, -233);
@@ -4155,14 +4155,14 @@ TextureConvPath:
             return new BufferShape(4, outw, outh, outd, outc);
         }
 
-        private static BufferShape GetTextureShape(Dictionary<string, BufferShape> textureShapes, TensorRef tr, string name)
+        internal static BufferShape GetTextureShape(Dictionary<string, BufferShape> textureShapes, TensorRef tr, string name)
         {
             if (textureShapes.TryGetValue(name, out var shape))
                 return shape;
             return new BufferShape(3, tr.width, tr.height, 1, tr.packs * 4);
         }
 
-        private int ResolveInputLogicalChannels(string inputBlobName, int fallbackChannels)
+        internal int ResolveInputLogicalChannels(string inputBlobName, int fallbackChannels)
         {
             if (Model?.layers == null || string.IsNullOrWhiteSpace(inputBlobName))
                 return fallbackChannels;
@@ -4184,7 +4184,7 @@ TextureConvPath:
             return fallbackChannels;
         }
 
-        private static Vector4Int ResolvePermuteAxes(int dims, int orderType, string layerName)
+        internal static Vector4Int ResolvePermuteAxes(int dims, int orderType, string layerName)
         {
             if (dims == 2)
             {
@@ -4240,7 +4240,7 @@ TextureConvPath:
             };
         }
 
-        private static BufferShape ResolvePermuteShape(NcnnTensorBuffer src, int dims, Vector4Int axes)
+        internal static BufferShape ResolvePermuteShape(NcnnTensorBuffer src, int dims, Vector4Int axes)
         {
             int GetAxisSize(int axis)
             {
@@ -4258,7 +4258,7 @@ TextureConvPath:
             return new BufferShape(dims, outW, outH, outD, outC);
         }
 
-        private static int MapNcnnAxisToTensorAxis(int dims, int axis)
+        internal static int MapNcnnAxisToTensorAxis(int dims, int axis)
         {
             if (dims == 1)
                 return 0;
@@ -4277,7 +4277,7 @@ TextureConvPath:
             return 0;
         }
 
-        private static int GetAxisSize(int dims, int w, int h, int d, int c, int axis)
+        internal static int GetAxisSize(int dims, int w, int h, int d, int c, int axis)
         {
             if (axis == 0) return w;
             if (axis == 1) return h;
@@ -4286,7 +4286,7 @@ TextureConvPath:
             throw new ArgumentOutOfRangeException(nameof(axis));
         }
 
-        private NcnnTensorBuffer ApplyCropSlices(
+        internal NcnnTensorBuffer ApplyCropSlices(
             ComputeBuffer srcBuf,
             NcnnTensorBuffer srcView,
             NcnnParamModel.Layer layer,
@@ -4355,7 +4355,7 @@ TextureConvPath:
             return currentView;
         }
 
-        private NcnnTensorBuffer ShuffleChannelCpu(ComputeBuffer srcBuffer, NcnnTensorBuffer srcView, int group, bool reverse)
+        internal NcnnTensorBuffer ShuffleChannelCpu(ComputeBuffer srcBuffer, NcnnTensorBuffer srcView, int group, bool reverse)
         {
             if (srcBuffer == null)
                 throw new ArgumentNullException(nameof(srcBuffer));
@@ -4393,7 +4393,7 @@ TextureConvPath:
             return new NcnnTensorBuffer(outBuffer, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
         }
 
-        private static (int mode, int size, int total, NcnnTensorBuffer outputView) ResolveBinaryBroadcast(
+        internal static (int mode, int size, int total, NcnnTensorBuffer outputView) ResolveBinaryBroadcast(
             NcnnTensorBuffer aView,
             NcnnTensorBuffer bView,
             int aCount,
@@ -4428,7 +4428,7 @@ TextureConvPath:
             throw new InvalidOperationException("BinaryOp broadcast not supported: " + layerName + " | " + aCount + " vs " + bCount);
         }
 
-        private bool TryExpand2DBroadcastBuffer(
+        internal bool TryExpand2DBroadcastBuffer(
             ComputeBuffer sourceBuffer,
             NcnnTensorBuffer sourceView,
             NcnnTensorBuffer targetView,
@@ -4479,7 +4479,7 @@ TextureConvPath:
             return true;
         }
 
-        private bool TryExpand1DTo2DBroadcastBuffer(
+        internal bool TryExpand1DTo2DBroadcastBuffer(
             ComputeBuffer sourceBuffer,
             NcnnTensorBuffer sourceView,
             NcnnTensorBuffer targetView,
@@ -4533,7 +4533,7 @@ TextureConvPath:
             return true;
         }
 
-        private bool TryExpand3DBroadcastBuffer(
+        internal bool TryExpand3DBroadcastBuffer(
             ComputeBuffer sourceBuffer,
             NcnnTensorBuffer sourceView,
             NcnnTensorBuffer targetView,
@@ -4690,7 +4690,7 @@ TextureConvPath:
             return packed;
         }
 
-        private bool ShouldCompareTextureConvLayer(string layerName)
+        internal bool ShouldCompareTextureConvLayer(string layerName)
         {
             if (!string.IsNullOrWhiteSpace(layerName))
             {
@@ -4703,7 +4703,7 @@ TextureConvPath:
             return false;
         }
 
-        private void CompareTextureConvPath(
+        internal void CompareTextureConvPath(
             string layerName,
             string bottomName,
             ConvPack conv,
@@ -4822,7 +4822,7 @@ TextureConvPath:
             }
         }
 
-        private void SynchronizeGpuBufferUse(ComputeBuffer buffer)
+        internal void SynchronizeGpuBufferUse(ComputeBuffer buffer)
         {
             if (buffer == null || buffer.count <= 0)
                 return;
@@ -4830,7 +4830,7 @@ TextureConvPath:
             buffer.GetData(_gpuSyncScratch, 0, 0, 1);
         }
 
-        private void CompareMaxPoolingIndPath(string layerName, TensorRef src, BufferShape srcShape, RenderTexture textureOutput, RenderTexture textureIndices, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH)
+        internal void CompareMaxPoolingIndPath(string layerName, TensorRef src, BufferShape srcShape, RenderTexture textureOutput, RenderTexture textureIndices, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH)
         {
             try
             {
@@ -4973,7 +4973,7 @@ TextureConvPath:
             }
         }
 
-        private void ApplyMaxPoolingIndCpu(TensorRef src, BufferShape srcShape, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH, RenderTexture outRt, RenderTexture idxRt)
+        internal void ApplyMaxPoolingIndCpu(TensorRef src, BufferShape srcShape, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH, RenderTexture outRt, RenderTexture idxRt)
         {
             var srcCount = srcShape.w * srcShape.h * srcShape.c;
             var srcBuffer = RentTempBuffer(srcCount, sizeof(float));
@@ -5050,7 +5050,7 @@ TextureConvPath:
             }
         }
 
-        private void ApplyMaxUnPoolingCpu(TensorRef src, BufferShape srcShape, IndexRef idx, int outW, int outH, RenderTexture outRt)
+        internal void ApplyMaxUnPoolingCpu(TensorRef src, BufferShape srcShape, IndexRef idx, int outW, int outH, RenderTexture outRt)
         {
             var pooledCount = src.width * src.height * srcShape.c;
             var pooledBuffer = RentTempBuffer(pooledCount, sizeof(float));
@@ -5101,7 +5101,7 @@ TextureConvPath:
             }
         }
 
-        private void LogBufferStats(string layerName, string kind, ComputeBuffer buffer, int logicalCount)
+        internal void LogBufferStats(string layerName, string kind, ComputeBuffer buffer, int logicalCount)
         {
             if (DebugLog == null || buffer == null)
                 return;
