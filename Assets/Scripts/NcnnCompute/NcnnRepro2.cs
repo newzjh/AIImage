@@ -449,7 +449,7 @@ namespace NcnnCompute
             set => _maxPooledPerShape = Mathf.Max(0, value);
         }
 
-        public bool EnableWinograd23 { get; set; }
+        public const bool EnableWinograd23 = false;
         public bool PreferTexturePathForFaceDetector { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
         public ISet<string> DebugCompareTextureLayers { get; set; }

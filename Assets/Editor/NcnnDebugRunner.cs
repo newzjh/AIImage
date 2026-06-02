@@ -293,7 +293,6 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<MatterNcnnReproRunner>();
             runner.enableDebugDump = true;
             runner.forceBufferConvolution = false;
-            runner.enableWinograd23 = false;
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("Matting Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | dump=" + (runner.LastDumpDir ?? ""));
             if (!string.IsNullOrWhiteSpace(result.error))
@@ -332,7 +331,6 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<YoloSegNcnnReproRunner>();
             runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
             runner.enableDebugDump = true;
-            runner.enableWinograd23 = false;
             runner.targetPersonOnly = true;
             runner.enableMaskClose = true;
             runner.enableMaskDilate = true;

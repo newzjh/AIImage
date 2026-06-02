@@ -328,7 +328,7 @@ namespace NcnnCompute
 
         public NcnnOps Ops => _ops;
 
-        public bool enableWinograd23 = false;
+        public const bool enableWinograd23 = false;
         public bool gpuLayerProfileEnabled = false;
         public bool useExperimentalIteratePath = false;
         public event Action<string, string, int, int, int, int, double> OnConvComplete;

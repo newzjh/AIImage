@@ -188,7 +188,7 @@ namespace NcnnCompute
         private int _maxPooledPerShape = 2;
 
         public NcnnParamModel Model { get; private set; }
-        public bool EnableWinograd23 { get; set; }
+        public const bool EnableWinograd23 = false;
         public bool ForceBufferConvolution { get; set; }
         public bool UseTextureMaxPoolingInd { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;

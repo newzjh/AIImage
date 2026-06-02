@@ -20,7 +20,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public bool enableTileProbe = false;
     public bool enableSeamProbe = false;
     public bool useCommandBuffer = false;
-    public bool enableWinograd23 = false;
     public bool enableGpuLayerProfiling = false;
 
     public event Action<float, string> ProgressChanged;
@@ -154,7 +153,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private void Awake()
     {
         _repro = new NcnnRepro(new NcnnOps());
-        _repro.enableWinograd23 = enableWinograd23;
         _repro.gpuLayerProfileEnabled = _gpuLayerProfileEnabled;
         _repro.OnConvComplete += OnConvCompleteHandler;
     }
@@ -266,9 +264,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private string CurrentGpuProfileRunId()
     {
-        var mode = enableWinograd23 ? "winograd-on" : "winograd-off";
         var submit = _useCmdThisRun ? "cmd" : "immediate";
-        return "profile-" + mode + "-" + submit;
+        return "profile-"  + submit;
     }
 
     private bool ShouldProfileGpuLayers()
@@ -331,12 +328,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         _gpuShapeProfileStats.Clear();
     }
 
-    private bool ShouldUseWinograd23Core(NcnnRepro.ConvPack pack, int srcW, int srcH)
-    {
-        return enableWinograd23
-               && pack != null
-               && pack.useWinograd23;
-    }
+
 
     private void RecordGpuLayerProfile(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
     {
@@ -461,7 +453,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outcome = outcome,
                 profilingEnabled = true,
                 useCommandBuffer = true,
-                enableWinograd23 = enableWinograd23,
                 originalW = originalW,
                 originalH = originalH,
                 runInW = runInW,
@@ -535,7 +526,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             outcome = outcome,
             profilingEnabled = true,
             useCommandBuffer = false,
-            enableWinograd23 = enableWinograd23,
             originalW = originalW,
             originalH = originalH,
             runInW = runInW,

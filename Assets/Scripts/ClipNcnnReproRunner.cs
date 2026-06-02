@@ -335,7 +335,6 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         if (repro == null)
             return;
 
-        repro.EnableWinograd23 = false;
         repro.ForceBufferConvolutionAll = strictReference;
         repro.ForceBufferBinaryOpAll = strictReference;
         repro.ForceBufferGeluAll = strictReference;

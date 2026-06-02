@@ -138,7 +138,6 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public bool flipYInput = false;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
-    public bool enableWinograd23 = false;
     public bool enableDepthWiseTextureConvolution = true;
     public bool enableConv1x1TextureConvolution = true;
     public bool enableMaskClose = true;
@@ -428,7 +427,6 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
-        _repro.EnableWinograd23 = enableWinograd23;
         _repro.ForceBufferConvolutionAll = false;
         _repro.ForceBufferBinaryOpAll = false;
         _repro.ForceBufferGeluAll = false;

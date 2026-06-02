@@ -99,12 +99,13 @@ public class MainView : MonoBehaviour
     private GpuSharpenRunner _gpuSharpenRunner;
     private FaceMaskGenerator _faceMaskGenerator;
     private RealEsrganNcnnVulkanRunner _realEsrganRunner;
-    private RealEsrganNcnnNativeRunner _realEsrganNativeRunner;
+    //private RealEsrganNcnnNativeRunner _realEsrganNativeRunner;
     private RealEsrganNcnnReproRunner _realEsrganReproRunner;
-    private GfpganNcnnNativeRunner _gfpganNativeRunner;
+    //private GfpganNcnnNativeRunner _gfpganNativeRunner;
     private GfpganNcnnReproRunner _gfpganReproRunner;
     private CodeFormerNcnnReproRunner2 _codeFormerReproRunner;
     private MatterNcnnReproRunner _mattingReproRunner;
+    private YoloSegNcnnReproRunner _yoloandinpaintingReproRunner;
     private ClipNcnnReproRunner _clipNcnnReproRunner;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
@@ -154,17 +155,17 @@ public class MainView : MonoBehaviour
         if (_realEsrganRunner == null)
             _realEsrganRunner = gameObject.AddComponent<RealEsrganNcnnVulkanRunner>();
 
-        _realEsrganNativeRunner = GetComponent<RealEsrganNcnnNativeRunner>();
-        if (_realEsrganNativeRunner == null)
-            _realEsrganNativeRunner = gameObject.AddComponent<RealEsrganNcnnNativeRunner>();
+        //_realEsrganNativeRunner = GetComponent<RealEsrganNcnnNativeRunner>();
+        //if (_realEsrganNativeRunner == null)
+        //    _realEsrganNativeRunner = gameObject.AddComponent<RealEsrganNcnnNativeRunner>();
 
         _realEsrganReproRunner = GetComponent<RealEsrganNcnnReproRunner>();
         if (_realEsrganReproRunner == null)
             _realEsrganReproRunner = gameObject.AddComponent<RealEsrganNcnnReproRunner>();
 
-        _gfpganNativeRunner = GetComponent<GfpganNcnnNativeRunner>();
-        if (_gfpganNativeRunner == null)
-            _gfpganNativeRunner = gameObject.AddComponent<GfpganNcnnNativeRunner>();
+        //_gfpganNativeRunner = GetComponent<GfpganNcnnNativeRunner>();
+        //if (_gfpganNativeRunner == null)
+        //    _gfpganNativeRunner = gameObject.AddComponent<GfpganNcnnNativeRunner>();
 
         _gfpganReproRunner = GetComponent<GfpganNcnnReproRunner>();
         if (_gfpganReproRunner == null)
@@ -177,6 +178,10 @@ public class MainView : MonoBehaviour
         _mattingReproRunner = GetComponent<MatterNcnnReproRunner>();
         if (_mattingReproRunner == null)
             _mattingReproRunner = gameObject.AddComponent<MatterNcnnReproRunner>();
+
+        _yoloandinpaintingReproRunner = GetComponent<YoloSegNcnnReproRunner>();
+        if (_yoloandinpaintingReproRunner == null)
+            _yoloandinpaintingReproRunner = gameObject.AddComponent<YoloSegNcnnReproRunner>();
 
         _clipNcnnReproRunner = GetComponent<ClipNcnnReproRunner>();
         if (_clipNcnnReproRunner == null)
@@ -901,7 +906,6 @@ public class MainView : MonoBehaviour
         var saveButton = new Button(OnSaveCurrentImage) { text = "保存" };
         row1.Add(saveButton);
 
-#if !UNITY_WEBGL
         var ncnnSelfTestButton = new Button(OnNcnnSelfTest) { text = "NCNN自测" };
         row1.Add(ncnnSelfTestButton);
 
@@ -925,14 +929,15 @@ public class MainView : MonoBehaviour
 
         var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
         row1.Add(browseButton);
-#endif
+
 
         var gpuSharpenButton = new Button(OnGpuSharpen) { text = "GPU清晰化" };
         row0.Add(gpuSharpenButton);
 
-#if !UNITY_WEBGL
-        var realEsrganButton = new Button(OnRealEsrgan2x) { text = "ESRGAN" };
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        var realEsrganButton = new Button(OnRealEsrganProcess) { text = "ESRGAN" };
         row0.Add(realEsrganButton);
+#endif
 
         var realEsrganReproButton = new Button(OnRealEsrganRepro) { text = "ESRGAN(复刻)" };
         row0.Add(realEsrganReproButton);
@@ -940,11 +945,12 @@ public class MainView : MonoBehaviour
         //var realEsrganOrtButton = new Button(OnRealEsrganOrt2x) { text = "Real-ESRGAN 2x(内置)" };
         //row0.Add(realEsrganOrtButton);
 
-        var realEsrganNativeButton = new Button(OnRealEsrganNative) { text = "ESRGAN 2" };
-        row0.Add(realEsrganNativeButton);
+        //var realEsrganNativeButton = new Button(OnRealEsrganNative) { text = "ESRGAN 2" };
+        //row0.Add(realEsrganNativeButton);
 
-#endif
 
+        var yoloandinpaintingReproButton = new Button(OnYoloAndInpaintingRepro) { text = "YOLO&Inpainting" };
+        row0.Add(yoloandinpaintingReproButton);
 
         var mattingReproButton = new Button(OnMattingRepro) { text = "Matting(复刻)" };
         row0.Add(mattingReproButton);
@@ -1528,25 +1534,30 @@ public class MainView : MonoBehaviour
     }
 
 #if !UNITY_WEBGL
-    private void OnRealEsrgan2x()
+    private void OnRealEsrganProcess()
     {
         ApplyRealEsrganAsync().Forget();
     }
 
-    private void OnRealEsrganNative()
-    {
-        ApplyRealEsrganNativeAsync().Forget();
-    }
+    //private void OnRealEsrganNative()
+    //{
+    //    ApplyRealEsrganNativeAsync().Forget();
+    //}
 
-    private void OnGfpganNative()
-    {
-        ApplyGfpganNativeAsync().Forget();
-    }
+    //private void OnGfpganNative()
+    //{
+    //    ApplyGfpganNativeAsync().Forget();
+    //}
 #endif
 
     private void OnRealEsrganRepro()
     {
         ApplyRealEsrganReproAsync().Forget();
+    }
+
+    private void OnYoloAndInpaintingRepro()
+    {
+        ApplyYoloAndInpaintingReproAsync().Forget();
     }
 
     private void OnMattingRepro()
@@ -1708,6 +1719,54 @@ public class MainView : MonoBehaviour
                 AddHistory(r.texture, "ESRGAN(复刻)");
             if (r.elapsedMs > 0)
                 ShowToast("ESRGAN(复刻) 耗时 " + r.elapsedMs + " ms", 1800);
+        }
+        finally
+        {
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+
+    private async UniTaskVoid ApplyYoloAndInpaintingReproAsync()
+    {
+        if (_aiRunning) return;
+        if (_adjustRunning) return;
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+
+        StopPreview();
+
+        var src = GetCurrentHistoryTexture();
+        if (src == null) src = GetOriginalHistoryTexture();
+        if (src == null) return;
+
+        _adjustRunning = true;
+        HideBusy();
+        ShowProgress("YoloAndInpainting(复刻)");
+        try
+        {
+            await UniTask.NextFrame();
+            if (_yoloandinpaintingReproRunner == null)
+            {
+                ShowToast("找不到_yoloandinpaintingReproRunner", 2200);
+                return;
+            }
+
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            _yoloandinpaintingReproRunner.ProgressChanged -= OnProgress;
+            _yoloandinpaintingReproRunner.ProgressChanged += OnProgress;
+            var r = await _yoloandinpaintingReproRunner.ProcessAsync(src, _lifetimeCts.Token);
+            _yoloandinpaintingReproRunner.ProgressChanged -= OnProgress;
+            if (!string.IsNullOrWhiteSpace(r.error))
+            {
+                var msg = r.error;
+                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+                ShowToast(msg, 4500);
+                return;
+            }
+            if (r.texture != null)
+                AddHistory(r.texture, "YoloAndInpainting(复刻)");
+            if (r.elapsedMs > 0)
+                ShowToast("YoloAndInpainting(复刻) 耗时 " + r.elapsedMs + " ms", 1800);
         }
         finally
         {
@@ -1921,101 +1980,101 @@ public class MainView : MonoBehaviour
 
 
 #if !UNITY_WEBGL
-    private async UniTaskVoid ApplyRealEsrganNativeAsync()
-    {
-        if (_aiRunning) return;
-        if (_adjustRunning) return;
-        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+    //private async UniTaskVoid ApplyRealEsrganNativeAsync()
+    //{
+    //    if (_aiRunning) return;
+    //    if (_adjustRunning) return;
+    //    if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
 
-        StopPreview();
+    //    StopPreview();
 
-        var src = GetCurrentHistoryTexture();
-        if (src == null) src = GetOriginalHistoryTexture();
-        if (src == null) return;
+    //    var src = GetCurrentHistoryTexture();
+    //    if (src == null) src = GetOriginalHistoryTexture();
+    //    if (src == null) return;
 
-        _adjustRunning = true;
-        HideBusy();
-        ShowProgress("Real-ESRGAN(ncnn原生)");
-        try
-        {
-            await UniTask.NextFrame();
-            if (_realEsrganNativeRunner == null)
-            {
-                ShowToast("找不到RealEsrganNcnnNativeRunner", 2200);
-                return;
-            }
+    //    _adjustRunning = true;
+    //    HideBusy();
+    //    ShowProgress("Real-ESRGAN(ncnn原生)");
+    //    try
+    //    {
+    //        await UniTask.NextFrame();
+    //        if (_realEsrganNativeRunner == null)
+    //        {
+    //            ShowToast("找不到RealEsrganNcnnNativeRunner", 2200);
+    //            return;
+    //        }
 
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            _realEsrganNativeRunner.ProgressChanged -= OnProgress;
-            _realEsrganNativeRunner.ProgressChanged += OnProgress;
-            var r = await _realEsrganNativeRunner.ProcessAsync(src, _lifetimeCts.Token);
-            _realEsrganNativeRunner.ProgressChanged -= OnProgress;
-            if (!string.IsNullOrWhiteSpace(r.error))
-            {
-                var msg = r.error;
-                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
-                ShowToast(msg, 4500);
-                return;
-            }
-            if (r.texture != null)
-                AddHistory(r.texture, "Real-ESRGAN(ncnn原生)");
-            if (r.elapsedMs > 0)
-                ShowToast("Real-ESRGAN(ncnn原生) 耗时 " + r.elapsedMs + " ms", 1800);
-        }
-        finally
-        {
-            _adjustRunning = false;
-            HideProgress();
-        }
-    }
+    //        void OnProgress(float p, string t) => SetProgress(p, t);
+    //        _realEsrganNativeRunner.ProgressChanged -= OnProgress;
+    //        _realEsrganNativeRunner.ProgressChanged += OnProgress;
+    //        var r = await _realEsrganNativeRunner.ProcessAsync(src, _lifetimeCts.Token);
+    //        _realEsrganNativeRunner.ProgressChanged -= OnProgress;
+    //        if (!string.IsNullOrWhiteSpace(r.error))
+    //        {
+    //            var msg = r.error;
+    //            if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+    //            ShowToast(msg, 4500);
+    //            return;
+    //        }
+    //        if (r.texture != null)
+    //            AddHistory(r.texture, "Real-ESRGAN(ncnn原生)");
+    //        if (r.elapsedMs > 0)
+    //            ShowToast("Real-ESRGAN(ncnn原生) 耗时 " + r.elapsedMs + " ms", 1800);
+    //    }
+    //    finally
+    //    {
+    //        _adjustRunning = false;
+    //        HideProgress();
+    //    }
+    //}
 
-    private async UniTaskVoid ApplyGfpganNativeAsync()
-    {
-        if (_aiRunning) return;
-        if (_adjustRunning) return;
-        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
+    //private async UniTaskVoid ApplyGfpganNativeAsync()
+    //{
+    //    if (_aiRunning) return;
+    //    if (_adjustRunning) return;
+    //    if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested) return;
 
-        StopPreview();
+    //    StopPreview();
 
-        var src = GetCurrentHistoryTexture();
-        if (src == null) src = GetOriginalHistoryTexture();
-        if (src == null) return;
+    //    var src = GetCurrentHistoryTexture();
+    //    if (src == null) src = GetOriginalHistoryTexture();
+    //    if (src == null) return;
 
-        _adjustRunning = true;
-        HideBusy();
-        ShowProgress("GFPGAN(ncnn原生)");
-        try
-        {
-            await UniTask.NextFrame();
-            if (_gfpganNativeRunner == null)
-            {
-                ShowToast("找不到GfpganNcnnNativeRunner", 2200);
-                return;
-            }
+    //    _adjustRunning = true;
+    //    HideBusy();
+    //    ShowProgress("GFPGAN(ncnn原生)");
+    //    try
+    //    {
+    //        await UniTask.NextFrame();
+    //        if (_gfpganNativeRunner == null)
+    //        {
+    //            ShowToast("找不到GfpganNcnnNativeRunner", 2200);
+    //            return;
+    //        }
 
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            _gfpganNativeRunner.ProgressChanged -= OnProgress;
-            _gfpganNativeRunner.ProgressChanged += OnProgress;
-            var r = await _gfpganNativeRunner.ProcessAsync(src, _lifetimeCts.Token);
-            _gfpganNativeRunner.ProgressChanged -= OnProgress;
-            if (!string.IsNullOrWhiteSpace(r.error))
-            {
-                var msg = r.error;
-                if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
-                ShowToast(msg, 4500);
-                return;
-            }
-            if (r.texture != null)
-                AddHistory(r.texture, "GFPGAN(ncnn原生)");
-            if (r.elapsedMs > 0)
-                ShowToast("GFPGAN(ncnn原生) 耗时 " + r.elapsedMs + " ms", 1800);
-        }
-        finally
-        {
-            _adjustRunning = false;
-            HideProgress();
-        }
-    }
+    //        void OnProgress(float p, string t) => SetProgress(p, t);
+    //        _gfpganNativeRunner.ProgressChanged -= OnProgress;
+    //        _gfpganNativeRunner.ProgressChanged += OnProgress;
+    //        var r = await _gfpganNativeRunner.ProcessAsync(src, _lifetimeCts.Token);
+    //        _gfpganNativeRunner.ProgressChanged -= OnProgress;
+    //        if (!string.IsNullOrWhiteSpace(r.error))
+    //        {
+    //            var msg = r.error;
+    //            if (r.elapsedMs > 0) msg += " (耗时 " + r.elapsedMs + " ms)";
+    //            ShowToast(msg, 4500);
+    //            return;
+    //        }
+    //        if (r.texture != null)
+    //            AddHistory(r.texture, "GFPGAN(ncnn原生)");
+    //        if (r.elapsedMs > 0)
+    //            ShowToast("GFPGAN(ncnn原生) 耗时 " + r.elapsedMs + " ms", 1800);
+    //    }
+    //    finally
+    //    {
+    //        _adjustRunning = false;
+    //        HideProgress();
+    //    }
+    //}
 #endif
 
 #if !UNITY_WEBGL

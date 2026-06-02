@@ -30,7 +30,6 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public bool useTextureMaxPoolingInd = true;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
-    public bool enableWinograd23 = false;
     public bool enableForegroundCleanup = true;
     [Range(0f, 1f)] public float foregroundCleanupThreshold = 0.05f;
     [Range(0, 4)] public int foregroundCleanupCloseRadius = 2;
@@ -262,7 +261,6 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             return;
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
-        _repro.EnableWinograd23 = enableWinograd23;
         _repro.ForceBufferConvolution = forceBufferConvolution;
         _repro.UseTextureMaxPoolingInd = useTextureMaxPoolingInd;
         _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;

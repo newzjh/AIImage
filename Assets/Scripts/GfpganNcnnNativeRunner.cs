@@ -7,6 +7,7 @@ using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
 
+[Obsolete("native plugin mode is not support any more")]
 public sealed class GfpganNcnnNativeRunner : MonoBehaviour
 {
     public bool enableGfpganNative = true;

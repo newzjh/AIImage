@@ -100,7 +100,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     public float faceBoxExpand = 0.35f;
     public bool enableTempPool = false;
     public int maxPooledPerShape = 2;
-    public bool enableWinograd23 = false;
     public bool enableDebugDump = false;
     public bool enableFaceRegionDebugDump = false;
     [Range(0f, 1f)] public float codeFormerSftMulScale = 1f;
@@ -1413,8 +1412,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _generatorRepro.EnableTempPool = enableTempPool;
         _encoderRepro.MaxPooledPerShape = maxPooledPerShape;
         _generatorRepro.MaxPooledPerShape = maxPooledPerShape;
-        _encoderRepro.EnableWinograd23 = enableWinograd23;
-        _generatorRepro.EnableWinograd23 = enableWinograd23;
         _encoderRepro.CodeFormerSftMulScale = 1f;
         _generatorRepro.CodeFormerSftMulScale = Mathf.Clamp01(codeFormerSftMulScale);
         _encoderRepro.CodeFormerSftAddScale = 1f;
