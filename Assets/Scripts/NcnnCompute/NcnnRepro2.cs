@@ -398,8 +398,9 @@ namespace NcnnCompute
                     try
                     {
                         if (owned is ComputeBuffer tempBuffer)
-                            NcnnGpuResourceTracker.ReleaseBuffer(tempBuffer, "NcnnRepro2.InferResult.Dispose(tempOwned)");
-                        owned?.Dispose();
+                            _owner.ReturnTempBuffer(tempBuffer);
+                        else
+                            owned?.Dispose();
                     }
                     catch
                     {
@@ -411,7 +412,7 @@ namespace NcnnCompute
                     var br = kv.Value;
                     if (br == null || !br.owned || br.buffer == null || !_visitedBuffers.Add(br.buffer))
                         continue;
-                    try { br.buffer.Dispose(); } catch { }
+                    try { _owner.ReturnTempBuffer(br.buffer); } catch { }
                 }
 
                 _bufferBlobs.Clear();
@@ -432,6 +433,7 @@ namespace NcnnCompute
         private readonly Dictionary<string, MultiHeadAttentionPack> _multiHeadAttention = new Dictionary<string, MultiHeadAttentionPack>(StringComparer.Ordinal);
         private Dictionary<string, int> _blobUseCount;
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
+        private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
 
         private readonly NcnnOps _ops;
         private bool _useTempPool = false;
@@ -440,13 +442,21 @@ namespace NcnnCompute
         public bool EnableTempPool
         {
             get => _useTempPool;
-            set => _useTempPool = value;
+            set
+            {
+                _useTempPool = value;
+                _bufferPool.Enabled = value;
+            }
         }
 
         public int MaxPooledPerShape
         {
             get => _maxPooledPerShape;
-            set => _maxPooledPerShape = Mathf.Max(0, value);
+            set
+            {
+                _maxPooledPerShape = Mathf.Max(0, value);
+                _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
+            }
         }
 
         public const bool EnableWinograd23 = false;
@@ -464,6 +474,7 @@ namespace NcnnCompute
         public NcnnRepro2(NcnnOps ops)
         {
             _ops = ops ?? throw new ArgumentNullException(nameof(ops));
+            _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
         }
 
         public void LoadModel(string paramText, NcnnBinReader br)
@@ -872,7 +883,7 @@ namespace NcnnCompute
                         throw new InvalidOperationException("Embed input buffer not found: " + layer.bottomNames[0]);
 
                     var words = indicesBuf.count;
-                    var outBuf = new ComputeBuffer(words * ep.numOutput, sizeof(float), ComputeBufferType.Structured);
+                    var outBuf = RentTempBuffer(words * ep.numOutput, sizeof(float));
                     _ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outBuf);
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf);
@@ -953,7 +964,7 @@ namespace NcnnCompute
                     var dims = Mathf.Clamp(srcTensor.dims, 2, 4);
                     var axes = ResolvePermuteAxes(dims, orderType, layer.name);
                     var outShape = ResolvePermuteShape(srcTensor, dims, axes);
-                    var outBuf = new ComputeBuffer(outShape.w * outShape.h * outShape.d * outShape.c, sizeof(float), ComputeBufferType.Structured);
+                    var outBuf = RentTempBuffer(outShape.w * outShape.h * outShape.d * outShape.c, sizeof(float));
                     _ops.Permute(srcBuf, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outBuf);
 
                     bufferBlobs[layer.topNames[0]] = outBuf;
@@ -995,7 +1006,7 @@ namespace NcnnCompute
 
                     if (reduceAll)
                     {
-                        var outBufAll = new ComputeBuffer(1, sizeof(float), ComputeBufferType.Structured);
+                        var outBufAll = RentTempBuffer(1, sizeof(float));
                         _ops.ReductionBuf(srcBuf, srcBuf.count, 1, layer.GetInt(0, 0), coeff, outBufAll);
                         bufferBlobs[layer.topNames[0]] = outBufAll;
                         bufferViews[layer.topNames[0]] = keepDims
@@ -1026,7 +1037,7 @@ namespace NcnnCompute
                     {
                         reduceElems = srcTensor.h;
                         outCount = srcTensor.w;
-                        var tempTranspose = new ComputeBuffer(srcTensor.buffer.count, sizeof(float), ComputeBufferType.Structured);
+                        var tempTranspose = RentTempBuffer(srcTensor.buffer.count, sizeof(float));
                         _ops.Permute(srcBuf, 2, srcTensor.w, srcTensor.h, 1, 1, 1, tempTranspose);
                         srcBuf = tempTranspose;
                         tempOwned.Add(tempTranspose);
@@ -1037,7 +1048,7 @@ namespace NcnnCompute
                         throw new InvalidOperationException("Reduction axis not supported for dims=2: " + axis + " | " + layer.name);
                     }
 
-                    var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                    var outBuf = RentTempBuffer(outCount, sizeof(float));
                     _ops.ReductionBuf(srcBuf, reduceElems, outCount, layer.GetInt(0, 0), coeff, outBuf);
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     bufferViews[layer.topNames[0]] = positiveAxis == 1
@@ -1100,7 +1111,7 @@ namespace NcnnCompute
                     {
                         var featureSize = first.width * first.height;
                         var outCount = featureSize * totalLogicalChannels;
-                        var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(outCount, sizeof(float));
                         var dstOffset = 0;
                         for (var i = 0; i < layer.bottomNames.Length; i++)
                         {
@@ -1271,7 +1282,7 @@ namespace NcnnCompute
                         var srcTensor = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                         var rows = srcTensor != null && srcTensor.dims == 2 ? srcTensor.h : 1;
                         var cols = srcTensor != null && srcTensor.dims == 2 ? srcTensor.w : softBuf.count;
-                        var outBuf = new ComputeBuffer(softBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(softBuf.count, sizeof(float));
                         _ops.Softmax2D(softBuf, outBuf, rows, cols);
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (srcTensor != null)
@@ -1310,7 +1321,7 @@ namespace NcnnCompute
 
                     var srcTensor = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                     var rows = srcTensor != null && srcTensor.dims == 2 && srcTensor.w == ip.inFeatures ? srcTensor.h : 1;
-                    var outBuf = new ComputeBuffer(ip.outFeatures * rows, sizeof(float), ComputeBufferType.Structured);
+                    var outBuf = RentTempBuffer(ip.outFeatures * rows, sizeof(float));
                     if (rows > 1)
                         _ops.InnerProduct2D(srcBuf, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
                     else
@@ -1359,7 +1370,7 @@ namespace NcnnCompute
 
                         var outW = ComputeConvOut(srcTensor.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
                         var outH = ComputeConvOut(srcTensor.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
-                        var outTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
+                        var outTensor = RentTempTensorBuffer(3, outW, outH, 1, conv.outC);
                         if (conv.isDepthWise || conv.group > 1 || conv.kernelW != 3 || conv.kernelH != 3 || conv.strideW != conv.strideH || conv.padLeft != conv.padTop)
                         {
                             _ops.ConvDepthWise(
@@ -1529,7 +1540,7 @@ TextureConvPath:
                             if (aBuf == null)
                                 throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
 
-                            var outBuf = new ComputeBuffer(aBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(aBuf.count, sizeof(float));
                             _ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
                             bufferBlobs[layer.topNames[0]] = outBuf;
                             if (aView != null)
@@ -1641,7 +1652,7 @@ TextureConvPath:
 
                             if (CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
                             {
-                                var scaledB = new ComputeBuffer(bBuf.count, sizeof(float), ComputeBufferType.Structured);
+                                var scaledB = RentTempBuffer(bBuf.count, sizeof(float));
                                 _ops.CopyBuf(bBuf, scaledB, bBuf.count);
                                 _ops.MulScalarInplace(scaledB, CodeFormerSftAddScale, scaledB.count);
                                 bBuf = scaledB;
@@ -1649,7 +1660,7 @@ TextureConvPath:
                             }
 
                             var broadcast = ResolveBinaryBroadcast(aView, bView, aBuf.count, bBuf.count, layer.name);
-                            var outBuf = new ComputeBuffer(broadcast.total, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(broadcast.total, sizeof(float));
                             _ops.BinaryOpBuf(aBuf, bBuf, broadcast.total, opType, outBuf, broadcast.mode, broadcast.size);
                             if (isCodeFormerSftMul)
                             {
@@ -1687,7 +1698,7 @@ TextureConvPath:
                         var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                         if (srcBuf == null)
                             throw new InvalidOperationException("UnaryOp source not found: " + layer.name);
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.UnaryOpBuf(srcBuf, srcBuf.count, layer.GetInt(0, 0), outBuf);
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (srcView != null)
@@ -1712,7 +1723,7 @@ TextureConvPath:
                         var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                         if (srcBuf == null)
                             throw new InvalidOperationException("Swish source not found: " + layer.name);
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.SwishBuf(srcBuf, srcBuf.count, outBuf);
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (srcView != null)
@@ -1737,7 +1748,7 @@ TextureConvPath:
                         var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                         if (srcBuf == null)
                             throw new InvalidOperationException("Sigmoid source not found: " + layer.name);
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.SigmoidBuf(srcBuf, srcBuf.count, outBuf);
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (srcView != null)
@@ -1762,7 +1773,7 @@ TextureConvPath:
                         var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                         if (srcBuf == null)
                             throw new InvalidOperationException("GELU source not found: " + layer.name);
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.GeluBuf(srcBuf, srcBuf.count, outBuf);
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (srcView != null)
@@ -1835,7 +1846,7 @@ TextureConvPath:
                     var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                     if (srcBuf == null || srcView == null || srcView.dims != 2)
                         throw new InvalidOperationException("LayerNorm expects dims=2 buffer input: " + layer.name);
-                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                    var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                     _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                     _ops.LayerNorm2DInplace(outBuf, srcView.h, srcView.w, lp.eps, lp.affine, lp.gamma, lp.beta);
                     bufferBlobs[layer.topNames[0]] = outBuf;
@@ -1853,7 +1864,7 @@ TextureConvPath:
                     var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                     if (srcBuf == null || srcView == null)
                         throw new InvalidOperationException("GroupNorm source not found: " + layer.name);
-                    var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                    var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                     _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                     var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
                     _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
@@ -1878,20 +1889,20 @@ TextureConvPath:
 
                     var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);
                     var dstLen = kBuf.count / Mathf.Max(1, mp.kdim);
-                    var qAff = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                    var kAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                    var vAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    var qAff = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
+                    var kAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
+                    var vAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
                     _ops.InnerProduct2D(qBuf, srcLen, mp.qdim, mp.qW, mp.qB, mp.embedDim, qAff);
                     _ops.InnerProduct2D(kBuf, dstLen, mp.kdim, mp.kW, mp.kB, mp.embedDim, kAff);
                     _ops.InnerProduct2D(vBuf, dstLen, mp.vdim, mp.vW, mp.vB, mp.embedDim, vAff);
 
-                    var qScaled = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    var qScaled = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                     _ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
 
-                    var ctx = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                    var ctx = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                     _ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx);
 
-                    var outBuf = new ComputeBuffer(srcLen * mp.qdim, sizeof(float), ComputeBufferType.Structured);
+                    var outBuf = RentTempBuffer(srcLen * mp.qdim, sizeof(float));
                     _ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
 
                     bufferBlobs[layer.topNames[0]] = outBuf;
@@ -1910,6 +1921,40 @@ TextureConvPath:
             }
 
             return new InferResult(textureBlobs, textureShapes, bufferBlobs, bufferRefs, bufferViews, tempOwned, this);
+        }
+
+        private static string GetTempBufferLabel(string member, int line)
+        {
+            return "NcnnRepro2.RentTempBuffer(" + (member ?? "?") + ":" + line.ToString(CultureInfo.InvariantCulture) + ")";
+        }
+
+        private ComputeBuffer RentTempBuffer(
+            int count,
+            int stride,
+            ComputeBufferType type = ComputeBufferType.Structured,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
+        {
+            return _bufferPool.Rent(count, stride, type, GetTempBufferLabel(callerMember, callerLine));
+        }
+
+        private void ReturnTempBuffer(ComputeBuffer buffer)
+        {
+            _bufferPool.Return(buffer, "NcnnRepro2.ReturnTempBuffer");
+        }
+
+        private NcnnTensorBuffer RentTempTensorBuffer(
+            int dims,
+            int w,
+            int h = 1,
+            int d = 1,
+            int c = 1,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
+        {
+            var count = checked(w * h * d * c);
+            var buffer = RentTempBuffer(count, sizeof(float), ComputeBufferType.Structured, callerMember, callerLine);
+            return new NcnnTensorBuffer(buffer, dims, w, h, d, c, true, ReturnTempBuffer);
         }
 
         public RenderTexture RentTempArray(
@@ -1936,7 +1981,7 @@ TextureConvPath:
                     var rt = pool.Pop();
                     if (rt != null)
                     {
-                        NcnnGpuResourceTracker.RegisterTexture(rt, allocLabel + "|pool");
+                        NcnnGpuResourceTracker.ReuseTexture(rt, allocLabel + "|pool");
                         return rt;
                     }
                 }
@@ -2000,6 +2045,7 @@ TextureConvPath:
                 }
             }
             _rtPool.Clear();
+            _bufferPool.Clear("NcnnRepro2.ClearTempPool");
         }
 
         public void Release()
@@ -2211,8 +2257,7 @@ TextureConvPath:
             var logicalCount = shape.w * shape.h * shape.d * shape.c;
             if (physicalCount == logicalCount)
             {
-                var convertedExact = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
-                NcnnGpuResourceTracker.RegisterBuffer(convertedExact, logicalCount, sizeof(float), "NcnnRepro2.GetOrConvertToBuffer.exact");
+                var convertedExact = RentTempBuffer(logicalCount, sizeof(float));
                 _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, convertedExact);
                 bufferBlobs[name] = convertedExact;
                 bufferViews[name] = new NcnnTensorBuffer(convertedExact, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
@@ -2222,13 +2267,11 @@ TextureConvPath:
 
             if (logicalCount > 0 && logicalCount < physicalCount)
             {
-                var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
-                NcnnGpuResourceTracker.RegisterBuffer(physicalBuffer, physicalCount, sizeof(float), "NcnnRepro2.GetOrConvertToBuffer.physical");
+                var physicalBuffer = RentTempBuffer(physicalCount, sizeof(float));
                 _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, physicalBuffer);
                 tempOwned.Add(physicalBuffer);
 
-                var converted = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
-                NcnnGpuResourceTracker.RegisterBuffer(converted, logicalCount, sizeof(float), "NcnnRepro2.GetOrConvertToBuffer.trimmed");
+                var converted = RentTempBuffer(logicalCount, sizeof(float));
                 _ops.CopyBufPartial(physicalBuffer, 0, converted, logicalCount);
 
                 bufferBlobs[name] = converted;
@@ -2240,7 +2283,7 @@ TextureConvPath:
             throw new InvalidOperationException("texture logical shape mismatch: " + name + " | physical=" + physicalCount + " logical=" + logicalCount);
         }
 
-        private static void Consume(
+        private void Consume(
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, int> remaining,
             string[] bottomNames,
@@ -2264,8 +2307,7 @@ TextureConvPath:
                     tr.refs--;
                     if (tr.refs <= 0 && tr.owned && tr.texture != null)
                     {
-                        NcnnGpuResourceTracker.ReleaseTexture(tr.texture, "NcnnRepro2.Consume(texture)");
-                        try { RenderTexture.ReleaseTemporary(tr.texture); } catch { }
+                        try { ReturnTempArray(tr.texture); } catch { }
                         tr.texture = null;
                     }
                 }
@@ -2273,7 +2315,7 @@ TextureConvPath:
             }
         }
 
-        private static void Consume(
+        private void Consume(
             Dictionary<string, TensorRef> textureBlobs,
             Dictionary<string, ComputeBuffer> bufferBlobs,
             Dictionary<string, BufferRef> bufferRefs,
@@ -2300,8 +2342,7 @@ TextureConvPath:
                     tr.refs--;
                     if (tr.refs <= 0 && tr.owned && tr.texture != null)
                     {
-                        NcnnGpuResourceTracker.ReleaseTexture(tr.texture, "NcnnRepro2.Consume(texture+buffer)");
-                        try { RenderTexture.ReleaseTemporary(tr.texture); } catch { }
+                        try { ReturnTempArray(tr.texture); } catch { }
                         tr.texture = null;
                     }
                 }
@@ -2311,8 +2352,7 @@ TextureConvPath:
                     br.refs--;
                     if (br.refs <= 0 && br.owned && br.buffer != null)
                     {
-                        NcnnGpuResourceTracker.ReleaseBuffer(br.buffer, "NcnnRepro2.Consume(buffer)");
-                        try { br.buffer.Dispose(); } catch { }
+                        try { ReturnTempBuffer(br.buffer); } catch { }
                         br.buffer = null;
                     }
                     bufferRefs.Remove(name);
@@ -2626,7 +2666,7 @@ TextureConvPath:
                 else if (axis == 2 || axis == 3) outC = outSize;
 
                 var outCount = outW * outH * outD * outC;
-                var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                var outBuf = RentTempBuffer(outCount, sizeof(float));
                 _ops.Slice(currentBuf, currentView.dims, currentView.w, currentView.h, currentView.d, currentView.c, axis, begin, outW, outH, outD, outC, outBuf);
                 var outView = new NcnnTensorBuffer(outBuf, currentView.dims, outW, outH, outD, outC, false);
 
@@ -2640,7 +2680,7 @@ TextureConvPath:
             return currentView;
         }
 
-        private static NcnnTensorBuffer ShuffleChannelCpu(ComputeBuffer srcBuffer, NcnnTensorBuffer srcView, int group, bool reverse)
+        private NcnnTensorBuffer ShuffleChannelCpu(ComputeBuffer srcBuffer, NcnnTensorBuffer srcView, int group, bool reverse)
         {
             if (srcBuffer == null)
                 throw new ArgumentNullException(nameof(srcBuffer));
@@ -2673,7 +2713,7 @@ TextureConvPath:
                 }
             }
 
-            var outBuffer = new ComputeBuffer(dstData.Length, sizeof(float), ComputeBufferType.Structured);
+            var outBuffer = RentTempBuffer(dstData.Length, sizeof(float));
             outBuffer.SetData(dstData);
             return new NcnnTensorBuffer(outBuffer, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
         }
@@ -2713,7 +2753,7 @@ TextureConvPath:
             throw new InvalidOperationException("BinaryOp broadcast not supported: " + layerName + " | " + aCount + " vs " + bCount);
         }
 
-        private static bool TryExpand2DBroadcastBuffer(
+        private bool TryExpand2DBroadcastBuffer(
             ComputeBuffer sourceBuffer,
             NcnnTensorBuffer sourceView,
             NcnnTensorBuffer targetView,
@@ -2758,13 +2798,13 @@ TextureConvPath:
                 }
             }
 
-            expandedBuffer = new ComputeBuffer(expandedData.Length, sizeof(float), ComputeBufferType.Structured);
+            expandedBuffer = RentTempBuffer(expandedData.Length, sizeof(float));
             expandedBuffer.SetData(expandedData);
             expandedView = new NcnnTensorBuffer(expandedBuffer, 2, targetView.w, targetView.h, 1, 1, false);
             return true;
         }
 
-        private static bool TryExpand1DTo2DBroadcastBuffer(
+        private bool TryExpand1DTo2DBroadcastBuffer(
             ComputeBuffer sourceBuffer,
             NcnnTensorBuffer sourceView,
             NcnnTensorBuffer targetView,
@@ -2812,7 +2852,7 @@ TextureConvPath:
                 }
             }
 
-            expandedBuffer = new ComputeBuffer(expandedData.Length, sizeof(float), ComputeBufferType.Structured);
+            expandedBuffer = RentTempBuffer(expandedData.Length, sizeof(float));
             expandedBuffer.SetData(expandedData);
             expandedView = new NcnnTensorBuffer(expandedBuffer, 2, targetView.w, targetView.h, 1, 1, false);
             return true;
@@ -2959,7 +2999,7 @@ TextureConvPath:
                     return;
                 }
 
-                using var refTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
+                using var refTensor = RentTempTensorBuffer(3, outW, outH, 1, conv.outC);
                 if (conv.isDepthWise || conv.group > 1 || conv.kernelW != 3 || conv.kernelH != 3 || conv.strideW != conv.strideH || conv.padLeft != conv.padTop)
                 {
                     _ops.ConvDepthWise(
@@ -2987,56 +3027,63 @@ TextureConvPath:
 
                 var logicalCount = outW * outH * conv.outC;
                 var physicalCount = outW * outH * conv.outPacks * 4;
-                using var texturePhysical = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
-                _ops.Pack4ToBufferCHW(textureOutput, outW, outH, conv.outPacks * 4, texturePhysical);
-
-                var refData = new float[logicalCount];
-                refTensor.buffer.GetData(refData);
-
-                var texPhysicalData = new float[physicalCount];
-                texturePhysical.GetData(texPhysicalData);
-
-                double sumAbs = 0d;
-                float maxAbs = 0f;
-                var validCount = 0;
-                var refNanCount = 0;
-                var texNanCount = 0;
-                var preview = new List<string>(8);
-                var compareCount = Mathf.Min(logicalCount, texPhysicalData.Length);
-                for (var i = 0; i < compareCount; i++)
+                var texturePhysical = RentTempBuffer(physicalCount, sizeof(float));
+                try
                 {
-                    var rv = refData[i];
-                    var tv = texPhysicalData[i];
-                    var refFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
-                    var texFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
-                    if (!refFinite) refNanCount++;
-                    if (!texFinite) texNanCount++;
-                    if (!refFinite || !texFinite)
+                    _ops.Pack4ToBufferCHW(textureOutput, outW, outH, conv.outPacks * 4, texturePhysical);
+
+                    var refData = new float[logicalCount];
+                    refTensor.buffer.GetData(refData);
+
+                    var texPhysicalData = new float[physicalCount];
+                    texturePhysical.GetData(texPhysicalData);
+
+                    double sumAbs = 0d;
+                    float maxAbs = 0f;
+                    var validCount = 0;
+                    var refNanCount = 0;
+                    var texNanCount = 0;
+                    var preview = new List<string>(8);
+                    var compareCount = Mathf.Min(logicalCount, texPhysicalData.Length);
+                    for (var i = 0; i < compareCount; i++)
                     {
+                        var rv = refData[i];
+                        var tv = texPhysicalData[i];
+                        var refFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
+                        var texFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
+                        if (!refFinite) refNanCount++;
+                        if (!texFinite) texNanCount++;
+                        if (!refFinite || !texFinite)
+                        {
+                            if (preview.Count < 8)
+                                preview.Add(i + ": ref=" + rv.ToString("G9", CultureInfo.InvariantCulture) + " tex=" + tv.ToString("G9", CultureInfo.InvariantCulture));
+                            continue;
+                        }
+
+                        var diff = Mathf.Abs(rv - tv);
+                        sumAbs += diff;
+                        if (diff > maxAbs)
+                            maxAbs = diff;
+                        validCount++;
                         if (preview.Count < 8)
                             preview.Add(i + ": ref=" + rv.ToString("G9", CultureInfo.InvariantCulture) + " tex=" + tv.ToString("G9", CultureInfo.InvariantCulture));
-                        continue;
                     }
 
-                    var diff = Mathf.Abs(rv - tv);
-                    sumAbs += diff;
-                    if (diff > maxAbs)
-                        maxAbs = diff;
-                    validCount++;
-                    if (preview.Count < 8)
-                        preview.Add(i + ": ref=" + rv.ToString("G9", CultureInfo.InvariantCulture) + " tex=" + tv.ToString("G9", CultureInfo.InvariantCulture));
+                    var meanAbs = validCount > 0 ? (float)(sumAbs / validCount) : float.NaN;
+                    DebugLog?.Invoke(layerName
+                        + " | texture_vs_buffer mean_abs=" + meanAbs.ToString("G9", CultureInfo.InvariantCulture)
+                        + " | max_abs=" + maxAbs.ToString("G9", CultureInfo.InvariantCulture)
+                        + " | count=" + compareCount
+                        + " | valid=" + validCount
+                        + " | ref_nan=" + refNanCount
+                        + " | tex_nan=" + texNanCount);
+                    for (var i = 0; i < preview.Count; i++)
+                        DebugLog?.Invoke(layerName + " | sample[" + i + "] " + preview[i]);
                 }
-
-                var meanAbs = validCount > 0 ? (float)(sumAbs / validCount) : float.NaN;
-                DebugLog?.Invoke(layerName
-                    + " | texture_vs_buffer mean_abs=" + meanAbs.ToString("G9", CultureInfo.InvariantCulture)
-                    + " | max_abs=" + maxAbs.ToString("G9", CultureInfo.InvariantCulture)
-                    + " | count=" + compareCount
-                    + " | valid=" + validCount
-                    + " | ref_nan=" + refNanCount
-                    + " | tex_nan=" + texNanCount);
-                for (var i = 0; i < preview.Count; i++)
-                    DebugLog?.Invoke(layerName + " | sample[" + i + "] " + preview[i]);
+                finally
+                {
+                    ReturnTempBuffer(texturePhysical);
+                }
             }
             catch (Exception e)
             {

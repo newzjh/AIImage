@@ -128,6 +128,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public float maskRectExpand = 0.18f;
     public float maskSoftness = 0.10f;
     public float faceRectThreshold = 0.18f;
+    public bool enableTempPool = true;
+    public int maxPooledPerShape = 2;
     public bool autoOpenDumpDir = false;
     public bool enableDetailedProposalDump = true;
     public bool useArgbFloatForDetector = true;
@@ -767,6 +769,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             _ops = new NcnnOps();
         if (_repro == null)
             _repro = new NcnnRepro2(_ops);
+        _repro.EnableTempPool = enableTempPool;
+        _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;
         _repro.TensorTextureFormat = useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
     }

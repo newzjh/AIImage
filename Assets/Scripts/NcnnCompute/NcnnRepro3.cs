@@ -181,6 +181,7 @@ namespace NcnnCompute
 
         private readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
+        private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
         private readonly NcnnOps _ops;
         private readonly float[] _gpuSyncScratch = new float[1];
         private Dictionary<string, int> _blobUseCount;
@@ -199,18 +200,27 @@ namespace NcnnCompute
         public bool EnableTempPool
         {
             get => _useTempPool;
-            set => _useTempPool = value;
+            set
+            {
+                _useTempPool = value;
+                _bufferPool.Enabled = value;
+            }
         }
 
         public int MaxPooledPerShape
         {
             get => _maxPooledPerShape;
-            set => _maxPooledPerShape = Mathf.Max(0, value);
+            set
+            {
+                _maxPooledPerShape = Mathf.Max(0, value);
+                _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
+            }
         }
 
         public NcnnRepro3(NcnnOps ops)
         {
             _ops = ops ?? throw new ArgumentNullException(nameof(ops));
+            _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
         }
 
         public void LoadModel(string paramText, NcnnBinReader br)
@@ -396,29 +406,36 @@ namespace NcnnCompute
                     }
                     else
                     {
-                        using var srcBuffer = new ComputeBuffer(srcShape.w * srcShape.h * srcShape.c, sizeof(float), ComputeBufferType.Structured);
-                        _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
-                        var srcTensor = new NcnnTensorBuffer(srcBuffer, 3, srcShape.w, srcShape.h, 1, srcShape.c, false);
-                        using var outTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
-                        _ops.ConvDepthWise(
-                            srcTensor,
-                            conv.rawWeight,
-                            conv.rawBias,
-                            conv.outC,
-                            conv.group,
-                            conv.kernelW,
-                            conv.kernelH,
-                            conv.strideW,
-                            conv.strideH,
-                            conv.padLeft,
-                            conv.padTop,
-                            conv.dilationW,
-                            conv.dilationH,
-                            conv.activationType,
-                            conv.activationSlope,
-                            outTensor);
-                        _ops.FillPack4FromBufferCHW(outTensor.buffer, outW, outH, conv.outC, outRt);
-                        SynchronizeGpuBufferUse(outTensor.buffer);
+                        var srcBuffer = RentTempBuffer(srcShape.w * srcShape.h * srcShape.c, sizeof(float));
+                        try
+                        {
+                            _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
+                            var srcTensor = new NcnnTensorBuffer(srcBuffer, 3, srcShape.w, srcShape.h, 1, srcShape.c, false);
+                            using var outTensor = RentTempTensorBuffer(3, outW, outH, 1, conv.outC);
+                            _ops.ConvDepthWise(
+                                srcTensor,
+                                conv.rawWeight,
+                                conv.rawBias,
+                                conv.outC,
+                                conv.group,
+                                conv.kernelW,
+                                conv.kernelH,
+                                conv.strideW,
+                                conv.strideH,
+                                conv.padLeft,
+                                conv.padTop,
+                                conv.dilationW,
+                                conv.dilationH,
+                                conv.activationType,
+                                conv.activationSlope,
+                                outTensor);
+                            _ops.FillPack4FromBufferCHW(outTensor.buffer, outW, outH, conv.outC, outRt);
+                            SynchronizeGpuBufferUse(outTensor.buffer);
+                        }
+                        finally
+                        {
+                            ReturnTempBuffer(srcBuffer);
+                        }
                     }
 
                     SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new TensorShape(outW, outH, conv.outC));
@@ -604,6 +621,40 @@ namespace NcnnCompute
             return new InferResult(textureBlobs, indexBlobs, this);
         }
 
+        private static string GetTempBufferLabel(string member, int line)
+        {
+            return "NcnnRepro3.RentTempBuffer(" + (member ?? "?") + ":" + line.ToString(CultureInfo.InvariantCulture) + ")";
+        }
+
+        private ComputeBuffer RentTempBuffer(
+            int count,
+            int stride,
+            ComputeBufferType type = ComputeBufferType.Structured,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
+        {
+            return _bufferPool.Rent(count, stride, type, GetTempBufferLabel(callerMember, callerLine));
+        }
+
+        private void ReturnTempBuffer(ComputeBuffer buffer)
+        {
+            _bufferPool.Return(buffer, "NcnnRepro3.ReturnTempBuffer");
+        }
+
+        private NcnnTensorBuffer RentTempTensorBuffer(
+            int dims,
+            int w,
+            int h = 1,
+            int d = 1,
+            int c = 1,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
+        {
+            var count = checked(w * h * d * c);
+            var buffer = RentTempBuffer(count, sizeof(float), ComputeBufferType.Structured, callerMember, callerLine);
+            return new NcnnTensorBuffer(buffer, dims, w, h, d, c, true, ReturnTempBuffer);
+        }
+
         public RenderTexture RentTempArray(
             int w,
             int h,
@@ -627,7 +678,7 @@ namespace NcnnCompute
                     var pooled = pool.Pop();
                     if (pooled != null)
                     {
-                        NcnnGpuResourceTracker.RegisterTexture(pooled, allocLabel + "|pool");
+                        NcnnGpuResourceTracker.ReuseTexture(pooled, allocLabel + "|pool");
                         return pooled;
                     }
                 }
@@ -689,6 +740,7 @@ namespace NcnnCompute
                 }
             }
             _rtPool.Clear();
+            _bufferPool.Clear("NcnnRepro3.ClearTempPool");
         }
 
         public void Release()
@@ -832,73 +884,87 @@ namespace NcnnCompute
             try
             {
                 var srcLogicalCount = srcShape.w * srcShape.h * srcShape.c;
-                using var srcBuffer = new ComputeBuffer(srcLogicalCount, sizeof(float), ComputeBufferType.Structured);
-                _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
-                var srcTensor = new NcnnTensorBuffer(srcBuffer, 3, srcShape.w, srcShape.h, 1, srcShape.c, false);
-
-                using var refTensor = new NcnnTensorBuffer(outW, outH, conv.outC);
-                _ops.ConvDepthWise(
-                    srcTensor,
-                    conv.rawWeight,
-                    conv.rawBias,
-                    conv.outC,
-                    conv.group,
-                    conv.kernelW,
-                    conv.kernelH,
-                    conv.strideW,
-                    conv.strideH,
-                    conv.padLeft,
-                    conv.padTop,
-                    conv.dilationW,
-                    conv.dilationH,
-                    conv.activationType,
-                    conv.activationSlope,
-                    refTensor);
-
-                var logicalCount = outW * outH * conv.outC;
-                using var textureBuffer = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
-                _ops.Pack4ToBufferCHW(textureOutput, outW, outH, conv.outC, textureBuffer);
-
-                var refData = new float[logicalCount];
-                var texData = new float[logicalCount];
-                refTensor.buffer.GetData(refData);
-                textureBuffer.GetData(texData);
-
-                double sumAbs = 0d;
-                float maxAbs = 0f;
-                var validCount = 0;
-                var refNan = 0;
-                var texNan = 0;
-                for (var i = 0; i < logicalCount; i++)
+                var srcBuffer = RentTempBuffer(srcLogicalCount, sizeof(float));
+                try
                 {
-                    var rv = refData[i];
-                    var tv = texData[i];
-                    var refFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
-                    var texFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
-                    if (!refFinite) refNan++;
-                    if (!texFinite) texNan++;
-                    if (!refFinite || !texFinite)
-                        continue;
+                    _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
+                    var srcTensor = new NcnnTensorBuffer(srcBuffer, 3, srcShape.w, srcShape.h, 1, srcShape.c, false);
 
-                    var diff = Mathf.Abs(rv - tv);
-                    sumAbs += diff;
-                    if (diff > maxAbs)
-                        maxAbs = diff;
-                    validCount++;
+                    using var refTensor = RentTempTensorBuffer(3, outW, outH, 1, conv.outC);
+                    _ops.ConvDepthWise(
+                        srcTensor,
+                        conv.rawWeight,
+                        conv.rawBias,
+                        conv.outC,
+                        conv.group,
+                        conv.kernelW,
+                        conv.kernelH,
+                        conv.strideW,
+                        conv.strideH,
+                        conv.padLeft,
+                        conv.padTop,
+                        conv.dilationW,
+                        conv.dilationH,
+                        conv.activationType,
+                        conv.activationSlope,
+                        refTensor);
+
+                    var logicalCount = outW * outH * conv.outC;
+                    var textureBuffer = RentTempBuffer(logicalCount, sizeof(float));
+                    try
+                    {
+                        _ops.Pack4ToBufferCHW(textureOutput, outW, outH, conv.outC, textureBuffer);
+
+                        var refData = new float[logicalCount];
+                        var texData = new float[logicalCount];
+                        refTensor.buffer.GetData(refData);
+                        textureBuffer.GetData(texData);
+
+                        double sumAbs = 0d;
+                        float maxAbs = 0f;
+                        var validCount = 0;
+                        var refNan = 0;
+                        var texNan = 0;
+                        for (var i = 0; i < logicalCount; i++)
+                        {
+                            var rv = refData[i];
+                            var tv = texData[i];
+                            var refFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
+                            var texFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
+                            if (!refFinite) refNan++;
+                            if (!texFinite) texNan++;
+                            if (!refFinite || !texFinite)
+                                continue;
+
+                            var diff = Mathf.Abs(rv - tv);
+                            sumAbs += diff;
+                            if (diff > maxAbs)
+                                maxAbs = diff;
+                            validCount++;
+                        }
+
+                        var meanAbs = validCount > 0 ? (float)(sumAbs / validCount) : float.NaN;
+                        var message = new StringBuilder();
+                        message.Append(layerName)
+                            .Append(" | conv_compare mean_abs=").Append(meanAbs.ToString("G9", CultureInfo.InvariantCulture))
+                            .Append(" | max_abs=").Append(maxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                            .Append(" | valid=").Append(validCount.ToString(CultureInfo.InvariantCulture))
+                            .Append(" | ref_nonfinite=").Append(refNan.ToString(CultureInfo.InvariantCulture))
+                            .Append(" | tex_nonfinite=").Append(texNan.ToString(CultureInfo.InvariantCulture))
+                            .Append(" | shape=").Append(srcShape.w).Append("x").Append(srcShape.h).Append("x").Append(srcShape.c)
+                            .Append(" -> ").Append(outW).Append("x").Append(outH).Append("x").Append(conv.outC)
+                            .Append(" | k=").Append(conv.kernelW).Append(" s=").Append(conv.strideW).Append(" p=").Append(conv.padLeft);
+                        DebugLog?.Invoke(message.ToString());
+                    }
+                    finally
+                    {
+                        ReturnTempBuffer(textureBuffer);
+                    }
                 }
-
-                var meanAbs = validCount > 0 ? (float)(sumAbs / validCount) : float.NaN;
-                var message = new StringBuilder();
-                message.Append(layerName)
-                    .Append(" | conv_compare mean_abs=").Append(meanAbs.ToString("G9", CultureInfo.InvariantCulture))
-                    .Append(" | max_abs=").Append(maxAbs.ToString("G9", CultureInfo.InvariantCulture))
-                    .Append(" | valid=").Append(validCount.ToString(CultureInfo.InvariantCulture))
-                    .Append(" | ref_nonfinite=").Append(refNan.ToString(CultureInfo.InvariantCulture))
-                    .Append(" | tex_nonfinite=").Append(texNan.ToString(CultureInfo.InvariantCulture))
-                    .Append(" | shape=").Append(srcShape.w).Append("x").Append(srcShape.h).Append("x").Append(srcShape.c)
-                    .Append(" -> ").Append(outW).Append("x").Append(outH).Append("x").Append(conv.outC)
-                    .Append(" | k=").Append(conv.kernelW).Append(" s=").Append(conv.strideW).Append(" p=").Append(conv.padLeft);
-                DebugLog?.Invoke(message.ToString());
+                finally
+                {
+                    ReturnTempBuffer(srcBuffer);
+                }
             }
             catch (Exception e)
             {
@@ -911,10 +977,12 @@ namespace NcnnCompute
             try
             {
                 var srcCount = srcShape.w * srcShape.h * srcShape.c;
-                using var srcBuffer = new ComputeBuffer(srcCount, sizeof(float), ComputeBufferType.Structured);
-                _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
-                var srcData = new float[srcCount];
-                srcBuffer.GetData(srcData);
+                var srcBuffer = RentTempBuffer(srcCount, sizeof(float));
+                try
+                {
+                    _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
+                    var srcData = new float[srcCount];
+                    srcBuffer.GetData(srcData);
 
                 var refData = new float[outW * outH * srcShape.c];
                 var refIndexData = new float[outW * outH * srcShape.c];
@@ -959,93 +1027,112 @@ namespace NcnnCompute
                     }
                 }
 
-                var logicalCount = outW * outH * srcShape.c;
-                using var texBuffer = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
-                _ops.Pack4ToBufferCHW(textureOutput, outW, outH, srcShape.c, texBuffer);
-                var texData = new float[logicalCount];
-                texBuffer.GetData(texData);
-
-                float[] texIndexData = null;
-                if (textureIndices != null)
-                {
-                    using var idxBuffer = new ComputeBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured);
-                    _ops.Pack4ToBufferCHW(textureIndices, outW, outH, srcShape.c, idxBuffer);
-                    texIndexData = new float[logicalCount];
-                    idxBuffer.GetData(texIndexData);
-                }
-
-                double sumAbs = 0d;
-                float maxAbs = 0f;
-                var valid = 0;
-                var refNonFinite = 0;
-                var texNonFinite = 0;
-                double sumIdxAbs = 0d;
-                float maxIdxAbs = 0f;
-                var idxValid = 0;
-                var firstLargeValueMismatch = -1;
-                for (var i = 0; i < logicalCount; i++)
-                {
-                    var rv = refData[i];
-                    var tv = texData[i];
-                    var rFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
-                    var tFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
-                    if (!rFinite) refNonFinite++;
-                    if (!tFinite) texNonFinite++;
-                    if (!rFinite || !tFinite)
-                        continue;
-                    var diff = Mathf.Abs(rv - tv);
-                    sumAbs += diff;
-                    if (diff > maxAbs)
-                        maxAbs = diff;
-                    if (firstLargeValueMismatch < 0 && diff > 1e20f)
-                        firstLargeValueMismatch = i;
-                    valid++;
-
-                    if (texIndexData != null)
+                    var logicalCount = outW * outH * srcShape.c;
+                    var texBuffer = RentTempBuffer(logicalCount, sizeof(float));
+                    try
                     {
-                        var idxDiff = Mathf.Abs(refIndexData[i] - texIndexData[i]);
-                        sumIdxAbs += idxDiff;
-                        if (idxDiff > maxIdxAbs)
-                            maxIdxAbs = idxDiff;
-                        idxValid++;
+                        _ops.Pack4ToBufferCHW(textureOutput, outW, outH, srcShape.c, texBuffer);
+                        var texData = new float[logicalCount];
+                        texBuffer.GetData(texData);
+
+                        float[] texIndexData = null;
+                        if (textureIndices != null)
+                        {
+                            var idxBuffer = RentTempBuffer(logicalCount, sizeof(float));
+                            try
+                            {
+                                _ops.Pack4ToBufferCHW(textureIndices, outW, outH, srcShape.c, idxBuffer);
+                                texIndexData = new float[logicalCount];
+                                idxBuffer.GetData(texIndexData);
+                            }
+                            finally
+                            {
+                                ReturnTempBuffer(idxBuffer);
+                            }
+                        }
+
+                        double sumAbs = 0d;
+                        float maxAbs = 0f;
+                        var valid = 0;
+                        var refNonFinite = 0;
+                        var texNonFinite = 0;
+                        double sumIdxAbs = 0d;
+                        float maxIdxAbs = 0f;
+                        var idxValid = 0;
+                        var firstLargeValueMismatch = -1;
+                        for (var i = 0; i < logicalCount; i++)
+                        {
+                            var rv = refData[i];
+                            var tv = texData[i];
+                            var rFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
+                            var tFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
+                            if (!rFinite) refNonFinite++;
+                            if (!tFinite) texNonFinite++;
+                            if (!rFinite || !tFinite)
+                                continue;
+                            var diff = Mathf.Abs(rv - tv);
+                            sumAbs += diff;
+                            if (diff > maxAbs)
+                                maxAbs = diff;
+                            if (firstLargeValueMismatch < 0 && diff > 1e20f)
+                                firstLargeValueMismatch = i;
+                            valid++;
+
+                            if (texIndexData != null)
+                            {
+                                var idxDiff = Mathf.Abs(refIndexData[i] - texIndexData[i]);
+                                sumIdxAbs += idxDiff;
+                                if (idxDiff > maxIdxAbs)
+                                    maxIdxAbs = idxDiff;
+                                idxValid++;
+                            }
+                        }
+
+                        var meanAbs = valid > 0 ? (float)(sumAbs / valid) : float.NaN;
+                        var meanIdxAbs = idxValid > 0 ? (float)(sumIdxAbs / idxValid) : float.NaN;
+                        var message = new StringBuilder();
+                        message.Append(layerName)
+                            .Append(" | maxpool_compare mean_abs=").Append(meanAbs.ToString("G9", CultureInfo.InvariantCulture))
+                            .Append(" | max_abs=").Append(maxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                            .Append(" | idx_mean_abs=").Append(meanIdxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                            .Append(" | idx_max_abs=").Append(maxIdxAbs.ToString("G9", CultureInfo.InvariantCulture))
+                            .Append(" | valid=").Append(valid.ToString(CultureInfo.InvariantCulture))
+                            .Append(" | ref_nonfinite=").Append(refNonFinite.ToString(CultureInfo.InvariantCulture))
+                            .Append(" | tex_nonfinite=").Append(texNonFinite.ToString(CultureInfo.InvariantCulture))
+                            .Append(" | shape=").Append(srcShape.w).Append("x").Append(srcShape.h).Append("x").Append(srcShape.c)
+                            .Append(" -> ").Append(outW).Append("x").Append(outH).Append("x").Append(srcShape.c);
+
+                        if (firstLargeValueMismatch >= 0)
+                        {
+                            var plane = outW * outH;
+                            var c = firstLargeValueMismatch / plane;
+                            var rem = firstLargeValueMismatch - c * plane;
+                            var y = rem / outW;
+                            var x = rem - y * outW;
+                            message.Append(" | first_large_value_mismatch=(")
+                                .Append(x.ToString(CultureInfo.InvariantCulture)).Append(",")
+                                .Append(y.ToString(CultureInfo.InvariantCulture)).Append(",")
+                                .Append(c.ToString(CultureInfo.InvariantCulture)).Append(")")
+                                .Append(" ref=").Append(refData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture))
+                                .Append(" tex=").Append(texData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture));
+                            if (texIndexData != null)
+                            {
+                                message.Append(" ref_idx=").Append(refIndexData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture))
+                                    .Append(" tex_idx=").Append(texIndexData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture));
+                            }
+                        }
+
+                        DebugLog?.Invoke(message.ToString());
+                    }
+                    finally
+                    {
+                        ReturnTempBuffer(texBuffer);
                     }
                 }
-
-                var meanAbs = valid > 0 ? (float)(sumAbs / valid) : float.NaN;
-                var meanIdxAbs = idxValid > 0 ? (float)(sumIdxAbs / idxValid) : float.NaN;
-                var message = new StringBuilder();
-                message.Append(layerName)
-                    .Append(" | maxpool_compare mean_abs=").Append(meanAbs.ToString("G9", CultureInfo.InvariantCulture))
-                    .Append(" | max_abs=").Append(maxAbs.ToString("G9", CultureInfo.InvariantCulture))
-                    .Append(" | idx_mean_abs=").Append(meanIdxAbs.ToString("G9", CultureInfo.InvariantCulture))
-                    .Append(" | idx_max_abs=").Append(maxIdxAbs.ToString("G9", CultureInfo.InvariantCulture))
-                    .Append(" | valid=").Append(valid.ToString(CultureInfo.InvariantCulture))
-                    .Append(" | ref_nonfinite=").Append(refNonFinite.ToString(CultureInfo.InvariantCulture))
-                    .Append(" | tex_nonfinite=").Append(texNonFinite.ToString(CultureInfo.InvariantCulture))
-                    .Append(" | shape=").Append(srcShape.w).Append("x").Append(srcShape.h).Append("x").Append(srcShape.c)
-                    .Append(" -> ").Append(outW).Append("x").Append(outH).Append("x").Append(srcShape.c);
-
-                if (firstLargeValueMismatch >= 0)
+                finally
                 {
-                    var plane = outW * outH;
-                    var c = firstLargeValueMismatch / plane;
-                    var rem = firstLargeValueMismatch - c * plane;
-                    var y = rem / outW;
-                    var x = rem - y * outW;
-                    message.Append(" | first_large_value_mismatch=(")
-                        .Append(x.ToString(CultureInfo.InvariantCulture)).Append(",")
-                        .Append(y.ToString(CultureInfo.InvariantCulture)).Append(",")
-                        .Append(c.ToString(CultureInfo.InvariantCulture)).Append(")")
-                        .Append(" ref=").Append(refData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture))
-                        .Append(" tex=").Append(texData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture));
-                    if (texIndexData != null)
-                    {
-                        message.Append(" ref_idx=").Append(refIndexData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture))
-                            .Append(" tex_idx=").Append(texIndexData[firstLargeValueMismatch].ToString("G9", CultureInfo.InvariantCulture));
-                    }
+                    ReturnTempBuffer(srcBuffer);
                 }
-
-                DebugLog?.Invoke(message.ToString());
             }
             catch (Exception e)
             {
@@ -1056,10 +1143,12 @@ namespace NcnnCompute
         private void ApplyMaxPoolingIndCpu(TensorRef src, TensorShape srcShape, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int outW, int outH, RenderTexture outRt, RenderTexture idxRt)
         {
             var srcCount = srcShape.w * srcShape.h * srcShape.c;
-            using var srcBuffer = new ComputeBuffer(srcCount, sizeof(float), ComputeBufferType.Structured);
-            _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
-            var srcData = new float[srcCount];
-            srcBuffer.GetData(srcData);
+            var srcBuffer = RentTempBuffer(srcCount, sizeof(float));
+            try
+            {
+                _ops.Pack4ToBufferCHW(src.texture, srcShape.w, srcShape.h, srcShape.c, srcBuffer);
+                var srcData = new float[srcCount];
+                srcBuffer.GetData(srcData);
 
             var outCount = outW * outH * srcShape.c;
             var valueData = new float[outCount];
@@ -1106,27 +1195,42 @@ namespace NcnnCompute
                 }
             }
 
-            using var valueBuffer = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
-            using var indexBuffer = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
-            valueBuffer.SetData(valueData);
-            indexBuffer.SetData(indexData);
-            _ops.FillPack4FromBufferCHW(valueBuffer, outW, outH, srcShape.c, outRt);
-            _ops.FillPack4FromBufferCHW(indexBuffer, outW, outH, srcShape.c, idxRt);
-            SynchronizeGpuBufferUse(indexBuffer);
+                var valueBuffer = RentTempBuffer(outCount, sizeof(float));
+                var indexBuffer = RentTempBuffer(outCount, sizeof(float));
+                try
+                {
+                    valueBuffer.SetData(valueData);
+                    indexBuffer.SetData(indexData);
+                    _ops.FillPack4FromBufferCHW(valueBuffer, outW, outH, srcShape.c, outRt);
+                    _ops.FillPack4FromBufferCHW(indexBuffer, outW, outH, srcShape.c, idxRt);
+                    SynchronizeGpuBufferUse(indexBuffer);
+                }
+                finally
+                {
+                    ReturnTempBuffer(valueBuffer);
+                    ReturnTempBuffer(indexBuffer);
+                }
+            }
+            finally
+            {
+                ReturnTempBuffer(srcBuffer);
+            }
         }
 
         private void ApplyMaxUnPoolingCpu(TensorRef src, TensorShape srcShape, IndexRef idx, int outW, int outH, RenderTexture outRt)
         {
             var pooledCount = src.width * src.height * srcShape.c;
-            using var pooledBuffer = new ComputeBuffer(pooledCount, sizeof(float), ComputeBufferType.Structured);
-            _ops.Pack4ToBufferCHW(src.texture, src.width, src.height, srcShape.c, pooledBuffer);
-            var pooledData = new float[pooledCount];
-            pooledBuffer.GetData(pooledData);
+            var pooledBuffer = RentTempBuffer(pooledCount, sizeof(float));
+            var indexBuffer = RentTempBuffer(src.width * src.height * srcShape.c, sizeof(float));
+            try
+            {
+                _ops.Pack4ToBufferCHW(src.texture, src.width, src.height, srcShape.c, pooledBuffer);
+                var pooledData = new float[pooledCount];
+                pooledBuffer.GetData(pooledData);
 
-            using var indexBuffer = new ComputeBuffer(src.width * src.height * srcShape.c, sizeof(float), ComputeBufferType.Structured);
-            _ops.Pack4ToBufferCHW(idx.texture, idx.width, idx.height, srcShape.c, indexBuffer);
-            var indexData = new float[indexBuffer.count];
-            indexBuffer.GetData(indexData);
+                _ops.Pack4ToBufferCHW(idx.texture, idx.width, idx.height, srcShape.c, indexBuffer);
+                var indexData = new float[indexBuffer.count];
+                indexBuffer.GetData(indexData);
 
             var outPlane = outW * outH;
             var pooledPlane = src.width * src.height;
@@ -1148,10 +1252,23 @@ namespace NcnnCompute
                 }
             }
 
-            using var outBuffer = new ComputeBuffer(outData.Length, sizeof(float), ComputeBufferType.Structured);
-            outBuffer.SetData(outData);
-            _ops.FillPack4FromBufferCHW(outBuffer, outW, outH, srcShape.c, outRt);
-            SynchronizeGpuBufferUse(outBuffer);
+                var outBuffer = RentTempBuffer(outData.Length, sizeof(float));
+                try
+                {
+                    outBuffer.SetData(outData);
+                    _ops.FillPack4FromBufferCHW(outBuffer, outW, outH, srcShape.c, outRt);
+                    SynchronizeGpuBufferUse(outBuffer);
+                }
+                finally
+                {
+                    ReturnTempBuffer(outBuffer);
+                }
+            }
+            finally
+            {
+                ReturnTempBuffer(pooledBuffer);
+                ReturnTempBuffer(indexBuffer);
+            }
         }
     }
 }

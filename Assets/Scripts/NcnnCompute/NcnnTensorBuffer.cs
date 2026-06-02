@@ -12,6 +12,7 @@ namespace NcnnCompute
         public int c { get; }
         public ComputeBuffer buffer { get; }
         public bool ownsBuffer { get; }
+        private readonly Action<ComputeBuffer> _releaseBuffer;
 
         public NcnnTensorBuffer(int w, int h, int c)
         {
@@ -72,7 +73,7 @@ namespace NcnnCompute
             NcnnGpuResourceTracker.RegisterBuffer(buffer, checked(w * h * d * c), sizeof(float), "NcnnTensorBuffer(4d)");
         }
 
-        internal NcnnTensorBuffer(ComputeBuffer existing, int dims, int w, int h, int d, int c, bool ownsBuffer)
+        internal NcnnTensorBuffer(ComputeBuffer existing, int dims, int w, int h, int d, int c, bool ownsBuffer, Action<ComputeBuffer> releaseBuffer = null)
         {
             buffer = existing ?? throw new ArgumentNullException(nameof(existing));
             this.dims = dims;
@@ -81,6 +82,7 @@ namespace NcnnCompute
             this.d = d;
             this.c = c;
             this.ownsBuffer = ownsBuffer;
+            _releaseBuffer = ownsBuffer ? releaseBuffer : null;
         }
 
         public int elementCount => checked(w * h * d * c);
@@ -143,6 +145,11 @@ namespace NcnnCompute
         public void Dispose()
         {
             if (!ownsBuffer) return;
+            if (_releaseBuffer != null)
+            {
+                _releaseBuffer(buffer);
+                return;
+            }
             NcnnGpuResourceTracker.ReleaseBuffer(buffer, "NcnnTensorBuffer.Dispose");
             try { buffer?.Dispose(); } catch { }
         }

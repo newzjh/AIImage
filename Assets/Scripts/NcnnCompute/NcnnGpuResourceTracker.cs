@@ -96,6 +96,22 @@ namespace NcnnCompute
             AddTimeline("free_buffer", label ?? info.label, info.bytes, info.count + "x" + info.stride);
         }
 
+        public static void ReuseBuffer(ComputeBuffer buffer, string label)
+        {
+            if (!Enabled || buffer == null)
+                return;
+
+            var id = buffer.GetHashCode();
+            if (!Buffers.TryGetValue(id, out var info))
+            {
+                RegisterBuffer(buffer, buffer.count, buffer.stride, label);
+                return;
+            }
+
+            info.label = label ?? "";
+            AddTimeline("reuse_buffer", info.label, info.bytes, info.count + "x" + info.stride);
+        }
+
         public static void RegisterTexture(RenderTexture texture, string label)
         {
             if (!Enabled || texture == null)
@@ -134,6 +150,22 @@ namespace NcnnCompute
             Textures.Remove(id);
             _textureBytes -= info.bytes;
             AddTimeline("free_rt", label ?? info.label, info.bytes, info.width + "x" + info.height + "x" + info.depth + " " + info.format);
+        }
+
+        public static void ReuseTexture(RenderTexture texture, string label)
+        {
+            if (!Enabled || texture == null)
+                return;
+
+            var id = texture.GetHashCode();
+            if (!Textures.TryGetValue(id, out var info))
+            {
+                RegisterTexture(texture, label);
+                return;
+            }
+
+            info.label = label ?? "";
+            AddTimeline("reuse_rt", info.label, info.bytes, info.width + "x" + info.height + "x" + info.depth + " " + info.format);
         }
 
         public static void UpdateTextureLabel(RenderTexture texture, string label)

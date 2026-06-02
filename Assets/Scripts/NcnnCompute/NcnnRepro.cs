@@ -277,7 +277,7 @@ namespace NcnnCompute
             {
                 for (var i = 0; i < TempBuffers.Count; i++)
                 {
-                    try { TempBuffers[i]?.Dispose(); } catch { }
+                    try { Repro.ReturnTempBuffer(TempBuffers[i]); } catch { }
                 }
 
                 foreach (var kv in BufferBlobs)
@@ -310,6 +310,7 @@ namespace NcnnCompute
         private NcnnOps _ops;
 
         private readonly Dictionary<RtKey, Stack<PooledRt>> _rtPool = new Dictionary<RtKey, Stack<PooledRt>>();
+        private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
         private bool _useTempPool = false;
         private int _maxPooledPerShape = 2;
         private readonly HashSet<ComputeTexture> _cmdSets = new HashSet<ComputeTexture>();
@@ -317,13 +318,21 @@ namespace NcnnCompute
         public bool EnableTempPool
         {
             get => _useTempPool;
-            set => _useTempPool = value;
+            set
+            {
+                _useTempPool = value;
+                _bufferPool.Enabled = value;
+            }
         }
 
         public int MaxPooledPerShape
         {
             get => _maxPooledPerShape;
-            set => _maxPooledPerShape = Mathf.Max(0, value);
+            set
+            {
+                _maxPooledPerShape = Mathf.Max(0, value);
+                _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
+            }
         }
 
         public NcnnOps Ops => _ops;
@@ -348,6 +357,7 @@ namespace NcnnCompute
         public NcnnRepro(NcnnOps ops)
         {
             _ops = ops ?? throw new ArgumentNullException(nameof(ops));
+            _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
         }
 
         public void SetOps(NcnnOps ops)
@@ -645,7 +655,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("Embed input buffer not found: " + l.bottomNames[0]);
 
                         var words = indicesBuf.count;
-                        var outBuf = new ComputeBuffer(words * ep.numOutput, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(words * ep.numOutput, sizeof(float));
                         _ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
                         continue;
@@ -661,7 +671,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("BinaryOp input buffer not found: " + l.bottomNames[0]);
 
                         var total = aBuf.count;
-                        var outBuf = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(total, sizeof(float));
 
                         if (withScalar != 0)
                         {
@@ -711,7 +721,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("LayerNorm input blob not found: " + l.bottomNames[0]);
 
                         var rows = srcBuf.count / Mathf.Max(1, lp.affineSize);
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                         _ops.LayerNorm2DInplace(outBuf, rows, lp.affineSize, lp.eps, lp.affine, lp.gamma, lp.beta);
                         bufferBlobs[l.topNames[0]] = outBuf;
@@ -726,7 +736,7 @@ namespace NcnnCompute
                         if (!bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) || srcBuf == null)
                             throw new InvalidOperationException("GroupNorm input blob not found: " + l.bottomNames[0]);
 
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                         var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
                         _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
@@ -754,26 +764,26 @@ namespace NcnnCompute
                         if (srcLen > 65535)
                             throw new InvalidOperationException("MultiHeadAttention srcLen too large for dispatch: " + l.name + " | srcLen=" + srcLen + " qcount=" + qBuf.count + " qdim=" + mp.qdim);
 
-                        var qAff = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                        var kAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                        var vAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var qAff = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
+                        var kAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
+                        var vAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
                         _ops.InnerProduct2D(qBuf, srcLen, mp.qdim, mp.qW, mp.qB, mp.embedDim, qAff);
                         _ops.InnerProduct2D(kBuf, dstLen, mp.kdim, mp.kW, mp.kB, mp.embedDim, kAff);
                         _ops.InnerProduct2D(vBuf, dstLen, mp.vdim, mp.vW, mp.vB, mp.embedDim, vAff);
 
-                        var qScaled = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var qScaled = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                         _ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
-                        qAff.Dispose();
+                        ReturnTempBuffer(qAff);
 
-                        var ctx = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var ctx = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                         _ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx);
-                        qScaled.Dispose();
-                        kAff.Dispose();
-                        vAff.Dispose();
+                        ReturnTempBuffer(qScaled);
+                        ReturnTempBuffer(kAff);
+                        ReturnTempBuffer(vAff);
 
-                        var outBuf = new ComputeBuffer(srcLen * mp.qdim, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcLen * mp.qdim, sizeof(float));
                         _ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
-                        ctx.Dispose();
+                        ReturnTempBuffer(ctx);
 
                         bufferBlobs[l.topNames[0]] = outBuf;
                         continue;
@@ -812,7 +822,7 @@ namespace NcnnCompute
                             var len = end - start;
                             if (len <= 0)
                                 throw new InvalidOperationException("Slice invalid range for " + l.name);
-                            var sliceBuf = new ComputeBuffer(len, sizeof(float), ComputeBufferType.Structured);
+                            var sliceBuf = RentTempBuffer(len, sizeof(float));
                             tempBuffers.Add(sliceBuf);
                             _ops.CopyBufPartial(srcBuf, start, sliceBuf, len);
                             bufferBlobs[l.topNames[t]] = sliceBuf;
@@ -837,7 +847,7 @@ namespace NcnnCompute
                 }
                 for (var i = 0; i < tempBuffers.Count; i++)
                 {
-                    try { tempBuffers[i]?.Dispose(); } catch { }
+                    try { ReturnTempBuffer(tempBuffers[i]); } catch { }
                 }
                 foreach (var kv in bufferBlobs)
                 {
@@ -971,7 +981,7 @@ namespace NcnnCompute
                 var h = tr.h;
                 var c = tr.packs * 4;
                 var total = w * h * c;
-                var buf = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
+                var buf = RentTempBuffer(total, sizeof(float));
                 tempBuffers.Add(buf);
                 _ops.Pack4ToBufferCHW(tr.t1, w, h, c, buf);
                 bufferBlobs[name] = buf;
@@ -1099,7 +1109,7 @@ namespace NcnnCompute
                         var outD = dims == 4 ? GetAxisSize(axes.z) : 1;
                         var outC = dims == 2 ? 1 : GetAxisSize(dims == 4 ? axes.w : axes.z);
                         var outCount = outW * outH * outD * outC;
-                        var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(outCount, sizeof(float));
                         tempBuffers.Add(outBuf);
                         _ops.Permute(srcBuf, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
@@ -1159,7 +1169,7 @@ namespace NcnnCompute
                                 elems *= shape[i];
                         }
                         var outCount = redAll != 0 ? 1 : (count / elems);
-                        var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(outCount, sizeof(float));
                         tempBuffers.Add(outBuf);
                         _ops.ReductionBuf(srcBuf, elems, outCount, redType, coeff, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
@@ -1176,7 +1186,7 @@ namespace NcnnCompute
                         var sbegin = l.GetInt(2, 0);
                         var send = l.GetInt(3, srcBuf.count);
                         var outCount = send - sbegin;
-                        var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(outCount, sizeof(float));
                         tempBuffers.Add(outBuf);
                         if (sbegin == 0)
                             _ops.CopyBuf(srcBuf, outBuf, outCount);
@@ -1303,7 +1313,7 @@ namespace NcnnCompute
                             var srcTensor = GetBufferView(l.bottomNames[0]);
                             var rows = srcTensor != null && srcTensor.dims >= 2 ? srcTensor.h : 1;
                             var cols = srcTensor != null && srcTensor.dims >= 2 ? srcTensor.w : srcBuf.count;
-                            var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                             tempBuffers.Add(outBuf);
                             _ops.Softmax2D(srcBuf, outBuf, rows, cols);
                             bufferBlobs[l.topNames[0]] = outBuf;
@@ -1331,7 +1341,7 @@ namespace NcnnCompute
                             var ip = _innerProduct[l.name];
                             var inTensor = GetBufferView(l.bottomNames[0]);
                             var rows = inTensor != null && inTensor.dims == 2 && inTensor.w == ip.inFeatures ? inTensor.h : 1;
-                            var outBuf = new ComputeBuffer(ip.outFeatures * rows, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(ip.outFeatures * rows, sizeof(float));
                             tempBuffers.Add(outBuf);
                             if (rows > 1)
                                 _ops.InnerProduct2D(ipInput, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
@@ -1348,10 +1358,10 @@ namespace NcnnCompute
                             var src = Get(blobs, l.bottomNames[0]);
                             if (src.w * src.h * src.packs * 4 != ip.inFeatures)
                                 throw new InvalidOperationException("InnerProduct inFeatures mismatch for " + l.name);
-                            var inBuf = new ComputeBuffer(ip.inFeatures, sizeof(float), ComputeBufferType.Structured);
+                            var inBuf = RentTempBuffer(ip.inFeatures, sizeof(float));
                             tempBuffers.Add(inBuf);
                             _ops.Pack4ToBufferCHW(src.t1, src.w, src.h, src.packs * 4, inBuf);
-                            var outBuf = new ComputeBuffer(ip.outFeatures, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(ip.outFeatures, sizeof(float));
                             _ops.InnerProduct(inBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
                             bufferBlobs[l.topNames[0]] = outBuf;
                         }
@@ -1479,7 +1489,7 @@ namespace NcnnCompute
                             {
                                 if (withScalar != 0)
                                 {
-                                    var outBuf = new ComputeBuffer(aBuf.count, sizeof(float), ComputeBufferType.Structured);
+                                    var outBuf = RentTempBuffer(aBuf.count, sizeof(float));
                                     tempBuffers.Add(outBuf);
                                     _ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
                                     bufferBlobs[l.topNames[0]] = outBuf;
@@ -1489,7 +1499,7 @@ namespace NcnnCompute
                                     if (bBufMaybe == null)
                                         throw new InvalidOperationException("BinaryOp second input buffer not found: " + l.name);
                                     var outCount = Math.Max(aBuf.count, bBufMaybe.count);
-                                    var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                                    var outBuf = RentTempBuffer(outCount, sizeof(float));
                                     tempBuffers.Add(outBuf);
                                     if (aBuf.count == bBufMaybe.count)
                                     {
@@ -1521,7 +1531,7 @@ namespace NcnnCompute
 
                         if (bufferBlobs.TryGetValue(l.bottomNames[0], out var srcBuf) && srcBuf != null)
                         {
-                            var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                             tempBuffers.Add(outBuf);
                             _ops.UnaryOpBuf(srcBuf, srcBuf.count, opType, outBuf);
                             bufferBlobs[l.topNames[0]] = outBuf;
@@ -1541,7 +1551,7 @@ namespace NcnnCompute
                     {
                         if (bufferBlobs.TryGetValue(l.bottomNames[0], out var swishBuf) && swishBuf != null)
                         {
-                            var outBuf = new ComputeBuffer(swishBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(swishBuf.count, sizeof(float));
                             tempBuffers.Add(outBuf);
                             _ops.SwishBuf(swishBuf, swishBuf.count, outBuf);
                             bufferBlobs[l.topNames[0]] = outBuf;
@@ -1561,7 +1571,7 @@ namespace NcnnCompute
                     {
                         if (bufferBlobs.TryGetValue(l.bottomNames[0], out var sigBuf) && sigBuf != null)
                         {
-                            var outBuf = new ComputeBuffer(sigBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(sigBuf.count, sizeof(float));
                             tempBuffers.Add(outBuf);
                             _ops.SigmoidBuf(sigBuf, sigBuf.count, outBuf);
                             bufferBlobs[l.topNames[0]] = outBuf;
@@ -1581,7 +1591,7 @@ namespace NcnnCompute
                     {
                         if (bufferBlobs.TryGetValue(l.bottomNames[0], out var geluBuf) && geluBuf != null)
                         {
-                            var outBuf = new ComputeBuffer(geluBuf.count, sizeof(float), ComputeBufferType.Structured);
+                            var outBuf = RentTempBuffer(geluBuf.count, sizeof(float));
                             tempBuffers.Add(outBuf);
                             _ops.UnaryOpBuf(geluBuf, geluBuf.count, 15, outBuf);
                             bufferBlobs[l.topNames[0]] = outBuf;
@@ -1650,7 +1660,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("Embed input buffer not found: " + l.bottomNames[0]);
 
                         var words = indicesBuf.count;
-                        var outBuf = new ComputeBuffer(words * ep.numOutput, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(words * ep.numOutput, sizeof(float));
                         tempBuffers.Add(outBuf);
                         _ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
@@ -1671,7 +1681,7 @@ namespace NcnnCompute
                         var rows = srcTensor != null && srcTensor.dims == 2 && srcTensor.w == lp.affineSize
                             ? srcTensor.h
                             : srcBuf.count / Mathf.Max(1, lp.affineSize);
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         tempBuffers.Add(outBuf);
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                         _ops.LayerNorm2DInplace(outBuf, rows, lp.affineSize, lp.eps, lp.affine, lp.gamma, lp.beta);
@@ -1691,7 +1701,7 @@ namespace NcnnCompute
                         if (srcBuf == null)
                             throw new InvalidOperationException("GroupNorm input blob not found: " + l.bottomNames[0]);
 
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         tempBuffers.Add(outBuf);
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                         var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
@@ -1716,9 +1726,9 @@ namespace NcnnCompute
                         var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);
                         var dstLen = kBuf.count / Mathf.Max(1, mp.kdim);
 
-                        var qAff = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                        var kAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                        var vAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var qAff = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
+                        var kAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
+                        var vAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
                         tempBuffers.Add(qAff);
                         tempBuffers.Add(kAff);
                         tempBuffers.Add(vAff);
@@ -1726,15 +1736,15 @@ namespace NcnnCompute
                         _ops.InnerProduct2D(kBuf, dstLen, mp.kdim, mp.kW, mp.kB, mp.embedDim, kAff);
                         _ops.InnerProduct2D(vBuf, dstLen, mp.vdim, mp.vW, mp.vB, mp.embedDim, vAff);
 
-                        var qScaled = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var qScaled = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                         tempBuffers.Add(qScaled);
                         _ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
 
-                        var ctx = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var ctx = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                         tempBuffers.Add(ctx);
                         _ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx);
 
-                        var outBuf = new ComputeBuffer(srcLen * mp.qdim, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcLen * mp.qdim, sizeof(float));
                         tempBuffers.Add(outBuf);
                         _ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
 
@@ -1947,11 +1957,11 @@ namespace NcnnCompute
                         if (src.w * src.h * src.packs * 4 != ip.inFeatures)
                             throw new InvalidOperationException("InnerProduct inFeatures mismatch for " + l.name);
 
-                        var inBuf = new ComputeBuffer(ip.inFeatures, sizeof(float), ComputeBufferType.Structured);
+                        var inBuf = RentTempBuffer(ip.inFeatures, sizeof(float));
                         tempBuffers.Add(inBuf);
                         _ops.Pack4ToBufferCHW(src.t1, src.w, src.h, src.packs * 4, inBuf);
 
-                        var outBuf = new ComputeBuffer(ip.outFeatures, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(ip.outFeatures, sizeof(float));
                         _ops.InnerProduct(inBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
@@ -2140,7 +2150,7 @@ namespace NcnnCompute
                             throw new InvalidOperationException("Embed input buffer not found: " + l.bottomNames[0]);
 
                         var words = indicesBuf.count;
-                        var outBuf = new ComputeBuffer(words * ep.numOutput, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(words * ep.numOutput, sizeof(float));
                         _ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
@@ -2156,7 +2166,7 @@ namespace NcnnCompute
                         if (!bufferBlobs.TryGetValue(l.bottomNames[0], out srcBuf) || srcBuf == null)
                             throw new InvalidOperationException("LayerNorm input buffer not found: " + l.bottomNames[0]);
 
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                         _ops.LayerNorm2DInplace(outBuf, srcBuf.count / Mathf.Max(1, lp.affineSize), lp.affineSize, lp.eps, lp.affine, lp.gamma, lp.beta);
                         bufferBlobs[l.topNames[0]] = outBuf;
@@ -2173,7 +2183,7 @@ namespace NcnnCompute
                         if (!bufferBlobs.TryGetValue(l.bottomNames[0], out srcBuf) || srcBuf == null)
                             throw new InvalidOperationException("GroupNorm input buffer not found: " + l.bottomNames[0]);
 
-                        var outBuf = new ComputeBuffer(srcBuf.count, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                         _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                         var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
                         _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
@@ -2197,26 +2207,26 @@ namespace NcnnCompute
                         var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);
                         var dstLen = kBuf.count / Mathf.Max(1, mp.kdim);
 
-                        var qAff = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                        var kAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
-                        var vAff = new ComputeBuffer(dstLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var qAff = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
+                        var kAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
+                        var vAff = RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
                         _ops.InnerProduct2D(qBuf, srcLen, mp.qdim, mp.qW, mp.qB, mp.embedDim, qAff);
                         _ops.InnerProduct2D(kBuf, dstLen, mp.kdim, mp.kW, mp.kB, mp.embedDim, kAff);
                         _ops.InnerProduct2D(vBuf, dstLen, mp.vdim, mp.vW, mp.vB, mp.embedDim, vAff);
 
-                        var qScaled = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var qScaled = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                         _ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
-                        qAff.Dispose();
+                        ReturnTempBuffer(qAff);
 
-                        var ctx = new ComputeBuffer(srcLen * mp.embedDim, sizeof(float), ComputeBufferType.Structured);
+                        var ctx = RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                         _ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx);
-                        qScaled.Dispose();
-                        kAff.Dispose();
-                        vAff.Dispose();
+                        ReturnTempBuffer(qScaled);
+                        ReturnTempBuffer(kAff);
+                        ReturnTempBuffer(vAff);
 
-                        var outBuf = new ComputeBuffer(srcLen * mp.qdim, sizeof(float), ComputeBufferType.Structured);
+                        var outBuf = RentTempBuffer(srcLen * mp.qdim, sizeof(float));
                         _ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
-                        ctx.Dispose();
+                        ReturnTempBuffer(ctx);
 
                         bufferBlobs[l.topNames[0]] = outBuf;
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
@@ -2729,6 +2739,36 @@ namespace NcnnCompute
             return r;
         }
 
+        private ComputeBuffer RentTempBuffer(
+            int count,
+            int stride,
+            ComputeBufferType type = ComputeBufferType.Structured,
+            [System.Runtime.CompilerServices.CallerMemberName] string callerMember = null,
+            [System.Runtime.CompilerServices.CallerLineNumber] int callerLine = 0)
+        {
+            var label = "NcnnRepro.RentTempBuffer(" + (callerMember ?? "?") + ":" + callerLine.ToString(CultureInfo.InvariantCulture) + ")";
+            return _bufferPool.Rent(count, stride, type, label);
+        }
+
+        private void ReturnTempBuffer(ComputeBuffer buffer)
+        {
+            _bufferPool.Return(buffer, "NcnnRepro.ReturnTempBuffer");
+        }
+
+        private NcnnTensorBuffer RentTempTensorBuffer(
+            int dims,
+            int w,
+            int h = 1,
+            int d = 1,
+            int c = 1,
+            [System.Runtime.CompilerServices.CallerMemberName] string callerMember = null,
+            [System.Runtime.CompilerServices.CallerLineNumber] int callerLine = 0)
+        {
+            var count = checked(w * h * d * c);
+            var buffer = RentTempBuffer(count, sizeof(float), ComputeBufferType.Structured, callerMember, callerLine);
+            return new NcnnTensorBuffer(buffer, dims, w, h, d, c, true, ReturnTempBuffer);
+        }
+
         public RenderTexture RentTempArray(int w, int h, int depth, RenderTextureFormat format)
         {
             if (!_useTempPool)
@@ -2752,7 +2792,10 @@ namespace NcnnCompute
                 while (keep.Count > 0)
                     stack.Push(keep.Pop());
                 if (hit != null)
+                {
+                    NcnnGpuResourceTracker.ReuseTexture(hit, "NcnnRepro.RentTempArray|pool");
                     return hit;
+                }
             }
             return CreateTempArray(w, h, depth, format);
         }
@@ -2846,6 +2889,7 @@ namespace NcnnCompute
                 }
             }
             _rtPool.Clear();
+            _bufferPool.Clear("NcnnRepro.ClearTempPool");
         }
 
         private static bool IsFencePassedOrAged(PooledRt p)

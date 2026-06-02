@@ -17,7 +17,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public int maxInputLongSide = 2048;
     public float faceMaskThreshold = 0.2f;
     public float faceBoxExpand = 0.35f;
-    public bool enableTempPool = false;
+    public bool enableTempPool = true;
     public int maxPooledPerShape = 2;
     public bool enableFaceRegionDebugDump = false;
 
@@ -180,6 +180,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             faceRegion = GetComponent<NcnnFaceRegionGenerator>();
             if (faceRegion == null)
                 faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
+            faceRegion.enableTempPool = enableTempPool;
+            faceRegion.maxPooledPerShape = maxPooledPerShape;
             RectInt rect = default;
             if (faceRegion != null && faceRegion.enabled)
             {
