@@ -28,6 +28,7 @@ public static class NcnnDebugRunner
     private static readonly string DefaultClipDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultMattingDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_img.jpg");
     private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
+    private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
 
     [MenuItem("Tools/AIImage/Run NCNN Face Debug")]
     public static void RunFaceDebugMenu()
@@ -71,6 +72,12 @@ public static class NcnnDebugRunner
         RunMattingDebug().Forget();
     }
 
+    [MenuItem("Tools/AIImage/Run YOLO Seg Debug")]
+    public static void RunYoloSegDebugMenu()
+    {
+        RunYoloSegDebug().Forget();
+    }
+
     [MenuItem("Tools/AIImage/Run CodeFormer Stress (60x)")]
     public static void RunCodeFormerStressMenu()
     {
@@ -103,6 +110,7 @@ public static class NcnnDebugRunner
         }
         finally
         {
+            RenderTexture.active = null;
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
         }
@@ -229,6 +237,11 @@ public static class NcnnDebugRunner
         await RunMattingDebugInternal();
     }
 
+    public static async UniTaskVoid RunYoloSegDebug()
+    {
+        await RunYoloSegDebugInternal();
+    }
+
     public static async void RunMattingDebugBatch()
     {
         try
@@ -241,6 +254,23 @@ public static class NcnnDebugRunner
         catch (Exception e)
         {
             Debug.Log("[NcnnDebugRunner] RunMattingDebugBatch failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
+    public static async void RunYoloSegDebugBatch()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatch start");
+            await RunYoloSegDebugInternal();
+            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatch done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatch failed: " + e.Message);
             Debug.LogException(e);
             EditorApplication.Exit(1);
         }
@@ -277,6 +307,61 @@ public static class NcnnDebugRunner
                 UnityEngine.Object.DestroyImmediate(result.texture);
             if (result.matte != null)
                 UnityEngine.Object.DestroyImmediate(result.matte);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    private static async UniTask RunYoloSegDebugInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultYoloSegDebugImagePath);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+        {
+            Debug.LogError("Failed to load debug input: " + inputPath);
+            return;
+        }
+
+        var go = new GameObject("YoloSegDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<YoloSegNcnnReproRunner>();
+            runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
+            runner.enableDebugDump = true;
+            runner.enableWinograd23 = false;
+            runner.targetPersonOnly = true;
+            runner.enableMaskClose = true;
+            runner.enableMaskDilate = true;
+
+            var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            Debug.Log(
+                "YOLO Seg Debug result | error=" + (result.error ?? "")
+                + " | elapsedMs=" + result.elapsedMs
+                + " | personCount=" + result.personCount.ToString(CultureInfo.InvariantCulture)
+                + " | coverage=" + result.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture)
+                + " | dump=" + (runner.LastDumpDir ?? ""));
+
+            if (!string.IsNullOrWhiteSpace(result.error))
+                return;
+
+            var dir = !string.IsNullOrWhiteSpace(runner.LastDumpDir)
+                ? runner.LastDumpDir
+                : CreateGenericDumpDir("AIImage_YoloSegRepro");
+            TryWriteTexturePng(result.mask, dir, "01_person_mask.png");
+            TryWriteTexturePng(result.texture, dir, "02_transparent_cutout.png");
+            TryWriteTexturePng(result.overlay, dir, "03_overlay.png");
+            if (!string.IsNullOrWhiteSpace(runner.LastSummaryText))
+                File.WriteAllText(Path.Combine(dir, "summary.txt"), runner.LastSummaryText);
+
+            if (result.texture != null)
+                UnityEngine.Object.DestroyImmediate(result.texture);
+            if (result.mask != null)
+                UnityEngine.Object.DestroyImmediate(result.mask);
+            if (result.overlay != null)
+                UnityEngine.Object.DestroyImmediate(result.overlay);
         }
         finally
         {

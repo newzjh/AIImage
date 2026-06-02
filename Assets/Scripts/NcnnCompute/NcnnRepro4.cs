@@ -156,6 +156,37 @@ namespace NcnnCompute
             }
         }
 
+        public sealed class DeconvPack : IDisposable
+        {
+            public int outC;
+            public int inC;
+            public int group;
+            public int kernelW;
+            public int kernelH;
+            public int dilationW;
+            public int dilationH;
+            public int strideW;
+            public int strideH;
+            public int padLeft;
+            public int padRight;
+            public int padTop;
+            public int padBottom;
+            public int outputPadRight;
+            public int outputPadBottom;
+            public int biasTerm;
+            public int weightSize;
+            public int activationType;
+            public float activationSlope;
+            public ComputeBuffer rawWeight;
+            public ComputeBuffer rawBias;
+
+            public void Dispose()
+            {
+                try { rawWeight?.Dispose(); } catch { }
+                try { rawBias?.Dispose(); } catch { }
+            }
+        }
+
         public sealed class GemmPack : IDisposable
         {
             public float alpha;
@@ -466,6 +497,7 @@ namespace NcnnCompute
         public bool EnableConv1x1TextureConvolution { get; set; } = true;
 
         private readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
+        private readonly Dictionary<string, DeconvPack> _deconv = new Dictionary<string, DeconvPack>(StringComparer.Ordinal);
         private readonly Dictionary<string, InnerProductPack> _innerProduct = new Dictionary<string, InnerProductPack>(StringComparer.Ordinal);
         private readonly Dictionary<string, GemmPack> _gemm = new Dictionary<string, GemmPack>(StringComparer.Ordinal);
         private readonly Dictionary<string, MemoryDataPack> _memoryData = new Dictionary<string, MemoryDataPack>(StringComparer.Ordinal);
@@ -617,6 +649,42 @@ namespace NcnnCompute
                     }
 
                     _conv[layer.name] = pack;
+                    continue;
+                }
+
+                if (string.Equals(layer.type, "Deconvolution", StringComparison.Ordinal))
+                {
+                    var pack = new DeconvPack();
+                    pack.outC = layer.GetInt(0, 0);
+                    pack.group = Mathf.Max(1, layer.GetInt(7, 1));
+                    pack.kernelW = layer.GetInt(1, 0);
+                    pack.kernelH = layer.GetInt(11, pack.kernelW);
+                    pack.dilationW = layer.GetInt(2, 1);
+                    pack.dilationH = layer.GetInt(12, pack.dilationW);
+                    pack.strideW = layer.GetInt(3, 1);
+                    pack.strideH = layer.GetInt(13, pack.strideW);
+                    pack.padLeft = layer.GetInt(4, 0);
+                    pack.padRight = layer.GetInt(15, pack.padLeft);
+                    pack.padTop = layer.GetInt(14, pack.padLeft);
+                    pack.padBottom = layer.GetInt(16, pack.padTop);
+                    pack.outputPadRight = layer.GetInt(18, 0);
+                    pack.outputPadBottom = layer.GetInt(19, pack.outputPadRight);
+                    pack.biasTerm = layer.GetInt(5, 0);
+                    pack.weightSize = layer.GetInt(6, 0);
+                    pack.activationType = layer.GetInt(9, 0);
+                    pack.activationSlope = ParseLeakySlope(layer);
+
+                    var kernelArea = Mathf.Max(1, pack.kernelW * pack.kernelH);
+                    pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
+
+                    var w = ReadPackedOrRawWeightArray(br, pack.weightSize, layer.name);
+                    var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
+
+                    pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                    pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                    pack.rawWeight.SetData(w);
+                    pack.rawBias.SetData(b);
+                    _deconv[layer.name] = pack;
                     continue;
                 }
 
@@ -1341,6 +1409,46 @@ namespace NcnnCompute
 
                 if (string.Equals(layer.type, "Concat", StringComparison.Ordinal))
                 {
+                    var firstBufferView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                    if (firstBufferView != null && firstBufferView.dims == 2)
+                    {
+                        var concatAxis = layer.GetInt(0, 0);
+                        if (concatAxis != 0)
+                            throw new InvalidOperationException("Concat dims=2 only supports axis=0: " + layer.name);
+
+                        var totalRows = 0;
+                        var outWidth = firstBufferView.w;
+                        for (var i = 0; i < layer.bottomNames.Length; i++)
+                        {
+                            var partView = TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
+                            if (partView == null || partView.dims != 2)
+                                throw new InvalidOperationException("Concat dims=2 source missing: " + layer.name + " | " + layer.bottomNames[i]);
+                            if (partView.w != outWidth)
+                                throw new InvalidOperationException("Concat dims=2 width mismatch: " + layer.name);
+                            totalRows += partView.h;
+                        }
+
+                        var outCount = outWidth * totalRows;
+                        var outBuf = new ComputeBuffer(outCount, sizeof(float), ComputeBufferType.Structured);
+                        var dstOffset = 0;
+                        for (var i = 0; i < layer.bottomNames.Length; i++)
+                        {
+                            var partBuf = GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                            var partView = TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
+                            if (partBuf == null || partView == null)
+                                throw new InvalidOperationException("Concat dims=2 buffer source missing: " + layer.name + " | " + layer.bottomNames[i]);
+                            var partCount = partView.w * partView.h;
+                            _ops.CopyBufPartial(partBuf, 0, outBuf, partCount, dstOffset);
+                            dstOffset += partCount;
+                        }
+
+                        bufferBlobs[layer.topNames[0]] = outBuf;
+                        bufferRefs[layer.topNames[0]] = NewOwnedBufferRef(layer.topNames[0], outBuf);
+                        bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 2, outWidth, totalRows, 1, 1, false);
+                        Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        continue;
+                    }
+
                     var first = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var axis = layer.GetInt(0, 0);
                     if (axis != 0)
@@ -1676,6 +1784,48 @@ namespace NcnnCompute
                         ? new NcnnTensorBuffer(outBuf, 2, ip.outFeatures, rows, 1, 1, false)
                         : new NcnnTensorBuffer(outBuf, 1, ip.outFeatures, 1, 1, 1, false);
                     tempOwned.Add(outBuf);
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (string.Equals(layer.type, "Deconvolution", StringComparison.Ordinal))
+                {
+                    if (!_deconv.TryGetValue(layer.name, out var deconv))
+                        throw new InvalidOperationException("Deconvolution not found: " + layer.name);
+
+                    var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                    var srcTensor = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                    if (srcBuf == null || srcTensor == null || srcTensor.dims != 3)
+                        throw new InvalidOperationException("Deconvolution expects dims=3 tensor input: " + layer.name);
+
+                    var outW = ComputeDeconvOut(srcTensor.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight);
+                    var outH = ComputeDeconvOut(srcTensor.h, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom);
+                    var outTensor = new NcnnTensorBuffer(outW, outH, deconv.outC);
+                    _ops.Deconvolution(
+                        srcTensor,
+                        deconv.rawWeight,
+                        deconv.rawBias,
+                        deconv.outC,
+                        deconv.group,
+                        deconv.kernelW,
+                        deconv.kernelH,
+                        deconv.strideW,
+                        deconv.strideH,
+                        deconv.padLeft,
+                        deconv.padRight,
+                        deconv.padTop,
+                        deconv.padBottom,
+                        deconv.outputPadRight,
+                        deconv.outputPadBottom,
+                        deconv.dilationW,
+                        deconv.dilationH,
+                        deconv.activationType,
+                        deconv.activationSlope,
+                        outTensor);
+
+                    bufferBlobs[layer.topNames[0]] = outTensor.buffer;
+                    bufferViews[layer.topNames[0]] = outTensor;
+                    tempOwned.Add(outTensor);
                     Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     continue;
                 }
@@ -2407,6 +2557,7 @@ TextureConvPath:
         public void Release()
         {
             foreach (var kv in _conv) kv.Value?.Dispose();
+            foreach (var kv in _deconv) kv.Value?.Dispose();
             foreach (var kv in _innerProduct) kv.Value?.Dispose();
             foreach (var kv in _gemm) kv.Value?.Dispose();
             foreach (var kv in _memoryData) kv.Value?.Dispose();
@@ -2417,6 +2568,7 @@ TextureConvPath:
             foreach (var kv in _multiHeadAttention) kv.Value?.Dispose();
 
             _conv.Clear();
+            _deconv.Clear();
             _innerProduct.Clear();
             _gemm.Clear();
             _memoryData.Clear();
@@ -2554,6 +2706,13 @@ TextureConvPath:
         {
             var kernelExtent = dilation * (kernel - 1) + 1;
             return Mathf.Max(1, (inSize + padBefore + padAfter - kernelExtent) / Mathf.Max(1, stride) + 1);
+        }
+
+        private static int ComputeDeconvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter, int outputPadAfter)
+        {
+            var kernelExtent = dilation * (kernel - 1) + 1;
+            var bordered = (inSize - 1) * Mathf.Max(1, stride) + kernelExtent + Mathf.Max(0, outputPadAfter);
+            return Mathf.Max(1, bordered - Mathf.Max(0, padBefore) - Mathf.Max(0, padAfter));
         }
 
         private static ComputeBuffer NewBuffer(float[] data)
