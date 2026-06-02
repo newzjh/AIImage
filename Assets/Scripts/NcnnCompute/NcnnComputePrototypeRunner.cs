@@ -130,7 +130,7 @@ namespace NcnnCompute
                     var counts = new Dictionary<string, int>(StringComparer.Ordinal);
                     foreach (var l in model.layers)
                     {
-                        var key = l.type ?? "";
+                        var key = l.type.ToString();
                         if (!counts.TryGetValue(key, out var c)) c = 0;
                         counts[key] = c + 1;
                     }
@@ -188,7 +188,7 @@ namespace NcnnCompute
                     var count = 0;
                     foreach (var l in model.layers)
                     {
-                        if (!string.Equals(l.type, "MemoryData", StringComparison.Ordinal))
+                        if (l.type != NcnnLayerTypes.MemoryData)
                             continue;
 
                         var w = l.GetInt(0, 0);
@@ -344,7 +344,7 @@ namespace NcnnCompute
                     {
                         var l = model.layers[i];
 
-                        if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
+                        if (l.type == NcnnLayerTypes.Convolution)
                         {
                             var numOut = l.GetInt(0, 0);
                             var biasTerm = l.GetInt(5, 0) != 0;
@@ -356,7 +356,7 @@ namespace NcnnCompute
                             continue;
                         }
 
-                        if (string.Equals(l.type, "InnerProduct", StringComparison.Ordinal))
+                        if (l.type == NcnnLayerTypes.InnerProduct)
                         {
                             var numOut = l.GetInt(0, 0);
                             var biasTerm = l.GetInt(1, 0) != 0;
@@ -368,7 +368,7 @@ namespace NcnnCompute
                             continue;
                         }
 
-                        if (string.Equals(l.type, "LayerNorm", StringComparison.Ordinal))
+                        if (l.type == NcnnLayerTypes.LayerNorm)
                         {
                             var affineSize = l.GetInt(0, 0);
                             var affine = l.GetInt(2, 1) != 0;
@@ -381,7 +381,7 @@ namespace NcnnCompute
                             continue;
                         }
 
-                        if (string.Equals(l.type, "GroupNorm", StringComparison.Ordinal))
+                        if (l.type == NcnnLayerTypes.GroupNorm)
                         {
                             var channels = l.GetInt(0, 0);
                             var affine = l.GetInt(3, 1) != 0;
@@ -394,7 +394,7 @@ namespace NcnnCompute
                             continue;
                         }
 
-                        if (string.Equals(l.type, "Embed", StringComparison.Ordinal))
+                        if (l.type == NcnnLayerTypes.Embed)
                         {
                             var numOut = l.GetInt(0, 0);
                             var biasTerm = l.GetInt(2, 0) != 0;
@@ -406,7 +406,7 @@ namespace NcnnCompute
                             continue;
                         }
 
-                        if (string.Equals(l.type, "MultiHeadAttention", StringComparison.Ordinal))
+                        if (l.type == NcnnLayerTypes.MultiHeadAttention)
                         {
                             var embedDim = l.GetInt(0, 0);
                             var weightSize = l.GetInt(2, 0);
@@ -453,7 +453,7 @@ namespace NcnnCompute
                 }
 
                 var model = NcnnParamParser.Parse(File.ReadAllText(paramPath));
-                var mhaLayer = model.layers.FirstOrDefault(l => string.Equals(l.type, "MultiHeadAttention", StringComparison.Ordinal));
+                var mhaLayer = model.layers.FirstOrDefault(l => l.type == NcnnLayerTypes.MultiHeadAttention);
                 if (mhaLayer == null)
                 {
                     Debug.Log("[SD] UNet MHA not found in param");
@@ -589,7 +589,7 @@ namespace NcnnCompute
 
         private static void SkipLayerWeights(NcnnBinReader br, NcnnParamModel.Layer l)
         {
-            if (string.Equals(l.type, "Convolution", StringComparison.Ordinal))
+            if (l.type == NcnnLayerTypes.Convolution)
             {
                 var numOut = l.GetInt(0, 0);
                 var biasTerm = l.GetInt(5, 0) != 0;
@@ -600,7 +600,7 @@ namespace NcnnCompute
                 return;
             }
 
-            if (string.Equals(l.type, "InnerProduct", StringComparison.Ordinal))
+            if (l.type == NcnnLayerTypes.InnerProduct)
             {
                 var numOut = l.GetInt(0, 0);
                 var biasTerm = l.GetInt(1, 0) != 0;
@@ -611,7 +611,7 @@ namespace NcnnCompute
                 return;
             }
 
-            if (string.Equals(l.type, "LayerNorm", StringComparison.Ordinal))
+            if (l.type == NcnnLayerTypes.LayerNorm)
             {
                 var affineSize = l.GetInt(0, 0);
                 var affine = l.GetInt(2, 1) != 0;
@@ -623,7 +623,7 @@ namespace NcnnCompute
                 return;
             }
 
-            if (string.Equals(l.type, "GroupNorm", StringComparison.Ordinal))
+            if (l.type == NcnnLayerTypes.GroupNorm)
             {
                 var channels = l.GetInt(1, 0);
                 var affine = l.GetInt(3, 1) != 0;
@@ -635,7 +635,7 @@ namespace NcnnCompute
                 return;
             }
 
-            if (string.Equals(l.type, "Embed", StringComparison.Ordinal))
+            if (l.type == NcnnLayerTypes.Embed)
             {
                 var numOut = l.GetInt(0, 0);
                 var biasTerm = l.GetInt(2, 0) != 0;
@@ -646,7 +646,7 @@ namespace NcnnCompute
                 return;
             }
 
-            if (string.Equals(l.type, "MultiHeadAttention", StringComparison.Ordinal))
+            if (l.type == NcnnLayerTypes.MultiHeadAttention)
             {
                 var embedDim = l.GetInt(0, 0);
                 var weightSize = l.GetInt(2, 0);

@@ -10,7 +10,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
-    public class NcnnRepro : IDisposable
+    public partial class NcnnRepro : IDisposable
     {
         private static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -36,7 +36,7 @@ namespace NcnnCompute
             "Add_904"
         };
 
-        internal readonly struct BufferShape
+        public readonly struct BufferShape
         {
             public readonly int dims;
             public readonly int w;
@@ -106,7 +106,7 @@ namespace NcnnCompute
             public bool owned;
         }
 
-        private sealed class CmdTensorRef
+        public sealed class CmdTensorRef
         {
             public ComputeTexture texture;
             public int width;
@@ -116,7 +116,7 @@ namespace NcnnCompute
             public bool owned;
         }
 
-        internal sealed class BufferRef
+        public sealed class BufferRef
         {
             public ComputeBuffer buffer;
             public int refs;
@@ -517,6 +517,7 @@ namespace NcnnCompute
         }
 
         public NcnnParamModel Model { get; private set; }
+        public IReadOnlyList<NcnnBaseLayerRepro> LayerRepros { get; private set; }
         public ModelLoadProfile LastLoadProfile { get; private set; }
         public bool ForceBufferBinaryOpAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
@@ -668,6 +669,7 @@ namespace NcnnCompute
 
             stageSw.Restart();
             Model = NcnnParamParser.Parse(paramText);
+            LayerRepros = NcnnLayerFactoryRepro.CreateModelLayers(Model?.layers);
             stageSw.Stop();
             profile.parseParamMs = stageSw.ElapsedMilliseconds;
             totalLoadMs += profile.parseParamMs;
@@ -687,16 +689,17 @@ namespace NcnnCompute
             {
                 var layer = Model.layers[i];
                 var layerSw = Stopwatch.StartNew();
-                var metrics = LoadLayer(layer, br);
+                var layerRepro = LayerRepros != null && i < LayerRepros.Count ? LayerRepros[i] : null;
+                var metrics = layerRepro != null ? layerRepro.LoadLayer(this, layer, br) : LoadLayer(layer, br);
                 layerSw.Stop();
                 totalLoadMs += layerSw.ElapsedMilliseconds;
 
-                AccumulateLayerProfile(profile, layer?.type, metrics, layerSw.ElapsedMilliseconds);
+                AccumulateLayerProfile(profile, layer != null ? layer.type.ToString() : null, metrics, layerSw.ElapsedMilliseconds);
 
                 var progress01 = totalLayers > 0
                     ? 0.05f + 0.94f * ((float)(i + 1) / totalLayers)
                     : 0.99f;
-                yield return new LoadProgress("layer", i + 1, totalLayers, layer?.name, layer?.type, progress01);
+                yield return new LoadProgress("layer", i + 1, totalLayers, layer?.name, layer != null ? layer.type.ToString() : null, progress01);
             }
 
             profile.totalMs = totalLoadMs;
@@ -714,8 +717,8 @@ namespace NcnnCompute
             long packMs = 0;
             var phaseSw = new Stopwatch();
 
-            if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
-                || string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.Convolution
+                || layer.type == NcnnLayerTypes.ConvolutionDepthWise)
             {
                 var pack = new ConvPack();
                 pack.outC = layer.GetInt(0, 0);
@@ -734,7 +737,7 @@ namespace NcnnCompute
                 pack.weightSize = layer.GetInt(6, 0);
                 pack.activationType = layer.GetInt(9, 0);
                 pack.activationSlope = ParseLeakySlope(layer);
-                pack.isDepthWise = string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal);
+                pack.isDepthWise = layer.type == NcnnLayerTypes.ConvolutionDepthWise;
 
                 var kernelArea = Mathf.Max(1, pack.kernelW * pack.kernelH);
                 if (pack.isDepthWise)
@@ -836,7 +839,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "Deconvolution", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.Deconvolution)
             {
                 var pack = new DeconvPack();
                 pack.outC = layer.GetInt(0, 0);
@@ -879,7 +882,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "InnerProduct", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.InnerProduct)
             {
                 var ip = new InnerProductPack();
                 ip.outFeatures = layer.GetInt(0, 0);
@@ -905,7 +908,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "Gemm", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.Gemm)
             {
                 var gp = new GemmPack
                 {
@@ -965,7 +968,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "MemoryData", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.MemoryData)
             {
                 var w = layer.GetInt(0, 0);
                 var h = layer.GetInt(1, 0);
@@ -999,7 +1002,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "Embed", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.Embed)
             {
                 var ep = new EmbedPack();
                 ep.numOutput = layer.GetInt(0, 0);
@@ -1030,7 +1033,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "LayerNorm", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.LayerNorm)
             {
                 var lp = new LayerNormPack();
                 lp.affineSize = layer.GetInt(0, 0);
@@ -1060,7 +1063,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "GroupNorm", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.GroupNorm)
             {
                 var gp = new GroupNormPack();
                 gp.group = layer.GetInt(0, 1);
@@ -1091,7 +1094,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "BatchNorm", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.BatchNorm)
             {
                 var bp = new BatchNormPack();
                 bp.channels = layer.GetInt(0, 0);
@@ -1132,7 +1135,7 @@ namespace NcnnCompute
                 return new LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
             }
 
-            if (string.Equals(layer.type, "MultiHeadAttention", StringComparison.Ordinal))
+            if (layer.type == NcnnLayerTypes.MultiHeadAttention)
             {
                 var mp = new MultiHeadAttentionPack();
                 mp.embedDim = layer.GetInt(0, 0);
@@ -1240,6 +1243,8 @@ namespace NcnnCompute
                 throw new InvalidOperationException("model not loaded");
             if ((textureInputs == null || textureInputs.Count == 0) && (bufferInputs == null || bufferInputs.Count == 0))
                 throw new ArgumentNullException(nameof(textureInputs));
+            if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
+                return InferWithMultiInputsByLayerRepros(textureInputs, bufferInputs, pinnedNames);
 
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
             var textureBlobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
@@ -1293,10 +1298,10 @@ namespace NcnnCompute
             for (var li = 0; li < Model.layers.Count; li++)
             {
                 var layer = Model.layers[li];
-                if (string.Equals(layer.type, "Input", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Input)
                     continue;
 
-                if (string.Equals(layer.type, "Split", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Split)
                 {
                     if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var srcBuf) && srcBuf != null)
                     {
@@ -1329,7 +1334,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "MemoryData", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.MemoryData)
                 {
                     if (!_memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
                         throw new InvalidOperationException("MemoryData not found: " + layer.name);
@@ -1344,7 +1349,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Embed", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Embed)
                 {
                     if (!_embed.TryGetValue(layer.name, out var ep) || ep.w == null)
                         throw new InvalidOperationException("Embed not found: " + layer.name);
@@ -1361,7 +1366,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "ExpandDims", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.ExpandDims)
                 {
                     var axes = layer.GetInts(-23303, null);
                     if (axes == null || axes.Length == 0)
@@ -1399,7 +1404,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Squeeze", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Squeeze)
                 {
                     var axes = layer.GetInts(-23303, null);
                     if (axes == null || axes.Length == 0)
@@ -1437,7 +1442,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Reshape", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Reshape)
                 {
                     if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var reshapeBuf) && reshapeBuf != null)
                     {
@@ -1480,7 +1485,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "ShuffleChannel", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.ShuffleChannel)
                 {
                     var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                     var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
@@ -1495,7 +1500,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Permute", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Permute)
                 {
                     var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                     if (srcBuf == null)
@@ -1519,7 +1524,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Crop", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Crop)
                 {
                     var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                     var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
@@ -1534,7 +1539,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Slice", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Slice)
                 {
                     var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                     var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
@@ -1602,7 +1607,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Reduction", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Reduction)
                 {
                     var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                     if (srcBuf == null)
@@ -1716,7 +1721,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Concat", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Concat)
                 {
                     var firstBufferView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                     if (firstBufferView != null && firstBufferView.dims == 2)
@@ -1827,7 +1832,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Padding", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Padding)
                 {
                     var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var top = layer.GetInt(0, 0);
@@ -1854,7 +1859,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Pooling", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Pooling)
                 {
                     var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var poolType = layer.GetInt(0, 0);
@@ -1968,7 +1973,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "ReLU", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.ReLU)
                 {
                     var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var srcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
@@ -1989,7 +1994,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "MaxPoolingInd", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.MaxPoolingInd)
                 {
                     var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var srcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
@@ -2047,7 +2052,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Softmax", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Softmax)
                 {
                     if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var softBuf) && softBuf != null)
                     {
@@ -2109,7 +2114,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Gemm", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Gemm)
                 {
                     if (!_gemm.TryGetValue(layer.name, out var gp) || gp.bData == null)
                         throw new InvalidOperationException("Gemm not found: " + layer.name);
@@ -2141,7 +2146,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "MatMul", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.MatMul)
                 {
                     var aBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                     var bBuf = GetOrConvertToBuffer(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
@@ -2158,7 +2163,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "InnerProduct", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.InnerProduct)
                 {
                     if (!_innerProduct.TryGetValue(layer.name, out var ip))
                         throw new InvalidOperationException("InnerProduct not found: " + layer.name);
@@ -2184,7 +2189,7 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Deconvolution", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Deconvolution)
                 {
                     if (!_deconv.TryGetValue(layer.name, out var deconv))
                         throw new InvalidOperationException("Deconvolution not found: " + layer.name);
@@ -2226,8 +2231,8 @@ namespace NcnnCompute
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
-                    || string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Convolution
+                    || layer.type == NcnnLayerTypes.ConvolutionDepthWise)
                 {
                     if (!_conv.TryGetValue(layer.name, out var conv))
                         throw new InvalidOperationException("Convolution not found: " + layer.name);
@@ -2385,7 +2390,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Eltwise", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Eltwise)
                 {
                     var a = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var b = GetOrMaterializeTexture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews);
@@ -2414,7 +2419,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "BinaryOp", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.BinaryOp)
                 {
                     var opType = layer.GetInt(0, 0);
                     var withScalar = layer.GetInt(1, 0);
@@ -2595,7 +2600,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "UnaryOp", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.UnaryOp)
                 {
                     if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
                     {
@@ -2620,7 +2625,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Swish", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Swish)
                 {
                     if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
                     {
@@ -2645,7 +2650,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Sigmoid", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Sigmoid)
                 {
                     if (TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
                     {
@@ -2670,7 +2675,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "GELU", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.GELU)
                 {
                     if (!ForceBufferGeluAll
                         && TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
@@ -2704,7 +2709,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "Interp", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.Interp)
                 {
                     var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     var srcShape = GetTextureShape(textureShapes, src, layer.bottomNames[0]);
@@ -2777,7 +2782,7 @@ TextureConvPath:
                     }
                 }
 
-                if (string.Equals(layer.type, "MaxUnPooling", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.MaxUnPooling)
                 {
                     var src = GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                     if (!indexBlobs.TryGetValue(layer.bottomNames[1], out var idx) || idx == null || idx.texture == null)
@@ -2801,7 +2806,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "BatchNorm", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.BatchNorm)
                 {
                     if (!_batchNorm.TryGetValue(layer.name, out var bp) || bp.biasA4 == null || bp.scaleB4 == null)
                         throw new InvalidOperationException("BatchNorm not found: " + layer.name);
@@ -2818,7 +2823,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "LayerNorm", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.LayerNorm)
                 {
                     if (!_layerNorm.TryGetValue(layer.name, out var lp))
                         throw new InvalidOperationException("LayerNorm not found: " + layer.name);
@@ -2836,7 +2841,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "GroupNorm", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.GroupNorm)
                 {
                     if (!_groupNorm.TryGetValue(layer.name, out var gp))
                         throw new InvalidOperationException("GroupNorm not found: " + layer.name);
@@ -2855,7 +2860,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(layer.type, "MultiHeadAttention", StringComparison.Ordinal))
+                if (layer.type == NcnnLayerTypes.MultiHeadAttention)
                 {
                     if (!_multiHeadAttention.TryGetValue(layer.name, out var mp))
                         throw new InvalidOperationException("MultiHeadAttention not found: " + layer.name);
@@ -2926,6 +2931,8 @@ TextureConvPath:
                 throw new ArgumentNullException(nameof(inputPack4));
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
+            if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
+                return ForwardPack4ByLayerRepros(cmd, inputPack4, inputPacks, inputBlobName, pinnedNames);
 
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
             var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
@@ -2944,10 +2951,10 @@ TextureConvPath:
             for (var li = 0; li < Model.layers.Count; li++)
             {
                 var l = Model.layers[li];
-                if (string.Equals(l.type, "Input", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Input)
                     continue;
 
-                if (string.Equals(l.type, "Split", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Split)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     for (var i = 0; i < l.topNames.Length; i++)
@@ -2959,7 +2966,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Concat", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Concat)
                 {
                     var parts = new CmdTensorRef[l.bottomNames.Length];
                     var sumP = 0;
@@ -2987,7 +2994,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Reshape", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Reshape)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     blobs[l.topNames[0]] = src;
@@ -2996,7 +3003,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Padding", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Padding)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var top = l.GetInt(0, 0);
@@ -3018,7 +3025,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Pooling", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Pooling)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var poolingType = l.GetInt(0, 0);
@@ -3044,7 +3051,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Softmax", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Softmax)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var axis = l.GetInt(0, 0);
@@ -3057,7 +3064,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Convolution", StringComparison.Ordinal) || string.Equals(l.type, "ConvolutionDepthWise", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Convolution || l.type == NcnnLayerTypes.ConvolutionDepthWise)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     if (!_conv.TryGetValue(l.name, out var conv))
@@ -3104,7 +3111,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Eltwise", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Eltwise)
                 {
                     var a = GetCmdTensor(blobs, l.bottomNames[0]);
                     var b = GetCmdTensor(blobs, l.bottomNames[1]);
@@ -3116,7 +3123,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "BinaryOp", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.BinaryOp)
                 {
                     var opType = l.GetInt(0, 0);
                     var withScalar = l.GetInt(1, 0);
@@ -3139,7 +3146,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "UnaryOp", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.UnaryOp)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var opType = l.GetInt(0, 0);
@@ -3150,7 +3157,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Swish", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Swish)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var outArr = RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
@@ -3160,7 +3167,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Sigmoid", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Sigmoid)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var outArr = RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
@@ -3170,7 +3177,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "GELU", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.GELU)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var fast = l.GetInt(0, 0) != 0;
@@ -3181,7 +3188,7 @@ TextureConvPath:
                     continue;
                 }
 
-                if (string.Equals(l.type, "Interp", StringComparison.Ordinal))
+                if (l.type == NcnnLayerTypes.Interp)
                 {
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var resizeType = l.GetInt(0, 2);
@@ -3431,6 +3438,7 @@ TextureConvPath:
             _batchNorm.Clear();
             _multiHeadAttention.Clear();
             Model = null;
+            LayerRepros = null;
             _blobUseCount = null;
             ClearTempPool();
         }
@@ -3562,7 +3570,7 @@ TextureConvPath:
             }
         }
 
-        private readonly struct LayerLoadMetrics
+        public readonly struct LayerLoadMetrics
         {
             public readonly long bytesRead;
             public readonly long readMs;
@@ -4166,8 +4174,8 @@ TextureConvPath:
                     continue;
                 if (!string.Equals(layer.bottomNames[0], inputBlobName, StringComparison.Ordinal))
                     continue;
-                if (!string.Equals(layer.type, "Convolution", StringComparison.Ordinal)
-                    && !string.Equals(layer.type, "ConvolutionDepthWise", StringComparison.Ordinal))
+                if (layer.type != NcnnLayerTypes.Convolution
+                    && layer.type != NcnnLayerTypes.ConvolutionDepthWise)
                     continue;
                 if (_conv.TryGetValue(layer.name, out var conv) && conv != null && conv.inC > 0)
                     return conv.inC;

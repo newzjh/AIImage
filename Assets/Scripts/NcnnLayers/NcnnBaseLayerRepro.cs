@@ -1,0 +1,68 @@
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+namespace NcnnCompute
+{
+    public enum NcnnLayerPathPreference
+    {
+        Auto,
+        Pack4Rt,
+        Buffer
+    }
+
+    public sealed class NcnnLayerBufferContext
+    {
+        public Dictionary<string, NcnnRepro.TensorRef> textureBlobs;
+        public Dictionary<string, NcnnRepro.BufferShape> textureShapes;
+        public Dictionary<string, ComputeBuffer> bufferBlobs;
+        public Dictionary<string, NcnnRepro.BufferRef> bufferRefs;
+        public Dictionary<string, NcnnTensorBuffer> bufferViews;
+        public Dictionary<string, NcnnRepro.IndexRef> indexBlobs;
+        public Dictionary<string, int> remaining;
+        public ICollection<string> pinnedNames;
+        public List<IDisposable> tempOwned;
+    }
+
+    public sealed class NcnnLayerCommandBufferContext
+    {
+        public CommandBuffer commandBuffer;
+        public Dictionary<string, NcnnRepro.CmdTensorRef> blobs;
+        public Dictionary<string, int> remaining;
+        public ICollection<string> pinnedNames;
+    }
+
+    public abstract class NcnnBaseLayerRepro
+    {
+        protected NcnnBaseLayerRepro(
+            NcnnLayerTypeKey typeKey,
+            bool supportsBufferPath,
+            bool supportsCommandBufferPath)
+        {
+            TypeKey = typeKey;
+            SupportsBufferPath = supportsBufferPath;
+            SupportsCommandBufferPath = supportsCommandBufferPath;
+        }
+
+        public NcnnLayerTypeKey TypeKey { get; }
+        public bool SupportsBufferPath { get; }
+        public bool SupportsCommandBufferPath { get; }
+        public NcnnLayerPathPreference PreferredPath { get; set; } = NcnnLayerPathPreference.Auto;
+
+        public virtual NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
+        {
+            return default;
+        }
+
+        public virtual void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            throw new NotSupportedException("Buffer path is not implemented for layer type: " + TypeKey);
+        }
+
+        public virtual void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            throw new NotSupportedException("CommandBuffer path is not implemented for layer type: " + TypeKey);
+        }
+    }
+}

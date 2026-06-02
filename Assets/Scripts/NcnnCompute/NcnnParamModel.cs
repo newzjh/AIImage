@@ -2,16 +2,162 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace NcnnCompute
 {
+    [Serializable]
+    [StructLayout(LayoutKind.Explicit, Size = 16)]
+    public readonly struct NcnnLayerTypeKey : IEquatable<NcnnLayerTypeKey>
+    {
+        private static readonly Dictionary<NcnnLayerTypeKey, string> NameMap = new Dictionary<NcnnLayerTypeKey, string>();
+        private static readonly object NameMapLock = new object();
+
+        [FieldOffset(0)] public readonly ulong low;
+        [FieldOffset(8)] public readonly ulong high;
+
+        public NcnnLayerTypeKey(ulong low, ulong high)
+        {
+            this.low = low;
+            this.high = high;
+        }
+
+        public static NcnnLayerTypeKey FromString(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return default;
+
+            var key = CreateKey(value);
+            lock (NameMapLock)
+            {
+                if (!NameMap.ContainsKey(key))
+                    NameMap[key] = value;
+            }
+            return key;
+        }
+
+        public static implicit operator NcnnLayerTypeKey(string value)
+        {
+            return FromString(value);
+        }
+
+        public static implicit operator string(NcnnLayerTypeKey value)
+        {
+            return value.ToString();
+        }
+
+        public bool Equals(NcnnLayerTypeKey other)
+        {
+            return low == other.low && high == other.high;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is NcnnLayerTypeKey other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                return (low.GetHashCode() * 397) ^ high.GetHashCode();
+            }
+        }
+
+        public override string ToString()
+        {
+            lock (NameMapLock)
+            {
+                if (NameMap.TryGetValue(this, out var value))
+                    return value;
+            }
+
+            return low.ToString("X16", CultureInfo.InvariantCulture)
+                   + high.ToString("X16", CultureInfo.InvariantCulture);
+        }
+
+        public static bool operator ==(NcnnLayerTypeKey left, NcnnLayerTypeKey right)
+        {
+            return left.Equals(right);
+        }
+
+        public static bool operator !=(NcnnLayerTypeKey left, NcnnLayerTypeKey right)
+        {
+            return !left.Equals(right);
+        }
+
+        private static NcnnLayerTypeKey CreateKey(string value)
+        {
+            var ascii = Encoding.ASCII.GetBytes(value);
+            if (ascii.Length <= 16)
+            {
+                var direct = new byte[16];
+                Buffer.BlockCopy(ascii, 0, direct, 0, ascii.Length);
+                return new NcnnLayerTypeKey(
+                    BitConverter.ToUInt64(direct, 0),
+                    BitConverter.ToUInt64(direct, 8));
+            }
+
+            using (var md5 = MD5.Create())
+            {
+                var hash = md5.ComputeHash(Encoding.UTF8.GetBytes(value));
+                return new NcnnLayerTypeKey(
+                    BitConverter.ToUInt64(hash, 0),
+                    BitConverter.ToUInt64(hash, 8));
+            }
+        }
+    }
+
+    public static class NcnnLayerTypes
+    {
+        public static readonly NcnnLayerTypeKey Input = NcnnLayerTypeKey.FromString("Input");
+        public static readonly NcnnLayerTypeKey Split = NcnnLayerTypeKey.FromString("Split");
+        public static readonly NcnnLayerTypeKey Concat = NcnnLayerTypeKey.FromString("Concat");
+        public static readonly NcnnLayerTypeKey Reshape = NcnnLayerTypeKey.FromString("Reshape");
+        public static readonly NcnnLayerTypeKey ShuffleChannel = NcnnLayerTypeKey.FromString("ShuffleChannel");
+        public static readonly NcnnLayerTypeKey Permute = NcnnLayerTypeKey.FromString("Permute");
+        public static readonly NcnnLayerTypeKey Slice = NcnnLayerTypeKey.FromString("Slice");
+        public static readonly NcnnLayerTypeKey ExpandDims = NcnnLayerTypeKey.FromString("ExpandDims");
+        public static readonly NcnnLayerTypeKey Squeeze = NcnnLayerTypeKey.FromString("Squeeze");
+        public static readonly NcnnLayerTypeKey Crop = NcnnLayerTypeKey.FromString("Crop");
+        public static readonly NcnnLayerTypeKey Convolution = NcnnLayerTypeKey.FromString("Convolution");
+        public static readonly NcnnLayerTypeKey ConvolutionDepthWise = NcnnLayerTypeKey.FromString("ConvolutionDepthWise");
+        public static readonly NcnnLayerTypeKey Deconvolution = NcnnLayerTypeKey.FromString("Deconvolution");
+        public static readonly NcnnLayerTypeKey Interp = NcnnLayerTypeKey.FromString("Interp");
+        public static readonly NcnnLayerTypeKey Eltwise = NcnnLayerTypeKey.FromString("Eltwise");
+        public static readonly NcnnLayerTypeKey BinaryOp = NcnnLayerTypeKey.FromString("BinaryOp");
+        public static readonly NcnnLayerTypeKey UnaryOp = NcnnLayerTypeKey.FromString("UnaryOp");
+        public static readonly NcnnLayerTypeKey Swish = NcnnLayerTypeKey.FromString("Swish");
+        public static readonly NcnnLayerTypeKey Sigmoid = NcnnLayerTypeKey.FromString("Sigmoid");
+        public static readonly NcnnLayerTypeKey GELU = NcnnLayerTypeKey.FromString("GELU");
+        public static readonly NcnnLayerTypeKey Softmax = NcnnLayerTypeKey.FromString("Softmax");
+        public static readonly NcnnLayerTypeKey Padding = NcnnLayerTypeKey.FromString("Padding");
+        public static readonly NcnnLayerTypeKey Pooling = NcnnLayerTypeKey.FromString("Pooling");
+        public static readonly NcnnLayerTypeKey InnerProduct = NcnnLayerTypeKey.FromString("InnerProduct");
+        public static readonly NcnnLayerTypeKey MatMul = NcnnLayerTypeKey.FromString("MatMul");
+        public static readonly NcnnLayerTypeKey Gemm = NcnnLayerTypeKey.FromString("Gemm");
+        public static readonly NcnnLayerTypeKey MultiHeadAttention = NcnnLayerTypeKey.FromString("MultiHeadAttention");
+        public static readonly NcnnLayerTypeKey LayerNorm = NcnnLayerTypeKey.FromString("LayerNorm");
+        public static readonly NcnnLayerTypeKey GroupNorm = NcnnLayerTypeKey.FromString("GroupNorm");
+        public static readonly NcnnLayerTypeKey BatchNorm = NcnnLayerTypeKey.FromString("BatchNorm");
+        public static readonly NcnnLayerTypeKey Embed = NcnnLayerTypeKey.FromString("Embed");
+        public static readonly NcnnLayerTypeKey Reduction = NcnnLayerTypeKey.FromString("Reduction");
+        public static readonly NcnnLayerTypeKey MemoryData = NcnnLayerTypeKey.FromString("MemoryData");
+        public static readonly NcnnLayerTypeKey ReLU = NcnnLayerTypeKey.FromString("ReLU");
+        public static readonly NcnnLayerTypeKey MaxPoolingInd = NcnnLayerTypeKey.FromString("MaxPoolingInd");
+        public static readonly NcnnLayerTypeKey MaxUnPooling = NcnnLayerTypeKey.FromString("MaxUnPooling");
+        public static readonly NcnnLayerTypeKey Tile = NcnnLayerTypeKey.FromString("Tile");
+    }
+
     [Serializable]
     public sealed class NcnnParamModel
     {
         [Serializable]
         public sealed class Layer
         {
-            public string type;
+            public NcnnLayerTypeKey type;
             public string name;
             public int bottoms;
             public int tops;
