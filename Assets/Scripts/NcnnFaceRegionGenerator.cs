@@ -138,7 +138,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     [Range(0.2f, 3f)] public float maxFaceAspectRatio = 1.6f;
 
     private NcnnOps _ops;
-    private NcnnRepro2 _repro;
+    private NcnnRepro _repro;
     private bool _loaded;
 
     private void Awake()
@@ -768,7 +768,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         if (_ops == null)
             _ops = new NcnnOps();
         if (_repro == null)
-            _repro = new NcnnRepro2(_ops);
+            _repro = new NcnnRepro(_ops);
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;
@@ -839,7 +839,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         return "[" + string.Join(" ", parts) + "]";
     }
 
-    private void AppendBlobPreview(NcnnRepro2.InferResult infer, List<string> lines, string blobName, int previewCount)
+    private void AppendBlobPreview(NcnnRepro.InferResult infer, List<string> lines, string blobName, int previewCount)
     {
         if (infer == null || lines == null || string.IsNullOrWhiteSpace(blobName))
             return;

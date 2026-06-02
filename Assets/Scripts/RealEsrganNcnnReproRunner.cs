@@ -990,7 +990,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             if (outRt != null)
             {
                 outRt.Release();
-                Destroy(outRt);
+                DestroyObjectSafe(outRt);
             }
             _repro?.ClearTempPool();
             try { probeBuf?.Dispose(); } catch { }
@@ -1156,6 +1156,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (msg.IndexOf("out of memory", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         if (msg.IndexOf("failed to create", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         return false;
+    }
+
+    private static void DestroyObjectSafe(UnityEngine.Object obj)
+    {
+        if (obj == null)
+            return;
+
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
     }
 
 

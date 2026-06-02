@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEditor;
@@ -24,6 +25,9 @@ public static class NcnnDebugRunner
     private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
     private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
     private const string ReproTempPoolEnvVar = "AIIMAGE_REPRO_TEMP_POOL";
+    private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
+    private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
+    private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultClipDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
@@ -31,6 +35,69 @@ public static class NcnnDebugRunner
     private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
     private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
     private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
+    private static bool _autoBatchScheduled;
+
+    [InitializeOnLoadMethod]
+    private static void AutoStartBatchMethodFromEnv()
+    {
+        if (_autoBatchScheduled || !Application.isBatchMode)
+            return;
+
+        var methodName = Environment.GetEnvironmentVariable(BatchMethodEnvVar);
+        if (string.IsNullOrWhiteSpace(methodName))
+            return;
+
+        _autoBatchScheduled = true;
+        EditorApplication.delayCall += () =>
+        {
+            try
+            {
+                RunBatchMethodByName(methodName.Trim());
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("[NcnnDebugRunner] Auto batch dispatch failed: " + e.Message);
+                Debug.LogException(e);
+                EditorApplication.Exit(1);
+            }
+        };
+    }
+
+    private static void RunBatchMethodByName(string methodName)
+    {
+        switch (methodName)
+        {
+            case nameof(RunFaceDebugBatch):
+                RunFaceDebugBatch();
+                return;
+            case nameof(RunCodeFormerDebugBatch):
+                RunCodeFormerDebugBatch();
+                return;
+            case nameof(RunClipDebugBatch):
+                RunClipDebugBatch();
+                return;
+            case nameof(RunClipDirectoryDebugBatch):
+                RunClipDirectoryDebugBatch();
+                return;
+            case nameof(RunGfpganDebugBatch):
+                RunGfpganDebugBatch();
+                return;
+            case nameof(RunMattingDebugBatch):
+                RunMattingDebugBatch();
+                return;
+            case nameof(RunYoloSegDebugBatch):
+                RunYoloSegDebugBatch();
+                return;
+            case nameof(RunCodeFormerStressBatch):
+                RunCodeFormerStressBatch();
+                return;
+            case nameof(RunReproSuiteStressBatch):
+                RunReproSuiteStressBatch();
+                return;
+            default:
+                throw new InvalidOperationException("Unknown batch method: " + methodName);
+        }
+    }
 
     [MenuItem("Tools/AIImage/Run NCNN Face Debug")]
     public static void RunFaceDebugMenu()
@@ -124,22 +191,7 @@ public static class NcnnDebugRunner
         }
     }
 
-    public static async void RunFaceDebugBatch()
-    {
-        try
-        {
-            Debug.Log("[NcnnDebugRunner] RunFaceDebugBatch start");
-            await RunFaceDebugInternal();
-            Debug.Log("[NcnnDebugRunner] RunFaceDebugBatch done");
-            EditorApplication.Exit(0);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("[NcnnDebugRunner] RunFaceDebugBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
-        }
-    }
+    public static void RunFaceDebugBatch() => RunBatchBlocking(nameof(RunFaceDebugBatch), RunFaceDebugInternal);
 
     public static async UniTaskVoid RunCodeFormerDebug()
     {
@@ -251,39 +303,9 @@ public static class NcnnDebugRunner
         await RunYoloSegDebugInternal();
     }
 
-    public static async void RunMattingDebugBatch()
-    {
-        try
-        {
-            Debug.Log("[NcnnDebugRunner] RunMattingDebugBatch start");
-            await RunMattingDebugInternal();
-            Debug.Log("[NcnnDebugRunner] RunMattingDebugBatch done");
-            EditorApplication.Exit(0);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("[NcnnDebugRunner] RunMattingDebugBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
-        }
-    }
+    public static void RunMattingDebugBatch() => RunBatchBlocking(nameof(RunMattingDebugBatch), RunMattingDebugInternal);
 
-    public static async void RunYoloSegDebugBatch()
-    {
-        try
-        {
-            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatch start");
-            await RunYoloSegDebugInternal();
-            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatch done");
-            EditorApplication.Exit(0);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
-        }
-    }
+    public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
 
     private static async UniTask RunMattingDebugInternal()
     {
@@ -377,106 +399,84 @@ public static class NcnnDebugRunner
         }
     }
 
-    public static async void RunCodeFormerDebugBatch()
+    public static void RunCodeFormerDebugBatch() => RunBatchBlocking(nameof(RunCodeFormerDebugBatch), RunCodeFormerDebugInternal);
+
+    public static void RunClipDebugBatch() => RunBatchBlocking(nameof(RunClipDebugBatch), RunClipDebugInternal);
+
+    public static void RunClipDirectoryDebugBatch() => RunBatchBlocking(nameof(RunClipDirectoryDebugBatch), RunClipDirectoryDebugInternal);
+
+    public static void RunGfpganDebugBatch() => RunBatchBlocking(nameof(RunGfpganDebugBatch), RunGfpganDebugInternal);
+
+    public static void RunCodeFormerStressBatch() => RunBatchBlocking(nameof(RunCodeFormerStressBatch), RunCodeFormerStressInternal, TimeSpan.FromHours(2));
+
+    public static void RunReproSuiteStressBatch() => RunBatchBlocking(nameof(RunReproSuiteStressBatch), RunReproSuiteStressInternal, TimeSpan.FromHours(2));
+
+    private static void RunBatchBlocking(string methodName, Func<UniTask> taskFactory, TimeSpan? timeout = null)
     {
         try
         {
-            Debug.Log("[NcnnDebugRunner] RunCodeFormerDebugBatch start");
-            await RunCodeFormerDebugInternal();
-            Debug.Log("[NcnnDebugRunner] RunCodeFormerDebugBatch done");
+            Debug.Log("[NcnnDebugRunner] " + methodName + " start");
+            RunUniTaskBlocking(taskFactory, timeout ?? TimeSpan.FromMinutes(45));
+            Debug.Log("[NcnnDebugRunner] " + methodName + " done");
             EditorApplication.Exit(0);
         }
         catch (Exception e)
         {
-            Debug.Log("[NcnnDebugRunner] RunCodeFormerDebugBatch failed: " + e.Message);
+            Debug.Log("[NcnnDebugRunner] " + methodName + " failed: " + e.Message);
             Debug.LogException(e);
             EditorApplication.Exit(1);
         }
     }
 
-    public static async void RunClipDebugBatch()
+    private static void RunUniTaskBlocking(Func<UniTask> taskFactory, TimeSpan timeout)
     {
-        try
+        if (taskFactory == null)
+            throw new ArgumentNullException(nameof(taskFactory));
+
+        Exception failure = null;
+        var completed = false;
+
+        async UniTask ExecuteAsync()
         {
-            Debug.Log("[NcnnDebugRunner] RunClipDebugBatch start");
-            await RunClipDebugInternal();
-            Debug.Log("[NcnnDebugRunner] RunClipDebugBatch done");
-            EditorApplication.Exit(0);
+            try
+            {
+                await taskFactory();
+            }
+            catch (Exception e)
+            {
+                failure = e;
+            }
+            finally
+            {
+                completed = true;
+            }
         }
-        catch (Exception e)
+
+        ExecuteAsync().Forget();
+
+        var sw = Stopwatch.StartNew();
+        while (!completed)
         {
-            Debug.Log("[NcnnDebugRunner] RunClipDebugBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
+            if (sw.Elapsed > timeout)
+                throw new TimeoutException("Timed out waiting for batch task after " + timeout + ".");
+
+            PumpEditorLoopOnce();
+            Thread.Sleep(10);
         }
+
+        if (failure != null)
+            throw failure;
     }
 
-    public static async void RunClipDirectoryDebugBatch()
+    private static void PumpEditorLoopOnce()
     {
-        try
-        {
-            Debug.Log("[NcnnDebugRunner] RunClipDirectoryDebugBatch start");
-            await RunClipDirectoryDebugInternal();
-            Debug.Log("[NcnnDebugRunner] RunClipDirectoryDebugBatch done");
-            EditorApplication.Exit(0);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("[NcnnDebugRunner] RunClipDirectoryDebugBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
-        }
-    }
+        EditorApplication.QueuePlayerLoopUpdate();
 
-    public static async void RunGfpganDebugBatch()
-    {
-        try
-        {
-            Debug.Log("[NcnnDebugRunner] RunGfpganDebugBatch start");
-            await RunGfpganDebugInternal();
-            Debug.Log("[NcnnDebugRunner] RunGfpganDebugBatch done");
-            EditorApplication.Exit(0);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("[NcnnDebugRunner] RunGfpganDebugBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
-        }
-    }
+        if (EditorUpdatePumpMethod == null)
+            throw new MissingMethodException("Unable to resolve Unity Editor pump methods for batch execution.");
 
-    public static async void RunCodeFormerStressBatch()
-    {
-        try
-        {
-            Debug.Log("[NcnnDebugRunner] RunCodeFormerStressBatch start");
-            await RunCodeFormerStressInternal();
-            Debug.Log("[NcnnDebugRunner] RunCodeFormerStressBatch done");
-            EditorApplication.Exit(0);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("[NcnnDebugRunner] RunCodeFormerStressBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
-        }
-    }
-
-    public static async void RunReproSuiteStressBatch()
-    {
-        try
-        {
-            Debug.Log("[NcnnDebugRunner] RunReproSuiteStressBatch start");
-            await RunReproSuiteStressInternal();
-            Debug.Log("[NcnnDebugRunner] RunReproSuiteStressBatch done");
-            EditorApplication.Exit(0);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("[NcnnDebugRunner] RunReproSuiteStressBatch failed: " + e.Message);
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
-        }
+        EditorUpdatePumpMethod.Invoke(null, null);
+        EditorDelayPumpMethod?.Invoke(null, null);
     }
 
     private static async UniTask RunFaceDebugInternal()

@@ -198,7 +198,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 else
                 {
                     if (rr.mask != null)
-                        Destroy(rr.mask);
+                        DestroyObjectSafe(rr.mask);
                 }
             }
 
@@ -244,7 +244,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 ReportProgress(0.95f, "回缩放到原分辨率");
                 await UniTask.Yield();
                 var resized = ResizeTextureBilinear(finalTex, originalW, originalH);
-                Destroy(finalTex);
+                DestroyObjectSafe(finalTex);
                 finalTex = resized;
                 if (finalTex == null)
                     return Finish(new GfpganResult { error = "回缩放失败" });
@@ -265,13 +265,13 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
         finally
         {
-            if (scaled != null) Destroy(scaled);
-            if (faceMask != null) Destroy(faceMask);
-            if (faceCrop != null) Destroy(faceCrop);
-            if (face512 != null) Destroy(face512);
-            if (restored512 != null) Destroy(restored512);
-            if (restoredCrop != null) Destroy(restoredCrop);
-            if (restoredCropTex != null) Destroy(restoredCropTex);
+            if (scaled != null) DestroyObjectSafe(scaled);
+            if (faceMask != null) DestroyObjectSafe(faceMask);
+            if (faceCrop != null) DestroyObjectSafe(faceCrop);
+            if (face512 != null) DestroyObjectSafe(face512);
+            if (restored512 != null) DestroyObjectSafe(restored512);
+            if (restoredCrop != null) DestroyObjectSafe(restoredCrop);
+            if (restoredCropTex != null) DestroyObjectSafe(restoredCropTex);
             _repro.ClearTempPool();
         }
     }
@@ -349,7 +349,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
         catch
         {
-            if (outTex != null) Destroy(outTex);
+            if (outTex != null) DestroyObjectSafe(outTex);
             return null;
         }
         finally
@@ -976,5 +976,16 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         dst.SetPixels32(dstPixels);
         dst.Apply(false, false);
         return dst;
+    }
+
+    private static void DestroyObjectSafe(UnityEngine.Object obj)
+    {
+        if (obj == null)
+            return;
+
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
     }
 }

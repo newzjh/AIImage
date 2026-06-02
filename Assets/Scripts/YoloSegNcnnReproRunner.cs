@@ -151,7 +151,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro4 _repro;
+    private NcnnRepro _repro;
     private string _loadedModelKey;
     private string _lastDumpDir;
     private string _lastSummaryText;
@@ -418,7 +418,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private void EnsureRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _repro ??= new NcnnRepro4(_ops);
+        _repro ??= new NcnnRepro(_ops);
     }
 
     private void ApplyReproOptions()
@@ -480,7 +480,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         _lastSummaryText = null;
     }
 
-    private BlobData ReadBlobData(NcnnRepro4.InferResult infer, string blobName)
+    private BlobData ReadBlobData(NcnnRepro.InferResult infer, string blobName)
     {
         if (infer == null)
             throw new ArgumentNullException(nameof(infer));

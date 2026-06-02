@@ -88,9 +88,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro4 _imageRepro;
-    private NcnnRepro4 _textRepro;
-    private NcnnRepro4 _projectionRepro;
+    private NcnnRepro _imageRepro;
+    private NcnnRepro _textRepro;
+    private NcnnRepro _projectionRepro;
     private MobileClipSimpleTokenizer _tokenizer;
     private string _loadedModelKey;
     private string _lastTextEmbeddingSource;
@@ -257,14 +257,14 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private void EnsureRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _imageRepro ??= new NcnnRepro4(_ops);
+        _imageRepro ??= new NcnnRepro(_ops);
     }
 
     private void EnsureTextRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _textRepro ??= new NcnnRepro4(_ops);
-        _projectionRepro ??= new NcnnRepro4(_ops);
+        _textRepro ??= new NcnnRepro(_ops);
+        _projectionRepro ??= new NcnnRepro(_ops);
     }
 
     private void EnsureTokenizer(string clipRoot)
@@ -321,7 +321,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void ApplyOptions(NcnnRepro4 repro)
+    private void ApplyOptions(NcnnRepro repro)
     {
         if (repro == null)
             return;
@@ -330,7 +330,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         repro.ForceBufferConvolutionAll = false;
     }
 
-    private static void ConfigureClipRepro(NcnnRepro4 repro, bool strictReference)
+    private static void ConfigureClipRepro(NcnnRepro repro, bool strictReference)
     {
         if (repro == null)
             return;
@@ -364,9 +364,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         long textLoadMs = 0;
         long projectionLoadMs = 0;
         long buildTextMs = 0;
-        NcnnRepro4.ModelLoadProfile imageProfile = null;
-        NcnnRepro4.ModelLoadProfile textProfile = null;
-        NcnnRepro4.ModelLoadProfile projectionProfile = null;
+        NcnnRepro.ModelLoadProfile imageProfile = null;
+        NcnnRepro.ModelLoadProfile textProfile = null;
+        NcnnRepro.ModelLoadProfile projectionProfile = null;
 
         ReportProgress(0.02f, "Warm up CLIP");
         await UniTask.Yield();
@@ -530,7 +530,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     }
 
     private async UniTask LoadReproModelAsync(
-        NcnnRepro4 repro,
+        NcnnRepro repro,
         string paramPath,
         string binPath,
         string modelLabel,
@@ -865,7 +865,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void ReportLoadProgress(string modelLabel, float progressStart, float progressEnd, NcnnRepro4.LoadProgress progress)
+    private void ReportLoadProgress(string modelLabel, float progressStart, float progressEnd, NcnnRepro.LoadProgress progress)
     {
         var progress01 = Mathf.Lerp(progressStart, progressEnd, Mathf.Clamp01(progress.progress01));
         string text;
@@ -893,12 +893,12 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ReportProgress(progress01, text);
     }
 
-    private static void LogLoadProfile(string label, NcnnRepro4.ModelLoadProfile profile)
+    private static void LogLoadProfile(string label, NcnnRepro.ModelLoadProfile profile)
     {
         if (profile == null)
             return;
 
-        var items = new List<KeyValuePair<string, NcnnRepro4.LayerTypeLoadProfile>>(profile.layerTypes);
+        var items = new List<KeyValuePair<string, NcnnRepro.LayerTypeLoadProfile>>(profile.layerTypes);
         items.Sort((a, b) => b.Value.totalMs.CompareTo(a.Value.totalMs));
         var top = new List<string>();
         for (var i = 0; i < Math.Min(4, items.Count); i++)
@@ -1084,7 +1084,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         DumpVector(dir, Path.GetFileName(path), logical);
     }
 
-    private void TryDumpAnyBlob(NcnnRepro4.InferResult infer, string blobName, string path)
+    private void TryDumpAnyBlob(NcnnRepro.InferResult infer, string blobName, string path)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;

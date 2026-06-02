@@ -58,7 +58,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro3 _repro;
+    private NcnnRepro _repro;
     private bool _loaded;
     private string _lastDumpDir;
     public string LastDumpDir => _lastDumpDir;
@@ -253,7 +253,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         if (_ops == null)
             _ops = new NcnnOps();
         if (_repro == null)
-            _repro = new NcnnRepro3(_ops);
+            _repro = new NcnnRepro(_ops);
     }
 
     private void ApplyReproOptions()
@@ -431,7 +431,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         try { ProgressChanged?.Invoke(Mathf.Clamp01(progress01), text ?? string.Empty); } catch { }
     }
 
-    private void DumpPinnedBlobStats(NcnnRepro3.InferResult infer, string dir, ICollection<string> blobNames)
+    private void DumpPinnedBlobStats(NcnnRepro.InferResult infer, string dir, ICollection<string> blobNames)
     {
         if (infer == null || string.IsNullOrWhiteSpace(dir) || blobNames == null || blobNames.Count == 0)
             return;

@@ -110,8 +110,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro2 _encoderRepro;
-    private NcnnRepro2 _generatorRepro;
+    private NcnnRepro _encoderRepro;
+    private NcnnRepro _generatorRepro;
     private bool _encoderLoaded;
     private bool _generatorLoaded;
     private bool _loaded;
@@ -732,7 +732,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         return tex;
     }
 
-    private async UniTask DumpInferBlobAsync(NcnnRepro2.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
+    private async UniTask DumpInferBlobAsync(NcnnRepro.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -748,7 +748,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async UniTask DumpInferBlobStatsAsync(NcnnRepro2.InferResult inferResult, string dir, string blobName)
+    private async UniTask DumpInferBlobStatsAsync(NcnnRepro.InferResult inferResult, string dir, string blobName)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -929,7 +929,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async UniTask DumpBufferBlobAsNormalizedImageAsync(NcnnRepro2.InferResult inferResult, string dir, string fileName, string blobName, int width, int height, CancellationToken ct)
+    private async UniTask DumpBufferBlobAsNormalizedImageAsync(NcnnRepro.InferResult inferResult, string dir, string fileName, string blobName, int width, int height, CancellationToken ct)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -1506,9 +1506,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         if (_ops == null)
             _ops = new NcnnOps();
         if (_encoderRepro == null)
-            _encoderRepro = new NcnnRepro2(_ops);
+            _encoderRepro = new NcnnRepro(_ops);
         if (_generatorRepro == null)
-            _generatorRepro = new NcnnRepro2(_ops);
+            _generatorRepro = new NcnnRepro(_ops);
         ApplyReproOptions();
     }
 
@@ -1755,7 +1755,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private static void TryAppendInferBufferPreview(NcnnRepro2.InferResult inferResult, string dir, string blobName, int maxCount = 16)
+    private static void TryAppendInferBufferPreview(NcnnRepro.InferResult inferResult, string dir, string blobName, int maxCount = 16)
     {
         if (inferResult == null || string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(blobName))
             return;
