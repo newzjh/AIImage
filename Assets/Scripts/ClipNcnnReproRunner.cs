@@ -291,9 +291,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         var bpePath = Path.Combine(clipRoot, "bpe_simple_vocab_16e6.txt");
 
         _tokenizer = new MobileClipSimpleTokenizer(vocabPath, bpePath);
-        LoadModel(_imageRepro, Path.Combine(modelRoot, "image_encoder.ncnn.param"), Path.Combine(modelRoot, "image_encoder.ncnn.bin"));
-        LoadModel(_textRepro, Path.Combine(modelRoot, "text_encoder.ncnn.param"), Path.Combine(modelRoot, "text_encoder.ncnn.bin"));
-        LoadModel(_projectionRepro, Path.Combine(modelRoot, "projection_layer.ncnn.param"), Path.Combine(modelRoot, "projection_layer.ncnn.bin"));
+        await LoadModel(_imageRepro, Path.Combine(modelRoot, "image_encoder.ncnn.param"), Path.Combine(modelRoot, "image_encoder.ncnn.bin"));
+        await LoadModel(_textRepro, Path.Combine(modelRoot, "text_encoder.ncnn.param"), Path.Combine(modelRoot, "text_encoder.ncnn.bin"));
+        await LoadModel(_projectionRepro, Path.Combine(modelRoot, "projection_layer.ncnn.param"), Path.Combine(modelRoot, "projection_layer.ncnn.bin"));
 
         ReportProgress(0.12f, "Encode text labels");
         await BuildTextEmbeddingsAsync(ct);
@@ -373,7 +373,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         return embedding;
     }
 
-    private static void LoadModel(NcnnRepro4 repro, string paramPath, string binPath)
+    private static async UniTask LoadModel(NcnnRepro4 repro, string paramPath, string binPath)
     {
         if (repro == null)
             throw new ArgumentNullException(nameof(repro));
@@ -383,9 +383,16 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             throw new FileNotFoundException("Model bin not found", binPath);
 
         var paramText = File.ReadAllText(paramPath);
-        using var fs = File.OpenRead(binPath);
-        using var br = new NcnnBinReader(fs);
+        var bytes = await File.ReadAllBytesAsync(binPath);
+
+        await UniTask.Yield();
+
+        MemoryStream ms = new MemoryStream(bytes);
+        using var br = new NcnnBinReader(ms);
         repro.LoadModel(paramText, br);
+        ms.Dispose();
+
+        await UniTask.Yield();
     }
 
     private void Release()
