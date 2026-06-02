@@ -30,8 +30,11 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 {
     public enum ClipModelLevel
     {
+        B,
+        BLT,
         S0,
-        S1
+        S1,
+        S2
     }
 
     [Serializable]
@@ -64,7 +67,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private static readonly string[] DebugImageBlobNames = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140", "141", "142", "143", "144", "145", "146", "147", "148", "149", "150", "151", "152", "153", "154", "155", "156", "157", "158", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "170", "171", "172", "173", "177", "178", "179", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189", "190", "191", "341", "343", "348", "349", "350", "351", "352", "353", "354", "355", "356", "357", "358", "359", "360", "361", "363", "366", "367", "368", "369", "370", "371", "372", "373", "376", "377", "378", "379", "380", "381", "382", "383", "384", "385", "386", "387", "388", "389", "390", "391", "392", "393", "396", "397", "398", "399", "414", "434", "449", "469", "484", "504", "519", "541", "out0" };
     private static readonly string[] DebugImageCompareLayers = { "convdw_253", "convdw_254", "conv_41", "conv_42", "convdw_255", "convdw_256", "conv_43", "conv_44", "convdw_257", "convdw_258", "conv_45", "conv_46", "convdw_259", "convrelu_0", "convsigmoid_3", "conv_49", "convdw_260", "convdw_261", "conv_50", "conv_51", "convdw_294", "convdw_295", "conv_84", "conv_85", "convdw_296", "convdw_297", "conv_86", "conv_87", "convdw_298", "convdw_299", "conv_88", "conv_89", "convdw_300" };
 
-    public ClipModelLevel modelLevel = ClipModelLevel.S1;
+    public ClipModelLevel modelLevel = ClipModelLevel.S0;
     public string clipRootRelativePath = "Clip";
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
@@ -140,7 +143,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (_cachedTextEmbeddings == null || _cachedTextEmbeddings.Length == 0)
                 return Finish(new ClipClassificationResult { error = "CLIP text embeddings unavailable" });
 
-            var targetSize = 256;
+            var targetSize = ResolveInputSize();
             ReportProgress(0.72f, "Prepare input");
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
@@ -569,13 +572,32 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
     private string ResolveModelKey()
     {
-        return modelLevel == ClipModelLevel.S0 ? "mobileclip_s0_export" : "mobileclip_s1_export";
+        switch (modelLevel)
+        {
+            case ClipModelLevel.B:
+                return "mobileclip_b_export";
+            case ClipModelLevel.BLT:
+                return "mobileclip_blt_export";
+            case ClipModelLevel.S0:
+                return "mobileclip_s0_export";
+            case ClipModelLevel.S2:
+                return "mobileclip_s2_export";
+            default:
+                return "mobileclip_s1_export";
+        }
+    }
+
+    private int ResolveInputSize()
+    {
+        return modelLevel == ClipModelLevel.B || modelLevel == ClipModelLevel.BLT ? 224 : 256;
     }
 
     private bool TryLoadTextEmbeddingCache(string clipRoot, string modelKey, out string source)
     {
         source = null;
         if (string.IsNullOrWhiteSpace(clipRoot) || string.IsNullOrWhiteSpace(modelKey))
+            return false;
+        if (IsTextCacheDisabledByEnv())
             return false;
 
         var candidates = new[]
@@ -612,6 +634,21 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
 
         return false;
+    }
+
+    private static bool IsTextCacheDisabledByEnv()
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable("AIIMAGE_CLIP_DISABLE_TEXT_CACHE");
+            return string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private bool TryApplyTextEmbeddingCache(string modelKey, ClipTextEmbeddingCache cache)

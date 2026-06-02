@@ -510,7 +510,7 @@ public static class NcnnDebugRunner
             runner.modelLevel = ResolveClipModelLevel();
 
             using var sw = new StreamWriter(summaryPath, false);
-            sw.WriteLine("image\tstatus\telapsed_ms\tbest_label\tbest_prob\ttop3\tgpu_summary\trt_count\tmanaged_mb\tgfx_driver_mb\tdump");
+            sw.WriteLine("image\tstatus\telapsed_ms\tbest_label\tbest_prob\ttop3\terror\tgpu_summary\trt_count\tmanaged_mb\tgfx_driver_mb\tdump");
 
             for (var i = 0; i < files.Count; i++)
             {
@@ -521,7 +521,7 @@ public static class NcnnDebugRunner
                     tex = LoadTexture(path);
                     if (tex == null)
                     {
-                        sw.WriteLine(EscapeTsv(path) + "\tload_failed\t0\t\t0\t\t\t0\t0\t0\t");
+                        sw.WriteLine(EscapeTsv(path) + "\tload_failed\t0\t\t0\t\tload_failed\t\t0\t0\t0\t");
                         continue;
                     }
 
@@ -539,6 +539,7 @@ public static class NcnnDebugRunner
                         + EscapeTsv(result.bestLabel ?? "") + "\t"
                         + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture) + "\t"
                         + EscapeTsv(top3) + "\t"
+                        + EscapeTsv(result.error ?? "") + "\t"
                         + EscapeTsv(gpuSummary) + "\t"
                         + rtCount.ToString(CultureInfo.InvariantCulture) + "\t"
                         + managedMb.ToString("0.000", CultureInfo.InvariantCulture) + "\t"
@@ -549,6 +550,7 @@ public static class NcnnDebugRunner
                     Debug.Log("[CLIP-DIR] " + (i + 1) + "/" + files.Count
                         + " | " + path
                         + " | status=" + status
+                        + " | error=" + EscapeTsv(result.error ?? "")
                         + " | best=" + (result.bestLabel ?? "")
                         + " | prob=" + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture)
                         + " | elapsedMs=" + result.elapsedMs
@@ -830,14 +832,20 @@ public static class NcnnDebugRunner
         try
         {
             var env = Environment.GetEnvironmentVariable(ClipModelEnvVar);
+            if (string.Equals(env, "B", StringComparison.OrdinalIgnoreCase))
+                return ClipNcnnReproRunner.ClipModelLevel.B;
+            if (string.Equals(env, "BLT", StringComparison.OrdinalIgnoreCase))
+                return ClipNcnnReproRunner.ClipModelLevel.BLT;
             if (string.Equals(env, "S0", StringComparison.OrdinalIgnoreCase))
                 return ClipNcnnReproRunner.ClipModelLevel.S0;
+            if (string.Equals(env, "S2", StringComparison.OrdinalIgnoreCase))
+                return ClipNcnnReproRunner.ClipModelLevel.S2;
         }
         catch
         {
         }
 
-        return ClipNcnnReproRunner.ClipModelLevel.S1;
+        return ClipNcnnReproRunner.ClipModelLevel.S0;
     }
 
     private static bool ResolveBoolEnv(string envName, bool fallback)
