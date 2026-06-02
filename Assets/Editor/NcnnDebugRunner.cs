@@ -23,12 +23,14 @@ public static class NcnnDebugRunner
     private const string ClipInputDirEnvVar = "AIIMAGE_CLIP_INPUT_DIR";
     private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
     private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
+    private const string ReproTempPoolEnvVar = "AIIMAGE_REPRO_TEMP_POOL";
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultClipDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
     private static readonly string DefaultMattingDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_img.jpg");
     private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
     private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
+    private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
 
     [MenuItem("Tools/AIImage/Run NCNN Face Debug")]
     public static void RunFaceDebugMenu()
@@ -82,6 +84,12 @@ public static class NcnnDebugRunner
     public static void RunCodeFormerStressMenu()
     {
         RunCodeFormerStressBatch();
+    }
+
+    [MenuItem("Tools/AIImage/Run Repro Suite Stress (02.png)")]
+    public static void RunReproSuiteStressMenu()
+    {
+        RunReproSuiteStressBatch();
     }
 
     public static async UniTaskVoid RunFaceDebug()
@@ -454,6 +462,23 @@ public static class NcnnDebugRunner
         }
     }
 
+    public static async void RunReproSuiteStressBatch()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunReproSuiteStressBatch start");
+            await RunReproSuiteStressInternal();
+            Debug.Log("[NcnnDebugRunner] RunReproSuiteStressBatch done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunReproSuiteStressBatch failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
     private static async UniTask RunFaceDebugInternal()
     {
         var inputPath = ResolveInputPath(DefaultFaceDebugImagePath);
@@ -710,6 +735,299 @@ public static class NcnnDebugRunner
         }
     }
 
+    private static async UniTask RunReproSuiteStressInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultReproStressImagePath);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+            throw new InvalidOperationException("Failed to load repro stress input: " + inputPath);
+
+        var iterations = ResolvePositiveIntEnv(StressCountEnvVar, 5);
+        var enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, true);
+        var dumpDir = CreateGenericDumpDir("AIImage_ReproSuiteStress");
+        var summaryPath = Path.Combine(dumpDir, "suite_summary.txt");
+        var lines = new List<string>(256)
+        {
+            "input=" + inputPath,
+            "iterations=" + iterations.ToString(CultureInfo.InvariantCulture),
+            "enable_temp_pool=" + enableTempPool,
+            "started_at=" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+            string.Empty
+        };
+        var failures = new List<string>();
+
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        try
+        {
+            await RunRealEsrganStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
+            await RunYoloSegStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
+            await RunMattingStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
+            await RunGfpganStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
+            await RunCodeFormerStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
+        }
+        finally
+        {
+            lines.Add(string.Empty);
+            lines.Add("finished_at=" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+            if (failures.Count > 0)
+                lines.Add("failures=" + string.Join(" | ", failures));
+
+            try { File.WriteAllLines(summaryPath, lines); } catch { }
+
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            UnityEngine.Object.DestroyImmediate(tex);
+        }
+
+        if (failures.Count > 0)
+            throw new InvalidOperationException("Repro suite stress had failures: " + string.Join(" | ", failures));
+    }
+
+    private static async UniTask RunRealEsrganStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    {
+        const string runnerName = "ESRGAN";
+        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        var go = new GameObject("ReproSuiteStress_" + runnerName);
+        RealEsrganNcnnReproRunner runner = null;
+        try
+        {
+            runner = go.AddComponent<RealEsrganNcnnReproRunner>();
+            runner.enableTempPool = enableTempPool;
+            runner.maxPooledPerShape = enableTempPool ? 4 : 0;
+            runner.enableGpuLayerProfiling = false;
+            runner.useCommandBuffer = false;
+
+            for (var i = 0; i < iterations; i++)
+            {
+                var result = await runner.ProcessAsync(tex, CancellationToken.None);
+                AppendStressMetrics(lines, runnerName, "iter", i + 1, result.elapsedMs, result.error, result.workDir);
+                if (result.texture != null)
+                    UnityEngine.Object.DestroyImmediate(result.texture);
+            }
+        }
+        catch (Exception e)
+        {
+            failures.Add(runnerName + ": " + e.Message);
+            AppendStressMetrics(lines, runnerName, "fatal", 0, 0, e.Message, null);
+        }
+        finally
+        {
+            TryInvokeReleaseMethod(runner);
+            UnityEngine.Object.DestroyImmediate(go);
+            await UniTask.Yield();
+            AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "esrgan_gpu_resources.txt"); } catch { }
+        }
+    }
+
+    private static async UniTask RunYoloSegStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    {
+        const string runnerName = "YoloSeg";
+        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        var go = new GameObject("ReproSuiteStress_" + runnerName);
+        YoloSegNcnnReproRunner runner = null;
+        try
+        {
+            runner = go.AddComponent<YoloSegNcnnReproRunner>();
+            runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
+            runner.enableTempPool = enableTempPool;
+            runner.maxPooledPerShape = enableTempPool ? 4 : 0;
+            runner.enableDebugDump = false;
+            runner.targetPersonOnly = true;
+            runner.enableMaskClose = true;
+            runner.enableMaskDilate = true;
+
+            for (var i = 0; i < iterations; i++)
+            {
+                var result = await runner.ProcessAsync(tex, CancellationToken.None);
+                var extra = "persons=" + result.personCount.ToString(CultureInfo.InvariantCulture)
+                    + " | coverage=" + result.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture);
+                AppendStressMetrics(lines, runnerName, "iter", i + 1, result.elapsedMs, result.error, extra);
+                if (result.texture != null)
+                    UnityEngine.Object.DestroyImmediate(result.texture);
+                if (result.mask != null)
+                    UnityEngine.Object.DestroyImmediate(result.mask);
+                if (result.overlay != null)
+                    UnityEngine.Object.DestroyImmediate(result.overlay);
+            }
+        }
+        catch (Exception e)
+        {
+            failures.Add(runnerName + ": " + e.Message);
+            AppendStressMetrics(lines, runnerName, "fatal", 0, 0, e.Message, null);
+        }
+        finally
+        {
+            TryInvokeReleaseMethod(runner);
+            UnityEngine.Object.DestroyImmediate(go);
+            await UniTask.Yield();
+            AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "yoloseg_gpu_resources.txt"); } catch { }
+        }
+    }
+
+    private static async UniTask RunMattingStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    {
+        const string runnerName = "Matting";
+        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        var go = new GameObject("ReproSuiteStress_" + runnerName);
+        MatterNcnnReproRunner runner = null;
+        try
+        {
+            runner = go.AddComponent<MatterNcnnReproRunner>();
+            runner.enableTempPool = enableTempPool;
+            runner.maxPooledPerShape = enableTempPool ? 4 : 0;
+            runner.enableDebugDump = false;
+            runner.forceBufferConvolution = false;
+
+            for (var i = 0; i < iterations; i++)
+            {
+                var result = await runner.ProcessAsync(tex, CancellationToken.None);
+                AppendStressMetrics(lines, runnerName, "iter", i + 1, result.elapsedMs, result.error, runner.LastDumpDir);
+                if (result.texture != null)
+                    UnityEngine.Object.DestroyImmediate(result.texture);
+                if (result.matte != null)
+                    UnityEngine.Object.DestroyImmediate(result.matte);
+            }
+        }
+        catch (Exception e)
+        {
+            failures.Add(runnerName + ": " + e.Message);
+            AppendStressMetrics(lines, runnerName, "fatal", 0, 0, e.Message, null);
+        }
+        finally
+        {
+            TryInvokeReleaseMethod(runner);
+            UnityEngine.Object.DestroyImmediate(go);
+            await UniTask.Yield();
+            AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "matting_gpu_resources.txt"); } catch { }
+        }
+    }
+
+    private static async UniTask RunGfpganStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    {
+        const string runnerName = "GFPGAN";
+        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        var go = new GameObject("ReproSuiteStress_" + runnerName);
+        GfpganNcnnReproRunner runner = null;
+        try
+        {
+            runner = go.AddComponent<GfpganNcnnReproRunner>();
+            runner.enableTempPool = enableTempPool;
+            runner.maxPooledPerShape = enableTempPool ? 2 : 0;
+            runner.enableFaceRegionDebugDump = false;
+
+            for (var i = 0; i < iterations; i++)
+            {
+                var result = await runner.ProcessAsync(tex, CancellationToken.None);
+                AppendStressMetrics(lines, runnerName, "iter", i + 1, result.elapsedMs, result.error, null);
+                if (result.texture != null)
+                    UnityEngine.Object.DestroyImmediate(result.texture);
+            }
+        }
+        catch (Exception e)
+        {
+            failures.Add(runnerName + ": " + e.Message);
+            AppendStressMetrics(lines, runnerName, "fatal", 0, 0, e.Message, null);
+        }
+        finally
+        {
+            TryInvokeReleaseMethod(runner);
+            UnityEngine.Object.DestroyImmediate(go);
+            await UniTask.Yield();
+            AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "gfpgan_gpu_resources.txt"); } catch { }
+        }
+    }
+
+    private static async UniTask RunCodeFormerStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    {
+        const string runnerName = "CodeFormer";
+        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        var go = new GameObject("ReproSuiteStress_" + runnerName);
+        CodeFormerNcnnReproRunner2 runner = null;
+        try
+        {
+            runner = go.AddComponent<CodeFormerNcnnReproRunner2>();
+            runner.enableTempPool = enableTempPool;
+            runner.maxPooledPerShape = enableTempPool ? 2 : 0;
+            runner.enableDebugDump = false;
+            runner.enableFaceRegionDebugDump = false;
+
+            for (var i = 0; i < iterations; i++)
+            {
+                var result = await runner.ProcessAsync(tex, CancellationToken.None);
+                AppendStressMetrics(lines, runnerName, "iter", i + 1, result.elapsedMs, result.error, runner.LastDumpDir);
+                if (result.texture != null)
+                    UnityEngine.Object.DestroyImmediate(result.texture);
+            }
+        }
+        catch (Exception e)
+        {
+            failures.Add(runnerName + ": " + e.Message);
+            AppendStressMetrics(lines, runnerName, "fatal", 0, 0, e.Message, null);
+        }
+        finally
+        {
+            TryInvokeReleaseMethod(runner);
+            UnityEngine.Object.DestroyImmediate(go);
+            await UniTask.Yield();
+            AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "codeformer_gpu_resources.txt"); } catch { }
+        }
+    }
+
+    private static void AppendStressMetrics(List<string> lines, string runnerName, string phase, int iteration, long elapsedMs, string error, string extra)
+    {
+        var privateMb = Process.GetCurrentProcess().PrivateMemorySize64 / (1024.0 * 1024.0);
+        var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+        var gfxMb = GetGraphicsDriverMemoryMb();
+        var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
+        var line =
+            "runner=" + runnerName
+            + " | phase=" + (phase ?? "")
+            + " | iter=" + iteration.ToString(CultureInfo.InvariantCulture)
+            + " | elapsed_ms=" + elapsedMs.ToString(CultureInfo.InvariantCulture)
+            + " | err=" + (error ?? "")
+            + " | private_mb=" + privateMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | managed_mb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | gfx_mb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | rt_objects=" + rtCount.ToString(CultureInfo.InvariantCulture)
+            + " | " + NcnnCompute.NcnnGpuResourceTracker.BuildSummary();
+        if (!string.IsNullOrWhiteSpace(extra))
+            line += " | extra=" + extra.Replace("\r", " ").Replace("\n", " | ");
+        lines.Add(line);
+        try { Debug.Log("[REPRO-STRESS] " + line); } catch { }
+    }
+
+    private static void TryInvokeReleaseMethod(object target)
+    {
+        if (target == null)
+            return;
+
+        try
+        {
+            var method = target.GetType().GetMethod("Release", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (method != null && method.GetParameters().Length == 0)
+            {
+                method.Invoke(target, null);
+                return;
+            }
+
+            var reproField = target.GetType().GetField("_repro", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var repro = reproField?.GetValue(target);
+            if (repro == null)
+                return;
+
+            var reproRelease = repro.GetType().GetMethod("Release", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (reproRelease != null && reproRelease.GetParameters().Length == 0)
+                reproRelease.Invoke(repro, null);
+        }
+        catch
+        {
+        }
+    }
+
     private static string ResolveInputPath(string fallbackPath)
     {
         try
@@ -823,6 +1141,23 @@ public static class NcnnDebugRunner
         }
 
         return Mathf.Max(60, inputCount);
+    }
+
+    private static int ResolvePositiveIntEnv(string envName, int fallback)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env)
+                && int.TryParse(env.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                && parsed > 0)
+                return parsed;
+        }
+        catch
+        {
+        }
+
+        return Mathf.Max(1, fallback);
     }
 
     private static ClipNcnnReproRunner.ClipModelLevel ResolveClipModelLevel()

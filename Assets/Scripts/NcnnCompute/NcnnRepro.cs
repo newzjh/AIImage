@@ -1962,6 +1962,7 @@ namespace NcnnCompute
                         _ops.Pack4ToBufferCHW(src.t1, src.w, src.h, src.packs * 4, inBuf);
 
                         var outBuf = RentTempBuffer(ip.outFeatures, sizeof(float));
+                        tempBuffers.Add(outBuf);
                         _ops.InnerProduct(inBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
                         bufferBlobs[l.topNames[0]] = outBuf;
                         Consume(blobs, remaining, l.bottomNames, pinnedNames);
@@ -2810,7 +2811,9 @@ namespace NcnnCompute
                 sRGB = false,
                 enableRandomWrite = true
             };
-            return RenderTexture.GetTemporary(desc);
+            var rt = RenderTexture.GetTemporary(desc);
+            NcnnGpuResourceTracker.RegisterTexture(rt, "NcnnRepro.RentTempArray|new");
+            return rt;
         }
 
         public ComputeTexture RentTempArray(CommandBuffer cmd, int w, int h, int depth, RenderTextureFormat format)
@@ -2841,6 +2844,7 @@ namespace NcnnCompute
                 return;
             if (!_useTempPool)
             {
+                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray");
                 RenderTexture.ReleaseTemporary(rt);
                 return;
             }
@@ -2854,6 +2858,7 @@ namespace NcnnCompute
             var cap = Mathf.Max(0, _maxPooledPerShape);
             if (stack.Count >= cap)
             {
+                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray(pool-full)");
                 RenderTexture.ReleaseTemporary(rt);
                 return;
             }
@@ -2864,6 +2869,7 @@ namespace NcnnCompute
             }
             catch
             {
+                NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray(fence-failed)");
                 RenderTexture.ReleaseTemporary(rt);
             }
         }
@@ -2885,6 +2891,7 @@ namespace NcnnCompute
                 while (stack.Count > 0)
                 {
                     var rt = stack.Pop().rt;
+                    NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ClearTempPool");
                     try { RenderTexture.ReleaseTemporary(rt); } catch { }
                 }
             }

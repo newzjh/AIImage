@@ -75,8 +75,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
     private void Awake()
     {
-        _ops = new NcnnOps();
-        _repro = new NcnnRepro(_ops);
+        EnsureRuntimeObjects();
     }
 
     private void OnDestroy()
@@ -120,6 +119,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         if (src == null)
             return default;
 
+        EnsureRuntimeObjects();
+        _repro.EnableTempPool = enableTempPool;
+        _repro.MaxPooledPerShape = maxPooledPerShape;
         var totalSw = Stopwatch.StartNew();
         var originalW0 = src.width;
         var originalH0 = src.height;
@@ -855,6 +857,14 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     {
         progress01 = Mathf.Clamp01(progress01);
         try { ProgressChanged?.Invoke(progress01, text ?? ""); } catch { }
+    }
+
+    private void EnsureRuntimeObjects()
+    {
+        _ops ??= new NcnnOps();
+        _repro ??= new NcnnRepro(_ops);
+        _repro.EnableTempPool = enableTempPool;
+        _repro.MaxPooledPerShape = maxPooledPerShape;
     }
 
     private static bool IsLikelyVulkanOom(Exception e)

@@ -17,6 +17,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public int tileSize = 128;
     public int tilePad = 10;
     public int maxInputLongSide = 2048;
+    public bool enableTempPool = true;
+    public int maxPooledPerShape = 4;
     public bool enableTileProbe = false;
     public bool enableSeamProbe = false;
     public bool useCommandBuffer = false;
@@ -152,9 +154,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private void Awake()
     {
-        _repro = new NcnnRepro(new NcnnOps());
-        _repro.gpuLayerProfileEnabled = _gpuLayerProfileEnabled;
-        _repro.OnConvComplete += OnConvCompleteHandler;
+        EnsureRuntimeObjects();
     }
 
     private void OnDestroy()
@@ -567,6 +567,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (src == null)
             return default;
 
+        EnsureRuntimeObjects();
+        _repro.EnableTempPool = enableTempPool;
+        _repro.MaxPooledPerShape = maxPooledPerShape;
         await EnsureLoaded();
 
         var originalW = src.width;
@@ -999,6 +1002,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (_loaded)
             return;
 
+        EnsureRuntimeObjects();
+
         var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
         var paramPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".param");
         var binPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".bin");
@@ -1024,6 +1029,19 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
         _loaded = true;
 
+    }
+
+    private void EnsureRuntimeObjects()
+    {
+        if (_repro == null)
+        {
+            _repro = new NcnnRepro(new NcnnOps());
+            _repro.OnConvComplete += OnConvCompleteHandler;
+        }
+
+        _repro.EnableTempPool = enableTempPool;
+        _repro.MaxPooledPerShape = maxPooledPerShape;
+        _repro.gpuLayerProfileEnabled = _gpuLayerProfileEnabled;
     }
 
     
