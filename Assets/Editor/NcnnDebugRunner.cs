@@ -105,12 +105,6 @@ public static class NcnnDebugRunner
         RunFaceDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run NCNN Internal Self Test")]
-    public static void RunNcnnSelfTestMenu()
-    {
-        NcnnCompute.NcnnComputePrototypeRunner.RunSelfTestsFromUI();
-    }
-
     [MenuItem("Tools/AIImage/Run CodeFormer Debug")]
     public static void RunCodeFormerDebugMenu()
     {

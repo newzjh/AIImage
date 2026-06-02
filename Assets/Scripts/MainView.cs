@@ -906,26 +906,9 @@ public class MainView : MonoBehaviour
         var saveButton = new Button(OnSaveCurrentImage) { text = "保存" };
         row1.Add(saveButton);
 
-        var ncnnSelfTestButton = new Button(OnNcnnSelfTest) { text = "NCNN自测" };
-        row1.Add(ncnnSelfTestButton);
-
-        var sdSupportButton = new Button(OnSdSupport) { text = "SD检查" };
-        row1.Add(sdSupportButton);
-
-        var sdMemButton = new Button(OnSdMemoryData) { text = "SD常量" };
-        row1.Add(sdMemButton);
-
-        var sdClipSmokeButton = new Button(OnSdClipSmoke) { text = "SD-CLIP" };
-        row1.Add(sdClipSmokeButton);
-
         var clipTagButton = new Button(OnClipClassify) { text = "CLIP标签" };
         row1.Add(clipTagButton);
 
-        var sdWeightScanButton = new Button(OnSdWeightScan) { text = "SD权重" };
-        row1.Add(sdWeightScanButton);
-
-        var sdUnetMhaButton = new Button(OnSdUnetMha) { text = "SD-UNetMHA" };
-        row1.Add(sdUnetMhaButton);
 
         var browseButton = new Button(OnBrowseOriginalImage) { text = "浏览" };
         row1.Add(browseButton);
@@ -986,83 +969,16 @@ public class MainView : MonoBehaviour
         BuildFloatingAdjustPanel(parent);
     }
 
-    private void OnNcnnSelfTest()
-    {
-        try
-        {
-            NcnnCompute.NcnnComputePrototypeRunner.RunSelfTestsFromUI();
-            ShowToast("已触发 NCNN 自测，查看 Console 输出");
-        }
-        catch (Exception e)
-        {
-            ShowToast("NCNN 自测失败: " + e.Message);
-        }
-    }
 
-    private void OnSdSupport()
-    {
-        try
-        {
-            NcnnCompute.NcnnComputePrototypeRunner.RunSdParamSupportReportFromUI();
-            ShowToast("已输出 SD param 统计，查看 Console 输出");
-        }
-        catch (Exception e)
-        {
-            ShowToast("SD 检查失败: " + e.Message);
-        }
-    }
 
-    private void OnSdMemoryData()
-    {
-        try
-        {
-            NcnnCompute.NcnnComputePrototypeRunner.RunSdMemoryDataDumpFromUI();
-            ShowToast("已输出 SD MemoryData 常量信息，查看 Console 输出");
-        }
-        catch (Exception e)
-        {
-            ShowToast("SD 常量失败: " + e.Message);
-        }
-    }
+ 
 
-    private void OnSdClipSmoke()
-    {
-        try
-        {
-            NcnnCompute.NcnnComputePrototypeRunner.RunSdClipSmokeFromUI();
-            ShowToast("已触发 SD CLIP 冒烟前向，查看 Console 输出");
-        }
-        catch (Exception e)
-        {
-            ShowToast("SD CLIP 失败: " + e.Message);
-        }
-    }
 
-    private void OnSdWeightScan()
-    {
-        try
-        {
-            NcnnCompute.NcnnComputePrototypeRunner.RunSdWeightScanFromUI();
-            ShowToast("已触发 SD 权重扫描，查看 Console 输出");
-        }
-        catch (Exception e)
-        {
-            ShowToast("SD 权重失败: " + e.Message);
-        }
-    }
 
-    private void OnSdUnetMha()
-    {
-        try
-        {
-            NcnnCompute.NcnnComputePrototypeRunner.RunSdUnetMhaFromUI();
-            ShowToast("已触发 SD UNet MHA 冒烟测试，查看 Console 输出");
-        }
-        catch (Exception e)
-        {
-            ShowToast("SD UNetMHA 失败: " + e.Message);
-        }
-    }
+
+
+
+
 
     private void OnClipClassify()
     {
