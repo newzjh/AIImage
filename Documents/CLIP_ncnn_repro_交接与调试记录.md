@@ -360,16 +360,29 @@ Unity 当前 top3：
 2. 再单独修 `ConvDepthWisePack4`
 3. 最后再收 `Conv1x1Pack4`
 
-### B. 还没重新验证 S0
+### B. S0 现状
 
-当前对齐验证全是 `S1`。
+`S0` 现在已经能跑通，但这是在额外补了兼容以后得到的结果，不是最初就天然可用。
 
-如果想减包体，可以后续：
+补过的兼容点：
 
-1. 先把 `ClipNcnnReproRunner.modelLevel` 改成 `S0`
-2. 跑 `P1010096.JPG / 02.png / 03.jpg`
-3. 再跑目录批量
-4. 如果分布和速度都满意，再删 `S1`
+1. `ExpandDims / Squeeze` 兼容 `-23303` 轴参数格式
+2. `S0` text encoder 默认也走严格 reference 路径
+3. 单图 `RunClipDebugBatch` 也支持 `AIIMAGE_CLIP_MODEL=S0`
+
+已验证：
+
+- `P1010096.JPG`
+  `Landscape 0.778067`
+- `03.jpg`
+  top1 `Photo`
+- `02.png`
+  top1 `Group`，top2 `Photo`
+
+注意：
+
+- `S0` 虽然能跑，但和 `S1` 在个别图上的 top1 可能不同
+- 如果目标是删掉 `S1` 缩包体，建议先以业务图集做一次完整回归
 
 ### C. 图像侧严格官方路径目前偏 buffer/reference
 
@@ -411,4 +424,3 @@ Unity 当前 top3：
 - `Editor` 可整目录静默批跑
 - `P1010096.JPG` 已稳定回到 `Landscape`
 - `02.png / 03.jpg` top1/top3 已贴近官方
-

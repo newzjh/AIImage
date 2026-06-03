@@ -1,0 +1,11 @@
+numpy<2
+monai==1.5.2
+onnx==1.21.0
+onnxruntime==1.23.2
+onnxscript==0.7.0
+onnxsim==0.6.4
+nibabel==5.4.2
+gdown==6.1.0
+fire==0.7.1
+huggingface_hub==1.17.0
+pnnx==20260526

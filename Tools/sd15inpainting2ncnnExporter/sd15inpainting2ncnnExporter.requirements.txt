@@ -1,0 +1,14 @@
+numpy<2
+torch>=2.1
+diffusers>=0.30.0,<0.31
+transformers>=4.41.0,<5
+accelerate>=0.31.0
+safetensors>=0.4.3
+onnx>=1.16.0
+onnxruntime>=1.18.0
+onnxsim>=0.4.36
+omegaconf>=2.3.0
+optimum>=1.21.0
+pnnx>=20250516
+scipy>=1.11.0
+sentencepiece>=0.2.0
