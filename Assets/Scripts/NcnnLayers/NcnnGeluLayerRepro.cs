@@ -39,15 +39,22 @@ namespace NcnnCompute
                                                     if (srcBuf == null)
                                                         throw new InvalidOperationException("GELU source not found: " + layer.name);
                                                     var outBuf = owner.RentTempBuffer(srcBuf.count, sizeof(float));
-                                                    var srcData = NcnnRepro.ReadFloatBuffer(srcBuf);
-                                                    var outData = new float[srcData.Length];
-                                                    for (var i = 0; i < srcData.Length; i++)
+                                                    if (owner.EnableGpuGeluBufferPath)
                                                     {
-                                                        var x = srcData[i];
-                                                        var t = 0.7978845608f * (x + 0.044715f * x * x * x);
-                                                        outData[i] = 0.5f * x * (1f + (float)Math.Tanh(t));
+                                                        owner.Ops.GeluBuf(srcBuf, srcBuf.count, outBuf);
                                                     }
-                                                    outBuf.SetData(outData);
+                                                    else
+                                                    {
+                                                        var srcData = NcnnRepro.ReadFloatBuffer(srcBuf);
+                                                        var outData = new float[srcData.Length];
+                                                        for (var i = 0; i < srcData.Length; i++)
+                                                        {
+                                                            var x = srcData[i];
+                                                            var t = 0.7978845608f * (x + 0.044715f * x * x * x);
+                                                            outData[i] = 0.5f * x * (1f + (float)Math.Tanh(t));
+                                                        }
+                                                        outBuf.SetData(outData);
+                                                    }
                                                     bufferBlobs[layer.topNames[0]] = outBuf;
                                                     if (srcView != null)
                                                         bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);

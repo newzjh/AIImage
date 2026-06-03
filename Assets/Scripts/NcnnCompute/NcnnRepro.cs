@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Diagnostics;
+using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -382,6 +383,9 @@ namespace NcnnCompute
                 if (materialized == null)
                     throw new InvalidOperationException("blob not found: " + name);
 
+                if (_bufferViews.TryGetValue(name, out var view) && view != null)
+                    _textureShapes[name] = new BufferShape(view.dims, view.w, view.h, view.d, view.c);
+
                 _textureBlobs[name] = new TensorRef
                 {
                     texture = materialized,
@@ -521,10 +525,14 @@ namespace NcnnCompute
         public ModelLoadProfile LastLoadProfile { get; private set; }
         public bool ForceBufferBinaryOpAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
+        // Default false: some runners intentionally use the buffer GELU fallback as a GPU sync point via SetData.
+        public bool EnableGpuGeluBufferPath { get; set; }
         public bool EnableDepthWiseTextureConvolution { get; set; } = true;
         public bool EnableConv1x1TextureConvolution { get; set; } = true;
+        public bool EnableGroupNormTexturePath { get; set; }
         public bool ForceBufferConvolution { get; set; }
         public bool UseTextureMaxPoolingInd { get; set; }
+        public bool UseNcnnStyleGroupNorm { get; set; }
 
         internal readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
         internal readonly Dictionary<string, DeconvPack> _deconv = new Dictionary<string, DeconvPack>(StringComparer.Ordinal);
@@ -541,6 +549,7 @@ namespace NcnnCompute
         private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
         private readonly HashSet<ComputeTexture> _cmdSets = new HashSet<ComputeTexture>();
         private readonly float[] _gpuSyncScratch = new float[1];
+        private int _runtimeProfileInferenceIndex;
 
         private readonly NcnnOps _ops;
         private bool _useTempPool = false;
@@ -583,6 +592,9 @@ namespace NcnnCompute
         public NcnnOps Ops => _ops;
         public bool gpuLayerProfileEnabled = false;
         public bool useExperimentalIteratePath = false;
+        public bool LayerRuntimeProfileEnabled { get; set; }
+        public bool LayerRuntimeProfileSyncGpu { get; set; }
+        public LayerRuntimeProfile LastRuntimeProfile { get; private set; }
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
 
         internal void NotifyConvComplete(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
@@ -1237,14 +1249,15 @@ namespace NcnnCompute
         public InferResult InferWithMultiInputs(
             Dictionary<string, RenderTexture> textureInputs,
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
-            ICollection<string> pinnedNames = null)
+            ICollection<string> pinnedNames = null,
+            Dictionary<string, BufferShape> textureInputShapes = null)
         {
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
             if ((textureInputs == null || textureInputs.Count == 0) && (bufferInputs == null || bufferInputs.Count == 0))
                 throw new ArgumentNullException(nameof(textureInputs));
             if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
-                return InferWithMultiInputsByLayerRepros(textureInputs, bufferInputs, pinnedNames);
+                return InferWithMultiInputsByLayerRepros(textureInputs, bufferInputs, pinnedNames, textureInputShapes);
 
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
             var textureBlobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
@@ -1255,28 +1268,7 @@ namespace NcnnCompute
             var indexBlobs = new Dictionary<string, IndexRef>(StringComparer.Ordinal);
             var tempOwned = new List<IDisposable>();
 
-            if (textureInputs != null)
-            {
-                foreach (var kv in textureInputs)
-                {
-                    if (kv.Value == null)
-                        throw new ArgumentNullException("textureInputs[\"" + kv.Key + "\"]");
-                    var rt = kv.Value;
-                    var packs = rt.volumeDepth > 0 ? rt.volumeDepth : 1;
-                    var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
-                    var logicalChannels = ResolveInputLogicalChannels(kv.Key, packs * 4);
-                    textureBlobs[kv.Key] = new TensorRef
-                    {
-                        texture = rt,
-                        width = rt.width,
-                        height = rt.height,
-                        packs = packs,
-                        refs = useCount,
-                        owned = false
-                    };
-                    textureShapes[kv.Key] = new BufferShape(3, rt.width, rt.height, 1, logicalChannels);
-                }
-            }
+            RegisterTextureInputs(textureInputs, textureInputShapes, textureBlobs, textureShapes);
 
             if (bufferInputs != null)
             {
@@ -1300,6 +1292,12 @@ namespace NcnnCompute
                 var layer = Model.layers[li];
                 if (layer.type == NcnnLayerTypes.Input)
                     continue;
+
+                if (AreAllLayerTopsAlreadyAvailable(layer, textureBlobs, bufferBlobs, indexBlobs))
+                {
+                    Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    continue;
+                }
 
                 if (layer.type == NcnnLayerTypes.Split)
                 {
@@ -2691,15 +2689,22 @@ TextureConvPath:
                         if (srcBuf == null)
                             throw new InvalidOperationException("GELU source not found: " + layer.name);
                         var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
-                        var srcData = ReadFloatBuffer(srcBuf);
-                        var outData = new float[srcData.Length];
-                        for (var i = 0; i < srcData.Length; i++)
+                        if (EnableGpuGeluBufferPath)
                         {
-                            var x = srcData[i];
-                            var t = 0.7978845608f * (x + 0.044715f * x * x * x);
-                            outData[i] = 0.5f * x * (1f + (float)Math.Tanh(t));
+                            _ops.GeluBuf(srcBuf, srcBuf.count, outBuf);
                         }
-                        outBuf.SetData(outData);
+                        else
+                        {
+                            var srcData = ReadFloatBuffer(srcBuf);
+                            var outData = new float[srcData.Length];
+                            for (var i = 0; i < srcData.Length; i++)
+                            {
+                                var x = srcData[i];
+                                var t = 0.7978845608f * (x + 0.044715f * x * x * x);
+                                outData[i] = 0.5f * x * (1f + (float)Math.Tanh(t));
+                            }
+                            outBuf.SetData(outData);
+                        }
                         bufferBlobs[layer.topNames[0]] = outBuf;
                         if (srcView != null)
                             bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
@@ -2845,6 +2850,30 @@ TextureConvPath:
                 {
                     if (!_groupNorm.TryGetValue(layer.name, out var gp))
                         throw new InvalidOperationException("GroupNorm not found: " + layer.name);
+                    if (EnableGroupNormTexturePath
+                        && UseNcnnStyleGroupNorm
+                        && TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var gnSrcTex, out var gnSrcShape)
+                        && CanUseGroupNormPack4Path(gnSrcTex, gnSrcShape, gp))
+                    {
+                        var outRt = RentTempArray(gnSrcTex.width, gnSrcTex.height, gnSrcTex.packs, RenderTextureFormat.ARGBHalf);
+                        var texStatsBuf = RentTempBuffer(gp.group, sizeof(float) * 4);
+                        try
+                        {
+                            _ops.GroupNormPack4(gnSrcTex.texture, gnSrcShape.w, gnSrcShape.h, gnSrcShape.c, gnSrcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, texStatsBuf, outRt);
+                            SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, gnSrcShape);
+                            outRt = null;
+                        }
+                        finally
+                        {
+                            ReturnTempBuffer(texStatsBuf);
+                            if (outRt != null)
+                                ReturnTempArray(outRt);
+                        }
+
+                        Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        continue;
+                    }
+
                     var srcBuf = GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                     var srcView = TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                     if (srcBuf == null || srcView == null)
@@ -2852,7 +2881,15 @@ TextureConvPath:
                     var outBuf = RentTempBuffer(srcBuf.count, sizeof(float));
                     _ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
                     var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
-                    _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
+                    var statsBuf = RentTempBuffer(gp.group, sizeof(float) * 4);
+                    try
+                    {
+                        _ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta, statsBuf, UseNcnnStyleGroupNorm);
+                    }
+                    finally
+                    {
+                        ReturnTempBuffer(statsBuf);
+                    }
                     bufferBlobs[layer.topNames[0]] = outBuf;
                     bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
                     tempOwned.Add(outBuf);
@@ -3457,12 +3494,36 @@ TextureConvPath:
                 return null;
             if (!bufferViews.TryGetValue(name, out var view) || view == null)
                 return null;
-            if (view.dims != 3)
-                return null;
 
-            var packs = Mathf.CeilToInt(view.c / 4f);
-            var rt = RentTempArray(view.w, view.h, packs, RenderTextureFormat.ARGBHalf);
-            _ops.FillPack4FromBufferCHW(buffer, view.w, view.h, view.c, rt);
+            int texW;
+            int texH;
+            int channels;
+            if (view.dims == 1)
+            {
+                texW = view.w;
+                texH = 1;
+                channels = 1;
+            }
+            else if (view.dims == 2)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = 1;
+            }
+            else if (view.dims == 3)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = view.c;
+            }
+            else
+            {
+                return null;
+            }
+
+            var packs = Mathf.CeilToInt(channels / 4f);
+            var rt = RentTempArray(texW, texH, packs, RenderTextureFormat.ARGBHalf);
+            _ops.FillPack4FromBufferCHW(buffer, texW, texH, channels, rt);
             return rt;
         }
 
@@ -3482,7 +3543,7 @@ TextureConvPath:
 
             var packs = materialized.volumeDepth > 0 ? materialized.volumeDepth : 1;
             var shape = bufferViews.TryGetValue(name, out var view) && view != null
-                ? new BufferShape(3, view.w, view.h, 1, view.c)
+                ? new BufferShape(view.dims, view.w, view.h, view.d, view.c)
                 : new BufferShape(3, materialized.width, materialized.height, 1, packs * 4);
 
             tr = new TensorRef
@@ -3497,6 +3558,45 @@ TextureConvPath:
             textureBlobs[name] = tr;
             textureShapes[name] = shape;
             return tr;
+        }
+
+        internal void RegisterTextureInputs(
+            Dictionary<string, RenderTexture> textureInputs,
+            Dictionary<string, BufferShape> textureInputShapes,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes)
+        {
+            if (textureInputs == null)
+                return;
+
+            foreach (var kv in textureInputs)
+            {
+                if (kv.Value == null)
+                    throw new ArgumentNullException("textureInputs[\"" + kv.Key + "\"]");
+
+                var rt = kv.Value;
+                var packs = rt.volumeDepth > 0 ? rt.volumeDepth : 1;
+                var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
+                var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
+                    ? suppliedShape
+                    : new BufferShape(3, rt.width, rt.height, 1, ResolveInputLogicalChannels(kv.Key, packs * 4));
+
+                var physicalCount = rt.width * rt.height * packs * 4;
+                var logicalCount = Mathf.Max(1, logicalShape.w) * Mathf.Max(1, logicalShape.h) * Mathf.Max(1, logicalShape.d) * Mathf.Max(1, logicalShape.c);
+                if (logicalCount > physicalCount)
+                    throw new InvalidOperationException("texture input logical shape exceeds physical storage: " + kv.Key);
+
+                textureBlobs[kv.Key] = new TensorRef
+                {
+                    texture = rt,
+                    width = rt.width,
+                    height = rt.height,
+                    packs = packs,
+                    refs = useCount,
+                    owned = false
+                };
+                textureShapes[kv.Key] = logicalShape;
+            }
         }
 
         internal bool TryGetPack4Texture(
@@ -3526,6 +3626,300 @@ TextureConvPath:
                 shape = default;
                 return false;
             }
+        }
+
+        internal static bool AreAllLayerTopsAlreadyAvailable(
+            NcnnParamModel.Layer layer,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, IndexRef> indexBlobs)
+        {
+            var topNames = layer?.topNames;
+            if (topNames == null || topNames.Length == 0)
+                return false;
+
+            for (var i = 0; i < topNames.Length; i++)
+            {
+                var name = topNames[i];
+                if (string.IsNullOrEmpty(name))
+                    return false;
+
+                var hasTexture = textureBlobs != null
+                    && textureBlobs.TryGetValue(name, out var tr)
+                    && tr != null
+                    && tr.texture != null;
+                var hasBuffer = bufferBlobs != null
+                    && bufferBlobs.TryGetValue(name, out var buf)
+                    && buf != null;
+                var hasIndex = indexBlobs != null
+                    && indexBlobs.TryGetValue(name, out var ir)
+                    && ir != null
+                    && ir.texture != null;
+
+                if (!hasTexture && !hasBuffer && !hasIndex)
+                    return false;
+            }
+
+            return true;
+        }
+
+        internal LayerRuntimeProfile BeginLayerRuntimeProfile(string pathKind)
+        {
+            if (!LayerRuntimeProfileEnabled)
+            {
+                LastRuntimeProfile = null;
+                return null;
+            }
+
+            var profile = new LayerRuntimeProfile
+            {
+                inferenceIndex = ++_runtimeProfileInferenceIndex,
+                pathKind = string.IsNullOrWhiteSpace(pathKind) ? "buffer" : pathKind,
+                syncGpu = LayerRuntimeProfileSyncGpu
+            };
+            LastRuntimeProfile = profile;
+            return profile;
+        }
+
+        internal static void FinishLayerRuntimeProfile(LayerRuntimeProfile profile)
+        {
+            if (profile == null)
+                return;
+            profile.totalMs = TicksToMilliseconds(profile.totalTicks);
+        }
+
+        internal static void RecordLayerRuntime(
+            LayerRuntimeProfile profile,
+            int layerIndex,
+            NcnnParamModel.Layer layer,
+            string path,
+            long elapsedTicks)
+        {
+            if (profile == null || layer == null)
+                return;
+
+            if (elapsedTicks < 0)
+                elapsedTicks = 0;
+
+            var typeName = string.IsNullOrWhiteSpace(layer.typeName) ? "Unknown" : layer.typeName;
+            var record = new LayerRuntimeRecord
+            {
+                layerIndex = layerIndex,
+                layerName = layer.name ?? string.Empty,
+                layerType = typeName,
+                path = path ?? string.Empty,
+                elapsedTicks = elapsedTicks,
+                elapsedMs = TicksToMilliseconds(elapsedTicks)
+            };
+            profile.layers.Add(record);
+            profile.totalTicks += elapsedTicks;
+
+            if (!profile.layerTypes.TryGetValue(typeName, out var typeProfile) || typeProfile == null)
+            {
+                typeProfile = new LayerRuntimeTypeProfile { layerType = typeName };
+                profile.layerTypes[typeName] = typeProfile;
+            }
+
+            typeProfile.count++;
+            typeProfile.totalTicks += elapsedTicks;
+            typeProfile.totalMs = TicksToMilliseconds(typeProfile.totalTicks);
+            typeProfile.avgMs = typeProfile.count > 0 ? typeProfile.totalMs / typeProfile.count : 0d;
+        }
+
+        internal static string DescribeLayerOutputPath(
+            NcnnParamModel.Layer layer,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            Dictionary<string, IndexRef> indexBlobs)
+        {
+            var topNames = layer?.topNames;
+            if (topNames == null || topNames.Length == 0)
+                return string.Empty;
+
+            var sb = new StringBuilder();
+            for (var i = 0; i < topNames.Length; i++)
+            {
+                if (i > 0)
+                    sb.Append(';');
+
+                var name = topNames[i] ?? string.Empty;
+                sb.Append(name);
+                sb.Append('=');
+
+                if (textureBlobs != null
+                    && textureBlobs.TryGetValue(name, out var tex)
+                    && tex != null
+                    && tex.texture != null)
+                {
+                    sb.Append("tex:");
+                    sb.Append(tex.width.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('x');
+                    sb.Append(tex.height.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('x');
+                    sb.Append(tex.packs.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('p');
+                    if (textureShapes != null && textureShapes.TryGetValue(name, out var shape))
+                    {
+                        sb.Append(":c");
+                        sb.Append(shape.c.ToString(CultureInfo.InvariantCulture));
+                    }
+                    continue;
+                }
+
+                if (bufferBlobs != null
+                    && bufferBlobs.TryGetValue(name, out var buffer)
+                    && buffer != null)
+                {
+                    sb.Append("buf:");
+                    if (bufferViews != null && bufferViews.TryGetValue(name, out var view) && view != null)
+                    {
+                        sb.Append('d');
+                        sb.Append(view.dims.ToString(CultureInfo.InvariantCulture));
+                        sb.Append(':');
+                        sb.Append(view.w.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('x');
+                        sb.Append(view.h.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('x');
+                        sb.Append(view.c.ToString(CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        sb.Append(buffer.count.ToString(CultureInfo.InvariantCulture));
+                    }
+                    continue;
+                }
+
+                if (indexBlobs != null
+                    && indexBlobs.TryGetValue(name, out var index)
+                    && index != null
+                    && index.texture != null)
+                {
+                    sb.Append("idx:");
+                    sb.Append(index.width.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('x');
+                    sb.Append(index.height.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('x');
+                    sb.Append(index.packs.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('p');
+                    continue;
+                }
+
+                sb.Append("missing");
+            }
+
+            return sb.ToString();
+        }
+
+        public string FormatLastLayerRuntimeProfile(int topN = 40)
+        {
+            return FormatLayerRuntimeProfile(LastRuntimeProfile, topN);
+        }
+
+        public static string FormatLayerRuntimeProfile(LayerRuntimeProfile profile, int topN = 40)
+        {
+            if (profile == null)
+                return string.Empty;
+
+            topN = Mathf.Max(1, topN);
+            var sb = new StringBuilder(4096);
+            sb.AppendLine("section\tinference\tpath_kind\tsync_gpu\tlayer_index\tname\ttype\tpath\tcount\tms\tavg_ms");
+            sb.Append("summary\t");
+            sb.Append(profile.inferenceIndex.ToString(CultureInfo.InvariantCulture));
+            sb.Append('\t');
+            sb.Append(profile.pathKind ?? string.Empty);
+            sb.Append('\t');
+            sb.Append(profile.syncGpu ? "1" : "0");
+            sb.Append("\t\t\t\t");
+            sb.Append(profile.layers.Count.ToString(CultureInfo.InvariantCulture));
+            sb.Append('\t');
+            sb.Append(profile.totalMs.ToString("0.###", CultureInfo.InvariantCulture));
+            sb.AppendLine("\t");
+
+            var typeProfiles = new List<LayerRuntimeTypeProfile>(profile.layerTypes.Values);
+            typeProfiles.Sort((a, b) => b.totalTicks.CompareTo(a.totalTicks));
+            for (var i = 0; i < typeProfiles.Count; i++)
+            {
+                var item = typeProfiles[i];
+                sb.Append("type\t");
+                sb.Append(profile.inferenceIndex.ToString(CultureInfo.InvariantCulture));
+                sb.Append('\t');
+                sb.Append(profile.pathKind ?? string.Empty);
+                sb.Append('\t');
+                sb.Append(profile.syncGpu ? "1" : "0");
+                sb.Append("\t\t\t");
+                sb.Append(item.layerType ?? string.Empty);
+                sb.Append("\t\t");
+                sb.Append(item.count.ToString(CultureInfo.InvariantCulture));
+                sb.Append('\t');
+                sb.Append(item.totalMs.ToString("0.###", CultureInfo.InvariantCulture));
+                sb.Append('\t');
+                sb.AppendLine(item.avgMs.ToString("0.###", CultureInfo.InvariantCulture));
+            }
+
+            var records = new List<LayerRuntimeRecord>(profile.layers);
+            records.Sort((a, b) => b.elapsedTicks.CompareTo(a.elapsedTicks));
+            var count = Mathf.Min(topN, records.Count);
+            for (var i = 0; i < count; i++)
+            {
+                var item = records[i];
+                sb.Append("layer\t");
+                sb.Append(profile.inferenceIndex.ToString(CultureInfo.InvariantCulture));
+                sb.Append('\t');
+                sb.Append(profile.pathKind ?? string.Empty);
+                sb.Append('\t');
+                sb.Append(profile.syncGpu ? "1" : "0");
+                sb.Append('\t');
+                sb.Append(item.layerIndex.ToString(CultureInfo.InvariantCulture));
+                sb.Append('\t');
+                sb.Append(item.layerName ?? string.Empty);
+                sb.Append('\t');
+                sb.Append(item.layerType ?? string.Empty);
+                sb.Append('\t');
+                sb.Append(item.path ?? string.Empty);
+                sb.Append("\t1\t");
+                sb.Append(item.elapsedMs.ToString("0.###", CultureInfo.InvariantCulture));
+                sb.Append('\t');
+                sb.AppendLine(item.elapsedMs.ToString("0.###", CultureInfo.InvariantCulture));
+            }
+
+            return sb.ToString();
+        }
+
+        private static double TicksToMilliseconds(long ticks)
+        {
+            return ticks <= 0 ? 0d : (double)ticks * 1000d / Stopwatch.Frequency;
+        }
+
+        public sealed class LayerRuntimeRecord
+        {
+            public int layerIndex;
+            public string layerName;
+            public string layerType;
+            public string path;
+            public long elapsedTicks;
+            public double elapsedMs;
+        }
+
+        public sealed class LayerRuntimeTypeProfile
+        {
+            public string layerType;
+            public int count;
+            public long totalTicks;
+            public double totalMs;
+            public double avgMs;
+        }
+
+        public sealed class LayerRuntimeProfile
+        {
+            public int inferenceIndex;
+            public string pathKind;
+            public bool syncGpu;
+            public long totalTicks;
+            public double totalMs;
+            public readonly List<LayerRuntimeRecord> layers = new List<LayerRuntimeRecord>();
+            public readonly Dictionary<string, LayerRuntimeTypeProfile> layerTypes = new Dictionary<string, LayerRuntimeTypeProfile>(StringComparer.Ordinal);
         }
 
         public sealed class LayerTypeLoadProfile
@@ -3619,6 +4013,24 @@ TextureConvPath:
                 && a.width == b.width
                 && a.height == b.height
                 && a.packs == b.packs;
+        }
+
+        internal static bool CanUseGroupNormPack4Path(TensorRef src, BufferShape shape, GroupNormPack gp)
+        {
+            return src != null
+                && src.texture != null
+                && gp != null
+                && gp.affine
+                && gp.gamma != null
+                && gp.beta != null
+                && shape.dims == 3
+                && shape.w == src.width
+                && shape.h == src.height
+                && shape.c == gp.channels
+                && gp.channels > 0
+                && gp.group > 0
+                && gp.channels % gp.group == 0
+                && src.packs == Mathf.CeilToInt(gp.channels / 4f);
         }
 
         internal static int ComputeConvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter)

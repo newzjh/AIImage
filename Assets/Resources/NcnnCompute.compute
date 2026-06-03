@@ -62,6 +62,12 @@
 #pragma kernel NcnnMulScalarBuf
 #pragma kernel NcnnGroupNormStats
 #pragma kernel NcnnGroupNormApply
+#pragma kernel NcnnGroupNormMean
+#pragma kernel NcnnGroupNormVariance
+#pragma kernel NcnnGroupNormApplyMeanVar
+#pragma kernel NcnnGroupNormPack4Mean
+#pragma kernel NcnnGroupNormPack4Variance
+#pragma kernel NcnnGroupNormPack4ApplyMeanVar
 #pragma kernel NcnnTouchU32
 #pragma kernel NcnnCopyBuf
 #pragma kernel NcnnCopyBufPartial
@@ -1220,7 +1226,8 @@ void NcnnPack4ToRgb01(uint3 id : SV_DispatchThreadID)
     uint w, h;
     _RgbOut.GetDimensions(w, h);
     if (id.x >= w || id.y >= h) return;
-    float4 v = _RgbInArr[int3((int)id.x, (int)id.y, 0)];
+    int sy = _FlipY != 0 ? (int)(h - 1 - id.y) : (int)id.y;
+    float4 v = _RgbInArr[int3((int)id.x, sy, 0)];
     v.xyz = v.xyz * 0.5 + 0.5;
     _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
 }
@@ -1734,6 +1741,8 @@ int _MulTotal;
 float _MulK;
 
 RWStructuredBuffer<float> _GnInOut;
+Texture2DArray<float4> _GnTexInArr;
+RWTexture2DArray<float4> _GnTexOutArr;
 StructuredBuffer<float> _GnGamma;
 StructuredBuffer<float> _GnBeta;
 RWStructuredBuffer<float4> _GnStatsOut;
@@ -2678,6 +2687,234 @@ void NcnnGroupNormApply(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gro
             y = y * _GnGamma[c] + _GnBeta[c];
         _GnInOut[c * size + s] = y;
     }
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormMean(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)(_GnChannelsG) * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
+
+    float sum = 0.0;
+    for (uint t = (uint)tid; t < total; t += 256u)
+    {
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
+        sum += _GnInOut[c * size + s];
+    }
+
+    red0[tid] = sum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stGn = 128; stGn > 0; stGn >>= 1)
+    {
+        if (tid < stGn)
+            red0[tid] += red0[tid + stGn];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0)
+    {
+        float denom = (float)max(1u, total);
+        _GnStatsOut[g] = float4(red0[0] / denom, 0.0, 0.0, 0.0);
+    }
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormVariance(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)(_GnChannelsG) * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
+    float mean = _GnStatsOut[g].x;
+
+    float sqsum = 0.0;
+    for (uint t = (uint)tid; t < total; t += 256u)
+    {
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
+        float v = _GnInOut[c * size + s] - mean;
+        sqsum += v * v;
+    }
+
+    red0[tid] = sqsum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stGn = 128; stGn > 0; stGn >>= 1)
+    {
+        if (tid < stGn)
+            red0[tid] += red0[tid + stGn];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0)
+    {
+        float denom = (float)max(1u, total);
+        float mean0 = _GnStatsOut[g].x;
+        _GnStatsOut[g] = float4(mean0, red0[0] / denom, 0.0, 0.0);
+    }
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormApplyMeanVar(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)(_GnChannelsG) * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
+
+    float2 stats = _GnStatsOut[g].xy;
+    float mean = stats.x;
+    float invstd = rsqrt(max(stats.y + _GnEps, 1e-20));
+
+    for (uint t = (uint)tid; t < total; t += 256u)
+    {
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
+        float y = (_GnInOut[c * size + s] - mean) * invstd;
+        if (_GnAffine != 0)
+            y = y * _GnGamma[c] + _GnBeta[c];
+        _GnInOut[c * size + s] = y;
+    }
+}
+
+float NcnnGnReadPack4(uint c, uint s)
+{
+    uint x = s % (uint)_GnW;
+    uint y = s / (uint)_GnW;
+    int pack = (int)(c >> 2);
+    int lane = (int)(c & 3u);
+    float4 v = _GnTexInArr[int3((int)x, (int)y, pack)];
+    return lane == 0 ? v.x : (lane == 1 ? v.y : (lane == 2 ? v.z : v.w));
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormPack4Mean(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)_GnChannelsG * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
+
+    float sum = 0.0;
+    for (uint t = (uint)tid; t < total; t += 256u)
+    {
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
+        sum += NcnnGnReadPack4(c, s);
+    }
+
+    red0[tid] = sum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stGn = 128; stGn > 0; stGn >>= 1)
+    {
+        if (tid < stGn)
+            red0[tid] += red0[tid + stGn];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0)
+    {
+        float denom = (float)max(1u, total);
+        _GnStatsOut[g] = float4(red0[0] / denom, 0.0, 0.0, 0.0);
+    }
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormPack4Variance(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)_GnChannelsG * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
+    float mean = _GnStatsOut[g].x;
+
+    float sqsum = 0.0;
+    for (uint t = (uint)tid; t < total; t += 256u)
+    {
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
+        float v = NcnnGnReadPack4(c, s) - mean;
+        sqsum += v * v;
+    }
+
+    red0[tid] = sqsum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stGn = 128; stGn > 0; stGn >>= 1)
+    {
+        if (tid < stGn)
+            red0[tid] += red0[tid + stGn];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0)
+    {
+        float denom = (float)max(1u, total);
+        float mean0 = _GnStatsOut[g].x;
+        _GnStatsOut[g] = float4(mean0, red0[0] / denom, 0.0, 0.0);
+    }
+}
+
+float NcnnGnApplyOne(float x, int c)
+{
+    if (c < 0 || c >= _GnC)
+        return 0.0;
+    int g = c / max(1, _GnChannelsG);
+    float2 stats = _GnStatsOut[g].xy;
+    float y = (x - stats.x) * rsqrt(max(stats.y + _GnEps, 1e-20));
+    if (_GnAffine != 0)
+        y = y * _GnGamma[c] + _GnBeta[c];
+    return y;
+}
+
+[numthreads(8,8,1)]
+void NcnnGroupNormPack4ApplyMeanVar(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _GnTexOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    float4 v = _GnTexInArr[int3((int)id.x, (int)id.y, p)];
+    int c0 = p * 4 + 0;
+    int c1 = p * 4 + 1;
+    int c2 = p * 4 + 2;
+    int c3 = p * 4 + 3;
+    _GnTexOutArr[int3((int)id.x, (int)id.y, p)] = float4(
+        NcnnGnApplyOne(v.x, c0),
+        NcnnGnApplyOne(v.y, c1),
+        NcnnGnApplyOne(v.z, c2),
+        NcnnGnApplyOne(v.w, c3));
 }
 
 #define TILE 8

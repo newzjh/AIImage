@@ -322,6 +322,12 @@ namespace NcnnCompute
         private readonly int _kMulScalarBuf;
         private readonly int _kGroupNormStats;
         private readonly int _kGroupNormApply;
+        private readonly int _kGroupNormMean;
+        private readonly int _kGroupNormVariance;
+        private readonly int _kGroupNormApplyMeanVar;
+        private readonly int _kGroupNormPack4Mean;
+        private readonly int _kGroupNormPack4Variance;
+        private readonly int _kGroupNormPack4ApplyMeanVar;
         private readonly int _kTouchU32;
         private readonly int _kInnerProduct2D;
         private readonly int _kMhaAttention;
@@ -401,6 +407,12 @@ namespace NcnnCompute
             _kMulScalarBuf = _cs.FindKernel("NcnnMulScalarBuf");
             _kGroupNormStats = _cs.FindKernel("NcnnGroupNormStats");
             _kGroupNormApply = _cs.FindKernel("NcnnGroupNormApply");
+            _kGroupNormMean = _cs.FindKernel("NcnnGroupNormMean");
+            _kGroupNormVariance = _cs.FindKernel("NcnnGroupNormVariance");
+            _kGroupNormApplyMeanVar = _cs.FindKernel("NcnnGroupNormApplyMeanVar");
+            _kGroupNormPack4Mean = _cs.FindKernel("NcnnGroupNormPack4Mean");
+            _kGroupNormPack4Variance = _cs.FindKernel("NcnnGroupNormPack4Variance");
+            _kGroupNormPack4ApplyMeanVar = _cs.FindKernel("NcnnGroupNormPack4ApplyMeanVar");
             _kTouchU32 = _cs.FindKernel("NcnnTouchU32");
             _kInnerProduct2D = _cs.FindKernel("NcnnInnerProduct2D");
             _kMhaAttention = _cs.FindKernel("NcnnMhaAttention");
@@ -618,10 +630,11 @@ namespace NcnnCompute
             Dispatch3D(_kSftPack4, output.width, output.height, outPacks, 8, 8);
         }
 
-        public void Pack4ToRgb01(RenderTexture inputPack4, RenderTexture outputRgb)
+        public void Pack4ToRgb01(RenderTexture inputPack4, RenderTexture outputRgb, bool flipY = false)
         {
             if (inputPack4 == null) throw new ArgumentNullException(nameof(inputPack4));
             if (outputRgb == null) throw new ArgumentNullException(nameof(outputRgb));
+            _cs.SetInt("_FlipY", flipY ? 1 : 0);
             _cs.SetTexture(_kPack4ToRgb01, "_RgbInArr", inputPack4);
             _cs.SetTexture(_kPack4ToRgb01, "_RgbOut", outputRgb);
             Dispatch2D(_kPack4ToRgb01, outputRgb.width, outputRgb.height, 32, 32);
@@ -2238,6 +2251,13 @@ namespace NcnnCompute
 
         public void GroupNormInplace(ComputeBuffer inOut, int w, int h, int c, int group, float eps, bool affine, ComputeBuffer gamma, ComputeBuffer beta)
         {
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            using var stats = new ComputeBuffer(group, sizeof(float) * 4, ComputeBufferType.Structured);
+            GroupNormInplace(inOut, w, h, c, group, eps, affine, gamma, beta, stats, false);
+        }
+
+        public void GroupNormInplace(ComputeBuffer inOut, int w, int h, int c, int group, float eps, bool affine, ComputeBuffer gamma, ComputeBuffer beta, ComputeBuffer stats, bool ncnnStyleVariance)
+        {
             if (inOut == null) throw new ArgumentNullException(nameof(inOut));
             if (w <= 0) throw new ArgumentOutOfRangeException(nameof(w));
             if (h <= 0) throw new ArgumentOutOfRangeException(nameof(h));
@@ -2245,9 +2265,9 @@ namespace NcnnCompute
             if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
             if (c % group != 0) throw new ArgumentOutOfRangeException(nameof(group), "c must be divisible by group");
             if (affine && (gamma == null || beta == null)) throw new ArgumentNullException(nameof(gamma));
+            if (stats == null) throw new ArgumentNullException(nameof(stats));
 
             var channelsG = c / group;
-            using var stats = new ComputeBuffer(group, sizeof(float) * 4, ComputeBufferType.Structured);
 
             _cs.SetInt("_GnW", w);
             _cs.SetInt("_GnH", h);
@@ -2256,11 +2276,28 @@ namespace NcnnCompute
             _cs.SetInt("_GnChannelsG", channelsG);
             _cs.SetFloat("_GnEps", eps);
             _cs.SetInt("_GnAffine", affine ? 1 : 0);
-            _cs.SetBuffer(_kGroupNormStats, "_GnInOut", inOut);
-            _cs.SetBuffer(_kGroupNormStats, "_GnGamma", affine ? gamma : inOut);
-            _cs.SetBuffer(_kGroupNormStats, "_GnBeta", affine ? beta : inOut);
-            _cs.SetBuffer(_kGroupNormStats, "_GnStatsOut", stats);
-            _cs.Dispatch(_kGroupNormStats, Mathf.Max(1, group), 1, 1);
+            if (ncnnStyleVariance)
+            {
+                _cs.SetBuffer(_kGroupNormMean, "_GnInOut", inOut);
+                _cs.SetBuffer(_kGroupNormMean, "_GnGamma", affine ? gamma : inOut);
+                _cs.SetBuffer(_kGroupNormMean, "_GnBeta", affine ? beta : inOut);
+                _cs.SetBuffer(_kGroupNormMean, "_GnStatsOut", stats);
+                _cs.Dispatch(_kGroupNormMean, Mathf.Max(1, group), 1, 1);
+
+                _cs.SetBuffer(_kGroupNormVariance, "_GnInOut", inOut);
+                _cs.SetBuffer(_kGroupNormVariance, "_GnGamma", affine ? gamma : inOut);
+                _cs.SetBuffer(_kGroupNormVariance, "_GnBeta", affine ? beta : inOut);
+                _cs.SetBuffer(_kGroupNormVariance, "_GnStatsOut", stats);
+                _cs.Dispatch(_kGroupNormVariance, Mathf.Max(1, group), 1, 1);
+            }
+            else
+            {
+                _cs.SetBuffer(_kGroupNormStats, "_GnInOut", inOut);
+                _cs.SetBuffer(_kGroupNormStats, "_GnGamma", affine ? gamma : inOut);
+                _cs.SetBuffer(_kGroupNormStats, "_GnBeta", affine ? beta : inOut);
+                _cs.SetBuffer(_kGroupNormStats, "_GnStatsOut", stats);
+                _cs.Dispatch(_kGroupNormStats, Mathf.Max(1, group), 1, 1);
+            }
 
             _cs.SetInt("_GnW", w);
             _cs.SetInt("_GnH", h);
@@ -2269,11 +2306,51 @@ namespace NcnnCompute
             _cs.SetInt("_GnChannelsG", channelsG);
             _cs.SetFloat("_GnEps", eps);
             _cs.SetInt("_GnAffine", affine ? 1 : 0);
-            _cs.SetBuffer(_kGroupNormApply, "_GnInOut", inOut);
-            _cs.SetBuffer(_kGroupNormApply, "_GnGamma", affine ? gamma : inOut);
-            _cs.SetBuffer(_kGroupNormApply, "_GnBeta", affine ? beta : inOut);
-            _cs.SetBuffer(_kGroupNormApply, "_GnStatsOut", stats);
-            _cs.Dispatch(_kGroupNormApply, Mathf.Max(1, group), 1, 1);
+            var applyKernel = ncnnStyleVariance ? _kGroupNormApplyMeanVar : _kGroupNormApply;
+            _cs.SetBuffer(applyKernel, "_GnInOut", inOut);
+            _cs.SetBuffer(applyKernel, "_GnGamma", affine ? gamma : inOut);
+            _cs.SetBuffer(applyKernel, "_GnBeta", affine ? beta : inOut);
+            _cs.SetBuffer(applyKernel, "_GnStatsOut", stats);
+            _cs.Dispatch(applyKernel, Mathf.Max(1, group), 1, 1);
+        }
+
+        public void GroupNormPack4(RenderTexture input, int w, int h, int c, int packs, int group, float eps, ComputeBuffer gamma, ComputeBuffer beta, ComputeBuffer stats, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (gamma == null) throw new ArgumentNullException(nameof(gamma));
+            if (beta == null) throw new ArgumentNullException(nameof(beta));
+            if (stats == null) throw new ArgumentNullException(nameof(stats));
+            if (w <= 0) throw new ArgumentOutOfRangeException(nameof(w));
+            if (h <= 0) throw new ArgumentOutOfRangeException(nameof(h));
+            if (c <= 0) throw new ArgumentOutOfRangeException(nameof(c));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            if (c % group != 0) throw new ArgumentOutOfRangeException(nameof(group), "c must be divisible by group");
+
+            var channelsG = c / group;
+            _cs.SetInt("_GnW", w);
+            _cs.SetInt("_GnH", h);
+            _cs.SetInt("_GnC", c);
+            _cs.SetInt("_GnGroup", group);
+            _cs.SetInt("_GnChannelsG", channelsG);
+            _cs.SetFloat("_GnEps", eps);
+            _cs.SetInt("_GnAffine", 1);
+
+            _cs.SetTexture(_kGroupNormPack4Mean, "_GnTexInArr", input);
+            _cs.SetBuffer(_kGroupNormPack4Mean, "_GnStatsOut", stats);
+            _cs.Dispatch(_kGroupNormPack4Mean, Mathf.Max(1, group), 1, 1);
+
+            _cs.SetTexture(_kGroupNormPack4Variance, "_GnTexInArr", input);
+            _cs.SetBuffer(_kGroupNormPack4Variance, "_GnStatsOut", stats);
+            _cs.Dispatch(_kGroupNormPack4Variance, Mathf.Max(1, group), 1, 1);
+
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVar, "_GnTexInArr", input);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVar, "_GnTexOutArr", output);
+            _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnGamma", gamma);
+            _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnBeta", beta);
+            _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnStatsOut", stats);
+            Dispatch3D(_kGroupNormPack4ApplyMeanVar, output.width, output.height, packs, 8, 8);
         }
 
         private static Vector4Int GetPermuteAxes(int dims, int orderType)
