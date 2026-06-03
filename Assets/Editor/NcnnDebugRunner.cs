@@ -34,6 +34,10 @@ public static class NcnnDebugRunner
     private const string SdNegativePromptEnvVar = "AIIMAGE_SD_NEGATIVE_PROMPT";
     private const string SdInitImageEnvVar = "AIIMAGE_SD_INIT_IMAGE";
     private const string SdMaskImageEnvVar = "AIIMAGE_SD_MASK_IMAGE";
+    private const string SdTensorFormatEnvVar = "AIIMAGE_SD_TENSOR_FORMAT";
+    private const string SdDecoderTensorFormatEnvVar = "AIIMAGE_SD_DECODER_TENSOR_FORMAT";
+    private const string SdEncoderTensorFormatEnvVar = "AIIMAGE_SD_ENCODER_TENSOR_FORMAT";
+    private const string SdEnableDumpEnvVar = "AIIMAGE_SD_ENABLE_DUMP";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -326,6 +330,23 @@ public static class NcnnDebugRunner
 
     public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
 
+    public static async void RunYoloSegDebugBatchLegacy()
+    {
+        try
+        {
+            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatchLegacy start");
+            await RunYoloSegDebugInternal();
+            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatchLegacy done");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.Log("[NcnnDebugRunner] RunYoloSegDebugBatchLegacy failed: " + e.Message);
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
     public static void RunStableDiffusionDebugBatch() => RunBatchBlocking(nameof(RunStableDiffusionDebugBatch), RunStableDiffusionDebugInternal, TimeSpan.FromHours(4));
 
     private static async UniTask RunMattingDebugInternal()
@@ -382,6 +403,11 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<YoloSegNcnnReproRunner>();
             runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
             runner.enableDebugDump = true;
+            runner.forceBufferConvolution = true;
+            runner.forceBufferBinaryOp = true;
+            runner.useArgbFloatTensor = true;
+            runner.enableDepthWiseTextureConvolution = false;
+            runner.enableConv1x1TextureConvolution = false;
             runner.targetPersonOnly = true;
             runner.enableMaskClose = true;
             runner.enableMaskDilate = true;
@@ -452,9 +478,12 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<SDNcnnReproRunner>();
-            runner.enableDebugDump = true;
+            runner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, true);
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
+            runner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, runner.tensorTextureFormat);
+            runner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, runner.decoderTensorTextureFormat);
+            runner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, runner.encoderTensorTextureFormat);
             runner.ProgressChanged += (value, message) =>
             {
                 Debug.Log("[SD-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
@@ -483,10 +512,13 @@ public static class NcnnDebugRunner
 
             if (result.texture != null)
             {
-                var dir = !string.IsNullOrWhiteSpace(runner.LastDumpDir)
-                    ? runner.LastDumpDir
-                    : CreateGenericDumpDir("AIImage_SD_NcnnRepro");
-                TryWriteTexturePng(result.texture, dir, "final_output.png");
+                if (runner.enableDebugDump)
+                {
+                    var dir = !string.IsNullOrWhiteSpace(runner.LastDumpDir)
+                        ? runner.LastDumpDir
+                        : CreateGenericDumpDir("AIImage_SD_NcnnRepro");
+                    TryWriteTexturePng(result.texture, dir, "final_output.png");
+                }
                 UnityEngine.Object.DestroyImmediate(result.texture);
             }
         }
@@ -1326,6 +1358,35 @@ public static class NcnnDebugRunner
     {
         if (TryReadFloatEnv(envName, out var value))
             return value;
+        return fallback;
+    }
+
+    private static RenderTextureFormat ResolveRenderTextureFormatEnv(string envName, RenderTextureFormat fallback)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(env))
+                return fallback;
+
+            env = env.Trim();
+            if (string.Equals(env, "float", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "fp32", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "argbfloat", StringComparison.OrdinalIgnoreCase))
+                return RenderTextureFormat.ARGBFloat;
+
+            if (string.Equals(env, "half", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "fp16", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "argbhalf", StringComparison.OrdinalIgnoreCase))
+                return RenderTextureFormat.ARGBHalf;
+
+            if (Enum.TryParse(env, true, out RenderTextureFormat parsed))
+                return parsed;
+        }
+        catch
+        {
+        }
+
         return fallback;
     }
 

@@ -307,6 +307,8 @@ namespace NcnnCompute
         private readonly int _kSoftmaxChannelPack4;
         private readonly int _kUnaryOpPack4;
         private readonly int _kBinaryOpPack4;
+        private readonly int _kBinaryOpPack4Broadcast;
+        private readonly int _kBinaryOpPack4BufferScalar;
         private readonly int _kSwishPack4;
         private readonly int _kSigmoidPack4;
         private readonly int _kGeluPack4;
@@ -392,6 +394,8 @@ namespace NcnnCompute
             _kSoftmaxChannelPack4 = _cs.FindKernel("NcnnSoftmaxChannelPack4");
             _kUnaryOpPack4 = _cs.FindKernel("NcnnUnaryOpPack4");
             _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
+            _kBinaryOpPack4Broadcast = _cs.FindKernel("NcnnBinaryOpPack4Broadcast");
+            _kBinaryOpPack4BufferScalar = _cs.FindKernel("NcnnBinaryOpPack4BufferScalar");
             _kSwishPack4 = _cs.FindKernel("NcnnSwishPack4");
             _kSigmoidPack4 = _cs.FindKernel("NcnnSigmoidPack4");
             _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
@@ -858,6 +862,37 @@ namespace NcnnCompute
             _cs.SetTexture(_kBinaryOpPack4, "_BinaryB", b);
             _cs.SetTexture(_kBinaryOpPack4, "_BinaryOutArr", output);
             Dispatch3D(_kBinaryOpPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void BinaryOpPack4Broadcast(RenderTexture a, RenderTexture b, int packs, int opType, int broadcastMode, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (broadcastMode != 1 && broadcastMode != 2)
+                throw new ArgumentOutOfRangeException(nameof(broadcastMode));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 0);
+            _cs.SetFloat("_BinaryScalar", 0f);
+            _cs.SetInt("_BinaryPack4BroadcastMode", broadcastMode);
+            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryA", a);
+            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryB", b);
+            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryOutArr", output);
+            Dispatch3D(_kBinaryOpPack4Broadcast, output.width, output.height, packs, 8, 8);
+        }
+
+        public void BinaryOpPack4BufferScalar(RenderTexture texture, ComputeBuffer scalar, int packs, int opType, bool scalarIsA, RenderTexture output)
+        {
+            if (texture == null) throw new ArgumentNullException(nameof(texture));
+            if (scalar == null) throw new ArgumentNullException(nameof(scalar));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (scalar.count < 1) throw new ArgumentOutOfRangeException(nameof(scalar));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryPack4BufferScalarMode", scalarIsA ? 1 : 2);
+            _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_BinaryA", texture);
+            _cs.SetBuffer(_kBinaryOpPack4BufferScalar, "_BufB", scalar);
+            _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_BinaryOutArr", output);
+            Dispatch3D(_kBinaryOpPack4BufferScalar, output.width, output.height, packs, 8, 8);
         }
 
         public void BinaryOpPack4(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int packs, int opType, ComputeTexture output)

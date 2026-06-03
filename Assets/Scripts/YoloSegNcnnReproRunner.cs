@@ -122,6 +122,16 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private const float PadColor01 = 114f / 255f;
 
     private static readonly int[] DefaultStrides = { 8, 16, 32 };
+    private static readonly string[] DebugBlobNames =
+    {
+        "194", "195", "196",
+        "201", "202", "203",
+        "208", "209", "210",
+        "222", "245", "246",
+        "233", "247", "248",
+        "244", "249", "250",
+        OutputBoxesBlobName, OutputMaskCoeffBlobName, OutputMaskProtoBlobName
+    };
 
     public YoloSegModelVariant modelVariant = YoloSegModelVariant.YoloV8nSeg;
     public string yolo8ParamRelativePath = "Yolo/yolov8n_seg.ncnn.param";
@@ -138,6 +148,9 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public bool flipYInput = false;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
+    public bool forceBufferConvolution = false;
+    public bool forceBufferBinaryOp = false;
+    public bool useArgbFloatTensor = false;
     public bool enableDepthWiseTextureConvolution = true;
     public bool enableConv1x1TextureConvolution = true;
     public bool enableMaskClose = true;
@@ -244,11 +257,26 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             BlobData predBlob;
             BlobData coeffBlob;
             BlobData protoBlob;
-            using (var infer = _repro.Infer(inputPack4, 1, InputBlobName))
+            HashSet<string> pinned = null;
+            if (enableDebugDump)
+                pinned = new HashSet<string>(DebugBlobNames, StringComparer.Ordinal);
+
+            using (var infer = _repro.Infer(inputPack4, 1, InputBlobName, pinned))
             {
                 predBlob = ReadBlobData(infer, OutputBoxesBlobName);
                 coeffBlob = ReadBlobData(infer, OutputMaskCoeffBlobName);
                 protoBlob = ReadBlobData(infer, OutputMaskProtoBlobName);
+
+                if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                {
+                    TryWriteFloatArray(predBlob.values, _lastDumpDir, "blob_out0_f32.bin");
+                    TryWriteFloatArray(coeffBlob.values, _lastDumpDir, "blob_out1_f32.bin");
+                    TryWriteFloatArray(protoBlob.values, _lastDumpDir, "blob_out2_f32.bin");
+                    for (var i = 0; i < DebugBlobNames.Length; i++)
+                    {
+                        TryDumpBlobSummary(infer, DebugBlobNames[i], Path.Combine(_lastDumpDir, "blob_" + DebugBlobNames[i] + "_summary.txt"));
+                    }
+                }
             }
 
             if (predBlob.values == null || predBlob.values.Length == 0)
@@ -428,14 +456,14 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
-        _repro.ForceBufferConvolutionAll = false;
-        _repro.ForceBufferBinaryOpAll = false;
+        _repro.ForceBufferConvolutionAll = forceBufferConvolution;
+        _repro.ForceBufferBinaryOpAll = forceBufferBinaryOp;
         _repro.ForceBufferGeluAll = false;
         _repro.EnableDepthWiseTextureConvolution = modelVariant == YoloSegModelVariant.Yolo11nSeg
             ? false
             : enableDepthWiseTextureConvolution;
         _repro.EnableConv1x1TextureConvolution = enableConv1x1TextureConvolution;
-        _repro.TensorTextureFormat = RenderTextureFormat.ARGBHalf;
+        _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         _repro.DebugCompareTextureLayers = null;
         _repro.DebugLog = null;
     }
@@ -1062,6 +1090,117 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                     + "\tmask_pixels=" + d.maskPixelCount.ToString(CultureInfo.InvariantCulture));
             }
         }
+        return sb.ToString();
+    }
+
+    private void TryDumpBlobSummary(NcnnRepro.InferResult infer, string blobName, string path)
+    {
+        if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            var blob = ReadBlobData(infer, blobName);
+            var text = BuildBlobSummary(blob);
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+            TryWriteTextFile(text, Path.GetDirectoryName(path), Path.GetFileName(path));
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryWriteFloatArray(float[] values, string dir, string fileName)
+    {
+        if (values == null || string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(fileName))
+            return;
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var bytes = new byte[values.Length * sizeof(float)];
+            Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(Path.Combine(dir, fileName), bytes);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string BuildBlobSummary(BlobData blob)
+    {
+        if (blob.values == null)
+            return null;
+
+        var sb = new StringBuilder(2048);
+        sb.AppendLine("name=" + blob.name);
+        sb.AppendLine("shape=" + blob.dims + "d " + blob.w + "x" + blob.h + "x" + blob.d + "x" + blob.c);
+        var finiteCount = 0;
+        var nanCount = 0;
+        var infCount = 0;
+        double sum = 0d;
+        float min = float.PositiveInfinity;
+        float max = float.NegativeInfinity;
+        for (var i = 0; i < blob.values.Length; i++)
+        {
+            var v = blob.values[i];
+            if (float.IsNaN(v))
+            {
+                nanCount++;
+                continue;
+            }
+            if (float.IsInfinity(v))
+            {
+                infCount++;
+                continue;
+            }
+            finiteCount++;
+            sum += v;
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+
+        sb.AppendLine("count=" + blob.values.Length);
+        sb.AppendLine("finite=" + finiteCount);
+        sb.AppendLine("nan=" + nanCount);
+        sb.AppendLine("inf=" + infCount);
+        sb.AppendLine("min=" + (finiteCount > 0 ? min.ToString("R", CultureInfo.InvariantCulture) : "NaN"));
+        sb.AppendLine("max=" + (finiteCount > 0 ? max.ToString("R", CultureInfo.InvariantCulture) : "NaN"));
+        sb.AppendLine("mean=" + (finiteCount > 0 ? (sum / finiteCount).ToString("R", CultureInfo.InvariantCulture) : "NaN"));
+
+        if (blob.dims == 2 && blob.w > 0 && blob.h > 0)
+        {
+            var rowIndices = new List<int> { 0 };
+            if (blob.h > 1) rowIndices.Add(Mathf.Min(1, blob.h - 1));
+            if (blob.h > 2) rowIndices.Add(blob.h / 2);
+            if (blob.h > 3) rowIndices.Add(blob.h - 1);
+            var seen = new HashSet<int>();
+            foreach (var row in rowIndices)
+            {
+                if (!seen.Add(row))
+                    continue;
+                sb.Append("row[").Append(row).Append("]=");
+                var cols = Mathf.Min(blob.w, 24);
+                for (var x = 0; x < cols; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    sb.Append(blob.values[row * blob.w + x].ToString("0.######", CultureInfo.InvariantCulture));
+                }
+                sb.AppendLine();
+            }
+        }
+        else
+        {
+            sb.Append("head=");
+            var head = Mathf.Min(blob.values.Length, 32);
+            for (var i = 0; i < head; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(blob.values[i].ToString("0.######", CultureInfo.InvariantCulture));
+            }
+            sb.AppendLine();
+        }
+
         return sb.ToString();
     }
 

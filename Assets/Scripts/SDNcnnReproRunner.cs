@@ -59,7 +59,127 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         "95",
         "115",
         "139",
-        "149"
+        "149",
+        "251",
+        "337",
+        "425",
+        "511",
+        "599",
+        "627",
+        "711",
+        "725",
+        "740",
+        "755",
+        "772",
+        "858",
+        "944",
+        "1032",
+        "1118",
+        "1194",
+        "1195",
+        "1196",
+        "1197",
+        "1198",
+        "1199",
+        "1200",
+        "1201",
+        "1202",
+        "1203",
+        "1204",
+        "1205",
+        "1206",
+        "1207",
+        "1208",
+        "1209",
+        "1210",
+        "1211",
+        "1212",
+        "1213",
+        "1214",
+        "1242",
+        "1243",
+        "1244",
+        "1245",
+        "1246",
+        "1266",
+        "1267",
+        "1268",
+        "1269",
+        "1270",
+        "1271",
+        "1272",
+        "1273",
+        "1274",
+        "1275",
+        "1276",
+        "1277",
+        "1278",
+        "1279",
+        "1280",
+        "1281",
+        "1282",
+        "1283",
+        "1284",
+        "1285",
+        "1286",
+        "1287",
+        "1288",
+        "1289",
+        "1290",
+        "1291",
+        "1292",
+        "1293",
+        "1294",
+        "1295",
+        "1296",
+        "1297",
+        "1298",
+        "1299",
+        "1300",
+        "1301",
+        "1302",
+        "1368",
+        "1369",
+        "1370",
+        "1371",
+        "1372",
+        "1373",
+        "1374",
+        "1375",
+        "1376",
+        "1377",
+        "1378",
+        "1379",
+        "1380",
+        "1381",
+        "1382",
+        "1383",
+        "1384",
+        "1385",
+        "1386",
+        "1387",
+        "1388",
+        "1390",
+        "1416",
+        "1417",
+        "1440",
+        "1441",
+        "1445",
+        "1448",
+        "1449",
+        "1450",
+        "1451",
+        "1453",
+        "1454",
+        "1455",
+        "1465",
+        "1470",
+        "1541",
+        "1542",
+        "1543",
+        "out0",
+        "c_out_out0",
+        "outout"
     };
     private static readonly string[] OfficialUnetCacheBlobNames =
     {
@@ -222,7 +342,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     public int maxPooledPerShape = 0;
     public bool deterministicAncestralNoise = true;
     public bool enableDebugDump = false;
-    public RenderTextureFormat tensorTextureFormat = RenderTextureFormat.ARGBHalf;
+    public RenderTextureFormat tensorTextureFormat = RenderTextureFormat.ARGBFloat;
+    public RenderTextureFormat decoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
     public RenderTextureFormat encoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
     public bool encoderForceBufferConvolutionAll = false;
     public bool useNcnnStyleGroupNorm = true;
@@ -247,6 +368,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     private string _lastDumpDir;
     private bool _clipDebugDumped;
     private bool _unetDebugDumped;
+    private bool _unetUncondDebugDumped;
 
     private sealed class UnetCacheBlob
     {
@@ -379,6 +501,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "negative_prompt.txt"), negativePrompt ?? string.Empty);
                 WriteFloatArray(Path.Combine(_lastDumpDir, "unity_cond.txt"), cond);
                 WriteFloatArray(Path.Combine(_lastDumpDir, "unity_uncond.txt"), uncond);
+                WriteFloatArray(Path.Combine(_lastDumpDir, "unity_sigmas.txt"), sigmas);
                 WriteAllTextSafe(
                     Path.Combine(_lastDumpDir, "run_config.txt"),
                     "width=" + width.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
@@ -386,7 +509,10 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                     + "steps=" + stepCount.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
                     + "seed=" + actualSeed.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
                     + "used_init_image=" + BoolText(initImage != null) + Environment.NewLine
-                    + "strength=" + strength.ToString("0.000000", CultureInfo.InvariantCulture));
+                    + "strength=" + strength.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
+                    + "tensor_texture_format=" + tensorTextureFormat + Environment.NewLine
+                    + "decoder_tensor_texture_format=" + decoderTensorTextureFormat + Environment.NewLine
+                    + "encoder_tensor_texture_format=" + encoderTensorTextureFormat);
             }
 
             ReportProgress(0.22f, initImage != null ? "Encode init image" : "Init latent");
@@ -438,12 +564,32 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                     var sigmaUp = Mathf.Min(sigmaNext, Mathf.Sqrt(Mathf.Max(0f, sigmaNext * sigmaNext * (sigma * sigma - sigmaNext * sigmaNext) / Mathf.Max(sigma * sigma, 1e-12f))));
                     var sigmaDown = Mathf.Sqrt(Mathf.Max(0f, sigmaNext * sigmaNext - sigmaUp * sigmaUp));
                     if (sigmaUp > 0f)
-                        noiseBuf = NewFloatBuffer(GenerateStepGaussian(LatentElementCount(width, height), actualSeed, stepIndex));
+                    {
+                        var stepNoiseSeed = ResolveStepNoiseSeed(actualSeed, stepIndex);
+                        var stepNoise = GenerateGaussianByMode(LatentElementCount(width, height), stepNoiseSeed);
+                        if (initImage == null && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                        {
+                            WriteAllTextSafe(
+                                Path.Combine(_lastDumpDir, "unity_txt2img_step_noise_seed_" + (stepIndex + 1).ToString(CultureInfo.InvariantCulture) + ".txt"),
+                                stepNoiseSeed.ToString(CultureInfo.InvariantCulture));
+                            WriteFloatArray(
+                                Path.Combine(_lastDumpDir, "unity_txt2img_step_noise_" + (stepIndex + 1).ToString(CultureInfo.InvariantCulture) + ".txt"),
+                                stepNoise);
+                        }
+                        noiseBuf = NewFloatBuffer(stepNoise);
+                    }
 
                     nextLatent = UpdateLatentEulerAncestral(latentBuf, denoisedBuf, sigma, sigmaDown, sigmaUp, noiseBuf, width, height);
                     LogStageTiming("update_latent_step_" + (stepIndex + 1).ToString(CultureInfo.InvariantCulture), stageSw.ElapsedMilliseconds);
                     if (nextLatent == null)
                         return Finish(new SDNcnnReproResult { error = "Latent update failed at step " + (stepIndex + 1).ToString(CultureInfo.InvariantCulture), seed = actualSeed, usedInitImage = initImage != null });
+                    if (initImage == null && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                    {
+                        DumpBufferToFile(
+                            Path.Combine(_lastDumpDir, "unity_txt2img_latent_after_step_" + (stepIndex + 1).ToString(CultureInfo.InvariantCulture) + ".txt"),
+                            nextLatent,
+                            nextLatent.count);
+                    }
                 }
                 finally
                 {
@@ -458,6 +604,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
             ReportProgress(0.86f, "Decode image");
             stageSw.Restart();
+            if (initImage == null && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_txt2img_final_latent.txt"), latentBuf, latentBuf.count);
             var finalTexture = await DecodeLatentAsync(latentBuf, width, height, ct);
             LogStageTiming("decode_latent", stageSw.ElapsedMilliseconds);
             if (finalTexture == null)
@@ -772,7 +920,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             UnityEngine.Debug.Log("[SD] CLIP loaded");
         }
 
-        var spatialKey = width.ToString(CultureInfo.InvariantCulture) + "x" + height.ToString(CultureInfo.InvariantCulture) + "|" + BoolText(needEncoder) + "|" + tensorTextureFormat + "|" + encoderTensorTextureFormat + "|" + BoolText(ResolveEncoderForceBufferConvolution()) + "|" + paths.unetBinPath + "|" + paths.decoderBinPath + "|" + (paths.encoderBinPath ?? string.Empty);
+        var spatialKey = width.ToString(CultureInfo.InvariantCulture) + "x" + height.ToString(CultureInfo.InvariantCulture) + "|" + BoolText(needEncoder) + "|" + tensorTextureFormat + "|" + decoderTensorTextureFormat + "|" + encoderTensorTextureFormat + "|" + BoolText(ResolveEncoderForceBufferConvolution()) + "|" + paths.unetBinPath + "|" + paths.decoderBinPath + "|" + (paths.encoderBinPath ?? string.Empty);
         if (string.Equals(_loadedSpatialKey, spatialKey, StringComparison.Ordinal))
             return;
 
@@ -783,8 +931,10 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         _decoderRepro = new NcnnRepro(_ops);
         _encoderRepro = needEncoder ? new NcnnRepro(_ops) : null;
         _unetDebugDumped = false;
+        _unetUncondDebugDumped = false;
         ApplyCommonOptions(_unetRepro);
         ApplyCommonOptions(_decoderRepro);
+        _decoderRepro.TensorTextureFormat = decoderTensorTextureFormat;
         if (_encoderRepro != null)
         {
             ApplyCommonOptions(_encoderRepro);
@@ -978,6 +1128,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         var latent = _unetRepro.RentTempBuffer(LatentElementCount(width, height), sizeof(float));
         latent.SetData(GenerateInitialGaussian(latent.count, seed));
         _ops.MulScalarInplace(latent, sigma0, latent.count);
+        if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+            DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_txt2img_latent_init.txt"), latent, latent.count);
         return latent;
     }
 
@@ -1266,6 +1418,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             && !_unetDebugDumped
             && !string.IsNullOrWhiteSpace(_lastDumpDir)
             && string.Equals(dumpTag, "cond", StringComparison.Ordinal);
+        var debugUnetBlobNames = shouldDumpCond ? ResolveDebugUnetBlobNames() : DebugUnetBlobNames;
         if (captureCache != null)
         {
             pinned = new HashSet<string>(OfficialUnetCacheBlobNames, StringComparer.Ordinal)
@@ -1277,8 +1430,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         if (shouldDumpCond)
         {
             pinned ??= new HashSet<string>(StringComparer.Ordinal);
-            for (var i = 0; i < DebugUnetBlobNames.Length; i++)
-                pinned.Add(DebugUnetBlobNames[i]);
+            for (var i = 0; i < debugUnetBlobNames.Length; i++)
+                pinned.Add(debugUnetBlobNames[i]);
             pinned.Add(UnetOutputBlobName);
         }
 
@@ -1318,9 +1471,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
         if (shouldDumpCond)
         {
-            for (var i = 0; i < DebugUnetBlobNames.Length; i++)
+            for (var i = 0; i < debugUnetBlobNames.Length; i++)
             {
-                var blobName = DebugUnetBlobNames[i];
+                var blobName = debugUnetBlobNames[i];
                 if (!TryDumpUnetCacheBlob(captureCache, blobName, Path.Combine(_lastDumpDir, "unity_unet_blob_" + blobName + ".txt")))
                     TryDumpAnyBlob(infer, blobName, Path.Combine(_lastDumpDir, "unity_unet_blob_" + blobName + ".txt"));
             }
@@ -1339,9 +1492,13 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_unet_outout_cond.txt"), outBuf, outBuf.count);
                 _unetDebugDumped = true;
             }
-            else if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && string.Equals(dumpTag, "uncond", StringComparison.Ordinal))
+            else if (enableDebugDump
+                     && !_unetUncondDebugDumped
+                     && !string.IsNullOrWhiteSpace(_lastDumpDir)
+                     && string.Equals(dumpTag, "uncond", StringComparison.Ordinal))
             {
                 DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_unet_outout_uncond.txt"), outBuf, outBuf.count);
+                _unetUncondDebugDumped = true;
             }
             return outBuf;
         }
@@ -1855,121 +2012,95 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     private static float[] GenerateOfficialGaussian(int count, int seed)
     {
         var data = new float[Mathf.Max(0, count)];
-        var rng = new MsvcMt19937((uint)seed);
-        var i = 0;
-        while (i < data.Length)
+        EnsureOpenCvNormalTables();
+
+        var state = seed != 0 ? (ulong)(uint)seed : 0xffffffffUL;
+        const float r = 3.442620f;
+        const float rngFloat = 2.3283064365386962890625e-10f;
+        const float floatMin = 1.17549435e-38f;
+
+        for (var i = 0; i < data.Length; i++)
         {
-            float vx1;
-            float vx2;
-            float sx;
-            do
+            float x;
+            for (;;)
             {
-                vx1 = 2f * rng.NextCanonicalFloat() - 1f;
-                vx2 = 2f * rng.NextCanonicalFloat() - 1f;
-                sx = vx1 * vx1 + vx2 * vx2;
-            }
-            while (!(sx < 1f && vx1 != 0f && vx2 != 0f));
+                var hz = unchecked((int)(uint)state);
+                state = OpenCvRngNext(state);
+                var iz = hz & 127;
+                x = hz * _openCvNormalWn[iz];
 
-            float logSx;
-            if (sx > 1e-4f)
-            {
-                logSx = (float)Math.Log(sx);
-            }
-            else
-            {
-                const float ln2 = 0.6931471805599453f;
-                var maxAbs = Mathf.Max(Mathf.Abs(vx1), Mathf.Abs(vx2));
-                var expMax = ILogB(maxAbs);
-                vx1 = ScaleB(vx1, -expMax);
-                vx2 = ScaleB(vx2, -expMax);
-                sx = vx1 * vx1 + vx2 * vx2;
-                logSx = (float)Math.Log(sx) + expMax * (ln2 * 2f);
+                var absHz = hz < 0 ? unchecked((uint)-hz) : (uint)hz;
+                if (absHz < _openCvNormalKn[iz])
+                    break;
+
+                if (iz == 0)
+                {
+                    float y;
+                    do
+                    {
+                        x = (uint)state * rngFloat;
+                        state = OpenCvRngNext(state);
+                        y = (uint)state * rngFloat;
+                        state = OpenCvRngNext(state);
+                        x = (float)(-Math.Log(x + floatMin) * 0.2904764);
+                        y = (float)-Math.Log(y + floatMin);
+                    }
+                    while (y + y < x * x);
+
+                    x = hz > 0 ? r + x : -r - x;
+                    break;
+                }
+
+                var wedgeY = (uint)state * rngFloat;
+                state = OpenCvRngNext(state);
+                if (_openCvNormalFn[iz] + wedgeY * (_openCvNormalFn[iz - 1] - _openCvNormalFn[iz]) < (float)Math.Exp(-0.5f * x * x))
+                    break;
             }
 
-            var fx = Mathf.Sqrt(-2f * logSx / sx);
-            data[i++] = fx * vx1;
-            if (i < data.Length)
-                data[i++] = fx * vx2;
+            data[i] = x;
         }
 
         return data;
     }
 
-    private static int ILogB(float value)
-    {
-        if (value == 0f)
-            return int.MinValue;
-        var bits = BitConverter.SingleToInt32Bits(Mathf.Abs(value));
-        var exp = (bits >> 23) & 0xff;
-        if (exp != 0)
-            return exp - 127;
+    private static readonly uint[] _openCvNormalKn = new uint[128];
+    private static readonly float[] _openCvNormalWn = new float[128];
+    private static readonly float[] _openCvNormalFn = new float[128];
+    private static bool _openCvNormalTablesReady;
 
-        var mantissa = bits & 0x7fffff;
-        var e = -126;
-        while ((mantissa & 0x400000) == 0 && mantissa != 0)
+    private static void EnsureOpenCvNormalTables()
+    {
+        if (_openCvNormalTablesReady)
+            return;
+
+        const double m1 = 2147483648.0;
+        var dn = 3.442619855899;
+        var tn = dn;
+        const double vn = 9.91256303526217e-3;
+
+        var q = vn / Math.Exp(-0.5 * dn * dn);
+        _openCvNormalKn[0] = (uint)((dn / q) * m1);
+        _openCvNormalKn[1] = 0;
+        _openCvNormalWn[0] = (float)(q / m1);
+        _openCvNormalWn[127] = (float)(dn / m1);
+        _openCvNormalFn[0] = 1f;
+        _openCvNormalFn[127] = (float)Math.Exp(-0.5 * dn * dn);
+
+        for (var i = 126; i >= 1; i--)
         {
-            mantissa <<= 1;
-            e--;
+            dn = Math.Sqrt(-2.0 * Math.Log(vn / dn + Math.Exp(-0.5 * dn * dn)));
+            _openCvNormalKn[i + 1] = (uint)((dn / tn) * m1);
+            tn = dn;
+            _openCvNormalFn[i] = (float)Math.Exp(-0.5 * dn * dn);
+            _openCvNormalWn[i] = (float)(dn / m1);
         }
-        return e;
+
+        _openCvNormalTablesReady = true;
     }
 
-    private static float ScaleB(float value, int exponent)
+    private static ulong OpenCvRngNext(ulong state)
     {
-        return (float)(value * Math.Pow(2.0, exponent));
-    }
-
-    private sealed class MsvcMt19937
-    {
-        private const int N = 624;
-        private const int M = 397;
-        private const uint MatrixA = 0x9908b0dfu;
-        private const uint UpperMask = 0x80000000u;
-        private const uint LowerMask = 0x7fffffffu;
-        private readonly uint[] _state = new uint[N];
-        private int _index = N;
-
-        public MsvcMt19937(uint seed)
-        {
-            _state[0] = seed;
-            for (var i = 1; i < N; i++)
-            {
-                var prev = _state[i - 1];
-                _state[i] = unchecked(1812433253u * (prev ^ (prev >> 30)) + (uint)i);
-            }
-        }
-
-        public float NextCanonicalFloat()
-        {
-            return NextUInt() * (1f / 4294967296f);
-        }
-
-        private uint NextUInt()
-        {
-            if (_index >= N)
-                Twist();
-
-            var y = _state[_index++];
-            y ^= y >> 11;
-            y ^= (y << 7) & 0x9d2c5680u;
-            y ^= (y << 15) & 0xefc60000u;
-            y ^= y >> 18;
-            return y;
-        }
-
-        private void Twist()
-        {
-            for (var i = 0; i < N; i++)
-            {
-                var x = (_state[i] & UpperMask) | (_state[(i + 1) % N] & LowerMask);
-                var xa = x >> 1;
-                if ((x & 1u) != 0u)
-                    xa ^= MatrixA;
-                _state[i] = _state[(i + M) % N] ^ xa;
-            }
-
-            _index = 0;
-        }
+        return unchecked((ulong)(uint)state * 4164903690UL + (state >> 32));
     }
 
     private static ComputeBuffer NewFloatBuffer(float[] data)
@@ -2227,7 +2358,27 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         return Array.Empty<string>();
     }
 
+    private static string[] ResolveDebugUnetBlobNames()
+    {
+        try
+        {
+            var listEnv = Environment.GetEnvironmentVariable("AIIMAGE_SD_UNET_BLOBS");
+            if (!string.IsNullOrWhiteSpace(listEnv))
+                return ParseDebugBlobList(listEnv, UnetOutputBlobName);
+        }
+        catch
+        {
+        }
+
+        return DebugUnetBlobNames;
+    }
+
     private static string[] ParseDebugEncoderBlobList(string value)
+    {
+        return ParseDebugBlobList(value, EncoderMeanBlobName, EncoderStdBlobName);
+    }
+
+    private static string[] ParseDebugBlobList(string value, params string[] excludedNames)
     {
         if (string.IsNullOrWhiteSpace(value))
             return Array.Empty<string>();
@@ -2235,13 +2386,15 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         var parts = value.Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         var result = new List<string>(parts.Length);
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var excluded = excludedNames != null && excludedNames.Length > 0
+            ? new HashSet<string>(excludedNames, StringComparer.Ordinal)
+            : null;
         for (var i = 0; i < parts.Length; i++)
         {
             var name = parts[i].Trim();
             if (string.IsNullOrEmpty(name))
                 continue;
-            if (string.Equals(name, EncoderMeanBlobName, StringComparison.Ordinal)
-                || string.Equals(name, EncoderStdBlobName, StringComparison.Ordinal))
+            if (excluded != null && excluded.Contains(name))
                 continue;
             if (seen.Add(name))
                 result.Add(name);
@@ -2683,24 +2836,16 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
                 return;
 
-            var tex = infer.ExtractTexture(blobName);
+            var tex = infer.GetTexture(blobName);
             if (tex == null)
                 return;
 
-            try
-            {
-                var packs = tex.volumeDepth > 0 ? tex.volumeDepth : 1;
-                var channels = packs * 4;
-                using var physicalBuffer = new ComputeBuffer(tex.width * tex.height * channels, sizeof(float), ComputeBufferType.Structured);
-                _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, channels, physicalBuffer);
-                var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
-                DumpBufferToFile(path, physicalBuffer, logicalCount);
-            }
-            finally
-            {
-                var owner = ownerOverride ?? (useUnetOwner ? _unetRepro : _clipRepro);
-                owner?.ReturnTempArray(tex);
-            }
+            var packs = tex.volumeDepth > 0 ? tex.volumeDepth : 1;
+            var channels = packs * 4;
+            using var physicalBuffer = new ComputeBuffer(tex.width * tex.height * channels, sizeof(float), ComputeBufferType.Structured);
+            _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, channels, physicalBuffer);
+            var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
+            DumpBufferToFile(path, physicalBuffer, logicalCount);
         }
         catch
         {

@@ -62,9 +62,15 @@ namespace NcnnCompute
                                                         : string.Equals(layer.name, owner.CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
                                                     var isCodeFormerSftMul = opType == 2 && isTargetSftMulLayer;
 
-                                                    if (!owner.ForceBufferBinaryOpAll
-                                                        && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aTexShape)
-                                                        && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var bTex, out var bTexShape)
+                                                    NcnnRepro.TensorRef aTex = null;
+                                                    NcnnRepro.TensorRef bTex = null;
+                                                    NcnnRepro.BufferShape aTexShape = default;
+                                                    NcnnRepro.BufferShape bTexShape = default;
+                                                    var canUseTextureBinary = !owner.ForceBufferBinaryOpAll
+                                                        && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out aTex, out aTexShape)
+                                                        && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out bTex, out bTexShape);
+
+                                                    if (canUseTextureBinary
                                                         && NcnnRepro.CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
                                                     {
                                                         RenderTexture scaledBTexture = null;
@@ -103,6 +109,55 @@ namespace NcnnCompute
                                                         {
                                                             if (scaledBTexture != null)
                                                                 owner.ReturnTempArray(scaledBTexture);
+                                                            if (finalTexture != null)
+                                                                owner.ReturnTempArray(finalTexture);
+                                                        }
+                                                    }
+                                                    else if (!owner.ForceBufferBinaryOpAll
+                                                             && !isTargetSftAddLayer
+                                                             && !isTargetSftMulLayer
+                                                             && TryResolvePack4BufferScalar(
+                                                                 owner,
+                                                                 layer.bottomNames[0],
+                                                                 layer.bottomNames[1],
+                                                                 textureBlobs,
+                                                                 textureShapes,
+                                                                 bufferBlobs,
+                                                                 bufferViews,
+                                                                 out var scalarTexture,
+                                                                 out var scalarTextureShape,
+                                                                 out var scalarBuffer,
+                                                                 out var scalarIsA))
+                                                    {
+                                                        RenderTexture finalTexture = null;
+                                                        try
+                                                        {
+                                                            finalTexture = owner.RentTempArray(scalarTexture.width, scalarTexture.height, scalarTexture.packs, RenderTextureFormat.ARGBHalf);
+                                                            owner.Ops.BinaryOpPack4BufferScalar(scalarTexture.texture, scalarBuffer, scalarTexture.packs, opType, scalarIsA, finalTexture);
+                                                            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalarTextureShape);
+                                                            finalTexture = null;
+                                                        }
+                                                        finally
+                                                        {
+                                                            if (finalTexture != null)
+                                                                owner.ReturnTempArray(finalTexture);
+                                                        }
+                                                    }
+                                                    else if (canUseTextureBinary
+                                                             && !isTargetSftAddLayer
+                                                             && !isTargetSftMulLayer
+                                                             && TryResolvePack4SpatialBroadcast(aTex, aTexShape, bTex, bTexShape, out var broadcastMode, out var outShape, out var outWidth, out var outHeight, out var outPacks))
+                                                    {
+                                                        RenderTexture finalTexture = null;
+                                                        try
+                                                        {
+                                                            finalTexture = owner.RentTempArray(outWidth, outHeight, outPacks, RenderTextureFormat.ARGBHalf);
+                                                            owner.Ops.BinaryOpPack4Broadcast(aTex.texture, bTex.texture, outPacks, opType, broadcastMode, finalTexture);
+                                                            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, outShape);
+                                                            finalTexture = null;
+                                                        }
+                                                        finally
+                                                        {
                                                             if (finalTexture != null)
                                                                 owner.ReturnTempArray(finalTexture);
                                                         }
@@ -204,6 +259,129 @@ namespace NcnnCompute
                                                 continue;
                         } while (false);
         }
+
+        private static bool TryResolvePack4SpatialBroadcast(
+            NcnnRepro.TensorRef aTex,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.TensorRef bTex,
+            NcnnRepro.BufferShape bShape,
+            out int broadcastMode,
+            out NcnnRepro.BufferShape outShape,
+            out int outWidth,
+            out int outHeight,
+            out int outPacks)
+        {
+            broadcastMode = 0;
+            outShape = default;
+            outWidth = 0;
+            outHeight = 0;
+            outPacks = 0;
+
+            if (aTex == null || bTex == null || aTex.texture == null || bTex.texture == null)
+                return false;
+            if (aShape.dims != 3 || bShape.dims != 3)
+                return false;
+            if (aShape.c != bShape.c || aTex.packs != bTex.packs)
+                return false;
+
+            var aIsScalarSpatial = aShape.w == 1 && aShape.h == 1 && aTex.width == 1 && aTex.height == 1;
+            var bIsScalarSpatial = bShape.w == 1 && bShape.h == 1 && bTex.width == 1 && bTex.height == 1;
+            var aIsOutputSpatial = aShape.w == aTex.width && aShape.h == aTex.height;
+            var bIsOutputSpatial = bShape.w == bTex.width && bShape.h == bTex.height;
+
+            if (aIsScalarSpatial && !bIsScalarSpatial && bIsOutputSpatial)
+            {
+                broadcastMode = 1;
+                outWidth = bTex.width;
+                outHeight = bTex.height;
+                outPacks = bTex.packs;
+                outShape = new NcnnRepro.BufferShape(3, bShape.w, bShape.h, 1, bShape.c);
+                return true;
+            }
+
+            if (bIsScalarSpatial && !aIsScalarSpatial && aIsOutputSpatial)
+            {
+                broadcastMode = 2;
+                outWidth = aTex.width;
+                outHeight = aTex.height;
+                outPacks = aTex.packs;
+                outShape = new NcnnRepro.BufferShape(3, aShape.w, aShape.h, 1, aShape.c);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolvePack4BufferScalar(
+            NcnnRepro owner,
+            string aName,
+            string bName,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.TensorRef texture,
+            out NcnnRepro.BufferShape textureShape,
+            out ComputeBuffer scalar,
+            out bool scalarIsA)
+        {
+            texture = null;
+            textureShape = default;
+            scalar = null;
+            scalarIsA = false;
+
+            if (owner == null)
+                return false;
+
+            if (TryGetSingleElementBuffer(bName, bufferBlobs, bufferViews, out var bScalar)
+                && owner.TryGetPack4Texture(aName, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aShape))
+            {
+                texture = aTex;
+                textureShape = aShape;
+                scalar = bScalar;
+                scalarIsA = false;
+                return true;
+            }
+
+            if (TryGetSingleElementBuffer(aName, bufferBlobs, bufferViews, out var aScalar)
+                && owner.TryGetPack4Texture(bName, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var bTex, out var bShape))
+            {
+                texture = bTex;
+                textureShape = bShape;
+                scalar = aScalar;
+                scalarIsA = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetSingleElementBuffer(
+            string name,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out ComputeBuffer scalar)
+        {
+            scalar = null;
+            if (string.IsNullOrEmpty(name) || bufferBlobs == null)
+                return false;
+            if (!bufferBlobs.TryGetValue(name, out var buffer) || buffer == null || buffer.count < 1)
+                return false;
+
+            if (bufferViews != null && bufferViews.TryGetValue(name, out var view) && view != null)
+            {
+                if (view.elementCount != 1)
+                    return false;
+            }
+            else if (buffer.count != 1)
+            {
+                return false;
+            }
+
+            scalar = buffer;
+            return true;
+        }
+
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
                         var cmd = context.commandBuffer;
