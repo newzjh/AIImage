@@ -18,6 +18,7 @@ public struct SDNcnnReproResult
     public long elapsedMs;
     public int seed;
     public bool usedInitImage;
+    public bool usedMask;
     public string dumpDir;
 }
 
@@ -172,6 +173,21 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         CancellationToken ct)
     {
         return RunAsync(initImage, positivePrompt, negativePrompt, width, height, stepCount, seed, strength, ct);
+    }
+
+    public UniTask<SDNcnnReproResult> InpaintAsync(
+        Texture initImage,
+        Texture maskImage,
+        string positivePrompt,
+        string negativePrompt,
+        int width,
+        int height,
+        int stepCount,
+        int seed,
+        float strength,
+        CancellationToken ct)
+    {
+        return RunInpaintAsync(initImage, maskImage, positivePrompt, negativePrompt, width, height, stepCount, seed, strength, ct);
     }
 
     private async UniTask<SDNcnnReproResult> RunAsync(
@@ -336,6 +352,233 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 DisposeBuffer(condBuf);
             if (uncondBuf != null)
                 DisposeBuffer(uncondBuf);
+            ReportProgress(1f, string.Empty);
+        }
+    }
+
+    private async UniTask<SDNcnnReproResult> RunInpaintAsync(
+        Texture initImage,
+        Texture maskImage,
+        string positivePrompt,
+        string negativePrompt,
+        int width,
+        int height,
+        int stepCount,
+        int seed,
+        float strength,
+        CancellationToken ct)
+    {
+        var totalSw = Stopwatch.StartNew();
+        _lastDumpDir = null;
+
+        SDNcnnReproResult Finish(SDNcnnReproResult result)
+        {
+            result.elapsedMs = totalSw.ElapsedMilliseconds;
+            result.dumpDir = _lastDumpDir;
+            return result;
+        }
+
+        if (initImage == null)
+            return Finish(new SDNcnnReproResult { error = "Inpainting requires an init image." });
+        if (maskImage == null)
+            return Finish(new SDNcnnReproResult { error = "Inpainting requires a mask image." });
+
+        ComputeBuffer condBuf = null;
+        ComputeBuffer uncondBuf = null;
+        ComputeBuffer latentBuf = null;
+        ComputeBuffer cleanLatentBuf = null;
+        ComputeBuffer maskBuf = null;
+        ComputeBuffer invMaskBuf = null;
+        ComputeBuffer preserveNoiseBuf = null;
+        Texture2D resizedMaskTex = null;
+        Texture2D resizedSourceTex = null;
+        var actualSeed = ResolveSeed(seed);
+
+        try
+        {
+            EnsureRuntimeObjects();
+            width = Mathf.Max(256, width);
+            height = Mathf.Max(256, height);
+            stepCount = Mathf.Max(1, stepCount);
+            if ((width % 128) != 0 || (height % 128) != 0)
+                return Finish(new SDNcnnReproResult { error = "Stable Diffusion width/height must be multiples of 128.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            if (enableDebugDump)
+                _lastDumpDir = CreateDumpDir("AIImage_SD_NcnnRepro");
+
+            ReportProgress(0.02f, "Load models");
+            await EnsureLoadedAsync(width, height, true, ct);
+
+            ReportProgress(0.12f, "Encode prompts");
+            var cond = await BuildConditioningAsync(positivePrompt ?? string.Empty, ct);
+            var uncond = await BuildConditioningAsync(negativePrompt ?? string.Empty, ct);
+            if (cond == null || cond.Length == 0 || uncond == null || uncond.Length == 0)
+                return Finish(new SDNcnnReproResult { error = "Prompt conditioning failed.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            condBuf = NewFloatBuffer(cond);
+            uncondBuf = NewFloatBuffer(uncond);
+            var condView = new NcnnTensorBuffer(condBuf, 2, TextEmbeddingWidth, cond.Length / TextEmbeddingWidth, 1, 1, false);
+            var uncondView = new NcnnTensorBuffer(uncondBuf, 2, TextEmbeddingWidth, uncond.Length / TextEmbeddingWidth, 1, 1, false);
+
+            var sigmas = BuildSigmaSchedule(stepCount);
+            if (sigmas == null || sigmas.Length != stepCount + 1)
+                return Finish(new SDNcnnReproResult { error = "Failed to build sigma schedule.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            ReportProgress(0.20f, "Prepare inpaint mask");
+            (maskBuf, invMaskBuf, resizedMaskTex) = CreateLatentMaskBuffers(maskImage, width, height);
+            if (maskBuf == null || invMaskBuf == null || resizedMaskTex == null)
+                return Finish(new SDNcnnReproResult { error = "Inpaint mask preparation failed.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            resizedSourceTex = ReadResizedTexture(initImage, width, height);
+            if (resizedSourceTex == null)
+                return Finish(new SDNcnnReproResult { error = "Inpaint source preparation failed.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+            {
+                TryWriteTexturePng(resizedSourceTex, _lastDumpDir, "inpaint_source.png");
+                TryWriteTexturePng(resizedMaskTex, _lastDumpDir, "inpaint_mask.png");
+            }
+
+            ReportProgress(0.24f, "Encode init image");
+            preserveNoiseBuf = NewFloatBuffer(GenerateGaussian(LatentElementCount(width, height), NormalizeSeed(actualSeed)));
+            cleanLatentBuf = await EncodeInitLatentAsync(initImage, width, height, actualSeed, ct);
+            if (cleanLatentBuf == null)
+                return Finish(new SDNcnnReproResult { error = "Inpaint latent encoding failed.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            var samplingSigmas = BuildImg2ImgSamplingSigmas(sigmas, stepCount, Mathf.Clamp01(strength), out var startIndex);
+            if (samplingSigmas == null || samplingSigmas.Length < 2)
+                return Finish(new SDNcnnReproResult { error = "Sampling schedule invalid.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            latentBuf = BuildNoisedReferenceLatent(cleanLatentBuf, preserveNoiseBuf, samplingSigmas[0]);
+            if (latentBuf == null)
+                return Finish(new SDNcnnReproResult { error = "Inpaint latent init failed.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            ReportProgress(0.30f, "Sample latent");
+            for (var stepIndex = 0; stepIndex < samplingSigmas.Length - 1; stepIndex++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var sigma = samplingSigmas[stepIndex];
+                var sigmaNext = samplingSigmas[stepIndex + 1];
+                var progressBase = 0.30f;
+                var progressSpan = 0.50f;
+                var stepProgress = (float)stepIndex / Mathf.Max(1, samplingSigmas.Length - 1);
+                ReportProgress(progressBase + progressSpan * stepProgress, "Denoise step " + (stepIndex + 1).ToString(CultureInfo.InvariantCulture) + "/" + (samplingSigmas.Length - 1).ToString(CultureInfo.InvariantCulture));
+                await UniTask.Yield();
+
+                ComputeBuffer referenceAtSigma = null;
+                ComputeBuffer constrainedCurrent = null;
+                ComputeBuffer denoisedBuf = null;
+                ComputeBuffer nextLatent = null;
+                ComputeBuffer referenceAtNext = null;
+                ComputeBuffer constrainedNext = null;
+                try
+                {
+                    referenceAtSigma = BuildNoisedReferenceLatent(cleanLatentBuf, preserveNoiseBuf, sigma);
+                    constrainedCurrent = BlendLatentWithMask(latentBuf, referenceAtSigma, maskBuf, invMaskBuf);
+                    denoisedBuf = await RunCfgDenoiserAsync(constrainedCurrent, width, height, sigma, condView, uncondView, ct);
+                    if (denoisedBuf == null)
+                        return Finish(new SDNcnnReproResult { error = "UNet denoiser failed at step " + (stepIndex + 1).ToString(CultureInfo.InvariantCulture), seed = actualSeed, usedInitImage = true, usedMask = true });
+
+                    var sigmaUp = Mathf.Min(sigmaNext, Mathf.Sqrt(Mathf.Max(0f, sigmaNext * sigmaNext * (sigma * sigma - sigmaNext * sigmaNext) / Mathf.Max(sigma * sigma, 1e-12f))));
+                    var sigmaDown = Mathf.Sqrt(Mathf.Max(0f, sigmaNext * sigmaNext - sigmaUp * sigmaUp));
+                    ComputeBuffer stepNoise = null;
+                    try
+                    {
+                        if (sigmaUp > 0f)
+                            stepNoise = NewFloatBuffer(GenerateGaussian(LatentElementCount(width, height), ResolveStepNoiseSeed(actualSeed, stepIndex)));
+                        nextLatent = UpdateLatentEulerAncestral(constrainedCurrent, denoisedBuf, sigma, sigmaDown, sigmaUp, stepNoise, width, height);
+                    }
+                    finally
+                    {
+                        if (stepNoise != null)
+                            DisposeBuffer(stepNoise);
+                    }
+
+                    if (nextLatent == null)
+                        return Finish(new SDNcnnReproResult { error = "Latent update failed at step " + (stepIndex + 1).ToString(CultureInfo.InvariantCulture), seed = actualSeed, usedInitImage = true, usedMask = true });
+
+                    referenceAtNext = BuildNoisedReferenceLatent(cleanLatentBuf, preserveNoiseBuf, sigmaNext);
+                    constrainedNext = BlendLatentWithMask(nextLatent, referenceAtNext, maskBuf, invMaskBuf);
+
+                    _unetRepro.ReturnTempBuffer(latentBuf);
+                    latentBuf = constrainedNext;
+                    constrainedNext = null;
+                }
+                finally
+                {
+                    if (referenceAtSigma != null)
+                        _unetRepro.ReturnTempBuffer(referenceAtSigma);
+                    if (constrainedCurrent != null)
+                        _unetRepro.ReturnTempBuffer(constrainedCurrent);
+                    if (denoisedBuf != null)
+                        _unetRepro.ReturnTempBuffer(denoisedBuf);
+                    if (nextLatent != null)
+                        _unetRepro.ReturnTempBuffer(nextLatent);
+                    if (referenceAtNext != null)
+                        _unetRepro.ReturnTempBuffer(referenceAtNext);
+                    if (constrainedNext != null)
+                        _unetRepro.ReturnTempBuffer(constrainedNext);
+                }
+            }
+
+            ReportProgress(0.86f, "Decode image");
+            var decoded = await DecodeLatentAsync(latentBuf, width, height, ct);
+            if (decoded == null)
+                return Finish(new SDNcnnReproResult { error = "Decoder failed.", seed = actualSeed, usedInitImage = true, usedMask = true });
+
+            var composited = CompositeWithMask(resizedSourceTex, decoded, resizedMaskTex);
+            if (composited == null)
+            {
+                UnityEngine.Object.DestroyImmediate(decoded);
+                return Finish(new SDNcnnReproResult { error = "Inpaint composite failed.", seed = actualSeed, usedInitImage = true, usedMask = true });
+            }
+
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+            {
+                TryWriteTexturePng(decoded, _lastDumpDir, "inpaint_generated.png");
+                TryWriteTexturePng(composited, _lastDumpDir, "final_output.png");
+            }
+
+            UnityEngine.Object.DestroyImmediate(decoded);
+            ReportProgress(1f, string.Empty);
+            return Finish(new SDNcnnReproResult
+            {
+                texture = composited,
+                error = null,
+                seed = actualSeed,
+                usedInitImage = true,
+                usedMask = true
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            return Finish(new SDNcnnReproResult { error = "Cancelled", seed = actualSeed, usedInitImage = true, usedMask = true });
+        }
+        catch (Exception e)
+        {
+            UnityEngine.Debug.LogException(e);
+            return Finish(new SDNcnnReproResult { error = e.Message, seed = actualSeed, usedInitImage = true, usedMask = true });
+        }
+        finally
+        {
+            if (latentBuf != null)
+                _unetRepro?.ReturnTempBuffer(latentBuf);
+            if (cleanLatentBuf != null)
+                _unetRepro?.ReturnTempBuffer(cleanLatentBuf);
+            if (maskBuf != null)
+                DisposeBuffer(maskBuf);
+            if (invMaskBuf != null)
+                DisposeBuffer(invMaskBuf);
+            if (preserveNoiseBuf != null)
+                DisposeBuffer(preserveNoiseBuf);
+            if (condBuf != null)
+                DisposeBuffer(condBuf);
+            if (uncondBuf != null)
+                DisposeBuffer(uncondBuf);
+            if (resizedMaskTex != null)
+                UnityEngine.Object.DestroyImmediate(resizedMaskTex);
+            if (resizedSourceTex != null)
+                UnityEngine.Object.DestroyImmediate(resizedSourceTex);
             ReportProgress(1f, string.Empty);
         }
     }
@@ -554,6 +797,28 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
     private async UniTask<ComputeBuffer> CreateImg2ImgLatentAsync(Texture initImage, int width, int height, float[] sigmas, int seed, float strength, CancellationToken ct)
     {
+        var cleanLatent = await EncodeInitLatentAsync(initImage, width, height, seed, ct);
+        if (cleanLatent == null)
+            return null;
+
+        try
+        {
+            var totalSteps = Mathf.Max(1, sigmas.Length - 1);
+            var img2ImgStepCount = Mathf.Clamp(Mathf.FloorToInt(totalSteps * strength), 1, totalSteps);
+            var sigmaIndex = Mathf.Clamp((sigmas.Length - 1) - img2ImgStepCount, 0, sigmas.Length - 1);
+            var sigmaKick = sigmas[sigmaIndex];
+            using var kickNoise = NewFloatBuffer(GenerateGaussian(LatentElementCount(width, height), NormalizeSeed(seed)));
+            return BuildNoisedReferenceLatent(cleanLatent, kickNoise, sigmaKick);
+        }
+        finally
+        {
+            if (cleanLatent != null)
+                _unetRepro?.ReturnTempBuffer(cleanLatent);
+        }
+    }
+
+    private async UniTask<ComputeBuffer> EncodeInitLatentAsync(Texture initImage, int width, int height, int seed, CancellationToken ct)
+    {
         if (_encoderRepro == null)
             throw new InvalidOperationException("img2img requires encoder model.");
         if (initImage == null)
@@ -605,31 +870,6 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             _ops.BinaryOpBuf(meanBuf, mulBuf, noiseBuf.count, 0, latentBuf);
             _ops.MulScalarInplace(latentBuf, LatentScale, latentBuf.count);
 
-            var totalSteps = Mathf.Max(1, sigmas.Length - 1);
-            var img2ImgStepCount = Mathf.Clamp(Mathf.FloorToInt(totalSteps * strength), 1, totalSteps);
-            var sigmaIndex = Mathf.Clamp((sigmas.Length - 1) - img2ImgStepCount, 0, sigmas.Length - 1);
-            var sigmaKick = sigmas[sigmaIndex];
-            if (sigmaKick > 0f)
-            {
-                using var kickNoise = NewFloatBuffer(GenerateGaussian(LatentElementCount(width, height), NormalizeSeed(seed)));
-                var kickScaled = _unetRepro.RentTempBuffer(kickNoise.count, sizeof(float));
-                var kicked = _unetRepro.RentTempBuffer(kickNoise.count, sizeof(float));
-                try
-                {
-                    _ops.BinaryOpScalarBuf(kickNoise, sigmaKick, kickNoise.count, 2, kickScaled);
-                    _ops.BinaryOpBuf(latentBuf, kickScaled, kickNoise.count, 0, kicked);
-                    _unetRepro.ReturnTempBuffer(latentBuf);
-                    latentBuf = kicked;
-                    kicked = null;
-                }
-                finally
-                {
-                    _unetRepro.ReturnTempBuffer(kickScaled);
-                    if (kicked != null)
-                        _unetRepro.ReturnTempBuffer(kicked);
-                }
-            }
-
             await UniTask.Yield();
             return latentBuf;
         }
@@ -659,6 +899,60 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         var result = new float[effectiveSteps + 1];
         Array.Copy(sigmas, startIndex, result, 0, result.Length);
         return result;
+    }
+
+    private ComputeBuffer BuildNoisedReferenceLatent(ComputeBuffer cleanLatentBuf, ComputeBuffer noiseBuf, float sigma)
+    {
+        if (cleanLatentBuf == null)
+            throw new ArgumentNullException(nameof(cleanLatentBuf));
+        if (noiseBuf == null)
+            throw new ArgumentNullException(nameof(noiseBuf));
+
+        var count = cleanLatentBuf.count;
+        if (Mathf.Abs(sigma) <= 1e-8f)
+        {
+            var copy = _unetRepro.RentTempBuffer(count, sizeof(float));
+            _ops.CopyBuf(cleanLatentBuf, copy, count);
+            return copy;
+        }
+
+        var scaledNoise = _unetRepro.RentTempBuffer(count, sizeof(float));
+        var outBuf = _unetRepro.RentTempBuffer(count, sizeof(float));
+        try
+        {
+            _ops.BinaryOpScalarBuf(noiseBuf, sigma, count, 2, scaledNoise);
+            _ops.BinaryOpBuf(cleanLatentBuf, scaledNoise, count, 0, outBuf);
+            return outBuf;
+        }
+        finally
+        {
+            _unetRepro.ReturnTempBuffer(scaledNoise);
+        }
+    }
+
+    private ComputeBuffer BlendLatentWithMask(ComputeBuffer generatedBuf, ComputeBuffer originalBuf, ComputeBuffer maskBuf, ComputeBuffer invMaskBuf)
+    {
+        if (generatedBuf == null) throw new ArgumentNullException(nameof(generatedBuf));
+        if (originalBuf == null) throw new ArgumentNullException(nameof(originalBuf));
+        if (maskBuf == null) throw new ArgumentNullException(nameof(maskBuf));
+        if (invMaskBuf == null) throw new ArgumentNullException(nameof(invMaskBuf));
+
+        var count = generatedBuf.count;
+        var genMasked = _unetRepro.RentTempBuffer(count, sizeof(float));
+        var origMasked = _unetRepro.RentTempBuffer(count, sizeof(float));
+        var outBuf = _unetRepro.RentTempBuffer(count, sizeof(float));
+        try
+        {
+            _ops.BinaryOpBuf(generatedBuf, maskBuf, count, 2, genMasked);
+            _ops.BinaryOpBuf(originalBuf, invMaskBuf, count, 2, origMasked);
+            _ops.BinaryOpBuf(genMasked, origMasked, count, 0, outBuf);
+            return outBuf;
+        }
+        finally
+        {
+            _unetRepro.ReturnTempBuffer(genMasked);
+            _unetRepro.ReturnTempBuffer(origMasked);
+        }
     }
 
     private async UniTask<ComputeBuffer> RunCfgDenoiserAsync(ComputeBuffer latentBuf, int width, int height, float sigma, NcnnTensorBuffer condView, NcnnTensorBuffer uncondView, CancellationToken ct)
@@ -1175,6 +1469,108 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         {
             RenderTexture.active = prev;
         }
+    }
+
+    private (ComputeBuffer maskBuf, ComputeBuffer invMaskBuf, Texture2D resizedMaskTex) CreateLatentMaskBuffers(Texture maskImage, int width, int height)
+    {
+        if (maskImage == null)
+            return default;
+
+        var latentW = Mathf.Max(1, width / 8);
+        var latentH = Mathf.Max(1, height / 8);
+        var resizedMask = ReadResizedTexture(maskImage, width, height);
+        if (resizedMask == null)
+            return default;
+
+        var latentMask = ReadResizedTexture(maskImage, latentW, latentH);
+        if (latentMask == null)
+        {
+            UnityEngine.Object.DestroyImmediate(resizedMask);
+            return default;
+        }
+
+        try
+        {
+            var pixels = latentMask.GetPixels32();
+            var count = LatentElementCount(width, height);
+            var maskData = new float[count];
+            var invData = new float[count];
+            for (var y = 0; y < latentH; y++)
+            {
+                for (var x = 0; x < latentW; x++)
+                {
+                    var p = pixels[y * latentW + x];
+                    var alpha = SampleMaskWeight(p);
+                    var baseIndex = (y * latentW + x) * LatentChannels;
+                    for (var c = 0; c < LatentChannels; c++)
+                    {
+                        maskData[baseIndex + c] = alpha;
+                        invData[baseIndex + c] = 1f - alpha;
+                    }
+                }
+            }
+
+            return (NewFloatBuffer(maskData), NewFloatBuffer(invData), resizedMask);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(latentMask);
+        }
+    }
+
+    private static Texture2D ReadResizedTexture(Texture src, int width, int height)
+    {
+        if (src == null)
+            return null;
+        var rt = ResizeTextureBilinear(src, width, height);
+        if (rt == null)
+            return null;
+        try
+        {
+            return RenderTextureToTexture2D(rt, width, height);
+        }
+        finally
+        {
+            ReleaseTemporaryRt(rt);
+        }
+    }
+
+    private static Texture2D CompositeWithMask(Texture2D source, Texture2D generated, Texture2D mask)
+    {
+        if (source == null || generated == null || mask == null)
+            return null;
+        if (source.width != generated.width || source.height != generated.height || source.width != mask.width || source.height != mask.height)
+            return null;
+
+        var srcPixels = source.GetPixels32();
+        var genPixels = generated.GetPixels32();
+        var maskPixels = mask.GetPixels32();
+        var outPixels = new Color32[srcPixels.Length];
+        for (var i = 0; i < outPixels.Length; i++)
+        {
+            var mp = maskPixels[i];
+            var alpha = SampleMaskWeight(mp);
+            var inv = 1f - alpha;
+            var s = srcPixels[i];
+            var g = genPixels[i];
+            outPixels[i] = new Color32(
+                (byte)Mathf.Clamp(Mathf.RoundToInt(s.r * inv + g.r * alpha), 0, 255),
+                (byte)Mathf.Clamp(Mathf.RoundToInt(s.g * inv + g.g * alpha), 0, 255),
+                (byte)Mathf.Clamp(Mathf.RoundToInt(s.b * inv + g.b * alpha), 0, 255),
+                255);
+        }
+
+        var result = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, false);
+        result.SetPixels32(outPixels);
+        result.Apply(false, false);
+        return result;
+    }
+
+    private static float SampleMaskWeight(Color32 pixel)
+    {
+        var luminance = ((pixel.r + pixel.g + pixel.b) / 3f) / 255f;
+        var alpha = pixel.a / 255f;
+        return Mathf.Clamp01(luminance * alpha);
     }
 
     private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, bool enableRandomWrite)

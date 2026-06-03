@@ -33,6 +33,7 @@ public static class NcnnDebugRunner
     private const string SdPositivePromptEnvVar = "AIIMAGE_SD_POSITIVE_PROMPT";
     private const string SdNegativePromptEnvVar = "AIIMAGE_SD_NEGATIVE_PROMPT";
     private const string SdInitImageEnvVar = "AIIMAGE_SD_INIT_IMAGE";
+    private const string SdMaskImageEnvVar = "AIIMAGE_SD_MASK_IMAGE";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -429,13 +430,22 @@ public static class NcnnDebugRunner
         var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, DefaultSdPositivePrompt);
         var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, DefaultSdNegativePrompt);
         var initPath = ResolveOptionalExistingFile(SdInitImageEnvVar);
+        var maskPath = ResolveOptionalExistingFile(SdMaskImageEnvVar);
         Texture2D initTex = null;
+        Texture2D maskTex = null;
 
         if (!string.IsNullOrWhiteSpace(initPath))
         {
             initTex = LoadTexture(initPath);
             if (initTex == null)
                 throw new InvalidOperationException("Failed to load SD init image: " + initPath);
+        }
+
+        if (!string.IsNullOrWhiteSpace(maskPath))
+        {
+            maskTex = LoadTexture(maskPath);
+            if (maskTex == null)
+                throw new InvalidOperationException("Failed to load SD mask image: " + maskPath);
         }
 
         var go = new GameObject("StableDiffusionDebugRunner");
@@ -450,15 +460,25 @@ public static class NcnnDebugRunner
                 Debug.Log("[SD-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             };
 
-            var result = initTex != null
-                ? await runner.Img2ImgAsync(initTex, positivePrompt, negativePrompt, width, height, steps, seed, strength, CancellationToken.None)
-                : await runner.Txt2ImgAsync(positivePrompt, negativePrompt, width, height, steps, seed, CancellationToken.None);
+            SDNcnnReproResult result;
+            if (initTex != null && maskTex != null)
+            {
+                result = await runner.InpaintAsync(initTex, maskTex, positivePrompt, negativePrompt, width, height, steps, seed, strength, CancellationToken.None);
+            }
+            else if (initTex != null)
+            {
+                result = await runner.Img2ImgAsync(initTex, positivePrompt, negativePrompt, width, height, steps, seed, strength, CancellationToken.None);
+            }
+            else
+            {
+                result = await runner.Txt2ImgAsync(positivePrompt, negativePrompt, width, height, steps, seed, CancellationToken.None);
+            }
 
             Debug.Log(
                 "Stable Diffusion Debug result | error=" + (result.error ?? "")
                 + " | elapsedMs=" + result.elapsedMs
                 + " | seed=" + result.seed.ToString(CultureInfo.InvariantCulture)
-                + " | mode=" + (initTex != null ? "img2img" : "txt2img")
+                + " | mode=" + (initTex != null ? (maskTex != null ? "inpainting" : "img2img") : "txt2img")
                 + " | dump=" + (runner.LastDumpDir ?? ""));
 
             if (result.texture != null)
@@ -474,6 +494,8 @@ public static class NcnnDebugRunner
         {
             if (initTex != null)
                 UnityEngine.Object.DestroyImmediate(initTex);
+            if (maskTex != null)
+                UnityEngine.Object.DestroyImmediate(maskTex);
             UnityEngine.Object.DestroyImmediate(go);
         }
     }
