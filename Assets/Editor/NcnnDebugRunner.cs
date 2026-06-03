@@ -1334,7 +1334,7 @@ public static class NcnnDebugRunner
         try
         {
             var env = Environment.GetEnvironmentVariable(envName);
-            if (!string.IsNullOrWhiteSpace(env))
+            if (env != null)
                 return env;
         }
         catch

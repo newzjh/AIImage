@@ -47,6 +47,87 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
     private static readonly string DefaultNegativePrompt =
         "((part of the head)), ((((mutated hands and fingers)))), deformed, blurry, bad anatomy, disfigured, poorly drawn face, mutation, mutated, extra limb, ugly, poorly drawn hands, missing limb, blurry, floating limbs, disconnected limbs, malformed hands, blur, out of focus, long neck, long body, Octane renderer, lowres, bad anatomy, bad hands, text";
+    private static readonly string[] DebugUnetBlobNames =
+    {
+        "36",
+        "37",
+        "40",
+        "41",
+        "42",
+        "43",
+        "44",
+        "95",
+        "115",
+        "139",
+        "149"
+    };
+    private static readonly string[] DebugClipBlobNames =
+    {
+        "19",
+        "23",
+        "24",
+        "25",
+        "26",
+        "33",
+        "34",
+        "38",
+        "44",
+        "45",
+        "49",
+        "50",
+        "55",
+        "57",
+        "out0",
+        "cal_1",
+        "cal_2",
+        "cal_6",
+        "cal_7",
+        "cal_8",
+        "cal_9",
+        "cal_10",
+        "cal_11",
+        "cal_12"
+    };
+    private static readonly string[] DebugEncoderBlobNames =
+    {
+        "1",
+        "4",
+        "6",
+        "10",
+        "13",
+        "15",
+        "19",
+        "24",
+        "27",
+        "31",
+        "36",
+        "40",
+        "42",
+        "47",
+        "52",
+        "57",
+        "61",
+        "63",
+        "68",
+        "72",
+        "77",
+        "81",
+        "86",
+        "90",
+        "93",
+        "94",
+        "95",
+        "96",
+        "98",
+        "99",
+        "104",
+        "108",
+        "111",
+        "112",
+        "114",
+        "115",
+        "116"
+    };
 
     [Serializable]
     private readonly struct ResolvedPaths
@@ -129,6 +210,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     private string _loadedClipKey;
     private string _loadedSpatialKey;
     private string _lastDumpDir;
+    private bool _clipDebugDumped;
+    private bool _unetDebugDumped;
 
     public string LastDumpDir => _lastDumpDir;
 
@@ -248,6 +331,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             {
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "positive_prompt.txt"), positivePrompt ?? string.Empty);
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "negative_prompt.txt"), negativePrompt ?? string.Empty);
+                WriteFloatArray(Path.Combine(_lastDumpDir, "unity_cond.txt"), cond);
+                WriteFloatArray(Path.Combine(_lastDumpDir, "unity_uncond.txt"), uncond);
                 WriteAllTextSafe(
                     Path.Combine(_lastDumpDir, "run_config.txt"),
                     "width=" + width.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
@@ -599,6 +684,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             _clipRepro?.Dispose();
             _clipRepro = new NcnnRepro(_ops);
             ApplyCommonOptions(_clipRepro);
+            _clipDebugDumped = false;
             var clipParamText = File.ReadAllText(paths.clipParamPath);
             UnityEngine.Debug.Log("[SD] Open CLIP bin stream");
             using (var fs = new FileStream(paths.clipBinPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, false))
@@ -623,6 +709,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         _unetRepro = new NcnnRepro(_ops);
         _decoderRepro = new NcnnRepro(_ops);
         _encoderRepro = needEncoder ? new NcnnRepro(_ops) : null;
+        _unetDebugDumped = false;
         ApplyCommonOptions(_unetRepro);
         ApplyCommonOptions(_decoderRepro);
         if (_encoderRepro != null)
@@ -750,18 +837,29 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
             var tokens77 = new int[PromptChunkModelTokenCount];
             var multipliers77 = new float[PromptChunkModelTokenCount];
-            tokens77[0] = StartTokenId;
-            multipliers77[0] = 1f;
+            for (var tokenIndex = 0; tokenIndex < PromptChunkModelTokenCount; tokenIndex++)
+            {
+                tokens77[tokenIndex] = StartTokenId;
+                multipliers77[tokenIndex] = 1f;
+            }
             Array.Copy(chunks[i].tokens75, 0, tokens77, 1, PromptChunkTokenCount);
             Array.Copy(chunks[i].multipliers75, 0, multipliers77, 1, PromptChunkTokenCount);
-            tokens77[PromptChunkModelTokenCount - 1] = EndTokenId;
-            multipliers77[PromptChunkModelTokenCount - 1] = 1f;
 
             using var tokenBuffer = new ComputeBuffer(tokens77.Length, sizeof(int), ComputeBufferType.Structured);
             using var multiplierBuffer = NewFloatBuffer(multipliers77);
             tokenBuffer.SetData(tokens77);
             var tokenView = new NcnnTensorBuffer(tokenBuffer, 1, tokens77.Length, 1, 1, 1, false);
             var multiplierView = new NcnnTensorBuffer(multiplierBuffer, 1, multipliers77.Length, 1, 1, 1, false);
+
+            HashSet<string> pinned = null;
+            var shouldDumpClip = enableDebugDump && !_clipDebugDumped && !string.IsNullOrWhiteSpace(_lastDumpDir);
+            if (shouldDumpClip)
+            {
+                pinned = new HashSet<string>(DebugClipBlobNames, StringComparer.Ordinal)
+                {
+                    ClipOutputBlobName
+                };
+            }
 
             using var infer = _clipRepro.InferWithMultiInputs(
                 null,
@@ -771,7 +869,14 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                     { "multiplier", multiplierView },
                     { "cond", dummyCondView }
                 },
-                new HashSet<string>(StringComparer.Ordinal) { ClipOutputBlobName });
+                pinned ?? new HashSet<string>(StringComparer.Ordinal) { ClipOutputBlobName });
+
+            if (shouldDumpClip)
+            {
+                for (var bi = 0; bi < DebugClipBlobNames.Length; bi++)
+                    TryDumpAnyBlob(infer, DebugClipBlobNames[bi], Path.Combine(_lastDumpDir, "unity_clip_blob_" + DebugClipBlobNames[bi] + ".txt"), false);
+                _clipDebugDumped = true;
+            }
 
             var chunkData = infer.GetBufferData(ClipOutputBlobName);
             if (chunkData == null || chunkData.Length != rowsPerChunk * TextEmbeddingWidth)
@@ -808,7 +913,10 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             var sigmaIndex = Mathf.Clamp((sigmas.Length - 1) - img2ImgStepCount, 0, sigmas.Length - 1);
             var sigmaKick = sigmas[sigmaIndex];
             using var kickNoise = NewFloatBuffer(GenerateGaussian(LatentElementCount(width, height), NormalizeSeed(seed)));
-            return BuildNoisedReferenceLatent(cleanLatent, kickNoise, sigmaKick);
+            var result = BuildNoisedReferenceLatent(cleanLatent, kickNoise, sigmaKick);
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir) && result != null)
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_img2img_latent_after_sigma_reset.txt"), result, result.count);
+            return result;
         }
         finally
         {
@@ -824,26 +932,42 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         if (initImage == null)
             throw new ArgumentNullException(nameof(initImage));
 
-        RenderTexture resized = null;
         RenderTexture inputPack4 = null;
         RenderTexture stdTex = null;
         ComputeBuffer meanBuf = null;
         ComputeBuffer stdBuf = null;
+        ComputeBuffer inputBuf = null;
         ComputeBuffer noiseBuf = null;
         ComputeBuffer mulBuf = null;
         ComputeBuffer latentBuf = null;
         try
         {
-            resized = ResizeTextureBilinear(initImage, width, height);
+            inputBuf = CreateEncoderInputBufferNcnn(initImage, width, height);
             inputPack4 = _encoderRepro.RentTempArray(width, height, 1, RenderTextureFormat.ARGBHalf);
-            _ops.PackRgbToPack4Gfpgan(resized, 0, 0, 1f, 1f, inputPack4);
+            _ops.FillPack4FromBufferCHW(inputBuf, width, height, 3, inputPack4);
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_encoder_in0.txt"), inputBuf, inputBuf.count);
 
-            using (var infer = _encoderRepro.Infer(inputPack4, 1, EncoderInputBlobName, new HashSet<string>(StringComparer.Ordinal)
+            var encoderOutputs = new HashSet<string>(StringComparer.Ordinal)
             {
                 EncoderMeanBlobName,
                 EncoderStdBlobName
-            }))
+            };
+            var shouldDumpEncoder = enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && ShouldDumpEncoderBlobs();
+            if (shouldDumpEncoder)
             {
+                for (var i = 0; i < DebugEncoderBlobNames.Length; i++)
+                    encoderOutputs.Add(DebugEncoderBlobNames[i]);
+            }
+
+            using (var infer = _encoderRepro.Infer(inputPack4, 1, EncoderInputBlobName, encoderOutputs))
+            {
+                if (shouldDumpEncoder)
+                {
+                    for (var i = 0; i < DebugEncoderBlobNames.Length; i++)
+                        TryDumpAnyBlob(infer, DebugEncoderBlobNames[i], Path.Combine(_lastDumpDir, "unity_encoder_blob_" + DebugEncoderBlobNames[i] + ".txt"), true, _encoderRepro);
+                }
+
                 meanBuf = infer.ExtractBuffer(EncoderMeanBlobName);
                 try
                 {
@@ -870,13 +994,18 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             _ops.BinaryOpBuf(meanBuf, mulBuf, noiseBuf.count, 0, latentBuf);
             _ops.MulScalarInplace(latentBuf, LatentScale, latentBuf.count);
 
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+            {
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_encoder_out0.txt"), meanBuf, meanBuf.count);
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_encoder_out1.txt"), stdBuf, stdBuf.count);
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_img2img_latent_after_encoder.txt"), latentBuf, latentBuf.count);
+            }
+
             await UniTask.Yield();
             return latentBuf;
         }
         finally
         {
-            if (resized != null)
-                ReleaseTemporaryRt(resized);
             if (inputPack4 != null)
                 _encoderRepro?.ReturnTempArray(inputPack4);
             if (stdTex != null)
@@ -885,6 +1014,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 _encoderRepro?.ReturnTempBuffer(meanBuf);
             if (stdBuf != null)
                 _encoderRepro?.ReturnTempBuffer(stdBuf);
+            if (inputBuf != null)
+                DisposeBuffer(inputBuf);
             if (noiseBuf != null)
                 DisposeBuffer(noiseBuf);
             if (mulBuf != null)
@@ -983,8 +1114,16 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             var cInView = new NcnnTensorBuffer(cInBuf, 1, 1, 1, 1, 1, false);
             var cOutView = new NcnnTensorBuffer(cOutBuf, 1, 1, 1, 1, 1, false);
 
-            condOut = RunUnetOnce(latentTex, timestepView, condView, cInView, cOutView, width, height);
-            uncondOut = RunUnetOnce(latentTex, timestepView, uncondView, cInView, cOutView, width, height);
+            if (enableDebugDump && !_unetDebugDumped && !string.IsNullOrWhiteSpace(_lastDumpDir))
+            {
+                WriteFloatArray(Path.Combine(_lastDumpDir, "unity_unet_in1_t.txt"), new[] { t });
+                WriteFloatArray(Path.Combine(_lastDumpDir, "unity_unet_c_in.txt"), new[] { cIn });
+                WriteFloatArray(Path.Combine(_lastDumpDir, "unity_unet_c_out.txt"), new[] { cOut });
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_unet_in0.txt"), latentBuf, latentBuf.count);
+            }
+
+            condOut = RunUnetOnce(latentTex, timestepView, condView, cInView, cOutView, width, height, "cond");
+            uncondOut = RunUnetOnce(latentTex, timestepView, uncondView, cInView, cOutView, width, height, "uncond");
             if (condOut == null || uncondOut == null)
                 return null;
 
@@ -1019,8 +1158,21 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private ComputeBuffer RunUnetOnce(RenderTexture latentTex, NcnnTensorBuffer timestepView, NcnnTensorBuffer condView, NcnnTensorBuffer cInView, NcnnTensorBuffer cOutView, int width, int height)
+    private ComputeBuffer RunUnetOnce(RenderTexture latentTex, NcnnTensorBuffer timestepView, NcnnTensorBuffer condView, NcnnTensorBuffer cInView, NcnnTensorBuffer cOutView, int width, int height, string dumpTag = null)
     {
+        HashSet<string> pinned = null;
+        var shouldDumpCond = enableDebugDump
+            && !_unetDebugDumped
+            && !string.IsNullOrWhiteSpace(_lastDumpDir)
+            && string.Equals(dumpTag, "cond", StringComparison.Ordinal);
+        if (shouldDumpCond)
+        {
+            pinned = new HashSet<string>(DebugUnetBlobNames, StringComparer.Ordinal)
+            {
+                UnetOutputBlobName
+            };
+        }
+
         using var infer = _unetRepro.InferWithMultiInputs(
             new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
@@ -1032,7 +1184,14 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 { "in2", condView },
                 { "c_in", cInView },
                 { "c_out", cOutView }
-            });
+            },
+            pinned);
+
+        if (shouldDumpCond)
+        {
+            for (var i = 0; i < DebugUnetBlobNames.Length; i++)
+                TryDumpAnyBlob(infer, DebugUnetBlobNames[i], Path.Combine(_lastDumpDir, "unity_unet_blob_" + DebugUnetBlobNames[i] + ".txt"));
+        }
 
         var outTex = infer.ExtractTexture(UnetOutputBlobName);
         if (outTex == null)
@@ -1042,6 +1201,15 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         {
             var outBuf = _unetRepro.RentTempBuffer(LatentElementCount(width, height), sizeof(float));
             _ops.Pack4ToBufferCHW(outTex, outTex.width, outTex.height, LatentChannels, outBuf);
+            if (shouldDumpCond)
+            {
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_unet_outout_cond.txt"), outBuf, outBuf.count);
+                _unetDebugDumped = true;
+            }
+            else if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && string.Equals(dumpTag, "uncond", StringComparison.Ordinal))
+            {
+                DumpBufferToFile(Path.Combine(_lastDumpDir, "unity_unet_outout_uncond.txt"), outBuf, outBuf.count);
+            }
             return outBuf;
         }
         finally
@@ -1443,6 +1611,231 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         return data;
     }
 
+    private static ComputeBuffer CreateEncoderInputBufferNcnn(Texture src, int width, int height)
+    {
+        if (src == null)
+            throw new ArgumentNullException(nameof(src));
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width));
+
+        Texture2D tempTexture = null;
+        try
+        {
+            var pixels = ReadTexturePixels32(src, out var srcW, out var srcH, out tempTexture);
+            var input = CreateEncoderInputChwNcnn(pixels, srcW, srcH, width, height);
+            return NewFloatBuffer(input);
+        }
+        finally
+        {
+            if (tempTexture != null)
+                UnityEngine.Object.DestroyImmediate(tempTexture);
+        }
+    }
+
+    private static Color32[] ReadTexturePixels32(Texture src, out int width, out int height, out Texture2D tempTexture)
+    {
+        tempTexture = null;
+        width = src != null ? src.width : 0;
+        height = src != null ? src.height : 0;
+        if (src == null || width <= 0 || height <= 0)
+            return Array.Empty<Color32>();
+
+        if (src is Texture2D tex && tex.isReadable)
+            return tex.GetPixels32();
+
+        var rt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, false);
+        try
+        {
+            Graphics.Blit(src, rt);
+            tempTexture = RenderTextureToTexture2D(rt, width, height);
+            return tempTexture != null ? tempTexture.GetPixels32() : Array.Empty<Color32>();
+        }
+        finally
+        {
+            ReleaseTemporaryRt(rt);
+        }
+    }
+
+    private static float[] CreateEncoderInputChwNcnn(Color32[] pixelsBottomUp, int srcW, int srcH, int dstW, int dstH)
+    {
+        if (pixelsBottomUp == null || pixelsBottomUp.Length < srcW * srcH)
+            throw new InvalidDataException("Source texture pixels are unavailable.");
+        if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0)
+            throw new InvalidDataException("Invalid Stable Diffusion encoder input size.");
+
+        var srcBgr = new byte[srcW * srcH * 3];
+        for (var y = 0; y < srcH; y++)
+        {
+            var srcRow = (srcH - 1 - y) * srcW;
+            var dstRow = y * srcW * 3;
+            for (var x = 0; x < srcW; x++)
+            {
+                var p = pixelsBottomUp[srcRow + x];
+                var di = dstRow + x * 3;
+                srcBgr[di + 0] = p.b;
+                srcBgr[di + 1] = p.g;
+                srcBgr[di + 2] = p.r;
+            }
+        }
+
+        var dstBgr = new byte[dstW * dstH * 3];
+        ResizeBilinearC3Ncnn(srcBgr, srcW, srcH, srcW * 3, dstBgr, dstW, dstH, dstW * 3);
+
+        var wh = dstW * dstH;
+        var chw = new float[wh * 3];
+        const float norm = 1f / 127.5f;
+        for (var i = 0; i < wh; i++)
+        {
+            var bi = i * 3;
+            chw[i] = (dstBgr[bi + 2] - 127.5f) * norm;
+            chw[wh + i] = (dstBgr[bi + 1] - 127.5f) * norm;
+            chw[wh * 2 + i] = (dstBgr[bi + 0] - 127.5f) * norm;
+        }
+
+        return chw;
+    }
+
+    private static void ResizeBilinearC3Ncnn(byte[] src, int srcW, int srcH, int srcStride, byte[] dst, int dstW, int dstH, int dstStride)
+    {
+        if (src == null || dst == null)
+            throw new ArgumentNullException(src == null ? nameof(src) : nameof(dst));
+        if (srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0)
+            throw new InvalidDataException("Invalid resize dimensions.");
+
+        if (srcW == dstW && srcH == dstH)
+        {
+            for (var y = 0; y < dstH; y++)
+                Buffer.BlockCopy(src, y * srcStride, dst, y * dstStride, dstW * 3);
+            return;
+        }
+
+        if (srcW < 2 || srcH < 2)
+        {
+            ResizeNearestC3(src, srcW, srcH, srcStride, dst, dstW, dstH, dstStride);
+            return;
+        }
+
+        const int coefBits = 11;
+        const int coefScale = 1 << coefBits;
+        var scaleX = (double)srcW / dstW;
+        var scaleY = (double)srcH / dstH;
+        var xofs = new int[dstW];
+        var yofs = new int[dstH];
+        var ialpha = new short[dstW * 2];
+        var ibeta = new short[dstH * 2];
+
+        for (var dx = 0; dx < dstW; dx++)
+        {
+            var fx = (float)((dx + 0.5) * scaleX - 0.5);
+            var sx = (int)Math.Floor(fx);
+            fx -= sx;
+
+            if (sx < 0)
+            {
+                sx = 0;
+                fx = 0f;
+            }
+
+            if (sx >= srcW - 1)
+            {
+                sx = srcW - 2;
+                fx = 1f;
+            }
+
+            xofs[dx] = sx * 3;
+            ialpha[dx * 2 + 0] = SaturateCastShort((1f - fx) * coefScale);
+            ialpha[dx * 2 + 1] = SaturateCastShort(fx * coefScale);
+        }
+
+        for (var dy = 0; dy < dstH; dy++)
+        {
+            var fy = (float)((dy + 0.5) * scaleY - 0.5);
+            var sy = (int)Math.Floor(fy);
+            fy -= sy;
+
+            if (sy < 0)
+            {
+                sy = 0;
+                fy = 0f;
+            }
+
+            if (sy >= srcH - 1)
+            {
+                sy = srcH - 2;
+                fy = 1f;
+            }
+
+            yofs[dy] = sy;
+            ibeta[dy * 2 + 0] = SaturateCastShort((1f - fy) * coefScale);
+            ibeta[dy * 2 + 1] = SaturateCastShort(fy * coefScale);
+        }
+
+        for (var dy = 0; dy < dstH; dy++)
+        {
+            var sy = yofs[dy];
+            var s0Base = sy * srcStride;
+            var s1Base = (sy + 1) * srcStride;
+            var dBase = dy * dstStride;
+            var b0 = ibeta[dy * 2 + 0];
+            var b1 = ibeta[dy * 2 + 1];
+
+            for (var dx = 0; dx < dstW; dx++)
+            {
+                var sx = xofs[dx];
+                var a0 = ialpha[dx * 2 + 0];
+                var a1 = ialpha[dx * 2 + 1];
+                var s0 = s0Base + sx;
+                var s1 = s1Base + sx;
+                var di = dBase + dx * 3;
+
+                for (var c = 0; c < 3; c++)
+                {
+                    var row0 = (src[s0 + c] * a0 + src[s0 + c + 3] * a1) >> 4;
+                    var row1 = (src[s1 + c] * a0 + src[s1 + c + 3] * a1) >> 4;
+                    var value = (((b0 * row0) >> 16) + ((b1 * row1) >> 16) + 2) >> 2;
+                    dst[di + c] = (byte)Mathf.Clamp(value, 0, 255);
+                }
+            }
+        }
+    }
+
+    private static void ResizeNearestC3(byte[] src, int srcW, int srcH, int srcStride, byte[] dst, int dstW, int dstH, int dstStride)
+    {
+        for (var y = 0; y < dstH; y++)
+        {
+            var sy = Mathf.Clamp((int)((long)y * srcH / dstH), 0, srcH - 1);
+            for (var x = 0; x < dstW; x++)
+            {
+                var sx = Mathf.Clamp((int)((long)x * srcW / dstW), 0, srcW - 1);
+                Buffer.BlockCopy(src, sy * srcStride + sx * 3, dst, y * dstStride + x * 3, 3);
+            }
+        }
+    }
+
+    private static short SaturateCastShort(float value)
+    {
+        var rounded = (int)(value + (value >= 0f ? 0.5f : -0.5f));
+        return (short)Mathf.Clamp(rounded, short.MinValue, short.MaxValue);
+    }
+
+    private static bool ShouldDumpEncoderBlobs()
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable("AIIMAGE_SD_DUMP_ENCODER_BLOBS");
+            if (string.IsNullOrWhiteSpace(env))
+                return false;
+            env = env.Trim();
+            return string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static RenderTexture ResizeTextureBilinear(Texture src, int width, int height)
     {
         if (src == null)
@@ -1774,6 +2167,63 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             sb.Append(data[i].ToString("R", CultureInfo.InvariantCulture));
         }
         WriteAllTextSafe(path, sb.ToString());
+    }
+
+    private static void DumpBufferToFile(string path, ComputeBuffer buffer, int logicalCount)
+    {
+        if (buffer == null || string.IsNullOrWhiteSpace(path))
+            return;
+
+        var count = Mathf.Clamp(logicalCount, 0, buffer.count);
+        var data = new float[buffer.count];
+        buffer.GetData(data);
+        if (count != data.Length)
+            Array.Resize(ref data, count);
+        WriteFloatArray(path, data);
+    }
+
+    private void TryDumpAnyBlob(NcnnRepro.InferResult infer, string blobName, string path, bool useUnetOwner = true, NcnnRepro ownerOverride = null)
+    {
+        if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            var data = infer.GetBufferData(blobName);
+            WriteFloatArray(path, data);
+            return;
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
+                return;
+
+            var tex = infer.ExtractTexture(blobName);
+            if (tex == null)
+                return;
+
+            try
+            {
+                var packs = tex.volumeDepth > 0 ? tex.volumeDepth : 1;
+                var channels = packs * 4;
+                using var physicalBuffer = new ComputeBuffer(tex.width * tex.height * channels, sizeof(float), ComputeBufferType.Structured);
+                _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, channels, physicalBuffer);
+                var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
+                DumpBufferToFile(path, physicalBuffer, logicalCount);
+            }
+            finally
+            {
+                var owner = ownerOverride ?? (useUnetOwner ? _unetRepro : _clipRepro);
+                owner?.ReturnTempArray(tex);
+            }
+        }
+        catch
+        {
+        }
     }
 
     private static void WriteAllTextSafe(string path, string content)
