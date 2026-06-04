@@ -12,6 +12,9 @@ public sealed class BeforeAfterCompareView : VisualElement
     private readonly Label _afterTag;
     private readonly Label _leftHint;
     private readonly Label _rightHint;
+    private Rect _lastImageRect;
+    private Rect _lastDrawRect;
+    private bool _hasPendingDecorationLayout;
 
     private Texture _texA;
     private Texture _texB;
@@ -71,6 +74,7 @@ public sealed class BeforeAfterCompareView : VisualElement
     {
         _texA = current;
         _texB = original;
+        _hasPendingDecorationLayout = true;
         MarkDirtyRepaint();
         UpdateDecorations();
     }
@@ -78,6 +82,7 @@ public sealed class BeforeAfterCompareView : VisualElement
     public void SetPreview(Texture preview)
     {
         _previewTex = preview;
+        _hasPendingDecorationLayout = true;
         MarkDirtyRepaint();
     }
 
@@ -106,6 +111,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         {
             _pan = Vector2.zero;
         }
+        _hasPendingDecorationLayout = true;
         MarkDirtyRepaint();
         UpdateDecorations();
         NotifyViewTransformChanged();
@@ -126,6 +132,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         _zoom = Mathf.Clamp(Mathf.Min(scaleX, scaleY), 0.01f, 20f);
         var scaledSize = new Vector2(refTex.width * _zoom, refTex.height * _zoom);
         _pan = (viewRect.size - scaledSize) * 0.5f;
+        _hasPendingDecorationLayout = true;
         MarkDirtyRepaint();
         UpdateDecorations();
         NotifyViewTransformChanged();
@@ -167,6 +174,7 @@ public sealed class BeforeAfterCompareView : VisualElement
 
         var imageLocal = (viewportPos - _pan) / oldZoom;
         _pan = viewportPos - imageLocal * _zoom;
+        _hasPendingDecorationLayout = true;
         MarkDirtyRepaint();
         UpdateDecorations();
         NotifyViewTransformChanged();
@@ -250,6 +258,7 @@ public sealed class BeforeAfterCompareView : VisualElement
                 ClampOffsetToDrawRect(drawRect, imageRect);
             }
             MarkDirtyRepaint();
+            _hasPendingDecorationLayout = true;
             UpdateDecorations();
             NotifyViewTransformChanged();
             evt.StopPropagation();
@@ -260,6 +269,7 @@ public sealed class BeforeAfterCompareView : VisualElement
             return;
 
         _pan = _panStartPan + (Vector2)(evt.localPosition - _panStartPointer);
+        _hasPendingDecorationLayout = true;
         MarkDirtyRepaint();
         UpdateDecorations();
         NotifyViewTransformChanged();
@@ -379,6 +389,8 @@ public sealed class BeforeAfterCompareView : VisualElement
 
         var imageRect = GetImageRect(refTex, _zoom, viewRect.position + _pan);
         var drawRect = IntersectRect(viewRect, imageRect);
+        _lastImageRect = imageRect;
+        _lastDrawRect = drawRect;
         if (drawRect.width <= 1f || drawRect.height <= 1f)
         {
             UpdateDecorations();
@@ -390,7 +402,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         if (_previewTex != null)
         {
             DrawFullRect(mgc, _previewTex, drawRect, imageRect);
-            PositionHints(imageRect, drawRect);
+            ScheduleDecorationLayout();
             return;
         }
 
@@ -400,6 +412,33 @@ public sealed class BeforeAfterCompareView : VisualElement
         if (_texB != null)
             DrawHalfPlane(mgc, _texB, drawRect, imageRect, SignedDistance, false);
         DrawSplitLine(mgc, drawRect, imageRect);
+        ScheduleDecorationLayout();
+    }
+
+    private void ScheduleDecorationLayout()
+    {
+        if (!_hasPendingDecorationLayout)
+            return;
+
+        _hasPendingDecorationLayout = false;
+        schedule.Execute(UpdateDecorationLayout);
+    }
+
+    private void UpdateDecorationLayout()
+    {
+        var refTex = _texA ?? _texB;
+        if (refTex == null)
+            return;
+
+        var imageRect = _lastImageRect;
+        var drawRect = _lastDrawRect;
+        if (imageRect.width <= 1f || imageRect.height <= 1f || drawRect.width <= 1f || drawRect.height <= 1f)
+        {
+            _leftHint.style.display = DisplayStyle.None;
+            _rightHint.style.display = DisplayStyle.None;
+            return;
+        }
+
         PositionHints(imageRect, drawRect);
     }
 
@@ -414,17 +453,25 @@ public sealed class BeforeAfterCompareView : VisualElement
         }
 
         var mid = (segA + segB) * 0.5f;
-        var y = Mathf.Clamp(mid.y, imageRect.yMin + 28f, imageRect.yMax - 28f);
-        PositionTags(imageRect, true, mid.x, y);
-        _leftHint.style.left = mid.x - 28f;
-        _leftHint.style.top = y - 14f;
-        _rightHint.style.left = mid.x + 6f;
-        _rightHint.style.top = y - 14f;
+        var tangent = (segB - segA).normalized;
+        if (tangent.sqrMagnitude <= 1e-6f)
+            tangent = Vector2.right;
+
+        var normal = new Vector2(Mathf.Cos(AngleRad), -Mathf.Sin(AngleRad));
+        if (normal.sqrMagnitude <= 1e-6f)
+            normal = Vector2.up;
+        else
+            normal.Normalize();
+
+        var rotationDeg = -AngleRad * Mathf.Rad2Deg;
+        PositionTags(imageRect, true, mid.x, mid.y, normal, rotationDeg);
+        PositionHint(_leftHint, mid - normal * 24f, rotationDeg);
+        PositionHint(_rightHint, mid + normal * 24f, rotationDeg);
         _leftHint.style.display = DisplayStyle.Flex;
         _rightHint.style.display = DisplayStyle.Flex;
     }
 
-    private void PositionTags(Rect imageRect, bool nearSplit, float splitX, float splitY)
+    private void PositionTags(Rect imageRect, bool nearSplit, float splitX, float splitY, Vector2 splitNormal = default, float rotationDeg = 0f)
     {
         if (!nearSplit)
         {
@@ -432,16 +479,42 @@ public sealed class BeforeAfterCompareView : VisualElement
             _beforeTag.style.top = imageRect.yMin + 18f;
             _afterTag.style.left = Mathf.Max(imageRect.xMin + 18f, imageRect.xMax - 90f);
             _afterTag.style.top = imageRect.yMin + 18f;
+            _beforeTag.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
+            _afterTag.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
+            _leftHint.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
+            _rightHint.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
             return;
         }
 
-        var tagTop = Mathf.Clamp(splitY - 42f, imageRect.yMin + 14f, imageRect.yMax - 32f);
-        var beforeLeft = Mathf.Clamp(splitX - 114f, imageRect.xMin + 12f, imageRect.xMax - 168f);
-        var afterLeft = Mathf.Clamp(splitX + 14f, imageRect.xMin + 84f, imageRect.xMax - 72f);
-        _beforeTag.style.left = beforeLeft;
-        _beforeTag.style.top = tagTop;
-        _afterTag.style.left = afterLeft;
-        _afterTag.style.top = tagTop;
+        if (splitNormal.sqrMagnitude <= 1e-6f)
+            splitNormal = Vector2.up;
+        else
+            splitNormal.Normalize();
+
+        PositionTag(_beforeTag, new Vector2(splitX, splitY) - splitNormal * 54f, rotationDeg, imageRect);
+        PositionTag(_afterTag, new Vector2(splitX, splitY) + splitNormal * 54f, rotationDeg, imageRect);
+    }
+
+    private static void PositionTag(VisualElement tag, Vector2 center, float rotationDeg, Rect imageRect)
+    {
+        var width = Mathf.Max(82f, tag.resolvedStyle.width > 1f ? tag.resolvedStyle.width : 86f);
+        var height = Mathf.Max(28f, tag.resolvedStyle.height > 1f ? tag.resolvedStyle.height : 34f);
+        var left = Mathf.Clamp(center.x - width * 0.5f, imageRect.xMin + 6f, imageRect.xMax - width - 6f);
+        var top = Mathf.Clamp(center.y - height * 0.5f, imageRect.yMin + 6f, imageRect.yMax - height - 6f);
+        tag.style.left = left;
+        tag.style.top = top;
+        tag.style.rotate = new Rotate(new Angle(rotationDeg, AngleUnit.Degree));
+        tag.style.transformOrigin = new TransformOrigin(Length.Percent(50), Length.Percent(50), 0f);
+    }
+
+    private static void PositionHint(VisualElement hint, Vector2 center, float rotationDeg)
+    {
+        var width = Mathf.Max(22f, hint.resolvedStyle.width > 1f ? hint.resolvedStyle.width : 22f);
+        var height = Mathf.Max(22f, hint.resolvedStyle.height > 1f ? hint.resolvedStyle.height : 22f);
+        hint.style.left = center.x - width * 0.5f;
+        hint.style.top = center.y - height * 0.5f;
+        hint.style.rotate = new Rotate(new Angle(rotationDeg, AngleUnit.Degree));
+        hint.style.transformOrigin = new TransformOrigin(Length.Percent(50), Length.Percent(50), 0f);
     }
 
     private void UpdateDecorations()

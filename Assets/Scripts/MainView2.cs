@@ -9,7 +9,6 @@ using UnityEngine.UIElements;
 
 public sealed class MainView2 : BasePageView
 {
-    private const float BottomOverlayHeight = 118f;
     private const string PrefKeyMaleFacePath = "MainView.Ref.MaleFacePath";
     private const string PrefKeyFemaleFacePath = "MainView.Ref.FemaleFacePath";
     private const string PrefKeyBackgroundPath = "MainView.Ref.BackgroundPath";
@@ -184,7 +183,6 @@ public sealed class MainView2 : BasePageView
         canvasHost.style.flexGrow = 1;
         canvasHost.style.minHeight = 0;
         canvasHost.style.position = Position.Relative;
-        canvasHost.style.marginBottom = BottomOverlayHeight;
         canvasHost.style.backgroundColor = new StyleColor(new Color(0.08f, 0.09f, 0.11f, 1f));
         canvasHost.style.borderTopLeftRadius = 24;
         canvasHost.style.borderTopRightRadius = 24;

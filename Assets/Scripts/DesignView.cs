@@ -6,8 +6,6 @@ using UnityEngine.UIElements;
 
 public sealed class DesignView : BasePageView
 {
-    private const float BottomOverlayHeight = 72f;
-
     private sealed class LayerBoxData
     {
         public string title;
@@ -79,7 +77,6 @@ public sealed class DesignView : BasePageView
         canvasHost.style.flexGrow = 1;
         canvasHost.style.minHeight = 0;
         canvasHost.style.position = Position.Relative;
-        canvasHost.style.marginBottom = BottomOverlayHeight;
         canvasHost.style.backgroundColor = new StyleColor(new Color(0.08f, 0.09f, 0.11f, 1f));
         canvasHost.style.borderTopLeftRadius = 24;
         canvasHost.style.borderTopRightRadius = 24;

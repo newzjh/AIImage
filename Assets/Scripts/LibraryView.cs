@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -15,7 +16,7 @@ public sealed class LibraryView : BasePageView
     private const string PendingClipText = "待接入";
     private const string EmptyText = "无";
     private const int ThumbnailMaxEdge = 640;
-    private static readonly NaturalStringComparer DirectoryComparer = new NaturalStringComparer();
+    private static readonly ExplorerStringComparer ExplorerComparer = new ExplorerStringComparer();
 
     private enum LibraryImageType
     {
@@ -98,6 +99,7 @@ public sealed class LibraryView : BasePageView
     private readonly Dictionary<string, Label> _statusByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Label> _timeLabelByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VisualElement> _cardByPath = new Dictionary<string, VisualElement>(StringComparer.OrdinalIgnoreCase);
+    private bool _didInitialPathSync;
     private string _currentDriveRoot;
     private string _selectedDirectoryPath;
     private string _selectedThumbnailPath;
@@ -141,6 +143,7 @@ public sealed class LibraryView : BasePageView
 
     protected override void OnShown()
     {
+        SyncInitialSelectionFromCurrentImagePath();
         PopulateDrives();
         RestoreSelectionState();
         if (!string.IsNullOrWhiteSpace(_materializedDirectoryPath) &&
@@ -176,6 +179,29 @@ public sealed class LibraryView : BasePageView
         base.OnDestroy();
     }
 
+    private void SyncInitialSelectionFromCurrentImagePath()
+    {
+        if (_didInitialPathSync)
+            return;
+
+        _didInitialPathSync = true;
+
+        var currentPath = Host?.MainPage?.CurrentSourcePathForSync;
+        if (string.IsNullOrWhiteSpace(currentPath) || !File.Exists(currentPath))
+            return;
+
+        try
+        {
+            var directory = Path.GetDirectoryName(currentPath);
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+                _selectedDirectoryPath = directory;
+            _selectedThumbnailPath = currentPath;
+        }
+        catch
+        {
+        }
+    }
+
     private VisualElement BuildTopBar()
     {
         var bar = new VisualElement();
@@ -195,7 +221,7 @@ public sealed class LibraryView : BasePageView
         title.style.marginRight = 14;
         bar.Add(title);
 
-        bar.Add(CreateFilterToggle("时间", true, out _sortTimeToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("名称", true, out _sortTimeToggle, OnSortToggleChanged));
         bar.Add(CreateFilterToggle("人脸", false, out _sortFaceToggle, OnSortToggleChanged));
         bar.Add(CreateFilterToggle("地点", false, out _sortLocationToggle, OnSortToggleChanged));
         bar.Add(CreateFilterToggle("原图", true, out _showOriginalToggle, ApplyFilters));
@@ -641,11 +667,14 @@ public sealed class LibraryView : BasePageView
             filtered = filtered.Where(entry => entry.favorite);
 
         if (_sortFaceToggle?.value == true)
-            filtered = filtered.OrderByDescending(entry => entry.faceText, DirectoryComparer);
+            filtered = filtered.OrderByDescending(entry => entry.faceText, ExplorerComparer)
+                .ThenBy(entry => entry.fileName, ExplorerComparer);
         else if (_sortLocationToggle?.value == true)
-            filtered = filtered.OrderBy(entry => entry.locationText, DirectoryComparer);
+            filtered = filtered.OrderBy(entry => entry.locationText, ExplorerComparer)
+                .ThenBy(entry => entry.fileName, ExplorerComparer);
         else
-            filtered = filtered.OrderByDescending(entry => entry.DisplayTime);
+            filtered = filtered.OrderBy(entry => entry.fileName, ExplorerComparer)
+                .ThenByDescending(entry => entry.DisplayTime);
 
         _visibleEntries.AddRange(filtered);
         if (_visibleEntries.Count == 0)
@@ -1115,7 +1144,7 @@ public sealed class LibraryView : BasePageView
                                    name.Contains("star", StringComparison.OrdinalIgnoreCase)
                     };
                 })
-                .OrderByDescending(entry => entry.modifiedTime)
+                .OrderBy(entry => entry.fileName, ExplorerComparer)
                 .ToList();
         }
         catch
@@ -1411,7 +1440,8 @@ public sealed class LibraryView : BasePageView
         try
         {
             return Directory.EnumerateDirectories(path)
-                .OrderBy(DirectoryNameFromPath, DirectoryComparer)
+                .OrderBy(DirectoryNameFromPath, ExplorerComparer)
+                .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .Take(Mathf.Max(1, maxCount))
                 .ToArray();
         }
@@ -1471,9 +1501,12 @@ public sealed class LibraryView : BasePageView
         }
     }
 
-    private sealed class NaturalStringComparer : IComparer<string>
+    private sealed class ExplorerStringComparer : IComparer<string>
     {
         private readonly CompareInfo _compareInfo = CompareInfo.GetCompareInfo("zh-CN");
+
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern int StrCmpLogicalW(string left, string right);
 
         public int Compare(string x, string y)
         {
@@ -1484,62 +1517,32 @@ public sealed class LibraryView : BasePageView
             if (y == null)
                 return 1;
 
-            var ix = 0;
-            var iy = 0;
-            while (ix < x.Length && iy < y.Length)
+            if (IsWindows())
             {
-                var xDigit = char.IsDigit(x[ix]);
-                var yDigit = char.IsDigit(y[iy]);
-                if (xDigit && yDigit)
+                try
                 {
-                    var result = CompareNumberChunks(x, ref ix, y, ref iy);
-                    if (result != 0)
-                        return result;
-                    continue;
+                    var logicalResult = StrCmpLogicalW(x, y);
+                    if (logicalResult != 0)
+                        return logicalResult;
                 }
-
-                var xStart = ix;
-                var yStart = iy;
-                while (ix < x.Length && !char.IsDigit(x[ix]))
-                    ix++;
-                while (iy < y.Length && !char.IsDigit(y[iy]))
-                    iy++;
-                var chunkX = x.Substring(xStart, ix - xStart);
-                var chunkY = y.Substring(yStart, iy - yStart);
-                var chunkResult = _compareInfo.Compare(chunkX, chunkY, CompareOptions.IgnoreCase | CompareOptions.StringSort);
-                if (chunkResult != 0)
-                    return chunkResult;
+                catch
+                {
+                }
             }
 
-            return x.Length.CompareTo(y.Length);
+            var fallback = _compareInfo.Compare(x, y, CompareOptions.IgnoreCase | CompareOptions.StringSort);
+            if (fallback != 0)
+                return fallback;
+            return string.CompareOrdinal(x, y);
         }
 
-        private static int CompareNumberChunks(string x, ref int ix, string y, ref int iy)
+        private static bool IsWindows()
         {
-            var xStart = ix;
-            var yStart = iy;
-            while (ix < x.Length && char.IsDigit(x[ix]))
-                ix++;
-            while (iy < y.Length && char.IsDigit(y[iy]))
-                iy++;
-
-            var xChunk = x.Substring(xStart, ix - xStart);
-            var yChunk = y.Substring(yStart, iy - yStart);
-            var xTrimmed = xChunk.TrimStart('0');
-            var yTrimmed = yChunk.TrimStart('0');
-            if (xTrimmed.Length == 0)
-                xTrimmed = "0";
-            if (yTrimmed.Length == 0)
-                yTrimmed = "0";
-
-            if (xTrimmed.Length != yTrimmed.Length)
-                return xTrimmed.Length.CompareTo(yTrimmed.Length);
-
-            var digitResult = string.CompareOrdinal(xTrimmed, yTrimmed);
-            if (digitResult != 0)
-                return digitResult;
-
-            return xChunk.Length.CompareTo(yChunk.Length);
+            var platform = Environment.OSVersion.Platform;
+            return platform == PlatformID.Win32NT ||
+                   platform == PlatformID.Win32S ||
+                   platform == PlatformID.Win32Windows ||
+                   platform == PlatformID.WinCE;
         }
     }
 }
