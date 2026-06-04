@@ -266,8 +266,109 @@ public abstract class BasePageView : MonoBehaviour
         _historyList.selectionChanged += OnHistorySelectionChanged;
         panel.Add(_historyList);
 
+        EnableFloatingPanelDrag(panel, header);
         RefreshHistoryUi();
         return panel;
+    }
+
+    protected void EnableFloatingPanelDrag(VisualElement panel, VisualElement dragHandle, float margin = 10f)
+    {
+        if (panel == null || dragHandle == null)
+            return;
+
+        var dragging = false;
+        var dragPointerId = -1;
+        var startPointer = Vector2.zero;
+        var startPos = Vector2.zero;
+
+        dragHandle.RegisterCallback<PointerDownEvent>(evt =>
+        {
+            if (evt.button != 0 || panel.parent == null)
+                return;
+            if (IsDragBlockedByInteractiveChild(evt.target, dragHandle))
+                return;
+
+            dragging = true;
+            dragPointerId = evt.pointerId;
+            startPointer = evt.position;
+
+            var panelRect = panel.worldBound;
+            var parentRect = panel.parent.worldBound;
+            startPos = new Vector2(panelRect.xMin - parentRect.xMin, panelRect.yMin - parentRect.yMin);
+
+            panel.style.left = startPos.x;
+            panel.style.top = startPos.y;
+            panel.style.right = new StyleLength(StyleKeyword.Auto);
+            panel.style.bottom = new StyleLength(StyleKeyword.Auto);
+            panel.style.width = panel.resolvedStyle.width;
+            panel.style.height = panel.resolvedStyle.height;
+
+            dragHandle.CapturePointer(dragPointerId);
+            evt.StopPropagation();
+        });
+
+        dragHandle.RegisterCallback<PointerMoveEvent>(evt =>
+        {
+            if (!dragging || dragPointerId != evt.pointerId || panel.parent == null || !dragHandle.HasPointerCapture(dragPointerId))
+                return;
+
+            var delta = (Vector2)evt.position - startPointer;
+            var newPos = startPos + delta;
+            var bounds = panel.parent.contentRect;
+            var panelWidth = Mathf.Max(1f, panel.resolvedStyle.width);
+            var panelHeight = Mathf.Max(1f, panel.resolvedStyle.height);
+            var headerHeight = Mathf.Max(32f, dragHandle.resolvedStyle.height);
+
+            var minX = margin - panelWidth;
+            var maxX = Mathf.Max(margin, bounds.width - margin);
+            var minY = margin;
+            var maxY = Mathf.Max(margin, bounds.height - headerHeight - margin);
+
+            newPos.x = Mathf.Clamp(newPos.x, minX, maxX);
+            newPos.y = Mathf.Clamp(newPos.y, minY, maxY);
+
+            panel.style.left = newPos.x;
+            panel.style.top = newPos.y;
+            evt.StopPropagation();
+        });
+
+        dragHandle.RegisterCallback<PointerUpEvent>(evt =>
+        {
+            if (!dragging || dragPointerId != evt.pointerId)
+                return;
+
+            dragging = false;
+            if (dragHandle.HasPointerCapture(dragPointerId))
+                dragHandle.ReleasePointer(dragPointerId);
+            evt.StopPropagation();
+        });
+
+        dragHandle.RegisterCallback<PointerCancelEvent>(evt =>
+        {
+            if (!dragging || dragPointerId != evt.pointerId)
+                return;
+
+            dragging = false;
+            if (dragHandle.HasPointerCapture(dragPointerId))
+                dragHandle.ReleasePointer(dragPointerId);
+            evt.StopPropagation();
+        });
+    }
+
+    private static bool IsDragBlockedByInteractiveChild(IEventHandler target, VisualElement dragHandle)
+    {
+        if (target is not VisualElement ve)
+            return false;
+
+        var current = ve;
+        while (current != null && !ReferenceEquals(current, dragHandle))
+        {
+            if (current is Button || current is Toggle || current is Slider || current is TextField || current is Scroller)
+                return true;
+            current = current.parent;
+        }
+
+        return false;
     }
 
     protected void BuildStandardOverlays()

@@ -137,7 +137,7 @@ public sealed class MainView2 : BasePageView
             _adjustPanel.style.left = 5;
             _adjustPanel.style.bottom = 18;
             _adjustPanel.style.top = new StyleLength(StyleKeyword.Auto);
-            _adjustHost.style.paddingRight = 0;
+            _adjustHost.style.paddingRight = 12;
             SetAdjustPanelCollapsed(_adjustPanelCollapsed || _adjustBody.style.display == DisplayStyle.None, false);
         }
         else
@@ -147,7 +147,7 @@ public sealed class MainView2 : BasePageView
             _adjustPanel.style.right = 16;
             _adjustPanel.style.top = 18;
             _adjustPanel.style.bottom = 18;
-            _adjustHost.style.paddingRight = 368;
+            _adjustHost.style.paddingRight = 12;
             if (_adjustBody.style.display == DisplayStyle.None)
                 SetAdjustPanelCollapsed(false, false);
         }
@@ -457,6 +457,7 @@ public sealed class MainView2 : BasePageView
         collapseButton.style.borderBottomLeftRadius = 16;
         collapseButton.style.borderBottomRightRadius = 16;
         header.Add(collapseButton);
+        EnableFloatingPanelDrag(panel, header);
 
         var scroll = new ScrollView(ScrollViewMode.Vertical);
         scroll.style.flexGrow = 1;

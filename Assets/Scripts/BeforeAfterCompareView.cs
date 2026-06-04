@@ -6,6 +6,8 @@ using UnityEngine.UIElements;
 
 public sealed class BeforeAfterCompareView : VisualElement
 {
+    public event Action ViewTransformChanged;
+
     private readonly Label _beforeTag;
     private readonly Label _afterTag;
     private readonly Label _leftHint;
@@ -110,6 +112,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         }
         MarkDirtyRepaint();
         UpdateDecorations();
+        NotifyViewTransformChanged();
     }
 
     public void FitToView()
@@ -129,6 +132,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         _pan = (viewRect.size - scaledSize) * 0.5f;
         MarkDirtyRepaint();
         UpdateDecorations();
+        NotifyViewTransformChanged();
     }
 
     public bool TryGetDisplayedImageRect(out Rect imageRect)
@@ -169,6 +173,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         _pan = viewportPos - imageLocal * _zoom;
         MarkDirtyRepaint();
         UpdateDecorations();
+        NotifyViewTransformChanged();
         evt.StopPropagation();
     }
 
@@ -250,6 +255,7 @@ public sealed class BeforeAfterCompareView : VisualElement
             }
             MarkDirtyRepaint();
             UpdateDecorations();
+            NotifyViewTransformChanged();
             evt.StopPropagation();
             return;
         }
@@ -260,6 +266,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         _pan = _panStartPan + (Vector2)(evt.localPosition - _panStartPointer);
         MarkDirtyRepaint();
         UpdateDecorations();
+        NotifyViewTransformChanged();
         evt.StopPropagation();
     }
 
@@ -429,6 +436,11 @@ public sealed class BeforeAfterCompareView : VisualElement
             _leftHint.style.display = DisplayStyle.None;
             _rightHint.style.display = DisplayStyle.None;
         }
+    }
+
+    private void NotifyViewTransformChanged()
+    {
+        ViewTransformChanged?.Invoke();
     }
 
     private static void DrawFullRect(MeshGenerationContext mgc, Texture tex, Rect drawRect, Rect imageRect)
@@ -652,9 +664,18 @@ public sealed class BeforeAfterCompareView : VisualElement
         label.style.paddingRight = 12;
         label.style.paddingTop = 8;
         label.style.paddingBottom = 8;
-        label.style.backgroundColor = Color.white;
-        label.style.color = new Color(0.62f, 0.62f, 0.64f, 1f);
+        label.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.52f));
+        label.style.color = Color.white;
         label.style.unityFontStyleAndWeight = FontStyle.Bold;
+        label.style.fontSize = 13;
+        label.style.borderLeftWidth = 1;
+        label.style.borderRightWidth = 1;
+        label.style.borderTopWidth = 1;
+        label.style.borderBottomWidth = 1;
+        label.style.borderLeftColor = new StyleColor(new Color(1f, 1f, 1f, 0.20f));
+        label.style.borderRightColor = new StyleColor(new Color(1f, 1f, 1f, 0.20f));
+        label.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.20f));
+        label.style.borderBottomColor = new StyleColor(new Color(1f, 1f, 1f, 0.20f));
         label.style.borderTopLeftRadius = 18;
         label.style.borderTopRightRadius = 18;
         label.style.borderBottomLeftRadius = 18;
@@ -670,7 +691,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         label.style.height = 22;
         label.style.unityTextAlign = TextAnchor.MiddleCenter;
         label.style.color = Color.white;
-        label.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.22f));
+        label.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.48f));
         label.style.borderTopLeftRadius = 11;
         label.style.borderTopRightRadius = 11;
         label.style.borderBottomLeftRadius = 11;

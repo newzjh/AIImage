@@ -30,6 +30,12 @@ public sealed class DesignView : BasePageView
 
     protected override void OnShown()
     {
+        if (CompareView != null)
+        {
+            CompareView.ViewTransformChanged -= OnCompareViewTransformChanged;
+            CompareView.ViewTransformChanged += OnCompareViewTransformChanged;
+        }
+
         var current = GetCurrentHistoryTexture();
         var original = GetOriginalHistoryTexture();
         if (current != null || original != null)
@@ -38,6 +44,12 @@ public sealed class DesignView : BasePageView
             CompareView?.FitToView();
             RebuildLayerBoxes();
         }
+    }
+
+    protected override void OnBeforeDetach()
+    {
+        if (CompareView != null)
+            CompareView.ViewTransformChanged -= OnCompareViewTransformChanged;
     }
 
     protected override void BuildPage(VisualElement contentRoot)
@@ -55,7 +67,6 @@ public sealed class DesignView : BasePageView
         body.style.paddingLeft = 12;
         body.style.paddingRight = 12;
         body.style.paddingTop = 8;
-        body.style.paddingBottom = 0;
         contentRoot.Add(body);
 
         var canvasHost = new VisualElement();
@@ -70,7 +81,7 @@ public sealed class DesignView : BasePageView
         canvasHost.style.overflow = Overflow.Hidden;
         body.Add(canvasHost);
 
-        CreateCompareView(canvasHost, false);
+        CreateCompareView(canvasHost, true);
 
         _canvasOverlay = new VisualElement();
         _canvasOverlay.style.position = Position.Absolute;
@@ -78,8 +89,9 @@ public sealed class DesignView : BasePageView
         _canvasOverlay.style.top = 0;
         _canvasOverlay.style.right = 0;
         _canvasOverlay.style.bottom = 0;
-        _canvasOverlay.pickingMode = PickingMode.Ignore;
+        _canvasOverlay.pickingMode = PickingMode.Position;
         canvasHost.Add(_canvasOverlay);
+
         canvasHost.Add(CreateFloatingHistoryPanel(230f, "设计历史"));
 
         _tipsPanel = new VisualElement();
@@ -97,13 +109,14 @@ public sealed class DesignView : BasePageView
         _tipsPanel.style.paddingTop = 12;
         _tipsPanel.style.paddingBottom = 12;
         canvasHost.Add(_tipsPanel);
+        EnableFloatingPanelDrag(_tipsPanel, _tipsPanel);
 
         var tipsTitle = new Label("设计说明");
         tipsTitle.style.color = Color.white;
         tipsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
         _tipsPanel.Add(tipsTitle);
 
-        _tipsLabel = new Label("点击“识别图层”后，会基于 YOLO Seg 结果生成可拖拽/缩放的图层框。应用按钮暂时保留接口，后续接入 SD inpainting。");
+        _tipsLabel = new Label("点击“识别图层”后，会基于 YOLO Seg 结果生成可拖动、可缩放的图层框。应用按钮先保留接口，后续接入 SD inpainting。");
         _tipsLabel.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
         _tipsLabel.style.whiteSpace = WhiteSpace.Normal;
         _tipsLabel.style.marginTop = 4;
@@ -115,22 +128,22 @@ public sealed class DesignView : BasePageView
     protected override void OnLayoutChanged(bool isPortrait, Rect layoutRect)
     {
         RebuildLayerBoxes();
-        if (_tipsPanel != null)
+        if (_tipsPanel == null)
+            return;
+
+        if (isPortrait)
         {
-            if (isPortrait)
-            {
-                _tipsPanel.style.left = 18;
-                _tipsPanel.style.right = 18;
-                _tipsPanel.style.top = 18;
-                _tipsPanel.style.width = new StyleLength(StyleKeyword.Auto);
-            }
-            else
-            {
-                _tipsPanel.style.left = new StyleLength(StyleKeyword.Auto);
-                _tipsPanel.style.right = 18;
-                _tipsPanel.style.top = 18;
-                _tipsPanel.style.width = 260;
-            }
+            _tipsPanel.style.left = 18;
+            _tipsPanel.style.right = 18;
+            _tipsPanel.style.top = 18;
+            _tipsPanel.style.width = new StyleLength(StyleKeyword.Auto);
+        }
+        else
+        {
+            _tipsPanel.style.left = new StyleLength(StyleKeyword.Auto);
+            _tipsPanel.style.right = 18;
+            _tipsPanel.style.top = 18;
+            _tipsPanel.style.width = 260;
         }
     }
 
@@ -138,9 +151,15 @@ public sealed class DesignView : BasePageView
     {
         if (currentTexture == null && originalTexture == null)
             return;
+
         SetHistoryFromSharedTextures(originalTexture, currentTexture, label, path);
         CompareView?.SetSources(currentTexture ?? originalTexture, originalTexture ?? currentTexture, label);
         CompareView?.FitToView();
+        RebuildLayerBoxes();
+    }
+
+    private void OnCompareViewTransformChanged()
+    {
         RebuildLayerBoxes();
     }
 
@@ -171,7 +190,7 @@ public sealed class DesignView : BasePageView
         return bar;
     }
 
-    private Button CreateActionButton(string text, Action onClick)
+    private static Button CreateActionButton(string text, Action onClick)
     {
         var button = new Button(onClick) { text = text };
         button.style.height = 36;
@@ -227,6 +246,7 @@ public sealed class DesignView : BasePageView
                         Mathf.Clamp01(rect.y / Mathf.Max(1f, src.height)),
                         Mathf.Clamp01(rect.width / Mathf.Max(1f, src.width)),
                         Mathf.Clamp01(rect.height / Mathf.Max(1f, src.height)));
+
                     if (normalized.width < 0.03f || normalized.height < 0.03f)
                         continue;
 
@@ -250,7 +270,7 @@ public sealed class DesignView : BasePageView
             }
 
             RebuildLayerBoxes();
-            _tipsLabel.text = $"已生成 {_layerData.Count} 个图层框，可拖动、缩放并保留位置，后续会接入背景重算与 inpainting。";
+            _tipsLabel.text = $"已生成 {_layerData.Count} 个图层框，可拖动、缩放并保留位置。后续会在这里接入背景重算和 inpainting。";
         }
         finally
         {
@@ -260,7 +280,7 @@ public sealed class DesignView : BasePageView
 
     private void OnApplyDesign()
     {
-        ShowToast("应用接口已预留：后续将在这里重新计算背景 mask 并调用 SD inpainting 生成整图。", 3600);
+        ShowToast("应用接口已预留：后续会在这里重新计算背景 mask 并调用 SD inpainting 生成整图。", 3600);
     }
 
     private void RebuildLayerBoxes()
@@ -322,15 +342,14 @@ public sealed class DesignView : BasePageView
         title.style.unityFontStyleAndWeight = FontStyle.Bold;
         header.Add(title);
 
-        var handleNames = new[] { "tl", "tr", "bl", "br" };
-        foreach (var handleName in handleNames)
+        foreach (var handleName in new[] { "tl", "tr", "bl", "br" })
             box.Add(CreateHandle(handleName));
 
         SetupDragAndResize(box, header, data);
         return box;
     }
 
-    private VisualElement CreateHandle(string corner)
+    private static VisualElement CreateHandle(string corner)
     {
         var handle = new VisualElement();
         handle.name = corner;
@@ -342,6 +361,7 @@ public sealed class DesignView : BasePageView
         handle.style.borderTopRightRadius = 3;
         handle.style.borderBottomLeftRadius = 3;
         handle.style.borderBottomRightRadius = 3;
+
         switch (corner)
         {
             case "tl":
@@ -361,19 +381,22 @@ public sealed class DesignView : BasePageView
                 handle.style.bottom = -7;
                 break;
         }
+
         return handle;
     }
 
     private void SetupDragAndResize(VisualElement box, VisualElement header, LayerBoxData data)
     {
-        bool dragging = false;
-        int dragPointerId = -1;
-        Vector2 startPointer = default;
-        Rect startRect = default;
+        var dragging = false;
+        var dragPointerId = -1;
+        var startPointer = Vector2.zero;
+        var startRect = default(Rect);
 
         header.RegisterCallback<PointerDownEvent>(evt =>
         {
-            if (evt.button != 0) return;
+            if (evt.button != 0)
+                return;
+
             dragging = true;
             dragPointerId = evt.pointerId;
             startPointer = evt.position;
@@ -381,49 +404,55 @@ public sealed class DesignView : BasePageView
             header.CapturePointer(dragPointerId);
             evt.StopPropagation();
         });
+
         header.RegisterCallback<PointerMoveEvent>(evt =>
         {
             if (!dragging || dragPointerId != evt.pointerId || !header.HasPointerCapture(dragPointerId))
                 return;
+
             var delta = (Vector2)evt.position - startPointer;
             ApplyBoxRect(box, data, new Rect(startRect.x + delta.x, startRect.y + delta.y, startRect.width, startRect.height));
             evt.StopPropagation();
         });
+
         header.RegisterCallback<PointerUpEvent>(evt =>
         {
-            if (!dragging || dragPointerId != evt.pointerId) return;
+            if (!dragging || dragPointerId != evt.pointerId)
+                return;
+
             dragging = false;
             if (header.HasPointerCapture(dragPointerId))
                 header.ReleasePointer(dragPointerId);
             evt.StopPropagation();
         });
+
         header.RegisterCallback<PointerCancelEvent>(evt =>
         {
-            if (!dragging || dragPointerId != evt.pointerId) return;
+            if (!dragging || dragPointerId != evt.pointerId)
+                return;
+
             dragging = false;
             if (header.HasPointerCapture(dragPointerId))
                 header.ReleasePointer(dragPointerId);
             evt.StopPropagation();
         });
 
-        var handles = new List<VisualElement>();
-        foreach (var child in box.Children())
-            handles.Add(child);
-
-        foreach (var handle in handles)
+        foreach (var handle in box.Children())
         {
             if (handle.name != "tl" && handle.name != "tr" && handle.name != "bl" && handle.name != "br")
                 continue;
 
-            bool resizing = false;
-            int resizePointerId = -1;
-            Vector2 resizeStart = default;
-            Rect resizeStartRect = default;
             var corner = handle.name;
+            var resizing = false;
+            var resizePointerId = -1;
+            var resizeStart = Vector2.zero;
+            var resizeStartRect = default(Rect);
 
             handle.RegisterCallback<PointerDownEvent>(evt =>
             {
-                if (evt.button != 0) return;
+                if (evt.button != 0)
+                    return;
+
                 resizing = true;
                 resizePointerId = evt.pointerId;
                 resizeStart = evt.position;
@@ -431,6 +460,7 @@ public sealed class DesignView : BasePageView
                 handle.CapturePointer(resizePointerId);
                 evt.StopPropagation();
             });
+
             handle.RegisterCallback<PointerMoveEvent>(evt =>
             {
                 if (!resizing || resizePointerId != evt.pointerId || !handle.HasPointerCapture(resizePointerId))
@@ -465,17 +495,23 @@ public sealed class DesignView : BasePageView
                 ApplyBoxRect(box, data, rect);
                 evt.StopPropagation();
             });
+
             handle.RegisterCallback<PointerUpEvent>(evt =>
             {
-                if (!resizing || resizePointerId != evt.pointerId) return;
+                if (!resizing || resizePointerId != evt.pointerId)
+                    return;
+
                 resizing = false;
                 if (handle.HasPointerCapture(resizePointerId))
                     handle.ReleasePointer(resizePointerId);
                 evt.StopPropagation();
             });
+
             handle.RegisterCallback<PointerCancelEvent>(evt =>
             {
-                if (!resizing || resizePointerId != evt.pointerId) return;
+                if (!resizing || resizePointerId != evt.pointerId)
+                    return;
+
                 resizing = false;
                 if (handle.HasPointerCapture(resizePointerId))
                     handle.ReleasePointer(resizePointerId);
