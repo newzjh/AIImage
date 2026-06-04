@@ -1398,6 +1398,9 @@ public static class NcnnDebugRunner
     {
         try
         {
+            if (ResolveBoolEnv(envName + "_EMPTY", false))
+                return string.Empty;
+
             var env = Environment.GetEnvironmentVariable(envName);
             if (env != null)
                 return env;
