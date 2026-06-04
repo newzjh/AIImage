@@ -165,6 +165,8 @@ public abstract class BasePageView : MonoBehaviour
     protected virtual void OnBeforeDetach() { }
     protected virtual void OnLayoutChanged(bool isPortrait, Rect layoutRect) { }
     protected virtual AppPageId? ResolveSwipeTarget(SwipeDirection direction) => null;
+    protected virtual bool UseOverlaySwitchZone => false;
+    protected virtual float GetSwitchPillAlignment01() => 0.5f;
     protected abstract void BuildPage(VisualElement contentRoot);
 
     protected virtual void OnDestroy()
@@ -1034,14 +1036,25 @@ public abstract class BasePageView : MonoBehaviour
     {
         _switchZone = new VisualElement();
         _switchZone.style.height = 72;
-        _switchZone.style.flexShrink = 0;
         _switchZone.style.alignItems = Align.Center;
         _switchZone.style.justifyContent = Justify.Center;
         _switchZone.style.paddingBottom = 12;
         _switchZone.style.paddingTop = 12;
         _switchZone.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0f));
+        if (UseOverlaySwitchZone)
+        {
+            _switchZone.style.position = Position.Absolute;
+            _switchZone.style.left = 0;
+            _switchZone.style.right = 0;
+            _switchZone.style.bottom = 0;
+        }
+        else
+        {
+            _switchZone.style.flexShrink = 0;
+        }
 
         _switchTrack = new VisualElement();
+        _switchTrack.style.position = Position.Relative;
         _switchTrack.style.width = 160;
         _switchTrack.style.height = 28;
         _switchTrack.style.alignItems = Align.Center;
@@ -1054,8 +1067,10 @@ public abstract class BasePageView : MonoBehaviour
         _switchZone.Add(_switchTrack);
 
         _switchPill = new VisualElement();
+        _switchPill.style.position = Position.Absolute;
         _switchPill.style.width = 118;
         _switchPill.style.height = 8;
+        _switchPill.style.top = 10;
         _switchPill.style.borderTopLeftRadius = 4;
         _switchPill.style.borderTopRightRadius = 4;
         _switchPill.style.borderBottomLeftRadius = 4;
@@ -1069,6 +1084,7 @@ public abstract class BasePageView : MonoBehaviour
         _switchZone.RegisterCallback<PointerUpEvent>(OnSwitchPointerUp);
         _switchZone.RegisterCallback<PointerCancelEvent>(OnSwitchPointerCancel);
         root.Add(_switchZone);
+        _switchZone.schedule.Execute(ApplySwitchPillOffset);
     }
 
     private void OnGeometryChanged(GeometryChangedEvent evt)
@@ -1076,6 +1092,7 @@ public abstract class BasePageView : MonoBehaviour
         var rect = evt.newRect;
         _isPortraitLayout = rect.height > rect.width;
         OnLayoutChanged(_isPortraitLayout, rect);
+        ApplySwitchPillOffset();
     }
 
     private void OnHistorySelectionChanged(IEnumerable<object> selectedItems)
@@ -1223,7 +1240,7 @@ public abstract class BasePageView : MonoBehaviour
         _toastOverlay.style.position = Position.Absolute;
         _toastOverlay.style.left = 0;
         _toastOverlay.style.right = 0;
-        _toastOverlay.style.top = 14;
+        _toastOverlay.style.top = 114;
         _toastOverlay.style.alignItems = Align.Center;
         _toastOverlay.style.justifyContent = Justify.FlexStart;
         _toastOverlay.style.display = DisplayStyle.None;
@@ -1382,7 +1399,7 @@ public abstract class BasePageView : MonoBehaviour
         var delta = evt.position.x - _switchDragStart.x;
         var max = Mathf.Max(24f, (_switchTrack?.resolvedStyle.width ?? 160f) * 0.18f);
         delta = Mathf.Clamp(delta, -max, max);
-        _switchPill.style.translate = new Translate(new Length(delta, LengthUnit.Pixel), new Length(0f, LengthUnit.Pixel));
+        ApplySwitchPillOffset(delta);
         evt.StopPropagation();
     }
 
@@ -1430,8 +1447,28 @@ public abstract class BasePageView : MonoBehaviour
 
     private void ResetSwitchPill()
     {
-        if (_switchPill != null)
-            _switchPill.style.translate = new Translate(new Length(0f, LengthUnit.Pixel), new Length(0f, LengthUnit.Pixel));
+        ApplySwitchPillOffset();
+    }
+
+    private void ApplySwitchPillOffset()
+    {
+        ApplySwitchPillOffset(0f);
+    }
+
+    private void ApplySwitchPillOffset(float dragDelta)
+    {
+        if (_switchPill == null)
+            return;
+
+        var trackWidth = _switchTrack != null && _switchTrack.resolvedStyle.width > 1f
+            ? _switchTrack.resolvedStyle.width
+            : 160f;
+        var pillWidth = _switchPill.resolvedStyle.width > 1f
+            ? _switchPill.resolvedStyle.width
+            : 118f;
+        var maxLeft = Mathf.Max(0f, trackWidth - pillWidth);
+        var baseLeft = Mathf.Lerp(0f, maxLeft, Mathf.Clamp01(GetSwitchPillAlignment01()));
+        _switchPill.style.left = Mathf.Clamp(baseLeft + dragDelta, 0f, maxLeft);
     }
 
     private static int GetKernelId(ComputeShader shader, string kernelName)

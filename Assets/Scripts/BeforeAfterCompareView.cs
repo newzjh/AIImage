@@ -42,13 +42,9 @@ public sealed class BeforeAfterCompareView : VisualElement
         style.backgroundColor = new StyleColor(new Color(0.10f, 0.11f, 0.13f, 1f));
 
         _beforeTag = CreateTag("Before");
-        _beforeTag.style.left = 18;
-        _beforeTag.style.top = 18;
         Add(_beforeTag);
 
         _afterTag = CreateTag("After");
-        _afterTag.style.right = 18;
-        _afterTag.style.top = 18;
         Add(_afterTag);
 
         _leftHint = CreateHint("<");
@@ -411,6 +407,7 @@ public sealed class BeforeAfterCompareView : VisualElement
     {
         if (!TryGetSplitSegment(drawRect, imageRect, out var segA, out var segB))
         {
+            PositionTags(imageRect, false, 0f, 0f);
             _leftHint.style.display = DisplayStyle.None;
             _rightHint.style.display = DisplayStyle.None;
             return;
@@ -418,12 +415,33 @@ public sealed class BeforeAfterCompareView : VisualElement
 
         var mid = (segA + segB) * 0.5f;
         var y = Mathf.Clamp(mid.y, imageRect.yMin + 28f, imageRect.yMax - 28f);
+        PositionTags(imageRect, true, mid.x, y);
         _leftHint.style.left = mid.x - 28f;
         _leftHint.style.top = y - 14f;
         _rightHint.style.left = mid.x + 6f;
         _rightHint.style.top = y - 14f;
         _leftHint.style.display = DisplayStyle.Flex;
         _rightHint.style.display = DisplayStyle.Flex;
+    }
+
+    private void PositionTags(Rect imageRect, bool nearSplit, float splitX, float splitY)
+    {
+        if (!nearSplit)
+        {
+            _beforeTag.style.left = imageRect.xMin + 18f;
+            _beforeTag.style.top = imageRect.yMin + 18f;
+            _afterTag.style.left = Mathf.Max(imageRect.xMin + 18f, imageRect.xMax - 90f);
+            _afterTag.style.top = imageRect.yMin + 18f;
+            return;
+        }
+
+        var tagTop = Mathf.Clamp(splitY - 42f, imageRect.yMin + 14f, imageRect.yMax - 32f);
+        var beforeLeft = Mathf.Clamp(splitX - 114f, imageRect.xMin + 12f, imageRect.xMax - 168f);
+        var afterLeft = Mathf.Clamp(splitX + 14f, imageRect.xMin + 84f, imageRect.xMax - 72f);
+        _beforeTag.style.left = beforeLeft;
+        _beforeTag.style.top = tagTop;
+        _afterTag.style.left = afterLeft;
+        _afterTag.style.top = tagTop;
     }
 
     private void UpdateDecorations()

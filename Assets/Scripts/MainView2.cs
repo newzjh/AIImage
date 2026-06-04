@@ -9,6 +9,7 @@ using UnityEngine.UIElements;
 
 public sealed class MainView2 : BasePageView
 {
+    private const float BottomOverlayHeight = 118f;
     private const string PrefKeyMaleFacePath = "MainView.Ref.MaleFacePath";
     private const string PrefKeyFemaleFacePath = "MainView.Ref.FemaleFacePath";
     private const string PrefKeyBackgroundPath = "MainView.Ref.BackgroundPath";
@@ -124,6 +125,10 @@ public sealed class MainView2 : BasePageView
         };
     }
 
+    protected override bool UseOverlaySwitchZone => true;
+
+    protected override float GetSwitchPillAlignment01() => 0.5f;
+
     protected override void OnLayoutChanged(bool isPortrait, Rect layoutRect)
     {
         if (_adjustPanel == null || _adjustHost == null)
@@ -179,6 +184,7 @@ public sealed class MainView2 : BasePageView
         canvasHost.style.flexGrow = 1;
         canvasHost.style.minHeight = 0;
         canvasHost.style.position = Position.Relative;
+        canvasHost.style.marginBottom = BottomOverlayHeight;
         canvasHost.style.backgroundColor = new StyleColor(new Color(0.08f, 0.09f, 0.11f, 1f));
         canvasHost.style.borderTopLeftRadius = 24;
         canvasHost.style.borderTopRightRadius = 24;
@@ -211,7 +217,12 @@ public sealed class MainView2 : BasePageView
         _adjustPanel = BuildAdjustPanel();
         canvasHost.Add(_adjustPanel);
 
-        contentRoot.Add(BuildPresetBar());
+        var presetBar = BuildPresetBar();
+        presetBar.style.position = Position.Absolute;
+        presetBar.style.left = 12;
+        presetBar.style.right = 12;
+        presetBar.style.bottom = 28;
+        _adjustHost.Add(presetBar);
         BuildStandardOverlays();
 
         SetAdjustPanelCollapsed(IsPortraitLayout, false);
@@ -324,11 +335,7 @@ public sealed class MainView2 : BasePageView
     private VisualElement BuildPresetBar()
     {
         var shell = new VisualElement();
-        shell.style.flexShrink = 0;
-        shell.style.paddingLeft = 12;
-        shell.style.paddingRight = 12;
-        shell.style.paddingTop = 8;
-        shell.style.paddingBottom = 0;
+        shell.style.height = 100;
 
         var frame = new VisualElement();
         frame.style.height = 100;

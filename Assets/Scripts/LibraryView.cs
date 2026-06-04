@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -9,6 +11,12 @@ using UnityEngine.UIElements;
 
 public sealed class LibraryView : BasePageView
 {
+    private const string PendingText = "待提取";
+    private const string PendingClipText = "待接入";
+    private const string EmptyText = "无";
+    private const int ThumbnailMaxEdge = 640;
+    private static readonly NaturalStringComparer DirectoryComparer = new NaturalStringComparer();
+
     private enum LibraryImageType
     {
         Original,
@@ -28,15 +36,29 @@ public sealed class LibraryView : BasePageView
         public string fullPath;
         public string fileName;
         public DateTime modifiedTime;
+        public DateTime? captureTime;
         public long fileSize;
         public Texture2D thumbnail;
         public bool thumbnailLoading;
         public bool thumbnailFailed;
         public LibraryImageType type;
-        public string locationText;
-        public string faceText;
-        public string clipText;
+        public string locationText = PendingText;
+        public string faceText = PendingClipText;
+        public string clipText = PendingClipText;
+        public string cameraText = PendingText;
+        public string apertureText = PendingText;
         public bool favorite;
+
+        public DateTime DisplayTime => captureTime ?? modifiedTime;
+    }
+
+    private sealed class ThumbnailPayload
+    {
+        public byte[] thumbnailBytes;
+        public DateTime? captureTime;
+        public string locationText;
+        public string cameraText;
+        public string apertureText;
     }
 
     private static readonly HashSet<string> ImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -69,9 +91,13 @@ public sealed class LibraryView : BasePageView
     private Label _selectionTipsDetail;
 
     private readonly List<ThumbnailEntry> _thumbnailEntries = new List<ThumbnailEntry>();
+    private readonly List<ThumbnailEntry> _visibleEntries = new List<ThumbnailEntry>();
     private readonly HashSet<int> _loadedDirectoryIds = new HashSet<int>();
     private readonly Dictionary<string, ThumbnailEntry> _entryByPath = new Dictionary<string, ThumbnailEntry>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Image> _imageByPath = new Dictionary<string, Image>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Label> _statusByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Label> _timeLabelByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, VisualElement> _cardByPath = new Dictionary<string, VisualElement>(StringComparer.OrdinalIgnoreCase);
     private string _currentDriveRoot;
     private string _selectedDirectoryPath;
     private string _selectedThumbnailPath;
@@ -79,12 +105,16 @@ public sealed class LibraryView : BasePageView
     private long _lastClickTicks;
     private string _lastClickPath;
     private CancellationTokenSource _thumbnailLoadCts;
+    private CancellationTokenSource _directoryScanCts;
     private int _thumbnailLoadGeneration;
+    private int _directoryScanGeneration;
 
     protected override AppPageId? ResolveSwipeTarget(SwipeDirection direction)
     {
         return direction == SwipeDirection.Right ? AppPageId.MainView2 : null;
     }
+
+    protected override float GetSwitchPillAlignment01() => 0f;
 
     protected override void BuildPage(VisualElement contentRoot)
     {
@@ -113,15 +143,18 @@ public sealed class LibraryView : BasePageView
     {
         PopulateDrives();
         RestoreSelectionState();
-        if (!string.IsNullOrWhiteSpace(_materializedDirectoryPath) && string.Equals(_materializedDirectoryPath, _selectedDirectoryPath, StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(_materializedDirectoryPath) &&
+            string.Equals(_materializedDirectoryPath, _selectedDirectoryPath, StringComparison.OrdinalIgnoreCase))
         {
             ApplyFilters();
             RestoreSelectedThumbnailTips();
+            ScrollToSelectedThumbnailSoon();
         }
     }
 
     protected override void OnBeforeDetach()
     {
+        CancelDirectoryScan();
         CancelThumbnailRefresh();
     }
 
@@ -137,6 +170,7 @@ public sealed class LibraryView : BasePageView
 
     protected override void OnDestroy()
     {
+        CancelDirectoryScan();
         CancelThumbnailRefresh();
         ClearThumbnailEntries(true);
         base.OnDestroy();
@@ -489,14 +523,14 @@ public sealed class LibraryView : BasePageView
             .Select(path => BuildDirectoryItem(path, DirectoryNameFromPath(path), GetDepthForPath(path)))
             .ToList();
 
-        RemovePlaceholderChildren(parentId, directoryPath);
+        RemovePlaceholderChildren(directoryPath);
         foreach (var child in children)
             _directoryTree.AddItem(child, parentId, -1, false);
 
         _directoryTree.RefreshItems();
     }
 
-    private void RemovePlaceholderChildren(int parentId, string directoryPath)
+    private void RemovePlaceholderChildren(string directoryPath)
     {
         try
         {
@@ -516,11 +550,17 @@ public sealed class LibraryView : BasePageView
 
         _selectedDirectoryPath = entry.path;
         _directorySummary.text = entry.path;
-        RefreshThumbnailGrid(entry.path, forceRescan: !string.Equals(_materializedDirectoryPath, entry.path, StringComparison.OrdinalIgnoreCase));
+        RefreshThumbnailGrid(entry.path, !string.Equals(_materializedDirectoryPath, entry.path, StringComparison.OrdinalIgnoreCase));
     }
 
     private void RefreshThumbnailGrid(string directoryPath, bool forceRescan)
     {
+        RefreshThumbnailGridAsync(directoryPath, forceRescan).Forget();
+    }
+
+    private async UniTaskVoid RefreshThumbnailGridAsync(string directoryPath, bool forceRescan)
+    {
+        CancelDirectoryScan();
         CancelThumbnailRefresh();
         _imageByPath.Clear();
 
@@ -528,42 +568,50 @@ public sealed class LibraryView : BasePageView
         {
             ClearThumbnailEntries(true);
             _materializedDirectoryPath = directoryPath;
+            ShowGridStatus(string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath) ? "该目录不存在。" : "正在扫描目录...");
             if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
             {
                 _selectionTipsDetail.text = "该目录不存在。";
                 return;
             }
 
+            _directoryScanGeneration++;
+            var generation = _directoryScanGeneration;
+            var scanCts = new CancellationTokenSource();
+            _directoryScanCts = scanCts;
+            var cancellationToken = scanCts.Token;
+
             try
             {
-                var files = Directory.EnumerateFiles(directoryPath)
-                    .Where(IsImageFile)
-                    .Select(path =>
-                    {
-                        var info = new FileInfo(path);
-                        var name = info.Name;
-                        return new ThumbnailEntry
-                        {
-                            fullPath = path,
-                            fileName = name,
-                            modifiedTime = info.LastWriteTime,
-                            fileSize = info.Exists ? info.Length : 0,
-                            type = GuessType(name),
-                            locationText = "待接入",
-                            faceText = "待接入",
-                            clipText = "待接入",
-                            favorite = name.Contains("fav", StringComparison.OrdinalIgnoreCase) || name.Contains("star", StringComparison.OrdinalIgnoreCase)
-                        };
-                    })
-                    .OrderByDescending(entry => entry.modifiedTime)
-                    .ToList();
+                var files = await UniTask.RunOnThreadPool(
+                    () => ScanDirectoryEntries(directoryPath),
+                    cancellationToken: cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested ||
+                    generation != _directoryScanGeneration ||
+                    !string.Equals(_selectedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase))
+                    return;
 
                 _thumbnailEntries.AddRange(files);
                 foreach (var entry in files)
                     _entryByPath[entry.fullPath] = entry;
             }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
             catch
             {
+                ShowGridStatus("目录扫描失败。");
+                return;
+            }
+            finally
+            {
+                if (ReferenceEquals(_directoryScanCts, scanCts))
+                {
+                    try { _directoryScanCts.Dispose(); } catch { }
+                    _directoryScanCts = null;
+                }
             }
         }
 
@@ -577,6 +625,10 @@ public sealed class LibraryView : BasePageView
             return;
 
         _imageByPath.Clear();
+        _statusByPath.Clear();
+        _timeLabelByPath.Clear();
+        _cardByPath.Clear();
+        _visibleEntries.Clear();
         _thumbnailGrid.Clear();
 
         IEnumerable<ThumbnailEntry> filtered = _thumbnailEntries;
@@ -589,17 +641,26 @@ public sealed class LibraryView : BasePageView
             filtered = filtered.Where(entry => entry.favorite);
 
         if (_sortFaceToggle?.value == true)
-            filtered = filtered.OrderByDescending(entry => entry.faceText);
+            filtered = filtered.OrderByDescending(entry => entry.faceText, DirectoryComparer);
         else if (_sortLocationToggle?.value == true)
-            filtered = filtered.OrderBy(entry => entry.locationText);
+            filtered = filtered.OrderBy(entry => entry.locationText, DirectoryComparer);
         else
-            filtered = filtered.OrderByDescending(entry => entry.modifiedTime);
+            filtered = filtered.OrderByDescending(entry => entry.DisplayTime);
 
-        foreach (var entry in filtered)
+        _visibleEntries.AddRange(filtered);
+        if (_visibleEntries.Count == 0)
+        {
+            ShowGridStatus(_directoryScanCts != null ? "正在扫描目录..." : "当前筛选下没有图片。");
+            RestoreSelectedThumbnailTips();
+            return;
+        }
+
+        foreach (var entry in _visibleEntries)
             _thumbnailGrid.Add(BuildThumbnailCard(entry));
 
         StartThumbnailRefresh();
         RestoreSelectedThumbnailTips();
+        ScrollToSelectedThumbnailSoon();
     }
 
     private VisualElement BuildThumbnailCard(ThumbnailEntry entry)
@@ -618,6 +679,7 @@ public sealed class LibraryView : BasePageView
         card.style.paddingRight = 6;
         card.style.paddingTop = 6;
         card.style.paddingBottom = 8;
+        _cardByPath[entry.fullPath] = card;
 
         var imageHost = new VisualElement();
         imageHost.style.height = IsPortraitLayout ? PortraitImageHeight : LandscapeImageHeight;
@@ -638,18 +700,18 @@ public sealed class LibraryView : BasePageView
         imageHost.Add(image);
         _imageByPath[entry.fullPath] = image;
 
-        if (entry.thumbnail == null)
-        {
-            var loadingLabel = new Label(entry.thumbnailFailed ? "无法预览" : "加载中...");
-            loadingLabel.style.position = Position.Absolute;
-            loadingLabel.style.left = 0;
-            loadingLabel.style.right = 0;
-            loadingLabel.style.top = 0;
-            loadingLabel.style.bottom = 0;
-            loadingLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
-            loadingLabel.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
-            imageHost.Add(loadingLabel);
-        }
+        var statusLabel = new Label();
+        statusLabel.style.position = Position.Absolute;
+        statusLabel.style.left = 0;
+        statusLabel.style.right = 0;
+        statusLabel.style.top = 0;
+        statusLabel.style.bottom = 0;
+        statusLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
+        statusLabel.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
+        statusLabel.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.14f));
+        imageHost.Add(statusLabel);
+        _statusByPath[entry.fullPath] = statusLabel;
+        UpdateThumbnailVisuals(entry);
 
         var badgeRow = new VisualElement();
         badgeRow.style.position = Position.Absolute;
@@ -685,10 +747,11 @@ public sealed class LibraryView : BasePageView
         label.style.textOverflow = TextOverflow.Ellipsis;
         card.Add(label);
 
-        var sub = new Label(entry.modifiedTime.ToString("yyyy-MM-dd HH:mm"));
+        var sub = new Label(FormatThumbnailTime(entry));
         sub.style.color = new Color(0.80f, 0.84f, 0.90f, 1f);
         sub.style.fontSize = 10;
         card.Add(sub);
+        _timeLabelByPath[entry.fullPath] = sub;
 
         card.RegisterCallback<PointerUpEvent>(evt =>
         {
@@ -744,19 +807,24 @@ public sealed class LibraryView : BasePageView
 
     private void UpdateSelectionTips(ThumbnailEntry entry)
     {
+        if (_selectionTipsTitle == null || _selectionTipsDetail == null)
+            return;
+
         _selectionTipsTitle.text = entry.fileName;
         _selectionTipsDetail.text =
-            $"时间: {entry.modifiedTime:yyyy-MM-dd HH:mm:ss}\n" +
-            $"大小: {FormatBytes(entry.fileSize)}\n" +
-            $"地点: {entry.locationText}\n" +
-            $"人脸: {entry.faceText}\n" +
-            $"CLIP: {entry.clipText}";
+            $"拍摄时间: {entry.DisplayTime:yyyy-MM-dd HH:mm:ss}\n" +
+            $"文件大小: {FormatBytes(entry.fileSize)}\n" +
+            $"地点: {NormalizeDisplay(entry.locationText)}\n" +
+            $"相机: {NormalizeDisplay(entry.cameraText)}\n" +
+            $"光圈: {NormalizeDisplay(entry.apertureText)}\n" +
+            $"人脸: {NormalizeDisplay(entry.faceText)}\n" +
+            $"CLIP: {NormalizeDisplay(entry.clipText)}";
     }
 
     private void StartThumbnailRefresh()
     {
         CancelThumbnailRefresh();
-        if (_imageByPath.Count == 0)
+        if (_visibleEntries.Count == 0)
             return;
 
         _thumbnailLoadGeneration++;
@@ -774,35 +842,62 @@ public sealed class LibraryView : BasePageView
         _thumbnailLoadCts = null;
     }
 
+    private void CancelDirectoryScan()
+    {
+        if (_directoryScanCts == null)
+            return;
+
+        try { _directoryScanCts.Cancel(); } catch { }
+        try { _directoryScanCts.Dispose(); } catch { }
+        _directoryScanCts = null;
+    }
+
     private async UniTaskVoid RefreshVisibleThumbnailsAsync(int generation, CancellationToken cancellationToken)
     {
-        foreach (var pair in _imageByPath.ToArray())
+        foreach (var entry in _visibleEntries.ToArray())
         {
             if (cancellationToken.IsCancellationRequested || generation != _thumbnailLoadGeneration)
                 return;
 
-            if (!_entryByPath.TryGetValue(pair.Key, out var entry))
-                continue;
             if (entry.thumbnail != null || entry.thumbnailLoading || entry.thumbnailFailed)
+            {
+                UpdateThumbnailVisuals(entry);
                 continue;
+            }
 
             entry.thumbnailLoading = true;
+            UpdateThumbnailVisuals(entry);
             try
             {
-                var bytes = await UniTask.RunOnThreadPool(() => LoadImageBytes(entry.fullPath), cancellationToken: cancellationToken);
+                var payload = await UniTask.RunOnThreadPool(
+                    () => LoadThumbnailPayload(entry.fullPath, ThumbnailMaxEdge),
+                    cancellationToken: cancellationToken);
+
                 if (cancellationToken.IsCancellationRequested || generation != _thumbnailLoadGeneration)
                     return;
-                if (bytes == null || bytes.Length == 0)
+
+                if (!string.IsNullOrWhiteSpace(payload.locationText))
+                    entry.locationText = payload.locationText;
+                if (!string.IsNullOrWhiteSpace(payload.cameraText))
+                    entry.cameraText = payload.cameraText;
+                if (!string.IsNullOrWhiteSpace(payload.apertureText))
+                    entry.apertureText = payload.apertureText;
+                if (payload.captureTime.HasValue)
+                    entry.captureTime = payload.captureTime.Value;
+
+                if (payload.thumbnailBytes == null || payload.thumbnailBytes.Length == 0)
                 {
                     entry.thumbnailFailed = true;
+                    UpdateThumbnailVisuals(entry);
                     continue;
                 }
 
                 var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                if (!texture.LoadImage(bytes, false))
+                if (!texture.LoadImage(payload.thumbnailBytes, true))
                 {
                     UnityEngine.Object.Destroy(texture);
                     entry.thumbnailFailed = true;
+                    UpdateThumbnailVisuals(entry);
                     continue;
                 }
 
@@ -810,9 +905,7 @@ public sealed class LibraryView : BasePageView
                 texture.filterMode = FilterMode.Bilinear;
                 texture.name = entry.fileName;
                 entry.thumbnail = texture;
-
-                if (_imageByPath.TryGetValue(entry.fullPath, out var image))
-                    image.image = texture;
+                UpdateThumbnailVisuals(entry);
             }
             catch (OperationCanceledException)
             {
@@ -821,14 +914,41 @@ public sealed class LibraryView : BasePageView
             catch
             {
                 entry.thumbnailFailed = true;
+                UpdateThumbnailVisuals(entry);
             }
             finally
             {
                 entry.thumbnailLoading = false;
+                UpdateThumbnailVisuals(entry);
             }
 
-            await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+            await UniTask.DelayFrame(1, cancellationToken: cancellationToken);
         }
+    }
+
+    private void UpdateThumbnailVisuals(ThumbnailEntry entry)
+    {
+        if (_imageByPath.TryGetValue(entry.fullPath, out var image))
+            image.image = entry.thumbnail;
+
+        if (_statusByPath.TryGetValue(entry.fullPath, out var status))
+        {
+            if (entry.thumbnail != null)
+            {
+                status.style.display = DisplayStyle.None;
+            }
+            else
+            {
+                status.text = entry.thumbnailFailed ? "无法预览" : (entry.thumbnailLoading ? "加载中..." : "等待加载");
+                status.style.display = DisplayStyle.Flex;
+            }
+        }
+
+        if (_timeLabelByPath.TryGetValue(entry.fullPath, out var timeLabel))
+            timeLabel.text = FormatThumbnailTime(entry);
+
+        if (string.Equals(_selectedThumbnailPath, entry.fullPath, StringComparison.OrdinalIgnoreCase))
+            UpdateSelectionTips(entry);
     }
 
     private void RestoreSelectionState()
@@ -898,6 +1018,65 @@ public sealed class LibraryView : BasePageView
         }
     }
 
+    private void ScrollToSelectedThumbnailSoon()
+    {
+        if (_thumbnailScroll == null || string.IsNullOrWhiteSpace(_selectedThumbnailPath))
+            return;
+
+        _thumbnailScroll.schedule.Execute(() =>
+        {
+            _thumbnailScroll.schedule.Execute(ScrollToSelectedThumbnailNow);
+        });
+    }
+
+    private void ScrollToSelectedThumbnailNow()
+    {
+        if (_thumbnailScroll == null ||
+            string.IsNullOrWhiteSpace(_selectedThumbnailPath) ||
+            !_cardByPath.TryGetValue(_selectedThumbnailPath, out var card) ||
+            card == null)
+            return;
+
+        var viewportHeight = _thumbnailScroll.contentViewport.resolvedStyle.height;
+        if (viewportHeight <= 1f)
+            return;
+
+        var containerTop = _thumbnailScroll.contentContainer.worldBound.yMin;
+        var cardTop = card.worldBound.yMin - containerTop;
+        var cardBottom = card.worldBound.yMax - containerTop;
+        var current = _thumbnailScroll.scrollOffset.y;
+        const float padding = 24f;
+        var target = current;
+
+        if (cardTop < current + padding)
+            target = Mathf.Max(0f, cardTop - padding);
+        else if (cardBottom > current + viewportHeight - padding)
+            target = Mathf.Max(0f, cardBottom - viewportHeight + padding);
+
+        _thumbnailScroll.scrollOffset = new Vector2(_thumbnailScroll.scrollOffset.x, target);
+    }
+
+    private void ShowGridStatus(string text)
+    {
+        if (_thumbnailGrid == null)
+            return;
+
+        _thumbnailGrid.Clear();
+        _visibleEntries.Clear();
+        _cardByPath.Clear();
+        _imageByPath.Clear();
+        _statusByPath.Clear();
+        _timeLabelByPath.Clear();
+
+        var label = new Label(text);
+        label.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
+        label.style.unityTextAlign = TextAnchor.MiddleCenter;
+        label.style.width = Length.Percent(100);
+        label.style.marginTop = 36;
+        label.style.marginBottom = 36;
+        _thumbnailGrid.Add(label);
+    }
+
     private void ClearThumbnailEntries(bool destroyTextures)
     {
         if (destroyTextures)
@@ -911,7 +1090,244 @@ public sealed class LibraryView : BasePageView
         }
 
         _thumbnailEntries.Clear();
+        _visibleEntries.Clear();
         _entryByPath.Clear();
+    }
+
+    private static List<ThumbnailEntry> ScanDirectoryEntries(string directoryPath)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(directoryPath)
+                .Where(IsImageFile)
+                .Select(path =>
+                {
+                    var info = new FileInfo(path);
+                    var name = info.Name;
+                    return new ThumbnailEntry
+                    {
+                        fullPath = path,
+                        fileName = name,
+                        modifiedTime = info.LastWriteTime,
+                        fileSize = info.Exists ? info.Length : 0,
+                        type = GuessType(name),
+                        favorite = name.Contains("fav", StringComparison.OrdinalIgnoreCase) ||
+                                   name.Contains("star", StringComparison.OrdinalIgnoreCase)
+                    };
+                })
+                .OrderByDescending(entry => entry.modifiedTime)
+                .ToList();
+        }
+        catch
+        {
+            return new List<ThumbnailEntry>();
+        }
+    }
+
+    private static ThumbnailPayload LoadThumbnailPayload(string filePath, int maxEdge)
+    {
+        if (TryBuildThumbnailPayloadWithSystemDrawing(filePath, maxEdge, out var payload))
+            return payload;
+
+        return new ThumbnailPayload
+        {
+            thumbnailBytes = LoadImageBytes(filePath)
+        };
+    }
+
+    private static bool TryBuildThumbnailPayloadWithSystemDrawing(string filePath, int maxEdge, out ThumbnailPayload payload)
+    {
+        payload = new ThumbnailPayload();
+        var imageType = ResolveSystemDrawingType("System.Drawing.Image");
+        var bitmapType = ResolveSystemDrawingType("System.Drawing.Bitmap");
+        var sizeType = ResolveSystemDrawingType("System.Drawing.Size");
+        var imageFormatType = ResolveSystemDrawingType("System.Drawing.Imaging.ImageFormat");
+        if (imageType == null || bitmapType == null || sizeType == null || imageFormatType == null)
+            return false;
+
+        var fromStream = imageType.GetMethod("FromStream", new[] { typeof(Stream) });
+        if (fromStream == null)
+            return false;
+
+        Stream stream = null;
+        object image = null;
+        object bitmap = null;
+        try
+        {
+            stream = File.OpenRead(filePath);
+            image = fromStream.Invoke(null, new object[] { stream });
+            if (image == null)
+                return false;
+
+            payload.captureTime = ReadExifDate(image, imageType, 0x9003) ?? ReadExifDate(image, imageType, 0x0132);
+            payload.locationText = ReadGpsLocation(image, imageType);
+            payload.cameraText = ReadCameraModel(image, imageType);
+            payload.apertureText = ReadAperture(image, imageType);
+
+            var width = Convert.ToInt32(imageType.GetProperty("Width")?.GetValue(image));
+            var height = Convert.ToInt32(imageType.GetProperty("Height")?.GetValue(image));
+            if (width <= 0 || height <= 0)
+                return false;
+
+            var scale = Mathf.Min(1f, maxEdge / (float)Mathf.Max(width, height));
+            var thumbWidth = Mathf.Max(1, Mathf.RoundToInt(width * scale));
+            var thumbHeight = Mathf.Max(1, Mathf.RoundToInt(height * scale));
+            var size = Activator.CreateInstance(sizeType, thumbWidth, thumbHeight);
+            bitmap = Activator.CreateInstance(bitmapType, image, size);
+            if (bitmap == null)
+                return false;
+
+            var pngFormat = imageFormatType.GetProperty("Png", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+            var saveMethod = bitmapType.GetMethod("Save", new[] { typeof(Stream), imageFormatType });
+            if (pngFormat == null || saveMethod == null)
+                return false;
+
+            using var ms = new MemoryStream();
+            saveMethod.Invoke(bitmap, new[] { ms, pngFormat });
+            payload.thumbnailBytes = ms.ToArray();
+            return payload.thumbnailBytes != null && payload.thumbnailBytes.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            TryDispose(bitmap);
+            TryDispose(image);
+            stream?.Dispose();
+        }
+    }
+
+    private static Type ResolveSystemDrawingType(string fullName)
+    {
+        return Type.GetType(fullName + ", System.Drawing") ??
+               Type.GetType(fullName + ", System.Drawing.Common");
+    }
+
+    private static void TryDispose(object obj)
+    {
+        if (obj == null)
+            return;
+
+        try
+        {
+            obj.GetType().GetMethod("Dispose", Type.EmptyTypes)?.Invoke(obj, null);
+        }
+        catch
+        {
+        }
+    }
+
+    private static object TryGetPropertyItem(object image, Type imageType, int id)
+    {
+        try
+        {
+            return imageType.GetMethod("GetPropertyItem", new[] { typeof(int) })?.Invoke(image, new object[] { id });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static byte[] GetPropertyItemBytes(object propertyItem)
+    {
+        return propertyItem?.GetType().GetProperty("Value")?.GetValue(propertyItem) as byte[];
+    }
+
+    private static string ReadCameraModel(object image, Type imageType)
+    {
+        var model = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x0110));
+        if (!string.IsNullOrWhiteSpace(model))
+            return model;
+
+        var make = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x010F));
+        return string.IsNullOrWhiteSpace(make) ? PendingText : make;
+    }
+
+    private static string ReadAperture(object image, Type imageType)
+    {
+        var value = ReadRational(TryGetPropertyItem(image, imageType, 0x829D));
+        if (value.HasValue && value.Value > 0.01)
+            return $"f/{value.Value:0.0#}";
+        return PendingText;
+    }
+
+    private static string ReadGpsLocation(object image, Type imageType)
+    {
+        var latValues = ReadRationalArray(TryGetPropertyItem(image, imageType, 0x0002));
+        var lonValues = ReadRationalArray(TryGetPropertyItem(image, imageType, 0x0004));
+        if (latValues == null || lonValues == null || latValues.Length < 3 || lonValues.Length < 3)
+            return PendingText;
+
+        var lat = latValues[0] + latValues[1] / 60d + latValues[2] / 3600d;
+        var lon = lonValues[0] + lonValues[1] / 60d + lonValues[2] / 3600d;
+        var latRef = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x0001));
+        var lonRef = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x0003));
+        if (string.Equals(latRef, "S", StringComparison.OrdinalIgnoreCase))
+            lat = -lat;
+        if (string.Equals(lonRef, "W", StringComparison.OrdinalIgnoreCase))
+            lon = -lon;
+
+        return $"GPS {lat:0.0000}, {lon:0.0000}";
+    }
+
+    private static DateTime? ReadExifDate(object image, Type imageType, int propertyId)
+    {
+        var text = ReadExifAscii(TryGetPropertyItem(image, imageType, propertyId));
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        if (DateTime.TryParseExact(
+                text.Trim(),
+                new[] { "yyyy:MM:dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss" },
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var value))
+            return value;
+
+        return null;
+    }
+
+    private static string ReadExifAscii(object propertyItem)
+    {
+        var bytes = GetPropertyItemBytes(propertyItem);
+        if (bytes == null || bytes.Length == 0)
+            return null;
+
+        var text = System.Text.Encoding.ASCII.GetString(bytes);
+        return text.Trim('\0', ' ', '\t', '\r', '\n');
+    }
+
+    private static double? ReadRational(object propertyItem)
+    {
+        var bytes = GetPropertyItemBytes(propertyItem);
+        if (bytes == null || bytes.Length < 8)
+            return null;
+
+        var numerator = BitConverter.ToUInt32(bytes, 0);
+        var denominator = BitConverter.ToUInt32(bytes, 4);
+        if (denominator == 0)
+            return null;
+        return numerator / (double)denominator;
+    }
+
+    private static double[] ReadRationalArray(object propertyItem)
+    {
+        var bytes = GetPropertyItemBytes(propertyItem);
+        if (bytes == null || bytes.Length < 8 || bytes.Length % 8 != 0)
+            return null;
+
+        var result = new double[bytes.Length / 8];
+        for (var i = 0; i < result.Length; i++)
+        {
+            var numerator = BitConverter.ToUInt32(bytes, i * 8);
+            var denominator = BitConverter.ToUInt32(bytes, i * 8 + 4);
+            result[i] = denominator == 0 ? 0d : numerator / (double)denominator;
+        }
+
+        return result;
     }
 
     private static byte[] LoadImageBytes(string filePath)
@@ -994,12 +1410,41 @@ public sealed class LibraryView : BasePageView
 
         try
         {
-            return Directory.EnumerateDirectories(path).Take(Mathf.Max(1, maxCount)).ToArray();
+            return Directory.EnumerateDirectories(path)
+                .OrderBy(DirectoryNameFromPath, DirectoryComparer)
+                .Take(Mathf.Max(1, maxCount))
+                .ToArray();
         }
         catch
         {
             return Array.Empty<string>();
         }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes <= 0)
+            return "0 B";
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        var value = bytes;
+        var unitIndex = 0;
+        double display = value;
+        while (display >= 1024 && unitIndex < units.Length - 1)
+        {
+            display /= 1024d;
+            unitIndex++;
+        }
+        return $"{display:0.##} {units[unitIndex]}";
+    }
+
+    private static string NormalizeDisplay(string text)
+    {
+        return string.IsNullOrWhiteSpace(text) ? EmptyText : text;
+    }
+
+    private static string FormatThumbnailTime(ThumbnailEntry entry)
+    {
+        return entry.DisplayTime.ToString("yyyy-MM-dd HH:mm");
     }
 
     private static int StableId(string text)
@@ -1023,6 +1468,78 @@ public sealed class LibraryView : BasePageView
 
             var id = (int)(hash & 0x7FFFFFFF);
             return id == 0 ? 1 : id;
+        }
+    }
+
+    private sealed class NaturalStringComparer : IComparer<string>
+    {
+        private readonly CompareInfo _compareInfo = CompareInfo.GetCompareInfo("zh-CN");
+
+        public int Compare(string x, string y)
+        {
+            if (ReferenceEquals(x, y))
+                return 0;
+            if (x == null)
+                return -1;
+            if (y == null)
+                return 1;
+
+            var ix = 0;
+            var iy = 0;
+            while (ix < x.Length && iy < y.Length)
+            {
+                var xDigit = char.IsDigit(x[ix]);
+                var yDigit = char.IsDigit(y[iy]);
+                if (xDigit && yDigit)
+                {
+                    var result = CompareNumberChunks(x, ref ix, y, ref iy);
+                    if (result != 0)
+                        return result;
+                    continue;
+                }
+
+                var xStart = ix;
+                var yStart = iy;
+                while (ix < x.Length && !char.IsDigit(x[ix]))
+                    ix++;
+                while (iy < y.Length && !char.IsDigit(y[iy]))
+                    iy++;
+                var chunkX = x.Substring(xStart, ix - xStart);
+                var chunkY = y.Substring(yStart, iy - yStart);
+                var chunkResult = _compareInfo.Compare(chunkX, chunkY, CompareOptions.IgnoreCase | CompareOptions.StringSort);
+                if (chunkResult != 0)
+                    return chunkResult;
+            }
+
+            return x.Length.CompareTo(y.Length);
+        }
+
+        private static int CompareNumberChunks(string x, ref int ix, string y, ref int iy)
+        {
+            var xStart = ix;
+            var yStart = iy;
+            while (ix < x.Length && char.IsDigit(x[ix]))
+                ix++;
+            while (iy < y.Length && char.IsDigit(y[iy]))
+                iy++;
+
+            var xChunk = x.Substring(xStart, ix - xStart);
+            var yChunk = y.Substring(yStart, iy - yStart);
+            var xTrimmed = xChunk.TrimStart('0');
+            var yTrimmed = yChunk.TrimStart('0');
+            if (xTrimmed.Length == 0)
+                xTrimmed = "0";
+            if (yTrimmed.Length == 0)
+                yTrimmed = "0";
+
+            if (xTrimmed.Length != yTrimmed.Length)
+                return xTrimmed.Length.CompareTo(yTrimmed.Length);
+
+            var digitResult = string.CompareOrdinal(xTrimmed, yTrimmed);
+            if (digitResult != 0)
+                return digitResult;
+
+            return xChunk.Length.CompareTo(yChunk.Length);
         }
     }
 }

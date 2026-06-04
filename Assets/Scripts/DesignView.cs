@@ -6,6 +6,8 @@ using UnityEngine.UIElements;
 
 public sealed class DesignView : BasePageView
 {
+    private const float BottomOverlayHeight = 72f;
+
     private sealed class LayerBoxData
     {
         public string title;
@@ -27,6 +29,10 @@ public sealed class DesignView : BasePageView
     {
         return direction == SwipeDirection.Left ? AppPageId.MainView2 : null;
     }
+
+    protected override bool UseOverlaySwitchZone => true;
+
+    protected override float GetSwitchPillAlignment01() => 1f;
 
     protected override void OnShown()
     {
@@ -73,6 +79,7 @@ public sealed class DesignView : BasePageView
         canvasHost.style.flexGrow = 1;
         canvasHost.style.minHeight = 0;
         canvasHost.style.position = Position.Relative;
+        canvasHost.style.marginBottom = BottomOverlayHeight;
         canvasHost.style.backgroundColor = new StyleColor(new Color(0.08f, 0.09f, 0.11f, 1f));
         canvasHost.style.borderTopLeftRadius = 24;
         canvasHost.style.borderTopRightRadius = 24;
@@ -89,7 +96,7 @@ public sealed class DesignView : BasePageView
         _canvasOverlay.style.top = 0;
         _canvasOverlay.style.right = 0;
         _canvasOverlay.style.bottom = 0;
-        _canvasOverlay.pickingMode = PickingMode.Position;
+        _canvasOverlay.pickingMode = PickingMode.Ignore;
         canvasHost.Add(_canvasOverlay);
 
         canvasHost.Add(CreateFloatingHistoryPanel(230f, "设计历史"));
