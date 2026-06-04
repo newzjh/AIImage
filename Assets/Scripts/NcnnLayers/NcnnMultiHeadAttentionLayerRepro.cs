@@ -81,28 +81,47 @@ namespace NcnnCompute
 
                                                 var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);
                                                 var dstLen = kBuf.count / Mathf.Max(1, mp.kdim);
-                                                var qAff = owner.RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
-                                                var kAff = owner.RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
-                                                var vAff = owner.RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
-                                                owner.Ops.InnerProduct2D(qBuf, srcLen, mp.qdim, mp.qW, mp.qB, mp.embedDim, qAff);
-                                                owner.Ops.InnerProduct2D(kBuf, dstLen, mp.kdim, mp.kW, mp.kB, mp.embedDim, kAff);
-                                                owner.Ops.InnerProduct2D(vBuf, dstLen, mp.vdim, mp.vW, mp.vB, mp.embedDim, vAff);
-
-                                                var qScaled = owner.RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
-                                                owner.Ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
-
                                                 var ctx = owner.RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
-                                                owner.Ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx);
+
+                                                var canFuseSelfAttentionQkv = owner.EnableMhaQkvFusion
+                                                                              && owner.EnableMhaParallelSoftmax
+                                                                              && ReferenceEquals(qBuf, kBuf)
+                                                                              && ReferenceEquals(qBuf, vBuf)
+                                                                              && mp.qdim == mp.kdim
+                                                                              && mp.qdim == mp.vdim
+                                                                              && srcLen == dstLen;
+
+                                                if (canFuseSelfAttentionQkv)
+                                                {
+                                                    var qkv = owner.RentTempBuffer(srcLen * mp.embedDim * 3, sizeof(float));
+                                                    owner.Ops.MhaProjectQkv2D(qBuf, srcLen, mp.qdim, mp.qW, mp.qB, mp.kW, mp.kB, mp.vW, mp.vB, mp.embedDim, qkv);
+                                                    owner.Ops.MhaAttentionQkv(qkv, srcLen, mp.embedDim, mp.numHeads, mp.scale, ctx);
+                                                    tempOwned.Add(qkv);
+                                                }
+                                                else
+                                                {
+                                                    var qAff = owner.RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
+                                                    var kAff = owner.RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
+                                                    var vAff = owner.RentTempBuffer(dstLen * mp.embedDim, sizeof(float));
+                                                    owner.Ops.InnerProduct2D(qBuf, srcLen, mp.qdim, mp.qW, mp.qB, mp.embedDim, qAff);
+                                                    owner.Ops.InnerProduct2D(kBuf, dstLen, mp.kdim, mp.kW, mp.kB, mp.embedDim, kAff);
+                                                    owner.Ops.InnerProduct2D(vBuf, dstLen, mp.vdim, mp.vW, mp.vB, mp.embedDim, vAff);
+
+                                                    var qScaled = owner.RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
+                                                    owner.Ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
+                                                    owner.Ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx, owner.EnableMhaParallelSoftmax);
+
+                                                    tempOwned.Add(qAff);
+                                                    tempOwned.Add(kAff);
+                                                    tempOwned.Add(vAff);
+                                                    tempOwned.Add(qScaled);
+                                                }
 
                                                 var outBuf = owner.RentTempBuffer(srcLen * mp.qdim, sizeof(float));
                                                 owner.Ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
 
                                                 bufferBlobs[layer.topNames[0]] = outBuf;
                                                 bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 2, mp.qdim, srcLen, 1, 1, false);
-                                                tempOwned.Add(qAff);
-                                                tempOwned.Add(kAff);
-                                                tempOwned.Add(vAff);
-                                                tempOwned.Add(qScaled);
                                                 tempOwned.Add(ctx);
                                                 tempOwned.Add(outBuf);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
