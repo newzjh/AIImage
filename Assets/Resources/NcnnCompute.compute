@@ -54,6 +54,7 @@
 #pragma kernel NcnnGeluPack4
 #pragma kernel NcnnMatMul2D
 #pragma kernel NcnnGemm2D
+#pragma kernel NcnnGemm2D16
 #pragma kernel NcnnLayerNorm2D
 #pragma kernel NcnnSoftmax2D
 #pragma kernel NcnnEmbed
@@ -80,6 +81,9 @@
 #pragma kernel NcnnGeluBuf
 #pragma kernel NcnnInnerProduct2D
 #pragma kernel NcnnMhaAttention
+#pragma kernel NcnnMhaAttentionFast
+#pragma kernel NcnnMhaAttentionQkvFast
+#pragma kernel NcnnMhaProjectQkv2D
 #pragma kernel NcnnReorgPack4
 
 RWTexture2D<float4> _NcnnOut;
@@ -990,14 +994,29 @@ void NcnnInnerProduct2D(uint3 id : SV_DispatchThreadID)
 StructuredBuffer<float> _MhaQ;
 StructuredBuffer<float> _MhaK;
 StructuredBuffer<float> _MhaV;
+StructuredBuffer<float> _MhaQkv;
 RWStructuredBuffer<float> _MhaOut;
+StructuredBuffer<float> _MhaProjectIn;
+StructuredBuffer<float> _MhaProjectQW;
+StructuredBuffer<float> _MhaProjectQB;
+StructuredBuffer<float> _MhaProjectKW;
+StructuredBuffer<float> _MhaProjectKB;
+StructuredBuffer<float> _MhaProjectVW;
+StructuredBuffer<float> _MhaProjectVB;
+RWStructuredBuffer<float> _MhaProjectOut;
 int _MhaSrcLen;
 int _MhaDstLen;
 int _MhaEmbedDim;
 int _MhaNumHeads;
 int _MhaHeadDim;
+int _MhaProjectRows;
+int _MhaProjectInFeatures;
+int _MhaProjectOutFeatures;
 float _MhaScale;
 groupshared float _MhaScores[4096];
+groupshared float _MhaReduce[64];
+groupshared float _MhaProjectAs[256];
+groupshared float _MhaProjectBs[256];
 
 [numthreads(64,1,1)]
 void NcnnMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
@@ -1015,37 +1034,40 @@ void NcnnMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     int qBase = q * embedDim + head * headDim;
     int kHeadBase = head * headDim;
 
-    // Correctness first: generator attention in CodeFormer uses headDim much larger than 64.
-    // The previous implementation only accumulated the first 64 elements and only wrote the first
-    // 64 output channels, which left most context entries undefined and caused unstable outputs.
+    // Split score dots over keys. Softmax stays sequential on tid 0 so accumulation order stays
+    // close to ncnn/current Unity while avoiding one-thread dot products for the whole row.
+    for (int scoreIndex = (int)tid; scoreIndex < dst; scoreIndex += 64)
+    {
+        int kBase = scoreIndex * embedDim + kHeadBase;
+        float s = 0.0;
+        for (int dotIndex = 0; dotIndex < headDim; dotIndex++)
+        {
+            s += (_MhaQ[qBase + dotIndex] * _MhaScale) * _MhaK[kBase + dotIndex];
+        }
+        _MhaScores[scoreIndex] = s;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
     if (tid == 0)
     {
         float maxScore = -3.402823466e+38;
-        for (int j = 0; j < dst; j++)
+        for (int maxIndex = 0; maxIndex < dst; maxIndex++)
         {
-            int kBase = j * embedDim + kHeadBase;
-            float s = 0.0;
-            for (int l = 0; l < headDim; l++)
-            {
-                s += _MhaQ[qBase + l] * _MhaK[kBase + l];
-            }
-            s *= _MhaScale;
-            _MhaScores[j] = s;
-            maxScore = max(maxScore, s);
+            maxScore = max(maxScore, _MhaScores[maxIndex]);
         }
 
         float sumExp = 0.0;
-        for (int j = 0; j < dst; j++)
+        for (int expIndex = 0; expIndex < dst; expIndex++)
         {
-            float w = exp(_MhaScores[j] - maxScore);
-            _MhaScores[j] = w;
+            float w = exp(_MhaScores[expIndex] - maxScore);
+            _MhaScores[expIndex] = w;
             sumExp += w;
         }
 
         float invSum = 1.0 / max(sumExp, 1e-20);
-        for (int j = 0; j < dst; j++)
+        for (int normIndex = 0; normIndex < dst; normIndex++)
         {
-            _MhaScores[j] *= invSum;
+            _MhaScores[normIndex] *= invSum;
         }
     }
     GroupMemoryBarrierWithGroupSync();
@@ -1054,11 +1076,241 @@ void NcnnMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
     {
         float outv = 0.0;
         int vHeadBase = head * headDim + lane;
-        for (int j = 0; j < dst; j++)
+        for (int valueIndex = 0; valueIndex < dst; valueIndex++)
         {
-            outv += _MhaScores[j] * _MhaV[j * embedDim + vHeadBase];
+            outv += _MhaScores[valueIndex] * _MhaV[valueIndex * embedDim + vHeadBase];
         }
         _MhaOut[q * embedDim + head * headDim + lane] = outv;
+    }
+}
+
+[numthreads(64,1,1)]
+void NcnnMhaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int q = (int)groupId.x;
+    int head = (int)groupId.y;
+    uint tid = groupThreadId.x;
+    if (q < 0 || head < 0) return;
+    if (q >= _MhaSrcLen || head >= _MhaNumHeads) return;
+    int dst = _MhaDstLen;
+    if (dst <= 0 || dst > 4096) return;
+
+    int headDim = _MhaHeadDim;
+    int embedDim = _MhaEmbedDim;
+    int qBase = q * embedDim + head * headDim;
+    int kHeadBase = head * headDim;
+
+    for (int scoreIndex = (int)tid; scoreIndex < dst; scoreIndex += 64)
+    {
+        int kBase = scoreIndex * embedDim + kHeadBase;
+        float s = 0.0;
+        for (int dotIndex = 0; dotIndex < headDim; dotIndex++)
+        {
+            s += (_MhaQ[qBase + dotIndex] * _MhaScale) * _MhaK[kBase + dotIndex];
+        }
+        _MhaScores[scoreIndex] = s;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    float localMax = -3.402823466e+38;
+    for (int maxIndex = (int)tid; maxIndex < dst; maxIndex += 64)
+    {
+        localMax = max(localMax, _MhaScores[maxIndex]);
+    }
+    _MhaReduce[tid] = localMax;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint maxStride = 32; maxStride > 0; maxStride >>= 1)
+    {
+        if (tid < maxStride)
+            _MhaReduce[tid] = max(_MhaReduce[tid], _MhaReduce[tid + maxStride]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float maxScore = _MhaReduce[0];
+
+    float localSum = 0.0;
+    for (int expIndex = (int)tid; expIndex < dst; expIndex += 64)
+    {
+        float w = exp(_MhaScores[expIndex] - maxScore);
+        _MhaScores[expIndex] = w;
+        localSum += w;
+    }
+    _MhaReduce[tid] = localSum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint sumStride = 32; sumStride > 0; sumStride >>= 1)
+    {
+        if (tid < sumStride)
+            _MhaReduce[tid] += _MhaReduce[tid + sumStride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float invSum = 1.0 / max(_MhaReduce[0], 1e-20);
+
+    for (int normIndex = (int)tid; normIndex < dst; normIndex += 64)
+    {
+        _MhaScores[normIndex] *= invSum;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    for (int lane = (int)tid; lane < headDim; lane += 64)
+    {
+        float outv = 0.0;
+        int vHeadBase = head * headDim + lane;
+        for (int valueIndex = 0; valueIndex < dst; valueIndex++)
+        {
+            outv += _MhaScores[valueIndex] * _MhaV[valueIndex * embedDim + vHeadBase];
+        }
+        _MhaOut[q * embedDim + head * headDim + lane] = outv;
+    }
+}
+
+[numthreads(64,1,1)]
+void NcnnMhaAttentionQkvFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int q = (int)groupId.x;
+    int head = (int)groupId.y;
+    uint tid = groupThreadId.x;
+    if (q < 0 || head < 0) return;
+    if (q >= _MhaSrcLen || head >= _MhaNumHeads) return;
+    int dst = _MhaDstLen;
+    if (dst <= 0 || dst > 4096) return;
+
+    int headDim = _MhaHeadDim;
+    int embedDim = _MhaEmbedDim;
+    int qkvStride = embedDim * 3;
+    int qBase = q * qkvStride + head * headDim;
+    int kHeadBase = embedDim + head * headDim;
+
+    for (int scoreIndex = (int)tid; scoreIndex < dst; scoreIndex += 64)
+    {
+        int kBase = scoreIndex * qkvStride + kHeadBase;
+        float s = 0.0;
+        for (int dotIndex = 0; dotIndex < headDim; dotIndex++)
+        {
+            s += (_MhaQkv[qBase + dotIndex] * _MhaScale) * _MhaQkv[kBase + dotIndex];
+        }
+        _MhaScores[scoreIndex] = s;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    float localMax = -3.402823466e+38;
+    for (int maxIndex = (int)tid; maxIndex < dst; maxIndex += 64)
+    {
+        localMax = max(localMax, _MhaScores[maxIndex]);
+    }
+    _MhaReduce[tid] = localMax;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint maxStride = 32; maxStride > 0; maxStride >>= 1)
+    {
+        if (tid < maxStride)
+            _MhaReduce[tid] = max(_MhaReduce[tid], _MhaReduce[tid + maxStride]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float maxScore = _MhaReduce[0];
+
+    float localSum = 0.0;
+    for (int expIndex = (int)tid; expIndex < dst; expIndex += 64)
+    {
+        float w = exp(_MhaScores[expIndex] - maxScore);
+        _MhaScores[expIndex] = w;
+        localSum += w;
+    }
+    _MhaReduce[tid] = localSum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint sumStride = 32; sumStride > 0; sumStride >>= 1)
+    {
+        if (tid < sumStride)
+            _MhaReduce[tid] += _MhaReduce[tid + sumStride];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    float invSum = 1.0 / max(_MhaReduce[0], 1e-20);
+
+    for (int normIndex = (int)tid; normIndex < dst; normIndex += 64)
+    {
+        _MhaScores[normIndex] *= invSum;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    for (int lane = (int)tid; lane < headDim; lane += 64)
+    {
+        float outv = 0.0;
+        int vHeadBase = embedDim * 2 + head * headDim + lane;
+        for (int valueIndex = 0; valueIndex < dst; valueIndex++)
+        {
+            outv += _MhaScores[valueIndex] * _MhaQkv[valueIndex * qkvStride + vHeadBase];
+        }
+        _MhaOut[q * embedDim + head * headDim + lane] = outv;
+    }
+}
+
+[numthreads(16,16,1)]
+void NcnnMhaProjectQkv2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int lx = (int)groupThreadId.x;
+    int ly = (int)groupThreadId.y;
+    int row = (int)groupId.y * 16 + ly;
+    int col = (int)groupId.x * 16 + lx;
+    int projection = (int)groupId.z;
+    bool valid = row < _MhaProjectRows
+                 && col < _MhaProjectOutFeatures
+                 && projection >= 0
+                 && projection < 3;
+
+    float sum = 0.0;
+    if (valid)
+    {
+        if (projection == 0)
+            sum = _MhaProjectQB[col];
+        else if (projection == 1)
+            sum = _MhaProjectKB[col];
+        else
+            sum = _MhaProjectVB[col];
+    }
+
+    float acc = 0.0;
+    for (int k0 = 0; k0 < _MhaProjectInFeatures; k0 += 16)
+    {
+        int ak = k0 + lx;
+        int bk = k0 + ly;
+        float a = 0.0;
+        float b = 0.0;
+
+        if (row < _MhaProjectRows && ak < _MhaProjectInFeatures)
+            a = _MhaProjectIn[row * _MhaProjectInFeatures + ak];
+        if (col < _MhaProjectOutFeatures && bk < _MhaProjectInFeatures)
+        {
+            if (projection == 0)
+                b = _MhaProjectQW[col * _MhaProjectInFeatures + bk];
+            else if (projection == 1)
+                b = _MhaProjectKW[col * _MhaProjectInFeatures + bk];
+            else
+                b = _MhaProjectVW[col * _MhaProjectInFeatures + bk];
+        }
+
+        _MhaProjectAs[ly * 16 + lx] = a;
+        _MhaProjectBs[ly * 16 + lx] = b;
+        GroupMemoryBarrierWithGroupSync();
+
+        [unroll]
+        for (int k1 = 0; k1 < 16; k1++)
+        {
+            int kk = k0 + k1;
+            if (kk < _MhaProjectInFeatures)
+                acc += _MhaProjectAs[ly * 16 + k1] * _MhaProjectBs[k1 * 16 + lx];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (valid)
+    {
+        int stride = _MhaProjectOutFeatures * 3;
+        _MhaProjectOut[row * stride + projection * _MhaProjectOutFeatures + col] = sum + acc;
     }
 }
 
@@ -2990,6 +3242,9 @@ void NcnnGroupNormPack4ApplyMeanVar(uint3 id : SV_DispatchThreadID)
 #define MATK_MAX 8192
 groupshared float _MatAs[64];
 groupshared float _MatBs[64];
+#define TILE16 16
+groupshared float _MatAs16[256];
+groupshared float _MatBs16[256];
 
 
 [numthreads(8,8,1)]
@@ -3002,7 +3257,7 @@ void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThre
     bool valid = (row < _MatM && col < _MatN);
 
     float acc = 0.0;
-    for (int k0 = 0; k0 < MATK_MAX; k0 += TILE)
+    for (int k0 = 0; k0 < _MatK; k0 += TILE)
     {
         int ak = k0 + lx;
         int bk = k0 + ly;
@@ -3061,7 +3316,7 @@ void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThread
     }
 
     float acc = 0.0;
-    for (int k0 = 0; k0 < MATK_MAX; k0 += TILE)
+    for (int k0 = 0; k0 < _MatK; k0 += TILE)
     {
         int ak = k0 + lx;
         int bk = k0 + ly;
@@ -3088,6 +3343,68 @@ void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThread
             int kk = k0 + k1;
             if (kk < _MatK)
                 acc += _MatAs[ly * TILE + k1] * _MatBs[k1 * TILE + lx];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (valid)
+    {
+        sum += acc * _MatAlpha;
+        _MatOut[row * _MatN + col] = sum;
+    }
+}
+
+[numthreads(16,16,1)]
+void NcnnGemm2D16(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int lx = (int)groupThreadId.x;
+    int ly = (int)groupThreadId.y;
+    int row = (int)groupId.y * TILE16 + ly;
+    int col = (int)groupId.x * TILE16 + lx;
+    bool valid = (row < _MatM && col < _MatN);
+
+    float sum = 0.0;
+    if (valid && _MatUseC != 0)
+    {
+        if (_MatBroadcastTypeC == 0)
+            sum = _MatC[0];
+        else if (_MatBroadcastTypeC == 1)
+            sum = _MatC[row];
+        else if (_MatBroadcastTypeC == 3)
+            sum = _MatC[row * _MatN + col];
+        else if (_MatBroadcastTypeC == 4)
+            sum = _MatC[col];
+        sum *= _MatBeta;
+    }
+
+    float acc = 0.0;
+    for (int k0 = 0; k0 < _MatK; k0 += TILE16)
+    {
+        int ak = k0 + lx;
+        int bk = k0 + ly;
+        float a = 0.0;
+        float b = 0.0;
+
+        if (row < _MatM && ak < _MatK)
+            a = _MatA[row * _MatK + ak];
+        if (bk < _MatK && col < _MatN)
+        {
+            if (_MatTransB != 0)
+                b = _MatB[col * _MatK + bk];
+            else
+                b = _MatB[bk * _MatN + col];
+        }
+
+        _MatAs16[ly * TILE16 + lx] = a;
+        _MatBs16[ly * TILE16 + lx] = b;
+        GroupMemoryBarrierWithGroupSync();
+
+        [unroll]
+        for (int k1 = 0; k1 < TILE16; k1++)
+        {
+            int kk = k0 + k1;
+            if (kk < _MatK)
+                acc += _MatAs16[ly * TILE16 + k1] * _MatBs16[k1 * TILE16 + lx];
         }
         GroupMemoryBarrierWithGroupSync();
     }

@@ -66,14 +66,6 @@ namespace NcnnCompute
                                         phaseSw.Stop();
                                         readMs += phaseSw.ElapsedMilliseconds;
 
-                                        phaseSw.Restart();
-                                        pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-                                        pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-                                        pack.rawWeight.SetData(w);
-                                        pack.rawBias.SetData(b);
-                                        phaseSw.Stop();
-                                        uploadMs += phaseSw.ElapsedMilliseconds;
-
                                         var needGeneralTexturePack = !owner.ForceBufferConvolutionAll
                                                                      && !pack.useBufferPath
                                                                      && !pack.isDepthWise
@@ -91,6 +83,14 @@ namespace NcnnCompute
                                                                        && pack.padLeft == pack.padRight
                                                                        && pack.padTop == pack.padBottom
                                                                        && pack.padLeft == pack.padTop;
+
+                                        if (owner.ShouldKeepRawConvWeightsForTexturePath(layer.name, pack, needGeneralTexturePack, needDepthWiseTexturePack))
+                                        {
+                                            phaseSw.Restart();
+                                            NcnnRepro.UploadRawConvWeights(pack, w, b);
+                                            phaseSw.Stop();
+                                            uploadMs += phaseSw.ElapsedMilliseconds;
+                                        }
 
                                         if (needGeneralTexturePack)
                                         {

@@ -38,6 +38,8 @@ public static class NcnnDebugRunner
     private const string SdDecoderTensorFormatEnvVar = "AIIMAGE_SD_DECODER_TENSOR_FORMAT";
     private const string SdEncoderTensorFormatEnvVar = "AIIMAGE_SD_ENCODER_TENSOR_FORMAT";
     private const string SdEnableDumpEnvVar = "AIIMAGE_SD_ENABLE_DUMP";
+    private const string SdSyncStageTimingsEnvVar = "AIIMAGE_SD_SYNC_STAGE_TIMINGS";
+    private const string SdKeepRawConvWeightsEnvVar = "AIIMAGE_SD_KEEP_RAW_CONV_WEIGHTS";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -484,6 +486,8 @@ public static class NcnnDebugRunner
             runner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, runner.tensorTextureFormat);
             runner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, runner.decoderTensorTextureFormat);
             runner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, runner.encoderTensorTextureFormat);
+            runner.syncStageTimings = ResolveBoolEnv(SdSyncStageTimingsEnvVar, runner.syncStageTimings);
+            runner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, runner.keepRawConvWeightsForTexturePath);
             runner.ProgressChanged += (value, message) =>
             {
                 Debug.Log("[SD-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));

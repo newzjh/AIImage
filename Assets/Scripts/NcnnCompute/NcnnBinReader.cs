@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace NcnnCompute
 {
@@ -8,6 +9,8 @@ namespace NcnnCompute
         private const uint TagFp16 = 0x01306B47;
         private const uint TagInt8 = 0x000D4B38;
         private const uint TagFloat32ExtraScale = 0x0002C056;
+
+        private static readonly float[] HalfToSingleTable = BuildHalfToSingleTable();
 
         private readonly Stream _stream;
         private readonly BinaryReader _br;
@@ -169,30 +172,55 @@ namespace NcnnCompute
 
         private static float HalfToSingle(ushort h)
         {
-            var sign = (h >> 15) & 1;
-            var exp = (h >> 10) & 0x1F;
-            var mant = h & 0x03FF;
+            return HalfToSingleTable[h];
+        }
+
+        private static float[] BuildHalfToSingleTable()
+        {
+            var table = new float[1 << 16];
+            for (var i = 0; i < table.Length; i++)
+                table[i] = UInt32BitsToSingle(HalfToSingleBits((ushort)i));
+            return table;
+        }
+
+        private static uint HalfToSingleBits(ushort h)
+        {
+            var sign = (uint)(h & 0x8000) << 16;
+            var exp = (uint)(h & 0x7C00) >> 10;
+            var mant = (uint)(h & 0x03FF);
 
             if (exp == 0)
             {
                 if (mant == 0)
-                    return sign != 0 ? -0f : 0f;
-                var v = mant / 1024f;
-                var f = (float)Math.Pow(2, -14) * v;
-                return sign != 0 ? -f : f;
+                    return sign;
+
+                var e = -14;
+                while ((mant & 0x0400) == 0)
+                {
+                    mant <<= 1;
+                    e--;
+                }
+
+                mant &= 0x03FF;
+                return sign | (uint)(e + 127) << 23 | mant << 13;
             }
 
-            if (exp == 31)
-            {
-                if (mant == 0)
-                    return sign != 0 ? float.NegativeInfinity : float.PositiveInfinity;
-                return float.NaN;
-            }
+            if (exp == 0x1F)
+                return sign | 0x7F800000u | mant << 13;
 
-            var baseV = 1f + mant / 1024f;
-            var scale = (float)Math.Pow(2, exp - 15);
-            var r = baseV * scale;
-            return sign != 0 ? -r : r;
+            return sign | (exp + 112u) << 23 | mant << 13;
+        }
+
+        private static float UInt32BitsToSingle(uint bits)
+        {
+            return new UIntFloat { UInt = bits }.Float;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct UIntFloat
+        {
+            [FieldOffset(0)] public uint UInt;
+            [FieldOffset(0)] public float Float;
         }
 
         private float[] ReadNcnnArrayAsFloat32(int count, int loadType)

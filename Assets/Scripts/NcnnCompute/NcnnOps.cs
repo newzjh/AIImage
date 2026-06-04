@@ -314,6 +314,7 @@ namespace NcnnCompute
         private readonly int _kGeluPack4;
         private readonly int _kMatMul2D;
         private readonly int _kGemm2D;
+        private readonly int _kGemm2D16;
         private readonly int _kLayerNorm2D;
         private readonly int _kSoftmax2D;
         private readonly int _kEmbed;
@@ -333,6 +334,9 @@ namespace NcnnCompute
         private readonly int _kTouchU32;
         private readonly int _kInnerProduct2D;
         private readonly int _kMhaAttention;
+        private readonly int _kMhaAttentionFast;
+        private readonly int _kMhaAttentionQkvFast;
+        private readonly int _kMhaProjectQkv2D;
         private readonly int _kReorgPack4;
         private readonly int _kConvDepthWise;
 
@@ -401,6 +405,7 @@ namespace NcnnCompute
             _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
             _kMatMul2D = _cs.FindKernel("NcnnMatMul2D");
             _kGemm2D = _cs.FindKernel("NcnnGemm2D");
+            _kGemm2D16 = _cs.FindKernel("NcnnGemm2D16");
             _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
             _kSoftmax2D = _cs.FindKernel("NcnnSoftmax2D");
             _kEmbed = _cs.FindKernel("NcnnEmbed");
@@ -420,6 +425,9 @@ namespace NcnnCompute
             _kTouchU32 = _cs.FindKernel("NcnnTouchU32");
             _kInnerProduct2D = _cs.FindKernel("NcnnInnerProduct2D");
             _kMhaAttention = _cs.FindKernel("NcnnMhaAttention");
+            _kMhaAttentionFast = _cs.FindKernel("NcnnMhaAttentionFast");
+            _kMhaAttentionQkvFast = _cs.FindKernel("NcnnMhaAttentionQkvFast");
+            _kMhaProjectQkv2D = _cs.FindKernel("NcnnMhaProjectQkv2D");
             _kReorgPack4 = _cs.FindKernel("NcnnReorgPack4");
         }
 
@@ -1927,6 +1935,12 @@ namespace NcnnCompute
             if (outFeatures <= 0) throw new ArgumentOutOfRangeException(nameof(outFeatures));
             if (rows == 0) return;
 
+            if (inFeatures <= 8192)
+            {
+                Gemm2D(input, weightsOxi, biasO, rows, outFeatures, inFeatures, true, 1f, 1f, true, 4, output);
+                return;
+            }
+
             _cs.SetInt("_IP2Rows", rows);
             _cs.SetInt("_IP2InFeatures", inFeatures);
             _cs.SetInt("_IP2OutFeatures", outFeatures);
@@ -1940,7 +1954,7 @@ namespace NcnnCompute
             _cs.Dispatch(_kInnerProduct2D, gx, gy, 1);
         }
 
-        public void MhaAttention(ComputeBuffer q, ComputeBuffer k, ComputeBuffer v, int srcLen, int dstLen, int embedDim, int numHeads, float scale, ComputeBuffer outContext)
+        public void MhaAttention(ComputeBuffer q, ComputeBuffer k, ComputeBuffer v, int srcLen, int dstLen, int embedDim, int numHeads, float scale, ComputeBuffer outContext, bool parallelSoftmax = false)
         {
             if (q == null) throw new ArgumentNullException(nameof(q));
             if (k == null) throw new ArgumentNullException(nameof(k));
@@ -1961,12 +1975,67 @@ namespace NcnnCompute
             _cs.SetInt("_MhaNumHeads", numHeads);
             _cs.SetInt("_MhaHeadDim", embedDim / numHeads);
             _cs.SetFloat("_MhaScale", scale);
-            _cs.SetBuffer(_kMhaAttention, "_MhaQ", q);
-            _cs.SetBuffer(_kMhaAttention, "_MhaK", k);
-            _cs.SetBuffer(_kMhaAttention, "_MhaV", v);
-            _cs.SetBuffer(_kMhaAttention, "_MhaOut", outContext);
+            var kernel = parallelSoftmax ? _kMhaAttentionFast : _kMhaAttention;
+            _cs.SetBuffer(kernel, "_MhaQ", q);
+            _cs.SetBuffer(kernel, "_MhaK", k);
+            _cs.SetBuffer(kernel, "_MhaV", v);
+            _cs.SetBuffer(kernel, "_MhaOut", outContext);
 
-            _cs.Dispatch(_kMhaAttention, srcLen, numHeads, 1);
+            _cs.Dispatch(kernel, srcLen, numHeads, 1);
+        }
+
+        public void MhaProjectQkv2D(ComputeBuffer input, int rows, int inFeatures, ComputeBuffer qW, ComputeBuffer qB, ComputeBuffer kW, ComputeBuffer kB, ComputeBuffer vW, ComputeBuffer vB, int outFeatures, ComputeBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (qW == null) throw new ArgumentNullException(nameof(qW));
+            if (qB == null) throw new ArgumentNullException(nameof(qB));
+            if (kW == null) throw new ArgumentNullException(nameof(kW));
+            if (kB == null) throw new ArgumentNullException(nameof(kB));
+            if (vW == null) throw new ArgumentNullException(nameof(vW));
+            if (vB == null) throw new ArgumentNullException(nameof(vB));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (rows < 0) throw new ArgumentOutOfRangeException(nameof(rows));
+            if (inFeatures <= 0) throw new ArgumentOutOfRangeException(nameof(inFeatures));
+            if (outFeatures <= 0) throw new ArgumentOutOfRangeException(nameof(outFeatures));
+            if (rows == 0) return;
+
+            _cs.SetInt("_MhaProjectRows", rows);
+            _cs.SetInt("_MhaProjectInFeatures", inFeatures);
+            _cs.SetInt("_MhaProjectOutFeatures", outFeatures);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectIn", input);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectQW", qW);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectQB", qB);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectKW", kW);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectKB", kB);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectVW", vW);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectVB", vB);
+            _cs.SetBuffer(_kMhaProjectQkv2D, "_MhaProjectOut", output);
+
+            _cs.Dispatch(_kMhaProjectQkv2D, (outFeatures + 15) / 16, (rows + 15) / 16, 3);
+        }
+
+        public void MhaAttentionQkv(ComputeBuffer qkv, int srcLen, int embedDim, int numHeads, float scale, ComputeBuffer outContext)
+        {
+            if (qkv == null) throw new ArgumentNullException(nameof(qkv));
+            if (outContext == null) throw new ArgumentNullException(nameof(outContext));
+            if (srcLen <= 0) throw new ArgumentOutOfRangeException(nameof(srcLen));
+            if (srcLen > 65535) throw new ArgumentOutOfRangeException(nameof(srcLen), "srcLen exceeds Unity compute dispatch limit: " + srcLen);
+            if (srcLen > 4096) throw new ArgumentOutOfRangeException(nameof(srcLen), "srcLen exceeds current shader shared-memory limit: " + srcLen);
+            if (embedDim <= 0) throw new ArgumentOutOfRangeException(nameof(embedDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (numHeads > 65535) throw new ArgumentOutOfRangeException(nameof(numHeads), "numHeads exceeds Unity compute dispatch limit: " + numHeads);
+            if ((embedDim % numHeads) != 0) throw new ArgumentOutOfRangeException(nameof(embedDim), "embedDim must be divisible by numHeads");
+
+            _cs.SetInt("_MhaSrcLen", srcLen);
+            _cs.SetInt("_MhaDstLen", srcLen);
+            _cs.SetInt("_MhaEmbedDim", embedDim);
+            _cs.SetInt("_MhaNumHeads", numHeads);
+            _cs.SetInt("_MhaHeadDim", embedDim / numHeads);
+            _cs.SetFloat("_MhaScale", scale);
+            _cs.SetBuffer(_kMhaAttentionQkvFast, "_MhaQkv", qkv);
+            _cs.SetBuffer(_kMhaAttentionQkvFast, "_MhaOut", outContext);
+
+            _cs.Dispatch(_kMhaAttentionQkvFast, srcLen, numHeads, 1);
         }
 
         public void Pack4ToBufferCHW(RenderTexture input, int w, int h, int c, ComputeBuffer output)
@@ -2035,7 +2104,7 @@ namespace NcnnCompute
             if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
             if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
-            if (k > 2048) throw new ArgumentOutOfRangeException(nameof(k), "k too large for current tiled kernel (MATK_MAX=2048): " + k);
+            if (k > 8192) throw new ArgumentOutOfRangeException(nameof(k), "k too large for current tiled kernel (MATK_MAX=8192): " + k);
             if (useC && c == null) throw new ArgumentNullException(nameof(c));
 
             _cs.SetInt("_MatM", m);
@@ -2046,12 +2115,14 @@ namespace NcnnCompute
             _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
             _cs.SetFloat("_MatAlpha", alpha);
             _cs.SetFloat("_MatBeta", beta);
-            _cs.SetBuffer(_kGemm2D, "_MatA", a);
-            _cs.SetBuffer(_kGemm2D, "_MatB", b);
-            _cs.SetBuffer(_kGemm2D, "_MatC", useC ? c : a);
-            _cs.SetBuffer(_kGemm2D, "_MatOut", output);
+            var useLargeTile = m >= 16 && n >= 128 && k >= 128;
+            var kernel = useLargeTile ? _kGemm2D16 : _kGemm2D;
+            _cs.SetBuffer(kernel, "_MatA", a);
+            _cs.SetBuffer(kernel, "_MatB", b);
+            _cs.SetBuffer(kernel, "_MatC", useC ? c : a);
+            _cs.SetBuffer(kernel, "_MatOut", output);
 
-            Dispatch2D(_cs, _kGemm2D, n, m, 8, 8);
+            Dispatch2D(_cs, kernel, n, m, useLargeTile ? 16 : 8, useLargeTile ? 16 : 8);
         }
 
         public void LayerNorm2DInplace(ComputeBuffer inOut, int rows, int cols, float eps, bool affine, ComputeBuffer gamma, ComputeBuffer beta)
