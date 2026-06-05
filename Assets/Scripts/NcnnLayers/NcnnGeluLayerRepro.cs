@@ -27,7 +27,9 @@ namespace NcnnCompute
                         do
                         {
                                                 if (!owner.ForceBufferGeluAll
-                                                    && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                                                    && !owner.ShouldForceCurrentLayerBufferPath()
+                                                    && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape)
+                                                    && srcShape.dims <= 3)
                                                 {
                                                     var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
                                                     owner.Ops.GeluPack4(srcTex.texture, srcTex.packs, false, outRt);

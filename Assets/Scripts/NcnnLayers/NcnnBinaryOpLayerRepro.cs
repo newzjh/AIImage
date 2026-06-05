@@ -32,7 +32,9 @@ namespace NcnnCompute
 
                                                 if (withScalar != 0)
                                                 {
-                                                    if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aTexShape))
+                                                    if (!owner.ShouldForceCurrentLayerBufferPath()
+                                                        && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var aTex, out var aTexShape)
+                                                        && aTexShape.dims <= 3)
                                                     {
                                                         var outRt = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
                                                         owner.Ops.BinaryOpScalarPack4(aTex.texture, scalarB, aTex.packs, opType, outRt);
@@ -165,14 +167,16 @@ namespace NcnnCompute
                                                     }
                                                     else
                                                     {
-                                                        var aBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var aView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                        if (aBuf == null)
+                                                        using var aReadable = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                        var aBuf = aReadable?.buffer;
+                                                        var aView = aReadable;
+                                                        if (aBuf == null || aView == null)
                                                             throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
 
-                                                        var bBuf = owner.GetOrConvertToBuffer(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var bView = NcnnRepro.TryGetBufferView(layer.bottomNames[1], bufferBlobs, bufferViews);
-                                                        if (bBuf == null)
+                                                        using var bReadable = owner.GetReadableTensorInput(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                        var bBuf = bReadable?.buffer;
+                                                        var bView = bReadable;
+                                                        if (bBuf == null || bView == null)
                                                             throw new InvalidOperationException("BinaryOp second source not found: " + layer.name);
 
                                                         // ncnn reduction + binary-op chains in CodeFormer frequently mix [h,w] with [1,w] or [h,1].
@@ -249,10 +253,19 @@ namespace NcnnCompute
                                                                 owner.Ops.MulScalarInplace(outBuf, owner.CodeFormerSftMulScale, outBuf.count);
                                                             }
                                                         }
-                                                        bufferBlobs[layer.topNames[0]] = outBuf;
-                                                        if (broadcast.outputView != null)
-                                                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, broadcast.outputView.dims, broadcast.outputView.w, broadcast.outputView.h, broadcast.outputView.d, broadcast.outputView.c, false);
-                                                        tempOwned.Add(outBuf);
+                                                        var outTensor = broadcast.outputView != null
+                                                            ? new NcnnTensorBuffer(outBuf, broadcast.outputView.dims, broadcast.outputView.w, broadcast.outputView.h, broadcast.outputView.d, broadcast.outputView.c, true, owner.ReturnTempBuffer)
+                                                            : new NcnnTensorBuffer(outBuf, 1, outBuf.count, 1, 1, 1, true, owner.ReturnTempBuffer);
+                                                        owner.PublishTensorBufferOutput(
+                                                            layer.topNames[0],
+                                                            outTensor,
+                                                            preferTexture: broadcast.outputView != null && broadcast.outputView.dims <= 3,
+                                                            textureBlobs,
+                                                            textureShapes,
+                                                            bufferBlobs,
+                                                            bufferRefs,
+                                                            bufferViews,
+                                                            tempOwned);
                                                     }
                                                 }
 

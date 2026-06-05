@@ -60,19 +60,18 @@ namespace NcnnCompute
                                                 if (!owner._innerProduct.TryGetValue(layer.name, out var ip))
                                                     throw new InvalidOperationException("InnerProduct not found: " + layer.name);
 
-                                                var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                if (srcBuf == null)
+                                                using var srcTensor = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                if (srcTensor == null || srcTensor.buffer == null)
                                                     throw new InvalidOperationException("InnerProduct source not found: " + layer.bottomNames[0]);
 
-                                                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                var rows = srcTensor != null && srcTensor.dims == 2 && srcTensor.w == ip.inFeatures ? srcTensor.h : 1;
+                                                var rows = srcTensor.dims == 2 && srcTensor.w == ip.inFeatures ? srcTensor.h : 1;
                                                 var outTensor = rows > 1
                                                     ? owner.RentTempTensorBuffer(2, ip.outFeatures, rows)
                                                     : owner.RentTempTensorBuffer(1, ip.outFeatures);
                                                 if (rows > 1)
-                                                    owner.Ops.InnerProduct2D(srcBuf, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
+                                                    owner.Ops.InnerProduct2D(srcTensor.buffer, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
                                                 else
-                                                    owner.Ops.InnerProduct(srcBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
+                                                    owner.Ops.InnerProduct(srcTensor.buffer, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
 
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],

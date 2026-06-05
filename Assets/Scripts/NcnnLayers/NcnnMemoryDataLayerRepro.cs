@@ -67,6 +67,39 @@ namespace NcnnCompute
                         {
                                                 if (!owner._memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
                                                     throw new InvalidOperationException("MemoryData not found: " + layer.name);
+
+                                                if (owner.DisallowBufferOutputs && mp.dims <= 3)
+                                                {
+                                                    var logicalShape = new NcnnRepro.BufferShape(mp.dims, mp.w, mp.h, mp.d, mp.c);
+                                                    int texW;
+                                                    int texH;
+                                                    int channels;
+                                                    if (mp.dims == 1)
+                                                    {
+                                                        texW = mp.w;
+                                                        texH = 1;
+                                                        channels = 1;
+                                                    }
+                                                    else if (mp.dims == 2)
+                                                    {
+                                                        texW = mp.w;
+                                                        texH = mp.h;
+                                                        channels = 1;
+                                                    }
+                                                    else
+                                                    {
+                                                        texW = mp.w;
+                                                        texH = mp.h;
+                                                        channels = mp.c;
+                                                    }
+
+                                                    var packs = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+                                                    var outRt = owner.RentTempArray(texW, texH, packs, RenderTextureFormat.ARGBHalf);
+                                                    owner.Ops.FillPack4FromBufferCHW(mp.data, texW, texH, channels, outRt);
+                                                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, logicalShape);
+                                                    continue;
+                                                }
+
                                                 var tensor = new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false);
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],

@@ -63,12 +63,11 @@ namespace NcnnCompute
                         {
                                                 if (!owner._layerNorm.TryGetValue(layer.name, out var lp))
                                                     throw new InvalidOperationException("LayerNorm not found: " + layer.name);
-                                                var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                if (srcBuf == null || srcView == null || srcView.dims != 2)
+                                                using var srcView = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                if (srcView == null || srcView.buffer == null || srcView.dims != 2)
                                                     throw new InvalidOperationException("LayerNorm expects dims=2 buffer input: " + layer.name);
                                                 var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
-                                                owner.Ops.CopyBuf(srcBuf, outTensor.buffer, srcBuf.count);
+                                                owner.Ops.CopyBuf(srcView.buffer, outTensor.buffer, srcView.buffer.count);
                                                 owner.Ops.LayerNorm2DInplace(outTensor.buffer, srcView.h, srcView.w, lp.eps, lp.affine, lp.gamma, lp.beta);
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],

@@ -65,17 +65,27 @@ namespace NcnnCompute
 
                                                     if (!canAliasTexture)
                                                     {
-                                                        var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        if (srcBuf == null)
-                                                            throw new InvalidOperationException("Reshape source not found: " + layer.bottomNames[0]);
-                                                        bufferBlobs[layer.topNames[0]] = srcBuf;
-                                                        if (bufferRefs.TryGetValue(layer.bottomNames[0], out var reshapeRef) && reshapeRef != null)
-                                                        {
-                                                            bufferRefs[layer.topNames[0]] = reshapeRef;
-                                                            reshapeRef.refs++;
-                                                        }
-                                                        if (NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews) is { } srcTensor)
-                                                            bufferViews[layer.topNames[0]] = NcnnRepro.ResolveReshapeTensor(srcTensor, layer, bottomShapes);
+                                                        var scratchTensor = owner.RentScratchTensorFromTexture(src, srcShape);
+                                                        var outView = NcnnRepro.ResolveReshapeTensor(scratchTensor, layer, bottomShapes);
+                                                        var outTensor = new NcnnTensorBuffer(
+                                                            scratchTensor.buffer,
+                                                            outView.dims,
+                                                            outView.w,
+                                                            outView.h,
+                                                            outView.d,
+                                                            outView.c,
+                                                            true,
+                                                            owner.ReturnTempBuffer);
+                                                        owner.PublishTensorBufferOutput(
+                                                            layer.topNames[0],
+                                                            outTensor,
+                                                            preferTexture: outView.dims <= 3,
+                                                            textureBlobs,
+                                                            textureShapes,
+                                                            bufferBlobs,
+                                                            bufferRefs,
+                                                            bufferViews,
+                                                            tempOwned);
                                                     }
                                                     else
                                                     {

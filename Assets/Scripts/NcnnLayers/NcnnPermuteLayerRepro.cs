@@ -42,19 +42,15 @@ namespace NcnnCompute
                 return;
             }
 
-            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-            if (srcBuf == null)
+            var srcTensor = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            if (srcTensor == null || srcTensor.buffer == null)
                 throw new InvalidOperationException("Permute source not found: " + layer.bottomNames[0]);
-
-            var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-            if (srcTensor == null)
-                throw new InvalidOperationException("Permute shape not resolved: " + layer.name);
 
             var dims = Mathf.Clamp(srcTensor.dims, 2, 4);
             axes = NcnnRepro.ResolvePermuteAxes(dims, orderType, layer.name);
             outShape = NcnnRepro.ResolvePermuteShape(srcTensor, dims, axes);
             var outTensor = owner.RentTempTensorBuffer(outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c);
-            owner.Ops.Permute(srcBuf, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outTensor.buffer);
+            owner.Ops.Permute(srcTensor.buffer, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outTensor.buffer);
 
             owner.PublishTensorBufferOutput(
                 layer.topNames[0],

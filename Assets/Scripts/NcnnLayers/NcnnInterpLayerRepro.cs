@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -20,95 +21,118 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
             var tempOwned = context.tempOwned;
 
-            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-            if (srcBuf == null || srcView == null)
-                throw new InvalidOperationException("Interp source not found: " + layer.name);
-
-            if (layer.GetInt(5, 0) != 0 && layer.bottomNames.Length > 1 && !bufferViews.ContainsKey(layer.bottomNames[1]))
-                owner.GetOrConvertToBuffer(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-
-            ResolveTargetShape(layer, srcView, bufferViews, out var outW, out var outH, out var outC);
-
-            if (srcView.dims == 2 && outW == srcView.w)
+            if (!owner.ShouldForceCurrentLayerBufferPath()
+                && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
             {
-                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
-                return;
-            }
+                ResolveTargetShape(layer, srcShape, textureBlobs, textureShapes, bufferViews, out var outW, out var outH, out var outC);
 
-            if (srcView.dims >= 3 && outW == srcView.w && outH == srcView.h)
-            {
-                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
-                return;
-            }
-
-            if (srcView.dims == 3
-                && outC == srcView.c
-                && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
-                && CanUsePack4Interp(srcTex, srcShape))
-            {
-                var resizeTypePack = layer.GetInt(0, 0);
-                var sxPack = layer.GetFloat(2, 1f);
-                var syPack = layer.GetFloat(1, 1f);
-                var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
-                var outRt = owner.RentTempArray(outW, outH, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                var executed = false;
-
-                if (Mathf.Abs(sxPack - 2f) < 1e-3f && Mathf.Abs(syPack - 2f) < 1e-3f)
+                if (srcShape.dims == 2 && outW == srcShape.w)
                 {
-                    if (resizeTypePack == 1)
-                        owner.Ops.Interp2xNearestPack4(srcTex.texture, srcTex.packs, outRt);
-                    else
-                        owner.Ops.Interp2xPack4(srcTex.texture, srcTex.packs, outRt);
-                    executed = true;
-                }
-                else if (Mathf.Abs(sxPack - 0.5f) < 1e-3f && Mathf.Abs(syPack - 0.5f) < 1e-3f)
-                {
-                    if (resizeTypePack == 1)
-                        owner.Ops.InterpDown2NearestPack4(srcTex.texture, srcTex.packs, outRt);
-                    else
-                        owner.Ops.InterpDown2Pack4(srcTex.texture, srcTex.packs, outRt);
-                    executed = true;
-                }
-                else if (resizeTypePack != 1 && resizeTypePack != 3)
-                {
-                    var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
-                    var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
-                    owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt);
-                    executed = true;
-                }
-
-                if (executed)
-                {
-                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
-                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
                     return;
                 }
 
-                owner.ReturnTempArray(outRt);
+                if (srcShape.dims >= 3 && outW == srcShape.w && outH == srcShape.h)
+                {
+                    new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
+                    return;
+                }
+
+                if (srcShape.dims == 3
+                    && outC == srcShape.c
+                    && CanUsePack4Interp(srcTex, srcShape))
+                {
+                    var resizeTypePack = layer.GetInt(0, 0);
+                    var sxPack = layer.GetFloat(2, 1f);
+                    var syPack = layer.GetFloat(1, 1f);
+                    var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
+                    var outRt = owner.RentTempArray(outW, outH, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    var executed = false;
+
+                    if (Mathf.Abs(sxPack - 2f) < 1e-3f && Mathf.Abs(syPack - 2f) < 1e-3f)
+                    {
+                        if (resizeTypePack == 1)
+                            owner.Ops.Interp2xNearestPack4(srcTex.texture, srcTex.packs, outRt);
+                        else
+                            owner.Ops.Interp2xPack4(srcTex.texture, srcTex.packs, outRt);
+                        executed = true;
+                    }
+                    else if (Mathf.Abs(sxPack - 0.5f) < 1e-3f && Mathf.Abs(syPack - 0.5f) < 1e-3f)
+                    {
+                        if (resizeTypePack == 1)
+                            owner.Ops.InterpDown2NearestPack4(srcTex.texture, srcTex.packs, outRt);
+                        else
+                            owner.Ops.InterpDown2Pack4(srcTex.texture, srcTex.packs, outRt);
+                        executed = true;
+                    }
+                    else if (resizeTypePack != 1 && resizeTypePack != 3)
+                    {
+                        var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
+                        var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
+                        owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt);
+                        executed = true;
+                    }
+
+                    if (executed)
+                    {
+                        NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        return;
+                    }
+
+                    owner.ReturnTempArray(outRt);
+                }
+            }
+
+            using var srcReadable = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcBuf = srcReadable?.buffer;
+            var srcView = srcReadable;
+            if (srcBuf == null || srcView == null)
+                throw new InvalidOperationException("Interp source not found: " + layer.name);
+
+            ResolveTargetShape(
+                layer,
+                new NcnnRepro.BufferShape(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c),
+                textureBlobs,
+                textureShapes,
+                bufferViews,
+                out var fallbackOutW,
+                out var fallbackOutH,
+                out var fallbackOutC);
+
+            if (srcView.dims == 2 && fallbackOutW == srcView.w)
+            {
+                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
+                return;
+            }
+
+            if (srcView.dims >= 3 && fallbackOutW == srcView.w && fallbackOutH == srcView.h)
+            {
+                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
+                return;
             }
 
             var resizeType = layer.GetInt(0, 0);
             var alignCorner = layer.GetInt(6, 0) != 0;
             var outDims = srcView.dims == 1 ? 3 : srcView.dims;
             var outTensor = srcView.dims == 1
-                ? owner.RentTempTensorBuffer(3, outW, outH, 1, outC)
-                : owner.RentTempTensorBuffer(srcView.dims, outW, outH, srcView.d, outC);
+                ? owner.RentTempTensorBuffer(3, fallbackOutW, fallbackOutH, 1, fallbackOutC)
+                : owner.RentTempTensorBuffer(srcView.dims, fallbackOutW, fallbackOutH, srcView.d, fallbackOutC);
 
             var srcData = NcnnRepro.ReadFloatBuffer(srcBuf);
             var outData = new float[outTensor.elementCount];
 
             if (srcView.dims == 1)
             {
-                ApplyInterpDims1(srcData, srcView, outW, outH, resizeType, alignCorner, outData);
+                ApplyInterpDims1(srcData, srcView, fallbackOutW, fallbackOutH, resizeType, alignCorner, outData);
             }
             else if (srcView.dims == 2)
             {
-                ApplyInterpDims2(srcData, srcView, outW, resizeType, alignCorner, layer, outData);
+                ApplyInterpDims2(srcData, srcView, fallbackOutW, resizeType, alignCorner, layer, outData);
             }
             else
             {
-                ApplyInterpDims3(srcData, srcView, outW, outH, resizeType, alignCorner, layer, outData);
+                ApplyInterpDims3(srcData, srcView, fallbackOutW, fallbackOutH, resizeType, alignCorner, layer, outData);
             }
 
             outTensor.buffer.SetData(outData);
@@ -286,8 +310,10 @@ namespace NcnnCompute
 
         private static void ResolveTargetShape(
             NcnnParamModel.Layer layer,
-            NcnnTensorBuffer srcView,
-            System.Collections.Generic.Dictionary<string, NcnnTensorBuffer> bufferViews,
+            NcnnRepro.BufferShape srcShape,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
             out int outW,
             out int outH,
             out int outC)
@@ -302,12 +328,12 @@ namespace NcnnCompute
 
             if (!string.IsNullOrWhiteSpace(sizeExpr))
             {
-                var bottomShapes = new System.Collections.Generic.List<NcnnRepro.BufferShape>(layer.bottomNames.Length);
+                var bottomShapes = new List<NcnnRepro.BufferShape>(layer.bottomNames.Length);
                 for (var i = 0; i < layer.bottomNames.Length; i++)
                 {
-                    if (!bufferViews.TryGetValue(layer.bottomNames[i], out var bottomView) || bottomView == null)
+                    if (!TryGetBottomShape(layer.bottomNames[i], textureBlobs, textureShapes, bufferViews, out var bottomShape))
                         throw new InvalidOperationException("Interp size_expr bottom shape unavailable: " + layer.name + " | " + layer.bottomNames[i]);
-                    bottomShapes.Add(new NcnnRepro.BufferShape(bottomView.dims, bottomView.w, bottomView.h, bottomView.d, bottomView.c));
+                    bottomShapes.Add(bottomShape);
                 }
 
                 var sizes = NcnnRepro.EvaluateExpressionList(sizeExpr, bottomShapes, layer);
@@ -316,25 +342,25 @@ namespace NcnnCompute
 
                 outW = Mathf.Max(1, sizes[0]);
                 outH = sizes.Count == 1
-                    ? (srcView.dims >= 2 ? srcView.h : 1)
+                    ? (srcShape.dims >= 2 ? srcShape.h : 1)
                     : Mathf.Max(1, sizes[1]);
-                outC = srcView.dims >= 3 ? srcView.c : 1;
-                if (srcView.dims == 1)
-                    outC = srcView.w;
+                outC = srcShape.dims >= 3 ? srcShape.c : 1;
+                if (srcShape.dims == 1)
+                    outC = srcShape.w;
                 return;
             }
 
-            if (srcView.dims == 1)
+            if (srcShape.dims == 1)
             {
                 var srcW = 1;
                 var srcH = 1;
                 outW = outputWidth;
                 outH = outputHeight;
 
-                if (dynamicTargetSize && layer.bottomNames.Length > 1 && bufferViews.TryGetValue(layer.bottomNames[1], out var refView1) && refView1 != null)
+                if (dynamicTargetSize && layer.bottomNames.Length > 1 && TryGetBottomShape(layer.bottomNames[1], textureBlobs, textureShapes, bufferViews, out var refShape1))
                 {
-                    outW = refView1.w;
-                    outH = refView1.h;
+                    outW = refShape1.w;
+                    outH = refShape1.h;
                 }
 
                 if (outW == 0 || outH == 0)
@@ -343,37 +369,57 @@ namespace NcnnCompute
                     outH = Mathf.Max(1, (int)(srcH * Mathf.Max(0f, sy)));
                 }
 
-                outC = srcView.w;
+                outC = srcShape.w;
                 return;
             }
 
-            if (srcView.dims == 2)
+            if (srcShape.dims == 2)
             {
                 outW = outputWidth;
-                if (dynamicTargetSize && layer.bottomNames.Length > 1 && bufferViews.TryGetValue(layer.bottomNames[1], out var refView2) && refView2 != null)
-                    outW = refView2.w;
+                if (dynamicTargetSize && layer.bottomNames.Length > 1 && TryGetBottomShape(layer.bottomNames[1], textureBlobs, textureShapes, bufferViews, out var refShape2))
+                    outW = refShape2.w;
                 if (outW == 0)
-                    outW = Mathf.Max(1, (int)(srcView.w * Mathf.Max(0f, sx)));
-                outH = srcView.h;
+                    outW = Mathf.Max(1, (int)(srcShape.w * Mathf.Max(0f, sx)));
+                outH = srcShape.h;
                 outC = 1;
                 return;
             }
 
             outW = outputWidth;
             outH = outputHeight;
-            if (dynamicTargetSize && layer.bottomNames.Length > 1 && bufferViews.TryGetValue(layer.bottomNames[1], out var refView3) && refView3 != null)
+            if (dynamicTargetSize && layer.bottomNames.Length > 1 && TryGetBottomShape(layer.bottomNames[1], textureBlobs, textureShapes, bufferViews, out var refShape3))
             {
-                outW = refView3.w;
-                outH = refView3.h;
+                outW = refShape3.w;
+                outH = refShape3.h;
             }
 
             if (outW == 0)
-                outW = Mathf.Max(1, (int)(srcView.w * Mathf.Max(0f, sx)));
+                outW = Mathf.Max(1, (int)(srcShape.w * Mathf.Max(0f, sx)));
             if (outH == 0)
-                outH = Mathf.Max(1, (int)(srcView.h * Mathf.Max(0f, sy)));
-            outC = srcView.c;
+                outH = Mathf.Max(1, (int)(srcShape.h * Mathf.Max(0f, sy)));
+            outC = srcShape.c;
 
             _ = resizeType;
+        }
+
+        private static bool TryGetBottomShape(
+            string name,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.BufferShape shape)
+        {
+            shape = default;
+            if (bufferViews != null && bufferViews.TryGetValue(name, out var view) && view != null)
+            {
+                shape = new NcnnRepro.BufferShape(view.dims, view.w, view.h, view.d, view.c);
+                return true;
+            }
+
+            if (NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, name, out _, out shape))
+                return true;
+
+            return false;
         }
 
         private static void ApplyInterpDims1(float[] srcData, NcnnTensorBuffer srcView, int outW, int outH, int resizeType, bool alignCorner, float[] outData)

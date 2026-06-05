@@ -761,6 +761,7 @@ namespace NcnnCompute
         public bool EnableGpuGeluBufferPath { get; set; }
         public bool EnableDepthWiseTextureConvolution { get; set; } = true;
         public bool EnableConv1x1TextureConvolution { get; set; } = true;
+        public bool EnableGeneralTextureConvolution { get; set; }
         public bool EnableGroupNormTexturePath { get; set; }
         public bool ForceBufferConvolution { get; set; }
         public bool UseTextureMaxPoolingInd { get; set; }
@@ -815,6 +816,9 @@ namespace NcnnCompute
         public bool EnableMhaParallelSoftmax { get; set; }
         public bool EnableMhaQkvFusion { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        public bool DisallowBufferAccess { get; set; }
+        public bool DisallowBufferOutputs { get; set; }
+        public bool DisallowBufferToTextureMaterialization { get; set; }
         public ISet<string> ForceBufferLayerTypes { get; set; }
         public ISet<string> ForceBufferLayerNames { get; set; }
         public ISet<string> DebugCompareTextureLayers { get; set; }
@@ -868,6 +872,32 @@ namespace NcnnCompute
             if (set == null || set.Count == 0 || string.IsNullOrWhiteSpace(value))
                 return false;
             return set.Contains(value) || set.Contains("*");
+        }
+
+        private string DescribeCurrentExecutionSite()
+        {
+            if (!string.IsNullOrWhiteSpace(_currentExecutingLayerTypeName) || !string.IsNullOrWhiteSpace(_currentExecutingLayerName))
+                return (_currentExecutingLayerTypeName ?? "Unknown") + ":" + (_currentExecutingLayerName ?? "Unknown");
+            return "outside-layer";
+        }
+
+        private InvalidOperationException CreateDisallowedBufferPathException(string reason, string blobName, string detail = null)
+        {
+            var sb = new StringBuilder(256);
+            sb.Append(reason);
+            sb.Append(" | site=");
+            sb.Append(DescribeCurrentExecutionSite());
+            if (!string.IsNullOrWhiteSpace(blobName))
+            {
+                sb.Append(" | blob=");
+                sb.Append(blobName);
+            }
+            if (!string.IsNullOrWhiteSpace(detail))
+            {
+                sb.Append(" | ");
+                sb.Append(detail);
+            }
+            return new InvalidOperationException(sb.ToString());
         }
 
         public NcnnRepro(NcnnOps ops)
@@ -2115,10 +2145,17 @@ namespace NcnnCompute
             Release();
         }
 
-        internal RenderTexture MaterializeTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view)
+        private RenderTexture MaterializeTextureFromBufferViewCore(ComputeBuffer buffer, NcnnTensorBuffer view, bool ignoreGuard)
         {
             if (buffer == null || view == null)
                 return null;
+            if (!ignoreGuard && DisallowBufferToTextureMaterialization)
+            {
+                throw CreateDisallowedBufferPathException(
+                    "pack4-only guard: buffer-to-texture materialization disallowed",
+                    null,
+                    "dims=" + view.dims + " w=" + view.w + " h=" + view.h + " d=" + view.d + " c=" + view.c);
+            }
 
             int texW;
             int texH;
@@ -2150,6 +2187,16 @@ namespace NcnnCompute
             var rt = RentTempArray(texW, texH, packs, RenderTextureFormat.ARGBHalf);
             _ops.FillPack4FromBufferCHW(buffer, texW, texH, channels, rt);
             return rt;
+        }
+
+        internal RenderTexture MaterializeTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view)
+        {
+            return MaterializeTextureFromBufferViewCore(buffer, view, ignoreGuard: false);
+        }
+
+        internal RenderTexture MaterializeScratchTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view)
+        {
+            return MaterializeTextureFromBufferViewCore(buffer, view, ignoreGuard: true);
         }
 
         internal ComputeTexture MaterializeCmdTextureFromBufferView(CommandBuffer cmd, ComputeBuffer buffer, NcnnTensorBuffer view)
@@ -2198,6 +2245,8 @@ namespace NcnnCompute
                 return null;
             if (!bufferViews.TryGetValue(name, out var view) || view == null)
                 return null;
+            if (DisallowBufferToTextureMaterialization)
+                throw CreateDisallowedBufferPathException("pack4-only guard: buffer-to-texture materialization disallowed", name);
             return MaterializeTextureFromBufferView(buffer, view);
         }
 
@@ -2232,6 +2281,126 @@ namespace NcnnCompute
             textureBlobs[name] = tr;
             textureShapes[name] = shape;
             return tr;
+        }
+
+        internal static bool TryGetExistingTexture(
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            string name,
+            out TensorRef texture,
+            out BufferShape shape)
+        {
+            texture = null;
+            shape = default;
+            if (textureBlobs == null || string.IsNullOrWhiteSpace(name))
+                return false;
+            if (!textureBlobs.TryGetValue(name, out texture) || texture == null || texture.texture == null)
+            {
+                texture = null;
+                return false;
+            }
+
+            shape = GetTextureShape(textureShapes, texture, name);
+            return true;
+        }
+
+        internal NcnnTensorBuffer RentScratchTensorFromTexture(
+            TensorRef texture,
+            BufferShape shape,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
+        {
+            if (texture == null || texture.texture == null)
+                throw new ArgumentNullException(nameof(texture));
+
+            var physicalChannels = Mathf.Max(1, texture.packs * 4);
+            var physicalCount = Mathf.Max(1, texture.width * texture.height * physicalChannels);
+            var logicalCount = Mathf.Max(1, shape.w) * Mathf.Max(1, shape.h) * Mathf.Max(1, shape.d) * Mathf.Max(1, shape.c);
+            if (logicalCount > physicalCount)
+                throw new InvalidOperationException("texture logical shape exceeds physical storage");
+
+            var converted = RentTempBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured, callerMember, callerLine);
+            if (physicalCount == logicalCount)
+            {
+                _ops.Pack4ToBufferCHW(texture.texture, texture.width, texture.height, physicalChannels, converted);
+                return new NcnnTensorBuffer(converted, shape.dims, shape.w, shape.h, shape.d, shape.c, true, ReturnTempBuffer);
+            }
+
+            var physical = RentTempBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured, callerMember, callerLine);
+            try
+            {
+                _ops.Pack4ToBufferCHW(texture.texture, texture.width, texture.height, physicalChannels, physical);
+                _ops.CopyBufPartial(physical, 0, converted, logicalCount);
+            }
+            finally
+            {
+                ReturnTempBuffer(physical);
+            }
+
+            return new NcnnTensorBuffer(converted, shape.dims, shape.w, shape.h, shape.d, shape.c, true, ReturnTempBuffer);
+        }
+
+        internal NcnnTensorBuffer GetReadableTensorInput(
+            string name,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            List<IDisposable> tempOwned = null,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
+        {
+            if (TryGetBufferView(name, bufferBlobs, bufferViews) is { } existingView)
+                return existingView;
+
+            if (TryGetExistingTexture(textureBlobs, textureShapes, name, out var texture, out var shape))
+                return RentScratchTensorFromTexture(texture, shape, callerMember, callerLine);
+
+            var buffer = GetOrConvertToBuffer(name, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            if (buffer == null)
+                return null;
+            return TryGetBufferView(name, bufferBlobs, bufferViews);
+        }
+
+        internal void PublishScratchTextureOutput(
+            string topName,
+            NcnnTensorBuffer tensor,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes)
+        {
+            if (string.IsNullOrWhiteSpace(topName))
+                throw new ArgumentNullException(nameof(topName));
+            if (tensor == null || tensor.buffer == null)
+                throw new ArgumentNullException(nameof(tensor));
+            if (tensor.dims > 3)
+                throw new InvalidOperationException("scratch texture outputs currently require dims<=3: " + topName);
+
+            var rt = MaterializeScratchTextureFromBufferView(tensor.buffer, tensor);
+            if (rt == null)
+                throw new InvalidOperationException("failed to materialize scratch texture output: " + topName);
+
+            SetTextureBlob(
+                textureBlobs,
+                textureShapes,
+                topName,
+                rt,
+                new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c));
+        }
+
+        internal void PublishScratchTextureOutput(
+            string topName,
+            ComputeBuffer buffer,
+            BufferShape logicalShape,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes)
+        {
+            if (buffer == null)
+                throw new ArgumentNullException(nameof(buffer));
+            var view = new NcnnTensorBuffer(buffer, logicalShape.dims, logicalShape.w, logicalShape.h, logicalShape.d, logicalShape.c, false);
+            var rt = MaterializeScratchTextureFromBufferView(buffer, view);
+            if (rt == null)
+                throw new InvalidOperationException("failed to materialize scratch texture output: " + topName);
+            SetTextureBlob(textureBlobs, textureShapes, topName, rt, logicalShape);
         }
 
         internal void RegisterTextureInputs(
@@ -2703,6 +2872,21 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(topName));
             if (tensor == null || tensor.buffer == null)
                 throw new ArgumentNullException(nameof(tensor));
+            if (DisallowBufferOutputs)
+            {
+                if (preferTexture && tensor.dims <= 3)
+                {
+                    PublishScratchTextureOutput(topName, tensor, textureBlobs, textureShapes);
+                    if (tensor.ownsBuffer)
+                        tensor.Dispose();
+                    return;
+                }
+
+                throw CreateDisallowedBufferPathException(
+                    "pack4-only guard: buffer output disallowed",
+                    topName,
+                    "dims=" + tensor.dims + " w=" + tensor.w + " h=" + tensor.h + " d=" + tensor.d + " c=" + tensor.c + " preferTexture=" + preferTexture);
+            }
 
             var logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
             bufferBlobs[topName] = tensor.buffer;
@@ -3002,6 +3186,14 @@ namespace NcnnCompute
             Dictionary<string, NcnnTensorBuffer> bufferViews,
             List<IDisposable> tempOwned)
         {
+            if (DisallowBufferAccess)
+            {
+                var detail = bufferBlobs != null && bufferBlobs.TryGetValue(name, out var existing) && existing != null
+                    ? "mode=existing-buffer"
+                    : "mode=materialize-from-texture";
+                throw CreateDisallowedBufferPathException("pack4-only guard: buffer access disallowed", name, detail);
+            }
+
             var emitMaterializeLog = DebugLog != null
                 && !string.IsNullOrEmpty(name)
                 && name.StartsWith("stride_", StringComparison.Ordinal);

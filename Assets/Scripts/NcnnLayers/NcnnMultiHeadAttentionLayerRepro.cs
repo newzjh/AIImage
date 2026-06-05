@@ -73,11 +73,17 @@ namespace NcnnCompute
                                                 if (!owner._multiHeadAttention.TryGetValue(layer.name, out var mp))
                                                     throw new InvalidOperationException("MultiHeadAttention not found: " + layer.name);
 
-                                                if (!bufferBlobs.TryGetValue(layer.bottomNames[0], out var qBuf) || qBuf == null)
+                                                using var qTensor = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                using var kTensor = owner.GetReadableTensorInput(layer.bottomNames.Length > 1 ? layer.bottomNames[1] : layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                using var vTensor = owner.GetReadableTensorInput(layer.bottomNames.Length > 2 ? layer.bottomNames[2] : layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                var qBuf = qTensor?.buffer;
+                                                var kBuf = kTensor?.buffer;
+                                                var vBuf = vTensor?.buffer;
+                                                if (qBuf == null)
                                                     throw new InvalidOperationException("MultiHeadAttention q input not found: " + layer.name);
-                                                if (!bufferBlobs.TryGetValue(layer.bottomNames.Length > 1 ? layer.bottomNames[1] : layer.bottomNames[0], out var kBuf) || kBuf == null)
+                                                if (kBuf == null)
                                                     throw new InvalidOperationException("MultiHeadAttention k input not found: " + layer.name);
-                                                if (!bufferBlobs.TryGetValue(layer.bottomNames.Length > 2 ? layer.bottomNames[2] : layer.bottomNames[0], out var vBuf) || vBuf == null)
+                                                if (vBuf == null)
                                                     throw new InvalidOperationException("MultiHeadAttention v input not found: " + layer.name);
 
                                                 var srcLen = qBuf.count / Mathf.Max(1, mp.qdim);

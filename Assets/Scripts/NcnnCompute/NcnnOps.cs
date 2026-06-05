@@ -281,6 +281,7 @@ namespace NcnnCompute
         private readonly int _kBlitTileToDst;
         private readonly int _kPackRgbToPack4;
         private readonly int _kConv3x3Pack4;
+        private readonly int _kConvPack4General;
         private readonly int _kConvDepthWisePack4;
         private readonly int _kWinograd23TransformInput;
         private readonly int _kWinograd23Gemm;
@@ -407,6 +408,7 @@ namespace NcnnCompute
             _kBlitTileToDst = _cs.FindKernel("NcnnBlitTileToDst");
             _kPackRgbToPack4 = _cs.FindKernel("NcnnPackRgbToPack4");
             _kConv3x3Pack4 = _cs.FindKernel("NcnnConv3x3Pack4");
+            _kConvPack4General = _cs.FindKernel("NcnnConvPack4General");
             _kConvDepthWisePack4 = _cs.FindKernel("NcnnConvDepthWisePack4");
             _kWinograd23TransformInput = _cs.FindKernel("NcnnWinograd23TransformInputPack4");
             _kWinograd23Gemm = _cs.FindKernel("NcnnWinograd23GemmPack4");
@@ -1378,6 +1380,39 @@ namespace NcnnCompute
             _cs.SetTexture(_kConv3x3Pack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConv3x3Pack4, "_ConvOutArr", dstPack4);
             Dispatch3D(_kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
+        }
+
+        public void ConvPack4General(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            _cs.SetInt("_InW", srcPack4.width);
+            _cs.SetInt("_InH", srcPack4.height);
+            _cs.SetInt("_OutW", dstPack4.width);
+            _cs.SetInt("_OutH", dstPack4.height);
+            _cs.SetInt("_InPacks", inPacks);
+            _cs.SetInt("_OutPacks", outPacks);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kConvPack4General, "_ConvW4", w4);
+            _cs.SetBuffer(_kConvPack4General, "_ConvB4", b4);
+            _cs.SetTexture(_kConvPack4General, "_ConvInArr", srcPack4);
+            _cs.SetTexture(_kConvPack4General, "_ConvOutArr", dstPack4);
+            Dispatch3D(_kConvPack4General, dstPack4.width, dstPack4.height, outPacks, 8, 8);
         }
 
         public void ConvDepthWisePack4(RenderTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)

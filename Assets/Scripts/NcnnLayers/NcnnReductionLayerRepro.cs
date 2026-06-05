@@ -26,11 +26,12 @@ namespace NcnnCompute
 
                         do
                         {
-                                                var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                using var srcReadable = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                var srcBuf = srcReadable?.buffer;
                                                 if (srcBuf == null)
                                                     throw new InvalidOperationException("Reduction source not found: " + layer.bottomNames[0]);
 
-                                                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                                                var srcTensor = srcReadable;
                                                 var reduceAll = layer.GetInt(1, 1) != 0;
                                                 var coeff = layer.GetFloat(2, 1f);
                                                 var axes = layer.GetInts(-23303, null);
@@ -54,11 +55,19 @@ namespace NcnnCompute
                                                         var scale = op == 3 ? (coeff / Mathf.Max(1, plane)) : coeff;
                                                         var outBuf3 = owner.RentTempBuffer(srcTensor.c, sizeof(float));
                                                         owner.Ops.ReductionRowsBuf(srcBuf, plane, srcTensor.c, 0, scale, outBuf3);
-                                                        bufferBlobs[layer.topNames[0]] = outBuf3;
-                                                        bufferViews[layer.topNames[0]] = keepDims
-                                                            ? new NcnnTensorBuffer(outBuf3, 3, 1, 1, 1, srcTensor.c, false)
-                                                            : new NcnnTensorBuffer(outBuf3, 1, srcTensor.c, 1, 1, 1, false);
-                                                        tempOwned.Add(outBuf3);
+                                                        var outTensor3 = keepDims
+                                                            ? new NcnnTensorBuffer(outBuf3, 3, 1, 1, 1, srcTensor.c, true, owner.ReturnTempBuffer)
+                                                            : new NcnnTensorBuffer(outBuf3, 1, srcTensor.c, 1, 1, 1, true, owner.ReturnTempBuffer);
+                                                        owner.PublishTensorBufferOutput(
+                                                            layer.topNames[0],
+                                                            outTensor3,
+                                                            preferTexture: outTensor3.dims <= 3,
+                                                            textureBlobs,
+                                                            textureShapes,
+                                                            bufferBlobs,
+                                                            bufferRefs,
+                                                            bufferViews,
+                                                            tempOwned);
                                                         owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                         continue;
                                                     }
@@ -71,11 +80,19 @@ namespace NcnnCompute
                                                 {
                                                     var outBufAll = owner.RentTempBuffer(1, sizeof(float));
                                                     owner.Ops.ReductionBuf(srcBuf, srcBuf.count, 1, layer.GetInt(0, 0), coeff, outBufAll);
-                                                    bufferBlobs[layer.topNames[0]] = outBufAll;
-                                                    bufferViews[layer.topNames[0]] = keepDims
-                                                        ? new NcnnTensorBuffer(outBufAll, 2, 1, 1, 1, 1, false)
-                                                        : new NcnnTensorBuffer(outBufAll, 1, 1, 1, 1, 1, false);
-                                                    tempOwned.Add(outBufAll);
+                                                    var outTensorAll = keepDims
+                                                        ? new NcnnTensorBuffer(outBufAll, 2, 1, 1, 1, 1, true, owner.ReturnTempBuffer)
+                                                        : new NcnnTensorBuffer(outBufAll, 1, 1, 1, 1, 1, true, owner.ReturnTempBuffer);
+                                                    owner.PublishTensorBufferOutput(
+                                                        layer.topNames[0],
+                                                        outTensorAll,
+                                                        preferTexture: outTensorAll.dims <= 3,
+                                                        textureBlobs,
+                                                        textureShapes,
+                                                        bufferBlobs,
+                                                        bufferRefs,
+                                                        bufferViews,
+                                                        tempOwned);
                                                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                     continue;
                                                 }
@@ -89,12 +106,10 @@ namespace NcnnCompute
                                                 var positiveAxis = axis < 0 ? axis + srcTensor.dims : axis;
                                                 int reduceElems;
                                                 int outCount;
-                                                NcnnTensorBuffer outView;
                                                 if (positiveAxis == 1)
                                                 {
                                                     reduceElems = srcTensor.w;
                                                     outCount = srcTensor.h;
-                                                    outView = keepDims ? null : null;
                                                 }
                                                 else if (positiveAxis == 0)
                                                 {
@@ -104,7 +119,6 @@ namespace NcnnCompute
                                                     owner.Ops.Permute(srcBuf, 2, srcTensor.w, srcTensor.h, 1, 1, 1, tempTranspose);
                                                     srcBuf = tempTranspose;
                                                     tempOwned.Add(tempTranspose);
-                                                    outView = keepDims ? null : null;
                                                 }
                                                 else
                                                 {
@@ -113,15 +127,23 @@ namespace NcnnCompute
 
                                                 var outBuf = owner.RentTempBuffer(outCount, sizeof(float));
                                                 owner.Ops.ReductionRowsBuf(srcBuf, reduceElems, outCount, layer.GetInt(0, 0), coeff, outBuf);
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferViews[layer.topNames[0]] = positiveAxis == 1
+                                                var outTensor = positiveAxis == 1
                                                     ? (keepDims
-                                                        ? new NcnnTensorBuffer(outBuf, 2, 1, srcTensor.h, 1, 1, false)
-                                                        : new NcnnTensorBuffer(outBuf, 1, srcTensor.h, 1, 1, 1, false))
+                                                        ? new NcnnTensorBuffer(outBuf, 2, 1, srcTensor.h, 1, 1, true, owner.ReturnTempBuffer)
+                                                        : new NcnnTensorBuffer(outBuf, 1, srcTensor.h, 1, 1, 1, true, owner.ReturnTempBuffer))
                                                     : (keepDims
-                                                        ? new NcnnTensorBuffer(outBuf, 2, srcTensor.w, 1, 1, 1, false)
-                                                        : new NcnnTensorBuffer(outBuf, 1, srcTensor.w, 1, 1, 1, false));
-                                                tempOwned.Add(outBuf);
+                                                        ? new NcnnTensorBuffer(outBuf, 2, srcTensor.w, 1, 1, 1, true, owner.ReturnTempBuffer)
+                                                        : new NcnnTensorBuffer(outBuf, 1, srcTensor.w, 1, 1, 1, true, owner.ReturnTempBuffer));
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: outTensor.dims <= 3,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

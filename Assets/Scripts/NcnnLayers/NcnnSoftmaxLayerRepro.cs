@@ -38,15 +38,21 @@ namespace NcnnCompute
                                                     continue;
                                                 }
 
-                                                if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var softBuf) && softBuf != null)
+                                                using var softTensor = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                var softBuf = softTensor?.buffer;
+                                                if (softBuf != null)
                                                 {
-                                                    var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    var outBuf = owner.RentTempBuffer(softBuf.count, sizeof(float));
-                                                    if (srcTensor != null && srcTensor.dims == 3)
+                                                    var outTensor = owner.RentTempTensorBuffer(
+                                                        softTensor.dims,
+                                                        softTensor.w,
+                                                        softTensor.h,
+                                                        softTensor.d,
+                                                        softTensor.c);
+                                                    if (softTensor.dims == 3)
                                                     {
-                                                        var batch = srcTensor.c;
-                                                        var rows = srcTensor.h;
-                                                        var cols = srcTensor.w;
+                                                        var batch = softTensor.c;
+                                                        var rows = softTensor.h;
+                                                        var cols = softTensor.w;
                                                         var matrixCount = rows * cols;
                                                         var sliceIn = owner.RentTempBuffer(matrixCount, sizeof(float));
                                                         var sliceOut = owner.RentTempBuffer(matrixCount, sizeof(float));
@@ -57,7 +63,7 @@ namespace NcnnCompute
                                                                 var offset = p * matrixCount;
                                                                 owner.Ops.CopyBufPartial(softBuf, offset, sliceIn, matrixCount);
                                                                 owner.Ops.Softmax2D(sliceIn, sliceOut, rows, cols);
-                                                                owner.Ops.CopyBufPartial(sliceOut, 0, outBuf, matrixCount, offset);
+                                                                owner.Ops.CopyBufPartial(sliceOut, 0, outTensor.buffer, matrixCount, offset);
                                                             }
                                                         }
                                                         finally
@@ -68,14 +74,20 @@ namespace NcnnCompute
                                                     }
                                                     else
                                                     {
-                                                        var rows = srcTensor != null && srcTensor.dims == 2 ? srcTensor.h : 1;
-                                                        var cols = srcTensor != null && srcTensor.dims == 2 ? srcTensor.w : softBuf.count;
-                                                        owner.Ops.Softmax2D(softBuf, outBuf, rows, cols);
+                                                        var rows = softTensor.dims == 2 ? softTensor.h : 1;
+                                                        var cols = softTensor.dims == 2 ? softTensor.w : softBuf.count;
+                                                        owner.Ops.Softmax2D(softBuf, outTensor.buffer, rows, cols);
                                                     }
-                                                    bufferBlobs[layer.topNames[0]] = outBuf;
-                                                    if (srcTensor != null)
-                                                        bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcTensor.dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, false);
-                                                    tempOwned.Add(outBuf);
+                                                    owner.PublishTensorBufferOutput(
+                                                        layer.topNames[0],
+                                                        outTensor,
+                                                        preferTexture: true,
+                                                        textureBlobs,
+                                                        textureShapes,
+                                                        bufferBlobs,
+                                                        bufferRefs,
+                                                        bufferViews,
+                                                        tempOwned);
                                                 }
                                                 else
                                                 {

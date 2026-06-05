@@ -67,11 +67,18 @@ namespace NcnnCompute
                                         phaseSw.Stop();
                                         readMs += phaseSw.ElapsedMilliseconds;
 
+                                        var canUseSpecializedTexturePack = !pack.useBufferPath
+                                                                          && !pack.isDepthWise
+                                                                          && pack.group == 1
+                                                                          && !(pack.kernelW == 1 && pack.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
+                                        var canUseGeneralTexturePack = owner.EnableGeneralTextureConvolution
+                                                                       && !pack.isDepthWise
+                                                                       && pack.group == 1
+                                                                       && pack.kernelW > 0
+                                                                       && pack.kernelH == pack.kernelW
+                                                                       && !(pack.kernelW == 1 && pack.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
                                         var needGeneralTexturePack = !owner.ForceBufferConvolutionAll
-                                                                     && !pack.useBufferPath
-                                                                     && !pack.isDepthWise
-                                                                     && pack.group == 1
-                                                                     && !(pack.kernelW == 1 && pack.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
+                                                                     && (canUseSpecializedTexturePack || canUseGeneralTexturePack);
                                         var needDepthWiseTexturePack = !owner.ForceBufferConvolutionAll
                                                                        && owner.EnableDepthWiseTextureConvolution
                                                                        && pack.isDepthWise
@@ -161,9 +168,17 @@ namespace NcnnCompute
                                                                                 && conv.outC == conv.inC
                                                                                 && conv.packedDepthWiseWeight4 != null
                                                                                 && conv.packedBias4 != null;
+                                                var canUseGeneralTexturePath = owner.EnableGeneralTextureConvolution
+                                                                               && !conv.isDepthWise
+                                                                               && conv.group == 1
+                                                                               && conv.packedWeight4 != null
+                                                                               && conv.packedBias4 != null
+                                                                               && conv.kernelW > 0
+                                                                               && conv.kernelH == conv.kernelW
+                                                                               && !(conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
 
                                                 var forceBufferThisConv = owner.ForceBufferConvolutionAll
-                                                                          || (conv.useBufferPath && !canUseDepthWiseTexturePath)
+                                                                          || (conv.useBufferPath && !canUseDepthWiseTexturePath && !canUseGeneralTexturePath)
                                                                           || (conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
 
                                                 if (forceBufferThisConv)
@@ -282,6 +297,14 @@ namespace NcnnCompute
                                                         owner.Ops.Conv3x3Pack4Winograd23(src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outRt);
                                                     else
                                                         owner.Ops.Conv3x3Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outRt);
+                                                    if (owner.ShouldCompareTextureConvLayer(layer.name))
+                                                    {
+                                                        owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                    }
+                                                }
+                                                else if (canUseGeneralTexturePath)
+                                                {
+                                                    owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
                                                     if (owner.ShouldCompareTextureConvLayer(layer.name))
                                                     {
                                                         owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);

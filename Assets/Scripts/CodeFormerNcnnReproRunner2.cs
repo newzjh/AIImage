@@ -17,6 +17,9 @@ public struct CodeFormerResult
 }
 public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 {
+    private const string Pack4OnlyEnvVar = "AIIMAGE_CODEFORMER_PACK4_ONLY";
+    private const string EncoderPack4OnlyEnvVar = "AIIMAGE_CODEFORMER_ENCODER_PACK4_ONLY";
+    private const string GeneratorPack4OnlyEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_PACK4_ONLY";
     private const string EncoderForceBufferTypesEnvVar = "AIIMAGE_CODEFORMER_ENCODER_FORCE_BUFFER_TYPES";
     private const string EncoderForceBufferNamesEnvVar = "AIIMAGE_CODEFORMER_ENCODER_FORCE_BUFFER_NAMES";
     private const string GeneratorForceBufferTypesEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_FORCE_BUFFER_TYPES";
@@ -322,6 +325,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         RenderTexture encFeat128 = null;
         RenderTexture encFeat256 = null;
         RenderTexture lqFeat = null;
+        RenderTexture minEncodingTex = null;
         NcnnTensorBuffer minEncodingTensor = null;
         var stage = "init";
         string dumpDir = null;
@@ -402,9 +406,18 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 lqFeat = encoderResult.ExtractTexture("lq_feat");
 
                 stage = "read encoder blob soft_one_hot";
-                var softOneHot = encoderResult.GetBufferData("soft_one_hot");
+                var softOneHotTex = encoderResult.ExtractTexture("soft_one_hot");
+                var softOneHot = ReadSingleChannelPack4TextureData(softOneHotTex, 1024, 256);
                 stage = "convert soft_one_hot to min encoding";
                 minEncodingTensor = ConvertSoftOneHotToMinEncodingTensor(softOneHot);
+                stage = "upload min encoding texture";
+                minEncodingTex = ConvertSingleChannelTensorToPack4Texture(minEncodingTensor, 1024, 256);
+                NcnnGpuResourceTracker.UpdateTextureLabel(minEncodingTex, "CodeFormer.minEncoding");
+                if (softOneHotTex != null)
+                {
+                    _encoderRepro.ReturnTempArray(softOneHotTex);
+                    softOneHotTex = null;
+                }
 
                 if (enableDebugDump)
                 {
@@ -458,9 +471,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_128_input", encFeat128, 3, 64, 64, 1, 256);
                 await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_256_input", encFeat256, 3, 32, 32, 1, 256);
                 await AppendPack4TextureStatsAsync(dumpDir, "style_feat_input", lqFeat, 3, 16, 16, 1, 256);
+                await AppendPack4TextureStatsAsync(dumpDir, "min_encoding_input", minEncodingTex, 2, 1024, 256, 1, 1);
             }
 
-            if (encFeat32 == null || encFeat64 == null || encFeat128 == null || encFeat256 == null || lqFeat == null || minEncodingTensor == null)
+            if (encFeat32 == null || encFeat64 == null || encFeat128 == null || encFeat256 == null || lqFeat == null || minEncodingTex == null)
             {
                 return new CodeFormer512RunResult
                 {
@@ -470,7 +484,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                         + " enc_feat_128=" + BoolText(encFeat128 != null)
                         + " enc_feat_256=" + BoolText(encFeat256 != null)
                         + " lq_feat=" + BoolText(lqFeat != null)
-                        + " min_encoding=" + BoolText(minEncodingTensor != null),
+                        + " min_encoding=" + BoolText(minEncodingTex != null),
                     dumpDir = dumpDir
                 };
             }
@@ -481,6 +495,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
             var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
+                { "input", minEncodingTex },
                 { "enc_feat_32", encFeat32 },
                 { "enc_feat_64", encFeat64 },
                 { "enc_feat_128", encFeat128 },
@@ -488,9 +503,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 { "style_feat", lqFeat }
             };
 
-            var bufferInputs = new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal)
+            var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
             {
-                { "input", minEncodingTensor }
+                { "input", new NcnnRepro.BufferShape(2, 1024, 256, 1, 1) }
             };
 
             stage = "generator inference";
@@ -551,7 +566,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 _generatorRepro.DebugLog = null;
             }
 
-            using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, bufferInputs, generatorPinned))
+            using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, null, generatorPinned, textureInputShapes))
             {
                 RenderTexture outputTex = null;
                 RenderTexture clipTex = null;
@@ -670,6 +685,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             if (encFeat128 != null) _encoderRepro.ReturnTempArray(encFeat128);
             if (encFeat256 != null) _encoderRepro.ReturnTempArray(encFeat256);
             if (lqFeat != null) _encoderRepro.ReturnTempArray(lqFeat);
+            if (minEncodingTex != null) _generatorRepro.ReturnTempArray(minEncodingTex);
             minEncodingTensor?.Dispose();
             _encoderRepro.DebugCompareTextureLayers = null;
             _encoderRepro.DebugLog = null;
@@ -735,6 +751,29 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.filterMode = FilterMode.Bilinear;
         return tex;
+    }
+
+    private float[] ReadSingleChannelPack4TextureData(RenderTexture pack4Tex, int width, int height)
+    {
+        if (pack4Tex == null || width <= 0 || height <= 0 || _ops == null)
+            return null;
+
+        var total = width * height;
+        using var buffer = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
+        _ops.Pack4ToBufferCHW(pack4Tex, width, height, 1, buffer);
+        var data = new float[total];
+        buffer.GetData(data);
+        return data;
+    }
+
+    private RenderTexture ConvertSingleChannelTensorToPack4Texture(NcnnTensorBuffer tensor, int width, int height)
+    {
+        if (tensor == null || tensor.buffer == null || width <= 0 || height <= 0 || _generatorRepro == null || _ops == null)
+            return null;
+
+        var rt = _generatorRepro.RentTempArray(width, height, 1, RenderTextureFormat.ARGBHalf);
+        _ops.FillPack4FromBufferCHW(tensor.buffer, width, height, 1, rt);
+        return rt;
     }
 
     private async UniTask DumpInferBlobAsync(NcnnRepro.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
@@ -1450,10 +1489,20 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         if (_encoderRepro == null || _generatorRepro == null)
             return;
 
+        var globalPack4Only = ParseEnvBool(Pack4OnlyEnvVar);
+        var encoderPack4Only = ParseEnvBool(EncoderPack4OnlyEnvVar) ?? globalPack4Only ?? false;
+        var generatorPack4Only = ParseEnvBool(GeneratorPack4OnlyEnvVar) ?? globalPack4Only ?? false;
+
         _encoderRepro.EnableTempPool = enableTempPool;
         _generatorRepro.EnableTempPool = enableTempPool;
         _encoderRepro.MaxPooledPerShape = maxPooledPerShape;
         _generatorRepro.MaxPooledPerShape = maxPooledPerShape;
+        _encoderRepro.EnableGeneralTextureConvolution = true;
+        _generatorRepro.EnableGeneralTextureConvolution = true;
+        _encoderRepro.EnableGroupNormTexturePath = true;
+        _generatorRepro.EnableGroupNormTexturePath = true;
+        _encoderRepro.UseNcnnStyleGroupNorm = true;
+        _generatorRepro.UseNcnnStyleGroupNorm = true;
         _encoderRepro.CodeFormerSftMulScale = 1f;
         _generatorRepro.CodeFormerSftMulScale = Mathf.Clamp01(codeFormerSftMulScale);
         _encoderRepro.CodeFormerSftAddScale = 1f;
@@ -1466,10 +1515,44 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _generatorRepro.CodeFormerTargetSftMulLayer = codeFormerOnlyTargetLastSftBlock ? "Mul_900" : null;
         _generatorRepro.CodeFormerTargetSftAddLayer = codeFormerOnlyTargetLastSftBlock ? "Add_901" : null;
         _generatorRepro.CodeFormerTargetSftResidualLayer = codeFormerOnlyTargetLastSftBlock ? "Add_904" : null;
+        _encoderRepro.DisallowBufferAccess = encoderPack4Only;
+        _encoderRepro.DisallowBufferOutputs = encoderPack4Only;
+        _encoderRepro.DisallowBufferToTextureMaterialization = encoderPack4Only;
+        _generatorRepro.DisallowBufferAccess = generatorPack4Only;
+        _generatorRepro.DisallowBufferOutputs = generatorPack4Only;
+        _generatorRepro.DisallowBufferToTextureMaterialization = generatorPack4Only;
         _encoderRepro.ForceBufferLayerTypes = ParseEnvTokenSet(EncoderForceBufferTypesEnvVar);
         _encoderRepro.ForceBufferLayerNames = ParseEnvTokenSet(EncoderForceBufferNamesEnvVar);
         _generatorRepro.ForceBufferLayerTypes = ParseEnvTokenSet(GeneratorForceBufferTypesEnvVar);
         _generatorRepro.ForceBufferLayerNames = ParseEnvTokenSet(GeneratorForceBufferNamesEnvVar);
+    }
+
+    private static bool? ParseEnvBool(string envName)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(env))
+                return null;
+
+            env = env.Trim();
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "on", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (string.Equals(env, "0", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "false", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "no", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "off", StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     private static ISet<string> ParseEnvTokenSet(string envName)
