@@ -6,7 +6,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnClipLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnClipLayerRepro() : base(NcnnLayerTypes.Clip, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnClipLayerRepro() : base(NcnnLayerTypes.Clip, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -52,6 +52,30 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var minValue = layer.GetFloat(0, -1e30f);
+            var maxValue = layer.GetFloat(1, 1e30f);
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.ClipPack4(cmd, src.texture, minValue, maxValue, src.packs, outArr);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outArr,
+                width = src.width,
+                height = src.height,
+                packs = src.packs,
+                refs = 1,
+                owned = true
+            };
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }

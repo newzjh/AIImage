@@ -97,7 +97,11 @@ namespace NcnnCompute
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
                                                 var axis = layer.GetInt(0, 0);
                                                 if (axis != 0)
-                                                    throw new InvalidOperationException("Softmax axis not supported: " + axis);
+                                                {
+                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs);
+                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                    continue;
+                                                }
                                                 var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
                                                 owner.Ops.SoftmaxChannelPack4(cmd, src.texture, src.packs, outArr);
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = src.width, height = src.height, packs = src.packs, refs = 1, owned = true };

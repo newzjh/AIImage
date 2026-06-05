@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnMatMulLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnMatMulLayerRepro() : base(NcnnLayerTypes.MatMul, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnMatMulLayerRepro() : base(NcnnLayerTypes.MatMul, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -39,6 +39,19 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var a = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var b = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[1]);
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], Mathf.Max(1, b.width), Mathf.Max(1, a.height), 1, blobs);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }

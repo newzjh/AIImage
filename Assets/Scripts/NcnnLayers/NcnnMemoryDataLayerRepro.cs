@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnMemoryDataLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnMemoryDataLayerRepro() : base(NcnnLayerTypes.MemoryData, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnMemoryDataLayerRepro() : base(NcnnLayerTypes.MemoryData, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
@@ -76,6 +76,18 @@ namespace NcnnCompute
                                                 bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+
+            if (!owner._memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
+                throw new InvalidOperationException("MemoryData not found: " + layer.name);
+
+            NcnnRepro.ResolveCmdTextureLayout(new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false), out var width, out var height, out var packs);
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs);
         }
     }
 }

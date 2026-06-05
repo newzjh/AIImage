@@ -78,8 +78,10 @@ namespace NcnnCompute
     public static class NcnnLayerTypes
     {
         public static readonly NcnnLayerTypeKey Input = NcnnLayerTypeKey.FromString("Input");
+        public static readonly NcnnLayerTypeKey AbsVal = NcnnLayerTypeKey.FromString("AbsVal");
         public static readonly NcnnLayerTypeKey Split = NcnnLayerTypeKey.FromString("Split");
         public static readonly NcnnLayerTypeKey Concat = NcnnLayerTypeKey.FromString("Concat");
+        public static readonly NcnnLayerTypeKey TanH = NcnnLayerTypeKey.FromString("TanH");
         public static readonly NcnnLayerTypeKey Reshape = NcnnLayerTypeKey.FromString("Reshape");
         public static readonly NcnnLayerTypeKey ShuffleChannel = NcnnLayerTypeKey.FromString("ShuffleChannel");
         public static readonly NcnnLayerTypeKey Permute = NcnnLayerTypeKey.FromString("Permute");
@@ -88,15 +90,45 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey Squeeze = NcnnLayerTypeKey.FromString("Squeeze");
         public static readonly NcnnLayerTypeKey Crop = NcnnLayerTypeKey.FromString("Crop");
         public static readonly NcnnLayerTypeKey Convolution = NcnnLayerTypeKey.FromString("Convolution");
+        public static readonly NcnnLayerTypeKey Convolution1D = NcnnLayerTypeKey.FromString("Convolution1D");
         public static readonly NcnnLayerTypeKey ConvolutionDepthWise = NcnnLayerTypeKey.FromString("ConvolutionDepthWise");
         public static readonly NcnnLayerTypeKey Deconvolution = NcnnLayerTypeKey.FromString("Deconvolution");
+        public static readonly NcnnLayerTypeKey DeconvolutionDepthWise = NcnnLayerTypeKey.FromString("DeconvolutionDepthWise");
         public static readonly NcnnLayerTypeKey Interp = NcnnLayerTypeKey.FromString("Interp");
+        public static readonly NcnnLayerTypeKey Dropout = NcnnLayerTypeKey.FromString("Dropout");
         public static readonly NcnnLayerTypeKey Eltwise = NcnnLayerTypeKey.FromString("Eltwise");
+        public static readonly NcnnLayerTypeKey ELU = NcnnLayerTypeKey.FromString("ELU");
+        public static readonly NcnnLayerTypeKey Erf = NcnnLayerTypeKey.FromString("Erf");
+        public static readonly NcnnLayerTypeKey Flatten = NcnnLayerTypeKey.FromString("Flatten");
         public static readonly NcnnLayerTypeKey BinaryOp = NcnnLayerTypeKey.FromString("BinaryOp");
         public static readonly NcnnLayerTypeKey UnaryOp = NcnnLayerTypeKey.FromString("UnaryOp");
+        public static readonly NcnnLayerTypeKey HardSigmoid = NcnnLayerTypeKey.FromString("HardSigmoid");
+        public static readonly NcnnLayerTypeKey HardSwish = NcnnLayerTypeKey.FromString("HardSwish");
+        public static readonly NcnnLayerTypeKey InstanceNorm = NcnnLayerTypeKey.FromString("InstanceNorm");
+        public static readonly NcnnLayerTypeKey LRN = NcnnLayerTypeKey.FromString("LRN");
+        public static readonly NcnnLayerTypeKey Mish = NcnnLayerTypeKey.FromString("Mish");
         public static readonly NcnnLayerTypeKey Swish = NcnnLayerTypeKey.FromString("Swish");
+        public static readonly NcnnLayerTypeKey Noop = NcnnLayerTypeKey.FromString("Noop");
+        public static readonly NcnnLayerTypeKey Normalize = NcnnLayerTypeKey.FromString("Normalize");
+        public static readonly NcnnLayerTypeKey Packing = NcnnLayerTypeKey.FromString("Packing");
+        public static readonly NcnnLayerTypeKey PixelShuffle = NcnnLayerTypeKey.FromString("PixelShuffle");
+        public static readonly NcnnLayerTypeKey PReLU = NcnnLayerTypeKey.FromString("PReLU");
+        public static readonly NcnnLayerTypeKey PriorBox = NcnnLayerTypeKey.FromString("PriorBox");
+        public static readonly NcnnLayerTypeKey Quantize = NcnnLayerTypeKey.FromString("Quantize");
+        public static readonly NcnnLayerTypeKey Dequantize = NcnnLayerTypeKey.FromString("Dequantize");
+        public static readonly NcnnLayerTypeKey Requantize = NcnnLayerTypeKey.FromString("Requantize");
+        public static readonly NcnnLayerTypeKey Reorg = NcnnLayerTypeKey.FromString("Reorg");
         public static readonly NcnnLayerTypeKey Sigmoid = NcnnLayerTypeKey.FromString("Sigmoid");
+        public static readonly NcnnLayerTypeKey RMSNorm = NcnnLayerTypeKey.FromString("RMSNorm");
+        public static readonly NcnnLayerTypeKey RotaryEmbed = NcnnLayerTypeKey.FromString("RotaryEmbed");
+        public static readonly NcnnLayerTypeKey Scale = NcnnLayerTypeKey.FromString("Scale");
+        public static readonly NcnnLayerTypeKey SDPA = NcnnLayerTypeKey.FromString("SDPA");
+        public static readonly NcnnLayerTypeKey SELU = NcnnLayerTypeKey.FromString("SELU");
+        public static readonly NcnnLayerTypeKey Shrink = NcnnLayerTypeKey.FromString("Shrink");
+        public static readonly NcnnLayerTypeKey Softplus = NcnnLayerTypeKey.FromString("Softplus");
         public static readonly NcnnLayerTypeKey GELU = NcnnLayerTypeKey.FromString("GELU");
+        public static readonly NcnnLayerTypeKey Cast = NcnnLayerTypeKey.FromString("Cast");
+        public static readonly NcnnLayerTypeKey CELU = NcnnLayerTypeKey.FromString("CELU");
         public static readonly NcnnLayerTypeKey Clip = NcnnLayerTypeKey.FromString("Clip");
         public static readonly NcnnLayerTypeKey Softmax = NcnnLayerTypeKey.FromString("Softmax");
         public static readonly NcnnLayerTypeKey Padding = NcnnLayerTypeKey.FromString("Padding");
@@ -112,9 +144,11 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey Reduction = NcnnLayerTypeKey.FromString("Reduction");
         public static readonly NcnnLayerTypeKey MemoryData = NcnnLayerTypeKey.FromString("MemoryData");
         public static readonly NcnnLayerTypeKey ReLU = NcnnLayerTypeKey.FromString("ReLU");
+        public static readonly NcnnLayerTypeKey DeepCopy = NcnnLayerTypeKey.FromString("DeepCopy");
         public static readonly NcnnLayerTypeKey MaxPoolingInd = NcnnLayerTypeKey.FromString("MaxPoolingInd");
         public static readonly NcnnLayerTypeKey MaxUnPooling = NcnnLayerTypeKey.FromString("MaxUnPooling");
         public static readonly NcnnLayerTypeKey Tile = NcnnLayerTypeKey.FromString("Tile");
+        public static readonly NcnnLayerTypeKey Unfold = NcnnLayerTypeKey.FromString("Unfold");
     }
 
     [Serializable]
@@ -296,7 +330,40 @@ namespace NcnnCompute
 
         private static string[] SplitWs(string s)
         {
-            return s.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            if (string.IsNullOrEmpty(s))
+                return Array.Empty<string>();
+
+            var tokens = new List<string>();
+            var current = new StringBuilder();
+            var inQuotes = false;
+
+            for (var i = 0; i < s.Length; i++)
+            {
+                var ch = s[i];
+                if (ch == '"')
+                {
+                    inQuotes = !inQuotes;
+                    current.Append(ch);
+                    continue;
+                }
+
+                if (!inQuotes && char.IsWhiteSpace(ch))
+                {
+                    if (current.Length > 0)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                    }
+                    continue;
+                }
+
+                current.Append(ch);
+            }
+
+            if (current.Length > 0)
+                tokens.Add(current.ToString());
+
+            return tokens.ToArray();
         }
     }
 }

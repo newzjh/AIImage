@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnMaxPoolingIndLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnMaxPoolingIndLayerRepro() : base(NcnnLayerTypes.MaxPoolingInd, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnMaxPoolingIndLayerRepro() : base(NcnnLayerTypes.MaxPoolingInd, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -25,8 +25,6 @@ namespace NcnnCompute
 
                         do
                         {
-                                                var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                                                 var kernelW = layer.GetInt(1, 0);
                                                 var kernelH = layer.GetInt(11, kernelW);
                                                 var strideW = layer.GetInt(2, 1);
@@ -36,48 +34,143 @@ namespace NcnnCompute
                                                 var padTop = layer.GetInt(13, padLeft);
                                                 var padBottom = layer.GetInt(15, padTop);
 
-                                                var outW = Mathf.Max(1, (src.width + padLeft + padRight - kernelW) / Mathf.Max(1, strideW) + 1);
-                                                var outH = Mathf.Max(1, (src.height + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
-                                                var outRt = owner.RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                                                var idxRt = owner.RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
-                                                if (owner.UseTextureMaxPoolingInd)
+                                                if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var src, out var srcShape))
                                                 {
-                                                    owner.Ops.PoolingPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outRt);
-                                                    owner.Ops.MaxPoolingIndicesFromValuePack4(src.texture, outRt, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, idxRt);
+                                                    var outW = Mathf.Max(1, (src.width + padLeft + padRight - kernelW) / Mathf.Max(1, strideW) + 1);
+                                                    var outH = Mathf.Max(1, (src.height + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
+                                                    var outRt = owner.RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                                                    var idxRt = owner.RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
+                                                    if (owner.UseTextureMaxPoolingInd)
+                                                    {
+                                                        owner.Ops.PoolingPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outRt);
+                                                        owner.Ops.MaxPoolingIndicesFromValuePack4(src.texture, outRt, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, idxRt);
+                                                    }
+                                                    else
+                                                    {
+                                                        owner.ApplyMaxPoolingIndCpu(src, srcShape, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH, outRt, idxRt);
+                                                    }
+
+                                                    if (owner.DebugCompareMaxPoolingLayers != null
+                                                        && (owner.DebugCompareMaxPoolingLayers.Contains(layer.name) || owner.DebugCompareMaxPoolingLayers.Contains("*")))
+                                                    {
+                                                        owner.CompareMaxPoolingIndPath(layer.name, src, srcShape, outRt, idxRt, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH);
+                                                    }
+
+                                                    textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
+                                                    {
+                                                        texture = outRt,
+                                                        width = outW,
+                                                        height = outH,
+                                                        packs = src.packs,
+                                                        refs = 1,
+                                                        owned = true
+                                                    };
+                                                    textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, outW, outH, 1, srcShape.c);
+                                                    indexBlobs[layer.topNames[1]] = new NcnnRepro.IndexRef
+                                                    {
+                                                        texture = idxRt,
+                                                        width = outW,
+                                                        height = outH,
+                                                        packs = src.packs,
+                                                        sourceWidth = src.width,
+                                                        sourceHeight = src.height,
+                                                        refs = owner._blobUseCount.TryGetValue(layer.topNames[1], out var idxUseCount) ? idxUseCount : 1,
+                                                        owned = true
+                                                    };
                                                 }
                                                 else
                                                 {
-                                                    owner.ApplyMaxPoolingIndCpu(src, srcShape, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH, outRt, idxRt);
-                                                }
+                                                    var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                    var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                                                    if (srcBuf == null || srcView == null || srcView.dims != 3)
+                                                        throw new InvalidOperationException("MaxPoolingInd expects dims=3 buffer input: " + layer.name);
 
-                                                if (owner.DebugCompareMaxPoolingLayers != null
-                                                    && (owner.DebugCompareMaxPoolingLayers.Contains(layer.name) || owner.DebugCompareMaxPoolingLayers.Contains("*")))
-                                                {
-                                                    owner.CompareMaxPoolingIndPath(layer.name, src, srcShape, outRt, idxRt, kernelW, kernelH, strideW, strideH, padLeft, padTop, outW, outH);
+                                                    var outW = Mathf.Max(1, (srcView.w + padLeft + padRight - kernelW) / Mathf.Max(1, strideW) + 1);
+                                                    var outH = Mathf.Max(1, (srcView.h + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
+                                                    var outTensor = owner.RentTempTensorBuffer(3, outW, outH, 1, srcView.c);
+                                                    var idxTensor = owner.RentTempTensorBuffer(3, outW, outH, 1, srcView.c);
+                                                    owner.ApplyMaxPoolingIndCpu(srcBuf, srcView, kernelW, kernelH, strideW, strideH, padLeft, padTop, outTensor, idxTensor);
+                                                    owner.PublishTensorBufferOutput(
+                                                        layer.topNames[0],
+                                                        outTensor,
+                                                        preferTexture: true,
+                                                        textureBlobs,
+                                                        textureShapes,
+                                                        bufferBlobs,
+                                                        bufferRefs,
+                                                        bufferViews,
+                                                        tempOwned);
+                                                    indexBlobs[layer.topNames[1]] = new NcnnRepro.IndexRef
+                                                    {
+                                                        buffer = idxTensor.buffer,
+                                                        view = idxTensor,
+                                                        width = outW,
+                                                        height = outH,
+                                                        packs = Mathf.Max(1, Mathf.CeilToInt(srcView.c / 4f)),
+                                                        sourceWidth = srcView.w,
+                                                        sourceHeight = srcView.h,
+                                                        refs = owner._blobUseCount.TryGetValue(layer.topNames[1], out var idxUseCount) ? idxUseCount : 1,
+                                                        owned = true
+                                                    };
                                                 }
+                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                                                continue;
+                        } while (false);
+        }
 
-                                                textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+                        var cmd = context.commandBuffer;
+                        var blobs = context.blobs;
+                        var remaining = context.remaining;
+                        var pinnedNames = context.pinnedNames;
+
+                        do
+                        {
+                                                var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+                                                var kernelW = layer.GetInt(1, 0);
+                                                var kernelH = layer.GetInt(11, kernelW);
+                                                var strideW = layer.GetInt(2, 1);
+                                                var strideH = layer.GetInt(12, strideW);
+                                                var padLeft = layer.GetInt(3, 0);
+                                                var padRight = layer.GetInt(14, padLeft);
+                                                var padTop = layer.GetInt(13, padLeft);
+                                                var padBottom = layer.GetInt(15, padTop);
+                                                var outW = Mathf.Max(1, (src.width + padLeft + padRight - kernelW) / Mathf.Max(1, strideW) + 1);
+                                                var outH = Mathf.Max(1, (src.height + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
+                                                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                                                ComputeTexture idxArr = null;
+                                                if (layer.topNames.Length > 1)
                                                 {
-                                                    texture = outRt,
+                                                    idxArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
+                                                    owner.Ops.MaxPoolingIndPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outArr, idxArr);
+                                                }
+                                                else
+                                                {
+                                                    owner.Ops.PoolingPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outArr);
+                                                }
+                                                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                                                {
+                                                    texture = outArr,
                                                     width = outW,
                                                     height = outH,
                                                     packs = src.packs,
                                                     refs = 1,
                                                     owned = true
                                                 };
-                                                textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, outW, outH, 1, srcShape.c);
-                                                indexBlobs[layer.topNames[1]] = new NcnnRepro.IndexRef
+                                                if (layer.topNames.Length > 1)
                                                 {
-                                                    texture = idxRt,
-                                                    width = outW,
-                                                    height = outH,
-                                                    packs = src.packs,
-                                                    sourceWidth = src.width,
-                                                    sourceHeight = src.height,
-                                                    refs = owner._blobUseCount.TryGetValue(layer.topNames[1], out var idxUseCount) ? idxUseCount : 1,
-                                                    owned = true
-                                                };
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                                                    blobs[layer.topNames[1]] = new NcnnRepro.CmdTensorRef
+                                                    {
+                                                        texture = idxArr,
+                                                        width = outW,
+                                                        height = outH,
+                                                        packs = src.packs,
+                                                        refs = 1,
+                                                        owned = true
+                                                    };
+                                                }
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
         }

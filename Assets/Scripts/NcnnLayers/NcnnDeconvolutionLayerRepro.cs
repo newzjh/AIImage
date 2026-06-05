@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnDeconvolutionLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnDeconvolutionLayerRepro() : base(NcnnLayerTypes.Deconvolution, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnDeconvolutionLayerRepro() : base(NcnnLayerTypes.Deconvolution, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
@@ -112,6 +112,21 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var outW = NcnnRepro.ComputeDeconvOut(src.width, layer.GetInt(1, 0), layer.GetInt(2, 1), layer.GetInt(3, 1), layer.GetInt(4, 0), layer.GetInt(15, layer.GetInt(4, 0)), layer.GetInt(18, 0));
+            var outH = NcnnRepro.ComputeDeconvOut(src.height, layer.GetInt(11, layer.GetInt(1, 0)), layer.GetInt(12, layer.GetInt(2, 1)), layer.GetInt(13, layer.GetInt(3, 1)), layer.GetInt(14, layer.GetInt(4, 0)), layer.GetInt(16, layer.GetInt(14, layer.GetInt(4, 0))), layer.GetInt(19, layer.GetInt(18, 0)));
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(layer.GetInt(0, 0) / 4f));
+            owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, outPacks);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }

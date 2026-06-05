@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -9,75 +8,404 @@ namespace NcnnCompute
 {
     public sealed class NcnnPaddingLayerRepro : NcnnBaseLayerRepro
     {
+        private sealed class PaddingPack : IDisposable
+        {
+            public int top;
+            public int bottom;
+            public int left;
+            public int right;
+            public int type;
+            public float value;
+            public int perChannelPadDataSize;
+            public int front;
+            public int behind;
+            public float[] perChannelPadDataCpu;
+            public ComputeBuffer perChannelPadData;
+
+            public void Dispose()
+            {
+                try { perChannelPadData?.Dispose(); } catch { }
+            }
+        }
+
         public NcnnPaddingLayerRepro() : base(NcnnLayerTypes.Padding, supportsBufferPath: true, supportsCommandBufferPath: true) { }
+
+        public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
+        {
+            var bytesStart = br.Position;
+            long readMs = 0;
+            long uploadMs = 0;
+            long packMs = 0;
+            var phaseSw = new Stopwatch();
+
+            var pp = new PaddingPack
+            {
+                top = layer.GetInt(0, 0),
+                bottom = layer.GetInt(1, 0),
+                left = layer.GetInt(2, 0),
+                right = layer.GetInt(3, 0),
+                type = layer.GetInt(4, 0),
+                value = layer.GetFloat(5, 0f),
+                perChannelPadDataSize = layer.GetInt(6, 0),
+                front = layer.GetInt(7, 0),
+                behind = layer.GetInt(8, 0)
+            };
+
+            if (pp.perChannelPadDataSize > 0)
+            {
+                phaseSw.Restart();
+                pp.perChannelPadDataCpu = br.ReadNcnnMatAsFloat32(pp.perChannelPadDataSize, 0, 0, 0, 1);
+                phaseSw.Stop();
+                readMs += phaseSw.ElapsedMilliseconds;
+
+                phaseSw.Restart();
+                pp.perChannelPadData = NcnnRepro.NewBuffer(pp.perChannelPadDataCpu);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+            }
+
+            owner._extraPacks[layer.name] = pp;
+            return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+        }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                        do
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not PaddingPack pp)
+            {
+                pp = new PaddingPack
+                {
+                    top = layer.GetInt(0, 0),
+                    bottom = layer.GetInt(1, 0),
+                    left = layer.GetInt(2, 0),
+                    right = layer.GetInt(3, 0),
+                    type = layer.GetInt(4, 0),
+                    value = layer.GetFloat(5, 0f),
+                    perChannelPadDataSize = layer.GetInt(6, 0),
+                    front = layer.GetInt(7, 0),
+                    behind = layer.GetInt(8, 0)
+                };
+                owner._extraPacks[layer.name] = pp;
+            }
+
+            if (pp.top == 0 && pp.bottom == 0 && pp.left == 0 && pp.right == 0 && pp.front == 0 && pp.behind == 0)
+            {
+                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
+                return;
+            }
+
+            if (CanUseSimplePack4TexturePath(owner, layer.bottomNames[0], pp, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+            {
+                var outRt = owner.RentTempArray(srcTex.width + pp.left + pp.right, srcTex.height + pp.top + pp.bottom, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PaddingPack4(srcTex.texture, srcTex.packs, pp.left, pp.right, pp.top, pp.bottom, pp.type, new Vector4(pp.value, pp.value, pp.value, pp.value), outRt);
+                NcnnRepro.SetTextureBlob(
+                    textureBlobs,
+                    textureShapes,
+                    layer.topNames[0],
+                    outRt,
+                    new NcnnRepro.BufferShape(3, srcShape.w + pp.left + pp.right, srcShape.h + pp.top + pp.bottom, 1, srcShape.c));
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null)
+                throw new InvalidOperationException("Padding source not found: " + layer.name);
+
+            var outDims = srcView.dims;
+            var outW = srcView.w + pp.left + pp.right;
+            var outH = srcView.dims >= 2 ? srcView.h + pp.top + pp.bottom : 1;
+            var outD = srcView.dims == 4 ? srcView.d + pp.front + pp.behind : 1;
+            var outC = srcView.dims == 3 ? srcView.c + pp.front + pp.behind : srcView.c;
+            if (outW <= 0 || outH <= 0 || outD <= 0 || outC <= 0)
+                throw new InvalidOperationException("Padding invalid output shape: " + layer.name);
+
+            var srcData = NcnnRepro.ReadFloatBuffer(srcBuf);
+            var outTensor = owner.RentTempTensorBuffer(outDims, outW, outH, outD, outC);
+            var outData = new float[outTensor.elementCount];
+
+            if (srcView.dims == 1)
+            {
+                for (var ox = 0; ox < outW; ox++)
+                {
+                    if (TryMapSpatialIndex(ox - pp.left, srcView.w, pp.type, out var sx))
+                        outData[ox] = srcData[sx];
+                    else
+                        outData[ox] = pp.value;
+                }
+            }
+            else if (srcView.dims == 2)
+            {
+                for (var oy = 0; oy < outH; oy++)
+                {
+                    for (var ox = 0; ox < outW; ox++)
+                    {
+                        var outIndex = oy * outW + ox;
+                        if (TryMapSpatialIndex(ox - pp.left, srcView.w, pp.type, out var sx)
+                            && TryMapSpatialIndex(oy - pp.top, srcView.h, pp.type, out var sy))
                         {
-                                                var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                var top = layer.GetInt(0, 0);
-                                                var bottom = layer.GetInt(1, 0);
-                                                var left = layer.GetInt(2, 0);
-                                                var right = layer.GetInt(3, 0);
-                                                var type = layer.GetInt(4, 0);
-                                                var value = layer.GetFloat(5, 0f);
+                            outData[outIndex] = srcData[sy * srcView.w + sx];
+                        }
+                        else
+                        {
+                            outData[outIndex] = pp.value;
+                        }
+                    }
+                }
+            }
+            else if (srcView.dims == 3)
+            {
+                var srcPlane = srcView.w * srcView.h;
+                var outPlane = outW * outH;
+                for (var oc = 0; oc < outC; oc++)
+                {
+                    var padValue = ResolvePadValue(pp, oc);
+                    if (!TryMapChannelIndex(oc - pp.front, srcView.c, pp.type, out var sc))
+                    {
+                        FillChannel(outData, oc * outPlane, outPlane, padValue);
+                        continue;
+                    }
 
-                                                var outRt = owner.RentTempArray(src.width + left + right, src.height + top + bottom, src.packs, RenderTextureFormat.ARGBHalf);
-                                                owner.Ops.PaddingPack4(src.texture, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outRt);
-                                                textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
-                                                {
-                                                    texture = outRt,
-                                                    width = outRt.width,
-                                                    height = outRt.height,
-                                                    packs = src.packs,
-                                                    refs = 1,
-                                                    owned = true
-                                                };
-                                                var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                                                textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, outRt.width, outRt.height, 1, srcShape.c);
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+                    var srcBase = sc * srcPlane;
+                    var outBase = oc * outPlane;
+                    for (var oy = 0; oy < outH; oy++)
+                    {
+                        for (var ox = 0; ox < outW; ox++)
+                        {
+                            var outIndex = outBase + oy * outW + ox;
+                            if (TryMapSpatialIndex(ox - pp.left, srcView.w, pp.type, out var sx)
+                                && TryMapSpatialIndex(oy - pp.top, srcView.h, pp.type, out var sy))
+                            {
+                                outData[outIndex] = srcData[srcBase + sy * srcView.w + sx];
+                            }
+                            else
+                            {
+                                outData[outIndex] = padValue;
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                var srcPlane = srcView.w * srcView.h;
+                var srcDepthStride = srcPlane;
+                var srcChannelStride = srcView.d * srcPlane;
+                var outPlane = outW * outH;
+                var outDepthStride = outPlane;
+                var outChannelStride = outD * outPlane;
+
+                for (var oc = 0; oc < outC; oc++)
+                {
+                    var padValue = ResolvePadValue(pp, oc);
+                    var srcChannelBase = oc * srcChannelStride;
+                    var outChannelBase = oc * outChannelStride;
+                    for (var oz = 0; oz < outD; oz++)
+                    {
+                        if (!TryMapChannelIndex(oz - pp.front, srcView.d, pp.type, out var sz))
+                        {
+                            FillChannel(outData, outChannelBase + oz * outDepthStride, outPlane, padValue);
+                            continue;
+                        }
+
+                        var srcDepthBase = srcChannelBase + sz * srcDepthStride;
+                        var outDepthBase = outChannelBase + oz * outDepthStride;
+                        for (var oy = 0; oy < outH; oy++)
+                        {
+                            for (var ox = 0; ox < outW; ox++)
+                            {
+                                var outIndex = outDepthBase + oy * outW + ox;
+                                if (TryMapSpatialIndex(ox - pp.left, srcView.w, pp.type, out var sx)
+                                    && TryMapSpatialIndex(oy - pp.top, srcView.h, pp.type, out var sy))
+                                {
+                                    outData[outIndex] = srcData[srcDepthBase + sy * srcView.w + sx];
+                                }
+                                else
+                                {
+                                    outData[outIndex] = padValue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            outTensor.buffer.SetData(outData);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: outTensor.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
+
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-                        var cmd = context.commandBuffer;
-                        var blobs = context.blobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
-                        do
-                        {
-                                                var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-                                                var top = layer.GetInt(0, 0);
-                                                var bottom = layer.GetInt(1, 0);
-                                                var left = layer.GetInt(2, 0);
-                                                var right = layer.GetInt(3, 0);
-                                                var type = layer.GetInt(4, 0);
-                                                var value = layer.GetFloat(5, 0f);
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not PaddingPack pp)
+            {
+                pp = new PaddingPack
+                {
+                    top = layer.GetInt(0, 0),
+                    bottom = layer.GetInt(1, 0),
+                    left = layer.GetInt(2, 0),
+                    right = layer.GetInt(3, 0),
+                    type = layer.GetInt(4, 0),
+                    value = layer.GetFloat(5, 0f),
+                    perChannelPadDataSize = layer.GetInt(6, 0),
+                    front = layer.GetInt(7, 0),
+                    behind = layer.GetInt(8, 0)
+                };
+                owner._extraPacks[layer.name] = pp;
+            }
 
-                                                var outW = src.width + left + right;
-                                                var outH = src.height + top + bottom;
-                                                if (outW <= 0 || outH <= 0)
-                                                    throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            if (pp.top == 0 && pp.bottom == 0 && pp.left == 0 && pp.right == 0 && pp.front == 0 && pp.behind == 0)
+            {
+                blobs[layer.topNames[0]] = src;
+                src.refs++;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
 
-                                                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                                                owner.Ops.PaddingPack4(cmd, src.texture, src.packs, left, right, top, bottom, type, new Vector4(value, value, value, value), outArr);
-                                                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = src.packs, refs = 1, owned = true };
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            var canUseTexturePath = pp.front == 0 && pp.behind == 0 && pp.perChannelPadDataSize == 0;
+            if (!canUseTexturePath)
+            {
+                owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, Mathf.Max(1, src.width + pp.left + pp.right), Mathf.Max(1, src.height + pp.top + pp.bottom), src.packs);
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            var outW = src.width + pp.left + pp.right;
+            var outH = src.height + pp.top + pp.bottom;
+            if (outW <= 0 || outH <= 0)
+                throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
+
+            var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.PaddingPack4(cmd, src.texture, src.packs, pp.left, pp.right, pp.top, pp.bottom, pp.type, new Vector4(pp.value, pp.value, pp.value, pp.value), outArr);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outArr,
+                width = outW,
+                height = outH,
+                packs = src.packs,
+                refs = 1,
+                owned = true
+            };
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        private static bool CanUseSimplePack4TexturePath(
+            NcnnRepro owner,
+            string bottomName,
+            PaddingPack pp,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.TensorRef srcTex,
+            out NcnnRepro.BufferShape srcShape)
+        {
+            srcTex = null;
+            srcShape = default;
+            if (pp.front != 0 || pp.behind != 0 || pp.perChannelPadDataSize != 0)
+                return false;
+            if (!owner.TryGetPack4Texture(bottomName, textureBlobs, textureShapes, bufferBlobs, bufferViews, out srcTex, out srcShape))
+                return false;
+            return srcShape.dims == 3;
+        }
+
+        private static float ResolvePadValue(PaddingPack pack, int channel)
+        {
+            if (pack.perChannelPadDataCpu != null && channel >= 0 && channel < pack.perChannelPadDataCpu.Length)
+                return pack.perChannelPadDataCpu[channel];
+            return pack.value;
+        }
+
+        private static void FillChannel(float[] data, int offset, int count, float value)
+        {
+            for (var i = 0; i < count; i++)
+                data[offset + i] = value;
+        }
+
+        private static bool TryMapSpatialIndex(int coord, int length, int type, out int mapped)
+        {
+            mapped = 0;
+            if (length <= 0)
+                return false;
+
+            if (coord >= 0 && coord < length)
+            {
+                mapped = coord;
+                return true;
+            }
+
+            if (type == 0)
+                return false;
+
+            if (type == 1)
+            {
+                mapped = Mathf.Clamp(coord, 0, length - 1);
+                return true;
+            }
+
+            mapped = Reflect101Index(coord, length);
+            return true;
+        }
+
+        private static bool TryMapChannelIndex(int coord, int length, int type, out int mapped)
+        {
+            mapped = 0;
+            if (length <= 0)
+                return false;
+
+            if (coord >= 0 && coord < length)
+            {
+                mapped = coord;
+                return true;
+            }
+
+            if (type == 0)
+                return false;
+
+            if (type == 1)
+            {
+                mapped = Mathf.Clamp(coord, 0, length - 1);
+                return true;
+            }
+
+            mapped = Reflect101Index(coord, length);
+            return true;
+        }
+
+        private static int Reflect101Index(int x, int len)
+        {
+            if (len <= 1)
+                return 0;
+            var period = len * 2 - 2;
+            var y = Mathf.Abs(x);
+            var m = y % period;
+            if (m >= len)
+                m = period - m;
+            return m;
         }
     }
 }

@@ -99,6 +99,8 @@ namespace NcnnCompute
         public sealed class IndexRef
         {
             public RenderTexture texture;
+            public ComputeBuffer buffer;
+            public NcnnTensorBuffer view;
             public int width;
             public int height;
             public int packs;
@@ -304,11 +306,15 @@ namespace NcnnCompute
         public sealed class BatchNormPack : IDisposable
         {
             public int channels;
+            public ComputeBuffer biasA;
+            public ComputeBuffer scaleB;
             public ComputeBuffer biasA4;
             public ComputeBuffer scaleB4;
 
             public void Dispose()
             {
+                try { biasA?.Dispose(); } catch { }
+                try { scaleB?.Dispose(); } catch { }
                 try { biasA4?.Dispose(); } catch { }
                 try { scaleB4?.Dispose(); } catch { }
             }
@@ -342,6 +348,195 @@ namespace NcnnCompute
                 try { vB?.Dispose(); } catch { }
                 try { oW?.Dispose(); } catch { }
                 try { oB?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class ScalePack : IDisposable
+        {
+            public int scaleDataSize;
+            public bool biasTerm;
+            public bool dynamic;
+            public ComputeBuffer scale;
+            public ComputeBuffer bias;
+            public ComputeBuffer packedScale4;
+            public ComputeBuffer packedBias4;
+            public float[] scaleCpu;
+            public float[] biasCpu;
+
+            public void Dispose()
+            {
+                try { scale?.Dispose(); } catch { }
+                try { bias?.Dispose(); } catch { }
+                try { packedScale4?.Dispose(); } catch { }
+                try { packedBias4?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class PReluPack : IDisposable
+        {
+            public int numSlope;
+            public ComputeBuffer slope;
+            public float[] slopeCpu;
+
+            public void Dispose()
+            {
+                try { slope?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class QuantizePack : IDisposable
+        {
+            public int scaleDataSize;
+            public ComputeBuffer scale;
+            public float[] scaleCpu;
+
+            public void Dispose()
+            {
+                try { scale?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class DequantizePack : IDisposable
+        {
+            public int scaleDataSize;
+            public int biasDataSize;
+            public ComputeBuffer scale;
+            public ComputeBuffer bias;
+            public float[] scaleCpu;
+            public float[] biasCpu;
+
+            public void Dispose()
+            {
+                try { scale?.Dispose(); } catch { }
+                try { bias?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class RequantizePack : IDisposable
+        {
+            public int scaleInDataSize;
+            public int scaleOutDataSize;
+            public int biasDataSize;
+            public int activationType;
+            public float activationParam0;
+            public float activationParam1;
+            public ComputeBuffer scaleIn;
+            public ComputeBuffer scaleOut;
+            public ComputeBuffer bias;
+            public float[] scaleInCpu;
+            public float[] scaleOutCpu;
+            public float[] biasCpu;
+
+            public void Dispose()
+            {
+                try { scaleIn?.Dispose(); } catch { }
+                try { scaleOut?.Dispose(); } catch { }
+                try { bias?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class NormalizePack : IDisposable
+        {
+            public bool acrossSpatial;
+            public bool acrossChannel;
+            public bool channelShared;
+            public float eps;
+            public int epsMode;
+            public int scaleDataSize;
+            public ComputeBuffer scale;
+            public float[] scaleCpu;
+
+            public void Dispose()
+            {
+                try { scale?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class LrnPack : IDisposable
+        {
+            public int regionType;
+            public int localSize;
+            public float alpha;
+            public float beta;
+            public float bias;
+
+            public void Dispose()
+            {
+            }
+        }
+
+        public sealed class RmsNormPack : IDisposable
+        {
+            public int affineSize;
+            public float eps;
+            public bool affine;
+            public ComputeBuffer gamma;
+            public float[] gammaCpu;
+
+            public void Dispose()
+            {
+                try { gamma?.Dispose(); } catch { }
+            }
+        }
+
+        public sealed class RotaryEmbedPack : IDisposable
+        {
+            public bool interleaved;
+
+            public void Dispose()
+            {
+            }
+        }
+
+        public sealed class SdpaPack : IDisposable
+        {
+            public bool attnMask;
+            public float scale;
+            public bool kvCache;
+            public bool int8ScaleTerm;
+
+            public void Dispose()
+            {
+            }
+        }
+
+        public sealed class UnfoldPack : IDisposable
+        {
+            public int kernelW;
+            public int kernelH;
+            public int dilationW;
+            public int dilationH;
+            public int strideW;
+            public int strideH;
+            public int padLeft;
+            public int padRight;
+            public int padTop;
+            public int padBottom;
+            public float padValue;
+
+            public void Dispose()
+            {
+            }
+        }
+
+        public sealed class PriorBoxPack : IDisposable
+        {
+            public float[] minSizes;
+            public float[] maxSizes;
+            public float[] aspectRatios;
+            public float[] variances;
+            public bool flip;
+            public bool clip;
+            public int imageWidth;
+            public int imageHeight;
+            public float stepWidth;
+            public float stepHeight;
+            public float offset;
+            public bool stepMmdetection;
+            public bool centerMmdetection;
+
+            public void Dispose()
+            {
             }
         }
 
@@ -545,6 +740,7 @@ namespace NcnnCompute
         internal readonly Dictionary<string, GroupNormPack> _groupNorm = new Dictionary<string, GroupNormPack>(StringComparer.Ordinal);
         internal readonly Dictionary<string, BatchNormPack> _batchNorm = new Dictionary<string, BatchNormPack>(StringComparer.Ordinal);
         internal readonly Dictionary<string, MultiHeadAttentionPack> _multiHeadAttention = new Dictionary<string, MultiHeadAttentionPack>(StringComparer.Ordinal);
+        internal readonly Dictionary<string, IDisposable> _extraPacks = new Dictionary<string, IDisposable>(StringComparer.Ordinal);
         internal Dictionary<string, int> _blobUseCount;
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
         private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
@@ -1784,6 +1980,7 @@ namespace NcnnCompute
             foreach (var kv in _groupNorm) kv.Value?.Dispose();
             foreach (var kv in _batchNorm) kv.Value?.Dispose();
             foreach (var kv in _multiHeadAttention) kv.Value?.Dispose();
+            foreach (var kv in _extraPacks) kv.Value?.Dispose();
 
             _conv.Clear();
             _deconv.Clear();
@@ -1795,6 +1992,7 @@ namespace NcnnCompute
             _groupNorm.Clear();
             _batchNorm.Clear();
             _multiHeadAttention.Clear();
+            _extraPacks.Clear();
             Model = null;
             LayerRepros = null;
             _blobUseCount = null;
@@ -1806,14 +2004,9 @@ namespace NcnnCompute
             Release();
         }
 
-        internal RenderTexture MaterializeTextureFromBuffer(
-            string name,
-            Dictionary<string, ComputeBuffer> bufferBlobs,
-            Dictionary<string, NcnnTensorBuffer> bufferViews)
+        internal RenderTexture MaterializeTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view)
         {
-            if (!bufferBlobs.TryGetValue(name, out var buffer) || buffer == null)
-                return null;
-            if (!bufferViews.TryGetValue(name, out var view) || view == null)
+            if (buffer == null || view == null)
                 return null;
 
             int texW;
@@ -1846,6 +2039,55 @@ namespace NcnnCompute
             var rt = RentTempArray(texW, texH, packs, RenderTextureFormat.ARGBHalf);
             _ops.FillPack4FromBufferCHW(buffer, texW, texH, channels, rt);
             return rt;
+        }
+
+        internal ComputeTexture MaterializeCmdTextureFromBufferView(CommandBuffer cmd, ComputeBuffer buffer, NcnnTensorBuffer view)
+        {
+            if (cmd == null || buffer == null || view == null)
+                return null;
+
+            int texW;
+            int texH;
+            int channels;
+            if (view.dims == 1)
+            {
+                texW = view.w;
+                texH = 1;
+                channels = 1;
+            }
+            else if (view.dims == 2)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = 1;
+            }
+            else if (view.dims == 3)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = view.c;
+            }
+            else
+            {
+                return null;
+            }
+
+            var packs = Mathf.CeilToInt(channels / 4f);
+            var rt = RentTempArray(cmd, texW, texH, packs, RenderTextureFormat.ARGBHalf);
+            _ops.FillPack4FromBufferCHW(cmd, buffer, texW, texH, channels, rt);
+            return rt;
+        }
+
+        internal RenderTexture MaterializeTextureFromBuffer(
+            string name,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews)
+        {
+            if (!bufferBlobs.TryGetValue(name, out var buffer) || buffer == null)
+                return null;
+            if (!bufferViews.TryGetValue(name, out var view) || view == null)
+                return null;
+            return MaterializeTextureFromBufferView(buffer, view);
         }
 
         internal TensorRef GetOrMaterializeTexture(
@@ -1975,7 +2217,7 @@ namespace NcnnCompute
                 var hasIndex = indexBlobs != null
                     && indexBlobs.TryGetValue(name, out var ir)
                     && ir != null
-                    && ir.texture != null;
+                    && (ir.texture != null || ir.buffer != null);
 
                 if (!hasTexture && !hasBuffer && !hasIndex)
                     return false;
@@ -2115,15 +2357,27 @@ namespace NcnnCompute
                 if (indexBlobs != null
                     && indexBlobs.TryGetValue(name, out var index)
                     && index != null
-                    && index.texture != null)
+                    && (index.texture != null || index.buffer != null))
                 {
                     sb.Append("idx:");
                     sb.Append(index.width.ToString(CultureInfo.InvariantCulture));
                     sb.Append('x');
                     sb.Append(index.height.ToString(CultureInfo.InvariantCulture));
                     sb.Append('x');
-                    sb.Append(index.packs.ToString(CultureInfo.InvariantCulture));
-                    sb.Append('p');
+                    if (index.texture != null)
+                    {
+                        sb.Append(index.packs.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('p');
+                    }
+                    else if (index.view != null)
+                    {
+                        sb.Append("buf:");
+                        sb.Append(index.view.w.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('x');
+                        sb.Append(index.view.h.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('x');
+                        sb.Append(index.view.c.ToString(CultureInfo.InvariantCulture));
+                    }
                     continue;
                 }
 
@@ -2317,7 +2571,175 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
-            textureShapes[name] = new BufferShape(3, logicalShape.w, logicalShape.h, 1, logicalShape.c);
+            textureShapes[name] = logicalShape;
+        }
+
+        internal void PublishTensorBufferOutput(
+            string topName,
+            NcnnTensorBuffer tensor,
+            bool preferTexture,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, BufferRef> bufferRefs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            List<IDisposable> tempOwned)
+        {
+            if (string.IsNullOrEmpty(topName))
+                throw new ArgumentNullException(nameof(topName));
+            if (tensor == null || tensor.buffer == null)
+                throw new ArgumentNullException(nameof(tensor));
+
+            var logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
+            if (preferTexture && tensor.dims <= 3)
+            {
+                var rt = MaterializeTextureFromBufferView(tensor.buffer, tensor);
+                if (rt != null)
+                {
+                    SetTextureBlob(textureBlobs, textureShapes, topName, rt, logicalShape);
+                    tempOwned.Add(tensor);
+                    return;
+                }
+            }
+
+            bufferBlobs[topName] = tensor.buffer;
+            bufferRefs[topName] = NewOwnedBufferRef(topName, tensor.buffer);
+            bufferViews[topName] = new NcnnTensorBuffer(tensor.buffer, tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c, false);
+            tempOwned.Add(tensor);
+        }
+
+        internal void PublishCmdTensorBufferOutput(
+            CommandBuffer cmd,
+            string topName,
+            NcnnTensorBuffer tensor,
+            bool preferTexture,
+            Dictionary<string, CmdTensorRef> blobs)
+        {
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (string.IsNullOrEmpty(topName))
+                throw new ArgumentNullException(nameof(topName));
+            if (tensor == null || tensor.buffer == null)
+                throw new ArgumentNullException(nameof(tensor));
+
+            if (!preferTexture || tensor.dims > 3)
+                throw new InvalidOperationException("CommandBuffer outputs currently require dims<=3 materialized texture: " + topName);
+
+            var rt = MaterializeCmdTextureFromBufferView(cmd, tensor.buffer, tensor);
+            if (rt == null)
+                throw new InvalidOperationException("Failed to materialize CommandBuffer tensor: " + topName);
+
+            blobs[topName] = new CmdTensorRef
+            {
+                texture = rt,
+                width = rt.width,
+                height = rt.height,
+                packs = Mathf.Max(1, Mathf.CeilToInt(tensor.c / 4f)),
+                refs = 1,
+                owned = true
+            };
+        }
+
+        internal void PublishCmdTensorLikeInput(
+            CommandBuffer cmd,
+            string topName,
+            int width,
+            int height,
+            int packs,
+            Dictionary<string, CmdTensorRef> blobs)
+        {
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (string.IsNullOrEmpty(topName))
+                throw new ArgumentNullException(nameof(topName));
+            if (blobs == null)
+                throw new ArgumentNullException(nameof(blobs));
+
+            var outArr = RentTempArray(cmd, width, height, packs, RenderTextureFormat.ARGBHalf);
+            blobs[topName] = new CmdTensorRef
+            {
+                texture = outArr,
+                width = width,
+                height = height,
+                packs = packs,
+                refs = 1,
+                owned = true
+            };
+        }
+
+        internal static void ResolveCmdTextureLayout(NcnnTensorBuffer tensor, out int width, out int height, out int packs)
+        {
+            if (tensor == null)
+                throw new ArgumentNullException(nameof(tensor));
+
+            width = Mathf.Max(1, tensor.w);
+            height = 1;
+            packs = 1;
+
+            if (tensor.dims == 2)
+            {
+                height = Mathf.Max(1, tensor.h);
+                return;
+            }
+
+            if (tensor.dims == 3)
+            {
+                height = Mathf.Max(1, tensor.h);
+                packs = Mathf.Max(1, Mathf.CeilToInt(tensor.c / 4f));
+                return;
+            }
+
+            if (tensor.dims >= 4)
+            {
+                height = Mathf.Max(1, tensor.h * Mathf.Max(1, tensor.d));
+                packs = Mathf.Max(1, Mathf.CeilToInt(tensor.c / 4f));
+            }
+        }
+
+        internal void PublishCmdPlaceholderFromTensorView(
+            CommandBuffer cmd,
+            string topName,
+            NcnnTensorBuffer tensor,
+            Dictionary<string, CmdTensorRef> blobs)
+        {
+            ResolveCmdTextureLayout(tensor, out var width, out var height, out var packs);
+            PublishCmdTensorLikeInput(cmd, topName, width, height, packs, blobs);
+        }
+
+        internal void CopyCmdTensor(
+            CommandBuffer cmd,
+            CmdTensorRef src,
+            string topName,
+            Dictionary<string, CmdTensorRef> blobs,
+            int width = -1,
+            int height = -1,
+            int packs = -1)
+        {
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (src == null)
+                throw new ArgumentNullException(nameof(src));
+            if (blobs == null)
+                throw new ArgumentNullException(nameof(blobs));
+
+            var outWidth = width > 0 ? width : src.width;
+            var outHeight = height > 0 ? height : src.height;
+            var outPacks = packs > 0 ? packs : src.packs;
+            var outArr = RentTempArray(cmd, outWidth, outHeight, outPacks, RenderTextureFormat.ARGBHalf);
+            if (outWidth == src.width && outHeight == src.height)
+            {
+                Ops.CopyPack4(cmd, src.texture, 0, outArr, 0, Mathf.Min(src.packs, outPacks));
+            }
+
+            blobs[topName] = new CmdTensorRef
+            {
+                texture = outArr,
+                width = outWidth,
+                height = outHeight,
+                packs = outPacks,
+                refs = 1,
+                owned = true
+            };
         }
 
         internal static bool CanUseExactPack4BinaryPath(TensorRef a, BufferShape aShape, TensorRef b, BufferShape bShape)
@@ -2752,10 +3174,19 @@ namespace NcnnCompute
                 if (indexBlobs.TryGetValue(name, out var ir) && ir != null)
                 {
                     ir.refs--;
-                    if (ir.refs <= 0 && ir.owned && ir.texture != null)
+                    if (ir.refs <= 0 && ir.owned)
                     {
-                        try { ReturnTempArray(ir.texture); } catch { }
-                        ir.texture = null;
+                        if (ir.texture != null)
+                        {
+                            try { ReturnTempArray(ir.texture); } catch { }
+                            ir.texture = null;
+                        }
+                        if (ir.buffer != null)
+                        {
+                            try { ReturnTempBuffer(ir.buffer); } catch { }
+                            ir.buffer = null;
+                        }
+                        ir.view = null;
                     }
                 }
                 indexBlobs.Remove(name);
@@ -2764,6 +3195,20 @@ namespace NcnnCompute
 
         internal static NcnnTensorBuffer ResolveReshapeTensor(NcnnTensorBuffer src, NcnnParamModel.Layer layer)
         {
+            return ResolveReshapeTensor(src, layer, null);
+        }
+
+        internal static NcnnTensorBuffer ResolveReshapeTensor(NcnnTensorBuffer src, NcnnParamModel.Layer layer, IReadOnlyList<BufferShape> bottomShapes)
+        {
+            if (layer == null)
+                throw new ArgumentNullException(nameof(layer));
+
+            if (!string.IsNullOrWhiteSpace(layer.GetString(6, null)))
+            {
+                var exprShape = EvaluateReshapeShapeExpression(layer.GetString(6, null), bottomShapes ?? new[] { new BufferShape(src.dims, src.w, src.h, src.d, src.c) }, layer);
+                return src.Reshape(exprShape.dims, exprShape.w, exprShape.h, exprShape.d, exprShape.c);
+            }
+
             var outw = layer.GetInt(0, -233);
             var outh = layer.GetInt(1, -233);
             var outd = layer.GetInt(11, -233);
@@ -2822,6 +3267,17 @@ namespace NcnnCompute
 
         internal static BufferShape ResolveReshapeShape(BufferShape src, NcnnParamModel.Layer layer)
         {
+            return ResolveReshapeShape(src, layer, null);
+        }
+
+        internal static BufferShape ResolveReshapeShape(BufferShape src, NcnnParamModel.Layer layer, IReadOnlyList<BufferShape> bottomShapes)
+        {
+            if (layer == null)
+                throw new ArgumentNullException(nameof(layer));
+
+            if (!string.IsNullOrWhiteSpace(layer.GetString(6, null)))
+                return EvaluateReshapeShapeExpression(layer.GetString(6, null), bottomShapes ?? new[] { src }, layer);
+
             var outw = layer.GetInt(0, -233);
             var outh = layer.GetInt(1, -233);
             var outd = layer.GetInt(11, -233);
@@ -2876,6 +3332,373 @@ namespace NcnnCompute
             if (outd == -1) outd = SafeDiv(total, Mathf.Max(1, outc) * Mathf.Max(1, outw) * Mathf.Max(1, outh), "Reshape outd");
             if (outc == -1) outc = SafeDiv(total, Mathf.Max(1, outd) * Mathf.Max(1, outw) * Mathf.Max(1, outh), "Reshape outc");
             return new BufferShape(4, outw, outh, outd, outc);
+        }
+
+        internal static BufferShape EvaluateReshapeShapeExpression(string expr, NcnnTensorBuffer src, NcnnParamModel.Layer layer)
+        {
+            if (src == null)
+                throw new ArgumentNullException(nameof(src));
+            return EvaluateReshapeShapeExpression(expr, new[] { new BufferShape(src.dims, src.w, src.h, src.d, src.c) }, layer);
+        }
+
+        internal static BufferShape EvaluateReshapeShapeExpression(string expr, BufferShape src, NcnnParamModel.Layer layer)
+        {
+            return EvaluateReshapeShapeExpression(expr, new[] { src }, layer);
+        }
+
+        internal static BufferShape EvaluateReshapeShapeExpression(string expr, IReadOnlyList<BufferShape> bottomShapes, NcnnParamModel.Layer layer)
+        {
+            if (string.IsNullOrWhiteSpace(expr))
+                throw new ArgumentException("shape expr is empty", nameof(expr));
+            if (layer == null)
+                throw new ArgumentNullException(nameof(layer));
+            if (bottomShapes == null || bottomShapes.Count == 0)
+                throw new ArgumentException("bottomShapes is empty", nameof(bottomShapes));
+
+            var values = EvaluateExpressionList(expr, bottomShapes, layer);
+            if (values.Count <= 0 || values.Count > 4)
+                throw new InvalidOperationException("Unsupported reshape shape_expr rank: " + values.Count + " | " + layer.name);
+
+            if (values.Count == 1)
+                return new BufferShape(1, values[0], 1, 1, 1);
+            if (values.Count == 2)
+                return new BufferShape(2, values[0], values[1], 1, 1);
+            if (values.Count == 3)
+                return new BufferShape(3, values[0], values[1], 1, values[2]);
+            return new BufferShape(4, values[0], values[1], values[2], values[3]);
+        }
+
+        internal static IReadOnlyList<int> EvaluateExpressionList(string expr, IReadOnlyList<BufferShape> bottomShapes, NcnnParamModel.Layer layer)
+        {
+            if (string.IsNullOrWhiteSpace(expr))
+                throw new ArgumentException("expression is empty", nameof(expr));
+            if (bottomShapes == null || bottomShapes.Count == 0)
+                throw new ArgumentException("bottomShapes is empty", nameof(bottomShapes));
+
+            var trimmed = expr.Trim();
+            if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[trimmed.Length - 1] == '"')
+                trimmed = trimmed.Substring(1, trimmed.Length - 2);
+
+            var tokens = new List<string>();
+            var token = new StringBuilder();
+            for (var i = 0; i < trimmed.Length; i++)
+            {
+                var ch = trimmed[i];
+                if (ch == '(' || ch == ')' || ch == ',')
+                {
+                    if (token.Length > 0)
+                    {
+                        tokens.Add(token.ToString());
+                        token.Clear();
+                    }
+                }
+                else if (!char.IsWhiteSpace(ch))
+                {
+                    token.Append(ch);
+                }
+            }
+            if (token.Length > 0)
+                tokens.Add(token.ToString());
+
+            var stack = new Stack<ExprValue>();
+            for (var i = tokens.Count - 1; i >= 0; i--)
+            {
+                var t = tokens[i];
+                if (IsShapeRefToken(t))
+                {
+                    stack.Push(new ExprValue(GetShapeRefValue(t, bottomShapes, layer)));
+                    continue;
+                }
+
+                if (t == "+" || t == "-" || t == "*" || t == "//" || t == "max" || t == "min")
+                {
+                    var a = PopExpr(stack, layer);
+                    var b = PopExpr(stack, layer);
+                    stack.Push(ApplyBinaryIntPref(t, a, b, layer));
+                    continue;
+                }
+
+                if (t == "abs" || t == "neg" || t == "sign" || t == "square")
+                {
+                    var a = PopExpr(stack, layer);
+                    stack.Push(ApplyUnarySimple(t, a));
+                    continue;
+                }
+
+                if (t == "trunc" || t == "ceil" || t == "floor" || t == "round")
+                {
+                    var a = PopExpr(stack, layer);
+                    stack.Push(ApplyUnaryRound(t, a));
+                    continue;
+                }
+
+                if (t == "acos" || t == "acosh" || t == "asin" || t == "asinh" || t == "atan" || t == "atanh"
+                    || t == "cos" || t == "cosh" || t == "erf" || t == "exp" || t == "log" || t == "log10"
+                    || t == "reciprocal" || t == "rsqrt" || t == "sin" || t == "sinh" || t == "sqrt" || t == "tan" || t == "tanh")
+                {
+                    var a = PopExpr(stack, layer);
+                    stack.Push(ApplyUnaryFloat(t, a));
+                    continue;
+                }
+
+                if (t == "/" || t == "atan2" || t == "fmod" || t == "pow" || t == "remainder" || t == "logaddexp")
+                {
+                    var a = PopExpr(stack, layer);
+                    var b = PopExpr(stack, layer);
+                    stack.Push(ApplyBinaryFloat(t, a, b));
+                    continue;
+                }
+
+                if (t == "and" || t == "or" || t == "xor" || t == "lshift" || t == "rshift")
+                {
+                    var a = PopExpr(stack, layer);
+                    var b = PopExpr(stack, layer);
+                    stack.Push(ApplyBinaryBitwise(t, a, b));
+                    continue;
+                }
+
+                if (TryParseExprLiteral(t, out var literal))
+                {
+                    stack.Push(literal);
+                    continue;
+                }
+
+                throw new InvalidOperationException("Malformed expression token " + t + " | " + layer?.name);
+            }
+
+            var values = new List<int>(stack.Count);
+            while (stack.Count > 0)
+                values.Add(stack.Pop().ToInt());
+            return values;
+        }
+
+        private readonly struct ExprValue
+        {
+            public readonly bool isFloat;
+            public readonly int i;
+            public readonly float f;
+
+            public ExprValue(int value)
+            {
+                isFloat = false;
+                i = value;
+                f = value;
+            }
+
+            public ExprValue(float value)
+            {
+                isFloat = true;
+                i = (int)value;
+                f = value;
+            }
+
+            public int ToInt() => isFloat ? (int)f : i;
+            public float ToFloat() => isFloat ? f : i;
+        }
+
+        private static ExprValue PopExpr(Stack<ExprValue> stack, NcnnParamModel.Layer layer)
+        {
+            if (stack == null || stack.Count == 0)
+                throw new InvalidOperationException("Malformed expression stack underflow: " + layer?.name);
+            return stack.Pop();
+        }
+
+        private static bool IsShapeRefToken(string token)
+        {
+            return token != null
+                && token.Length == 2
+                && token[0] >= '0' && token[0] <= '9'
+                && (token[1] == 'w' || token[1] == 'h' || token[1] == 'd' || token[1] == 'c');
+        }
+
+        private static int GetShapeRefValue(string token, IReadOnlyList<BufferShape> bottomShapes, NcnnParamModel.Layer layer)
+        {
+            var index = token[0] - '0';
+            if (index < 0 || index >= bottomShapes.Count)
+                throw new InvalidOperationException("shape expression blob index out of range: " + token + " | " + layer?.name);
+
+            var shape = bottomShapes[index];
+            return token[1] switch
+            {
+                'w' => shape.w,
+                'h' => shape.h,
+                'd' => shape.d,
+                'c' => shape.c,
+                _ => throw new InvalidOperationException("invalid shape ref token: " + token)
+            };
+        }
+
+        private static bool TryParseExprLiteral(string token, out ExprValue value)
+        {
+            if (int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)
+                && float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var fi)
+                && Mathf.Approximately(i, fi))
+            {
+                value = new ExprValue(i);
+                return true;
+            }
+
+            if (float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
+            {
+                value = new ExprValue(f);
+                return true;
+            }
+
+            value = default;
+            return false;
+        }
+
+        private static ExprValue ApplyBinaryIntPref(string op, ExprValue a, ExprValue b, NcnnParamModel.Layer layer)
+        {
+            if (!a.isFloat && !b.isFloat)
+            {
+                return op switch
+                {
+                    "+" => new ExprValue(a.i + b.i),
+                    "-" => new ExprValue(a.i - b.i),
+                    "*" => new ExprValue(a.i * b.i),
+                    "//" => b.i != 0 ? new ExprValue(a.i / b.i) : throw new InvalidOperationException("expr divide by zero | " + layer?.name),
+                    "max" => new ExprValue(Mathf.Max(a.i, b.i)),
+                    "min" => new ExprValue(Mathf.Min(a.i, b.i)),
+                    _ => throw new InvalidOperationException("unsupported int-pref op: " + op)
+                };
+            }
+
+            var af = a.ToFloat();
+            var bf = b.ToFloat();
+            return op switch
+            {
+                "+" => new ExprValue(af + bf),
+                "-" => new ExprValue(af - bf),
+                "*" => new ExprValue(af * bf),
+                "//" => new ExprValue(Mathf.Floor(af / bf)),
+                "max" => new ExprValue(Mathf.Max(af, bf)),
+                "min" => new ExprValue(Mathf.Min(af, bf)),
+                _ => throw new InvalidOperationException("unsupported float-pref op: " + op)
+            };
+        }
+
+        private static ExprValue ApplyUnarySimple(string op, ExprValue a)
+        {
+            if (!a.isFloat)
+            {
+                return op switch
+                {
+                    "abs" => new ExprValue(Mathf.Abs(a.i)),
+                    "neg" => new ExprValue(-a.i),
+                    "sign" => new ExprValue(a.i > 0 ? 1 : (a.i == 0 ? 0 : -1)),
+                    "square" => new ExprValue(a.i * a.i),
+                    _ => throw new InvalidOperationException("unsupported unary op: " + op)
+                };
+            }
+
+            var af = a.f;
+            return op switch
+            {
+                "abs" => new ExprValue(Mathf.Abs(af)),
+                "neg" => new ExprValue(-af),
+                "sign" => new ExprValue(af > 0f ? 1f : (af == 0f ? 0f : -1f)),
+                "square" => new ExprValue(af * af),
+                _ => throw new InvalidOperationException("unsupported unary op: " + op)
+            };
+        }
+
+        private static ExprValue ApplyUnaryRound(string op, ExprValue a)
+        {
+            if (!a.isFloat)
+                return new ExprValue(a.i);
+
+            return op switch
+            {
+                "trunc" => new ExprValue((int)a.f),
+                "ceil" => new ExprValue((int)Math.Ceiling(a.f)),
+                "floor" => new ExprValue((int)Math.Floor(a.f)),
+                "round" => new ExprValue((int)Math.Round(a.f)),
+                _ => throw new InvalidOperationException("unsupported round op: " + op)
+            };
+        }
+
+        private static ExprValue ApplyUnaryFloat(string op, ExprValue a)
+        {
+            var af = a.ToFloat();
+            return op switch
+            {
+                "acos" => new ExprValue(Mathf.Acos(af)),
+                "acosh" => new ExprValue((float)Math.Acosh(af)),
+                "asin" => new ExprValue(Mathf.Asin(af)),
+                "asinh" => new ExprValue((float)Math.Asinh(af)),
+                "atan" => new ExprValue(Mathf.Atan(af)),
+                "atanh" => new ExprValue((float)Math.Atanh(af)),
+                "cos" => new ExprValue(Mathf.Cos(af)),
+                "cosh" => new ExprValue((float)Math.Cosh(af)),
+                "erf" => new ExprValue((float)Erf(af)),
+                "exp" => new ExprValue(Mathf.Exp(af)),
+                "log" => new ExprValue(Mathf.Log(af)),
+                "log10" => new ExprValue(Mathf.Log10(af)),
+                "reciprocal" => new ExprValue(1f / af),
+                "rsqrt" => new ExprValue(1f / Mathf.Sqrt(af)),
+                "sin" => new ExprValue(Mathf.Sin(af)),
+                "sinh" => new ExprValue((float)Math.Sinh(af)),
+                "sqrt" => new ExprValue(Mathf.Sqrt(af)),
+                "tan" => new ExprValue(Mathf.Tan(af)),
+                "tanh" => new ExprValue((float)Math.Tanh(af)),
+                _ => throw new InvalidOperationException("unsupported float unary op: " + op)
+            };
+        }
+
+        private static ExprValue ApplyBinaryFloat(string op, ExprValue a, ExprValue b)
+        {
+            var af = a.ToFloat();
+            var bf = b.ToFloat();
+            return op switch
+            {
+                "/" => new ExprValue(af / bf),
+                "atan2" => new ExprValue(Mathf.Atan2(af, bf)),
+                "fmod" => new ExprValue(af % bf),
+                "pow" => new ExprValue(Mathf.Pow(af, bf)),
+                "remainder" => new ExprValue(RepeatRemainder(af, bf)),
+                "logaddexp" => new ExprValue(Mathf.Log(Mathf.Exp(af) + Mathf.Exp(bf))),
+                _ => throw new InvalidOperationException("unsupported float binary op: " + op)
+            };
+        }
+
+        private static ExprValue ApplyBinaryBitwise(string op, ExprValue a, ExprValue b)
+        {
+            var ai = a.ToInt();
+            var bi = b.ToInt();
+            return op switch
+            {
+                "and" => new ExprValue(ai & bi),
+                "or" => new ExprValue(ai | bi),
+                "xor" => new ExprValue(ai ^ bi),
+                "lshift" => new ExprValue(ai << bi),
+                "rshift" => new ExprValue(ai >> bi),
+                _ => throw new InvalidOperationException("unsupported bitwise op: " + op)
+            };
+        }
+
+        private static float RepeatRemainder(float a, float b)
+        {
+            var r = a % b;
+            if (a * b < 0f)
+                r += b;
+            return r;
+        }
+
+        private static double Erf(double x)
+        {
+            var sign = x < 0 ? -1d : 1d;
+            x = Math.Abs(x);
+
+            var a1 = 0.254829592d;
+            var a2 = -0.284496736d;
+            var a3 = 1.421413741d;
+            var a4 = -1.453152027d;
+            var a5 = 1.061405429d;
+            var p = 0.3275911d;
+            var t = 1d / (1d + p * x);
+            var y = 1d - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.Exp(-x * x);
+            return sign * y;
         }
 
         internal static BufferShape GetTextureShape(Dictionary<string, BufferShape> textureShapes, TensorRef tr, string name)
@@ -3323,6 +4146,30 @@ namespace NcnnCompute
             if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
                 return v;
             return 0.2f;
+        }
+
+        public static float[] ParseActivationParams(NcnnParamModel.Layer layer)
+        {
+            if (layer == null)
+                return Array.Empty<float>();
+            return layer.GetFloats(-23310, Array.Empty<float>());
+        }
+
+        public static float ApplyActivationScalarCpu(float v, int activationType, float param0 = 0f, float param1 = 0f)
+        {
+            if (activationType == 1)
+                return Mathf.Max(0f, v);
+            if (activationType == 2)
+                return v < 0f ? v * param0 : v;
+            if (activationType == 3)
+                return Mathf.Clamp(v, param0, param1);
+            if (activationType == 4)
+                return 1f / (1f + Mathf.Exp(-v));
+            if (activationType == 5)
+                return v * Mathf.Tanh(Mathf.Log(Mathf.Exp(v) + 1f));
+            if (activationType == 6)
+                return v * Mathf.Clamp(v * param0 + param1, 0f, 1f);
+            return v;
         }
 
         public static (float coeffA, float coeffB) ParseEltwiseCoeff(NcnnParamModel.Layer layer)
@@ -3859,6 +4706,80 @@ namespace NcnnCompute
             }
         }
 
+        internal void ApplyMaxPoolingIndCpu(
+            ComputeBuffer srcBuffer,
+            NcnnTensorBuffer srcView,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            NcnnTensorBuffer outValue,
+            NcnnTensorBuffer outIndex)
+        {
+            if (srcBuffer == null)
+                throw new ArgumentNullException(nameof(srcBuffer));
+            if (srcView == null)
+                throw new ArgumentNullException(nameof(srcView));
+            if (outValue == null)
+                throw new ArgumentNullException(nameof(outValue));
+            if (outIndex == null)
+                throw new ArgumentNullException(nameof(outIndex));
+
+            var srcCount = srcView.elementCount;
+            var srcData = new float[srcCount];
+            srcBuffer.GetData(srcData);
+
+            var outCount = outValue.elementCount;
+            var valueData = new float[outCount];
+            var indexData = new float[outCount];
+            var srcPlane = srcView.w * srcView.h;
+            var outPlane = outValue.w * outValue.h;
+
+            for (var c = 0; c < srcView.c; c++)
+            {
+                var srcBase = c * srcPlane;
+                var dstBase = c * outPlane;
+                for (var oy = 0; oy < outValue.h; oy++)
+                {
+                    var sy0 = oy * strideH - padTop;
+                    for (var ox = 0; ox < outValue.w; ox++)
+                    {
+                        var sx0 = ox * strideW - padLeft;
+                        var best = float.NegativeInfinity;
+                        var bestIndex = 0;
+                        for (var ky = 0; ky < kernelH; ky++)
+                        {
+                            var sy = sy0 + ky;
+                            if (sy < 0 || sy >= srcView.h)
+                                continue;
+                            for (var kx = 0; kx < kernelW; kx++)
+                            {
+                                var sx = sx0 + kx;
+                                if (sx < 0 || sx >= srcView.w)
+                                    continue;
+                                var linear = sy * srcView.w + sx;
+                                var v = srcData[srcBase + linear];
+                                if (v > best)
+                                {
+                                    best = v;
+                                    bestIndex = linear;
+                                }
+                            }
+                        }
+
+                        var dstIndex = dstBase + oy * outValue.w + ox;
+                        valueData[dstIndex] = best;
+                        indexData[dstIndex] = bestIndex;
+                    }
+                }
+            }
+
+            outValue.buffer.SetData(valueData);
+            outIndex.buffer.SetData(indexData);
+        }
+
         internal void ApplyMaxUnPoolingCpu(TensorRef src, BufferShape srcShape, IndexRef idx, int outW, int outH, RenderTexture outRt)
         {
             var pooledCount = src.width * src.height * srcShape.c;
@@ -3908,6 +4829,51 @@ namespace NcnnCompute
                 ReturnTempBuffer(pooledBuffer);
                 ReturnTempBuffer(indexBuffer);
             }
+        }
+
+        internal void ApplyMaxUnPoolingCpu(
+            ComputeBuffer pooledBuffer,
+            NcnnTensorBuffer pooledView,
+            ComputeBuffer indexBuffer,
+            NcnnTensorBuffer indexView,
+            int outW,
+            int outH,
+            NcnnTensorBuffer outTensor)
+        {
+            if (pooledBuffer == null)
+                throw new ArgumentNullException(nameof(pooledBuffer));
+            if (pooledView == null)
+                throw new ArgumentNullException(nameof(pooledView));
+            if (indexBuffer == null)
+                throw new ArgumentNullException(nameof(indexBuffer));
+            if (indexView == null)
+                throw new ArgumentNullException(nameof(indexView));
+            if (outTensor == null)
+                throw new ArgumentNullException(nameof(outTensor));
+
+            var pooledData = new float[pooledView.elementCount];
+            pooledBuffer.GetData(pooledData);
+            var indexData = new float[indexView.elementCount];
+            indexBuffer.GetData(indexData);
+
+            var outPlane = outW * outH;
+            var pooledPlane = pooledView.w * pooledView.h;
+            var outData = new float[outPlane * pooledView.c];
+
+            for (var c = 0; c < pooledView.c; c++)
+            {
+                var pooledBase = c * pooledPlane;
+                var outBase = c * outPlane;
+                for (var i = 0; i < pooledPlane; i++)
+                {
+                    var dstIndex = Mathf.RoundToInt(indexData[pooledBase + i]);
+                    if (dstIndex < 0 || dstIndex >= outPlane)
+                        continue;
+                    outData[outBase + dstIndex] = pooledData[pooledBase + i];
+                }
+            }
+
+            outTensor.buffer.SetData(outData);
         }
 
         internal void LogBufferStats(string layerName, string kind, ComputeBuffer buffer, int logicalCount)

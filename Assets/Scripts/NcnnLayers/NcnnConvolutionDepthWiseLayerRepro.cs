@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnConvolutionDepthWiseLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnConvolutionDepthWiseLayerRepro() : base(NcnnLayerTypes.ConvolutionDepthWise, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnConvolutionDepthWiseLayerRepro() : base(NcnnLayerTypes.ConvolutionDepthWise, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
@@ -319,42 +319,35 @@ namespace NcnnCompute
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
                                                 if (!owner._conv.TryGetValue(layer.name, out var conv))
                                                     throw new InvalidOperationException("Convolution not found: " + layer.name);
-                                                if (src.packs != conv.inPacks)
-                                                    throw new InvalidOperationException("unexpected in packs for " + layer.name + ": " + src.packs + " vs " + conv.inPacks);
-                                                if (conv.isDepthWise || conv.group != 1)
-                                                    throw new InvalidOperationException("CommandBuffer convolution does not support depthwise/group conv: " + layer.name);
-                                                if (conv.strideW != 1 || conv.strideH != 1 || conv.dilationW != 1 || conv.dilationH != 1)
-                                                    throw new InvalidOperationException("CommandBuffer convolution only supports stride=1 dilation=1: " + layer.name);
-
                                                 var outW = NcnnRepro.ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
                                                 var outH = NcnnRepro.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
+                                                var canUseTextureConv = src.packs == conv.inPacks
+                                                                        && owner.EnableDepthWiseTextureConvolution
+                                                                        && conv.isDepthWise
+                                                                        && conv.group == conv.inC
+                                                                        && conv.outC == conv.inC
+                                                                        && conv.packedDepthWiseWeight4 != null
+                                                                        && conv.packedBias4 != null
+                                                                        && conv.kernelW == 3
+                                                                        && conv.kernelH == 3
+                                                                        && conv.strideW == 1
+                                                                        && conv.strideH == 1
+                                                                        && conv.dilationW == 1
+                                                                        && conv.dilationH == 1
+                                                                        && conv.padLeft == conv.padRight
+                                                                        && conv.padTop == conv.padBottom
+                                                                        && conv.padLeft == conv.padTop;
+
+                                                if (!canUseTextureConv)
+                                                {
+                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, conv.outPacks);
+                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                    continue;
+                                                }
+
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
 
-                                                if (conv.kernelW == 1 && conv.kernelH == 1)
-                                                {
-                                                    owner.Ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outArr);
-                                                }
-                                                else if (conv.kernelW == 3 && conv.kernelH == 3 && conv.padLeft == conv.padRight && conv.padLeft == conv.padTop && conv.padTop == conv.padBottom)
-                                                {
-                                                    var useWinograd = NcnnRepro.EnableWinograd23
-                                                        && conv.packedWeightTm23 != null
-                                                        && conv.strideW == 1
-                                                        && conv.strideH == 1
-                                                        && conv.padLeft == 1
-                                                        && conv.padTop == 1;
-                                                    if (useWinograd)
-                                                    {
-                                                        owner.Ops.Conv3x3Pack4Winograd23(cmd, src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outArr);
-                                                    }
-                                                    else
-                                                    {
-                                                        owner.Ops.Conv3x3Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outArr);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    throw new InvalidOperationException("CommandBuffer convolution only supports 1x1/3x3 symmetric conv: " + layer.name);
-                                                }
+                                                owner.Ops.ConvDepthWisePack4(cmd, src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outArr);
 
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = conv.outPacks, refs = 1, owned = true };
                                                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);

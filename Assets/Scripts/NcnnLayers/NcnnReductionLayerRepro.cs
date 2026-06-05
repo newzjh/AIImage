@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnReductionLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnReductionLayerRepro() : base(NcnnLayerTypes.Reduction, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnReductionLayerRepro() : base(NcnnLayerTypes.Reduction, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -49,22 +49,10 @@ namespace NcnnCompute
                                                         if (op != 0 && op != 3)
                                                             throw new InvalidOperationException("Reduction dims=3 currently supports SUM/MEAN only: " + layer.name);
 
-                                                        var data = new float[srcBuf.count];
-                                                        srcBuf.GetData(data);
                                                         var plane = srcTensor.w * srcTensor.h;
-                                                        var reduced = new float[srcTensor.c];
                                                         var scale = op == 3 ? (coeff / Mathf.Max(1, plane)) : coeff;
-                                                        for (var channelIndex = 0; channelIndex < srcTensor.c; channelIndex++)
-                                                        {
-                                                            var sum = 0f;
-                                                            var offset = channelIndex * plane;
-                                                            for (var i = 0; i < plane; i++)
-                                                                sum += data[offset + i];
-                                                            reduced[channelIndex] = sum * scale;
-                                                        }
-
-                                                        var outBuf3 = owner.RentTempBuffer(reduced.Length, sizeof(float));
-                                                        outBuf3.SetData(reduced);
+                                                        var outBuf3 = owner.RentTempBuffer(srcTensor.c, sizeof(float));
+                                                        owner.Ops.ReductionRowsBuf(srcBuf, plane, srcTensor.c, 0, scale, outBuf3);
                                                         bufferBlobs[layer.topNames[0]] = outBuf3;
                                                         bufferViews[layer.topNames[0]] = keepDims
                                                             ? new NcnnTensorBuffer(outBuf3, 3, 1, 1, 1, srcTensor.c, false)
@@ -123,7 +111,7 @@ namespace NcnnCompute
                                                 }
 
                                                 var outBuf = owner.RentTempBuffer(outCount, sizeof(float));
-                                                owner.Ops.ReductionBuf(srcBuf, reduceElems, outCount, layer.GetInt(0, 0), coeff, outBuf);
+                                                owner.Ops.ReductionRowsBuf(srcBuf, reduceElems, outCount, layer.GetInt(0, 0), coeff, outBuf);
                                                 bufferBlobs[layer.topNames[0]] = outBuf;
                                                 bufferViews[layer.topNames[0]] = positiveAxis == 1
                                                     ? (keepDims
@@ -136,6 +124,21 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var keepDims = layer.GetInt(4, 0) != 0;
+            var width = keepDims ? 1 : 1;
+            var height = keepDims ? Mathf.Max(1, src.height) : 1;
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, 1, blobs);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }

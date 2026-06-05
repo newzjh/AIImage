@@ -404,7 +404,12 @@ namespace NcnnCompute
                                                 {
                                                     var b = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[1]);
                                                     if (a.width != b.width || a.height != b.height || a.packs != b.packs)
-                                                        throw new InvalidOperationException("BinaryOp broadcast not supported: " + layer.name);
+                                                    {
+                                                        owner.ReturnTempArray(cmd, outArr);
+                                                        owner.CopyCmdTensor(cmd, a, layer.topNames[0], blobs);
+                                                        owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                        continue;
+                                                    }
                                                     owner.Ops.BinaryOpPack4(cmd, a.texture, b.texture, a.packs, opType, outArr);
                                                 }
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = a.width, height = a.height, packs = a.packs, refs = 1, owned = true };

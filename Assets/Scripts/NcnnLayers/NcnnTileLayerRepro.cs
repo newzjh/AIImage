@@ -6,7 +6,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnTileLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnTileLayerRepro() : base(NcnnLayerTypes.Tile, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnTileLayerRepro() : base(NcnnLayerTypes.Tile, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -83,6 +83,29 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var hasAxis = layer.intParams != null && layer.intParams.ContainsKey(0);
+            var hasTiles = layer.intParams != null && layer.intParams.ContainsKey(1);
+            var tiles = layer.GetInt(1, 1);
+            if ((!hasAxis && !hasTiles) || tiles <= 1)
+            {
+                blobs[layer.topNames[0]] = src;
+                src.refs++;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, src.width, src.height, Mathf.Max(1, src.packs * tiles));
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }

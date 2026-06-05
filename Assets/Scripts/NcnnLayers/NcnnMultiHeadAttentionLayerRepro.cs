@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnMultiHeadAttentionLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnMultiHeadAttentionLayerRepro() : base(NcnnLayerTypes.MultiHeadAttention, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnMultiHeadAttentionLayerRepro() : base(NcnnLayerTypes.MultiHeadAttention, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
@@ -127,6 +127,18 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], Mathf.Max(1, src.width), Mathf.Max(1, src.height), Mathf.Max(1, src.packs), blobs);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }

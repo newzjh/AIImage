@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnExpandDimsLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnExpandDimsLayerRepro() : base(NcnnLayerTypes.ExpandDims, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnExpandDimsLayerRepro() : base(NcnnLayerTypes.ExpandDims, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -134,6 +134,19 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            blobs[layer.topNames[0]] = src;
+            src.refs++;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }

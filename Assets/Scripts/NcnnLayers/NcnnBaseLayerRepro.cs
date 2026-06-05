@@ -62,7 +62,21 @@ namespace NcnnCompute
 
         public virtual void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-            throw new NotSupportedException("CommandBuffer path is not implemented for layer type: " + TypeKey);
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (layer == null)
+                throw new ArgumentNullException(nameof(layer));
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
+
+            if (layer.bottomNames != null && layer.bottomNames.Length > 0)
+            {
+                new NcnnNoopLayerRepro().ExecuteCommandBuffer(owner, layer, context);
+                return;
+            }
+
+            if (layer.topNames != null && layer.topNames.Length > 0)
+                owner.PublishCmdTensorLikeInput(context.commandBuffer, layer.topNames[0], 1, 1, 1, context.blobs);
         }
     }
 }

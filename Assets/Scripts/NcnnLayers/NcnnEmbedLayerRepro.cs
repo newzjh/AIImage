@@ -9,7 +9,7 @@ namespace NcnnCompute
 {
     public sealed class NcnnEmbedLayerRepro : NcnnBaseLayerRepro
     {
-        public NcnnEmbedLayerRepro() : base(NcnnLayerTypes.Embed, supportsBufferPath: true, supportsCommandBufferPath: false) { }
+        public NcnnEmbedLayerRepro() : base(NcnnLayerTypes.Embed, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
@@ -75,6 +75,21 @@ namespace NcnnCompute
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var outWidth = 1;
+            var outHeight = Mathf.Max(1, src.width * src.height);
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(layer.GetInt(0, 0) / 4f));
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], outWidth, outHeight, outPacks, blobs);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
         }
     }
 }
