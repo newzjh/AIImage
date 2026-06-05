@@ -151,23 +151,23 @@ namespace NcnnCompute
                 return;
             }
 
-            var cmd = context.commandBuffer;
-            var blobs = context.blobs;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outArrFallback = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.CopyPack4(cmd, src.texture, 0, outArrFallback, 0, src.packs);
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            var fallbackCmd = context.commandBuffer;
+            var fallbackBlobs = context.blobs;
+            var fallbackRemaining = context.remaining;
+            var fallbackPinnedNames = context.pinnedNames;
+            var fallbackSrc = NcnnRepro.GetCmdTensor(fallbackBlobs, layer.bottomNames[0]);
+            var outArrFallback = owner.RentTempArray(fallbackCmd, fallbackSrc.width, fallbackSrc.height, fallbackSrc.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.CopyPack4(fallbackCmd, fallbackSrc.texture, 0, outArrFallback, 0, fallbackSrc.packs);
+            fallbackBlobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outArrFallback,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
+                width = fallbackSrc.width,
+                height = fallbackSrc.height,
+                packs = fallbackSrc.packs,
                 refs = 1,
                 owned = true
             };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            owner.ConsumeCmd(fallbackCmd, fallbackBlobs, fallbackRemaining, layer.bottomNames, fallbackPinnedNames);
         }
     }
 }

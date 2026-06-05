@@ -3472,6 +3472,19 @@ namespace NcnnCompute
             return values;
         }
 
+        internal static int[] EvaluateExpressionListOrNull(string expr, IReadOnlyList<BufferShape> bottomShapes, NcnnParamModel.Layer layer)
+        {
+            if (string.IsNullOrWhiteSpace(expr))
+                return null;
+            var values = EvaluateExpressionList(expr, bottomShapes, layer);
+            if (values == null || values.Count == 0)
+                return Array.Empty<int>();
+            var arr = new int[values.Count];
+            for (var i = 0; i < values.Count; i++)
+                arr[i] = values[i];
+            return arr;
+        }
+
         private readonly struct ExprValue
         {
             public readonly bool isFloat;
@@ -3613,7 +3626,7 @@ namespace NcnnCompute
                 "trunc" => new ExprValue((int)a.f),
                 "ceil" => new ExprValue((int)Math.Ceiling(a.f)),
                 "floor" => new ExprValue((int)Math.Floor(a.f)),
-                "round" => new ExprValue((int)Math.Round(a.f)),
+                "round" => new ExprValue((int)Math.Round(a.f, MidpointRounding.AwayFromZero)),
                 _ => throw new InvalidOperationException("unsupported round op: " + op)
             };
         }
@@ -3624,11 +3637,11 @@ namespace NcnnCompute
             return op switch
             {
                 "acos" => new ExprValue(Mathf.Acos(af)),
-                "acosh" => new ExprValue((float)Math.Acosh(af)),
+                "acosh" => new ExprValue((float)Acosh(af)),
                 "asin" => new ExprValue(Mathf.Asin(af)),
-                "asinh" => new ExprValue((float)Math.Asinh(af)),
+                "asinh" => new ExprValue((float)Asinh(af)),
                 "atan" => new ExprValue(Mathf.Atan(af)),
-                "atanh" => new ExprValue((float)Math.Atanh(af)),
+                "atanh" => new ExprValue((float)Atanh(af)),
                 "cos" => new ExprValue(Mathf.Cos(af)),
                 "cosh" => new ExprValue((float)Math.Cosh(af)),
                 "erf" => new ExprValue((float)Erf(af)),
@@ -3699,6 +3712,21 @@ namespace NcnnCompute
             var t = 1d / (1d + p * x);
             var y = 1d - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.Exp(-x * x);
             return sign * y;
+        }
+
+        private static double Acosh(double x)
+        {
+            return Math.Log(x + Math.Sqrt(x * x - 1d));
+        }
+
+        private static double Asinh(double x)
+        {
+            return Math.Log(x + Math.Sqrt(x * x + 1d));
+        }
+
+        private static double Atanh(double x)
+        {
+            return 0.5d * Math.Log((1d + x) / (1d - x));
         }
 
         internal static BufferShape GetTextureShape(Dictionary<string, BufferShape> textureShapes, TensorRef tr, string name)
@@ -3832,71 +3860,422 @@ namespace NcnnCompute
             throw new ArgumentOutOfRangeException(nameof(axis));
         }
 
-        internal NcnnTensorBuffer ApplyCropSlices(
-            ComputeBuffer srcBuf,
-            NcnnTensorBuffer srcView,
-            NcnnParamModel.Layer layer,
-            List<IDisposable> tempOwned)
+        internal readonly struct CropRoi
         {
+            public readonly int woffset;
+            public readonly int hoffset;
+            public readonly int doffset;
+            public readonly int coffset;
+            public readonly int outw;
+            public readonly int outh;
+            public readonly int outd;
+            public readonly int outc;
+
+            public CropRoi(int woffset, int hoffset, int doffset, int coffset, int outw, int outh, int outd, int outc)
+            {
+                this.woffset = woffset;
+                this.hoffset = hoffset;
+                this.doffset = doffset;
+                this.coffset = coffset;
+                this.outw = outw;
+                this.outh = outh;
+                this.outd = outd;
+                this.outc = outc;
+            }
+        }
+
+        internal static BufferShape GetShapeOf(NcnnTensorBuffer view)
+        {
+            if (view == null)
+                throw new ArgumentNullException(nameof(view));
+            return new BufferShape(view.dims, view.w, view.h, view.d, view.c);
+        }
+
+        internal static BufferShape ResolveSqueezeShape(BufferShape src, NcnnParamModel.Layer layer)
+        {
+            if (layer == null)
+                throw new ArgumentNullException(nameof(layer));
+
+            bool squeezeW = false;
+            bool squeezeH = false;
+            bool squeezeD = false;
+            bool squeezeC = false;
+
+            var axes = layer.GetInts(-23303, null);
+            if (axes == null || axes.Length == 0)
+                axes = layer.GetInts(3, null);
+
+            if (axes == null || axes.Length == 0)
+            {
+                squeezeW = src.w == 1 && layer.GetInt(0, 0) != 0;
+                squeezeH = src.h == 1 && layer.GetInt(1, 0) != 0;
+                squeezeD = src.d == 1 && layer.GetInt(11, 0) != 0;
+                squeezeC = src.c == 1 && layer.GetInt(2, 0) != 0;
+            }
+            else
+            {
+                for (var i = 0; i < axes.Length; i++)
+                {
+                    var axis = axes[i];
+                    if (axis < 0)
+                        axis += src.dims;
+
+                    if (src.dims == 1 && axis == 0) squeezeW = src.w == 1;
+                    if (src.dims == 2 && axis == 0) squeezeH = src.h == 1;
+                    if (src.dims == 2 && axis == 1) squeezeW = src.w == 1;
+                    if (src.dims == 3 && axis == 0) squeezeC = src.c == 1;
+                    if (src.dims == 3 && axis == 1) squeezeH = src.h == 1;
+                    if (src.dims == 3 && axis == 2) squeezeW = src.w == 1;
+                    if (src.dims == 4 && axis == 0) squeezeC = src.c == 1;
+                    if (src.dims == 4 && axis == 1) squeezeD = src.d == 1;
+                    if (src.dims == 4 && axis == 2) squeezeH = src.h == 1;
+                    if (src.dims == 4 && axis == 3) squeezeW = src.w == 1;
+                }
+            }
+
+            if (src.dims == 1)
+            {
+                if (squeezeW)
+                    return new BufferShape(1, 1, 1, 1, 1);
+                return src;
+            }
+
+            if (src.dims == 2)
+            {
+                if (squeezeW && squeezeH) return new BufferShape(1, 1, 1, 1, 1);
+                if (squeezeW) return new BufferShape(1, src.h, 1, 1, 1);
+                if (squeezeH) return new BufferShape(1, src.w, 1, 1, 1);
+                return src;
+            }
+
+            if (src.dims == 3)
+            {
+                if (squeezeW && squeezeH && squeezeC) return new BufferShape(1, 1, 1, 1, 1);
+                if (squeezeW && squeezeH) return new BufferShape(1, src.c, 1, 1, 1);
+                if (squeezeH && squeezeC) return new BufferShape(1, src.w, 1, 1, 1);
+                if (squeezeW && squeezeC) return new BufferShape(1, src.h, 1, 1, 1);
+                if (squeezeW) return new BufferShape(2, src.h, src.c, 1, 1);
+                if (squeezeH) return new BufferShape(2, src.w, src.c, 1, 1);
+                if (squeezeC) return new BufferShape(2, src.w, src.h, 1, 1);
+                return src;
+            }
+
+            if (squeezeW && squeezeH && squeezeD && squeezeC) return new BufferShape(1, 1, 1, 1, 1);
+            if (squeezeW && squeezeH && squeezeD) return new BufferShape(1, src.c, 1, 1, 1);
+            if (squeezeH && squeezeD && squeezeC) return new BufferShape(1, src.w, 1, 1, 1);
+            if (squeezeW && squeezeD && squeezeC) return new BufferShape(1, src.h, 1, 1, 1);
+            if (squeezeW && squeezeH && squeezeC) return new BufferShape(1, src.d, 1, 1, 1);
+            if (squeezeW && squeezeH) return new BufferShape(2, src.d, src.c, 1, 1);
+            if (squeezeW && squeezeD) return new BufferShape(2, src.h, src.c, 1, 1);
+            if (squeezeH && squeezeD) return new BufferShape(2, src.w, src.c, 1, 1);
+            if (squeezeH && squeezeC) return new BufferShape(2, src.w, src.d, 1, 1);
+            if (squeezeW && squeezeC) return new BufferShape(2, src.h, src.d, 1, 1);
+            if (squeezeD && squeezeC) return new BufferShape(2, src.w, src.h, 1, 1);
+            if (squeezeW) return new BufferShape(3, src.h, src.d, 1, src.c);
+            if (squeezeH) return new BufferShape(3, src.w, src.d, 1, src.c);
+            if (squeezeD) return new BufferShape(3, src.w, src.h, 1, src.c);
+            if (squeezeC) return new BufferShape(3, src.w, src.h, 1, src.d);
+            return src;
+        }
+
+        internal static NcnnTensorBuffer ResolveSqueezeView(NcnnTensorBuffer src, NcnnParamModel.Layer layer)
+        {
+            if (src == null)
+                throw new ArgumentNullException(nameof(src));
+            var shape = ResolveSqueezeShape(GetShapeOf(src), layer);
+            return src.Reshape(shape.dims, shape.w, shape.h, shape.d, shape.c);
+        }
+
+        internal static CropRoi ResolveCropRoi(BufferShape srcShape, NcnnParamModel.Layer layer, IReadOnlyList<BufferShape> bottomShapes)
+        {
+            if (layer == null)
+                throw new ArgumentNullException(nameof(layer));
+
+            var startsExpr = layer.GetString(19, null);
+            var endsExpr = layer.GetString(20, null);
+            var axesExpr = layer.GetString(21, null);
             var starts = layer.GetInts(-23309, null);
             var ends = layer.GetInts(-23310, null);
             var axes = layer.GetInts(-23311, null);
 
-            if (starts == null || ends == null || starts.Length == 0 || ends.Length == 0)
+            var hasExprSlice = !string.IsNullOrWhiteSpace(startsExpr) && !string.IsNullOrWhiteSpace(endsExpr);
+            if (hasExprSlice)
             {
-                throw new InvalidOperationException("Crop without starts/ends arrays is not supported yet: " + layer.name);
+                starts = EvaluateExpressionListOrNull(startsExpr, bottomShapes, layer);
+                ends = EvaluateExpressionListOrNull(endsExpr, bottomShapes, layer);
+                axes = EvaluateExpressionListOrNull(axesExpr, bottomShapes, layer);
             }
 
+            if (starts != null && ends != null && starts.Length > 0 && ends.Length > 0)
+                return ResolveCropRoiFromSlice(srcShape, starts, ends, axes, layer.name);
+
+            var dims = srcShape.dims;
+            var w = srcShape.w;
+            var h = srcShape.h;
+            var d = srcShape.d;
+            var c = srcShape.c;
+
+            var woffset = layer.GetInt(0, 0);
+            var hoffset = layer.GetInt(1, 0);
+            var doffset = layer.GetInt(13, 0);
+            var coffset = layer.GetInt(2, 0);
+            var outw = w;
+            var outh = h;
+            var outd = d;
+            var outc = c;
+            var woffset2 = layer.GetInt(6, 0);
+            var hoffset2 = layer.GetInt(7, 0);
+            var doffset2 = layer.GetInt(15, 0);
+            var coffset2 = layer.GetInt(8, 0);
+
+            if (dims == 1)
+            {
+                outw = w - woffset - woffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(3))
+                    outw = Math.Min(layer.GetInt(3, outw), outw);
+            }
+            else if (dims == 2)
+            {
+                outw = w - woffset - woffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(3))
+                    outw = Math.Min(layer.GetInt(3, outw), outw);
+                outh = h - hoffset - hoffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(4))
+                    outh = Math.Min(layer.GetInt(4, outh), outh);
+            }
+            else if (dims == 3)
+            {
+                outw = w - woffset - woffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(3))
+                    outw = Math.Min(layer.GetInt(3, outw), outw);
+                outh = h - hoffset - hoffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(4))
+                    outh = Math.Min(layer.GetInt(4, outh), outh);
+                outc = c - coffset - coffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(5))
+                    outc = Math.Min(layer.GetInt(5, outc), outc);
+            }
+            else
+            {
+                outw = w - woffset - woffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(3))
+                    outw = Math.Min(layer.GetInt(3, outw), outw);
+                outh = h - hoffset - hoffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(4))
+                    outh = Math.Min(layer.GetInt(4, outh), outh);
+                outd = d - doffset - doffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(14))
+                    outd = Math.Min(layer.GetInt(14, outd), outd);
+                outc = c - coffset - coffset2;
+                if (layer.intParams != null && layer.intParams.ContainsKey(5))
+                    outc = Math.Min(layer.GetInt(5, outc), outc);
+            }
+
+            return ValidateCropRoi(new CropRoi(woffset, hoffset, doffset, coffset, outw, outh, outd, outc), srcShape, layer.name);
+        }
+
+        internal static CropRoi ResolveCropRoi(BufferShape srcShape, BufferShape referenceShape, NcnnParamModel.Layer layer)
+        {
+            if (layer == null)
+                throw new ArgumentNullException(nameof(layer));
+
+            var woffset = layer.GetInt(0, 0);
+            var hoffset = layer.GetInt(1, 0);
+            var doffset = layer.GetInt(13, 0);
+            var coffset = layer.GetInt(2, 0);
+
+            if (srcShape.dims == 1)
+                return ValidateCropRoi(new CropRoi(woffset, 0, 0, 0, referenceShape.w, 1, 1, 1), srcShape, layer.name);
+            if (srcShape.dims == 2)
+                return ValidateCropRoi(new CropRoi(woffset, hoffset, 0, 0, referenceShape.w, referenceShape.h, 1, 1), srcShape, layer.name);
+            if (srcShape.dims == 3)
+                return ValidateCropRoi(new CropRoi(woffset, hoffset, 0, coffset, referenceShape.w, referenceShape.h, 1, referenceShape.dims == 3 ? referenceShape.c : srcShape.c), srcShape, layer.name);
+            return ValidateCropRoi(new CropRoi(woffset, hoffset, doffset, coffset, referenceShape.w, referenceShape.h, referenceShape.d, referenceShape.dims == 4 ? referenceShape.c : srcShape.c), srcShape, layer.name);
+        }
+
+        internal static CropRoi ResolveCropRoi(BufferShape srcShape, int[] paramData, NcnnParamModel.Layer layer)
+        {
+            if (paramData == null)
+                throw new ArgumentNullException(nameof(paramData));
+
+            CropRoi roi;
+            if (srcShape.dims == 1)
+                roi = new CropRoi(paramData[0], 0, 0, 0, paramData[3], 1, 1, 1);
+            else if (srcShape.dims == 2)
+                roi = new CropRoi(paramData[0], paramData[1], 0, 0, paramData[3], paramData[4], 1, 1);
+            else if (srcShape.dims == 3)
+                roi = new CropRoi(paramData[0], paramData[1], 0, paramData[2], paramData[3], paramData[4], 1, paramData[5]);
+            else
+                roi = new CropRoi(paramData[0], paramData[1], paramData[2], paramData[3], paramData[4], paramData[5], paramData[6], paramData[7]);
+
+            return ValidateCropRoi(roi, srcShape, layer?.name);
+        }
+
+        internal static CropRoi ResolveCropRoiFromSlice(BufferShape srcShape, int[] starts, int[] ends, int[] axes, string layerName)
+        {
+            if (starts == null || ends == null || starts.Length == 0 || ends.Length == 0)
+                throw new InvalidOperationException("Crop slice arrays are empty: " + layerName);
+
+            var dims = srcShape.dims;
+            var woffset = 0;
+            var hoffset = 0;
+            var doffset = 0;
+            var coffset = 0;
+            var outw = srcShape.w;
+            var outh = srcShape.h;
+            var outd = srcShape.d;
+            var outc = srcShape.c;
+
+            int[] actualAxes;
             if (axes == null || axes.Length == 0)
             {
-                axes = new int[starts.Length];
-                for (var i = 0; i < axes.Length; i++)
-                    axes[i] = i;
+                actualAxes = new int[Math.Max(starts.Length, dims)];
+                for (var i = 0; i < actualAxes.Length; i++)
+                    actualAxes[i] = i;
             }
+            else
+            {
+                actualAxes = axes;
+            }
+
+            var numAxis = axes == null || axes.Length == 0 ? Math.Min(dims, starts.Length) : Math.Min(starts.Length, axes.Length);
+            for (var i = 0; i < numAxis; i++)
+            {
+                var axis = actualAxes[i];
+                if (axis < 0)
+                    axis += dims;
+
+                var start = starts[i];
+                var end = ends[Math.Min(i, ends.Length - 1)];
+
+                if (dims == 1)
+                {
+                    ApplySliceBounds(srcShape.w, ref start, ref end, out woffset, out outw);
+                    continue;
+                }
+
+                if (dims == 2)
+                {
+                    if (axis == 0) ApplySliceBounds(srcShape.h, ref start, ref end, out hoffset, out outh);
+                    else if (axis == 1) ApplySliceBounds(srcShape.w, ref start, ref end, out woffset, out outw);
+                    continue;
+                }
+
+                if (dims == 3)
+                {
+                    if (axis == 0) ApplySliceBounds(srcShape.c, ref start, ref end, out coffset, out outc);
+                    else if (axis == 1) ApplySliceBounds(srcShape.h, ref start, ref end, out hoffset, out outh);
+                    else if (axis == 2) ApplySliceBounds(srcShape.w, ref start, ref end, out woffset, out outw);
+                    continue;
+                }
+
+                if (axis == 0) ApplySliceBounds(srcShape.c, ref start, ref end, out coffset, out outc);
+                else if (axis == 1) ApplySliceBounds(srcShape.d, ref start, ref end, out doffset, out outd);
+                else if (axis == 2) ApplySliceBounds(srcShape.h, ref start, ref end, out hoffset, out outh);
+                else if (axis == 3) ApplySliceBounds(srcShape.w, ref start, ref end, out woffset, out outw);
+            }
+
+            return ValidateCropRoi(new CropRoi(woffset, hoffset, doffset, coffset, outw, outh, outd, outc), srcShape, layerName);
+        }
+
+        private static void ApplySliceBounds(int axisSize, ref int start, ref int end, out int offset, out int outSize)
+        {
+            if (start == -233) start = 0;
+            if (end == -233) end = axisSize;
+            if (start < 0) start = axisSize + start;
+            if (end <= 0) end = axisSize + end;
+            if (end == int.MaxValue) end = axisSize;
+            offset = Mathf.Clamp(start, 0, axisSize);
+            var clampedEnd = Mathf.Clamp(end, offset, axisSize);
+            outSize = Mathf.Max(0, clampedEnd - offset);
+        }
+
+        internal static CropRoi ValidateCropRoi(CropRoi roi, BufferShape srcShape, string layerName)
+        {
+            if (roi.outw <= 0 || roi.outh <= 0 || roi.outd <= 0 || roi.outc <= 0)
+                throw new InvalidOperationException("Crop produced empty output: " + layerName);
+
+            if (roi.woffset < 0 || roi.hoffset < 0 || roi.doffset < 0 || roi.coffset < 0)
+                throw new InvalidOperationException("Crop negative offset: " + layerName);
+
+            if (roi.woffset + roi.outw > srcShape.w
+                || roi.hoffset + roi.outh > srcShape.h
+                || roi.doffset + roi.outd > srcShape.d
+                || roi.coffset + roi.outc > srcShape.c)
+            {
+                throw new InvalidOperationException("Crop roi out of range: " + layerName);
+            }
+
+            return roi;
+        }
+
+        internal NcnnTensorBuffer ApplyCrop(
+            ComputeBuffer srcBuf,
+            NcnnTensorBuffer srcView,
+            CropRoi roi,
+            List<IDisposable> tempOwned)
+        {
+            if (srcBuf == null)
+                throw new ArgumentNullException(nameof(srcBuf));
+            if (srcView == null)
+                throw new ArgumentNullException(nameof(srcView));
+
+            var needsCropW = roi.woffset != 0 || roi.outw != srcView.w;
+            var needsCropH = roi.hoffset != 0 || roi.outh != srcView.h;
+            var needsCropD = roi.doffset != 0 || roi.outd != srcView.d;
+            var needsCropC = roi.coffset != 0 || roi.outc != srcView.c;
+            if (!needsCropW && !needsCropH && !needsCropD && !needsCropC)
+                return srcView;
 
             var currentBuf = srcBuf;
             var currentView = srcView;
 
-            for (var i = 0; i < starts.Length; i++)
+            void ApplyAxisSlice(int tensorAxis, int begin, int outW, int outH, int outD, int outC)
             {
-                var ncnnAxis = axes[Mathf.Min(i, axes.Length - 1)];
-                if (ncnnAxis < 0)
-                    ncnnAxis += currentView.dims;
-                var axis = MapNcnnAxisToTensorAxis(currentView.dims, ncnnAxis);
-
-                var begin = starts[i];
-                var end = ends[Mathf.Min(i, ends.Length - 1)];
-                var axisSize = GetAxisSize(currentView.dims, currentView.w, currentView.h, currentView.d, currentView.c, axis);
-                if (begin == -233) begin = 0;
-                if (end == -233) end = axisSize;
-                if (begin < 0) begin = axisSize + begin;
-                if (end <= 0) end = axisSize + end;
-                begin = Mathf.Clamp(begin, 0, axisSize);
-                end = Mathf.Clamp(end, begin, axisSize);
-                var outSize = Mathf.Max(0, end - begin);
-                if (outSize <= 0)
-                    throw new InvalidOperationException("Crop produced empty output: " + layer.name);
-
-                var outW = currentView.w;
-                var outH = currentView.h;
-                var outD = currentView.d;
-                var outC = currentView.c;
-                if (axis == 0) outW = outSize;
-                else if (axis == 1) outH = outSize;
-                else if (axis == 2 && currentView.dims == 4) outD = outSize;
-                else if (axis == 2 || axis == 3) outC = outSize;
-
                 var outCount = outW * outH * outD * outC;
                 var outBuf = RentTempBuffer(outCount, sizeof(float));
-                _ops.Slice(currentBuf, currentView.dims, currentView.w, currentView.h, currentView.d, currentView.c, axis, begin, outW, outH, outD, outC, outBuf);
+                _ops.Slice(currentBuf, currentView.dims, currentView.w, currentView.h, currentView.d, currentView.c, tensorAxis, begin, outW, outH, outD, outC, outBuf);
                 var outView = new NcnnTensorBuffer(outBuf, currentView.dims, outW, outH, outD, outC, false);
-
-                if (!ReferenceEquals(currentBuf, srcBuf))
-                    tempOwned.Add(currentBuf);
-                tempOwned.Add(outBuf);
+                tempOwned?.Add(outBuf);
                 currentBuf = outBuf;
                 currentView = outView;
             }
+
+            if (srcView.dims == 1)
+            {
+                if (needsCropW)
+                    ApplyAxisSlice(0, roi.woffset, roi.outw, 1, 1, 1);
+                return currentView;
+            }
+
+            if (srcView.dims == 2)
+            {
+                if (needsCropH)
+                    ApplyAxisSlice(1, roi.hoffset, currentView.w, roi.outh, 1, 1);
+                if (needsCropW)
+                    ApplyAxisSlice(0, roi.woffset, roi.outw, currentView.h, 1, 1);
+                return currentView;
+            }
+
+            if (srcView.dims == 3)
+            {
+                if (needsCropC)
+                    ApplyAxisSlice(2, roi.coffset, currentView.w, currentView.h, 1, roi.outc);
+                if (needsCropH)
+                    ApplyAxisSlice(1, roi.hoffset, currentView.w, roi.outh, 1, currentView.c);
+                if (needsCropW)
+                    ApplyAxisSlice(0, roi.woffset, roi.outw, currentView.h, 1, currentView.c);
+                return currentView;
+            }
+
+            if (needsCropC)
+                ApplyAxisSlice(3, roi.coffset, currentView.w, currentView.h, currentView.d, roi.outc);
+            if (needsCropD)
+                ApplyAxisSlice(2, roi.doffset, currentView.w, currentView.h, roi.outd, currentView.c);
+            if (needsCropH)
+                ApplyAxisSlice(1, roi.hoffset, currentView.w, roi.outh, currentView.d, currentView.c);
+            if (needsCropW)
+                ApplyAxisSlice(0, roi.woffset, roi.outw, currentView.h, currentView.d, currentView.c);
 
             return currentView;
         }
@@ -4166,7 +4545,7 @@ namespace NcnnCompute
             if (activationType == 4)
                 return 1f / (1f + Mathf.Exp(-v));
             if (activationType == 5)
-                return v * Mathf.Tanh(Mathf.Log(Mathf.Exp(v) + 1f));
+                return v * (float)Math.Tanh(Mathf.Log(Mathf.Exp(v) + 1f));
             if (activationType == 6)
                 return v * Mathf.Clamp(v * param0 + param1, 0f, 1f);
             return v;

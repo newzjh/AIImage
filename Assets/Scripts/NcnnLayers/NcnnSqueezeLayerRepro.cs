@@ -1,9 +1,5 @@
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Globalization;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
@@ -13,53 +9,38 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                        do
-                        {
-                                                var axes = layer.GetInts(-23303, null);
-                                                if (axes == null || axes.Length == 0)
-                                                    axes = layer.GetInts(3, Array.Empty<int>());
-                                                if (axes == null || axes.Length != 1 || axes[0] != 1)
-                                                    throw new InvalidOperationException("Squeeze currently only supports axes=[1]: " + layer.name);
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcTensor == null)
+                throw new InvalidOperationException("Squeeze source not found: " + layer.name);
 
-                                                if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var squeezeBuf) && squeezeBuf != null)
-                                                {
-                                                    bufferBlobs[layer.topNames[0]] = squeezeBuf;
-                                                    if (bufferRefs.TryGetValue(layer.bottomNames[0], out var squeezeRef) && squeezeRef != null)
-                                                    {
-                                                        bufferRefs[layer.topNames[0]] = squeezeRef;
-                                                        squeezeRef.refs++;
-                                                    }
+            var squeezed = NcnnRepro.ResolveSqueezeView(srcTensor, layer);
+            if (TryAliasExistingBuffer(layer.bottomNames[0], layer.topNames[0], bufferBlobs, bufferRefs, bufferViews, squeezed, out var aliased))
+            {
+                if (aliased)
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+            }
 
-                                                    var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (srcTensor == null || srcTensor.dims != 3 || srcTensor.h != 1)
-                                                        throw new InvalidOperationException("Squeeze expects dims=3 buffer input with h=1: " + layer.name);
-                                                    bufferViews[layer.topNames[0]] = srcTensor.View(2, srcTensor.w, srcTensor.c, 1, 1);
-                                                }
-                                                else
-                                                {
-                                                    var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                    var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                                                    if (srcShape.dims != 3 || srcShape.h != 1)
-                                                        throw new InvalidOperationException("Squeeze expects dims=3 texture input with h=1: " + layer.name);
+            var outBuf = owner.RentTempBuffer(srcTensor.elementCount, sizeof(float));
+            owner.Ops.CopyBufPartial(srcBuf, 0, outBuf, srcTensor.elementCount);
+            bufferBlobs[layer.topNames[0]] = outBuf;
+            bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
+            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, squeezed.dims, squeezed.w, squeezed.h, squeezed.d, squeezed.c, false);
+            tempOwned.Add(outBuf);
 
-                                                    textureBlobs[layer.topNames[0]] = src;
-                                                    textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(2, srcShape.w, srcShape.c, 1, 1);
-                                                    src.refs++;
-                                                }
-
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -73,6 +54,29 @@ namespace NcnnCompute
             blobs[layer.topNames[0]] = src;
             src.refs++;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        private static bool TryAliasExistingBuffer(
+            string bottomName,
+            string topName,
+            System.Collections.Generic.Dictionary<string, ComputeBuffer> bufferBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferRef> bufferRefs,
+            System.Collections.Generic.Dictionary<string, NcnnTensorBuffer> bufferViews,
+            NcnnTensorBuffer outView,
+            out bool aliased)
+        {
+            aliased = false;
+            if (!bufferBlobs.TryGetValue(bottomName, out var existing) || existing == null)
+                return false;
+            if (!bufferRefs.TryGetValue(bottomName, out var existingRef) || existingRef == null || !existingRef.owned)
+                return false;
+
+            bufferBlobs[topName] = existing;
+            bufferRefs[topName] = existingRef;
+            existingRef.refs++;
+            bufferViews[topName] = outView;
+            aliased = true;
+            return true;
         }
     }
 }

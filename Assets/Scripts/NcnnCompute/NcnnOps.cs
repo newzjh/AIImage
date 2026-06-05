@@ -3550,5 +3550,24 @@ namespace NcnnCompute
                 baseIndex += groups * threadsPerGroup;
             }
         }
+
+        private void Dispatch1D(CommandBuffer cmd, int kernel, int total, int threadsPerGroup)
+        {
+            if (total <= 0)
+                return;
+
+            const int maxGroups = 65535;
+            var maxThreads = threadsPerGroup * maxGroups;
+            var baseIndex = 0;
+            while (baseIndex < total)
+            {
+                var remaining = total - baseIndex;
+                var dispatchCount = Mathf.Min(remaining, maxThreads);
+                var groups = Mathf.CeilToInt(dispatchCount / (float)threadsPerGroup);
+                cmd.SetComputeIntParam(_cs, "_BaseIndex", baseIndex);
+                cmd.DispatchCompute(_cs, kernel, Mathf.Max(1, groups), 1, 1);
+                baseIndex += groups * threadsPerGroup;
+            }
+        }
     }
 }

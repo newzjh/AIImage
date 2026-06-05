@@ -66,16 +66,16 @@ namespace NcnnCompute
                 && NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
             {
                 var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                var stats = owner.RentTempBuffer(gp.group, sizeof(float) * 4);
+                var pack4Stats = owner.RentTempBuffer(gp.group, sizeof(float) * 4);
                 try
                 {
-                    owner.Ops.GroupNormPack4(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, stats, outRt);
+                    owner.Ops.GroupNormPack4(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, pack4Stats, outRt);
                     NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
                     outRt = null;
                 }
                 finally
                 {
-                    owner.ReturnTempBuffer(stats);
+                    owner.ReturnTempBuffer(pack4Stats);
                     if (outRt != null)
                         owner.ReturnTempArray(outRt);
                 }
@@ -91,14 +91,14 @@ namespace NcnnCompute
 
             var outTensor = owner.RentTempTensorBuffer(3, srcView.w, srcView.h, 1, srcView.c);
             owner.Ops.CopyBuf(srcBuf, outTensor.buffer, srcBuf.count);
-            var stats = owner.RentTempBuffer(srcView.c, sizeof(float) * 4);
+            var channelStats = owner.RentTempBuffer(srcView.c, sizeof(float) * 4);
             try
             {
-                owner.Ops.GroupNormInplace(outTensor.buffer, srcView.w, srcView.h, srcView.c, srcView.c, gp.eps, gp.affine, gp.gamma, gp.beta, stats, true);
+                owner.Ops.GroupNormInplace(outTensor.buffer, srcView.w, srcView.h, srcView.c, srcView.c, gp.eps, gp.affine, gp.gamma, gp.beta, channelStats, true);
             }
             finally
             {
-                owner.ReturnTempBuffer(stats);
+                owner.ReturnTempBuffer(channelStats);
             }
 
             owner.PublishTensorBufferOutput(

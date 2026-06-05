@@ -1,7 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Globalization;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -13,160 +10,113 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                        do
+            var partBuffers = new ComputeBuffer[layer.bottomNames.Length];
+            var partViews = new NcnnTensorBuffer[layer.bottomNames.Length];
+            for (var i = 0; i < layer.bottomNames.Length; i++)
+            {
+                partBuffers[i] = owner.GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                partViews[i] = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
+                if (partBuffers[i] == null || partViews[i] == null)
+                    throw new InvalidOperationException("Concat source not found: " + layer.name + " | " + layer.bottomNames[i]);
+            }
+
+            var firstView = partViews[0];
+            var positiveAxis = layer.GetInt(0, 0);
+            if (positiveAxis < 0)
+                positiveAxis += firstView.dims;
+            if (positiveAxis < 0 || positiveAxis >= firstView.dims)
+                throw new InvalidOperationException("Concat axis out of range: " + layer.name);
+
+            var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(firstView.dims, positiveAxis);
+            var outW = firstView.w;
+            var outH = firstView.h;
+            var outD = firstView.d;
+            var outC = firstView.c;
+
+            for (var i = 0; i < partViews.Length; i++)
+            {
+                var v = partViews[i];
+                if (v.dims != firstView.dims)
+                    throw new InvalidOperationException("Concat dims mismatch: " + layer.name);
+
+                if (tensorAxis != 0 && v.w != firstView.w)
+                    throw new InvalidOperationException("Concat width mismatch: " + layer.name);
+                if (tensorAxis != 1 && v.h != firstView.h)
+                    throw new InvalidOperationException("Concat height mismatch: " + layer.name);
+                if (firstView.dims == 4 && tensorAxis != 2 && v.d != firstView.d)
+                    throw new InvalidOperationException("Concat depth mismatch: " + layer.name);
+                var channelAxis = firstView.dims == 4 ? 3 : 2;
+                if (tensorAxis != channelAxis && v.c != firstView.c)
+                    throw new InvalidOperationException("Concat channel mismatch: " + layer.name);
+
+                if (i == 0)
+                    continue;
+
+                if (tensorAxis == 0) outW += v.w;
+                else if (tensorAxis == 1) outH += v.h;
+                else if (tensorAxis == 2 && firstView.dims == 4) outD += v.d;
+                else outC += v.c;
+            }
+
+            var outCount = outW * outH * outD * outC;
+            var outData = new float[outCount];
+            var dstAxisOffset = 0;
+
+            for (var i = 0; i < partViews.Length; i++)
+            {
+                var v = partViews[i];
+                var srcData = NcnnRepro.ReadFloatBuffer(partBuffers[i]);
+
+                for (var c = 0; c < v.c; c++)
+                {
+                    var dstC = tensorAxis == (firstView.dims == 4 ? 3 : 2) ? dstAxisOffset + c : c;
+                    for (var z = 0; z < v.d; z++)
+                    {
+                        var dstDLocal = tensorAxis == 2 && firstView.dims == 4 ? dstAxisOffset + z : z;
+                        for (var y = 0; y < v.h; y++)
                         {
-                                                var firstBufferView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                if (firstBufferView != null && firstBufferView.dims == 1)
-                                                {
-                                                    var concatAxis = layer.GetInt(0, 0);
-                                                    if (concatAxis != 0)
-                                                        throw new InvalidOperationException("Concat dims=1 only supports axis=0: " + layer.name);
+                            var dstYLocal = tensorAxis == 1 ? dstAxisOffset + y : y;
+                            for (var x = 0; x < v.w; x++)
+                            {
+                                var dstXLocal = tensorAxis == 0 ? dstAxisOffset + x : x;
+                                var srcIndex = (((c * v.d) + z) * v.h + y) * v.w + x;
+                                var dstIndex = (((dstC * outD) + dstDLocal) * outH + dstYLocal) * outW + dstXLocal;
+                                outData[dstIndex] = srcData[srcIndex];
+                            }
+                        }
+                    }
+                }
 
-                                                    var totalCount = 0;
-                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        var partView = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
-                                                        if (partView == null || partView.dims != 1)
-                                                            throw new InvalidOperationException("Concat dims=1 source missing: " + layer.name + " | " + layer.bottomNames[i]);
-                                                        totalCount += partView.w;
-                                                    }
+                if (tensorAxis == 0) dstAxisOffset += v.w;
+                else if (tensorAxis == 1) dstAxisOffset += v.h;
+                else if (tensorAxis == 2 && firstView.dims == 4) dstAxisOffset += v.d;
+                else dstAxisOffset += v.c;
+            }
 
-                                                    var outBuf = owner.RentTempBuffer(totalCount, sizeof(float));
-                                                    var dstOffset = 0;
-                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        var partBuf = owner.GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var partView = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
-                                                        if (partBuf == null || partView == null)
-                                                            throw new InvalidOperationException("Concat dims=1 buffer source missing: " + layer.name + " | " + layer.bottomNames[i]);
-                                                        owner.Ops.CopyBufPartial(partBuf, 0, outBuf, partView.w, dstOffset);
-                                                        dstOffset += partView.w;
-                                                    }
+            var outBuf = owner.RentTempBuffer(outCount, sizeof(float));
+            outBuf.SetData(outData);
+            var outTensor = new NcnnTensorBuffer(outBuf, firstView.dims, outW, outH, outD, outC, false);
 
-                                                    bufferBlobs[layer.topNames[0]] = outBuf;
-                                                    bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 1, totalCount, 1, 1, 1, false);
-                                                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                    continue;
-                                                }
-
-                                                if (firstBufferView != null && firstBufferView.dims == 2)
-                                                {
-                                                    var concatAxis = layer.GetInt(0, 0);
-                                                    if (concatAxis != 0)
-                                                        throw new InvalidOperationException("Concat dims=2 only supports axis=0: " + layer.name);
-
-                                                    var totalRows = 0;
-                                                    var outWidth = firstBufferView.w;
-                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        var partView = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
-                                                        if (partView == null || partView.dims != 2)
-                                                            throw new InvalidOperationException("Concat dims=2 source missing: " + layer.name + " | " + layer.bottomNames[i]);
-                                                        if (partView.w != outWidth)
-                                                            throw new InvalidOperationException("Concat dims=2 width mismatch: " + layer.name);
-                                                        totalRows += partView.h;
-                                                    }
-
-                                                    var outCount = outWidth * totalRows;
-                                                    var outBuf = owner.RentTempBuffer(outCount, sizeof(float));
-                                                    var dstOffset = 0;
-                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        var partBuf = owner.GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var partView = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
-                                                        if (partBuf == null || partView == null)
-                                                            throw new InvalidOperationException("Concat dims=2 buffer source missing: " + layer.name + " | " + layer.bottomNames[i]);
-                                                        var partCount = partView.w * partView.h;
-                                                        owner.Ops.CopyBufPartial(partBuf, 0, outBuf, partCount, dstOffset);
-                                                        dstOffset += partCount;
-                                                    }
-
-                                                    bufferBlobs[layer.topNames[0]] = outBuf;
-                                                    bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 2, outWidth, totalRows, 1, 1, false);
-                                                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                    continue;
-                                                }
-
-                                                var first = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                var axis = layer.GetInt(0, 0);
-                                                if (axis != 0)
-                                                    throw new InvalidOperationException("Concat only supports channel axis for texture tensors: " + layer.name);
-
-                                                var totalPacks = 0;
-                                                var totalLogicalChannels = 0;
-                                                var canStayTexture = true;
-                                                for (var i = 0; i < layer.bottomNames.Length; i++)
-                                                {
-                                                    var tr = owner.GetOrMaterializeTexture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                    if (tr.width != first.width || tr.height != first.height)
-                                                        throw new InvalidOperationException("Concat shape mismatch: " + layer.name);
-                                                    var logicalShape = NcnnRepro.GetTextureShape(textureShapes, tr, layer.bottomNames[i]);
-                                                    if (i < layer.bottomNames.Length - 1 && (logicalShape.c % 4) != 0)
-                                                        canStayTexture = false;
-                                                    totalPacks += tr.packs;
-                                                    totalLogicalChannels += logicalShape.c;
-                                                }
-
-                                                if (canStayTexture)
-                                                {
-                                                    var outRt = owner.RentTempArray(first.width, first.height, totalPacks, RenderTextureFormat.ARGBHalf);
-                                                    var packOffset = 0;
-                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        var part = owner.GetOrMaterializeTexture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                        owner.Ops.CopyPack4(part.texture, 0, outRt, packOffset, part.packs);
-                                                        packOffset += part.packs;
-                                                    }
-
-                                                    textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
-                                                    {
-                                                        texture = outRt,
-                                                        width = first.width,
-                                                        height = first.height,
-                                                        packs = totalPacks,
-                                                        refs = 1,
-                                                        owned = true
-                                                    };
-                                                    textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, first.width, first.height, 1, totalLogicalChannels);
-                                                }
-                                                else
-                                                {
-                                                    var featureSize = first.width * first.height;
-                                                    var outCount = featureSize * totalLogicalChannels;
-                                                    var outBuf = owner.RentTempBuffer(outCount, sizeof(float));
-                                                    var dstOffset = 0;
-                                                    for (var i = 0; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        var partBuf = owner.GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var partView = NcnnRepro.TryGetBufferView(layer.bottomNames[i], bufferBlobs, bufferViews);
-                                                        if (partBuf == null || partView == null)
-                                                            throw new InvalidOperationException("Concat buffer fallback source not found: " + layer.name + " | " + layer.bottomNames[i]);
-
-                                                        var partCount = partView.w * partView.h * partView.d * partView.c;
-                                                        owner.Ops.CopyBufPartial(partBuf, 0, outBuf, partCount, dstOffset);
-                                                        dstOffset += partCount;
-                                                    }
-
-                                                    bufferBlobs[layer.topNames[0]] = outBuf;
-                                                    bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 3, first.width, first.height, 1, totalLogicalChannels, false);
-                                                }
-
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: firstView.dims <= 3 && tensorAxis == (firstView.dims == 3 ? 2 : -1),
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
