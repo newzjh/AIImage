@@ -117,13 +117,20 @@ namespace NcnnCompute
                                                     tempOwned.Add(qScaled);
                                                 }
 
-                                                var outBuf = owner.RentTempBuffer(srcLen * mp.qdim, sizeof(float));
-                                                owner.Ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outBuf);
+                                                var outTensor = owner.RentTempTensorBuffer(2, mp.qdim, srcLen);
+                                                owner.Ops.InnerProduct2D(ctx, srcLen, mp.embedDim, mp.oW, mp.oB, mp.qdim, outTensor.buffer);
 
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 2, mp.qdim, srcLen, 1, 1, false);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: true,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 tempOwned.Add(ctx);
-                                                tempOwned.Add(outBuf);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

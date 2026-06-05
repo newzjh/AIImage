@@ -38,13 +38,23 @@ namespace NcnnCompute
                 if (srcBuf == null)
                     throw new InvalidOperationException(TypeKey + " source not found: " + layer.name);
 
-                var outBuf = owner.RentTempBuffer(srcBuf.count, sizeof(float));
-                owner.Ops.UnaryOpBuf(srcBuf, srcBuf.count, _opType, outBuf);
-                bufferBlobs[layer.topNames[0]] = outBuf;
-                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                if (srcView != null)
-                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
-                tempOwned.Add(outBuf);
+                var outTensor = owner.RentTempTensorBuffer(
+                    srcView?.dims ?? 1,
+                    srcView?.w ?? srcBuf.count,
+                    srcView?.h ?? 1,
+                    srcView?.d ?? 1,
+                    srcView?.c ?? 1);
+                owner.Ops.UnaryOpBuf(srcBuf, srcBuf.count, _opType, outTensor.buffer);
+                owner.PublishTensorBufferOutput(
+                    layer.topNames[0],
+                    outTensor,
+                    preferTexture: srcView != null && srcView.dims <= 3,
+                    textureBlobs,
+                    textureShapes,
+                    bufferBlobs,
+                    bufferRefs,
+                    bufferViews,
+                    tempOwned);
             }
 
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -54,10 +64,12 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
             owner.Ops.UnaryOpPack4(cmd, src.texture, src.packs, _opType, outArr);
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
@@ -69,7 +81,9 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = srcShape;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

@@ -29,6 +29,7 @@ namespace NcnnCompute
     {
         public CommandBuffer commandBuffer;
         public Dictionary<string, NcnnRepro.CmdTensorRef> blobs;
+        public Dictionary<string, NcnnRepro.BufferShape> shapes;
         public Dictionary<string, int> remaining;
         public ICollection<string> pinnedNames;
     }
@@ -76,7 +77,7 @@ namespace NcnnCompute
             }
 
             if (layer.topNames != null && layer.topNames.Length > 0)
-                owner.PublishCmdTensorLikeInput(context.commandBuffer, layer.topNames[0], 1, 1, 1, context.blobs);
+                owner.PublishCmdTensorLikeInput(context.commandBuffer, layer.topNames[0], 1, 1, 1, context.blobs, context.shapes);
         }
     }
 }

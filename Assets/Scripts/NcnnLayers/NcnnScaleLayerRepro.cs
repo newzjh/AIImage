@@ -129,13 +129,16 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.ScalePack sp)
                 throw new InvalidOperationException("Scale pack not found: " + layer.name);
 
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var shapes = context.shapes;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+
             if (!sp.dynamic && sp.scaleDataSize == 1 && !sp.biasTerm)
             {
-                var cmd = context.commandBuffer;
-                var blobs = context.blobs;
-                var remaining = context.remaining;
-                var pinnedNames = context.pinnedNames;
-                var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
                 var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
                 owner.Ops.PointwisePack4(cmd, src.texture, src.packs, NcnnOps.PointwiseType.ScaleScalar, sp.scaleCpu[0], 0f, outArr);
                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
@@ -147,27 +150,14 @@ namespace NcnnCompute
                     refs = 1,
                     owned = true
                 };
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
 
-            var fallbackCmd = context.commandBuffer;
-            var fallbackBlobs = context.blobs;
-            var fallbackRemaining = context.remaining;
-            var fallbackPinnedNames = context.pinnedNames;
-            var fallbackSrc = NcnnRepro.GetCmdTensor(fallbackBlobs, layer.bottomNames[0]);
-            var outArrFallback = owner.RentTempArray(fallbackCmd, fallbackSrc.width, fallbackSrc.height, fallbackSrc.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.CopyPack4(fallbackCmd, fallbackSrc.texture, 0, outArrFallback, 0, fallbackSrc.packs);
-            fallbackBlobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-            {
-                texture = outArrFallback,
-                width = fallbackSrc.width,
-                height = fallbackSrc.height,
-                packs = fallbackSrc.packs,
-                refs = 1,
-                owned = true
-            };
-            owner.ConsumeCmd(fallbackCmd, fallbackBlobs, fallbackRemaining, layer.bottomNames, fallbackPinnedNames);
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], src.width, src.height, src.packs, blobs, shapes, srcShape);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

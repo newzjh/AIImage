@@ -67,11 +67,18 @@ namespace NcnnCompute
                                                     throw new InvalidOperationException("Embed input buffer not found: " + layer.bottomNames[0]);
 
                                                 var words = indicesBuf.count;
-                                                var outBuf = owner.RentTempBuffer(words * ep.numOutput, sizeof(float));
-                                                owner.Ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outBuf);
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, 2, ep.numOutput, words, 1, 1, false);
+                                                var outTensor = owner.RentTempTensorBuffer(2, ep.numOutput, words);
+                                                owner.Ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outTensor.buffer);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: true,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

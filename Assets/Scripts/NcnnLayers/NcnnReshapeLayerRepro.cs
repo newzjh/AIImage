@@ -80,30 +80,35 @@ namespace NcnnCompute
         {
                         var cmd = context.commandBuffer;
                         var blobs = context.blobs;
+                        var shapes = context.shapes;
                         var remaining = context.remaining;
                         var pinnedNames = context.pinnedNames;
 
                         do
                         {
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-                                                if (TryResolveCmdOutputShape(owner, layer, blobs, src, out var outW, out var outH, out var outPacks)
+                                                if (TryResolveCmdOutputShape(owner, layer, blobs, shapes, src, out var outShape, out var outW, out var outH, out var outPacks)
                                                     && outW == src.width
                                                     && outH == src.height
                                                     && outPacks == src.packs)
                                                 {
                                                     blobs[layer.topNames[0]] = src;
+                                                    if (shapes != null)
+                                                        shapes[layer.topNames[0]] = outShape;
                                                     src.refs++;
                                                 }
-                                                else if (TryResolveCmdOutputShape(owner, layer, blobs, src, out outW, out outH, out outPacks))
+                                                else if (TryResolveCmdOutputShape(owner, layer, blobs, shapes, src, out outShape, out outW, out outH, out outPacks))
                                                 {
-                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, outPacks);
+                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, outPacks, shapes, outShape);
                                                 }
                                                 else
                                                 {
                                                     blobs[layer.topNames[0]] = src;
+                                                    if (shapes != null)
+                                                        shapes[layer.topNames[0]] = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                     src.refs++;
                                                 }
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
         }
@@ -112,11 +117,14 @@ namespace NcnnCompute
             NcnnRepro owner,
             NcnnParamModel.Layer layer,
             System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
             NcnnRepro.CmdTensorRef src,
+            out NcnnRepro.BufferShape outShape,
             out int outW,
             out int outH,
             out int outPacks)
         {
+            outShape = NcnnRepro.InferCmdShape(src);
             outW = src.width;
             outH = src.height;
             outPacks = src.packs;
@@ -124,10 +132,10 @@ namespace NcnnCompute
             if (src == null || layer == null)
                 return false;
 
-            var bottomShapes = BuildCmdBottomShapes(layer, blobs);
+            var bottomShapes = BuildCmdBottomShapes(layer, blobs, shapes);
             if (!string.IsNullOrWhiteSpace(layer.GetString(6, null)))
             {
-                var outShape = NcnnRepro.EvaluateReshapeShapeExpression(layer.GetString(6, null), bottomShapes, layer);
+                outShape = NcnnRepro.EvaluateReshapeShapeExpression(layer.GetString(6, null), bottomShapes, layer);
                 if (outShape.dims > 3)
                     return false;
                 outW = Mathf.Max(1, outShape.w);
@@ -136,12 +144,12 @@ namespace NcnnCompute
                 return true;
             }
 
-            var outShapeStatic = NcnnRepro.ResolveReshapeShape(bottomShapes[0], layer, bottomShapes);
-            if (outShapeStatic.dims > 3)
+            outShape = NcnnRepro.ResolveReshapeShape(bottomShapes[0], layer, bottomShapes);
+            if (outShape.dims > 3)
                 return false;
-            outW = Mathf.Max(1, outShapeStatic.w);
-            outH = outShapeStatic.dims >= 2 ? Mathf.Max(1, outShapeStatic.h) : 1;
-            outPacks = outShapeStatic.dims >= 3 ? Mathf.Max(1, Mathf.CeilToInt(outShapeStatic.c / 4f)) : 1;
+            outW = Mathf.Max(1, outShape.w);
+            outH = outShape.dims >= 2 ? Mathf.Max(1, outShape.h) : 1;
+            outPacks = outShape.dims >= 3 ? Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f)) : 1;
             return true;
         }
 
@@ -188,15 +196,15 @@ namespace NcnnCompute
 
         private static System.Collections.Generic.List<NcnnRepro.BufferShape> BuildCmdBottomShapes(
             NcnnParamModel.Layer layer,
-            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs)
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> cmdShapes)
         {
-            var shapes = new System.Collections.Generic.List<NcnnRepro.BufferShape>(layer.bottomNames.Length);
+            var bottomShapes = new System.Collections.Generic.List<NcnnRepro.BufferShape>(layer.bottomNames.Length);
             for (var i = 0; i < layer.bottomNames.Length; i++)
             {
-                var tr = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[i]);
-                shapes.Add(new NcnnRepro.BufferShape(3, tr.width, tr.height, 1, tr.packs * 4));
+                bottomShapes.Add(NcnnRepro.GetCmdShape(cmdShapes, blobs, layer.bottomNames[i]));
             }
-            return shapes;
+            return bottomShapes;
         }
     }
 }

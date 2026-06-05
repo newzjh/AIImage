@@ -257,6 +257,7 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
@@ -278,24 +279,28 @@ namespace NcnnCompute
             }
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             if (pp.top == 0 && pp.bottom == 0 && pp.left == 0 && pp.right == 0 && pp.front == 0 && pp.behind == 0)
             {
                 blobs[layer.topNames[0]] = src;
                 src.refs++;
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
 
-            var canUseTexturePath = pp.front == 0 && pp.behind == 0 && pp.perChannelPadDataSize == 0;
-            if (!canUseTexturePath)
+            var outShape = ResolveCmdOutputShape(srcShape, pp);
+            if (!CanUseSimplePack4CmdPath(src, srcShape, pp))
             {
-                owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, Mathf.Max(1, src.width + pp.left + pp.right), Mathf.Max(1, src.height + pp.top + pp.bottom), src.packs);
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
+                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
 
-            var outW = src.width + pp.left + pp.right;
-            var outH = src.height + pp.top + pp.bottom;
+            var outW = srcShape.w + pp.left + pp.right;
+            var outH = srcShape.h + pp.top + pp.bottom;
             if (outW <= 0 || outH <= 0)
                 throw new InvalidOperationException("Padding invalid out size: " + outW + "x" + outH);
 
@@ -310,7 +315,9 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 
         private static bool CanUseSimplePack4TexturePath(
@@ -331,6 +338,37 @@ namespace NcnnCompute
             if (!owner.TryGetPack4Texture(bottomName, textureBlobs, textureShapes, bufferBlobs, bufferViews, out srcTex, out srcShape))
                 return false;
             return srcShape.dims == 3;
+        }
+
+        private static bool CanUseSimplePack4CmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, PaddingPack pp)
+        {
+            return src != null
+                && src.texture != null
+                && pp.front == 0
+                && pp.behind == 0
+                && pp.perChannelPadDataSize == 0
+                && srcShape.dims == 3
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.d == 1
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4;
+        }
+
+        private static NcnnRepro.BufferShape ResolveCmdOutputShape(NcnnRepro.BufferShape srcShape, PaddingPack pp)
+        {
+            var outW = Mathf.Max(1, srcShape.w + pp.left + pp.right);
+            if (srcShape.dims == 1)
+                return new NcnnRepro.BufferShape(1, outW, 1, 1, 1);
+
+            var outH = Mathf.Max(1, srcShape.h + pp.top + pp.bottom);
+            if (srcShape.dims == 2)
+                return new NcnnRepro.BufferShape(2, outW, outH, 1, 1);
+
+            if (srcShape.dims == 3)
+                return new NcnnRepro.BufferShape(3, outW, outH, 1, Mathf.Max(1, srcShape.c + pp.front + pp.behind));
+
+            return new NcnnRepro.BufferShape(4, outW, outH, Mathf.Max(1, srcShape.d + pp.front + pp.behind), srcShape.c);
         }
 
         private static float ResolvePadValue(PaddingPack pack, int channel)

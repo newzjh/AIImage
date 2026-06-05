@@ -324,6 +324,10 @@ namespace NcnnCompute
         private readonly int _kBinaryOpPack4;
         private readonly int _kBinaryOpPack4Broadcast;
         private readonly int _kBinaryOpPack4BufferScalar;
+        private readonly int _kShuffleChannelPack4;
+        private readonly int _kCropPack4;
+        private readonly int _kSlicePack4;
+        private readonly int _kPermutePack4;
         private readonly int _kSwishPack4;
         private readonly int _kSigmoidPack4;
         private readonly int _kGeluPack4;
@@ -346,6 +350,9 @@ namespace NcnnCompute
         private readonly int _kGroupNormPack4Mean;
         private readonly int _kGroupNormPack4Variance;
         private readonly int _kGroupNormPack4ApplyMeanVar;
+        private readonly int _kGroupNormPack4MeanTex;
+        private readonly int _kGroupNormPack4VarianceTex;
+        private readonly int _kGroupNormPack4ApplyMeanVarTex;
         private readonly int _kTouchU32;
         private readonly int _kInnerProduct2D;
         private readonly int _kMhaAttention;
@@ -435,6 +442,10 @@ namespace NcnnCompute
             _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
             _kBinaryOpPack4Broadcast = _cs.FindKernel("NcnnBinaryOpPack4Broadcast");
             _kBinaryOpPack4BufferScalar = _cs.FindKernel("NcnnBinaryOpPack4BufferScalar");
+            _kShuffleChannelPack4 = _cs.FindKernel("NcnnShuffleChannelPack4");
+            _kCropPack4 = _cs.FindKernel("NcnnCropPack4");
+            _kSlicePack4 = _cs.FindKernel("NcnnSlicePack4");
+            _kPermutePack4 = _cs.FindKernel("NcnnPermutePack4");
             _kSwishPack4 = _cs.FindKernel("NcnnSwishPack4");
             _kSigmoidPack4 = _cs.FindKernel("NcnnSigmoidPack4");
             _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
@@ -457,6 +468,9 @@ namespace NcnnCompute
             _kGroupNormPack4Mean = _cs.FindKernel("NcnnGroupNormPack4Mean");
             _kGroupNormPack4Variance = _cs.FindKernel("NcnnGroupNormPack4Variance");
             _kGroupNormPack4ApplyMeanVar = _cs.FindKernel("NcnnGroupNormPack4ApplyMeanVar");
+            _kGroupNormPack4MeanTex = _cs.FindKernel("NcnnGroupNormPack4MeanTex");
+            _kGroupNormPack4VarianceTex = _cs.FindKernel("NcnnGroupNormPack4VarianceTex");
+            _kGroupNormPack4ApplyMeanVarTex = _cs.FindKernel("NcnnGroupNormPack4ApplyMeanVarTex");
             _kTouchU32 = _cs.FindKernel("NcnnTouchU32");
             _kInnerProduct2D = _cs.FindKernel("NcnnInnerProduct2D");
             _kMhaAttention = _cs.FindKernel("NcnnMhaAttention");
@@ -761,6 +775,144 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kClipPack4, "_ClipInArr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kClipPack4, "_ClipOutArr", output.nameID);
             Dispatch3D(cmd, _kClipPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void ShuffleChannelPack4(RenderTexture input, int packs, int channels, int group, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            _cs.SetInt("_ShuffleChannels", channels);
+            _cs.SetInt("_ShuffleGroup", group);
+            _cs.SetTexture(_kShuffleChannelPack4, "_ShuffleInArr", input);
+            _cs.SetTexture(_kShuffleChannelPack4, "_ShuffleOutArr", output);
+            Dispatch3D(_kShuffleChannelPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void ShuffleChannelPack4(CommandBuffer cmd, ComputeTexture input, int packs, int channels, int group, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            cmd.SetComputeIntParam(_cs, "_ShuffleChannels", channels);
+            cmd.SetComputeIntParam(_cs, "_ShuffleGroup", group);
+            cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_ShuffleInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_ShuffleOutArr", output.nameID);
+            Dispatch3D(cmd, _kShuffleChannelPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void CropPack4(RenderTexture input, int inW, int inH, int inC, int offsetW, int offsetH, int offsetC, int outW, int outH, int outC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_CropPack4InW", inW);
+            _cs.SetInt("_CropPack4InH", inH);
+            _cs.SetInt("_CropPack4InC", inC);
+            _cs.SetInt("_CropPack4OffsetW", offsetW);
+            _cs.SetInt("_CropPack4OffsetH", offsetH);
+            _cs.SetInt("_CropPack4OffsetC", offsetC);
+            _cs.SetInt("_CropPack4OutW", outW);
+            _cs.SetInt("_CropPack4OutH", outH);
+            _cs.SetInt("_CropPack4OutC", outC);
+            _cs.SetTexture(_kCropPack4, "_CropPack4InArr", input);
+            _cs.SetTexture(_kCropPack4, "_CropPack4OutArr", output);
+            Dispatch3D(_kCropPack4, output.width, output.height, output.volumeDepth > 0 ? output.volumeDepth : 1, 8, 8);
+        }
+
+        public void CropPack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inC, int offsetW, int offsetH, int offsetC, int outW, int outH, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_CropPack4InW", inW);
+            cmd.SetComputeIntParam(_cs, "_CropPack4InH", inH);
+            cmd.SetComputeIntParam(_cs, "_CropPack4InC", inC);
+            cmd.SetComputeIntParam(_cs, "_CropPack4OffsetW", offsetW);
+            cmd.SetComputeIntParam(_cs, "_CropPack4OffsetH", offsetH);
+            cmd.SetComputeIntParam(_cs, "_CropPack4OffsetC", offsetC);
+            cmd.SetComputeIntParam(_cs, "_CropPack4OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_CropPack4OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_CropPack4OutC", outC);
+            cmd.SetComputeTextureParam(_cs, _kCropPack4, "_CropPack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCropPack4, "_CropPack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kCropPack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
+        public void SlicePack4(RenderTexture input, int inW, int inH, int inC, int axis, int begin, int outW, int outH, int outC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_SlicePack4InW", inW);
+            _cs.SetInt("_SlicePack4InH", inH);
+            _cs.SetInt("_SlicePack4InC", inC);
+            _cs.SetInt("_SlicePack4Axis", axis);
+            _cs.SetInt("_SlicePack4Begin", begin);
+            _cs.SetInt("_SlicePack4OutW", outW);
+            _cs.SetInt("_SlicePack4OutH", outH);
+            _cs.SetInt("_SlicePack4OutC", outC);
+            _cs.SetTexture(_kSlicePack4, "_SlicePack4InArr", input);
+            _cs.SetTexture(_kSlicePack4, "_SlicePack4OutArr", output);
+            Dispatch3D(_kSlicePack4, output.width, output.height, output.volumeDepth > 0 ? output.volumeDepth : 1, 8, 8);
+        }
+
+        public void SlicePack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inC, int axis, int begin, int outW, int outH, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_SlicePack4InW", inW);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4InH", inH);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4InC", inC);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4Axis", axis);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4Begin", begin);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4OutC", outC);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4, "_SlicePack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4, "_SlicePack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kSlicePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
+        public void PermutePack4(RenderTexture input, int inW, int inH, int inC, Vector4Int axes, int outW, int outH, int outC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PermutePack4InW", inW);
+            _cs.SetInt("_PermutePack4InH", inH);
+            _cs.SetInt("_PermutePack4InC", inC);
+            _cs.SetInt("_PermutePack4OutW", outW);
+            _cs.SetInt("_PermutePack4OutH", outH);
+            _cs.SetInt("_PermutePack4OutC", outC);
+            _cs.SetInt("_PermutePack4Axis0", axes.x);
+            _cs.SetInt("_PermutePack4Axis1", axes.y);
+            _cs.SetInt("_PermutePack4Axis2", axes.z);
+            _cs.SetTexture(_kPermutePack4, "_PermutePack4InArr", input);
+            _cs.SetTexture(_kPermutePack4, "_PermutePack4OutArr", output);
+            Dispatch3D(_kPermutePack4, output.width, output.height, output.volumeDepth > 0 ? output.volumeDepth : 1, 8, 8);
+        }
+
+        public void PermutePack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inC, Vector4Int axes, int outW, int outH, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_PermutePack4InW", inW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4InH", inH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4InC", inC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4OutC", outC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4Axis0", axes.x);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4Axis1", axes.y);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4Axis2", axes.z);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_PermutePack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_PermutePack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kPermutePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
         public void SftPack4(RenderTexture input, RenderTexture condMul, RenderTexture condAdd, int outPacks, int halfPacks, RenderTexture output)
@@ -1086,6 +1238,41 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryB", b.nameID);
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryOutArr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void BinaryOpPack4Broadcast(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int packs, int opType, int broadcastMode, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (broadcastMode != 1 && broadcastMode != 2)
+                throw new ArgumentOutOfRangeException(nameof(broadcastMode));
+
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
+            cmd.SetComputeIntParam(_cs, "_BinaryPack4BroadcastMode", broadcastMode);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_BinaryA", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_BinaryB", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_BinaryOutArr", output.nameID);
+            Dispatch3D(cmd, _kBinaryOpPack4Broadcast, output.width, output.height, packs, 8, 8);
+        }
+
+        public void BinaryOpPack4BufferScalar(CommandBuffer cmd, ComputeTexture texture, ComputeBuffer scalar, int packs, int opType, bool scalarIsA, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (texture == null) throw new ArgumentNullException(nameof(texture));
+            if (scalar == null) throw new ArgumentNullException(nameof(scalar));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (scalar.count < 1) throw new ArgumentOutOfRangeException(nameof(scalar));
+
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryPack4BufferScalarMode", scalarIsA ? 1 : 2);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4BufferScalar, "_BinaryA", texture.nameID);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpPack4BufferScalar, "_BufB", scalar);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4BufferScalar, "_BinaryOutArr", output.nameID);
+            Dispatch3D(cmd, _kBinaryOpPack4BufferScalar, output.width, output.height, packs, 8, 8);
         }
 
         public void BinaryOpScalarPack4(RenderTexture a, float b, int packs, int opType, RenderTexture output)
@@ -1542,6 +1729,18 @@ namespace NcnnCompute
             _cs.SetTexture(_kInterpPack4, "_InterpInArr", input);
             _cs.SetTexture(_kInterpPack4, "_InterpOutArr", output);
             Dispatch3D(_kInterpPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void InterpPack4(CommandBuffer cmd, ComputeTexture input, int packs, float scaleX, float scaleY, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorX", scaleX);
+            cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorY", scaleY);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_InterpInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_InterpOutArr", output.nameID);
+            Dispatch3D(cmd, _kInterpPack4, output.width, output.height, packs, 8, 8);
         }
          
         public void Interp2xPack4(CommandBuffer cmd,  ComputeTexture input, int packs, ComputeTexture output)
@@ -3179,6 +3378,89 @@ namespace NcnnCompute
             _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnBeta", beta);
             _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnStatsOut", stats);
             Dispatch3D(_kGroupNormPack4ApplyMeanVar, output.width, output.height, packs, 8, 8);
+        }
+
+        public void GroupNormPack4Tex(RenderTexture input, int w, int h, int c, int packs, int group, float eps, ComputeBuffer gamma, ComputeBuffer beta, RenderTexture statsA, RenderTexture statsB, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (statsA == null) throw new ArgumentNullException(nameof(statsA));
+            if (statsB == null) throw new ArgumentNullException(nameof(statsB));
+            if (gamma == null) throw new ArgumentNullException(nameof(gamma));
+            if (beta == null) throw new ArgumentNullException(nameof(beta));
+            if (w <= 0) throw new ArgumentOutOfRangeException(nameof(w));
+            if (h <= 0) throw new ArgumentOutOfRangeException(nameof(h));
+            if (c <= 0) throw new ArgumentOutOfRangeException(nameof(c));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            if (c % group != 0) throw new ArgumentOutOfRangeException(nameof(group), "c must be divisible by group");
+
+            var channelsG = c / group;
+            _cs.SetInt("_GnW", w);
+            _cs.SetInt("_GnH", h);
+            _cs.SetInt("_GnC", c);
+            _cs.SetInt("_GnGroup", group);
+            _cs.SetInt("_GnChannelsG", channelsG);
+            _cs.SetFloat("_GnEps", eps);
+            _cs.SetInt("_GnAffine", 1);
+
+            _cs.SetTexture(_kGroupNormPack4MeanTex, "_GnTexInArr", input);
+            _cs.SetTexture(_kGroupNormPack4MeanTex, "_GnStatsTexOut", statsA);
+            _cs.Dispatch(_kGroupNormPack4MeanTex, Mathf.Max(1, group), 1, 1);
+
+            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_GnTexInArr", input);
+            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_GnStatsTexIn", statsA);
+            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_GnStatsTexOut", statsB);
+            _cs.Dispatch(_kGroupNormPack4VarianceTex, Mathf.Max(1, group), 1, 1);
+
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_GnTexInArr", input);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_GnTexOutArr", output);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_GnStatsTexIn", statsB);
+            _cs.SetBuffer(_kGroupNormPack4ApplyMeanVarTex, "_GnGamma", gamma);
+            _cs.SetBuffer(_kGroupNormPack4ApplyMeanVarTex, "_GnBeta", beta);
+            Dispatch3D(_kGroupNormPack4ApplyMeanVarTex, output.width, output.height, packs, 8, 8);
+        }
+
+        public void GroupNormPack4Tex(CommandBuffer cmd, ComputeTexture input, int w, int h, int c, int packs, int group, float eps, ComputeBuffer gamma, ComputeBuffer beta, ComputeTexture statsA, ComputeTexture statsB, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (statsA == null) throw new ArgumentNullException(nameof(statsA));
+            if (statsB == null) throw new ArgumentNullException(nameof(statsB));
+            if (gamma == null) throw new ArgumentNullException(nameof(gamma));
+            if (beta == null) throw new ArgumentNullException(nameof(beta));
+            if (w <= 0) throw new ArgumentOutOfRangeException(nameof(w));
+            if (h <= 0) throw new ArgumentOutOfRangeException(nameof(h));
+            if (c <= 0) throw new ArgumentOutOfRangeException(nameof(c));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            if (c % group != 0) throw new ArgumentOutOfRangeException(nameof(group), "c must be divisible by group");
+
+            var channelsG = c / group;
+            cmd.SetComputeIntParam(_cs, "_GnW", w);
+            cmd.SetComputeIntParam(_cs, "_GnH", h);
+            cmd.SetComputeIntParam(_cs, "_GnC", c);
+            cmd.SetComputeIntParam(_cs, "_GnGroup", group);
+            cmd.SetComputeIntParam(_cs, "_GnChannelsG", channelsG);
+            cmd.SetComputeFloatParam(_cs, "_GnEps", eps);
+            cmd.SetComputeIntParam(_cs, "_GnAffine", 1);
+
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4MeanTex, "_GnTexInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4MeanTex, "_GnStatsTexOut", statsA.nameID);
+            cmd.DispatchCompute(_cs, _kGroupNormPack4MeanTex, Mathf.Max(1, group), 1, 1);
+
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_GnTexInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_GnStatsTexIn", statsA.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_GnStatsTexOut", statsB.nameID);
+            cmd.DispatchCompute(_cs, _kGroupNormPack4VarianceTex, Mathf.Max(1, group), 1, 1);
+
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnTexInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnTexOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnStatsTexIn", statsB.nameID);
+            cmd.SetComputeBufferParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnGamma", gamma);
+            cmd.SetComputeBufferParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnBeta", beta);
+            Dispatch3D(cmd, _kGroupNormPack4ApplyMeanVarTex, output.width, output.height, packs, 8, 8);
         }
 
         private static Vector4Int GetPermuteAxes(int dims, int orderType)

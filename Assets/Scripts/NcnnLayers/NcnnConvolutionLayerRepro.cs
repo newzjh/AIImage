@@ -311,17 +311,18 @@ namespace NcnnCompute
         {
                         var cmd = context.commandBuffer;
                         var blobs = context.blobs;
+                        var shapes = context.shapes;
                         var remaining = context.remaining;
                         var pinnedNames = context.pinnedNames;
 
                         do
                         {
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+                                                var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 if (!owner._conv.TryGetValue(layer.name, out var conv))
                                                     throw new InvalidOperationException("Convolution not found: " + layer.name);
-                                                var outW = NcnnRepro.ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
-                                                var outH = NcnnRepro.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
-                                                var canUseTextureConv = src.packs == conv.inPacks
+                                                var outShape = ResolveCmdOutputShape(srcShape, conv);
+                                                var canUseTextureConv = CanUsePack4CmdPath(src, srcShape, conv)
                                                                         && !conv.isDepthWise
                                                                         && conv.group == 1
                                                                         && conv.strideW == 1
@@ -339,11 +340,14 @@ namespace NcnnCompute
 
                                                 if (!canUseTextureConv)
                                                 {
-                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, conv.outPacks);
-                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                    NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
+                                                    owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
+                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                     continue;
                                                 }
 
+                                                var outW = Mathf.Max(1, outShape.w);
+                                                var outH = Mathf.Max(1, outShape.h);
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
 
                                                 if (conv.kernelW == 1 && conv.kernelH == 1)
@@ -370,15 +374,38 @@ namespace NcnnCompute
                                                 else
                                                 {
                                                     owner.ReturnTempArray(cmd, outArr);
-                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, conv.outPacks);
-                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                    NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
+                                                    owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
+                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                     continue;
                                                 }
 
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = conv.outPacks, refs = 1, owned = true };
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                if (shapes != null)
+                                                    shapes[layer.topNames[0]] = outShape;
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
+        }
+
+        private static bool CanUsePack4CmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.ConvPack conv)
+        {
+            return src != null
+                && src.texture != null
+                && conv != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.c == conv.inC
+                && src.packs == conv.inPacks;
+        }
+
+        private static NcnnRepro.BufferShape ResolveCmdOutputShape(NcnnRepro.BufferShape srcShape, NcnnRepro.ConvPack conv)
+        {
+            var outW = Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight));
+            var outH = Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom));
+            return new NcnnRepro.BufferShape(3, outW, outH, 1, Mathf.Max(1, conv.outC));
         }
     }
 }

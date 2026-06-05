@@ -105,10 +105,16 @@ namespace NcnnCompute
                                                     deconv.activationType,
                                                     deconv.activationSlope,
                                                     outTensor);
-
-                                                bufferBlobs[layer.topNames[0]] = outTensor.buffer;
-                                                bufferViews[layer.topNames[0]] = outTensor;
-                                                tempOwned.Add(outTensor);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: true,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

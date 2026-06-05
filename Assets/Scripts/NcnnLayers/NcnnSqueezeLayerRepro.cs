@@ -33,12 +33,18 @@ namespace NcnnCompute
                 }
             }
 
-            var outBuf = owner.RentTempBuffer(srcTensor.elementCount, sizeof(float));
-            owner.Ops.CopyBufPartial(srcBuf, 0, outBuf, srcTensor.elementCount);
-            bufferBlobs[layer.topNames[0]] = outBuf;
-            bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, squeezed.dims, squeezed.w, squeezed.h, squeezed.d, squeezed.c, false);
-            tempOwned.Add(outBuf);
+            var outTensor = owner.RentTempTensorBuffer(squeezed.dims, squeezed.w, squeezed.h, squeezed.d, squeezed.c);
+            owner.Ops.CopyBufPartial(srcBuf, 0, outTensor.buffer, srcTensor.elementCount);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: squeezed.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
 
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
@@ -47,13 +53,17 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             blobs[layer.topNames[0]] = src;
+            if (shapes != null)
+                shapes[layer.topNames[0]] = NcnnRepro.ResolveSqueezeShape(srcShape, layer);
             src.refs++;
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 
         private static bool TryAliasExistingBuffer(

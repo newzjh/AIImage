@@ -66,12 +66,19 @@ namespace NcnnCompute
                                                 var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                                                 if (srcBuf == null || srcView == null || srcView.dims != 2)
                                                     throw new InvalidOperationException("LayerNorm expects dims=2 buffer input: " + layer.name);
-                                                var outBuf = owner.RentTempBuffer(srcBuf.count, sizeof(float));
-                                                owner.Ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
-                                                owner.Ops.LayerNorm2DInplace(outBuf, srcView.h, srcView.w, lp.eps, lp.affine, lp.gamma, lp.beta);
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
-                                                tempOwned.Add(outBuf);
+                                                var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
+                                                owner.Ops.CopyBuf(srcBuf, outTensor.buffer, srcBuf.count);
+                                                owner.Ops.LayerNorm2DInplace(outTensor.buffer, srcView.h, srcView.w, lp.eps, lp.affine, lp.gamma, lp.beta);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: true,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
@@ -81,12 +88,14 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, src.width, src.height, src.packs);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], src.width, src.height, src.packs, blobs, shapes, srcShape);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

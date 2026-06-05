@@ -89,25 +89,42 @@ namespace NcnnCompute
         {
                         var cmd = context.commandBuffer;
                         var blobs = context.blobs;
+                        var shapes = context.shapes;
                         var remaining = context.remaining;
                         var pinnedNames = context.pinnedNames;
 
                         do
                         {
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+                                                var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 var axis = layer.GetInt(0, 0);
-                                                if (axis != 0)
+                                                if (axis != 0 || !CanUsePack4Softmax(src, srcShape))
                                                 {
-                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs);
-                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                    NcnnRepro.ResolveCmdTextureLayout(srcShape, out var width, out var height, out var packs);
+                                                    owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, srcShape);
+                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                     continue;
                                                 }
                                                 var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
                                                 owner.Ops.SoftmaxChannelPack4(cmd, src.texture, src.packs, outArr);
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = src.width, height = src.height, packs = src.packs, refs = 1, owned = true };
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                if (shapes != null)
+                                                    shapes[layer.topNames[0]] = srcShape;
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
+        }
+
+        private static bool CanUsePack4Softmax(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4;
         }
     }
 }

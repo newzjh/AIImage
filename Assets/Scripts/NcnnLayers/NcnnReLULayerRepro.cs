@@ -70,12 +70,14 @@ namespace NcnnCompute
         {
                         var cmd = context.commandBuffer;
                         var blobs = context.blobs;
+                        var shapes = context.shapes;
                         var remaining = context.remaining;
                         var pinnedNames = context.pinnedNames;
 
                         do
                         {
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+                                                var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 var slope = layer.GetFloat(0, 0f);
                                                 var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
                                                 owner.Ops.LeakyReluPack4(cmd, src.texture, slope, src.packs, outArr);
@@ -88,7 +90,9 @@ namespace NcnnCompute
                                                     refs = 1,
                                                     owned = true
                                                 };
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                if (shapes != null)
+                                                    shapes[layer.topNames[0]] = srcShape;
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
         }

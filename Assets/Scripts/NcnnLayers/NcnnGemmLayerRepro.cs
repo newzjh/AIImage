@@ -147,13 +147,20 @@ namespace NcnnCompute
                                                     useC = cBuf != null;
                                                 }
 
-                                                var outBuf = owner.RentTempBuffer(m * n, sizeof(float));
-                                                owner.Ops.Gemm2D(srcBuf, bBuf, cBuf, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outBuf);
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                                bufferViews[layer.topNames[0]] = m == 1 && srcView.dims == 1
-                                                    ? new NcnnTensorBuffer(outBuf, 1, n, 1, 1, 1, false)
-                                                    : new NcnnTensorBuffer(outBuf, 2, n, m, 1, 1, false);
+                                                var outTensor = m == 1 && srcView.dims == 1
+                                                    ? owner.RentTempTensorBuffer(1, n)
+                                                    : owner.RentTempTensorBuffer(2, n, m);
+                                                owner.Ops.Gemm2D(srcBuf, bBuf, cBuf, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outTensor.buffer);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: true,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

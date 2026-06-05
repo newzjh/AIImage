@@ -65,17 +65,24 @@ namespace NcnnCompute
 
                                                 var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                                                 var rows = srcTensor != null && srcTensor.dims == 2 && srcTensor.w == ip.inFeatures ? srcTensor.h : 1;
-                                                var outBuf = owner.RentTempBuffer(ip.outFeatures * rows, sizeof(float));
+                                                var outTensor = rows > 1
+                                                    ? owner.RentTempTensorBuffer(2, ip.outFeatures, rows)
+                                                    : owner.RentTempTensorBuffer(1, ip.outFeatures);
                                                 if (rows > 1)
-                                                    owner.Ops.InnerProduct2D(srcBuf, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
+                                                    owner.Ops.InnerProduct2D(srcBuf, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
                                                 else
-                                                    owner.Ops.InnerProduct(srcBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outBuf);
+                                                    owner.Ops.InnerProduct(srcBuf, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
 
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferViews[layer.topNames[0]] = rows > 1
-                                                    ? new NcnnTensorBuffer(outBuf, 2, ip.outFeatures, rows, 1, 1, false)
-                                                    : new NcnnTensorBuffer(outBuf, 1, ip.outFeatures, 1, 1, 1, false);
-                                                tempOwned.Add(outBuf);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: true,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

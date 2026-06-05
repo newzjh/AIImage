@@ -386,6 +386,7 @@ namespace NcnnCompute
         {
                         var cmd = context.commandBuffer;
                         var blobs = context.blobs;
+                        var shapes = context.shapes;
                         var remaining = context.remaining;
                         var pinnedNames = context.pinnedNames;
 
@@ -395,27 +396,128 @@ namespace NcnnCompute
                                                 var withScalar = layer.GetInt(1, 0);
                                                 var scalarB = layer.GetFloat(2, 0f);
                                                 var a = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-                                                var outArr = owner.RentTempArray(cmd, a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
+                                                var aShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 if (withScalar != 0)
                                                 {
+                                                    var outArr = owner.RentTempArray(cmd, a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
                                                     owner.Ops.BinaryOpScalarPack4(cmd, a.texture, scalarB, a.packs, opType, outArr);
+                                                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = a.width, height = a.height, packs = a.packs, refs = 1, owned = true };
+                                                    if (shapes != null)
+                                                        shapes[layer.topNames[0]] = aShape;
                                                 }
                                                 else
                                                 {
                                                     var b = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[1]);
-                                                    if (a.width != b.width || a.height != b.height || a.packs != b.packs)
+                                                    var bShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
+                                                    if (CanUseExactCmdBinaryPath(a, aShape, b, bShape))
                                                     {
-                                                        owner.ReturnTempArray(cmd, outArr);
-                                                        owner.CopyCmdTensor(cmd, a, layer.topNames[0], blobs);
-                                                        owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                        var outArr = owner.RentTempArray(cmd, a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
+                                                        owner.Ops.BinaryOpPack4(cmd, a.texture, b.texture, a.packs, opType, outArr);
+                                                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = a.width, height = a.height, packs = a.packs, refs = 1, owned = true };
+                                                        if (shapes != null)
+                                                            shapes[layer.topNames[0]] = aShape;
+                                                    }
+                                                    else if (TryResolveCmdSpatialBroadcast(a, aShape, b, bShape, out var broadcastMode, out var outShape, out var outWidth, out var outHeight, out var outPacks))
+                                                    {
+                                                        var outArr = owner.RentTempArray(cmd, outWidth, outHeight, outPacks, RenderTextureFormat.ARGBHalf);
+                                                        owner.Ops.BinaryOpPack4Broadcast(cmd, a.texture, b.texture, outPacks, opType, broadcastMode, outArr);
+                                                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outWidth, height = outHeight, packs = outPacks, refs = 1, owned = true };
+                                                        if (shapes != null)
+                                                            shapes[layer.topNames[0]] = outShape;
+                                                    }
+                                                    else
+                                                    {
+                                                        var fallbackShape = ResolveCmdOutputShape(aShape, bShape);
+                                                        NcnnRepro.ResolveCmdTextureLayout(fallbackShape, out var width, out var height, out var packs);
+                                                        owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, fallbackShape);
+                                                        owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                         continue;
                                                     }
-                                                    owner.Ops.BinaryOpPack4(cmd, a.texture, b.texture, a.packs, opType, outArr);
                                                 }
-                                                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = a.width, height = a.height, packs = a.packs, refs = 1, owned = true };
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
+        }
+
+        private static bool CanUseExactCmdBinaryPath(NcnnRepro.CmdTensorRef a, NcnnRepro.BufferShape aShape, NcnnRepro.CmdTensorRef b, NcnnRepro.BufferShape bShape)
+        {
+            return a != null
+                && b != null
+                && a.texture != null
+                && b.texture != null
+                && aShape.dims == 3
+                && bShape.dims == 3
+                && aShape.w == bShape.w
+                && aShape.h == bShape.h
+                && aShape.c == bShape.c
+                && a.width == b.width
+                && a.height == b.height
+                && a.packs == b.packs;
+        }
+
+        private static bool TryResolveCmdSpatialBroadcast(
+            NcnnRepro.CmdTensorRef a,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.CmdTensorRef b,
+            NcnnRepro.BufferShape bShape,
+            out int broadcastMode,
+            out NcnnRepro.BufferShape outShape,
+            out int outWidth,
+            out int outHeight,
+            out int outPacks)
+        {
+            broadcastMode = 0;
+            outShape = default;
+            outWidth = 0;
+            outHeight = 0;
+            outPacks = 0;
+
+            if (a == null || b == null || a.texture == null || b.texture == null)
+                return false;
+            if (aShape.dims != 3 || bShape.dims != 3)
+                return false;
+            if (aShape.c != bShape.c || a.packs != b.packs)
+                return false;
+
+            var aIsScalarSpatial = aShape.w == 1 && aShape.h == 1 && a.width == 1 && a.height == 1;
+            var bIsScalarSpatial = bShape.w == 1 && bShape.h == 1 && b.width == 1 && b.height == 1;
+            var aIsOutputSpatial = aShape.w == a.width && aShape.h == a.height;
+            var bIsOutputSpatial = bShape.w == b.width && bShape.h == b.height;
+
+            if (aIsScalarSpatial && !bIsScalarSpatial && bIsOutputSpatial)
+            {
+                broadcastMode = 1;
+                outWidth = b.width;
+                outHeight = b.height;
+                outPacks = b.packs;
+                outShape = new NcnnRepro.BufferShape(3, bShape.w, bShape.h, 1, bShape.c);
+                return true;
+            }
+
+            if (bIsScalarSpatial && !aIsScalarSpatial && aIsOutputSpatial)
+            {
+                broadcastMode = 2;
+                outWidth = a.width;
+                outHeight = a.height;
+                outPacks = a.packs;
+                outShape = new NcnnRepro.BufferShape(3, aShape.w, aShape.h, 1, aShape.c);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static NcnnRepro.BufferShape ResolveCmdOutputShape(NcnnRepro.BufferShape aShape, NcnnRepro.BufferShape bShape)
+        {
+            var aCount = Mathf.Max(1, aShape.w * aShape.h * aShape.d * aShape.c);
+            var bCount = Mathf.Max(1, bShape.w * bShape.h * bShape.d * bShape.c);
+            if (aCount == bCount)
+                return aShape;
+            if (aCount < bCount && bCount % aCount == 0)
+                return bShape;
+            if (bCount < aCount && aCount % bCount == 0)
+                return aShape;
+            return aShape;
         }
     }
 }

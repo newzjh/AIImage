@@ -94,21 +94,13 @@ namespace NcnnCompute
 
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.CopyPack4(cmd, src.texture, 0, outArr, 0, src.packs);
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-            {
-                texture = outArr,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
-                refs = 1,
-                owned = true
-            };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], src.width, src.height, src.packs, blobs, shapes, srcShape);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

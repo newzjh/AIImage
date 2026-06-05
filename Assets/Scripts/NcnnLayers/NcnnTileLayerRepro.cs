@@ -74,12 +74,19 @@ namespace NcnnCompute
                                                 else if (tensorAxis == 2 && srcView2.dims == 4) outD *= tiles;
                                                 else if (tensorAxis == 2 || tensorAxis == 3) outC *= tiles;
 
-                                                var outBuf = owner.RentTempBuffer(outW * outH * outD * outC, sizeof(float));
-                                                owner.Ops.Tile(srcBuf2, srcView2.dims, srcView2.w, srcView2.h, srcView2.d, srcView2.c, tensorAxis, tiles, outW, outH, outD, outC, outBuf);
+                                                var outTensor = owner.RentTempTensorBuffer(srcView2.dims, outW, outH, outD, outC);
+                                                owner.Ops.Tile(srcBuf2, srcView2.dims, srcView2.w, srcView2.h, srcView2.d, srcView2.c, tensorAxis, tiles, outW, outH, outD, outC, outTensor.buffer);
 
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView2.dims, outW, outH, outD, outC, false);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: srcView2.dims <= 3,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

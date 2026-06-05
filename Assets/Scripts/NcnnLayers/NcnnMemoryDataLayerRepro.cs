@@ -66,14 +66,17 @@ namespace NcnnCompute
                         {
                                                 if (!owner._memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
                                                     throw new InvalidOperationException("MemoryData not found: " + layer.name);
-                                                bufferBlobs[layer.topNames[0]] = mp.data;
-                                                bufferRefs[layer.topNames[0]] = new NcnnRepro.BufferRef
-                                                {
-                                                    buffer = mp.data,
-                                                    refs = 1,
-                                                    owned = false
-                                                };
-                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false);
+                                                var tensor = new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    tensor,
+                                                    preferTexture: mp.dims <= 3,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 continue;
                         } while (false);
         }
@@ -82,12 +85,18 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
 
             if (!owner._memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
                 throw new InvalidOperationException("MemoryData not found: " + layer.name);
 
-            NcnnRepro.ResolveCmdTextureLayout(new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false), out var width, out var height, out var packs);
-            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs);
+            owner.PublishCmdTensorBufferOutput(
+                cmd,
+                layer.topNames[0],
+                new NcnnTensorBuffer(mp.data, mp.dims, mp.w, mp.h, mp.d, mp.c, false),
+                preferTexture: true,
+                blobs,
+                shapes);
         }
     }
 }

@@ -49,6 +49,10 @@
 #pragma kernel NcnnBinaryOpPack4
 #pragma kernel NcnnBinaryOpPack4Broadcast
 #pragma kernel NcnnBinaryOpPack4BufferScalar
+#pragma kernel NcnnShuffleChannelPack4
+#pragma kernel NcnnCropPack4
+#pragma kernel NcnnSlicePack4
+#pragma kernel NcnnPermutePack4
 #pragma kernel NcnnSwishPack4
 #pragma kernel NcnnSigmoidPack4
 #pragma kernel NcnnGeluPack4
@@ -71,6 +75,9 @@
 #pragma kernel NcnnGroupNormPack4Mean
 #pragma kernel NcnnGroupNormPack4Variance
 #pragma kernel NcnnGroupNormPack4ApplyMeanVar
+#pragma kernel NcnnGroupNormPack4MeanTex
+#pragma kernel NcnnGroupNormPack4VarianceTex
+#pragma kernel NcnnGroupNormPack4ApplyMeanVarTex
 #pragma kernel NcnnTouchU32
 #pragma kernel NcnnCopyBuf
 #pragma kernel NcnnCopyBufPartial
@@ -2156,6 +2163,42 @@ RWTexture2DArray<float4> _UnaryOutArr;
 Texture2DArray<float4> _BinaryA;
 Texture2DArray<float4> _BinaryB;
 RWTexture2DArray<float4> _BinaryOutArr;
+Texture2DArray<float4> _ShuffleInArr;
+RWTexture2DArray<float4> _ShuffleOutArr;
+int _ShuffleGroup;
+int _ShuffleChannels;
+Texture2DArray<float4> _CropPack4InArr;
+RWTexture2DArray<float4> _CropPack4OutArr;
+int _CropPack4InW;
+int _CropPack4InH;
+int _CropPack4InC;
+int _CropPack4OffsetW;
+int _CropPack4OffsetH;
+int _CropPack4OffsetC;
+int _CropPack4OutW;
+int _CropPack4OutH;
+int _CropPack4OutC;
+Texture2DArray<float4> _SlicePack4InArr;
+RWTexture2DArray<float4> _SlicePack4OutArr;
+int _SlicePack4InW;
+int _SlicePack4InH;
+int _SlicePack4InC;
+int _SlicePack4Axis;
+int _SlicePack4Begin;
+int _SlicePack4OutW;
+int _SlicePack4OutH;
+int _SlicePack4OutC;
+Texture2DArray<float4> _PermutePack4InArr;
+RWTexture2DArray<float4> _PermutePack4OutArr;
+int _PermutePack4InW;
+int _PermutePack4InH;
+int _PermutePack4InC;
+int _PermutePack4OutW;
+int _PermutePack4OutH;
+int _PermutePack4OutC;
+int _PermutePack4Axis0;
+int _PermutePack4Axis1;
+int _PermutePack4Axis2;
 
 
 Texture2DArray<float4> _ActInArr;
@@ -2250,6 +2293,8 @@ float _MulK;
 RWStructuredBuffer<float> _GnInOut;
 Texture2DArray<float4> _GnTexInArr;
 RWTexture2DArray<float4> _GnTexOutArr;
+Texture2DArray<float4> _GnStatsTexIn;
+RWTexture2DArray<float4> _GnStatsTexOut;
 StructuredBuffer<float> _GnGamma;
 StructuredBuffer<float> _GnBeta;
 RWStructuredBuffer<float4> _GnStatsOut;
@@ -2778,6 +2823,166 @@ void NcnnBinaryOpPack4BufferScalar(uint3 id : SV_DispatchThreadID)
     else if (t == 8) o = b / a;
     else if (t == 9) o = pow(abs(b), a);
     _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = o;
+}
+
+float NcnnReadLane(float4 v, int lane)
+{
+    if (lane <= 0) return v.x;
+    if (lane == 1) return v.y;
+    if (lane == 2) return v.z;
+    return v.w;
+}
+
+float NcnnReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel)
+{
+    float4 v = tex[int3(x, y, channel / 4)];
+    return NcnnReadLane(v, channel % 4);
+}
+
+[numthreads(8,8,1)]
+void NcnnShuffleChannelPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _ShuffleOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+    if (_ShuffleGroup <= 0 || _ShuffleChannels <= 0) return;
+
+    int channelsPerGroup = _ShuffleChannels / _ShuffleGroup;
+    int4 gz4 = p * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+    if (gz4.x < _ShuffleChannels)
+    {
+        int srcChannel = (gz4.x % _ShuffleGroup) * channelsPerGroup + (gz4.x / _ShuffleGroup);
+        o.x = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+    }
+    if (gz4.y < _ShuffleChannels)
+    {
+        int srcChannel = (gz4.y % _ShuffleGroup) * channelsPerGroup + (gz4.y / _ShuffleGroup);
+        o.y = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+    }
+    if (gz4.z < _ShuffleChannels)
+    {
+        int srcChannel = (gz4.z % _ShuffleGroup) * channelsPerGroup + (gz4.z / _ShuffleGroup);
+        o.z = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+    }
+    if (gz4.w < _ShuffleChannels)
+    {
+        int srcChannel = (gz4.w % _ShuffleGroup) * channelsPerGroup + (gz4.w / _ShuffleGroup);
+        o.w = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+    }
+
+    _ShuffleOutArr[int3((int)id.x, (int)id.y, p)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnCropPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _CropPack4OutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    int x = (int)id.x + _CropPack4OffsetW;
+    int y = (int)id.y + _CropPack4OffsetH;
+    int4 oc4 = p * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+    if (oc4.x < _CropPack4OutC) o.x = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.x + _CropPack4OffsetC);
+    if (oc4.y < _CropPack4OutC) o.y = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.y + _CropPack4OffsetC);
+    if (oc4.z < _CropPack4OutC) o.z = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.z + _CropPack4OffsetC);
+    if (oc4.w < _CropPack4OutC) o.w = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.w + _CropPack4OffsetC);
+    _CropPack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnSlicePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _SlicePack4OutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int4 oc4 = p * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    if (_SlicePack4Axis == 0)
+        x += _SlicePack4Begin;
+    else if (_SlicePack4Axis == 1)
+        y += _SlicePack4Begin;
+
+    if (oc4.x < _SlicePack4OutC)
+    {
+        int sc = _SlicePack4Axis == 2 ? oc4.x + _SlicePack4Begin : oc4.x;
+        o.x = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+    }
+    if (oc4.y < _SlicePack4OutC)
+    {
+        int sc = _SlicePack4Axis == 2 ? oc4.y + _SlicePack4Begin : oc4.y;
+        o.y = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+    }
+    if (oc4.z < _SlicePack4OutC)
+    {
+        int sc = _SlicePack4Axis == 2 ? oc4.z + _SlicePack4Begin : oc4.z;
+        o.z = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+    }
+    if (oc4.w < _SlicePack4OutC)
+    {
+        int sc = _SlicePack4Axis == 2 ? oc4.w + _SlicePack4Begin : oc4.w;
+        o.w = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+    }
+
+    _SlicePack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnPermutePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _PermutePack4OutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int4 oc4 = p * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    if (oc4.x < _PermutePack4OutC)
+    {
+        int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.x);
+        int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.x);
+        int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.x);
+        o.x = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+    }
+    if (oc4.y < _PermutePack4OutC)
+    {
+        int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.y);
+        int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.y);
+        int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.y);
+        o.y = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+    }
+    if (oc4.z < _PermutePack4OutC)
+    {
+        int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.z);
+        int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.z);
+        int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.z);
+        o.z = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+    }
+    if (oc4.w < _PermutePack4OutC)
+    {
+        int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.w);
+        int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.w);
+        int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.w);
+        o.w = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+    }
+
+    _PermutePack4OutArr[int3(x, y, p)] = o;
 }
 
 [numthreads(8,8,1)]
@@ -3487,6 +3692,114 @@ void NcnnGroupNormPack4ApplyMeanVar(uint3 id : SV_DispatchThreadID)
         NcnnGnApplyOne(v.y, c1),
         NcnnGnApplyOne(v.z, c2),
         NcnnGnApplyOne(v.w, c3));
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormPack4MeanTex(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)_GnChannelsG * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
+
+    float sum = 0.0;
+    for (uint t = (uint)tid; t < total; t += 256u)
+    {
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
+        sum += NcnnGnReadPack4(c, s);
+    }
+
+    red0[tid] = sum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stGn = 128; stGn > 0; stGn >>= 1)
+    {
+        if (tid < stGn)
+            red0[tid] += red0[tid + stGn];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0)
+    {
+        float denom = (float)max(1u, total);
+        _GnStatsTexOut[int3(g, 0, 0)] = float4(red0[0] / denom, 0.0, 0.0, 0.0);
+    }
+}
+
+[numthreads(256,1,1)]
+void NcnnGroupNormPack4VarianceTex(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int g = (int)groupId.x;
+    int tid = (int)groupThreadId.x;
+    if (g < 0 || g >= _GnGroup) return;
+
+    uint size = (uint)(_GnW * _GnH);
+    uint total = (uint)_GnChannelsG * size;
+    uint chBase = (uint)g * (uint)_GnChannelsG;
+    float mean = _GnStatsTexIn[int3(g, 0, 0)].x;
+
+    float sqsum = 0.0;
+    for (uint t = (uint)tid; t < total; t += 256u)
+    {
+        uint ch = t / size;
+        uint s = t - ch * size;
+        uint c = chBase + ch;
+        float v = NcnnGnReadPack4(c, s) - mean;
+        sqsum += v * v;
+    }
+
+    red0[tid] = sqsum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (int stGn = 128; stGn > 0; stGn >>= 1)
+    {
+        if (tid < stGn)
+            red0[tid] += red0[tid + stGn];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0)
+        _GnStatsTexOut[int3(g, 0, 0)] = float4(mean, red0[0] / (float)max(1u, total), 0.0, 0.0);
+}
+
+float NcnnGnApplyOneTex(float x, int c)
+{
+    if (c < 0 || c >= _GnC)
+        return 0.0;
+    int g = c / max(1, _GnChannelsG);
+    float2 stats = _GnStatsTexIn[int3(g, 0, 0)].xy;
+    float y = (x - stats.x) * rsqrt(max(stats.y + _GnEps, 1e-20));
+    if (_GnAffine != 0)
+        y = y * _GnGamma[c] + _GnBeta[c];
+    return y;
+}
+
+[numthreads(8,8,1)]
+void NcnnGroupNormPack4ApplyMeanVarTex(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _GnTexOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    float4 v = _GnTexInArr[int3((int)id.x, (int)id.y, p)];
+    int c0 = p * 4 + 0;
+    int c1 = p * 4 + 1;
+    int c2 = p * 4 + 2;
+    int c3 = p * 4 + 3;
+    _GnTexOutArr[int3((int)id.x, (int)id.y, p)] = float4(
+        NcnnGnApplyOneTex(v.x, c0),
+        NcnnGnApplyOneTex(v.y, c1),
+        NcnnGnApplyOneTex(v.z, c2),
+        NcnnGnApplyOneTex(v.w, c3));
 }
 
 #define TILE 8

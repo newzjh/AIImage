@@ -1805,7 +1805,49 @@ namespace NcnnCompute
             return tr;
         }
 
-        internal void ConsumeCmd(CommandBuffer cmd, Dictionary<string, CmdTensorRef> blobs, Dictionary<string, int> remaining, string[] bottomNames, ICollection<string> pinnedNames)
+        internal static BufferShape InferCmdShape(CmdTensorRef tensor)
+        {
+            if (tensor == null)
+                throw new ArgumentNullException(nameof(tensor));
+            return new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4));
+        }
+
+        internal static bool TryGetCmdShape(
+            Dictionary<string, BufferShape> shapes,
+            Dictionary<string, CmdTensorRef> blobs,
+            string name,
+            out BufferShape shape)
+        {
+            if (shapes != null && shapes.TryGetValue(name, out shape))
+                return true;
+
+            if (blobs != null && blobs.TryGetValue(name, out var tensor) && tensor != null)
+            {
+                shape = InferCmdShape(tensor);
+                return true;
+            }
+
+            shape = default;
+            return false;
+        }
+
+        internal static BufferShape GetCmdShape(
+            Dictionary<string, BufferShape> shapes,
+            Dictionary<string, CmdTensorRef> blobs,
+            string name)
+        {
+            if (TryGetCmdShape(shapes, blobs, name, out var shape))
+                return shape;
+            throw new InvalidOperationException("cmd blob shape not found: " + name);
+        }
+
+        internal void ConsumeCmd(
+            CommandBuffer cmd,
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, int> remaining,
+            string[] bottomNames,
+            ICollection<string> pinnedNames,
+            Dictionary<string, BufferShape> shapes = null)
         {
             for (var i = 0; i < bottomNames.Length; i++)
             {
@@ -1831,6 +1873,7 @@ namespace NcnnCompute
                     }
                 }
                 blobs.Remove(b);
+                shapes?.Remove(b);
             }
         }
 
@@ -2591,21 +2634,16 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(tensor));
 
             var logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
+            bufferBlobs[topName] = tensor.buffer;
+            bufferRefs[topName] = NewBufferRef(tensor.buffer, tensor.ownsBuffer);
+            bufferViews[topName] = new NcnnTensorBuffer(tensor.buffer, tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c, false);
+
             if (preferTexture && tensor.dims <= 3)
             {
                 var rt = MaterializeTextureFromBufferView(tensor.buffer, tensor);
                 if (rt != null)
-                {
                     SetTextureBlob(textureBlobs, textureShapes, topName, rt, logicalShape);
-                    tempOwned.Add(tensor);
-                    return;
-                }
             }
-
-            bufferBlobs[topName] = tensor.buffer;
-            bufferRefs[topName] = NewOwnedBufferRef(topName, tensor.buffer);
-            bufferViews[topName] = new NcnnTensorBuffer(tensor.buffer, tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c, false);
-            tempOwned.Add(tensor);
         }
 
         internal void PublishCmdTensorBufferOutput(
@@ -2613,7 +2651,8 @@ namespace NcnnCompute
             string topName,
             NcnnTensorBuffer tensor,
             bool preferTexture,
-            Dictionary<string, CmdTensorRef> blobs)
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, BufferShape> shapes = null)
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
@@ -2638,6 +2677,8 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
+            if (shapes != null)
+                shapes[topName] = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
         }
 
         internal void PublishCmdTensorLikeInput(
@@ -2646,7 +2687,9 @@ namespace NcnnCompute
             int width,
             int height,
             int packs,
-            Dictionary<string, CmdTensorRef> blobs)
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, BufferShape> shapes = null,
+            BufferShape? logicalShape = null)
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
@@ -2665,6 +2708,8 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
+            if (shapes != null)
+                shapes[topName] = logicalShape ?? new BufferShape(3, Mathf.Max(1, width), Mathf.Max(1, height), 1, Mathf.Max(1, packs * 4));
         }
 
         internal static void ResolveCmdTextureLayout(NcnnTensorBuffer tensor, out int width, out int height, out int packs)
@@ -2696,14 +2741,41 @@ namespace NcnnCompute
             }
         }
 
+        internal static void ResolveCmdTextureLayout(BufferShape shape, out int width, out int height, out int packs)
+        {
+            width = Mathf.Max(1, shape.w);
+            height = 1;
+            packs = 1;
+
+            if (shape.dims == 2)
+            {
+                height = Mathf.Max(1, shape.h);
+                return;
+            }
+
+            if (shape.dims == 3)
+            {
+                height = Mathf.Max(1, shape.h);
+                packs = Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f));
+                return;
+            }
+
+            if (shape.dims >= 4)
+            {
+                height = Mathf.Max(1, shape.h * Mathf.Max(1, shape.d));
+                packs = Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f));
+            }
+        }
+
         internal void PublishCmdPlaceholderFromTensorView(
             CommandBuffer cmd,
             string topName,
             NcnnTensorBuffer tensor,
-            Dictionary<string, CmdTensorRef> blobs)
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, BufferShape> shapes = null)
         {
             ResolveCmdTextureLayout(tensor, out var width, out var height, out var packs);
-            PublishCmdTensorLikeInput(cmd, topName, width, height, packs, blobs);
+            PublishCmdTensorLikeInput(cmd, topName, width, height, packs, blobs, shapes, new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c));
         }
 
         internal void CopyCmdTensor(
@@ -2713,7 +2785,9 @@ namespace NcnnCompute
             Dictionary<string, CmdTensorRef> blobs,
             int width = -1,
             int height = -1,
-            int packs = -1)
+            int packs = -1,
+            Dictionary<string, BufferShape> shapes = null,
+            BufferShape? logicalShape = null)
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
@@ -2740,6 +2814,8 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
+            if (shapes != null)
+                shapes[topName] = logicalShape ?? new BufferShape(3, Mathf.Max(1, outWidth), Mathf.Max(1, outHeight), 1, Mathf.Max(1, outPacks * 4));
         }
 
         internal static bool CanUseExactPack4BinaryPath(TensorRef a, BufferShape aShape, TensorRef b, BufferShape bShape)
@@ -2796,7 +2872,7 @@ namespace NcnnCompute
             return buf;
         }
 
-        internal BufferRef NewOwnedBufferRef(string name, ComputeBuffer buffer)
+        internal BufferRef NewBufferRef(ComputeBuffer buffer, bool owned)
         {
             if (buffer == null)
                 throw new ArgumentNullException(nameof(buffer));
@@ -2804,8 +2880,13 @@ namespace NcnnCompute
             {
                 buffer = buffer,
                 refs = 1,
-                owned = true
+                owned = owned
             };
+        }
+
+        internal BufferRef NewOwnedBufferRef(string name, ComputeBuffer buffer)
+        {
+            return NewBufferRef(buffer, true);
         }
 
         internal static TensorRef GetTexture(Dictionary<string, TensorRef> blobs, string name)

@@ -33,9 +33,16 @@ namespace NcnnCompute
                                                     throw new InvalidOperationException("MatMul source not found: " + layer.name);
 
                                                 var outTensor = owner.RunMatMulLayer(aBuf, aView, bBuf, bView, layer.GetInt(0, 0) != 0);
-                                                bufferBlobs[layer.topNames[0]] = outTensor.buffer;
-                                                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outTensor.buffer);
-                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outTensor.buffer, outTensor.dims, outTensor.w, outTensor.h, outTensor.d, outTensor.c, false);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: outTensor.dims <= 3,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);

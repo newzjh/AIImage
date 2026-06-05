@@ -140,13 +140,74 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var axes = layer.GetInts(-23303, null);
+            if (axes == null || axes.Length == 0)
+                axes = layer.GetInts(3, Array.Empty<int>());
+            if (axes == null || axes.Length == 0)
+                throw new InvalidOperationException("ExpandDims missing axes: " + layer.name);
+
+            static NcnnRepro.BufferShape ExpandShape(NcnnRepro.BufferShape input, int[] expandAxes)
+            {
+                var dims = input.dims;
+                var w = input.w;
+                var h = input.h;
+                var d = input.d;
+                var c = input.c;
+
+                for (var i = 0; i < expandAxes.Length; i++)
+                {
+                    var outDims = dims + 1;
+                    if (outDims > 4)
+                        throw new InvalidOperationException("ExpandDims would exceed dims=4");
+
+                    var ncnnAxis = expandAxes[i];
+                    if (ncnnAxis < 0)
+                        ncnnAxis += outDims;
+                    if (ncnnAxis < 0 || ncnnAxis >= outDims)
+                        throw new InvalidOperationException("ExpandDims axis out of range");
+
+                    var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(outDims, ncnnAxis);
+                    var sizes = new[] { w, h, dims == 4 ? d : c, dims == 4 ? c : 1 };
+                    var expanded = new[] { 1, 1, 1, 1 };
+                    for (var axisIndex = 0; axisIndex < outDims; axisIndex++)
+                    {
+                        if (axisIndex < tensorAxis)
+                            expanded[axisIndex] = sizes[axisIndex];
+                        else if (axisIndex == tensorAxis)
+                            expanded[axisIndex] = 1;
+                        else
+                            expanded[axisIndex] = sizes[axisIndex - 1];
+                    }
+
+                    dims = outDims;
+                    w = expanded[0];
+                    h = expanded[1];
+                    if (dims == 3)
+                    {
+                        d = 1;
+                        c = expanded[2];
+                    }
+                    else
+                    {
+                        d = expanded[2];
+                        c = expanded[3];
+                    }
+                }
+
+                return new NcnnRepro.BufferShape(dims, w, h, d, c);
+            }
+
             blobs[layer.topNames[0]] = src;
+            if (shapes != null)
+                shapes[layer.topNames[0]] = ExpandShape(srcShape, axes);
             src.refs++;
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

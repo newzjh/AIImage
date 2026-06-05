@@ -190,6 +190,7 @@ namespace NcnnCompute
         {
                         var cmd = context.commandBuffer;
                         var blobs = context.blobs;
+                        var shapes = context.shapes;
                         var remaining = context.remaining;
                         var pinnedNames = context.pinnedNames;
 
@@ -198,6 +199,7 @@ namespace NcnnCompute
                                                 var opType = layer.GetInt(0, 1);
                                                 var coeffs = ParseEltwiseCoeffs(layer);
                                                 var a = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+                                                var aShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 var accum = owner.RentTempArray(cmd, a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
                                                 if (opType == 1)
                                                 {
@@ -230,7 +232,9 @@ namespace NcnnCompute
                                                 }
 
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = accum, width = a.width, height = a.height, packs = a.packs, refs = 1, owned = true };
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                if (shapes != null)
+                                                    shapes[layer.topNames[0]] = aShape;
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
         }

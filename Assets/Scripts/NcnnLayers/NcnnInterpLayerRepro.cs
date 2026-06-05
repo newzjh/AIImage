@@ -82,15 +82,36 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var resizeType = layer.GetInt(0, 0);
             var sy = layer.GetFloat(1, 1f);
             var sx = layer.GetFloat(2, 1f);
 
-            ResolveCmdTargetShape(layer, blobs, src, sx, sy, out var outW, out var outH);
+            ResolveCmdTargetShape(layer, shapes, blobs, srcShape, sx, sy, out var outW, out var outH);
+            var outShape = ResolveCmdOutputShape(srcShape, outW, outH);
+
+            if (IsCmdInterpNoop(srcShape, outShape))
+            {
+                blobs[layer.topNames[0]] = src;
+                src.refs++;
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
+
+            if (!CanUsePack4Interp(src, srcShape))
+            {
+                NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
+                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
 
             if (Mathf.Abs(sx - 2f) < 1e-3f && Mathf.Abs(sy - 2f) < 1e-3f)
             {
@@ -100,7 +121,9 @@ namespace NcnnCompute
                 else
                     owner.Ops.Interp2xPack4(cmd, src.texture, src.packs, outArr);
                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = src.width * 2, height = src.height * 2, packs = src.packs, refs = 1, owned = true };
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
 
@@ -112,18 +135,36 @@ namespace NcnnCompute
                 else
                     owner.Ops.InterpDown2Pack4(cmd, src.texture, src.packs, outArr);
                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = Mathf.Max(1, src.width / 2), height = Mathf.Max(1, src.height / 2), packs = src.packs, refs = 1, owned = true };
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
 
-            owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, src.packs);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (resizeType != 1 && resizeType != 3)
+            {
+                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                var scaleX = outW / (float)Mathf.Max(1, src.width);
+                var scaleY = outH / (float)Mathf.Max(1, src.height);
+                owner.Ops.InterpPack4(cmd, src.texture, src.packs, scaleX, scaleY, outArr);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = src.packs, refs = 1, owned = true };
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+            }
+            else
+            {
+                NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
+                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
+            }
+
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 
         private static void ResolveCmdTargetShape(
             NcnnParamModel.Layer layer,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
             System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
-            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
             float sx,
             float sy,
             out int outW,
@@ -134,25 +175,54 @@ namespace NcnnCompute
             {
                 var bottomShapes = new System.Collections.Generic.List<NcnnRepro.BufferShape>(layer.bottomNames.Length);
                 for (var i = 0; i < layer.bottomNames.Length; i++)
-                {
-                    var tr = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[i]);
-                    bottomShapes.Add(new NcnnRepro.BufferShape(3, tr.width, tr.height, 1, tr.packs * 4));
-                }
+                    bottomShapes.Add(NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[i]));
 
                 var sizes = NcnnRepro.EvaluateExpressionList(sizeExpr, bottomShapes, layer);
                 if (sizes.Count <= 0 || sizes.Count > 2)
                     throw new InvalidOperationException("Interp cmd size_expr rank unsupported: " + layer.name + " | " + sizeExpr);
                 outW = Mathf.Max(1, sizes[0]);
-                outH = sizes.Count == 1 ? src.height : Mathf.Max(1, sizes[1]);
+                outH = sizes.Count == 1 ? (srcShape.dims >= 2 ? srcShape.h : 1) : Mathf.Max(1, sizes[1]);
                 return;
             }
 
             outW = Mathf.Max(1, layer.GetInt(4, 0));
             outH = Mathf.Max(1, layer.GetInt(3, 0));
+            var srcW = srcShape.dims == 1 ? 1 : srcShape.w;
+            var srcH = srcShape.dims == 1 ? 1 : (srcShape.dims >= 2 ? srcShape.h : 1);
             if (layer.GetInt(4, 0) == 0)
-                outW = Mathf.Max(1, (int)(src.width * Mathf.Max(0f, sx)));
+                outW = Mathf.Max(1, (int)(srcW * Mathf.Max(0f, sx)));
             if (layer.GetInt(3, 0) == 0)
-                outH = Mathf.Max(1, (int)(src.height * Mathf.Max(0f, sy)));
+                outH = Mathf.Max(1, (int)(srcH * Mathf.Max(0f, sy)));
+        }
+
+        private static bool CanUsePack4Interp(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4;
+        }
+
+        private static bool IsCmdInterpNoop(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
+        {
+            if (srcShape.dims == 2)
+                return outShape.w == srcShape.w;
+            if (srcShape.dims >= 3)
+                return outShape.w == srcShape.w && outShape.h == srcShape.h;
+            return false;
+        }
+
+        private static NcnnRepro.BufferShape ResolveCmdOutputShape(NcnnRepro.BufferShape srcShape, int outW, int outH)
+        {
+            if (srcShape.dims == 1)
+                return new NcnnRepro.BufferShape(3, outW, outH, 1, srcShape.w);
+            if (srcShape.dims == 2)
+                return new NcnnRepro.BufferShape(2, outW, srcShape.h, 1, 1);
+            return new NcnnRepro.BufferShape(srcShape.dims, outW, outH, srcShape.d, srcShape.c);
         }
 
         private static void ResolveTargetShape(

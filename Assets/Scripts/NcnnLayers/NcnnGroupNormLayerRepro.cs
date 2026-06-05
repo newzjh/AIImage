@@ -69,16 +69,20 @@ namespace NcnnCompute
                                                     && NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
                                                 {
                                                     var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                                                    var statsBuf = owner.RentTempBuffer(gp.group, sizeof(float) * 4);
+                                                    var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+                                                    var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
                                                     try
                                                     {
-                                                        owner.Ops.GroupNormPack4(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsBuf, outRt);
+                                                        owner.Ops.GroupNormPack4Tex(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outRt);
                                                         NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
                                                         outRt = null;
                                                     }
                                                     finally
                                                     {
-                                                        owner.ReturnTempBuffer(statsBuf);
+                                                        if (statsA != null)
+                                                            owner.ReturnTempArray(statsA);
+                                                        if (statsB != null)
+                                                            owner.ReturnTempArray(statsB);
                                                         if (outRt != null)
                                                             owner.ReturnTempArray(outRt);
                                                     }
@@ -91,13 +95,20 @@ namespace NcnnCompute
                                                 var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                                                 if (srcBuf == null || srcView == null)
                                                     throw new InvalidOperationException("GroupNorm source not found: " + layer.name);
-                                                var outBuf = owner.RentTempBuffer(srcBuf.count, sizeof(float));
-                                                owner.Ops.CopyBuf(srcBuf, outBuf, srcBuf.count);
+                                                var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
+                                                owner.Ops.CopyBuf(srcBuf, outTensor.buffer, srcBuf.count);
                                                 var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
-                                                owner.Ops.GroupNormInplace(outBuf, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
-                                                bufferBlobs[layer.topNames[0]] = outBuf;
-                                                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
-                                                tempOwned.Add(outBuf);
+                                                owner.Ops.GroupNormInplace(outTensor.buffer, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
+                                                owner.PublishTensorBufferOutput(
+                                                    layer.topNames[0],
+                                                    outTensor,
+                                                    preferTexture: srcView.dims <= 3,
+                                                    textureBlobs,
+                                                    textureShapes,
+                                                    bufferBlobs,
+                                                    bufferRefs,
+                                                    bufferViews,
+                                                    tempOwned);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
@@ -107,12 +118,61 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, src.width, src.height, src.packs);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            if (!owner._groupNorm.TryGetValue(layer.name, out var gp))
+                throw new InvalidOperationException("GroupNorm not found: " + layer.name);
+
+            if (owner.UseNcnnStyleGroupNorm && CanUsePack4CmdPath(src, srcShape, gp))
+            {
+                var statsA = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+                var statsB = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+                var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.GroupNormPack4Tex(cmd, src.texture, srcShape.w, srcShape.h, srcShape.c, src.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outArr);
+                owner.ReturnTempArray(cmd, statsA);
+                owner.ReturnTempArray(cmd, statsB);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outArr,
+                    width = src.width,
+                    height = src.height,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true
+                };
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+            }
+            else
+            {
+                NcnnRepro.ResolveCmdTextureLayout(srcShape, out var width, out var height, out var packs);
+                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, srcShape);
+            }
+
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool CanUsePack4CmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.GroupNormPack gp)
+        {
+            return src != null
+                && src.texture != null
+                && gp != null
+                && gp.affine
+                && gp.gamma != null
+                && gp.beta != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.c == gp.channels
+                && gp.channels > 0
+                && gp.group > 0
+                && gp.channels % gp.group == 0
+                && src.packs == Mathf.CeilToInt(gp.channels / 4f);
         }
     }
 }

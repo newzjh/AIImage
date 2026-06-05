@@ -273,38 +273,94 @@ namespace NcnnCompute
         {
                         var cmd = context.commandBuffer;
                         var blobs = context.blobs;
+                        var shapes = context.shapes;
                         var remaining = context.remaining;
                         var pinnedNames = context.pinnedNames;
 
                         do
                         {
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+                                                var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 var poolingType = layer.GetInt(0, 0);
                                                 var kernelW = layer.GetInt(1, 0);
                                                 var kernelH = layer.GetInt(11, kernelW);
                                                 var strideW = layer.GetInt(2, 1);
                                                 var strideH = layer.GetInt(12, strideW);
                                                 var padLeft = layer.GetInt(3, 0);
+                                                var padRight = layer.GetInt(14, padLeft);
                                                 var padTop = layer.GetInt(13, padLeft);
+                                                var padBottom = layer.GetInt(15, padTop);
                                                 var globalPooling = layer.GetInt(4, 0);
                                                 var adaptivePooling = layer.GetInt(7, 0);
-                                                if (globalPooling != 0 || adaptivePooling != 0)
+                                                var outShape = ResolveCmdOutputShape(srcShape, layer, kernelW, kernelH, strideW, strideH, padLeft, padRight, padTop, padBottom, globalPooling != 0, adaptivePooling != 0);
+                                                if (adaptivePooling != 0 || !CanUsePack4CmdPath(src, srcShape))
                                                 {
-                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, 1, 1, src.packs);
-                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                    NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
+                                                    owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
+                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                     continue;
                                                 }
 
-                                                var outW = (src.width + padLeft * 2 - kernelW) / strideW + 1;
-                                                var outH = (src.height + padTop * 2 - kernelH) / strideH + 1;
-                                                outW = Mathf.Max(1, outW);
-                                                outH = Mathf.Max(1, outH);
+                                                var outW = globalPooling != 0 ? 1 : Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.w, kernelW, 1, strideW, padLeft, padRight));
+                                                var outH = globalPooling != 0 ? 1 : Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.h, kernelH, 1, strideH, padTop, padBottom));
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                                                owner.Ops.PoolingPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                                                if (globalPooling != 0)
+                                                    owner.Ops.PoolingPack4(cmd, src.texture, src.packs, src.width, src.height, 1, 1, 0, 0, poolingType, outArr);
+                                                else
+                                                    owner.Ops.PoolingPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = src.packs, refs = 1, owned = true };
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                                                if (shapes != null)
+                                                    shapes[layer.topNames[0]] = outShape;
+                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
+        }
+
+        private static bool CanUsePack4CmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4;
+        }
+
+        private static NcnnRepro.BufferShape ResolveCmdOutputShape(
+            NcnnRepro.BufferShape srcShape,
+            NcnnParamModel.Layer layer,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            bool globalPooling,
+            bool adaptivePooling)
+        {
+            var outC = Mathf.Max(1, srcShape.c);
+            if (srcShape.dims != 3)
+                return new NcnnRepro.BufferShape(srcShape.dims, Mathf.Max(1, srcShape.w), Mathf.Max(1, srcShape.h), Mathf.Max(1, srcShape.d), outC);
+
+            if (globalPooling)
+                return new NcnnRepro.BufferShape(3, 1, 1, 1, outC);
+
+            if (adaptivePooling)
+            {
+                var adaptiveOutW = layer.GetInt(8, 0);
+                var adaptiveOutH = layer.GetInt(18, adaptiveOutW);
+                var outW = adaptiveOutW == -233 || adaptiveOutW <= 0 ? srcShape.w : adaptiveOutW;
+                var outH = adaptiveOutH == -233 || adaptiveOutH <= 0 ? srcShape.h : adaptiveOutH;
+                return new NcnnRepro.BufferShape(3, Mathf.Max(1, outW), Mathf.Max(1, outH), 1, outC);
+            }
+
+            var resolvedW = Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.w, kernelW, 1, strideW, padLeft, padRight));
+            var resolvedH = Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.h, kernelH, 1, strideH, padTop, padBottom));
+            return new NcnnRepro.BufferShape(3, resolvedW, resolvedH, 1, outC);
         }
     }
 }

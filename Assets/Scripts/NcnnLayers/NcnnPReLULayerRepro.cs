@@ -88,33 +88,21 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.PReluPack pp)
                 throw new InvalidOperationException("PReLU pack not found: " + layer.name);
 
-            if (pp.numSlope != 1)
-            {
-                var cmdFallback = context.commandBuffer;
-                var blobsFallback = context.blobs;
-                var remainingFallback = context.remaining;
-                var pinnedFallback = context.pinnedNames;
-                var srcFallback = NcnnRepro.GetCmdTensor(blobsFallback, layer.bottomNames[0]);
-                var outFallback = owner.RentTempArray(cmdFallback, srcFallback.width, srcFallback.height, srcFallback.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.CopyPack4(cmdFallback, srcFallback.texture, 0, outFallback, 0, srcFallback.packs);
-                blobsFallback[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-                {
-                    texture = outFallback,
-                    width = srcFallback.width,
-                    height = srcFallback.height,
-                    packs = srcFallback.packs,
-                    refs = 1,
-                    owned = true
-                };
-                owner.ConsumeCmd(cmdFallback, blobsFallback, remainingFallback, layer.bottomNames, pinnedFallback);
-                return;
-            }
-
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+
+            if (pp.numSlope != 1)
+            {
+                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], src.width, src.height, src.packs, blobs, shapes, srcShape);
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
+
             var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
             owner.Ops.LeakyReluPack4(cmd, src.texture, pp.slopeCpu[0], src.packs, outArr);
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
@@ -126,7 +114,9 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = srcShape;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

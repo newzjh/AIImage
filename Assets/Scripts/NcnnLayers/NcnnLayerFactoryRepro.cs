@@ -208,6 +208,10 @@ namespace NcnnCompute
             ICollection<string> pinnedNames = null)
         {
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+            var shapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal)
+            {
+                [inputBlobName] = new BufferShape(3, inputPack4.width, inputPack4.height, 1, ResolveInputLogicalChannels(inputBlobName, inputPacks * 4))
+            };
             var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
             {
                 [inputBlobName] = new CmdTensorRef
@@ -225,6 +229,7 @@ namespace NcnnCompute
             {
                 commandBuffer = cmd,
                 blobs = blobs,
+                shapes = shapes,
                 remaining = remaining,
                 pinnedNames = pinnedNames
             };

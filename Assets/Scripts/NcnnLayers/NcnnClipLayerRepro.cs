@@ -38,15 +38,25 @@ namespace NcnnCompute
                                                         throw new InvalidOperationException("Clip source not found: " + layer.name);
 
                                                     var tmpBuf = owner.RentTempBuffer(srcBuf.count, sizeof(float));
-                                                    var outBuf = owner.RentTempBuffer(srcBuf.count, sizeof(float));
+                                                    var outTensor = owner.RentTempTensorBuffer(
+                                                        srcView?.dims ?? 1,
+                                                        srcView?.w ?? srcBuf.count,
+                                                        srcView?.h ?? 1,
+                                                        srcView?.d ?? 1,
+                                                        srcView?.c ?? 1);
                                                     owner.Ops.BinaryOpScalarBuf(srcBuf, minValue, srcBuf.count, 4, tmpBuf);
-                                                    owner.Ops.BinaryOpScalarBuf(tmpBuf, maxValue, srcBuf.count, 5, outBuf);
-                                                    bufferBlobs[layer.topNames[0]] = outBuf;
-                                                    bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], outBuf);
-                                                    if (srcView != null)
-                                                        bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, false);
+                                                    owner.Ops.BinaryOpScalarBuf(tmpBuf, maxValue, srcBuf.count, 5, outTensor.buffer);
                                                     tempOwned.Add(tmpBuf);
-                                                    tempOwned.Add(outBuf);
+                                                    owner.PublishTensorBufferOutput(
+                                                        layer.topNames[0],
+                                                        outTensor,
+                                                        preferTexture: srcView != null && srcView.dims <= 3,
+                                                        textureBlobs,
+                                                        textureShapes,
+                                                        bufferBlobs,
+                                                        bufferRefs,
+                                                        bufferViews,
+                                                        tempOwned);
                                                 }
 
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -58,12 +68,14 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var minValue = layer.GetFloat(0, -1e30f);
             var maxValue = layer.GetFloat(1, 1e30f);
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
             owner.Ops.ClipPack4(cmd, src.texture, minValue, maxValue, src.packs, outArr);
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
@@ -75,7 +87,9 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = srcShape;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }
