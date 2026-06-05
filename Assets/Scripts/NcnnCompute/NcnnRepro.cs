@@ -570,6 +570,32 @@ namespace NcnnCompute
                 _owner = owner;
             }
 
+            private ComputeBuffer GetOrMaterializeBuffer(string name)
+            {
+                if (_bufferBlobs.TryGetValue(name, out var existing) && existing != null)
+                    return existing;
+
+                var materialized = _owner.GetOrConvertToBuffer(name, _textureBlobs, _bufferBlobs, _textureShapes, _bufferViews, _tempOwned);
+                if (materialized == null)
+                    throw new InvalidOperationException("buffer blob not found: " + name);
+                return materialized;
+            }
+
+            private void DetachTempOwnedBuffer(ComputeBuffer buffer)
+            {
+                if (buffer == null || _tempOwned == null)
+                    return;
+
+                for (var i = _tempOwned.Count - 1; i >= 0; i--)
+                {
+                    if (ReferenceEquals(_tempOwned[i], buffer))
+                    {
+                        _tempOwned.RemoveAt(i);
+                        return;
+                    }
+                }
+            }
+
             public RenderTexture GetTexture(string name)
             {
                 if (_textureBlobs.TryGetValue(name, out var tr) && tr != null && tr.texture != null)
@@ -612,9 +638,7 @@ namespace NcnnCompute
 
             public ComputeBuffer GetBuffer(string name)
             {
-                if (!_bufferBlobs.TryGetValue(name, out var buf) || buf == null)
-                    throw new InvalidOperationException("buffer blob not found: " + name);
-                return buf;
+                return GetOrMaterializeBuffer(name);
             }
 
             public float[] GetBufferData(string name)
@@ -629,9 +653,21 @@ namespace NcnnCompute
             {
                 if (_bufferViews.TryGetValue(name, out var view) && view != null && view.buffer != null)
                     return view;
-                if (_bufferBlobs.TryGetValue(name, out var buf) && buf != null)
-                    return new NcnnTensorBuffer(buf, 1, buf.count, 1, 1, 1, false);
-                throw new InvalidOperationException("buffer view not found: " + name);
+
+                var buf = GetOrMaterializeBuffer(name);
+                if (_bufferViews.TryGetValue(name, out view) && view != null && view.buffer != null)
+                    return view;
+
+                if (_textureShapes.TryGetValue(name, out var shape))
+                {
+                    view = new NcnnTensorBuffer(buf, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
+                    _bufferViews[name] = view;
+                    return view;
+                }
+
+                view = new NcnnTensorBuffer(buf, 1, buf.count, 1, 1, 1, false);
+                _bufferViews[name] = view;
+                return view;
             }
 
             public bool TryGetLogicalShape(string name, out int dims, out int w, out int h, out int d, out int c)
@@ -666,11 +702,11 @@ namespace NcnnCompute
 
             public ComputeBuffer ExtractBuffer(string name)
             {
-                if (!_bufferBlobs.TryGetValue(name, out var buf) || buf == null)
-                    throw new InvalidOperationException("buffer blob not found: " + name);
+                var buf = GetOrMaterializeBuffer(name);
                 _bufferBlobs.Remove(name);
                 _bufferRefs.Remove(name);
                 _bufferViews.Remove(name);
+                DetachTempOwnedBuffer(buf);
                 return buf;
             }
 
@@ -779,6 +815,8 @@ namespace NcnnCompute
         public bool EnableMhaParallelSoftmax { get; set; }
         public bool EnableMhaQkvFusion { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        public ISet<string> ForceBufferLayerTypes { get; set; }
+        public ISet<string> ForceBufferLayerNames { get; set; }
         public ISet<string> DebugCompareTextureLayers { get; set; }
         public ISet<string> DebugCompareTextureConvLayers { get; set; }
         public ISet<string> DebugCompareMaxPoolingLayers { get; set; }
@@ -796,10 +834,40 @@ namespace NcnnCompute
         public bool LayerRuntimeProfileSyncGpu { get; set; }
         public LayerRuntimeProfile LastRuntimeProfile { get; private set; }
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
+        private string _currentExecutingLayerName;
+        private string _currentExecutingLayerTypeName;
 
         internal void NotifyConvComplete(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
         {
             try { OnConvComplete?.Invoke(layerName, mode, srcW, srcH, inPacks, outPacks, gpuMs); } catch { }
+        }
+
+        internal void SetCurrentExecutingLayer(NcnnParamModel.Layer layer)
+        {
+            _currentExecutingLayerName = layer?.name;
+            _currentExecutingLayerTypeName = layer?.typeName;
+        }
+
+        internal void ClearCurrentExecutingLayer()
+        {
+            _currentExecutingLayerName = null;
+            _currentExecutingLayerTypeName = null;
+        }
+
+        internal bool ShouldForceCurrentLayerBufferPath()
+        {
+            if (MatchesForceBufferToken(ForceBufferLayerNames, _currentExecutingLayerName))
+                return true;
+            if (MatchesForceBufferToken(ForceBufferLayerTypes, _currentExecutingLayerTypeName))
+                return true;
+            return false;
+        }
+
+        private static bool MatchesForceBufferToken(ISet<string> set, string value)
+        {
+            if (set == null || set.Count == 0 || string.IsNullOrWhiteSpace(value))
+                return false;
+            return set.Contains(value) || set.Contains("*");
         }
 
         public NcnnRepro(NcnnOps ops)
@@ -2217,6 +2285,9 @@ namespace NcnnCompute
             texture = null;
             shape = default;
 
+            if (ShouldForceCurrentLayerBufferPath())
+                return false;
+
             try
             {
                 texture = GetOrMaterializeTexture(name, textureBlobs, textureShapes, bufferBlobs, bufferViews);
@@ -2931,15 +3002,36 @@ namespace NcnnCompute
             Dictionary<string, NcnnTensorBuffer> bufferViews,
             List<IDisposable> tempOwned)
         {
+            var emitMaterializeLog = DebugLog != null
+                && !string.IsNullOrEmpty(name)
+                && name.StartsWith("stride_", StringComparison.Ordinal);
             if (bufferBlobs.TryGetValue(name, out var buf) && buf != null)
+            {
+                if (emitMaterializeLog)
+                    DebugLog("[BufferMaterialize] reuse | name=" + name + " | count=" + buf.count);
                 return buf;
+            }
             if (!textureBlobs.TryGetValue(name, out var tr) || tr == null || tr.texture == null)
+            {
+                if (emitMaterializeLog)
+                    DebugLog("[BufferMaterialize] missing-source | name=" + name + " | hasShape=" + textureShapes.ContainsKey(name));
                 return null;
+            }
 
             var shape = GetTextureShape(textureShapes, tr, name);
             var physicalChannels = tr.packs * 4;
             var physicalCount = tr.width * tr.height * physicalChannels;
             var logicalCount = shape.w * shape.h * shape.d * shape.c;
+            if (emitMaterializeLog)
+            {
+                DebugLog("[BufferMaterialize] convert-start | name=" + name
+                    + " | size=" + tr.width + "x" + tr.height
+                    + " | packs=" + tr.packs
+                    + " | physical=" + physicalCount
+                    + " | logical=" + logicalCount
+                    + " | dims=" + shape.dims
+                    + " | shape=" + shape.w + "x" + shape.h + "x" + shape.c);
+            }
             if (physicalCount == logicalCount)
             {
                 var convertedExact = RentTempBuffer(logicalCount, sizeof(float));
@@ -2947,6 +3039,8 @@ namespace NcnnCompute
                 bufferBlobs[name] = convertedExact;
                 bufferViews[name] = new NcnnTensorBuffer(convertedExact, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
                 tempOwned.Add(convertedExact);
+                if (emitMaterializeLog)
+                    DebugLog("[BufferMaterialize] convert-done | name=" + name + " | mode=exact | count=" + convertedExact.count);
                 return convertedExact;
             }
 
@@ -2962,6 +3056,8 @@ namespace NcnnCompute
                 bufferBlobs[name] = converted;
                 bufferViews[name] = new NcnnTensorBuffer(converted, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
                 tempOwned.Add(converted);
+                if (emitMaterializeLog)
+                    DebugLog("[BufferMaterialize] convert-done | name=" + name + " | mode=partial | count=" + converted.count);
                 return converted;
             }
 
@@ -3906,7 +4002,7 @@ namespace NcnnCompute
             };
         }
 
-        internal static BufferShape ResolvePermuteShape(NcnnTensorBuffer src, int dims, Vector4Int axes)
+        internal static BufferShape ResolvePermuteShape(BufferShape src, int dims, Vector4Int axes)
         {
             int GetAxisSize(int axis)
             {
@@ -3922,6 +4018,13 @@ namespace NcnnCompute
             var outD = dims == 4 ? GetAxisSize(axes.z) : 1;
             var outC = dims == 2 ? 1 : GetAxisSize(dims == 4 ? axes.w : axes.z);
             return new BufferShape(dims, outW, outH, outD, outC);
+        }
+
+        internal static BufferShape ResolvePermuteShape(NcnnTensorBuffer src, int dims, Vector4Int axes)
+        {
+            if (src == null)
+                throw new ArgumentNullException(nameof(src));
+            return ResolvePermuteShape(new BufferShape(src.dims, src.w, src.h, src.d, src.c), dims, axes);
         }
 
         internal static int MapNcnnAxisToTensorAxis(int dims, int axis)

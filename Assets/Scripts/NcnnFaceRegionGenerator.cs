@@ -162,14 +162,27 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             return default;
         EnsureRuntimeObjects();
 
+        List<string> debugLines = null;
+        void LogPhase(string phase)
+        {
+            if (!dumpDebug)
+                return;
+
+            var line = "[FaceDebugPhase] " + phase;
+            if (debugLines != null && debugLines.Count < 1024)
+                debugLines.Add(line);
+            Debug.Log(line);
+        }
+
+        LogPhase("ensure-loaded-start");
         await EnsureLoaded(ct);
+        LogPhase("ensure-loaded-done");
         if (_repro == null || _repro.Model == null)
             return new FaceRegionResult { error = "Face detector model unavailable" };
 
         Texture2D letterbox = null;
         RenderTexture inputPack4 = null;
         string dumpDir = null;
-        List<string> debugLines = null;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -179,8 +192,14 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 NcnnGpuResourceTracker.Reset("NcnnFaceRegionGenerator");
             }
 
+            LogPhase("letterbox-build-start");
             var prep = BuildLetterbox(src, Mathf.Max(64, inputSize));
             letterbox = prep.texture;
+            LogPhase("letterbox-build-done"
+                + " | size=" + (letterbox != null ? (letterbox.width + "x" + letterbox.height) : "null")
+                + " | scale=" + prep.scale.ToString("F6", CultureInfo.InvariantCulture)
+                + " | padLeft=" + prep.padLeft
+                + " | padTop=" + prep.padTop);
             if (letterbox == null)
                 return new FaceRegionResult { error = "Face detector letterbox build failed" };
 
@@ -224,6 +243,13 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 {
                     if (debugLines.Count < 512)
                         debugLines.Add(line);
+
+                    if (line.StartsWith("[LayerHeartbeat]", StringComparison.Ordinal)
+                        || line.StartsWith("[LayerOutput]", StringComparison.Ordinal)
+                        || line.StartsWith("[BufferMaterialize]", StringComparison.Ordinal))
+                    {
+                        Debug.Log(line);
+                    }
                 };
             }
             else
@@ -233,9 +259,11 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             }
 
             inputPack4 = _repro.RentTempArray(letterbox.width, letterbox.height, 1, useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
+            LogPhase("pack4-input-rent-done | size=" + inputPack4.width + "x" + inputPack4.height + " | format=" + inputPack4.format);
             // Texture2D<float4> sampling from RGBA32 already yields normalized 0..1 values.
             // _ScaleX/_ScaleY here are spatial sampling scale, not color normalization.
             _ops.PackRgbToPack4(letterbox, 0, 0, 1f, 1f, inputPack4);
+            LogPhase("pack4-input-fill-done");
 
             var pinned = new HashSet<string>(StringComparer.Ordinal)
             {
@@ -290,17 +318,29 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             };
 
             var proposals = new List<FaceProposal>();
+            LogPhase("infer-start | pinned=" + pinned.Count);
             using (var infer = _repro.Infer(inputPack4, 1, "images", pinned))
             {
+                LogPhase("infer-returned");
                 for (var i = 0; i < YoloV7StrideValues.Length; i++)
                 {
                     var blobName = "stride_" + YoloV7StrideValues[i].ToString(CultureInfo.InvariantCulture);
                     if (!infer.TryGetLogicalShape(blobName, out var dims, out var outW, out var outH, out _, out var outC))
+                    {
+                        LogPhase(blobName + " logical-shape-missing");
                         continue;
+                    }
                     if (dims != 3)
+                    {
+                        LogPhase(blobName + " logical-dims-unexpected | dims=" + dims);
                         continue;
+                    }
 
+                    LogPhase(blobName
+                        + " decode-start"
+                        + " | logical=" + outW + "x" + outH + "x" + outC);
                     var data = infer.GetBufferData(blobName);
+                    LogPhase(blobName + " buffer-ready | count=" + data.Length);
                     var strideProposalStart = proposals.Count;
                     DecodeYoloV7LiteE(
                         proposals,
@@ -328,6 +368,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                             + " | logical_c=" + outC
                             + " | proposals=" + added);
                     }
+
+                    LogPhase(blobName + " decode-done | proposals_added=" + (proposals.Count - strideProposalStart));
                 }
 
                 if (debugLines != null)
@@ -383,26 +425,36 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 }
             }
 
+            LogPhase("decode-finished | total_proposals=" + proposals.Count);
             if (proposals.Count == 0)
                 return new FaceRegionResult { error = "No face detected" };
 
+            LogPhase("sort-start");
             SortProposals(proposals);
+            LogPhase("sort-done");
+            LogPhase("nms-start");
             var picked = ApplyNms(proposals, Mathf.Clamp01(nmsThreshold));
+            LogPhase("nms-done | picked=" + picked.Count);
             if (picked.Count == 0)
                 return new FaceRegionResult { error = "No face left after NMS" };
 
+            LogPhase("build-faces-start");
             var faces = BuildFaces(proposals, picked, src.width, src.height, Mathf.Max(1, maxDetectedFaces));
+            LogPhase("build-faces-done | faces=" + (faces != null ? faces.Length : 0));
             if (faces == null || faces.Length == 0)
                 return new FaceRegionResult { error = "No face left after postprocess" };
 
             var primary = faces[0];
             var primaryProposal = proposals[picked[0]];
+            LogPhase("build-mask-start");
             var mask = BuildMask(src.width, src.height, primaryProposal, out var maskRect);
+            LogPhase("build-mask-done | rect=" + maskRect.x + "," + maskRect.y + "," + maskRect.width + "," + maskRect.height);
             if (mask == null)
                 return new FaceRegionResult { error = "Face mask build failed" };
 
             if (dumpDebug)
             {
+                LogPhase("dump-start");
                 dumpDir = CreateDumpDir();
                 if (debugLines != null)
                 {
@@ -418,6 +470,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     TryOpenFolderInShell(dumpDir);
             }
 
+            LogPhase("done-success");
             return new FaceRegionResult
             {
                 mask = mask,
@@ -436,6 +489,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         }
         catch (Exception e)
         {
+            LogPhase("exception | type=" + e.GetType().Name + " | message=" + e.Message);
             Debug.LogException(e);
             return new FaceRegionResult { error = e.Message };
         }
@@ -454,21 +508,66 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         if (_loaded)
             return;
 
+        void LogLoad(string message)
+        {
+            Debug.Log("[FaceDebugLoad] " + message);
+        }
+
         var paramPath = Path.Combine(Application.streamingAssetsPath, paramRelativePath);
         var binPath = Path.Combine(Application.streamingAssetsPath, binRelativePath);
+        LogLoad("paths | param=" + paramPath + " | bin=" + binPath);
         if (!File.Exists(paramPath))
             throw new InvalidOperationException("Missing face detector param: " + paramPath);
         if (!File.Exists(binPath))
             throw new InvalidOperationException("Missing face detector bin: " + binPath);
 
-        var paramText = await File.ReadAllTextAsync(paramPath, ct);
-        var bytes = await File.ReadAllBytesAsync(binPath, ct);
+        LogLoad("read-param-start");
+        string paramText;
+        if (Application.isBatchMode)
+        {
+            ct.ThrowIfCancellationRequested();
+            paramText = File.ReadAllText(paramPath);
+        }
+        else
+        {
+            paramText = await File.ReadAllTextAsync(paramPath, ct);
+        }
+        LogLoad("read-param-done | chars=" + (paramText != null ? paramText.Length : 0));
+        LogLoad("read-bin-start");
+        byte[] bytes;
+        if (Application.isBatchMode)
+        {
+            ct.ThrowIfCancellationRequested();
+            bytes = File.ReadAllBytes(binPath);
+        }
+        else
+        {
+            bytes = await File.ReadAllBytesAsync(binPath, ct);
+        }
+        LogLoad("read-bin-done | bytes=" + (bytes != null ? bytes.Length : 0));
         using (var ms = new MemoryStream(bytes))
         using (var br = new NcnnBinReader(ms))
         {
-            _repro.LoadModel(paramText, br);
+            LogLoad("load-model-start");
+            _repro.LoadModel(paramText, br, progress =>
+            {
+                if (!string.Equals(progress.stage, "layer", StringComparison.Ordinal)
+                    || progress.layerIndex <= 4
+                    || progress.layerIndex == progress.layerCount
+                    || (progress.layerIndex % 32) == 0)
+                {
+                    Debug.Log("[FaceDebugLoad] model-progress"
+                        + " | stage=" + progress.stage
+                        + " | layer=" + progress.layerIndex + "/" + progress.layerCount
+                        + " | name=" + (progress.layerName ?? string.Empty)
+                        + " | type=" + (progress.layerType ?? string.Empty)
+                        + " | p=" + progress.progress01.ToString("F3", CultureInfo.InvariantCulture));
+                }
+            });
+            LogLoad("load-model-done");
         }
         _loaded = true;
+        LogLoad("loaded-flag-set");
     }
 
     private static LetterboxInfo BuildLetterbox(Texture2D src, int targetSize)

@@ -43,11 +43,7 @@ namespace NcnnCompute
                                                         {
                                                             var srcShape = NcnnRepro.GetTextureShape(textureShapes, reshapeTex, layer.bottomNames[0]);
                                                             var outShape = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
-                                                            var canAliasTexture = srcShape.dims <= 3
-                                                                && outShape.dims <= 3
-                                                                && srcShape.w * srcShape.h * srcShape.d * srcShape.c == outShape.w * outShape.h * outShape.d * outShape.c
-                                                                && (srcShape.dims != 3 || (srcShape.c % 4) == 0)
-                                                                && (outShape.dims != 3 || (outShape.c % 4) == 0);
+                                                            var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
                                                             if (canAliasTexture)
                                                             {
                                                                 textureBlobs[layer.topNames[0]] = reshapeTex;
@@ -65,11 +61,7 @@ namespace NcnnCompute
 
                                                     // If logical channels do not fill whole pack4 lanes, keeping the texture view
                                                     // would preserve padded channels and break later buffer consumers such as Permute.
-                                                    var canAliasTexture = srcShape.dims <= 3
-                                                        && outShape.dims <= 3
-                                                        && srcShape.w * srcShape.h * srcShape.d * srcShape.c == outShape.w * outShape.h * outShape.d * outShape.c
-                                                        && (srcShape.dims != 3 || (srcShape.c % 4) == 0)
-                                                        && (outShape.dims != 3 || (outShape.c % 4) == 0);
+                                                    var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
 
                                                     if (!canAliasTexture)
                                                     {
@@ -210,9 +202,27 @@ namespace NcnnCompute
                     }
                 }
 
-                throw new InvalidOperationException("Reshape bottom shape unavailable: " + layer.name + " | " + name);
-            }
-            return shapes;
+            throw new InvalidOperationException("Reshape bottom shape unavailable: " + layer.name + " | " + name);
+        }
+        return shapes;
+    }
+
+        private static bool CanAliasTextureLayout(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
+        {
+            if (srcShape.dims > 3 || outShape.dims > 3)
+                return false;
+
+            var srcCount = srcShape.w * srcShape.h * srcShape.d * srcShape.c;
+            var outCount = outShape.w * outShape.h * outShape.d * outShape.c;
+            if (srcCount != outCount)
+                return false;
+
+            if ((srcShape.dims == 3 && (srcShape.c % 4) != 0) || (outShape.dims == 3 && (outShape.c % 4) != 0))
+                return false;
+
+            NcnnRepro.ResolveCmdTextureLayout(srcShape, out var srcW, out var srcH, out var srcPacks);
+            NcnnRepro.ResolveCmdTextureLayout(outShape, out var outW, out var outH, out var outPacks);
+            return srcW == outW && srcH == outH && srcPacks == outPacks;
         }
 
         private static System.Collections.Generic.List<NcnnRepro.BufferShape> BuildCmdBottomShapes(

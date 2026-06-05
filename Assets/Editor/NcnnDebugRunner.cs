@@ -229,6 +229,8 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<CodeFormerNcnnReproRunner2>();
             runner.enableDebugDump = true;
             runner.enableFaceRegionDebugDump = true;
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[CodeFormer Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("CodeFormer Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | dump=" + (runner.LastDumpDir ?? ""));
             if (result.texture != null)
@@ -297,6 +299,8 @@ public static class NcnnDebugRunner
         {
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[GFPGAN Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("GFPGAN Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs);
             if (result.texture != null)
@@ -746,6 +750,8 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<CodeFormerNcnnReproRunner2>();
             runner.enableDebugDump = true;
             runner.enableFaceRegionDebugDump = true;
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[CodeFormer Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("CodeFormer Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | dump=" + (runner.LastDumpDir ?? ""));
             if (result.texture != null)
@@ -773,6 +779,8 @@ public static class NcnnDebugRunner
         {
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[GFPGAN Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("GFPGAN Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs);
             if (result.texture != null)

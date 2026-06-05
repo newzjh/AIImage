@@ -17,6 +17,11 @@ public struct CodeFormerResult
 }
 public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 {
+    private const string EncoderForceBufferTypesEnvVar = "AIIMAGE_CODEFORMER_ENCODER_FORCE_BUFFER_TYPES";
+    private const string EncoderForceBufferNamesEnvVar = "AIIMAGE_CODEFORMER_ENCODER_FORCE_BUFFER_NAMES";
+    private const string GeneratorForceBufferTypesEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_FORCE_BUFFER_TYPES";
+    private const string GeneratorForceBufferNamesEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_FORCE_BUFFER_NAMES";
+
     private readonly struct Affine2D
     {
         public readonly float m00;
@@ -867,7 +872,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         if (texture is Texture2D srcTex2D)
         {
             var bytes = srcTex2D.EncodeToPNG();
-            await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+            await WriteAllBytesCompatAsync(Path.Combine(dir, fileName), bytes, ct);
             return;
         }
 
@@ -888,7 +893,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             try
             {
                 var bytes = tex2D.EncodeToPNG();
-                await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+                await WriteAllBytesCompatAsync(Path.Combine(dir, fileName), bytes, ct);
             }
             finally
             {
@@ -921,7 +926,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             tex.SetPixels32(pixels);
             tex.Apply(false, false);
             var bytes = tex.EncodeToPNG();
-            await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+            await WriteAllBytesCompatAsync(Path.Combine(dir, fileName), bytes, ct);
         }
         finally
         {
@@ -989,7 +994,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             tex.SetPixels32(pixels);
             tex.Apply(false, false);
             var bytes = tex.EncodeToPNG();
-            await File.WriteAllBytesAsync(Path.Combine(dir, fileName), bytes, ct);
+            await WriteAllBytesCompatAsync(Path.Combine(dir, fileName), bytes, ct);
         }
         finally
         {
@@ -1325,6 +1330,26 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
+        if (Application.isBatchMode)
+        {
+            ct.ThrowIfCancellationRequested();
+            var prev = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = rt;
+                var syncTex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+                syncTex.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
+                syncTex.Apply(false, false);
+                syncTex.wrapMode = TextureWrapMode.Clamp;
+                syncTex.filterMode = FilterMode.Bilinear;
+                return syncTex;
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+            }
+        }
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
         var request = await tcs.Task.AttachExternalCancellation(ct);
@@ -1338,6 +1363,21 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.filterMode = FilterMode.Bilinear;
         return tex;
+    }
+
+    private static async UniTask WriteAllBytesCompatAsync(string path, byte[] bytes, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(path) || bytes == null)
+            return;
+
+        if (Application.isBatchMode)
+        {
+            ct.ThrowIfCancellationRequested();
+            File.WriteAllBytes(path, bytes);
+            return;
+        }
+
+        await File.WriteAllBytesAsync(path, bytes, ct);
     }
 
     private static string CreateDumpDir()
@@ -1426,6 +1466,35 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _generatorRepro.CodeFormerTargetSftMulLayer = codeFormerOnlyTargetLastSftBlock ? "Mul_900" : null;
         _generatorRepro.CodeFormerTargetSftAddLayer = codeFormerOnlyTargetLastSftBlock ? "Add_901" : null;
         _generatorRepro.CodeFormerTargetSftResidualLayer = codeFormerOnlyTargetLastSftBlock ? "Add_904" : null;
+        _encoderRepro.ForceBufferLayerTypes = ParseEnvTokenSet(EncoderForceBufferTypesEnvVar);
+        _encoderRepro.ForceBufferLayerNames = ParseEnvTokenSet(EncoderForceBufferNamesEnvVar);
+        _generatorRepro.ForceBufferLayerTypes = ParseEnvTokenSet(GeneratorForceBufferTypesEnvVar);
+        _generatorRepro.ForceBufferLayerNames = ParseEnvTokenSet(GeneratorForceBufferNamesEnvVar);
+    }
+
+    private static ISet<string> ParseEnvTokenSet(string envName)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(env))
+                return null;
+
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            var parts = env.Split(new[] { ',', ';', '|', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                var token = parts[i]?.Trim();
+                if (!string.IsNullOrWhiteSpace(token))
+                    set.Add(token);
+            }
+
+            return set.Count > 0 ? set : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private async UniTask EnsureLoaded()
@@ -1454,8 +1523,18 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         ReportProgress(0.02f, "Load encoder");
         await UniTask.Yield();
 
-        var paramText = await File.ReadAllTextAsync(paramPath);
-        var bytes = await File.ReadAllBytesAsync(binPath);
+        string paramText;
+        byte[] bytes;
+        if (Application.isBatchMode)
+        {
+            paramText = File.ReadAllText(paramPath);
+            bytes = File.ReadAllBytes(binPath);
+        }
+        else
+        {
+            paramText = await File.ReadAllTextAsync(paramPath);
+            bytes = await File.ReadAllBytesAsync(binPath);
+        }
         using (var ms = new MemoryStream(bytes))
         using (var br = new NcnnBinReader(ms))
         {
@@ -1480,8 +1559,18 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         ReportProgress(0.08f, "Load generator");
         await UniTask.Yield();
 
-        var paramText = await File.ReadAllTextAsync(paramPath);
-        var bytes = await File.ReadAllBytesAsync(binPath);
+        string paramText;
+        byte[] bytes;
+        if (Application.isBatchMode)
+        {
+            paramText = File.ReadAllText(paramPath);
+            bytes = File.ReadAllBytes(binPath);
+        }
+        else
+        {
+            paramText = await File.ReadAllTextAsync(paramPath);
+            bytes = await File.ReadAllBytesAsync(binPath);
+        }
         using (var ms = new MemoryStream(bytes))
         using (var br = new NcnnBinReader(ms))
         {

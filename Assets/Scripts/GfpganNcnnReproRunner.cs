@@ -502,7 +502,11 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _styleConv = new StyleConvWeights[15];
         _toRgb = new ToRgbWeights[8];
 
-        var bytes = await File.ReadAllBytesAsync(stylePath);
+        byte[] bytes;
+        if (Application.isBatchMode)
+            bytes = File.ReadAllBytes(stylePath);
+        else
+            bytes = await File.ReadAllBytesAsync(stylePath);
         MemoryStream ms = new MemoryStream(bytes);
         using (var br = new BinaryReader(ms))
         {
@@ -829,8 +833,18 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         ReportProgress(0.02f, "Reading Model File...");
         await UniTask.Yield();
 
-        var paramText = await File.ReadAllTextAsync(paramPath);
-        var bytes = await File.ReadAllBytesAsync(binPath);
+        string paramText;
+        byte[] bytes;
+        if (Application.isBatchMode)
+        {
+            paramText = File.ReadAllText(paramPath);
+            bytes = File.ReadAllBytes(binPath);
+        }
+        else
+        {
+            paramText = await File.ReadAllTextAsync(paramPath);
+            bytes = await File.ReadAllBytesAsync(binPath);
+        }
 
         ReportProgress(0.06f, "Loading Model...");
         await UniTask.Yield();

@@ -140,8 +140,7 @@ namespace NcnnCompute
                 return false;
 
             axes = NcnnRepro.ResolvePermuteAxes(3, orderType, "PermutePack4");
-            var srcTensor = new NcnnTensorBuffer(null, srcShape.dims, srcShape.w, srcShape.h, srcShape.d, srcShape.c, false);
-            outShape = NcnnRepro.ResolvePermuteShape(srcTensor, 3, axes);
+            outShape = NcnnRepro.ResolvePermuteShape(srcShape, 3, axes);
             return outShape.dims == 3 && outShape.d == 1;
         }
     }
