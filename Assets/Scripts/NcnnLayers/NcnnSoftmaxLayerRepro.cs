@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnSoftmaxLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnSoftmaxLayerRepro() : base(NcnnLayerTypes.Softmax, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -25,6 +26,18 @@ namespace NcnnCompute
 
                         do
                         {
+                                                var axis = layer.GetInt(0, 0);
+                                                if (axis == 0
+                                                    && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var softSrcTex, out var softSrcShape)
+                                                    && CanUsePack4Softmax(softSrcTex, softSrcShape))
+                                                {
+                                                    var outRt = owner.RentTempArray(softSrcTex.width, softSrcTex.height, softSrcTex.packs, RenderTextureFormat.ARGBHalf);
+                                                    owner.Ops.SoftmaxChannelPack4(softSrcTex.texture, softSrcTex.packs, outRt);
+                                                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, softSrcShape);
+                                                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                                                    continue;
+                                                }
+
                                                 if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var softBuf) && softBuf != null)
                                                 {
                                                     var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
@@ -116,6 +129,18 @@ namespace NcnnCompute
         }
 
         private static bool CanUsePack4Softmax(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4;
+        }
+
+        private static bool CanUsePack4Softmax(NcnnRepro.TensorRef src, NcnnRepro.BufferShape srcShape)
         {
             return src != null
                 && src.texture != null

@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnInnerProductLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnInnerProductLayerRepro() : base(NcnnLayerTypes.InnerProduct, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -92,13 +93,20 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outPacks = Mathf.Max(1, Mathf.CeilToInt(layer.GetInt(0, 0) / 4f));
-            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], 1, Mathf.Max(1, src.height), outPacks, blobs);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (!owner._innerProduct.TryGetValue(layer.name, out var ip))
+                throw new InvalidOperationException("InnerProduct not found: " + layer.name);
+
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var rows = srcShape.dims == 2 && srcShape.w == ip.inFeatures ? srcShape.h : 1;
+            var outShape = rows > 1
+                ? new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), rows, 1, 1)
+                : new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

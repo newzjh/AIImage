@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnUnfoldLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnUnfoldLayerRepro()
@@ -100,22 +101,37 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.CopyPack4(cmd, src.texture, 0, outArr, 0, src.packs);
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-            {
-                texture = outArr,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
-                refs = 1,
-                owned = true
-            };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.UnfoldPack up)
+                throw new InvalidOperationException("Unfold pack not found: " + layer.name);
+
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            if (srcShape.dims != 2 && srcShape.dims != 3)
+                throw new InvalidOperationException("Unfold expects dims=2 or dims=3 source: " + layer.name);
+
+            var inW = srcShape.w;
+            var inH = srcShape.h;
+            var inC = srcShape.dims == 3 ? srcShape.c : 1;
+            var kernelExtentW = up.dilationW * (up.kernelW - 1) + 1;
+            var kernelExtentH = up.dilationH * (up.kernelH - 1) + 1;
+            ResolvePadding(inW, inH, kernelExtentW, kernelExtentH, up, out var padLeft, out var padRight, out var padTop, out var padBottom);
+            var paddedW = inW + padLeft + padRight;
+            var paddedH = inH + padTop + padBottom;
+            var outw = (paddedW - kernelExtentW) / up.strideW + 1;
+            var outh = (paddedH - kernelExtentH) / up.strideH + 1;
+            var size = Mathf.Max(1, outw * outh);
+            var outRows = Mathf.Max(1, up.kernelW * up.kernelH * inC);
+
+            owner.PublishCmdPlaceholder(
+                cmd,
+                layer.topNames[0],
+                new NcnnRepro.BufferShape(2, size, outRows, 1, 1),
+                blobs,
+                shapes);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 
         private static void ResolvePadding(

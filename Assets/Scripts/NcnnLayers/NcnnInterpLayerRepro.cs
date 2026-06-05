@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnInterpLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnInterpLayerRepro() : base(NcnnLayerTypes.Interp, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -39,6 +40,52 @@ namespace NcnnCompute
             {
                 new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
                 return;
+            }
+
+            if (srcView.dims == 3
+                && outC == srcView.c
+                && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+                && CanUsePack4Interp(srcTex, srcShape))
+            {
+                var resizeTypePack = layer.GetInt(0, 0);
+                var sxPack = layer.GetFloat(2, 1f);
+                var syPack = layer.GetFloat(1, 1f);
+                var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
+                var outRt = owner.RentTempArray(outW, outH, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                var executed = false;
+
+                if (Mathf.Abs(sxPack - 2f) < 1e-3f && Mathf.Abs(syPack - 2f) < 1e-3f)
+                {
+                    if (resizeTypePack == 1)
+                        owner.Ops.Interp2xNearestPack4(srcTex.texture, srcTex.packs, outRt);
+                    else
+                        owner.Ops.Interp2xPack4(srcTex.texture, srcTex.packs, outRt);
+                    executed = true;
+                }
+                else if (Mathf.Abs(sxPack - 0.5f) < 1e-3f && Mathf.Abs(syPack - 0.5f) < 1e-3f)
+                {
+                    if (resizeTypePack == 1)
+                        owner.Ops.InterpDown2NearestPack4(srcTex.texture, srcTex.packs, outRt);
+                    else
+                        owner.Ops.InterpDown2Pack4(srcTex.texture, srcTex.packs, outRt);
+                    executed = true;
+                }
+                else if (resizeTypePack != 1 && resizeTypePack != 3)
+                {
+                    var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
+                    var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
+                    owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt);
+                    executed = true;
+                }
+
+                if (executed)
+                {
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
+                owner.ReturnTempArray(outRt);
             }
 
             var resizeType = layer.GetInt(0, 0);
@@ -196,6 +243,18 @@ namespace NcnnCompute
         }
 
         private static bool CanUsePack4Interp(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4;
+        }
+
+        private static bool CanUsePack4Interp(NcnnRepro.TensorRef src, NcnnRepro.BufferShape srcShape)
         {
             return src != null
                 && src.texture != null

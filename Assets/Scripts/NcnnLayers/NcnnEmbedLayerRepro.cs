@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnEmbedLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnEmbedLayerRepro() : base(NcnnLayerTypes.Embed, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -88,15 +89,22 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outWidth = 1;
-            var outHeight = Mathf.Max(1, src.width * src.height);
-            var outPacks = Mathf.Max(1, Mathf.CeilToInt(layer.GetInt(0, 0) / 4f));
-            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], outWidth, outHeight, outPacks, blobs);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (!owner._embed.TryGetValue(layer.name, out var ep))
+                throw new InvalidOperationException("Embed not found: " + layer.name);
+
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var words = Mathf.Max(1, srcShape.w * srcShape.h * srcShape.d * srcShape.c);
+            owner.PublishCmdPlaceholder(
+                cmd,
+                layer.topNames[0],
+                new NcnnRepro.BufferShape(2, Mathf.Max(1, ep.numOutput), words, 1, 1),
+                blobs,
+                shapes);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

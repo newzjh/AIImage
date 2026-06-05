@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnPriorBoxLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnPriorBoxLayerRepro()
@@ -106,22 +107,58 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            var feature = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outPacks = Mathf.Max(1, Mathf.CeilToInt(2f / 4f));
-            var outArr = owner.RentTempArray(cmd, Mathf.Max(1, feature.width), Mathf.Max(1, feature.height), outPacks, RenderTextureFormat.ARGBHalf);
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.PriorBoxPack pp)
+                throw new InvalidOperationException("PriorBox pack not found: " + layer.name);
+
+            var featShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var featW = featShape.w;
+            var featH = featShape.h;
+
+            if (layer.bottomNames.Length == 1 && pp.imageWidth == -233 && pp.imageHeight == -233 && (pp.maxSizes == null || pp.maxSizes.Length == 0))
             {
-                texture = outArr,
-                width = Mathf.Max(1, feature.width),
-                height = Mathf.Max(1, feature.height),
-                packs = outPacks,
-                refs = 1,
-                owned = true
-            };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                var numSizes = pp.minSizes?.Length ?? 0;
+                var numRatios = pp.aspectRatios?.Length ?? 0;
+                var numPrior = Mathf.Max(1, numSizes - 1 + numRatios);
+                owner.PublishCmdPlaceholder(
+                    cmd,
+                    layer.topNames[0],
+                    new NcnnRepro.BufferShape(1, Mathf.Max(1, 4 * featW * featH * numPrior), 1, 1, 1),
+                    blobs,
+                    shapes);
+            }
+            else
+            {
+                var imageW = pp.imageWidth;
+                var imageH = pp.imageHeight;
+                if (imageW == -233 || imageH == -233)
+                {
+                    if (layer.bottomNames.Length < 2)
+                        throw new InvalidOperationException("PriorBox image shape missing: " + layer.name);
+                    var imageShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
+                    if (imageW == -233) imageW = imageShape.w;
+                    if (imageH == -233) imageH = imageShape.h;
+                }
+
+                var numMinSize = pp.minSizes?.Length ?? 0;
+                var numMaxSize = pp.maxSizes?.Length ?? 0;
+                var numAspectRatio = pp.aspectRatios?.Length ?? 0;
+                var numPrior = numMinSize * numAspectRatio + numMinSize + numMaxSize;
+                if (pp.flip)
+                    numPrior += numMinSize * numAspectRatio;
+                var total = Mathf.Max(1, 4 * featW * featH * numPrior);
+                owner.PublishCmdPlaceholder(
+                    cmd,
+                    layer.topNames[0],
+                    new NcnnRepro.BufferShape(2, total, 2, 1, 1),
+                    blobs,
+                    shapes);
+            }
+
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 
         private static bool TryResolveLogicalShape(

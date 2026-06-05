@@ -94,6 +94,7 @@
 #pragma kernel NcnnMhaProjectQkv2D
 #pragma kernel NcnnReorgPack4
 #pragma kernel NcnnPointwisePack4
+#pragma kernel NcnnPixelShufflePack4
 #pragma kernel NcnnCastBuf
 #pragma kernel NcnnScaleBuf
 #pragma kernel NcnnPReluBuf
@@ -3985,6 +3986,11 @@ RWTexture2DArray<float4> _ReorgOutArr;
 
 Texture2DArray<float4> _PointwiseInArr;
 RWTexture2DArray<float4> _PointwiseOutArr;
+Texture2DArray<float4> _PixelShufflePack4InArr;
+RWTexture2DArray<float4> _PixelShufflePack4OutArr;
+int _PixelShufflePack4OutC;
+int _PixelShufflePack4Scale;
+int _PixelShufflePack4Mode;
 StructuredBuffer<float> _QuantIn;
 StructuredBuffer<float> _QuantScale;
 StructuredBuffer<float> _QuantScaleOut;
@@ -4621,6 +4627,55 @@ void NcnnPointwisePack4(uint3 id : SV_DispatchThreadID)
     if (p < 0 || p >= (int)d) return;
     float4 x = _PointwiseInArr[int3((int)id.x, (int)id.y, p)];
     _PointwiseOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyPointwise4(x);
+}
+
+[numthreads(8,8,1)]
+void NcnnPixelShufflePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _PixelShufflePack4OutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    int scale = max(1, _PixelShufflePack4Scale);
+    int inX = (int)id.x / scale;
+    int inY = (int)id.y / scale;
+    int sh = (int)id.y % scale;
+    int sw = (int)id.x % scale;
+    int4 oc4 = p * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    if (oc4.x < _PixelShufflePack4OutC)
+    {
+        int srcChannel = _PixelShufflePack4Mode == 0
+            ? oc4.x * scale * scale + sh * scale + sw
+            : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.x;
+        o.x = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+    }
+    if (oc4.y < _PixelShufflePack4OutC)
+    {
+        int srcChannel = _PixelShufflePack4Mode == 0
+            ? oc4.y * scale * scale + sh * scale + sw
+            : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.y;
+        o.y = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+    }
+    if (oc4.z < _PixelShufflePack4OutC)
+    {
+        int srcChannel = _PixelShufflePack4Mode == 0
+            ? oc4.z * scale * scale + sh * scale + sw
+            : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.z;
+        o.z = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+    }
+    if (oc4.w < _PixelShufflePack4OutC)
+    {
+        int srcChannel = _PixelShufflePack4Mode == 0
+            ? oc4.w * scale * scale + sh * scale + sw
+            : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.w;
+        o.w = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+    }
+
+    _PixelShufflePack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
 [numthreads(256,1,1)]

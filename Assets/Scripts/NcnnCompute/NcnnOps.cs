@@ -361,6 +361,7 @@ namespace NcnnCompute
         private readonly int _kMhaProjectQkv2D;
         private readonly int _kReorgPack4;
         private readonly int _kPointwisePack4;
+        private readonly int _kPixelShufflePack4;
         private readonly int _kCastBuf;
         private readonly int _kScaleBuf;
         private readonly int _kPReluBuf;
@@ -479,6 +480,7 @@ namespace NcnnCompute
             _kMhaProjectQkv2D = _cs.FindKernel("NcnnMhaProjectQkv2D");
             _kReorgPack4 = _cs.FindKernel("NcnnReorgPack4");
             _kPointwisePack4 = _cs.FindKernel("NcnnPointwisePack4");
+            _kPixelShufflePack4 = _cs.FindKernel("NcnnPixelShufflePack4");
             _kCastBuf = _cs.FindKernel("NcnnCastBuf");
             _kScaleBuf = _cs.FindKernel("NcnnScaleBuf");
             _kPReluBuf = _cs.FindKernel("NcnnPReluBuf");
@@ -3812,6 +3814,31 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kPointwisePack4, "_PointwiseInArr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kPointwisePack4, "_PointwiseOutArr", output.nameID);
             Dispatch3D(cmd, _kPointwisePack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void PixelShufflePack4(RenderTexture input, int outChannels, int scale, int mode, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PixelShufflePack4OutC", outChannels);
+            _cs.SetInt("_PixelShufflePack4Scale", scale);
+            _cs.SetInt("_PixelShufflePack4Mode", mode);
+            _cs.SetTexture(_kPixelShufflePack4, "_PixelShufflePack4InArr", input);
+            _cs.SetTexture(_kPixelShufflePack4, "_PixelShufflePack4OutArr", output);
+            Dispatch3D(_kPixelShufflePack4, output.width, output.height, output.volumeDepth, 8, 8);
+        }
+
+        public void PixelShufflePack4(CommandBuffer cmd, ComputeTexture input, int outChannels, int scale, int mode, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_PixelShufflePack4OutC", outChannels);
+            cmd.SetComputeIntParam(_cs, "_PixelShufflePack4Scale", scale);
+            cmd.SetComputeIntParam(_cs, "_PixelShufflePack4Mode", mode);
+            cmd.SetComputeTextureParam(_cs, _kPixelShufflePack4, "_PixelShufflePack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPixelShufflePack4, "_PixelShufflePack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kPixelShufflePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outChannels / 4f)), 8, 8);
         }
 
         private void Dispatch1D(int kernel, int total, int threadsPerGroup)

@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnSdpaLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnSdpaLayerRepro()
@@ -160,22 +161,45 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.CopyPack4(cmd, src.texture, 0, outArr, 0, src.packs);
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.SdpaPack sp)
+                throw new InvalidOperationException("SDPA pack not found: " + layer.name);
+
+            var queryShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var keyShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
+            var valueShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[2]);
+            if (queryShape.dims != 3 || keyShape.dims != 3 || valueShape.dims != 3)
+                throw new InvalidOperationException("SDPA expects dims=3 tensors: " + layer.name);
+
+            var dstSeqLen = keyShape.h;
+            if (sp.kvCache)
             {
-                texture = outArr,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
-                refs = 1,
-                owned = true
-            };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                var pastKeyBottom = sp.attnMask ? 4 : 3;
+                var pastKeyShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[pastKeyBottom]);
+                dstSeqLen += pastKeyShape.h;
+            }
+
+            var outShape = new NcnnRepro.BufferShape(3, valueShape.w, queryShape.h, 1, queryShape.c);
+            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+            if (sp.kvCache && layer.topNames.Length >= 3)
+            {
+                owner.PublishCmdPlaceholder(
+                    cmd,
+                    layer.topNames[1],
+                    new NcnnRepro.BufferShape(3, keyShape.w, dstSeqLen, 1, keyShape.c),
+                    blobs,
+                    shapes);
+                owner.PublishCmdPlaceholder(
+                    cmd,
+                    layer.topNames[2],
+                    new NcnnRepro.BufferShape(3, valueShape.w, dstSeqLen, 1, valueShape.c),
+                    blobs,
+                    shapes);
+            }
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 
         private static void PublishTensor(

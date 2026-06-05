@@ -5,6 +5,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnScaleLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnScaleLayerRepro()
@@ -156,7 +157,7 @@ namespace NcnnCompute
                 return;
             }
 
-            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], src.width, src.height, src.packs, blobs, shapes, srcShape);
+            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], srcShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }

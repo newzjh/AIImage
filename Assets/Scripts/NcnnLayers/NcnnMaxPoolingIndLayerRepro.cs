@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnMaxPoolingIndLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnMaxPoolingIndLayerRepro() : base(NcnnLayerTypes.MaxPoolingInd, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -120,59 +121,63 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-                        var cmd = context.commandBuffer;
-                        var blobs = context.blobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var shapes = context.shapes;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
-                        do
-                        {
-                                                var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-                                                var kernelW = layer.GetInt(1, 0);
-                                                var kernelH = layer.GetInt(11, kernelW);
-                                                var strideW = layer.GetInt(2, 1);
-                                                var strideH = layer.GetInt(12, strideW);
-                                                var padLeft = layer.GetInt(3, 0);
-                                                var padRight = layer.GetInt(14, padLeft);
-                                                var padTop = layer.GetInt(13, padLeft);
-                                                var padBottom = layer.GetInt(15, padTop);
-                                                var outW = Mathf.Max(1, (src.width + padLeft + padRight - kernelW) / Mathf.Max(1, strideW) + 1);
-                                                var outH = Mathf.Max(1, (src.height + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
-                                                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                                                ComputeTexture idxArr = null;
-                                                if (layer.topNames.Length > 1)
-                                                {
-                                                    idxArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
-                                                    owner.Ops.MaxPoolingIndPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outArr, idxArr);
-                                                }
-                                                else
-                                                {
-                                                    owner.Ops.PoolingPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outArr);
-                                                }
-                                                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-                                                {
-                                                    texture = outArr,
-                                                    width = outW,
-                                                    height = outH,
-                                                    packs = src.packs,
-                                                    refs = 1,
-                                                    owned = true
-                                                };
-                                                if (layer.topNames.Length > 1)
-                                                {
-                                                    blobs[layer.topNames[1]] = new NcnnRepro.CmdTensorRef
-                                                    {
-                                                        texture = idxArr,
-                                                        width = outW,
-                                                        height = outH,
-                                                        packs = src.packs,
-                                                        refs = 1,
-                                                        owned = true
-                                                    };
-                                                }
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var kernelW = layer.GetInt(1, 0);
+            var kernelH = layer.GetInt(11, kernelW);
+            var strideW = layer.GetInt(2, 1);
+            var strideH = layer.GetInt(12, strideW);
+            var padLeft = layer.GetInt(3, 0);
+            var padRight = layer.GetInt(14, padLeft);
+            var padTop = layer.GetInt(13, padLeft);
+            var padBottom = layer.GetInt(15, padTop);
+            var outW = Mathf.Max(1, (srcShape.w + padLeft + padRight - kernelW) / Mathf.Max(1, strideW) + 1);
+            var outH = Mathf.Max(1, (srcShape.h + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
+            var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, srcShape.c);
+            var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+            ComputeTexture idxArr = null;
+            if (layer.topNames.Length > 1)
+            {
+                idxArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
+                owner.Ops.MaxPoolingIndPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outArr, idxArr);
+            }
+            else
+            {
+                owner.Ops.PoolingPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, 0, outArr);
+            }
+
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outArr,
+                width = outW,
+                height = outH,
+                packs = src.packs,
+                refs = 1,
+                owned = true
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            if (layer.topNames.Length > 1)
+            {
+                blobs[layer.topNames[1]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = idxArr,
+                    width = outW,
+                    height = outH,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true
+                };
+                if (shapes != null)
+                    shapes[layer.topNames[1]] = outShape;
+            }
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnConvolutionDepthWiseLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnConvolutionDepthWiseLayerRepro() : base(NcnnLayerTypes.ConvolutionDepthWise, supportsBufferPath: true, supportsCommandBufferPath: true) { }

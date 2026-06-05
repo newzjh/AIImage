@@ -1,8 +1,10 @@
 using System;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnPixelShuffleLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnPixelShuffleLayerRepro()
@@ -44,6 +46,17 @@ namespace NcnnCompute
             var outH = srcView.h * upscaleFactor;
             var outC = srcView.c / divisor;
 
+            if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+                && CanUsePack4PixelShuffle(srcTex, srcShape, upscaleFactor))
+            {
+                var outPacks = Mathf.Max(1, Mathf.CeilToInt(outC / 4f));
+                var outRt = owner.RentTempArray(outW, outH, outPacks, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PixelShufflePack4(srcTex.texture, outC, upscaleFactor, mode, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(3, outW, outH, 1, outC));
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
             var outTensor = owner.RentTempTensorBuffer(3, outW, outH, 1, outC);
             owner.Ops.PixelShuffleBuf(srcBuf, srcView.w, srcView.h, srcView.c, upscaleFactor, mode, outTensor.buffer);
             owner.PublishTensorBufferOutput(
@@ -63,21 +76,76 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            if (srcShape.dims != 3)
+                throw new InvalidOperationException("PixelShuffle expects dims=3 source: " + layer.name);
+
+            var upscaleFactor = layer.GetInt(0, 1);
+            if (upscaleFactor <= 0)
+                throw new InvalidOperationException("PixelShuffle upscale_factor must be positive: " + layer.name);
+
+            var divisor = upscaleFactor * upscaleFactor;
+            var outShape = new NcnnRepro.BufferShape(
+                3,
+                srcShape.w * upscaleFactor,
+                srcShape.h * upscaleFactor,
+                1,
+                Mathf.Max(1, srcShape.c / Mathf.Max(1, divisor)));
+
+            var mode = layer.GetInt(1, 0);
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.CopyPack4(cmd, src.texture, 0, outArr, 0, src.packs);
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            if (CanUsePack4PixelShuffle(src, srcShape, upscaleFactor))
             {
-                texture = outArr,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
-                refs = 1,
-                owned = true
-            };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f)), RenderTextureFormat.ARGBHalf);
+                owner.Ops.PixelShufflePack4(cmd, src.texture, outShape.c, upscaleFactor, mode, outArr);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outArr,
+                    width = outShape.w,
+                    height = outShape.h,
+                    packs = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f)),
+                    refs = 1,
+                    owned = true
+                };
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+            }
+            else
+            {
+                owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+            }
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool CanUsePack4PixelShuffle(NcnnRepro.TensorRef src, NcnnRepro.BufferShape srcShape, int upscaleFactor)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && upscaleFactor > 0
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4
+                && (srcShape.c % (upscaleFactor * upscaleFactor)) == 0;
+        }
+
+        private static bool CanUsePack4PixelShuffle(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, int upscaleFactor)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 3
+                && srcShape.d == 1
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && upscaleFactor > 0
+                && srcShape.c > 0
+                && srcShape.c <= src.packs * 4
+                && (srcShape.c % (upscaleFactor * upscaleFactor)) == 0;
         }
     }
 }

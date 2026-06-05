@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnMultiHeadAttentionLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnMultiHeadAttentionLayerRepro() : base(NcnnLayerTypes.MultiHeadAttention, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -140,12 +141,19 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], Mathf.Max(1, src.width), Mathf.Max(1, src.height), Mathf.Max(1, src.packs), blobs);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (!owner._multiHeadAttention.TryGetValue(layer.name, out var mp))
+                throw new InvalidOperationException("MultiHeadAttention not found: " + layer.name);
+
+            var qShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var totalElems = Mathf.Max(1, qShape.w * qShape.h * qShape.d * qShape.c);
+            var srcLen = mp.qdim > 0 ? Mathf.Max(1, totalElems / mp.qdim) : Mathf.Max(1, qShape.h);
+            var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, mp.qdim), srcLen, 1, 1);
+            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

@@ -2778,6 +2778,17 @@ namespace NcnnCompute
             PublishCmdTensorLikeInput(cmd, topName, width, height, packs, blobs, shapes, new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c));
         }
 
+        internal void PublishCmdPlaceholder(
+            CommandBuffer cmd,
+            string topName,
+            BufferShape shape,
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, BufferShape> shapes = null)
+        {
+            ResolveCmdTextureLayout(shape, out var width, out var height, out var packs);
+            PublishCmdTensorLikeInput(cmd, topName, width, height, packs, blobs, shapes, shape);
+        }
+
         internal void CopyCmdTensor(
             CommandBuffer cmd,
             CmdTensorRef src,

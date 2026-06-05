@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnReorgLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnReorgLayerRepro()
@@ -76,28 +77,27 @@ namespace NcnnCompute
             {
                 var cmdFallback = context.commandBuffer;
                 var blobsFallback = context.blobs;
+                var shapesFallback = context.shapes;
                 var remainingFallback = context.remaining;
                 var pinnedFallback = context.pinnedNames;
-                var srcFallback = NcnnRepro.GetCmdTensor(blobsFallback, layer.bottomNames[0]);
-                var outFallback = owner.RentTempArray(cmdFallback, srcFallback.width, srcFallback.height, srcFallback.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.CopyPack4(cmdFallback, srcFallback.texture, 0, outFallback, 0, srcFallback.packs);
-                blobsFallback[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-                {
-                    texture = outFallback,
-                    width = srcFallback.width,
-                    height = srcFallback.height,
-                    packs = srcFallback.packs,
-                    refs = 1,
-                    owned = true
-                };
-                owner.ConsumeCmd(cmdFallback, blobsFallback, remainingFallback, layer.bottomNames, pinnedFallback);
+                var srcShapeFallback = NcnnRepro.GetCmdShape(shapesFallback, blobsFallback, layer.bottomNames[0]);
+                var outShapeFallback = new NcnnRepro.BufferShape(
+                    3,
+                    Mathf.Max(1, srcShapeFallback.w / Mathf.Max(1, stride)),
+                    Mathf.Max(1, srcShapeFallback.h / Mathf.Max(1, stride)),
+                    1,
+                    Mathf.Max(1, srcShapeFallback.c * stride * stride));
+                owner.PublishCmdPlaceholder(cmdFallback, layer.topNames[0], outShapeFallback, blobsFallback, shapesFallback);
+                owner.ConsumeCmd(cmdFallback, blobsFallback, remainingFallback, layer.bottomNames, pinnedFallback, shapesFallback);
                 return;
             }
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var outArr = owner.RentTempArray(cmd, src.width / 2, src.height / 2, src.packs * 4, RenderTextureFormat.ARGBHalf);
             owner.Ops.ReorgPack4(cmd, src.texture, src.packs, outArr);
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
@@ -109,7 +109,9 @@ namespace NcnnCompute
                 refs = 1,
                 owned = true
             };
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, srcShape.w / 2, srcShape.h / 2, 1, srcShape.c * 4);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

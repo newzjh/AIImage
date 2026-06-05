@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnShuffleChannelLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnShuffleChannelLayerRepro() : base(NcnnLayerTypes.ShuffleChannel, supportsBufferPath: true, supportsCommandBufferPath: true) { }

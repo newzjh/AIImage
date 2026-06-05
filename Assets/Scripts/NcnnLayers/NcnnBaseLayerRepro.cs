@@ -34,6 +34,10 @@ namespace NcnnCompute
         public ICollection<string> pinnedNames;
     }
 
+    // Migration guidance for all LayerRepro implementations:
+    // 1. Keep the compute-buffer path only as a compatibility / truth-path fallback and avoid expanding new buffer-only branches.
+    // 2. Prefer migrating execution to the pack4 RenderTexture path first, because it is the near-term primary runtime path.
+    // 3. Long term, migrate toward the ComputeTexture-based ExecuteCommandBuffer pack4 RT path so async compute and command-buffer temporary RT allocation are both supported.
     public abstract class NcnnBaseLayerRepro
     {
         protected NcnnBaseLayerRepro(

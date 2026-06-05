@@ -4,6 +4,7 @@ using UnityEngine;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnReshapeLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnReshapeLayerRepro() : base(NcnnLayerTypes.Reshape, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -34,7 +35,27 @@ namespace NcnnCompute
                                                     }
                                                     var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                                                     if (srcTensor != null)
-                                                        bufferViews[layer.topNames[0]] = NcnnRepro.ResolveReshapeTensor(srcTensor, layer, bottomShapes);
+                                                    {
+                                                        var outView = NcnnRepro.ResolveReshapeTensor(srcTensor, layer, bottomShapes);
+                                                        bufferViews[layer.topNames[0]] = outView;
+
+                                                        if (textureBlobs.TryGetValue(layer.bottomNames[0], out var reshapeTex) && reshapeTex != null && reshapeTex.texture != null)
+                                                        {
+                                                            var srcShape = NcnnRepro.GetTextureShape(textureShapes, reshapeTex, layer.bottomNames[0]);
+                                                            var outShape = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
+                                                            var canAliasTexture = srcShape.dims <= 3
+                                                                && outShape.dims <= 3
+                                                                && srcShape.w * srcShape.h * srcShape.d * srcShape.c == outShape.w * outShape.h * outShape.d * outShape.c
+                                                                && (srcShape.dims != 3 || (srcShape.c % 4) == 0)
+                                                                && (outShape.dims != 3 || (outShape.c % 4) == 0);
+                                                            if (canAliasTexture)
+                                                            {
+                                                                textureBlobs[layer.topNames[0]] = reshapeTex;
+                                                                textureShapes[layer.topNames[0]] = outShape;
+                                                                reshapeTex.refs++;
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                                 else
                                                 {

@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnExpandDimsLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnExpandDimsLayerRepro() : base(NcnnLayerTypes.ExpandDims, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -120,6 +121,13 @@ namespace NcnnCompute
                                                     if (srcTensor == null)
                                                         throw new InvalidOperationException("ExpandDims expects buffer input: " + layer.name);
                                                     bufferViews[layer.topNames[0]] = ExpandBufferView(srcTensor, axes);
+
+                                                    if (textureBlobs.TryGetValue(layer.bottomNames[0], out var expandTex) && expandTex != null && expandTex.texture != null)
+                                                    {
+                                                        textureBlobs[layer.topNames[0]] = expandTex;
+                                                        textureShapes[layer.topNames[0]] = ExpandTextureShape(NcnnRepro.GetTextureShape(textureShapes, expandTex, layer.bottomNames[0]), axes);
+                                                        expandTex.refs++;
+                                                    }
                                                 }
                                                 else
                                                 {

@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnTileLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnTileLayerRepro() : base(NcnnLayerTypes.Tile, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -29,6 +30,8 @@ namespace NcnnCompute
 
                                                 if (isPassthrough)
                                                 {
+                                                    var hasTexture = textureBlobs.TryGetValue(layer.bottomNames[0], out var tileTex) && tileTex != null && tileTex.texture != null;
+                                                    var tileTexShape = hasTexture ? NcnnRepro.GetTextureShape(textureShapes, tileTex, layer.bottomNames[0]) : default;
                                                     if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var tileBuf) && tileBuf != null)
                                                     {
                                                         bufferBlobs[layer.topNames[0]] = tileBuf;
@@ -41,12 +44,19 @@ namespace NcnnCompute
                                                         var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                                                         if (srcView != null)
                                                             bufferViews[layer.topNames[0]] = srcView;
+
+                                                        if (hasTexture)
+                                                        {
+                                                            textureBlobs[layer.topNames[0]] = tileTex;
+                                                            textureShapes[layer.topNames[0]] = tileTexShape;
+                                                            tileTex.refs++;
+                                                        }
                                                     }
                                                     else
                                                     {
-                                                        var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                                                        var src = hasTexture ? tileTex : owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                                                         textureBlobs[layer.topNames[0]] = src;
-                                                        textureShapes[layer.topNames[0]] = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                                                        textureShapes[layer.topNames[0]] = hasTexture ? tileTexShape : NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                                                         src.refs++;
                                                     }
 
@@ -96,23 +106,40 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var hasAxis = layer.intParams != null && layer.intParams.ContainsKey(0);
             var hasTiles = layer.intParams != null && layer.intParams.ContainsKey(1);
             var tiles = layer.GetInt(1, 1);
             if ((!hasAxis && !hasTiles) || tiles <= 1)
             {
                 blobs[layer.topNames[0]] = src;
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
                 src.refs++;
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
 
-            owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, src.width, src.height, Mathf.Max(1, src.packs * tiles));
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            var axis = layer.GetInt(0, 0);
+            if (axis < 0)
+                axis += srcShape.dims;
+            if (axis < 0 || axis >= srcShape.dims)
+                throw new InvalidOperationException("Tile axis out of range: " + layer.name);
+
+            var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(srcShape.dims, axis);
+            var outShape = srcShape;
+            if (tensorAxis == 0) outShape = new NcnnRepro.BufferShape(srcShape.dims, srcShape.w * tiles, srcShape.h, srcShape.d, srcShape.c);
+            else if (tensorAxis == 1) outShape = new NcnnRepro.BufferShape(srcShape.dims, srcShape.w, srcShape.h * tiles, srcShape.d, srcShape.c);
+            else if (tensorAxis == 2 && srcShape.dims == 4) outShape = new NcnnRepro.BufferShape(srcShape.dims, srcShape.w, srcShape.h, srcShape.d * tiles, srcShape.c);
+            else outShape = new NcnnRepro.BufferShape(srcShape.dims, srcShape.w, srcShape.h, srcShape.d, srcShape.c * tiles);
+
+            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

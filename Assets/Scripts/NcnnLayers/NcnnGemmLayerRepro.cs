@@ -7,6 +7,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
     public sealed class NcnnGemmLayerRepro : NcnnBaseLayerRepro
     {
         public NcnnGemmLayerRepro() : base(NcnnLayerTypes.Gemm, supportsBufferPath: true, supportsCommandBufferPath: true) { }
@@ -170,13 +171,47 @@ namespace NcnnCompute
         {
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
+            var shapes = context.shapes;
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var outPacks = Mathf.Max(1, Mathf.CeilToInt(layer.GetInt(8, 0) / 4f));
-            owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], Mathf.Max(1, src.width), Mathf.Max(1, src.height), outPacks, blobs);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames);
+            if (!owner._gemm.TryGetValue(layer.name, out var gp))
+                throw new InvalidOperationException("Gemm not found: " + layer.name);
+
+            var aShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var aRows = aShape.dims == 1 ? 1 : aShape.h;
+            var aCols = aShape.w;
+            var m = aShape.dims == 1 ? 1 : aRows;
+            var k = aCols;
+            var bRows = 0;
+            var bCols = 0;
+
+            if (gp.constantB)
+            {
+                bRows = gp.transB ? gp.constantN : gp.constantK;
+                bCols = gp.transB ? gp.constantK : gp.constantN;
+            }
+            else
+            {
+                if (layer.bottomNames.Length < 2)
+                    throw new InvalidOperationException("Gemm B input missing: " + layer.name);
+                var bShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
+                bRows = bShape.dims == 1 ? 1 : bShape.h;
+                bCols = bShape.w;
+            }
+
+            var kFromB = gp.transB ? bCols : bRows;
+            var n = gp.transB ? bRows : bCols;
+            if (gp.constantK > 0)
+                k = gp.constantK;
+            if (kFromB > 0)
+                k = Mathf.Min(k, kFromB) == 0 ? kFromB : k;
+
+            var outShape = m == 1 && aShape.dims == 1
+                ? new NcnnRepro.BufferShape(1, Mathf.Max(1, n), 1, 1, 1)
+                : new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
+            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }
