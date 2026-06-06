@@ -854,7 +854,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
     private static Texture2D BuildTransparentTexture(Texture2D source, bool[] mask)
     {
-        var srcPixels = source.GetPixels32();
+        var srcPixels = GetVerticallyFlippedPixels(source);
         var pixels = new Color32[srcPixels.Length];
         for (var i = 0; i < srcPixels.Length; i++)
         {
@@ -874,7 +874,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
     private static Texture2D BuildOverlayTexture(Texture2D source, bool[] mask, Color32 tint, float opacity)
     {
-        var srcPixels = source.GetPixels32();
+        var srcPixels = GetVerticallyFlippedPixels(source);
         var pixels = new Color32[srcPixels.Length];
         for (var i = 0; i < srcPixels.Length; i++)
         {
@@ -896,6 +896,40 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         texture.wrapMode = TextureWrapMode.Clamp;
         texture.filterMode = FilterMode.Bilinear;
         return texture;
+    }
+
+    private static Color32[] GetVerticallyFlippedPixels(Texture2D source)
+    {
+        if (source == null)
+            return Array.Empty<Color32>();
+
+        Color32[] pixels;
+        try
+        {
+            pixels = source.GetPixels32();
+        }
+        catch
+        {
+            return Array.Empty<Color32>();
+        }
+
+        return FlipRows(pixels, source.width, source.height);
+    }
+
+    private static Color32[] FlipRows(Color32[] pixels, int width, int height)
+    {
+        if (pixels == null || pixels.Length != width * height || width <= 0 || height <= 0)
+            return pixels ?? Array.Empty<Color32>();
+
+        var flipped = new Color32[pixels.Length];
+        for (var y = 0; y < height; y++)
+        {
+            var srcRow = (height - 1 - y) * width;
+            var dstRow = y * width;
+            Array.Copy(pixels, srcRow, flipped, dstRow, width);
+        }
+
+        return flipped;
     }
 
     private static float ComputeMaskCoverage(bool[] mask)
