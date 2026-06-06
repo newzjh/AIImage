@@ -417,6 +417,17 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             await YieldIfNeeded();
             ct.ThrowIfCancellationRequested();
 
+            for (int y = 0; y < readableSrc.height/2; y++)
+            {
+                for (int x = 0; x < readableSrc.width; x++)
+                {
+                    bool b = unionMask[y * readableSrc.width + x];
+                    unionMask[y * readableSrc.width + x] = unionMask[(readableSrc.height - 1 - y) * readableSrc.width + x];
+                    unionMask[(readableSrc.height - 1 - y) * readableSrc.width + x] = b;
+
+                }
+            }
+
             var outputMask = BuildMaskTexture(unionMask, readableSrc.width, readableSrc.height);
             var transparent = BuildTransparentTexture(readableSrc, unionMask);
             var overlay = BuildOverlayTexture(readableSrc, unionMask, overlayColor, Mathf.Clamp01(overlayOpacity));
@@ -854,7 +865,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
     private static Texture2D BuildTransparentTexture(Texture2D source, bool[] mask)
     {
-        var srcPixels = GetVerticallyFlippedPixels(source);
+        var srcPixels = source.GetPixels32();
         var pixels = new Color32[srcPixels.Length];
         for (var i = 0; i < srcPixels.Length; i++)
         {
@@ -874,7 +885,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
     private static Texture2D BuildOverlayTexture(Texture2D source, bool[] mask, Color32 tint, float opacity)
     {
-        var srcPixels = GetVerticallyFlippedPixels(source);
+        var srcPixels = source.GetPixels32();
         var pixels = new Color32[srcPixels.Length];
         for (var i = 0; i < srcPixels.Length; i++)
         {
