@@ -24,6 +24,12 @@ public static class NcnnDebugRunner
     private const string ClipInputDirEnvVar = "AIIMAGE_CLIP_INPUT_DIR";
     private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
     private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
+    private const string YoloFlipYEnvVar = "AIIMAGE_YOLOSEG_FLIPY";
+    private const string YoloForceBufferConvEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_CONV";
+    private const string YoloForceBufferBinaryEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_BINARY";
+    private const string YoloUseArgbFloatEnvVar = "AIIMAGE_YOLOSEG_USE_ARGB_FLOAT";
+    private const string YoloEnableDepthwiseTexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_DEPTHWISE_TEX";
+    private const string YoloEnableConv1x1TexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_CONV1X1_TEX";
     private const string ReproTempPoolEnvVar = "AIIMAGE_REPRO_TEMP_POOL";
     private const string SdWidthEnvVar = "AIIMAGE_SD_WIDTH";
     private const string SdHeightEnvVar = "AIIMAGE_SD_HEIGHT";
@@ -409,14 +415,19 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<YoloSegNcnnReproRunner>();
             runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
             runner.enableDebugDump = true;
-            runner.forceBufferConvolution = true;
-            runner.forceBufferBinaryOp = true;
-            runner.useArgbFloatTensor = true;
-            runner.enableDepthWiseTextureConvolution = false;
-            runner.enableConv1x1TextureConvolution = false;
+            runner.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, true);
+            runner.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, true);
+            runner.useArgbFloatTensor = ResolveBoolEnv(YoloUseArgbFloatEnvVar, true);
+            runner.enableDepthWiseTextureConvolution = ResolveBoolEnv(YoloEnableDepthwiseTexConvEnvVar, false);
+            runner.enableConv1x1TextureConvolution = ResolveBoolEnv(YoloEnableConv1x1TexConvEnvVar, false);
             runner.targetPersonOnly = true;
+            runner.flipYInput = ResolveBoolEnv(YoloFlipYEnvVar, runner.flipYInput);
             runner.enableMaskClose = true;
             runner.enableMaskDilate = true;
+            runner.ProgressChanged += (value, message) =>
+            {
+                Debug.Log("[YoloSeg-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+            };
 
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log(
