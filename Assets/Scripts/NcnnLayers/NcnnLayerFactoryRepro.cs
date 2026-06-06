@@ -191,7 +191,11 @@ namespace NcnnCompute
             {
                 var layer = Model.layers[li];
                 var emitHeartbeat = DebugLog != null
-                    && (li < 8 || ((li + 1) % 32) == 0 || HasStrideBlob(layer?.topNames) || HasStrideBlob(layer?.bottomNames));
+                    && (DebugLogAllLayerHeartbeats
+                        || li < 8
+                        || ((li + 1) % 32) == 0
+                        || HasStrideBlob(layer?.topNames)
+                        || HasStrideBlob(layer?.bottomNames));
                 if (emitHeartbeat)
                 {
                     DebugLog("[LayerHeartbeat] idx=" + li + "/" + Model.layers.Count
@@ -223,6 +227,12 @@ namespace NcnnCompute
                     {
                         ClearCurrentExecutingLayer();
                     }
+                    if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
+                    {
+                        DebugLog("[LayerOutput] idx=" + li
+                            + " | name=" + (layer?.name ?? string.Empty)
+                            + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
+                    }
                     continue;
                 }
 
@@ -246,7 +256,7 @@ namespace NcnnCompute
                     DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs),
                     layerSw.ElapsedTicks);
 
-                if (DebugLog != null && HasStrideBlob(layer?.topNames))
+                if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
                 {
                     DebugLog("[LayerOutput] idx=" + li
                         + " | name=" + (layer?.name ?? string.Empty)

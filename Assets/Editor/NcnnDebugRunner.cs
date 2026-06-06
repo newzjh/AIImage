@@ -30,6 +30,12 @@ public static class NcnnDebugRunner
     private const string YoloUseArgbFloatEnvVar = "AIIMAGE_YOLOSEG_USE_ARGB_FLOAT";
     private const string YoloEnableDepthwiseTexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_DEPTHWISE_TEX";
     private const string YoloEnableConv1x1TexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_CONV1X1_TEX";
+    private const string YoloEnableGeneralTexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_GENERAL_TEX";
+    private const string YoloEnableLayerPathLogEnvVar = "AIIMAGE_YOLOSEG_ENABLE_LAYER_PATH_LOG";
+    private const string YoloLogAllLayerHeartbeatsEnvVar = "AIIMAGE_YOLOSEG_LOG_ALL_LAYER_HEARTBEATS";
+    private const string YoloLogAllLayerOutputsEnvVar = "AIIMAGE_YOLOSEG_LOG_ALL_LAYER_OUTPUTS";
+    private const string YoloLogAllBufferMaterializeEnvVar = "AIIMAGE_YOLOSEG_LOG_ALL_BUFFER_MATERIALIZE";
+    private const string YoloPack4OnlyGuardEnvVar = "AIIMAGE_YOLOSEG_PACK4_ONLY_GUARD";
     private const string ReproTempPoolEnvVar = "AIIMAGE_REPRO_TEMP_POOL";
     private const string SdWidthEnvVar = "AIIMAGE_SD_WIDTH";
     private const string SdHeightEnvVar = "AIIMAGE_SD_HEIGHT";
@@ -415,15 +421,30 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<YoloSegNcnnReproRunner>();
             runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
             runner.enableDebugDump = true;
-            runner.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, true);
+            runner.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, runner.forceBufferConvolution);
             runner.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, true);
             runner.useArgbFloatTensor = ResolveBoolEnv(YoloUseArgbFloatEnvVar, true);
-            runner.enableDepthWiseTextureConvolution = ResolveBoolEnv(YoloEnableDepthwiseTexConvEnvVar, false);
-            runner.enableConv1x1TextureConvolution = ResolveBoolEnv(YoloEnableConv1x1TexConvEnvVar, false);
+            runner.enableGeneralTextureConvolution = ResolveBoolEnv(YoloEnableGeneralTexConvEnvVar, runner.enableGeneralTextureConvolution);
+            runner.enableDepthWiseTextureConvolution = ResolveBoolEnv(YoloEnableDepthwiseTexConvEnvVar, runner.enableDepthWiseTextureConvolution);
+            runner.enableConv1x1TextureConvolution = ResolveBoolEnv(YoloEnableConv1x1TexConvEnvVar, runner.enableConv1x1TextureConvolution);
+            runner.enableLayerPathDebugLog = ResolveBoolEnv(YoloEnableLayerPathLogEnvVar, false);
+            runner.logAllLayerHeartbeats = ResolveBoolEnv(YoloLogAllLayerHeartbeatsEnvVar, false);
+            runner.logAllLayerOutputs = ResolveBoolEnv(YoloLogAllLayerOutputsEnvVar, false);
+            runner.logAllBufferMaterialize = ResolveBoolEnv(YoloLogAllBufferMaterializeEnvVar, false);
             runner.targetPersonOnly = true;
             runner.flipYInput = ResolveBoolEnv(YoloFlipYEnvVar, runner.flipYInput);
             runner.enableMaskClose = true;
             runner.enableMaskDilate = true;
+            if (ResolveBoolEnv(YoloPack4OnlyGuardEnvVar, false))
+            {
+                var reproField = typeof(YoloSegNcnnReproRunner).GetField("_repro", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (reproField?.GetValue(runner) is NcnnCompute.NcnnRepro repro)
+                {
+                    repro.DisallowBufferAccess = true;
+                    repro.DisallowBufferOutputs = true;
+                    repro.DisallowBufferToTextureMaterialization = true;
+                }
+            }
             runner.ProgressChanged += (value, message) =>
             {
                 Debug.Log("[YoloSeg-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));

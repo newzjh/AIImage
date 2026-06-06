@@ -156,6 +156,11 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public bool useArgbFloatTensor = false;
     public bool enableDepthWiseTextureConvolution = true;
     public bool enableConv1x1TextureConvolution = true;
+    public bool enableGeneralTextureConvolution = true;
+    public bool enableLayerPathDebugLog = false;
+    public bool logAllLayerHeartbeats = false;
+    public bool logAllLayerOutputs = false;
+    public bool logAllBufferMaterialize = false;
     public bool enableMaskClose = true;
     [Range(0, 6)] public int maskCloseRadius = 1;
     public bool enableMaskDilate = true;
@@ -171,6 +176,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private string _loadedModelKey;
     private string _lastDumpDir;
     private string _lastSummaryText;
+    private List<string> _lastLayerPathDebugLines;
 
     public string LastDumpDir => _lastDumpDir;
     public string LastSummaryText => _lastSummaryText;
@@ -431,6 +437,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 TryWriteTexturePng(transparent, _lastDumpDir, "02_transparent_cutout.png");
                 TryWriteTexturePng(overlay, _lastDumpDir, "03_overlay.png");
                 TryWriteTextFile(_lastSummaryText, _lastDumpDir, "summary.txt");
+                TryWriteDebugLines(_lastLayerPathDebugLines, _lastDumpDir, "layer_path_debug.txt");
             }
 
             UnityEngine.Debug.Log("[YoloSegRunner] ProcessAsync success");
@@ -484,13 +491,40 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         _repro.ForceBufferConvolutionAll = forceBufferConvolution;
         _repro.ForceBufferBinaryOpAll = forceBufferBinaryOp;
         _repro.ForceBufferGeluAll = false;
+        _repro.EnableGeneralTextureConvolution = enableGeneralTextureConvolution;
         _repro.EnableDepthWiseTextureConvolution = modelVariant == YoloSegModelVariant.Yolo11nSeg
             ? false
             : enableDepthWiseTextureConvolution;
         _repro.EnableConv1x1TextureConvolution = enableConv1x1TextureConvolution;
         _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         _repro.DebugCompareTextureLayers = null;
-        _repro.DebugLog = null;
+        _repro.DebugLogAllLayerHeartbeats = enableLayerPathDebugLog && logAllLayerHeartbeats;
+        _repro.DebugLogAllLayerOutputs = enableLayerPathDebugLog && logAllLayerOutputs;
+        _repro.DebugLogAllBufferMaterialize = enableLayerPathDebugLog && logAllBufferMaterialize;
+        if (enableLayerPathDebugLog)
+        {
+            _lastLayerPathDebugLines = new List<string>(2048);
+            _repro.DebugLog = line =>
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    return;
+
+                if (_lastLayerPathDebugLines != null && _lastLayerPathDebugLines.Count < 20000)
+                    _lastLayerPathDebugLines.Add(line);
+
+                if (line.StartsWith("[LayerHeartbeat]", StringComparison.Ordinal)
+                    || line.StartsWith("[LayerOutput]", StringComparison.Ordinal)
+                    || line.StartsWith("[BufferMaterialize]", StringComparison.Ordinal))
+                {
+                    UnityEngine.Debug.Log(line);
+                }
+            };
+        }
+        else
+        {
+            _repro.DebugLog = null;
+            _lastLayerPathDebugLines = null;
+        }
     }
 
     private async UniTask EnsureLoaded(CancellationToken ct)
@@ -531,6 +565,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         _loadedModelKey = null;
         _lastDumpDir = null;
         _lastSummaryText = null;
+        _lastLayerPathDebugLines = null;
     }
 
     private BlobData ReadBlobData(NcnnRepro.InferResult infer, string blobName)
@@ -1130,6 +1165,20 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             if (string.IsNullOrWhiteSpace(text))
                 return;
             TryWriteTextFile(text, Path.GetDirectoryName(path), Path.GetFileName(path));
+        }
+        catch
+        {
+        }
+    }
+
+    private static void TryWriteDebugLines(List<string> lines, string dir, string fileName)
+    {
+        if (lines == null || lines.Count == 0 || string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(fileName))
+            return;
+        try
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllLines(Path.Combine(dir, fileName), lines, Encoding.UTF8);
         }
         catch
         {

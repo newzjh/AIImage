@@ -190,6 +190,8 @@ namespace NcnnCompute
             public int outC;
             public int inC;
             public int group;
+            public int outPacks;
+            public int inPacks;
             public int kernelW;
             public int kernelH;
             public int dilationW;
@@ -206,11 +208,15 @@ namespace NcnnCompute
             public int weightSize;
             public int activationType;
             public float activationSlope;
+            public ComputeBuffer packedWeight4;
+            public ComputeBuffer packedBias4;
             public ComputeBuffer rawWeight;
             public ComputeBuffer rawBias;
 
             public void Dispose()
             {
+                try { packedWeight4?.Dispose(); } catch { }
+                try { packedBias4?.Dispose(); } catch { }
                 try { rawWeight?.Dispose(); } catch { }
                 try { rawBias?.Dispose(); } catch { }
             }
@@ -825,6 +831,9 @@ namespace NcnnCompute
         public ISet<string> DebugCompareTextureConvLayers { get; set; }
         public ISet<string> DebugCompareMaxPoolingLayers { get; set; }
         public Action<string> DebugLog { get; set; }
+        public bool DebugLogAllLayerOutputs { get; set; }
+        public bool DebugLogAllLayerHeartbeats { get; set; }
+        public bool DebugLogAllBufferMaterialize { get; set; }
         public float CodeFormerSftMulScale { get; set; } = 1f;
         public float CodeFormerSftAddScale { get; set; } = 1f;
         public bool CodeFormerBypassSftMul { get; set; }
@@ -3196,17 +3205,18 @@ namespace NcnnCompute
 
             var emitMaterializeLog = DebugLog != null
                 && !string.IsNullOrEmpty(name)
-                && name.StartsWith("stride_", StringComparison.Ordinal);
+                && (DebugLogAllBufferMaterialize || name.StartsWith("stride_", StringComparison.Ordinal));
+            var site = emitMaterializeLog ? DescribeCurrentExecutionSite() : null;
             if (bufferBlobs.TryGetValue(name, out var buf) && buf != null)
             {
                 if (emitMaterializeLog)
-                    DebugLog("[BufferMaterialize] reuse | name=" + name + " | count=" + buf.count);
+                    DebugLog("[BufferMaterialize] reuse | site=" + site + " | name=" + name + " | count=" + buf.count);
                 return buf;
             }
             if (!textureBlobs.TryGetValue(name, out var tr) || tr == null || tr.texture == null)
             {
                 if (emitMaterializeLog)
-                    DebugLog("[BufferMaterialize] missing-source | name=" + name + " | hasShape=" + textureShapes.ContainsKey(name));
+                    DebugLog("[BufferMaterialize] missing-source | site=" + site + " | name=" + name + " | hasShape=" + textureShapes.ContainsKey(name));
                 return null;
             }
 
@@ -3216,7 +3226,7 @@ namespace NcnnCompute
             var logicalCount = shape.w * shape.h * shape.d * shape.c;
             if (emitMaterializeLog)
             {
-                DebugLog("[BufferMaterialize] convert-start | name=" + name
+                DebugLog("[BufferMaterialize] convert-start | site=" + site + " | name=" + name
                     + " | size=" + tr.width + "x" + tr.height
                     + " | packs=" + tr.packs
                     + " | physical=" + physicalCount
@@ -3232,7 +3242,7 @@ namespace NcnnCompute
                 bufferViews[name] = new NcnnTensorBuffer(convertedExact, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
                 tempOwned.Add(convertedExact);
                 if (emitMaterializeLog)
-                    DebugLog("[BufferMaterialize] convert-done | name=" + name + " | mode=exact | count=" + convertedExact.count);
+                    DebugLog("[BufferMaterialize] convert-done | site=" + site + " | name=" + name + " | mode=exact | count=" + convertedExact.count);
                 return convertedExact;
             }
 
@@ -3249,7 +3259,7 @@ namespace NcnnCompute
                 bufferViews[name] = new NcnnTensorBuffer(converted, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
                 tempOwned.Add(converted);
                 if (emitMaterializeLog)
-                    DebugLog("[BufferMaterialize] convert-done | name=" + name + " | mode=partial | count=" + converted.count);
+                    DebugLog("[BufferMaterialize] convert-done | site=" + site + " | name=" + name + " | mode=partial | count=" + converted.count);
                 return converted;
             }
 
