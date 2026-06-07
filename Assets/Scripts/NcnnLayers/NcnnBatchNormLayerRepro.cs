@@ -62,53 +62,77 @@ namespace NcnnCompute
         }
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out _))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                        do
-                        {
-                                                if (!owner._batchNorm.TryGetValue(layer.name, out var bp) || bp.biasA == null || bp.scaleB == null || bp.biasA4 == null || bp.scaleB4 == null)
-                                                    throw new InvalidOperationException("BatchNorm not found: " + layer.name);
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
 
-                                                if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var bnSrc, out var bnShape))
-                                                {
-                                                    if (bnShape.dims != 3)
-                                                        throw new InvalidOperationException("BatchNorm expects dims=3 tensor input: " + layer.name);
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                                                    var outRt = owner.RentTempArray(bnSrc.width, bnSrc.height, bnSrc.packs, RenderTextureFormat.ARGBHalf);
-                                                    owner.Ops.BatchNormPack4(bnSrc.texture, bp.biasA4, bp.scaleB4, bnSrc.packs, outRt);
-                                                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, bnShape);
-                                                }
-                                                else
-                                                {
-                                                    var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (srcBuf == null || srcView == null)
-                                                        throw new InvalidOperationException("BatchNorm source not found: " + layer.name);
+            if (!owner._batchNorm.TryGetValue(layer.name, out var bp) || bp.biasA == null || bp.scaleB == null)
+                throw new InvalidOperationException("BatchNorm not found: " + layer.name);
 
-                                                    var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
-                                                    owner.Ops.ScaleBuf(srcBuf, srcView, bp.scaleB, bp.channels, true, bp.biasA, outTensor.buffer);
-                                                    owner.PublishTensorBufferOutput(
-                                                        layer.topNames[0],
-                                                        outTensor,
-                                                        preferTexture: srcView.dims <= 3,
-                                                        textureBlobs,
-                                                        textureShapes,
-                                                        bufferBlobs,
-                                                        bufferRefs,
-                                                        bufferViews,
-                                                        tempOwned);
-                                                }
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null)
+                throw new InvalidOperationException("BatchNorm source not found: " + layer.name);
+
+            var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
+            owner.Ops.ScaleBuf(srcBuf, srcView, bp.scaleB, bp.channels, true, bp.biasA, outTensor.buffer);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: srcView.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            if (!owner._batchNorm.TryGetValue(layer.name, out var bp) || bp.biasA4 == null || bp.scaleB4 == null)
+                throw new InvalidOperationException("BatchNorm not found: " + layer.name);
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                throw new InvalidOperationException("BatchNorm render-texture path requires pack4 texture input: " + layer.name);
+            if (srcShape.dims != 3)
+                throw new InvalidOperationException("BatchNorm expects dims=3 tensor input: " + layer.name);
+
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.BatchNormPack4(srcTex.texture, bp.biasA4, bp.scaleB4, srcTex.packs, outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

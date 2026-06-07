@@ -11,6 +11,29 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            var orderType = layer.GetInt(0, 0);
+            if (owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var srcTex,
+                    out var srcShape)
+                && CanUsePack4Permute(srcTex, srcShape, orderType, out _, out _))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -21,34 +44,13 @@ namespace NcnnCompute
             var tempOwned = context.tempOwned;
 
             var orderType = layer.GetInt(0, 0);
-
-            if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
-                && CanUsePack4Permute(srcTex, srcShape, orderType, out var axes, out var outShape))
-            {
-                if (orderType == 0)
-                {
-                    textureBlobs[layer.topNames[0]] = srcTex;
-                    textureShapes[layer.topNames[0]] = srcShape;
-                    srcTex.refs++;
-                }
-                else
-                {
-                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
-                    var outRt = owner.RentTempArray(outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
-                    owner.Ops.PermutePack4(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, axes, outShape.w, outShape.h, outShape.c, outRt);
-                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
-                }
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
-
             var srcTensor = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             if (srcTensor == null || srcTensor.buffer == null)
                 throw new InvalidOperationException("Permute source not found: " + layer.bottomNames[0]);
 
             var dims = Mathf.Clamp(srcTensor.dims, 2, 4);
-            axes = NcnnRepro.ResolvePermuteAxes(dims, orderType, layer.name);
-            outShape = NcnnRepro.ResolvePermuteShape(srcTensor, dims, axes);
+            var axes = NcnnRepro.ResolvePermuteAxes(dims, orderType, layer.name);
+            var outShape = NcnnRepro.ResolvePermuteShape(srcTensor, dims, axes);
             var outTensor = owner.RentTempTensorBuffer(outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c);
             owner.Ops.Permute(srcTensor.buffer, dims, srcTensor.w, srcTensor.h, srcTensor.d, srcTensor.c, orderType, outTensor.buffer);
 
@@ -63,6 +65,36 @@ namespace NcnnCompute
                 bufferViews,
                 tempOwned);
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+            var orderType = layer.GetInt(0, 0);
+
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+                || !CanUsePack4Permute(srcTex, srcShape, orderType, out var axes, out var outShape))
+            {
+                throw new InvalidOperationException("Permute render-texture path requires supported pack4 input: " + layer.name);
+            }
+
+            if (orderType == 0)
+            {
+                textureBlobs[layer.topNames[0]] = srcTex;
+                textureShapes[layer.topNames[0]] = srcShape;
+                srcTex.refs++;
+            }
+            else
+            {
+                var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+                var outRt = owner.RentTempArray(outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PermutePack4(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, axes, outShape.w, outShape.h, outShape.c, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+            }
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

@@ -14,57 +14,81 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out _))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                        do
-                        {
-                                                var slope = layer.GetFloat(0, 0f);
-                                                if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
-                                                {
-                                                    var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                                                    owner.Ops.LeakyReluPack4(srcTex.texture, slope, srcTex.packs, outRt);
-                                                    textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
-                                                    {
-                                                        texture = outRt,
-                                                        width = outRt.width,
-                                                        height = outRt.height,
-                                                        packs = srcTex.packs,
-                                                        refs = 1,
-                                                        owned = true
-                                                    };
-                                                    textureShapes[layer.topNames[0]] = srcShape;
-                                                }
-                                                else
-                                                {
-                                                    var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (srcBuf == null || srcView == null)
-                                                        throw new InvalidOperationException("ReLU source not found: " + layer.name);
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
 
-                                                    var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
-                                                    owner.Ops.LeakyReluBuf(srcBuf, srcView.elementCount, slope, outTensor.buffer);
-                                                    owner.PublishTensorBufferOutput(
-                                                        layer.topNames[0],
-                                                        outTensor,
-                                                        preferTexture: srcView.dims <= 3,
-                                                        textureBlobs,
-                                                        textureShapes,
-                                                        bufferBlobs,
-                                                        bufferRefs,
-                                                        bufferViews,
-                                                        tempOwned);
-                                                }
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            var slope = layer.GetFloat(0, 0f);
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null)
+                throw new InvalidOperationException("ReLU source not found: " + layer.name);
+
+            var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
+            owner.Ops.LeakyReluBuf(srcBuf, srcView.elementCount, slope, outTensor.buffer);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: srcView.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            var slope = layer.GetFloat(0, 0f);
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                throw new InvalidOperationException("ReLU render-texture path requires pack4 texture input: " + layer.name);
+
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.LeakyReluPack4(srcTex.texture, slope, srcTex.packs, outRt);
+            textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
+            {
+                texture = outRt,
+                width = outRt.width,
+                height = outRt.height,
+                packs = srcTex.packs,
+                refs = 1,
+                owned = true
+            };
+            textureShapes[layer.topNames[0]] = srcShape;
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

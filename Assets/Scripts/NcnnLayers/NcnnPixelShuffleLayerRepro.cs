@@ -49,14 +49,44 @@ namespace NcnnCompute
             if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
                 && CanUsePack4PixelShuffle(srcTex, srcShape, upscaleFactor))
             {
-                var outPacks = Mathf.Max(1, Mathf.CeilToInt(outC / 4f));
-                var outRt = owner.RentTempArray(outW, outH, outPacks, RenderTextureFormat.ARGBHalf);
-                owner.Ops.PixelShufflePack4(srcTex.texture, outC, upscaleFactor, mode, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(3, outW, outH, 1, outC));
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                ExecuteRenderTexturePath(owner, layer, context);
                 return;
             }
 
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null || srcView.dims != 3)
+                throw new InvalidOperationException("PixelShuffle expects dims=3 source: " + layer.name);
+
+            var upscaleFactor = layer.GetInt(0, 1);
+            var mode = layer.GetInt(1, 0);
+            if (upscaleFactor <= 0)
+                throw new InvalidOperationException("PixelShuffle upscale_factor must be positive: " + layer.name);
+
+            var divisor = upscaleFactor * upscaleFactor;
+            if (srcView.c % divisor != 0)
+                throw new InvalidOperationException("PixelShuffle channel count is not divisible by upscale_factor^2: " + layer.name);
+
+            var outW = srcView.w * upscaleFactor;
+            var outH = srcView.h * upscaleFactor;
+            var outC = srcView.c / divisor;
             var outTensor = owner.RentTempTensorBuffer(3, outW, outH, 1, outC);
             owner.Ops.PixelShuffleBuf(srcBuf, srcView.w, srcView.h, srcView.c, upscaleFactor, mode, outTensor.buffer);
             owner.PublishTensorBufferOutput(
@@ -70,6 +100,43 @@ namespace NcnnCompute
                 bufferViews,
                 tempOwned);
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, context.tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null || srcView.dims != 3)
+                throw new InvalidOperationException("PixelShuffle expects dims=3 source: " + layer.name);
+
+            var upscaleFactor = layer.GetInt(0, 1);
+            var mode = layer.GetInt(1, 0);
+            if (upscaleFactor <= 0)
+                throw new InvalidOperationException("PixelShuffle upscale_factor must be positive: " + layer.name);
+
+            var divisor = upscaleFactor * upscaleFactor;
+            if (srcView.c % divisor != 0)
+                throw new InvalidOperationException("PixelShuffle channel count is not divisible by upscale_factor^2: " + layer.name);
+
+            var outW = srcView.w * upscaleFactor;
+            var outH = srcView.h * upscaleFactor;
+            var outC = srcView.c / divisor;
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+                || !CanUsePack4PixelShuffle(srcTex, srcShape, upscaleFactor))
+            {
+                throw new InvalidOperationException("PixelShuffle render-texture path requires supported pack4 input: " + layer.name);
+            }
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outC / 4f));
+            var outRt = owner.RentTempArray(outW, outH, outPacks, RenderTextureFormat.ARGBHalf);
+            owner.Ops.PixelShufflePack4(srcTex.texture, outC, upscaleFactor, mode, outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(3, outW, outH, 1, outC));
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

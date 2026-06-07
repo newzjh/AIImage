@@ -30,162 +30,164 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (CanExecuteRenderTexturePath(owner, layer, context))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                        do
-                        {
-                                                var opType = layer.GetInt(0, 1);
-                                                var coeffs = ParseEltwiseCoeffs(layer);
-                                                var isTargetSftResidualLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftResidualLayer)
-                                                    ? NcnnRepro.CodeFormerSftResidualLayers.Contains(layer.name)
-                                                    : string.Equals(layer.name, owner.CodeFormerTargetSftResidualLayer, StringComparison.Ordinal);
-                                                var canUseTexture = layer.bottomNames.Length >= 2;
-                                                NcnnRepro.TensorRef currentTex = null;
-                                                NcnnRepro.BufferShape currentShape = default;
-                                                if (canUseTexture)
-                                                {
-                                                    canUseTexture = owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out currentTex, out currentShape);
-                                                }
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
 
-                                                if (canUseTexture)
-                                                {
-                                                    for (var i = 1; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        if (!owner.TryGetPack4Texture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var otherTex, out var otherShape)
-                                                            || currentTex.width != otherTex.width
-                                                            || currentTex.height != otherTex.height
-                                                            || currentTex.packs != otherTex.packs
-                                                            || currentShape.c != otherShape.c)
-                                                        {
-                                                            canUseTexture = false;
-                                                            break;
-                                                        }
-                                                    }
-                                                }
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                                                if (canUseTexture)
-                                                {
-                                                    RenderTexture accum = null;
-                                                    try
-                                                    {
-                                                        var a = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                        accum = owner.RentTempArray(a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
-                                                        if (opType == 1)
-                                                        {
-                                                            owner.Ops.ScalePack4(a.texture, ResolveEltwiseCoeff(coeffs, 0), a.packs, accum);
-                                                        }
-                                                        else
-                                                        {
-                                                            owner.Ops.CopyPack4(a.texture, 0, accum, 0, a.packs);
-                                                        }
+            var opType = layer.GetInt(0, 1);
+            var coeffs = ParseEltwiseCoeffs(layer);
+            var isTargetSftResidualLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftResidualLayer)
+                ? NcnnRepro.CodeFormerSftResidualLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftResidualLayer, StringComparison.Ordinal);
 
-                                                        for (var i = 1; i < layer.bottomNames.Length; i++)
-                                                        {
-                                                            var b = owner.GetOrMaterializeTexture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                            var next = owner.RentTempArray(a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
-                                                            if (opType == 0)
-                                                            {
-                                                                owner.Ops.BinaryOpPack4(accum, b.texture, a.packs, 2, next);
-                                                            }
-                                                            else if (opType == 2)
-                                                            {
-                                                                owner.Ops.BinaryOpPack4(accum, b.texture, a.packs, 4, next);
-                                                            }
-                                                            else
-                                                            {
-                                                                var coeffB = ResolveEltwiseCoeff(coeffs, i);
-                                                                if (owner.CodeFormerSftMulScale != 1f && isTargetSftResidualLayer && i == 1)
-                                                                    coeffB *= owner.CodeFormerSftMulScale;
-                                                                owner.Ops.AddPack4(accum, b.texture, 1f, coeffB, a.packs, next);
-                                                            }
+            var firstBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var firstView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (firstBuf == null || firstView == null)
+                throw new InvalidOperationException("Eltwise source not found: " + layer.name);
 
-                                                            owner.ReturnTempArray(accum);
-                                                            accum = next;
-                                                        }
+            var accumBuf = owner.RentTempBuffer(firstBuf.count, sizeof(float));
+            owner.Ops.CopyBuf(firstBuf, accumBuf, firstBuf.count);
+            var coeff0 = ResolveEltwiseCoeff(coeffs, 0);
+            if (opType == 1 && Mathf.Abs(coeff0 - 1f) > 1e-6f)
+                owner.Ops.MulScalarInplace(accumBuf, coeff0, accumBuf.count);
 
-                                                        textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
-                                                        {
-                                                            texture = accum,
-                                                            width = a.width,
-                                                            height = a.height,
-                                                            packs = a.packs,
-                                                            refs = 1,
-                                                            owned = true
-                                                        };
-                                                        textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, a.width, a.height, 1, currentShape.c);
-                                                        accum = null;
-                                                    }
-                                                    finally
-                                                    {
-                                                        if (accum != null)
-                                                            owner.ReturnTempArray(accum);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    var firstBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    var firstView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (firstBuf == null || firstView == null)
-                                                        throw new InvalidOperationException("Eltwise source not found: " + layer.name);
+            for (var i = 1; i < layer.bottomNames.Length; i++)
+            {
+                var nextBuf = owner.GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                if (nextBuf == null)
+                    throw new InvalidOperationException("Eltwise source not found: " + layer.name + " | " + layer.bottomNames[i]);
 
-                                                    var accumBuf = owner.RentTempBuffer(firstBuf.count, sizeof(float));
-                                                    owner.Ops.CopyBuf(firstBuf, accumBuf, firstBuf.count);
-                                                    var coeff0 = ResolveEltwiseCoeff(coeffs, 0);
-                                                    if (opType == 1 && Mathf.Abs(coeff0 - 1f) > 1e-6f)
-                                                        owner.Ops.MulScalarInplace(accumBuf, coeff0, accumBuf.count);
+                if (opType == 0)
+                {
+                    owner.Ops.BinaryOpBuf(accumBuf, nextBuf, accumBuf.count, 2, accumBuf);
+                }
+                else if (opType == 2)
+                {
+                    owner.Ops.BinaryOpBuf(accumBuf, nextBuf, accumBuf.count, 4, accumBuf);
+                }
+                else
+                {
+                    var coeffB = ResolveEltwiseCoeff(coeffs, i);
+                    if (owner.CodeFormerSftMulScale != 1f && isTargetSftResidualLayer && i == 1)
+                        coeffB *= owner.CodeFormerSftMulScale;
 
-                                                    for (var i = 1; i < layer.bottomNames.Length; i++)
-                                                    {
-                                                        var nextBuf = owner.GetOrConvertToBuffer(layer.bottomNames[i], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        if (nextBuf == null)
-                                                            throw new InvalidOperationException("Eltwise source not found: " + layer.name + " | " + layer.bottomNames[i]);
+                    if (Mathf.Abs(coeffB - 1f) < 1e-6f)
+                    {
+                        owner.Ops.BinaryOpBuf(accumBuf, nextBuf, accumBuf.count, 0, accumBuf);
+                    }
+                    else
+                    {
+                        var scaled = owner.RentTempBuffer(nextBuf.count, sizeof(float));
+                        owner.Ops.CopyBuf(nextBuf, scaled, nextBuf.count);
+                        owner.Ops.MulScalarInplace(scaled, coeffB, scaled.count);
+                        owner.Ops.BinaryOpBuf(accumBuf, scaled, accumBuf.count, 0, accumBuf);
+                        tempOwned.Add(scaled);
+                    }
+                }
+            }
 
-                                                        if (opType == 0)
-                                                        {
-                                                            owner.Ops.BinaryOpBuf(accumBuf, nextBuf, accumBuf.count, 2, accumBuf);
-                                                        }
-                                                        else if (opType == 2)
-                                                        {
-                                                            owner.Ops.BinaryOpBuf(accumBuf, nextBuf, accumBuf.count, 4, accumBuf);
-                                                        }
-                                                        else
-                                                        {
-                                                            var coeffB = ResolveEltwiseCoeff(coeffs, i);
-                                                            if (owner.CodeFormerSftMulScale != 1f && isTargetSftResidualLayer && i == 1)
-                                                                coeffB *= owner.CodeFormerSftMulScale;
+            bufferBlobs[layer.topNames[0]] = accumBuf;
+            bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], accumBuf);
+            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(accumBuf, firstView.dims, firstView.w, firstView.h, firstView.d, firstView.c, false);
+            tempOwned.Add(accumBuf);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
 
-                                                            if (Mathf.Abs(coeffB - 1f) < 1e-6f)
-                                                            {
-                                                                owner.Ops.BinaryOpBuf(accumBuf, nextBuf, accumBuf.count, 0, accumBuf);
-                                                            }
-                                                            else
-                                                            {
-                                                                var scaled = owner.RentTempBuffer(nextBuf.count, sizeof(float));
-                                                                owner.Ops.CopyBuf(nextBuf, scaled, nextBuf.count);
-                                                                owner.Ops.MulScalarInplace(scaled, coeffB, scaled.count);
-                                                                owner.Ops.BinaryOpBuf(accumBuf, scaled, accumBuf.count, 0, accumBuf);
-                                                                tempOwned.Add(scaled);
-                                                            }
-                                                        }
-                                                    }
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
-                                                    bufferBlobs[layer.topNames[0]] = accumBuf;
-                                                    bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], accumBuf);
-                                                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(accumBuf, firstView.dims, firstView.w, firstView.h, firstView.d, firstView.c, false);
-                                                    tempOwned.Add(accumBuf);
-                                                }
+            var opType = layer.GetInt(0, 1);
+            var coeffs = ParseEltwiseCoeffs(layer);
+            var isTargetSftResidualLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftResidualLayer)
+                ? NcnnRepro.CodeFormerSftResidualLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftResidualLayer, StringComparison.Ordinal);
 
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            var a = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out _, out var currentShape))
+                throw new InvalidOperationException("Eltwise render-texture path requires existing texture shape: " + layer.name);
+
+            RenderTexture accum = null;
+            try
+            {
+                accum = owner.RentTempArray(a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
+                if (opType == 1)
+                {
+                    owner.Ops.ScalePack4(a.texture, ResolveEltwiseCoeff(coeffs, 0), a.packs, accum);
+                }
+                else
+                {
+                    owner.Ops.CopyPack4(a.texture, 0, accum, 0, a.packs);
+                }
+
+                for (var i = 1; i < layer.bottomNames.Length; i++)
+                {
+                    var b = owner.GetOrMaterializeTexture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                    var next = owner.RentTempArray(a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
+                    if (opType == 0)
+                    {
+                        owner.Ops.BinaryOpPack4(accum, b.texture, a.packs, 2, next);
+                    }
+                    else if (opType == 2)
+                    {
+                        owner.Ops.BinaryOpPack4(accum, b.texture, a.packs, 4, next);
+                    }
+                    else
+                    {
+                        var coeffB = ResolveEltwiseCoeff(coeffs, i);
+                        if (owner.CodeFormerSftMulScale != 1f && isTargetSftResidualLayer && i == 1)
+                            coeffB *= owner.CodeFormerSftMulScale;
+                        owner.Ops.AddPack4(accum, b.texture, 1f, coeffB, a.packs, next);
+                    }
+
+                    owner.ReturnTempArray(accum);
+                    accum = next;
+                }
+
+                textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
+                {
+                    texture = accum,
+                    width = a.width,
+                    height = a.height,
+                    packs = a.packs,
+                    refs = 1,
+                    owned = true
+                };
+                textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, a.width, a.height, 1, currentShape.c);
+                accum = null;
+            }
+            finally
+            {
+                if (accum != null)
+                    owner.ReturnTempArray(accum);
+            }
+
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
@@ -238,6 +240,31 @@ namespace NcnnCompute
                                                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;
                         } while (false);
+        }
+
+        private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (layer.bottomNames == null || layer.bottomNames.Length < 2)
+                return false;
+
+            NcnnRepro.TensorRef currentTex = null;
+            NcnnRepro.BufferShape currentShape = default;
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out currentTex, out currentShape))
+                return false;
+
+            for (var i = 1; i < layer.bottomNames.Length; i++)
+            {
+                if (!owner.TryGetPack4Texture(layer.bottomNames[i], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out var otherTex, out var otherShape)
+                    || currentTex.width != otherTex.width
+                    || currentTex.height != otherTex.height
+                    || currentTex.packs != otherTex.packs
+                    || currentShape.c != otherShape.c)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }

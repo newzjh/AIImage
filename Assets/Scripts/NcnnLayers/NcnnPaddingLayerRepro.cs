@@ -71,15 +71,6 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            var textureBlobs = context.textureBlobs;
-            var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferRefs = context.bufferRefs;
-            var bufferViews = context.bufferViews;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-            var tempOwned = context.tempOwned;
-
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not PaddingPack pp)
             {
                 pp = new PaddingPack
@@ -99,21 +90,41 @@ namespace NcnnCompute
 
             if (pp.top == 0 && pp.bottom == 0 && pp.left == 0 && pp.right == 0 && pp.front == 0 && pp.behind == 0)
             {
-                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
+                ExecuteRenderTexturePath(owner, layer, context);
                 return;
             }
 
-            if (CanUseSimplePack4TexturePath(owner, layer.bottomNames[0], pp, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+            if (CanUseSimplePack4TexturePath(owner, layer.bottomNames[0], pp, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out _, out _))
             {
-                var outRt = owner.RentTempArray(srcTex.width + pp.left + pp.right, srcTex.height + pp.top + pp.bottom, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.PaddingPack4(srcTex.texture, srcTex.packs, pp.left, pp.right, pp.top, pp.bottom, pp.type, new Vector4(pp.value, pp.value, pp.value, pp.value), outRt);
-                NcnnRepro.SetTextureBlob(
-                    textureBlobs,
-                    textureShapes,
-                    layer.topNames[0],
-                    outRt,
-                    new NcnnRepro.BufferShape(3, srcShape.w + pp.left + pp.right, srcShape.h + pp.top + pp.bottom, 1, srcShape.c));
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+            #pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+            #pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not PaddingPack pp)
+                throw new InvalidOperationException("Padding pack not found: " + layer.name);
+
+            if (pp.top == 0 && pp.bottom == 0 && pp.left == 0 && pp.right == 0 && pp.front == 0 && pp.behind == 0)
+            {
+#pragma warning disable CS0618
+                new NcnnNoopLayerRepro().ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
                 return;
             }
 
@@ -251,6 +262,39 @@ namespace NcnnCompute
                 bufferRefs,
                 bufferViews,
                 tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not PaddingPack pp)
+                throw new InvalidOperationException("Padding pack not found: " + layer.name);
+
+            if (pp.top == 0 && pp.bottom == 0 && pp.left == 0 && pp.right == 0 && pp.front == 0 && pp.behind == 0)
+            {
+                new NcnnNoopLayerRepro().ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+            if (!CanUseSimplePack4TexturePath(owner, layer.bottomNames[0], pp, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                throw new InvalidOperationException("Padding render-texture path requires simple pack4 input: " + layer.name);
+
+            var outRt = owner.RentTempArray(srcTex.width + pp.left + pp.right, srcTex.height + pp.top + pp.bottom, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.PaddingPack4(srcTex.texture, srcTex.packs, pp.left, pp.right, pp.top, pp.bottom, pp.type, new Vector4(pp.value, pp.value, pp.value, pp.value), outRt);
+            NcnnRepro.SetTextureBlob(
+                textureBlobs,
+                textureShapes,
+                layer.topNames[0],
+                outRt,
+                new NcnnRepro.BufferShape(3, srcShape.w + pp.left + pp.right, srcShape.h + pp.top + pp.bottom, 1, srcShape.c));
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 

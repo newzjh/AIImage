@@ -50,69 +50,100 @@ namespace NcnnCompute
         }
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (!owner._groupNorm.TryGetValue(layer.name, out var gp))
+                throw new InvalidOperationException("GroupNorm not found: " + layer.name);
 
-                        do
-                        {
-                                                if (!owner._groupNorm.TryGetValue(layer.name, out var gp))
-                                                    throw new InvalidOperationException("GroupNorm not found: " + layer.name);
-                                                if (owner.EnableGroupNormTexturePath
-                                                    && owner.UseNcnnStyleGroupNorm
-                                                    && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
-                                                    && NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
-                                                {
-                                                    var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                                                    var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
-                                                    var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
-                                                    try
-                                                    {
-                                                        owner.Ops.GroupNormPack4Tex(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outRt);
-                                                        NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
-                                                        outRt = null;
-                                                    }
-                                                    finally
-                                                    {
-                                                        if (statsA != null)
-                                                            owner.ReturnTempArray(statsA);
-                                                        if (statsB != null)
-                                                            owner.ReturnTempArray(statsB);
-                                                        if (outRt != null)
-                                                            owner.ReturnTempArray(outRt);
-                                                    }
+            if (owner.EnableGroupNormTexturePath
+                && owner.UseNcnnStyleGroupNorm
+                && owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var srcTex,
+                    out var srcShape)
+                && NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                                                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                    continue;
-                                                }
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
 
-                                                var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                if (srcBuf == null || srcView == null)
-                                                    throw new InvalidOperationException("GroupNorm source not found: " + layer.name);
-                                                var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
-                                                owner.Ops.CopyBuf(srcBuf, outTensor.buffer, srcBuf.count);
-                                                var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
-                                                owner.Ops.GroupNormInplace(outTensor.buffer, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
-                                                owner.PublishTensorBufferOutput(
-                                                    layer.topNames[0],
-                                                    outTensor,
-                                                    preferTexture: srcView.dims <= 3,
-                                                    textureBlobs,
-                                                    textureShapes,
-                                                    bufferBlobs,
-                                                    bufferRefs,
-                                                    bufferViews,
-                                                    tempOwned);
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            if (!owner._groupNorm.TryGetValue(layer.name, out var gp))
+                throw new InvalidOperationException("GroupNorm not found: " + layer.name);
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null)
+                throw new InvalidOperationException("GroupNorm source not found: " + layer.name);
+            var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
+            owner.Ops.CopyBuf(srcBuf, outTensor.buffer, srcBuf.count);
+            var spatial = srcBuf.count / Mathf.Max(1, gp.channels);
+            owner.Ops.GroupNormInplace(outTensor.buffer, spatial, 1, gp.channels, gp.group, gp.eps, gp.affine, gp.gamma, gp.beta);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: srcView.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            if (!owner._groupNorm.TryGetValue(layer.name, out var gp))
+                throw new InvalidOperationException("GroupNorm not found: " + layer.name);
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+                || !NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
+            {
+                throw new InvalidOperationException("GroupNorm render-texture path requires supported pack4 input: " + layer.name);
+            }
+
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+            var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+            try
+            {
+                owner.Ops.GroupNormPack4Tex(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                outRt = null;
+            }
+            finally
+            {
+                if (statsA != null)
+                    owner.ReturnTempArray(statsA);
+                if (statsB != null)
+                    owner.ReturnTempArray(statsB);
+                if (outRt != null)
+                    owner.ReturnTempArray(outRt);
+            }
+
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

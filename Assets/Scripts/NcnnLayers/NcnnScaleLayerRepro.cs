@@ -51,6 +51,33 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.ScalePack sp)
+                throw new InvalidOperationException("Scale pack not found: " + layer.name);
+
+            if (!sp.dynamic
+                && sp.scaleDataSize == 1
+                && !sp.biasTerm
+                && owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out _))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -63,8 +90,8 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.ScalePack sp)
                 throw new InvalidOperationException("Scale pack not found: " + layer.name);
 
-            ComputeBuffer scaleBuf = null;
-            ComputeBuffer biasBuf = null;
+            ComputeBuffer scaleBuf;
+            ComputeBuffer biasBuf;
             var scaleCount = sp.scaleDataSize;
             var hasBias = sp.biasTerm;
 
@@ -84,6 +111,7 @@ namespace NcnnCompute
                 }
                 else
                 {
+                    biasBuf = null;
                     hasBias = false;
                 }
             }
@@ -91,18 +119,6 @@ namespace NcnnCompute
             {
                 scaleBuf = sp.scale;
                 biasBuf = sp.bias;
-            }
-
-            if (!sp.dynamic
-                && sp.scaleDataSize == 1
-                && !sp.biasTerm
-                && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
-            {
-                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.ScalePack4(srcTex.texture, sp.scaleCpu[0], srcTex.packs, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
             }
 
             var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
@@ -123,6 +139,27 @@ namespace NcnnCompute
                 bufferViews,
                 tempOwned);
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.ScalePack sp)
+                throw new InvalidOperationException("Scale pack not found: " + layer.name);
+            if (sp.dynamic || sp.scaleDataSize != 1 || sp.biasTerm)
+                throw new InvalidOperationException("Scale render-texture path currently requires static scalar scale without bias: " + layer.name);
+
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                throw new InvalidOperationException("Scale render-texture path requires pack4 texture input: " + layer.name);
+
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.ScalePack4(srcTex.texture, sp.scaleCpu[0], srcTex.packs, outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

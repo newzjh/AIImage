@@ -14,264 +14,309 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (CanExecuteRenderTexturePath(owner, layer, context))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                        do
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            var opType = layer.GetInt(0, 0);
+            var withScalar = layer.GetInt(1, 0);
+            var scalarB = layer.GetFloat(2, 0f);
+
+            if (withScalar != 0)
+            {
+                var aBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                var aView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                if (aBuf == null)
+                    throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
+
+                var outBuf = owner.RentTempBuffer(aBuf.count, sizeof(float));
+                owner.Ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
+                bufferBlobs[layer.topNames[0]] = outBuf;
+                if (aView != null)
+                    bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, aView.dims, aView.w, aView.h, aView.d, aView.c, false);
+                tempOwned.Add(outBuf);
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            var isTargetSftAddLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftAddLayer)
+                ? NcnnRepro.CodeFormerSftAddLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftAddLayer, StringComparison.Ordinal);
+            var isTargetSftMulLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftMulLayer)
+                ? NcnnRepro.CodeFormerSftMulLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
+            var isCodeFormerSftMul = opType == 2 && isTargetSftMulLayer;
+
+            using var aReadable = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var aBufFallback = aReadable?.buffer;
+            var aViewFallback = aReadable;
+            if (aBufFallback == null || aViewFallback == null)
+                throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
+
+            using var bReadable = owner.GetReadableTensorInput(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var bBufFallback = bReadable?.buffer;
+            var bViewFallback = bReadable;
+            if (bBufFallback == null || bViewFallback == null)
+                throw new InvalidOperationException("BinaryOp second source not found: " + layer.name);
+
+            if (aViewFallback.dims == 2 && bViewFallback.dims == 2 && aBufFallback.count != bBufFallback.count)
+            {
+                if (owner.TryExpand2DBroadcastBuffer(bBufFallback, bViewFallback, aViewFallback, out var expandedB, out var expandedBView))
+                {
+                    bBufFallback = expandedB;
+                    bViewFallback = expandedBView;
+                    tempOwned.Add(expandedB);
+                }
+                else if (owner.TryExpand2DBroadcastBuffer(aBufFallback, aViewFallback, bViewFallback, out var expandedA, out var expandedAView))
+                {
+                    aBufFallback = expandedA;
+                    aViewFallback = expandedAView;
+                    tempOwned.Add(expandedA);
+                }
+            }
+            else if (aViewFallback.dims == 1 && bViewFallback.dims == 2)
+            {
+                if (owner.TryExpand1DTo2DBroadcastBuffer(aBufFallback, aViewFallback, bViewFallback, out var expandedA, out var expandedAView))
+                {
+                    aBufFallback = expandedA;
+                    aViewFallback = expandedAView;
+                    tempOwned.Add(expandedA);
+                }
+            }
+            else if (aViewFallback.dims == 2 && bViewFallback.dims == 1)
+            {
+                if (owner.TryExpand1DTo2DBroadcastBuffer(bBufFallback, bViewFallback, aViewFallback, out var expandedB, out var expandedBView))
+                {
+                    bBufFallback = expandedB;
+                    bViewFallback = expandedBView;
+                    tempOwned.Add(expandedB);
+                }
+            }
+            else if (aViewFallback.dims == 3 && bViewFallback.dims == 3)
+            {
+                if (owner.TryExpand3DBroadcastBuffer(bBufFallback, bViewFallback, aViewFallback, out var expandedB, out var expandedBView))
+                {
+                    bBufFallback = expandedB;
+                    bViewFallback = expandedBView;
+                    tempOwned.Add(expandedB);
+                }
+                else if (owner.TryExpand3DBroadcastBuffer(aBufFallback, aViewFallback, bViewFallback, out var expandedA, out var expandedAView))
+                {
+                    aBufFallback = expandedA;
+                    aViewFallback = expandedAView;
+                    tempOwned.Add(expandedA);
+                }
+            }
+
+            if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
+            {
+                var scaledB = owner.RentTempBuffer(bBufFallback.count, sizeof(float));
+                owner.Ops.CopyBuf(bBufFallback, scaledB, bBufFallback.count);
+                owner.Ops.MulScalarInplace(scaledB, owner.CodeFormerSftAddScale, scaledB.count);
+                bBufFallback = scaledB;
+                tempOwned.Add(scaledB);
+            }
+
+            var broadcast = NcnnRepro.ResolveBinaryBroadcast(aViewFallback, bViewFallback, aBufFallback.count, bBufFallback.count, layer.name);
+            var outBufFallback = owner.RentTempBuffer(broadcast.total, sizeof(float));
+            owner.Ops.BinaryOpBuf(aBufFallback, bBufFallback, broadcast.total, opType, outBufFallback, broadcast.mode, broadcast.size);
+            if (isCodeFormerSftMul)
+            {
+                if (owner.CodeFormerBypassSftMul)
+                {
+                    owner.Ops.CopyBuf(aBufFallback, outBufFallback, broadcast.total);
+                }
+                else if (owner.CodeFormerSftMulScale != 1f)
+                {
+                    owner.Ops.MulScalarInplace(outBufFallback, owner.CodeFormerSftMulScale, outBufFallback.count);
+                }
+            }
+
+            var outTensorFallback = broadcast.outputView != null
+                ? new NcnnTensorBuffer(outBufFallback, broadcast.outputView.dims, broadcast.outputView.w, broadcast.outputView.h, broadcast.outputView.d, broadcast.outputView.c, true, owner.ReturnTempBuffer)
+                : new NcnnTensorBuffer(outBufFallback, 1, outBufFallback.count, 1, 1, 1, true, owner.ReturnTempBuffer);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensorFallback,
+                preferTexture: broadcast.outputView != null && broadcast.outputView.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var opType = layer.GetInt(0, 0);
+            var withScalar = layer.GetInt(1, 0);
+            var scalarB = layer.GetFloat(2, 0f);
+
+            if (withScalar != 0)
+            {
+                if (owner.ShouldForceCurrentLayerBufferPath()
+                    || !NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var aTexScalar, out var aTexShapeScalar)
+                    || aTexShapeScalar.dims > 3)
+                {
+                    throw new InvalidOperationException("BinaryOp render-texture scalar path requires existing texture input: " + layer.name);
+                }
+
+                var outRtScalar = owner.RentTempArray(aTexScalar.width, aTexScalar.height, aTexScalar.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.BinaryOpScalarPack4(aTexScalar.texture, scalarB, aTexScalar.packs, opType, outRtScalar);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRtScalar, aTexShapeScalar);
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            var isTargetSftAddLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftAddLayer)
+                ? NcnnRepro.CodeFormerSftAddLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftAddLayer, StringComparison.Ordinal);
+            var isTargetSftMulLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftMulLayer)
+                ? NcnnRepro.CodeFormerSftMulLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
+            var isCodeFormerSftMul = opType == 2 && isTargetSftMulLayer;
+
+            NcnnRepro.TensorRef aTex = null;
+            NcnnRepro.TensorRef bTex = null;
+            NcnnRepro.BufferShape aTexShape = default;
+            NcnnRepro.BufferShape bTexShape = default;
+            var canUseTextureBinary = !owner.ForceBufferBinaryOpAll
+                && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out aTex, out aTexShape)
+                && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out bTex, out bTexShape);
+
+            if (canUseTextureBinary && NcnnRepro.CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
+            {
+                RenderTexture scaledBTexture = null;
+                RenderTexture finalTexture = null;
+                try
+                {
+                    var rhsTexture = bTex.texture;
+                    if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
+                    {
+                        scaledBTexture = owner.RentTempArray(bTex.width, bTex.height, bTex.packs, RenderTextureFormat.ARGBHalf);
+                        owner.Ops.ScalePack4(bTex.texture, owner.CodeFormerSftAddScale, bTex.packs, scaledBTexture);
+                        rhsTexture = scaledBTexture;
+                    }
+
+                    finalTexture = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
+                    if (isCodeFormerSftMul && owner.CodeFormerBypassSftMul)
+                    {
+                        owner.Ops.CopyPack4(aTex.texture, 0, finalTexture, 0, aTex.packs);
+                    }
+                    else
+                    {
+                        owner.Ops.BinaryOpPack4(aTex.texture, rhsTexture, aTex.packs, opType, finalTexture);
+                        if (isCodeFormerSftMul && owner.CodeFormerSftMulScale != 1f)
                         {
-                                                var opType = layer.GetInt(0, 0);
-                                                var withScalar = layer.GetInt(1, 0);
-                                                var scalarB = layer.GetFloat(2, 0f);
+                            var scaledOutTexture = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
+                            owner.Ops.ScalePack4(finalTexture, owner.CodeFormerSftMulScale, aTex.packs, scaledOutTexture);
+                            owner.ReturnTempArray(finalTexture);
+                            finalTexture = scaledOutTexture;
+                        }
+                    }
 
-                                                if (withScalar != 0)
-                                                {
-                                                    if (!owner.ShouldForceCurrentLayerBufferPath()
-                                                        && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var aTex, out var aTexShape)
-                                                        && aTexShape.dims <= 3)
-                                                    {
-                                                        var outRt = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
-                                                        owner.Ops.BinaryOpScalarPack4(aTex.texture, scalarB, aTex.packs, opType, outRt);
-                                                        NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, aTexShape);
-                                                    }
-                                                    else
-                                                    {
-                                                        var aBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var aView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                        if (aBuf == null)
-                                                            throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, aTexShape);
+                    finalTexture = null;
+                }
+                finally
+                {
+                    if (scaledBTexture != null)
+                        owner.ReturnTempArray(scaledBTexture);
+                    if (finalTexture != null)
+                        owner.ReturnTempArray(finalTexture);
+                }
 
-                                                        var outBuf = owner.RentTempBuffer(aBuf.count, sizeof(float));
-                                                        owner.Ops.BinaryOpScalarBuf(aBuf, scalarB, aBuf.count, opType, outBuf);
-                                                        bufferBlobs[layer.topNames[0]] = outBuf;
-                                                        if (aView != null)
-                                                            bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(outBuf, aView.dims, aView.w, aView.h, aView.d, aView.c, false);
-                                                        tempOwned.Add(outBuf);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    var isTargetSftAddLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftAddLayer)
-                                                        ? NcnnRepro.CodeFormerSftAddLayers.Contains(layer.name)
-                                                        : string.Equals(layer.name, owner.CodeFormerTargetSftAddLayer, StringComparison.Ordinal);
-                                                    var isTargetSftMulLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftMulLayer)
-                                                        ? NcnnRepro.CodeFormerSftMulLayers.Contains(layer.name)
-                                                        : string.Equals(layer.name, owner.CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
-                                                    var isCodeFormerSftMul = opType == 2 && isTargetSftMulLayer;
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
 
-                                                    NcnnRepro.TensorRef aTex = null;
-                                                    NcnnRepro.TensorRef bTex = null;
-                                                    NcnnRepro.BufferShape aTexShape = default;
-                                                    NcnnRepro.BufferShape bTexShape = default;
-                                                    var canUseTextureBinary = !owner.ForceBufferBinaryOpAll
-                                                        && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out aTex, out aTexShape)
-                                                        && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out bTex, out bTexShape);
+            if (!owner.ForceBufferBinaryOpAll
+                && !isTargetSftAddLayer
+                && !isTargetSftMulLayer
+                && TryResolvePack4BufferScalar(
+                    owner,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    textureBlobs,
+                    textureShapes,
+                    bufferBlobs,
+                    bufferViews,
+                    out var scalarTexture,
+                    out var scalarTextureShape,
+                    out var scalarBuffer,
+                    out var scalarIsA))
+            {
+                RenderTexture finalTexture = null;
+                try
+                {
+                    finalTexture = owner.RentTempArray(scalarTexture.width, scalarTexture.height, scalarTexture.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.BinaryOpPack4BufferScalar(scalarTexture.texture, scalarBuffer, scalarTexture.packs, opType, scalarIsA, finalTexture);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalarTextureShape);
+                    finalTexture = null;
+                }
+                finally
+                {
+                    if (finalTexture != null)
+                        owner.ReturnTempArray(finalTexture);
+                }
 
-                                                    if (canUseTextureBinary
-                                                        && NcnnRepro.CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
-                                                    {
-                                                        RenderTexture scaledBTexture = null;
-                                                        RenderTexture finalTexture = null;
-                                                        try
-                                                        {
-                                                            var rhsTexture = bTex.texture;
-                                                            if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
-                                                            {
-                                                                scaledBTexture = owner.RentTempArray(bTex.width, bTex.height, bTex.packs, RenderTextureFormat.ARGBHalf);
-                                                                owner.Ops.ScalePack4(bTex.texture, owner.CodeFormerSftAddScale, bTex.packs, scaledBTexture);
-                                                                rhsTexture = scaledBTexture;
-                                                            }
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
 
-                                                            finalTexture = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
-                                                            if (isCodeFormerSftMul && owner.CodeFormerBypassSftMul)
-                                                            {
-                                                                owner.Ops.CopyPack4(aTex.texture, 0, finalTexture, 0, aTex.packs);
-                                                            }
-                                                            else
-                                                            {
-                                                                owner.Ops.BinaryOpPack4(aTex.texture, rhsTexture, aTex.packs, opType, finalTexture);
-                                                                if (isCodeFormerSftMul && owner.CodeFormerSftMulScale != 1f)
-                                                                {
-                                                                    var scaledOutTexture = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
-                                                                    owner.Ops.ScalePack4(finalTexture, owner.CodeFormerSftMulScale, aTex.packs, scaledOutTexture);
-                                                                    owner.ReturnTempArray(finalTexture);
-                                                                    finalTexture = scaledOutTexture;
-                                                                }
-                                                            }
+            if (canUseTextureBinary
+                && !isTargetSftAddLayer
+                && !isTargetSftMulLayer
+                && TryResolvePack4SpatialBroadcast(aTex, aTexShape, bTex, bTexShape, out var broadcastMode, out var outShape, out var outWidth, out var outHeight, out var outPacks))
+            {
+                RenderTexture finalTexture = null;
+                try
+                {
+                    finalTexture = owner.RentTempArray(outWidth, outHeight, outPacks, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.BinaryOpPack4Broadcast(aTex.texture, bTex.texture, outPacks, opType, broadcastMode, finalTexture);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, outShape);
+                    finalTexture = null;
+                }
+                finally
+                {
+                    if (finalTexture != null)
+                        owner.ReturnTempArray(finalTexture);
+                }
 
-                                                            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, aTexShape);
-                                                            finalTexture = null;
-                                                        }
-                                                        finally
-                                                        {
-                                                            if (scaledBTexture != null)
-                                                                owner.ReturnTempArray(scaledBTexture);
-                                                            if (finalTexture != null)
-                                                                owner.ReturnTempArray(finalTexture);
-                                                        }
-                                                    }
-                                                    else if (!owner.ForceBufferBinaryOpAll
-                                                             && !isTargetSftAddLayer
-                                                             && !isTargetSftMulLayer
-                                                             && TryResolvePack4BufferScalar(
-                                                                 owner,
-                                                                 layer.bottomNames[0],
-                                                                 layer.bottomNames[1],
-                                                                 textureBlobs,
-                                                                 textureShapes,
-                                                                 bufferBlobs,
-                                                                 bufferViews,
-                                                                 out var scalarTexture,
-                                                                 out var scalarTextureShape,
-                                                                 out var scalarBuffer,
-                                                                 out var scalarIsA))
-                                                    {
-                                                        RenderTexture finalTexture = null;
-                                                        try
-                                                        {
-                                                            finalTexture = owner.RentTempArray(scalarTexture.width, scalarTexture.height, scalarTexture.packs, RenderTextureFormat.ARGBHalf);
-                                                            owner.Ops.BinaryOpPack4BufferScalar(scalarTexture.texture, scalarBuffer, scalarTexture.packs, opType, scalarIsA, finalTexture);
-                                                            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalarTextureShape);
-                                                            finalTexture = null;
-                                                        }
-                                                        finally
-                                                        {
-                                                            if (finalTexture != null)
-                                                                owner.ReturnTempArray(finalTexture);
-                                                        }
-                                                    }
-                                                    else if (canUseTextureBinary
-                                                             && !isTargetSftAddLayer
-                                                             && !isTargetSftMulLayer
-                                                             && TryResolvePack4SpatialBroadcast(aTex, aTexShape, bTex, bTexShape, out var broadcastMode, out var outShape, out var outWidth, out var outHeight, out var outPacks))
-                                                    {
-                                                        RenderTexture finalTexture = null;
-                                                        try
-                                                        {
-                                                            finalTexture = owner.RentTempArray(outWidth, outHeight, outPacks, RenderTextureFormat.ARGBHalf);
-                                                            owner.Ops.BinaryOpPack4Broadcast(aTex.texture, bTex.texture, outPacks, opType, broadcastMode, finalTexture);
-                                                            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, outShape);
-                                                            finalTexture = null;
-                                                        }
-                                                        finally
-                                                        {
-                                                            if (finalTexture != null)
-                                                                owner.ReturnTempArray(finalTexture);
-                                                        }
-                                                    }
-                                                    else
-                                                    {
-                                                        using var aReadable = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var aBuf = aReadable?.buffer;
-                                                        var aView = aReadable;
-                                                        if (aBuf == null || aView == null)
-                                                            throw new InvalidOperationException("BinaryOp source not found: " + layer.name);
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
 
-                                                        using var bReadable = owner.GetReadableTensorInput(layer.bottomNames[1], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                        var bBuf = bReadable?.buffer;
-                                                        var bView = bReadable;
-                                                        if (bBuf == null || bView == null)
-                                                            throw new InvalidOperationException("BinaryOp second source not found: " + layer.name);
-
-                                                        // ncnn reduction + binary-op chains in CodeFormer frequently mix [h,w] with [1,w] or [h,1].
-                                                        // Expanding the smaller 2d tensor explicitly avoids ambiguous modulo-based broadcasting.
-                                                        if (aView != null && bView != null && aView.dims == 2 && bView.dims == 2 && aBuf.count != bBuf.count)
-                                                        {
-                                                            if (owner.TryExpand2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
-                                                            {
-                                                                bBuf = expandedB;
-                                                                bView = expandedBView;
-                                                                tempOwned.Add(expandedB);
-                                                            }
-                                                            else if (owner.TryExpand2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
-                                                            {
-                                                                aBuf = expandedA;
-                                                                aView = expandedAView;
-                                                                tempOwned.Add(expandedA);
-                                                            }
-                                                        }
-                                                        else if (aView != null && bView != null && aView.dims == 1 && bView.dims == 2)
-                                                        {
-                                                            if (owner.TryExpand1DTo2DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
-                                                            {
-                                                                aBuf = expandedA;
-                                                                aView = expandedAView;
-                                                                tempOwned.Add(expandedA);
-                                                            }
-                                                        }
-                                                        else if (aView != null && bView != null && aView.dims == 2 && bView.dims == 1)
-                                                        {
-                                                            if (owner.TryExpand1DTo2DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
-                                                            {
-                                                                bBuf = expandedB;
-                                                                bView = expandedBView;
-                                                                tempOwned.Add(expandedB);
-                                                            }
-                                                        }
-                                                        else if (aView != null && bView != null && aView.dims == 3 && bView.dims == 3)
-                                                        {
-                                                            if (owner.TryExpand3DBroadcastBuffer(bBuf, bView, aView, out var expandedB, out var expandedBView))
-                                                            {
-                                                                bBuf = expandedB;
-                                                                bView = expandedBView;
-                                                                tempOwned.Add(expandedB);
-                                                            }
-                                                            else if (owner.TryExpand3DBroadcastBuffer(aBuf, aView, bView, out var expandedA, out var expandedAView))
-                                                            {
-                                                                aBuf = expandedA;
-                                                                aView = expandedAView;
-                                                                tempOwned.Add(expandedA);
-                                                            }
-                                                        }
-
-                                                        if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
-                                                        {
-                                                            var scaledB = owner.RentTempBuffer(bBuf.count, sizeof(float));
-                                                            owner.Ops.CopyBuf(bBuf, scaledB, bBuf.count);
-                                                            owner.Ops.MulScalarInplace(scaledB, owner.CodeFormerSftAddScale, scaledB.count);
-                                                            bBuf = scaledB;
-                                                            tempOwned.Add(scaledB);
-                                                        }
-
-                                                        var broadcast = NcnnRepro.ResolveBinaryBroadcast(aView, bView, aBuf.count, bBuf.count, layer.name);
-                                                        var outBuf = owner.RentTempBuffer(broadcast.total, sizeof(float));
-                                                        owner.Ops.BinaryOpBuf(aBuf, bBuf, broadcast.total, opType, outBuf, broadcast.mode, broadcast.size);
-                                                        if (isCodeFormerSftMul)
-                                                        {
-                                                            if (owner.CodeFormerBypassSftMul)
-                                                            {
-                                                                owner.Ops.CopyBuf(aBuf, outBuf, broadcast.total);
-                                                            }
-                                                            else if (owner.CodeFormerSftMulScale != 1f)
-                                                            {
-                                                                owner.Ops.MulScalarInplace(outBuf, owner.CodeFormerSftMulScale, outBuf.count);
-                                                            }
-                                                        }
-                                                        var outTensor = broadcast.outputView != null
-                                                            ? new NcnnTensorBuffer(outBuf, broadcast.outputView.dims, broadcast.outputView.w, broadcast.outputView.h, broadcast.outputView.d, broadcast.outputView.c, true, owner.ReturnTempBuffer)
-                                                            : new NcnnTensorBuffer(outBuf, 1, outBuf.count, 1, 1, 1, true, owner.ReturnTempBuffer);
-                                                        owner.PublishTensorBufferOutput(
-                                                            layer.topNames[0],
-                                                            outTensor,
-                                                            preferTexture: broadcast.outputView != null && broadcast.outputView.dims <= 3,
-                                                            textureBlobs,
-                                                            textureShapes,
-                                                            bufferBlobs,
-                                                            bufferRefs,
-                                                            bufferViews,
-                                                            tempOwned);
-                                                    }
-                                                }
-
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            throw new InvalidOperationException("BinaryOp render-texture path unsupported config: " + layer.name);
         }
 
         private static bool TryResolvePack4SpatialBroadcast(
@@ -394,6 +439,61 @@ namespace NcnnCompute
 
             scalar = buffer;
             return true;
+        }
+
+        private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var opType = layer.GetInt(0, 0);
+            var withScalar = layer.GetInt(1, 0);
+
+            if (withScalar != 0)
+            {
+                return !owner.ShouldForceCurrentLayerBufferPath()
+                    && NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out _, out var scalarTexShape)
+                    && scalarTexShape.dims <= 3;
+            }
+
+            var isTargetSftAddLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftAddLayer)
+                ? NcnnRepro.CodeFormerSftAddLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftAddLayer, StringComparison.Ordinal);
+            var isTargetSftMulLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftMulLayer)
+                ? NcnnRepro.CodeFormerSftMulLayers.Contains(layer.name)
+                : string.Equals(layer.name, owner.CodeFormerTargetSftMulLayer, StringComparison.Ordinal);
+
+            NcnnRepro.TensorRef aTex = null;
+            NcnnRepro.TensorRef bTex = null;
+            NcnnRepro.BufferShape aTexShape = default;
+            NcnnRepro.BufferShape bTexShape = default;
+            var canUseTextureBinary = !owner.ForceBufferBinaryOpAll
+                && owner.TryGetPack4Texture(layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out aTex, out aTexShape)
+                && owner.TryGetPack4Texture(layer.bottomNames[1], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out bTex, out bTexShape);
+
+            if (canUseTextureBinary && NcnnRepro.CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
+                return true;
+
+            if (!owner.ForceBufferBinaryOpAll
+                && !isTargetSftAddLayer
+                && !isTargetSftMulLayer
+                && TryResolvePack4BufferScalar(
+                    owner,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out _,
+                    out _,
+                    out _))
+            {
+                return true;
+            }
+
+            return canUseTextureBinary
+                && !isTargetSftAddLayer
+                && !isTargetSftMulLayer
+                && TryResolvePack4SpatialBroadcast(aTex, aTexShape, bTex, bTexShape, out _, out _, out _, out _, out _);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

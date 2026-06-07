@@ -11,6 +11,20 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (CanExecuteTextureConcat(owner, layer, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+            #pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+            #pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -19,12 +33,6 @@ namespace NcnnCompute
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
             var tempOwned = context.tempOwned;
-
-            if (TryExecuteTextureConcat(owner, layer, textureBlobs, textureShapes, bufferBlobs, bufferViews))
-            {
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
 
             var partBuffers = new ComputeBuffer[layer.bottomNames.Length];
             var partViews = new NcnnTensorBuffer[layer.bottomNames.Length];
@@ -124,6 +132,109 @@ namespace NcnnCompute
                 bufferViews,
                 tempOwned);
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+
+            if (!TryExecuteTextureConcat(owner, layer, textureBlobs, textureShapes, bufferBlobs, context.bufferViews))
+                throw new InvalidOperationException("Concat render-texture path requires exact pack4 concat support: " + layer.name);
+
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
+        }
+
+        private static bool CanExecuteTextureConcat(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            System.Collections.Generic.Dictionary<string, ComputeBuffer> bufferBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnTensorBuffer> bufferViews)
+        {
+            if (owner == null || layer == null || owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length == 0)
+                return false;
+
+            if (!TryResolvePack4ConcatSource(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var firstShape, out var firstWidth, out var firstHeight, out var firstPacks))
+                return false;
+
+            var positiveAxis = layer.GetInt(0, 0);
+            if (positiveAxis < 0)
+                positiveAxis += firstShape.dims;
+            if (positiveAxis < 0 || positiveAxis >= firstShape.dims)
+                throw new InvalidOperationException("Concat axis out of range: " + layer.name);
+
+            var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(firstShape.dims, positiveAxis);
+            if (firstShape.dims != 3 || tensorAxis != 2)
+                return false;
+
+            for (var i = 0; i < layer.bottomNames.Length; i++)
+            {
+                if (!TryResolvePack4ConcatSource(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var shape, out var width, out var height, out var packs))
+                    return false;
+
+                if (shape.dims != 3
+                    || shape.d != 1
+                    || shape.w != firstShape.w
+                    || shape.h != firstShape.h
+                    || width != firstWidth
+                    || height != firstHeight
+                    || shape.c <= 0
+                    || shape.c > packs * 4)
+                {
+                    return false;
+                }
+
+                if (i < layer.bottomNames.Length - 1 && (shape.c & 3) != 0)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryResolvePack4ConcatSource(
+            string name,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            System.Collections.Generic.Dictionary<string, ComputeBuffer> bufferBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.BufferShape shape,
+            out int width,
+            out int height,
+            out int packs)
+        {
+            shape = default;
+            width = 0;
+            height = 0;
+            packs = 0;
+
+            if (NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, name, out var existingTexture, out shape))
+            {
+                width = existingTexture.width;
+                height = existingTexture.height;
+                packs = existingTexture.packs;
+                return shape.dims == 3;
+            }
+
+            if (bufferBlobs != null
+                && bufferViews != null
+                && bufferBlobs.TryGetValue(name, out var buffer)
+                && buffer != null
+                && bufferViews.TryGetValue(name, out var view)
+                && view != null)
+            {
+                shape = new NcnnRepro.BufferShape(view.dims, view.w, view.h, view.d, view.c);
+                width = view.w;
+                height = view.h;
+                packs = Mathf.Max(1, Mathf.CeilToInt(view.c / 4f));
+                return view.dims == 3 && view.d == 1 && view.c > 0;
+            }
+
+            return false;
         }
 
         private static bool TryExecuteTextureConcat(

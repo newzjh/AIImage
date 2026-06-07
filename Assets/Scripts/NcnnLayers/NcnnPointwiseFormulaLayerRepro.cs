@@ -14,6 +14,27 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out _))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -25,39 +46,46 @@ namespace NcnnCompute
 
             ResolveFormula(TypeKey, layer, out var type, out var a, out var b);
 
-            if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
-            {
-                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.PointwisePack4(srcTex.texture, srcTex.packs, type, a, b, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
-            }
-            else
-            {
-                var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                if (srcBuf == null)
-                    throw new InvalidOperationException(TypeKey + " source not found: " + layer.name);
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null)
+                throw new InvalidOperationException(TypeKey + " source not found: " + layer.name);
 
-                var outTensor = owner.RentTempTensorBuffer(
-                    srcView?.dims ?? 1,
-                    srcView?.w ?? srcBuf.count,
-                    srcView?.h ?? 1,
-                    srcView?.d ?? 1,
-                    srcView?.c ?? 1);
-                owner.Ops.PointwiseBuf(srcBuf, srcBuf.count, type, a, b, outTensor.buffer);
-                owner.PublishTensorBufferOutput(
-                    layer.topNames[0],
-                    outTensor,
-                    preferTexture: srcView != null && srcView.dims <= 3,
-                    textureBlobs,
-                    textureShapes,
-                    bufferBlobs,
-                    bufferRefs,
-                    bufferViews,
-                    tempOwned);
-            }
-
+            var outTensor = owner.RentTempTensorBuffer(
+                srcView?.dims ?? 1,
+                srcView?.w ?? srcBuf.count,
+                srcView?.h ?? 1,
+                srcView?.d ?? 1,
+                srcView?.c ?? 1);
+            owner.Ops.PointwiseBuf(srcBuf, srcBuf.count, type, a, b, outTensor.buffer);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: srcView != null && srcView.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            ResolveFormula(TypeKey, layer, out var type, out var a, out var b);
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                throw new InvalidOperationException(TypeKey + " render-texture path requires pack4 texture input: " + layer.name);
+
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.PointwisePack4(srcTex.texture, srcTex.packs, type, a, b, outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

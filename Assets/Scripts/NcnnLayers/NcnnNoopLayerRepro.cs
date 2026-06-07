@@ -1,3 +1,5 @@
+using System;
+
 namespace NcnnCompute
 {
     // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
@@ -9,6 +11,54 @@ namespace NcnnCompute
         }
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            ExecuteRenderTexturePath(owner, layer, context);
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var buf) && buf != null)
+            {
+                bufferBlobs[layer.topNames[0]] = buf;
+                if (bufferRefs.TryGetValue(layer.bottomNames[0], out var bufferRef) && bufferRef != null)
+                {
+                    bufferRefs[layer.topNames[0]] = bufferRef;
+                    bufferRef.refs++;
+                }
+
+                var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                if (srcView != null)
+                    bufferViews[layer.topNames[0]] = srcView;
+            }
+            else
+            {
+                var src = owner.GetReadableTensorInput(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    bufferBlobs,
+                    context.textureShapes,
+                    bufferViews,
+                    context.tempOwned);
+                if (src == null || src.buffer == null)
+                    throw new InvalidOperationException("Noop source not found: " + layer.name);
+
+                bufferBlobs[layer.topNames[0]] = src.buffer;
+                bufferRefs[layer.topNames[0]] = owner.NewOwnedBufferRef(layer.topNames[0], src.buffer);
+                bufferViews[layer.topNames[0]] = new NcnnTensorBuffer(src.buffer, src.dims, src.w, src.h, src.d, src.c, false);
+                context.tempOwned?.Add(src.buffer);
+            }
+
+            owner.Consume(context.textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;

@@ -14,57 +14,99 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            ExecuteRenderTexturePath(owner, layer, context);
+        }
 
-                        do
-                        {
-                                                var hasTexture = textureBlobs.TryGetValue(layer.bottomNames[0], out var srcTex) && srcTex != null && srcTex.texture != null;
-                                                var srcTexShape = hasTexture ? NcnnRepro.GetTextureShape(textureShapes, srcTex, layer.bottomNames[0]) : default;
-                                                if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var srcBuf) && srcBuf != null)
-                                                {
-                                                    var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    for (var i = 0; i < layer.topNames.Length; i++)
-                                                    {
-                                                        bufferBlobs[layer.topNames[i]] = srcBuf;
-                                                        if (bufferRefs.TryGetValue(layer.bottomNames[0], out var srcRef) && srcRef != null)
-                                                        {
-                                                            bufferRefs[layer.topNames[i]] = srcRef;
-                                                            srcRef.refs++;
-                                                        }
-                                                        if (srcTensor != null)
-                                                            bufferViews[layer.topNames[i]] = srcTensor;
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
-                                                        if (hasTexture)
-                                                        {
-                                                            textureBlobs[layer.topNames[i]] = srcTex;
-                                                            textureShapes[layer.topNames[i]] = srcTexShape;
-                                                            srcTex.refs++;
-                                                        }
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    var src = hasTexture ? srcTex : owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                    var shape = hasTexture ? srcTexShape : NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                                                    for (var i = 0; i < layer.topNames.Length; i++)
-                                                    {
-                                                        textureBlobs[layer.topNames[i]] = src;
-                                                        textureShapes[layer.topNames[i]] = shape;
-                                                        src.refs++;
-                                                    }
-                                                }
+            if (!bufferBlobs.TryGetValue(layer.bottomNames[0], out var srcBuf) || srcBuf == null)
+            {
+                srcBuf = owner.GetOrConvertToBuffer(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    bufferBlobs,
+                    context.textureShapes,
+                    bufferViews,
+                    context.tempOwned);
+            }
+            if (srcBuf == null)
+                throw new InvalidOperationException("Split source not found: " + layer.name);
 
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            for (var i = 0; i < layer.topNames.Length; i++)
+            {
+                bufferBlobs[layer.topNames[i]] = srcBuf;
+                if (bufferRefs.TryGetValue(layer.bottomNames[0], out var srcRef) && srcRef != null)
+                {
+                    bufferRefs[layer.topNames[i]] = srcRef;
+                    srcRef.refs++;
+                }
+                else
+                {
+                    bufferRefs[layer.topNames[i]] = owner.NewOwnedBufferRef(layer.topNames[i], srcBuf);
+                }
+
+                if (srcTensor != null)
+                    bufferViews[layer.topNames[i]] = srcTensor;
+            }
+
+            owner.Consume(context.textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var hasTexture = textureBlobs.TryGetValue(layer.bottomNames[0], out var srcTex) && srcTex != null && srcTex.texture != null;
+            var srcTexShape = hasTexture ? NcnnRepro.GetTextureShape(textureShapes, srcTex, layer.bottomNames[0]) : default;
+            if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var srcBuf) && srcBuf != null)
+            {
+                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                for (var i = 0; i < layer.topNames.Length; i++)
+                {
+                    bufferBlobs[layer.topNames[i]] = srcBuf;
+                    if (bufferRefs.TryGetValue(layer.bottomNames[0], out var srcRef) && srcRef != null)
+                    {
+                        bufferRefs[layer.topNames[i]] = srcRef;
+                        srcRef.refs++;
+                    }
+                    if (srcTensor != null)
+                        bufferViews[layer.topNames[i]] = srcTensor;
+
+                    if (hasTexture)
+                    {
+                        textureBlobs[layer.topNames[i]] = srcTex;
+                        textureShapes[layer.topNames[i]] = srcTexShape;
+                        srcTex.refs++;
+                    }
+                }
+            }
+            else
+            {
+                var src = hasTexture ? srcTex : owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                var shape = hasTexture ? srcTexShape : NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                for (var i = 0; i < layer.topNames.Length; i++)
+                {
+                    textureBlobs[layer.topNames[i]] = src;
+                    textureShapes[layer.topNames[i]] = shape;
+                    src.refs++;
+                }
+            }
+
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {

@@ -11,95 +11,113 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            var hasAxis = layer.intParams != null && layer.intParams.ContainsKey(0);
+            var hasTiles = layer.intParams != null && layer.intParams.ContainsKey(1);
+            var tiles = layer.GetInt(1, 1);
+            var isPassthrough = (!hasAxis && !hasTiles) || tiles <= 1;
 
-                        do
-                        {
-                                                var hasAxis = layer.intParams != null && layer.intParams.ContainsKey(0);
-                                                var hasTiles = layer.intParams != null && layer.intParams.ContainsKey(1);
-                                                var axis = layer.GetInt(0, 0);
-                                                var tiles = layer.GetInt(1, 1);
-                                                var isPassthrough = (!hasAxis && !hasTiles) || tiles <= 1;
+            if (isPassthrough)
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                                                if (isPassthrough)
-                                                {
-                                                    var hasTexture = textureBlobs.TryGetValue(layer.bottomNames[0], out var tileTex) && tileTex != null && tileTex.texture != null;
-                                                    var tileTexShape = hasTexture ? NcnnRepro.GetTextureShape(textureShapes, tileTex, layer.bottomNames[0]) : default;
-                                                    if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var tileBuf) && tileBuf != null)
-                                                    {
-                                                        bufferBlobs[layer.topNames[0]] = tileBuf;
-                                                        if (bufferRefs.TryGetValue(layer.bottomNames[0], out var tileRef) && tileRef != null)
-                                                        {
-                                                            bufferRefs[layer.topNames[0]] = tileRef;
-                                                            tileRef.refs++;
-                                                        }
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
 
-                                                        var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                        if (srcView != null)
-                                                            bufferViews[layer.topNames[0]] = srcView;
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                                                        if (hasTexture)
-                                                        {
-                                                            textureBlobs[layer.topNames[0]] = tileTex;
-                                                            textureShapes[layer.topNames[0]] = tileTexShape;
-                                                            tileTex.refs++;
-                                                        }
-                                                    }
-                                                    else
-                                                    {
-                                                        var src = hasTexture ? tileTex : owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                        textureBlobs[layer.topNames[0]] = src;
-                                                        textureShapes[layer.topNames[0]] = hasTexture ? tileTexShape : NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                                                        src.refs++;
-                                                    }
+            var axis = layer.GetInt(0, 0);
+            var tiles = layer.GetInt(1, 1);
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null)
+                throw new InvalidOperationException("Tile source not found: " + layer.name);
 
-                                                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                    continue;
-                                                }
+            if (axis < 0)
+                axis += srcView.dims;
+            if (axis < 0 || axis >= srcView.dims)
+                throw new InvalidOperationException("Tile axis out of range: " + layer.name);
 
-                                                var srcBuf2 = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                var srcView2 = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                if (srcBuf2 == null || srcView2 == null)
-                                                    throw new InvalidOperationException("Tile source not found: " + layer.name);
+            var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(srcView.dims, axis);
+            var outW = srcView.w;
+            var outH = srcView.h;
+            var outD = srcView.d;
+            var outC = srcView.c;
+            if (tensorAxis == 0) outW *= tiles;
+            else if (tensorAxis == 1) outH *= tiles;
+            else if (tensorAxis == 2 && srcView.dims == 4) outD *= tiles;
+            else if (tensorAxis == 2 || tensorAxis == 3) outC *= tiles;
 
-                                                if (axis < 0)
-                                                    axis += srcView2.dims;
-                                                if (axis < 0 || axis >= srcView2.dims)
-                                                    throw new InvalidOperationException("Tile axis out of range: " + layer.name);
+            var outTensor = owner.RentTempTensorBuffer(srcView.dims, outW, outH, outD, outC);
+            owner.Ops.Tile(srcBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, tensorAxis, tiles, outW, outH, outD, outC, outTensor.buffer);
 
-                                                var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(srcView2.dims, axis);
-                                                var outW = srcView2.w;
-                                                var outH = srcView2.h;
-                                                var outD = srcView2.d;
-                                                var outC = srcView2.c;
-                                                if (tensorAxis == 0) outW *= tiles;
-                                                else if (tensorAxis == 1) outH *= tiles;
-                                                else if (tensorAxis == 2 && srcView2.dims == 4) outD *= tiles;
-                                                else if (tensorAxis == 2 || tensorAxis == 3) outC *= tiles;
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: srcView.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
 
-                                                var outTensor = owner.RentTempTensorBuffer(srcView2.dims, outW, outH, outD, outC);
-                                                owner.Ops.Tile(srcBuf2, srcView2.dims, srcView2.w, srcView2.h, srcView2.d, srcView2.c, tensorAxis, tiles, outW, outH, outD, outC, outTensor.buffer);
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
-                                                owner.PublishTensorBufferOutput(
-                                                    layer.topNames[0],
-                                                    outTensor,
-                                                    preferTexture: srcView2.dims <= 3,
-                                                    textureBlobs,
-                                                    textureShapes,
-                                                    bufferBlobs,
-                                                    bufferRefs,
-                                                    bufferViews,
-                                                    tempOwned);
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            var hasTexture = textureBlobs.TryGetValue(layer.bottomNames[0], out var tileTex) && tileTex != null && tileTex.texture != null;
+            var tileTexShape = hasTexture ? NcnnRepro.GetTextureShape(textureShapes, tileTex, layer.bottomNames[0]) : default;
+            if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var tileBuf) && tileBuf != null)
+            {
+                bufferBlobs[layer.topNames[0]] = tileBuf;
+                if (bufferRefs.TryGetValue(layer.bottomNames[0], out var tileRef) && tileRef != null)
+                {
+                    bufferRefs[layer.topNames[0]] = tileRef;
+                    tileRef.refs++;
+                }
+
+                var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                if (srcView != null)
+                    bufferViews[layer.topNames[0]] = srcView;
+
+                if (hasTexture)
+                {
+                    textureBlobs[layer.topNames[0]] = tileTex;
+                    textureShapes[layer.topNames[0]] = tileTexShape;
+                    tileTex.refs++;
+                }
+            }
+            else
+            {
+                var src = hasTexture ? tileTex : owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                textureBlobs[layer.topNames[0]] = src;
+                textureShapes[layer.topNames[0]] = hasTexture ? tileTexShape : NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                src.refs++;
+            }
+
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

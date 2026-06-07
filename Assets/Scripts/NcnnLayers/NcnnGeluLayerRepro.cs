@@ -14,54 +14,69 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (!owner.ForceBufferGeluAll
+                && !owner.ShouldForceCurrentLayerBufferPath()
+                && NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out _, out var srcShape)
+                && srcShape.dims <= 3)
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                        do
-                        {
-                                                if (!owner.ForceBufferGeluAll
-                                                    && !owner.ShouldForceCurrentLayerBufferPath()
-                                                    && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape)
-                                                    && srcShape.dims <= 3)
-                                                {
-                                                    var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                                                    owner.Ops.GeluPack4(srcTex.texture, srcTex.packs, false, outRt);
-                                                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
-                                                }
-                                                else
-                                                {
-                                                    var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (srcBuf == null)
-                                                        throw new InvalidOperationException("GELU source not found: " + layer.name);
-                                                    var outTensor = owner.RentTempTensorBuffer(
-                                                        srcView?.dims ?? 1,
-                                                        srcView?.w ?? srcBuf.count,
-                                                        srcView?.h ?? 1,
-                                                        srcView?.d ?? 1,
-                                                        srcView?.c ?? 1);
-                                                    owner.Ops.GeluBuf(srcBuf, srcBuf.count, outTensor.buffer);
-                                                    owner.PublishTensorBufferOutput(
-                                                        layer.topNames[0],
-                                                        outTensor,
-                                                        preferTexture: srcView != null && srcView.dims <= 3,
-                                                        textureBlobs,
-                                                        textureShapes,
-                                                        bufferBlobs,
-                                                        bufferRefs,
-                                                        bufferViews,
-                                                        tempOwned);
-                                                }
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null)
+                throw new InvalidOperationException("GELU source not found: " + layer.name);
+
+            var outTensor = owner.RentTempTensorBuffer(
+                srcView?.dims ?? 1,
+                srcView?.w ?? srcBuf.count,
+                srcView?.h ?? 1,
+                srcView?.d ?? 1,
+                srcView?.c ?? 1);
+            owner.Ops.GeluBuf(srcBuf, srcBuf.count, outTensor.buffer);
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: srcView != null && srcView.dims <= 3,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape) || srcShape.dims > 3)
+                throw new InvalidOperationException("GELU render-texture path requires existing <=3D texture input: " + layer.name);
+
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.GeluPack4(srcTex.texture, srcTex.packs, false, outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {

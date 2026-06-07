@@ -25,6 +25,28 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var srcTex,
+                    out var srcShape)
+                && CanUsePack4Slice(srcTex, srcShape))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -50,30 +72,6 @@ namespace NcnnCompute
 
             var specs = ResolveSliceSpecs(layer, srcShape);
 
-            if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var texShape)
-                && CanUsePack4Slice(srcTex, texShape))
-            {
-                for (var i = 0; i < layer.topNames.Length; i++)
-                {
-                    var spec = specs[i];
-                    if (IsIdentitySlice(texShape, spec))
-                    {
-                        textureBlobs[layer.topNames[i]] = srcTex;
-                        textureShapes[layer.topNames[i]] = texShape;
-                        srcTex.refs++;
-                        continue;
-                    }
-
-                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
-                    var outRt = owner.RentTempArray(spec.shape.w, spec.shape.h, outPacks, RenderTextureFormat.ARGBHalf);
-                    owner.Ops.SlicePack4(srcTex.texture, texShape.w, texShape.h, texShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outRt);
-                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[i], outRt, spec.shape);
-                }
-
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
-
             var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
             if (srcBuf == null || srcView == null)
@@ -98,6 +96,40 @@ namespace NcnnCompute
             }
 
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var texShape)
+                || !CanUsePack4Slice(srcTex, texShape))
+            {
+                throw new InvalidOperationException("Slice render-texture path requires supported pack4 input: " + layer.name);
+            }
+
+            var specs = ResolveSliceSpecs(layer, texShape);
+            for (var i = 0; i < layer.topNames.Length; i++)
+            {
+                var spec = specs[i];
+                if (IsIdentitySlice(texShape, spec))
+                {
+                    textureBlobs[layer.topNames[i]] = srcTex;
+                    textureShapes[layer.topNames[i]] = texShape;
+                    srcTex.refs++;
+                    continue;
+                }
+
+                var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
+                var outRt = owner.RentTempArray(spec.shape.w, spec.shape.h, outPacks, RenderTextureFormat.ARGBHalf);
+                owner.Ops.SlicePack4(srcTex.texture, texShape.w, texShape.h, texShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[i], outRt, spec.shape);
+            }
+
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

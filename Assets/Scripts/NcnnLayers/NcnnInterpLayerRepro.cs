@@ -12,6 +12,20 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (CanExecuteRenderTexturePath(owner, layer, context))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -20,69 +34,6 @@ namespace NcnnCompute
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
             var tempOwned = context.tempOwned;
-
-            if (!owner.ShouldForceCurrentLayerBufferPath()
-                && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
-            {
-                ResolveTargetShape(layer, srcShape, textureBlobs, textureShapes, bufferViews, out var outW, out var outH, out var outC);
-
-                if (srcShape.dims == 2 && outW == srcShape.w)
-                {
-                    new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
-                    return;
-                }
-
-                if (srcShape.dims >= 3 && outW == srcShape.w && outH == srcShape.h)
-                {
-                    new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
-                    return;
-                }
-
-                if (srcShape.dims == 3
-                    && outC == srcShape.c
-                    && CanUsePack4Interp(srcTex, srcShape))
-                {
-                    var resizeTypePack = layer.GetInt(0, 0);
-                    var sxPack = layer.GetFloat(2, 1f);
-                    var syPack = layer.GetFloat(1, 1f);
-                    var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
-                    var outRt = owner.RentTempArray(outW, outH, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                    var executed = false;
-
-                    if (Mathf.Abs(sxPack - 2f) < 1e-3f && Mathf.Abs(syPack - 2f) < 1e-3f)
-                    {
-                        if (resizeTypePack == 1)
-                            owner.Ops.Interp2xNearestPack4(srcTex.texture, srcTex.packs, outRt);
-                        else
-                            owner.Ops.Interp2xPack4(srcTex.texture, srcTex.packs, outRt);
-                        executed = true;
-                    }
-                    else if (Mathf.Abs(sxPack - 0.5f) < 1e-3f && Mathf.Abs(syPack - 0.5f) < 1e-3f)
-                    {
-                        if (resizeTypePack == 1)
-                            owner.Ops.InterpDown2NearestPack4(srcTex.texture, srcTex.packs, outRt);
-                        else
-                            owner.Ops.InterpDown2Pack4(srcTex.texture, srcTex.packs, outRt);
-                        executed = true;
-                    }
-                    else if (resizeTypePack != 1 && resizeTypePack != 3)
-                    {
-                        var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
-                        var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
-                        owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt);
-                        executed = true;
-                    }
-
-                    if (executed)
-                    {
-                        NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
-                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                        return;
-                    }
-
-                    owner.ReturnTempArray(outRt);
-                }
-            }
 
             using var srcReadable = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             var srcBuf = srcReadable?.buffer;
@@ -102,19 +53,22 @@ namespace NcnnCompute
 
             if (srcView.dims == 2 && fallbackOutW == srcView.w)
             {
-                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
+#pragma warning disable CS0618
+                new NcnnNoopLayerRepro().ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
                 return;
             }
 
             if (srcView.dims >= 3 && fallbackOutW == srcView.w && fallbackOutH == srcView.h)
             {
-                new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
+#pragma warning disable CS0618
+                new NcnnNoopLayerRepro().ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
                 return;
             }
 
             var resizeType = layer.GetInt(0, 0);
             var alignCorner = layer.GetInt(6, 0) != 0;
-            var outDims = srcView.dims == 1 ? 3 : srcView.dims;
             var outTensor = srcView.dims == 1
                 ? owner.RentTempTensorBuffer(3, fallbackOutW, fallbackOutH, 1, fallbackOutC)
                 : owner.RentTempTensorBuffer(srcView.dims, fallbackOutW, fallbackOutH, srcView.d, fallbackOutC);
@@ -146,6 +100,77 @@ namespace NcnnCompute
                 bufferRefs,
                 bufferViews,
                 tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
+                throw new InvalidOperationException("Interp render-texture path requires existing texture input: " + layer.name);
+
+            ResolveTargetShape(layer, srcShape, textureBlobs, textureShapes, bufferViews, out var outW, out var outH, out var outC);
+
+            if (srcShape.dims == 2 && outW == srcShape.w)
+            {
+                new NcnnNoopLayerRepro().ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+            if (srcShape.dims >= 3 && outW == srcShape.w && outH == srcShape.h)
+            {
+                new NcnnNoopLayerRepro().ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+            if (srcShape.dims != 3 || outC != srcShape.c || !CanUsePack4Interp(srcTex, srcShape))
+                throw new InvalidOperationException("Interp render-texture path requires supported pack4 input/output shape: " + layer.name);
+
+            var resizeTypePack = layer.GetInt(0, 0);
+            var sxPack = layer.GetFloat(2, 1f);
+            var syPack = layer.GetFloat(1, 1f);
+            var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
+            var outRt = owner.RentTempArray(outW, outH, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            var executed = false;
+
+            if (Mathf.Abs(sxPack - 2f) < 1e-3f && Mathf.Abs(syPack - 2f) < 1e-3f)
+            {
+                if (resizeTypePack == 1)
+                    owner.Ops.Interp2xNearestPack4(srcTex.texture, srcTex.packs, outRt);
+                else
+                    owner.Ops.Interp2xPack4(srcTex.texture, srcTex.packs, outRt);
+                executed = true;
+            }
+            else if (Mathf.Abs(sxPack - 0.5f) < 1e-3f && Mathf.Abs(syPack - 0.5f) < 1e-3f)
+            {
+                if (resizeTypePack == 1)
+                    owner.Ops.InterpDown2NearestPack4(srcTex.texture, srcTex.packs, outRt);
+                else
+                    owner.Ops.InterpDown2Pack4(srcTex.texture, srcTex.packs, outRt);
+                executed = true;
+            }
+            else if (resizeTypePack != 1 && resizeTypePack != 3)
+            {
+                var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
+                var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
+                owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt);
+                executed = true;
+            }
+
+            if (!executed)
+            {
+                owner.ReturnTempArray(outRt);
+                throw new InvalidOperationException("Interp render-texture path unsupported resize config: " + layer.name);
+            }
+
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
@@ -288,6 +313,33 @@ namespace NcnnCompute
                 && srcShape.h == src.height
                 && srcShape.c > 0
                 && srcShape.c <= src.packs * 4;
+        }
+
+        private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
+                return false;
+
+            ResolveTargetShape(layer, srcShape, context.textureBlobs, context.textureShapes, context.bufferViews, out var outW, out var outH, out var outC);
+
+            if (srcShape.dims == 2 && outW == srcShape.w)
+                return true;
+            if (srcShape.dims >= 3 && outW == srcShape.w && outH == srcShape.h)
+                return true;
+
+            if (srcShape.dims != 3 || outC != srcShape.c || !CanUsePack4Interp(srcTex, srcShape))
+                return false;
+
+            var resizeType = layer.GetInt(0, 0);
+            var sx = layer.GetFloat(2, 1f);
+            var sy = layer.GetFloat(1, 1f);
+            if (Mathf.Abs(sx - 2f) < 1e-3f && Mathf.Abs(sy - 2f) < 1e-3f)
+                return true;
+            if (Mathf.Abs(sx - 0.5f) < 1e-3f && Mathf.Abs(sy - 0.5f) < 1e-3f)
+                return true;
+            return resizeType != 1 && resizeType != 3;
         }
 
         private static bool IsCmdInterpNoop(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)

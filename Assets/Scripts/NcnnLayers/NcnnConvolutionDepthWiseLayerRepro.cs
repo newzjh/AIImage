@@ -140,173 +140,171 @@ namespace NcnnCompute
         }
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var indexBlobs = context.indexBlobs;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (!owner._conv.TryGetValue(layer.name, out var conv))
+                throw new InvalidOperationException("Convolution not found: " + layer.name);
 
-                        do
-                        {
-                                                if (!owner._conv.TryGetValue(layer.name, out var conv))
-                                                    throw new InvalidOperationException("Convolution not found: " + layer.name);
+            if (CanExecuteRenderTexturePath(owner, layer, context, conv))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
 
-                                                var canUseDepthWiseTexturePath = owner.EnableDepthWiseTextureConvolution
-                                                                                && conv.isDepthWise
-                                                                                && conv.group == conv.inC
-                                                                                && conv.outC == conv.inC
-                                                                                && conv.packedDepthWiseWeight4 != null
-                                                                                && conv.packedBias4 != null;
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
 
-                                                var forceBufferThisConv = owner.ForceBufferConvolutionAll
-                                                                          || (conv.useBufferPath && !canUseDepthWiseTexturePath)
-                                                                          || (conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                                                if (forceBufferThisConv)
-                                                {
-                                                    if (owner.PreferTexturePathForFaceDetector
-                                                        && string.Equals(layer.bottomNames[0], "images", StringComparison.Ordinal) == false
-                                                        && layer.name.StartsWith("Conv_", StringComparison.Ordinal)
-                                                        && conv.kernelW == 3
-                                                        && conv.kernelH == 3
-                                                        && conv.dilationW == 1
-                                                        && conv.dilationH == 1
-                                                        && conv.group == conv.inC
-                                                        && conv.outC == conv.inC)
-                                                    {
-                                                        goto TextureConvPath;
-                                                    }
+            if (!owner._conv.TryGetValue(layer.name, out var conv))
+                throw new InvalidOperationException("Convolution not found: " + layer.name);
 
-                                                    var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (srcBuf == null || srcTensor == null || srcTensor.dims != 3)
-                                                        throw new InvalidOperationException("Buffer convolution expects dims=3 tensor input: " + layer.name);
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcTensor == null || srcTensor.dims != 3)
+                throw new InvalidOperationException("Buffer convolution expects dims=3 tensor input: " + layer.name);
 
-                                                    var outW = NcnnRepro.ComputeConvOut(srcTensor.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
-                                                    var outH = NcnnRepro.ComputeConvOut(srcTensor.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
-                                                    var outTensor = owner.RentTempTensorBuffer(3, outW, outH, 1, conv.outC);
-                                                    if (conv.isDepthWise || conv.group > 1 || conv.kernelW != 3 || conv.kernelH != 3 || conv.strideW != conv.strideH || conv.padLeft != conv.padTop)
-                                                    {
-                                                        owner.Ops.ConvDepthWise(
-                                                            srcTensor,
-                                                            conv.rawWeight,
-                                                            conv.rawBias,
-                                                            conv.outC,
-                                                            conv.group,
-                                                            conv.kernelW,
-                                                            conv.kernelH,
-                                                            conv.strideW,
-                                                            conv.strideH,
-                                                            conv.padLeft,
-                                                            conv.padTop,
-                                                            conv.dilationW,
-                                                            conv.dilationH,
-                                                            conv.activationType,
-                                                            conv.activationSlope,
-                                                            outTensor);
-                                                    }
-                                                    else
-                                                    {
-                                                        owner.Ops.Conv3x3(srcTensor, conv.rawWeight, conv.rawBias, conv.outC, conv.strideW, conv.padLeft, conv.activationType, conv.activationSlope, outTensor);
-                                                    }
+            var outW = NcnnRepro.ComputeConvOut(srcTensor.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
+            var outH = NcnnRepro.ComputeConvOut(srcTensor.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
+            var outTensor = owner.RentTempTensorBuffer(3, outW, outH, 1, conv.outC);
+            if (conv.isDepthWise || conv.group > 1 || conv.kernelW != 3 || conv.kernelH != 3 || conv.strideW != conv.strideH || conv.padLeft != conv.padTop)
+            {
+                owner.Ops.ConvDepthWise(
+                    srcTensor,
+                    conv.rawWeight,
+                    conv.rawBias,
+                    conv.outC,
+                    conv.group,
+                    conv.kernelW,
+                    conv.kernelH,
+                    conv.strideW,
+                    conv.strideH,
+                    conv.padLeft,
+                    conv.padTop,
+                    conv.dilationW,
+                    conv.dilationH,
+                    conv.activationType,
+                    conv.activationSlope,
+                    outTensor);
+            }
+            else
+            {
+                owner.Ops.Conv3x3(srcTensor, conv.rawWeight, conv.rawBias, conv.outC, conv.strideW, conv.padLeft, conv.activationType, conv.activationSlope, outTensor);
+            }
 
-                                                    bufferBlobs[layer.topNames[0]] = outTensor.buffer;
-                                                    bufferViews[layer.topNames[0]] = outTensor;
-                                                    tempOwned.Add(outTensor);
-                                                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                    continue;
-                                                }
+            bufferBlobs[layer.topNames[0]] = outTensor.buffer;
+            bufferViews[layer.topNames[0]] = outTensor;
+            tempOwned.Add(outTensor);
+            owner.Consume(textureBlobs, bufferBlobs, context.bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
 
-                            TextureConvPath:
-                                                NcnnRepro.TensorRef src;
-                                                RenderTexture tempInputTex = null;
-                                                    if (textureBlobs.TryGetValue(layer.bottomNames[0], out src) && src != null && src.texture != null)
-                                                    {
-                                                    }
-                                                    else
-                                                {
-                                                    if (!bufferBlobs.TryGetValue(layer.bottomNames[0], out var convInputBuf) || convInputBuf == null)
-                                                        throw new InvalidOperationException("Convolution source not found: " + layer.name);
-                                                    var convInputView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (convInputView == null || convInputView.dims != 3)
-                                                        throw new InvalidOperationException("Convolution texture path expects dims=3 buffer input: " + layer.name);
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                                                    var inPacks = (convInputView.c + 3) / 4;
-                                                    tempInputTex = owner.RentTempArray(convInputView.w, convInputView.h, inPacks, RenderTextureFormat.ARGBHalf);
-                                                    owner.Ops.FillPack4FromBufferCHW(convInputBuf, convInputView.w, convInputView.h, convInputView.c, tempInputTex);
-                                                    src = new NcnnRepro.TensorRef
-                                                    {
-                                                        texture = tempInputTex,
-                                                        width = convInputView.w,
-                                                        height = convInputView.h,
-                                                        packs = inPacks,
-                                                        refs = 1,
-                                                        owned = false
-                                                    };
-                                                }
-                                                var outWTex = NcnnRepro.ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
-                                                var outHTex = NcnnRepro.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
-                                                var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
+            if (!owner._conv.TryGetValue(layer.name, out var conv))
+                throw new InvalidOperationException("Convolution not found: " + layer.name);
 
-                                                if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution)
-                                                {
-                                                    if (src.width != outWTex || src.height != outHTex)
-                                                        throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
-                                                    owner.Ops.Conv1x1Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outRt);
-                                                    if (owner.ShouldCompareTextureConvLayer(layer.name))
-                                                    {
-                                                        owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    }
-                                                }
-                                                else if (canUseDepthWiseTexturePath)
-                                                {
-                                                    owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
-                                                    if (owner.ShouldCompareTextureConvLayer(layer.name))
-                                                    {
-                                                        owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    }
-                                                }
-                                                else if (conv.kernelW == 3
-                                                         && conv.kernelH == 3
-                                                         && conv.strideW == 1
-                                                         && conv.strideH == 1
-                                                         && conv.padLeft == conv.padRight
-                                                         && conv.padTop == conv.padBottom
-                                                         && conv.padLeft == conv.padTop)
-                                                {
-                                                    if (NcnnRepro.EnableWinograd23 && conv.useWinograd23)
-                                                        owner.Ops.Conv3x3Pack4Winograd23(src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outRt);
-                                                    else
-                                                        owner.Ops.Conv3x3Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outRt);
-                                                    if (owner.ShouldCompareTextureConvLayer(layer.name))
-                                                    {
-                                                        owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    throw new InvalidOperationException("Texture convolution path unsupported config: " + layer.name);
-                                                }
+            var canUseDepthWiseTexturePath = owner.EnableDepthWiseTextureConvolution
+                                            && conv.isDepthWise
+                                            && conv.group == conv.inC
+                                            && conv.outC == conv.inC
+                                            && conv.packedDepthWiseWeight4 != null
+                                            && conv.packedBias4 != null;
 
-                                                textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
-                                                {
-                                                    texture = outRt,
-                                                    width = outWTex,
-                                                    height = outHTex,
-                                                    packs = conv.outPacks,
-                                                    refs = 1,
-                                                    owned = true
-                                                };
-                                                textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, outWTex, outHTex, 1, conv.outC);
-                                                if (tempInputTex != null)
-                                                    owner.ReturnTempArray(tempInputTex);
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            NcnnRepro.TensorRef src;
+            RenderTexture tempInputTex = null;
+            if (textureBlobs.TryGetValue(layer.bottomNames[0], out src) && src != null && src.texture != null)
+            {
+            }
+            else
+            {
+                if (!bufferBlobs.TryGetValue(layer.bottomNames[0], out var convInputBuf) || convInputBuf == null)
+                    throw new InvalidOperationException("Convolution source not found: " + layer.name);
+                var convInputView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                if (convInputView == null || convInputView.dims != 3)
+                    throw new InvalidOperationException("Convolution texture path expects dims=3 buffer input: " + layer.name);
+
+                var inPacks = (convInputView.c + 3) / 4;
+                tempInputTex = owner.RentTempArray(convInputView.w, convInputView.h, inPacks, RenderTextureFormat.ARGBHalf);
+                owner.Ops.FillPack4FromBufferCHW(convInputBuf, convInputView.w, convInputView.h, convInputView.c, tempInputTex);
+                src = new NcnnRepro.TensorRef
+                {
+                    texture = tempInputTex,
+                    width = convInputView.w,
+                    height = convInputView.h,
+                    packs = inPacks,
+                    refs = 1,
+                    owned = false
+                };
+            }
+
+            var outWTex = NcnnRepro.ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
+            var outHTex = NcnnRepro.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
+            var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
+
+            if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution)
+            {
+                if (src.width != outWTex || src.height != outHTex)
+                    throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
+                owner.Ops.Conv1x1Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outRt);
+                if (owner.ShouldCompareTextureConvLayer(layer.name))
+                    owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            }
+            else if (canUseDepthWiseTexturePath)
+            {
+                owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
+                if (owner.ShouldCompareTextureConvLayer(layer.name))
+                    owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            }
+            else if (conv.kernelW == 3
+                     && conv.kernelH == 3
+                     && conv.strideW == 1
+                     && conv.strideH == 1
+                     && conv.padLeft == conv.padRight
+                     && conv.padTop == conv.padBottom
+                     && conv.padLeft == conv.padTop)
+            {
+                if (NcnnRepro.EnableWinograd23 && conv.useWinograd23)
+                    owner.Ops.Conv3x3Pack4Winograd23(src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outRt);
+                else
+                    owner.Ops.Conv3x3Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outRt);
+                if (owner.ShouldCompareTextureConvLayer(layer.name))
+                    owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            }
+            else
+            {
+                throw new InvalidOperationException("Texture convolution path unsupported config: " + layer.name);
+            }
+
+            textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
+            {
+                texture = outRt,
+                width = outWTex,
+                height = outHTex,
+                packs = conv.outPacks,
+                refs = 1,
+                owned = true
+            };
+            textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, outWTex, outHTex, 1, conv.outC);
+            if (tempInputTex != null)
+                owner.ReturnTempArray(tempInputTex);
+            owner.Consume(textureBlobs, bufferBlobs, context.bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
@@ -373,6 +371,35 @@ namespace NcnnCompute
                 && srcShape.h == src.height
                 && srcShape.c == conv.inC
                 && src.packs == conv.inPacks;
+        }
+
+        private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context, NcnnRepro.ConvPack conv)
+        {
+            var canUseDepthWiseTexturePath = owner.EnableDepthWiseTextureConvolution
+                                            && conv.isDepthWise
+                                            && conv.group == conv.inC
+                                            && conv.outC == conv.inC
+                                            && conv.packedDepthWiseWeight4 != null
+                                            && conv.packedBias4 != null;
+
+            var forceBufferThisConv = owner.ForceBufferConvolutionAll
+                                      || (conv.useBufferPath && !canUseDepthWiseTexturePath)
+                                      || (conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
+
+            if (forceBufferThisConv)
+            {
+                return owner.PreferTexturePathForFaceDetector
+                    && string.Equals(layer.bottomNames[0], "images", StringComparison.Ordinal) == false
+                    && layer.name.StartsWith("Conv_", StringComparison.Ordinal)
+                    && conv.kernelW == 3
+                    && conv.kernelH == 3
+                    && conv.dilationW == 1
+                    && conv.dilationH == 1
+                    && conv.group == conv.inC
+                    && conv.outC == conv.inC;
+            }
+
+            return true;
         }
 
         private static NcnnRepro.BufferShape ResolveCmdOutputShape(NcnnRepro.BufferShape srcShape, NcnnRepro.ConvPack conv)

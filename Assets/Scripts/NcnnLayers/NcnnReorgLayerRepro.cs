@@ -14,6 +14,35 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            var stride = Mathf.Max(1, layer.GetInt(0, 1));
+            var mode = layer.GetInt(1, 0);
+
+            if (stride == 2
+                && mode == 0
+                && owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var srcTex,
+                    out var srcShape)
+                && srcShape.dims == 3
+                && srcShape.w == srcTex.width
+                && srcShape.h == srcTex.height)
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -25,25 +54,6 @@ namespace NcnnCompute
 
             var stride = Mathf.Max(1, layer.GetInt(0, 1));
             var mode = layer.GetInt(1, 0);
-
-            if (stride == 2
-                && mode == 0
-                && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
-                && srcShape.dims == 3
-                && srcShape.w == srcTex.width
-                && srcShape.h == srcTex.height)
-            {
-                var outW = srcShape.w / 2;
-                var outH = srcShape.h / 2;
-                var outC = srcShape.c * 4;
-                var outPacks = Mathf.CeilToInt(outC / 4f);
-                var outRt = owner.RentTempArray(outW, outH, outPacks, RenderTextureFormat.ARGBHalf);
-                owner.Ops.ReorgPack4(srcTex.texture, srcTex.packs, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(3, outW, outH, 1, outC));
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
-
             var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
             if (srcBuf == null || srcView == null || srcView.dims != 3)
@@ -51,10 +61,10 @@ namespace NcnnCompute
             if (srcView.w % stride != 0 || srcView.h % stride != 0)
                 throw new InvalidOperationException("Reorg requires divisible spatial size: " + layer.name);
 
-            var outWBuf = srcView.w / stride;
-            var outHBuf = srcView.h / stride;
-            var outCBuf = srcView.c * stride * stride;
-            var outTensor = owner.RentTempTensorBuffer(3, outWBuf, outHBuf, 1, outCBuf);
+            var outW = srcView.w / stride;
+            var outH = srcView.h / stride;
+            var outC = srcView.c * stride * stride;
+            var outTensor = owner.RentTempTensorBuffer(3, outW, outH, 1, outC);
             owner.Ops.ReorgBuf(srcBuf, srcView.w, srcView.h, srcView.c, stride, mode, outTensor.buffer);
             owner.PublishTensorBufferOutput(
                 layer.topNames[0],
@@ -67,6 +77,36 @@ namespace NcnnCompute
                 bufferViews,
                 tempOwned);
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            var stride = Mathf.Max(1, layer.GetInt(0, 1));
+            var mode = layer.GetInt(1, 0);
+            if (stride != 2 || mode != 0)
+                throw new InvalidOperationException("Reorg render-texture path currently supports stride=2 and mode=0 only: " + layer.name);
+
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+                || srcShape.dims != 3
+                || srcShape.w != srcTex.width
+                || srcShape.h != srcTex.height)
+            {
+                throw new InvalidOperationException("Reorg render-texture path requires supported pack4 input: " + layer.name);
+            }
+
+            var outW = srcShape.w / 2;
+            var outH = srcShape.h / 2;
+            var outC = srcShape.c * 4;
+            var outPacks = Mathf.CeilToInt(outC / 4f);
+            var outRt = owner.RentTempArray(outW, outH, outPacks, RenderTextureFormat.ARGBHalf);
+            owner.Ops.ReorgPack4(srcTex.texture, srcTex.packs, outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(3, outW, outH, 1, outC));
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

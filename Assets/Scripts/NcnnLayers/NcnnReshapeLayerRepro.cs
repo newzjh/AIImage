@@ -11,93 +11,136 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-                        var textureBlobs = context.textureBlobs;
-                        var textureShapes = context.textureShapes;
-                        var bufferBlobs = context.bufferBlobs;
-                        var bufferRefs = context.bufferRefs;
-                        var bufferViews = context.bufferViews;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
-                        var tempOwned = context.tempOwned;
+            if (context.bufferBlobs.TryGetValue(layer.bottomNames[0], out var existingBuffer) && existingBuffer != null)
+            {
+#pragma warning disable CS0618
+                ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+                return;
+            }
 
-                        do
+            if (CanExecuteRenderTexturePath(owner, layer, context))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            var shapeExpr = layer.GetString(6, null);
+            var bottomShapes = BuildBottomShapes(owner, layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, tempOwned, !string.IsNullOrWhiteSpace(shapeExpr));
+
+            if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var reshapeBuf) && reshapeBuf != null)
+            {
+                bufferBlobs[layer.topNames[0]] = reshapeBuf;
+                if (bufferRefs.TryGetValue(layer.bottomNames[0], out var reshapeRef) && reshapeRef != null)
+                {
+                    bufferRefs[layer.topNames[0]] = reshapeRef;
+                    reshapeRef.refs++;
+                }
+
+                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                if (srcTensor != null)
+                {
+                    var outView = NcnnRepro.ResolveReshapeTensor(srcTensor, layer, bottomShapes);
+                    bufferViews[layer.topNames[0]] = outView;
+
+                    if (textureBlobs.TryGetValue(layer.bottomNames[0], out var reshapeTex) && reshapeTex != null && reshapeTex.texture != null)
+                    {
+                        var srcShape = NcnnRepro.GetTextureShape(textureShapes, reshapeTex, layer.bottomNames[0]);
+                        var outShape = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
+                        var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
+                        if (canAliasTexture)
                         {
-                                                var shapeExpr = layer.GetString(6, null);
-                                                var bottomShapes = BuildBottomShapes(owner, layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, tempOwned, !string.IsNullOrWhiteSpace(shapeExpr));
+                            textureBlobs[layer.topNames[0]] = reshapeTex;
+                            textureShapes[layer.topNames[0]] = outShape;
+                            reshapeTex.refs++;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+                var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
 
-                                                if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var reshapeBuf) && reshapeBuf != null)
-                                                {
-                                                    bufferBlobs[layer.topNames[0]] = reshapeBuf;
-                                                    if (bufferRefs.TryGetValue(layer.bottomNames[0], out var reshapeRef) && reshapeRef != null)
-                                                    {
-                                                        bufferRefs[layer.topNames[0]] = reshapeRef;
-                                                        reshapeRef.refs++;
-                                                    }
-                                                    var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-                                                    if (srcTensor != null)
-                                                    {
-                                                        var outView = NcnnRepro.ResolveReshapeTensor(srcTensor, layer, bottomShapes);
-                                                        bufferViews[layer.topNames[0]] = outView;
+                if (!canAliasTexture)
+                {
+                    var scratchTensor = owner.RentScratchTensorFromTexture(src, srcShape);
+                    var outView = NcnnRepro.ResolveReshapeTensor(scratchTensor, layer, bottomShapes);
+                    var outTensor = new NcnnTensorBuffer(
+                        scratchTensor.buffer,
+                        outView.dims,
+                        outView.w,
+                        outView.h,
+                        outView.d,
+                        outView.c,
+                        true,
+                        owner.ReturnTempBuffer);
+                    owner.PublishTensorBufferOutput(
+                        layer.topNames[0],
+                        outTensor,
+                        preferTexture: outView.dims <= 3,
+                        textureBlobs,
+                        textureShapes,
+                        bufferBlobs,
+                        bufferRefs,
+                        bufferViews,
+                        tempOwned);
+                }
+                else
+                {
+                    textureBlobs[layer.topNames[0]] = src;
+                    textureShapes[layer.topNames[0]] = outShape;
+                    src.refs++;
+                }
+            }
 
-                                                        if (textureBlobs.TryGetValue(layer.bottomNames[0], out var reshapeTex) && reshapeTex != null && reshapeTex.texture != null)
-                                                        {
-                                                            var srcShape = NcnnRepro.GetTextureShape(textureShapes, reshapeTex, layer.bottomNames[0]);
-                                                            var outShape = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
-                                                            var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
-                                                            if (canAliasTexture)
-                                                            {
-                                                                textureBlobs[layer.topNames[0]] = reshapeTex;
-                                                                textureShapes[layer.topNames[0]] = outShape;
-                                                                reshapeTex.refs++;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                                                    var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                                                    var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
 
-                                                    // If logical channels do not fill whole pack4 lanes, keeping the texture view
-                                                    // would preserve padded channels and break later buffer consumers such as Permute.
-                                                    var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
 
-                                                    if (!canAliasTexture)
-                                                    {
-                                                        var scratchTensor = owner.RentScratchTensorFromTexture(src, srcShape);
-                                                        var outView = NcnnRepro.ResolveReshapeTensor(scratchTensor, layer, bottomShapes);
-                                                        var outTensor = new NcnnTensorBuffer(
-                                                            scratchTensor.buffer,
-                                                            outView.dims,
-                                                            outView.w,
-                                                            outView.h,
-                                                            outView.d,
-                                                            outView.c,
-                                                            true,
-                                                            owner.ReturnTempBuffer);
-                                                        owner.PublishTensorBufferOutput(
-                                                            layer.topNames[0],
-                                                            outTensor,
-                                                            preferTexture: outView.dims <= 3,
-                                                            textureBlobs,
-                                                            textureShapes,
-                                                            bufferBlobs,
-                                                            bufferRefs,
-                                                            bufferViews,
-                                                            tempOwned);
-                                                    }
-                                                    else
-                                                    {
-                                                        textureBlobs[layer.topNames[0]] = src;
-                                                        textureShapes[layer.topNames[0]] = outShape;
-                                                        src.refs++;
-                                                    }
-                                                }
+            var shapeExpr = layer.GetString(6, null);
+            var bottomShapes = BuildBottomShapes(owner, layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, tempOwned, !string.IsNullOrWhiteSpace(shapeExpr));
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var src, out var srcShape))
+                throw new InvalidOperationException("Reshape render-texture path requires existing texture input: " + layer.name);
 
-                                                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                                                continue;
-                        } while (false);
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+
+            if (!CanAliasTextureLayout(srcShape, outShape))
+                throw new InvalidOperationException("Reshape render-texture path only supports alias-compatible layout: " + layer.name);
+
+            textureBlobs[layer.topNames[0]] = src;
+            textureShapes[layer.topNames[0]] = outShape;
+            src.refs++;
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
@@ -233,6 +276,20 @@ namespace NcnnCompute
             NcnnRepro.ResolveCmdTextureLayout(srcShape, out var srcW, out var srcH, out var srcPacks);
             NcnnRepro.ResolveCmdTextureLayout(outShape, out var outW, out var outH, out var outPacks);
             return srcW == outW && srcH == outH && srcPacks == outPacks;
+        }
+
+        private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+
+            var shapeExpr = layer.GetString(6, null);
+            var bottomShapes = BuildBottomShapes(owner, layer, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, context.tempOwned, !string.IsNullOrWhiteSpace(shapeExpr));
+            if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var src, out var srcShape))
+                return false;
+
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            return CanAliasTextureLayout(srcShape, outShape) && src != null && src.texture != null;
         }
 
         private static System.Collections.Generic.List<NcnnRepro.BufferShape> BuildCmdBottomShapes(

@@ -12,6 +12,25 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (!TryGetBottomShape(owner, layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, context.tempOwned, out var srcShape))
+                throw new InvalidOperationException("Crop source shape not found: " + layer.name);
+
+            var roi = ResolveCropRoi(owner, layer, srcShape, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, context.tempOwned);
+            if (owner.TryGetPack4Texture(layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out var srcTex, out var texShape)
+                && CanUsePack4Crop(srcTex, texShape, roi))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -25,26 +44,6 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Crop source shape not found: " + layer.name);
 
             var roi = ResolveCropRoi(owner, layer, srcShape, textureBlobs, textureShapes, bufferBlobs, bufferViews, tempOwned);
-
-            if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var texShape)
-                && CanUsePack4Crop(srcTex, texShape, roi))
-            {
-                if (IsIdentityCrop(texShape, roi))
-                {
-                    textureBlobs[layer.topNames[0]] = srcTex;
-                    textureShapes[layer.topNames[0]] = texShape;
-                    srcTex.refs++;
-                }
-                else
-                {
-                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(roi.outc / 4f));
-                    var outRt = owner.RentTempArray(roi.outw, roi.outh, outPacks, RenderTextureFormat.ARGBHalf);
-                    owner.Ops.CropPack4(srcTex.texture, texShape.w, texShape.h, texShape.c, roi.woffset, roi.hoffset, roi.coffset, roi.outw, roi.outh, roi.outc, outRt);
-                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(3, roi.outw, roi.outh, 1, roi.outc));
-                }
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
 
             var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
@@ -88,6 +87,40 @@ namespace NcnnCompute
                     tempOwned);
             }
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!TryGetBottomShape(owner, layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, context.bufferViews, context.tempOwned, out var srcShape))
+                throw new InvalidOperationException("Crop source shape not found: " + layer.name);
+            var roi = ResolveCropRoi(owner, layer, srcShape, textureBlobs, textureShapes, bufferBlobs, context.bufferViews, context.tempOwned);
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, context.bufferViews, out var srcTex, out var texShape)
+                || !CanUsePack4Crop(srcTex, texShape, roi))
+            {
+                throw new InvalidOperationException("Crop render-texture path requires supported pack4 input: " + layer.name);
+            }
+
+            if (IsIdentityCrop(texShape, roi))
+            {
+                textureBlobs[layer.topNames[0]] = srcTex;
+                textureShapes[layer.topNames[0]] = texShape;
+                srcTex.refs++;
+            }
+            else
+            {
+                var outPacks = Mathf.Max(1, Mathf.CeilToInt(roi.outc / 4f));
+                var outRt = owner.RentTempArray(roi.outw, roi.outh, outPacks, RenderTextureFormat.ARGBHalf);
+                owner.Ops.CropPack4(srcTex.texture, texShape.w, texShape.h, texShape.c, roi.woffset, roi.hoffset, roi.coffset, roi.outw, roi.outh, roi.outc, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(3, roi.outw, roi.outh, 1, roi.outc));
+            }
+
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

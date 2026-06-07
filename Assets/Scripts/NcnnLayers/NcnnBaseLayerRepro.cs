@@ -40,6 +40,8 @@ namespace NcnnCompute
     // 3. Long term, migrate toward the ComputeTexture-based ExecuteCommandBuffer pack4 RT path so async compute and command-buffer temporary RT allocation are both supported.
     public abstract class NcnnBaseLayerRepro
     {
+        internal const string ComputeBufferPathObsoleteMessage = "ComputeBuffer path is only kept for temporary real-time debugging. Please migrate the final implementation to ExecuteRenderTexturePath and ExecuteCommandBuffer.";
+
         protected NcnnBaseLayerRepro(
             NcnnLayerTypeKey typeKey,
             bool supportsBufferPath,
@@ -62,7 +64,20 @@ namespace NcnnCompute
 
         public virtual void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            throw new NotSupportedException("Buffer path is not implemented for layer type: " + TypeKey);
+            ExecuteRenderTexturePath(owner, layer, context);
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public virtual void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            throw new NotSupportedException("ComputeBuffer path is not implemented for layer type: " + TypeKey);
+        }
+
+        public virtual void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
         }
 
         public virtual void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
