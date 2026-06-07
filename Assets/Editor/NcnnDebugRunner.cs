@@ -694,12 +694,7 @@ public static class NcnnDebugRunner
 
             TryWriteTexturePng(inpaintResult.texture, outputDir, "07_final_output.png");
 
-            var maskedDiff = ComputeMaskedMeanAbsDiff(
-                tex,
-                inpaintResult.texture,
-                yoloResult.mask,
-                inpaintRunner.blackMaskMeansInpaint,
-                out var maskedPixels);
+            var maskedDiff = ComputeMaskedMeanAbsDiff(tex, inpaintResult.texture, yoloResult.mask, out var maskedPixels);
             var summary = string.Join(
                 Environment.NewLine,
                 "input=" + inputPath,
@@ -1731,7 +1726,7 @@ public static class NcnnDebugRunner
         }
     }
 
-    private static float ComputeMaskedMeanAbsDiff(Texture2D source, Texture2D candidate, Texture2D mask, bool blackMaskMeansInpaint, out int maskedPixels)
+    private static float ComputeMaskedMeanAbsDiff(Texture2D source, Texture2D candidate, Texture2D mask, out int maskedPixels)
     {
         maskedPixels = 0;
         if (source == null || candidate == null || mask == null)
@@ -1745,9 +1740,7 @@ public static class NcnnDebugRunner
         double sumAbs = 0d;
         for (var i = 0; i < srcPixels.Length; i++)
         {
-            var maskIsWhite = maskPixels[i].r >= 128 || maskPixels[i].g >= 128 || maskPixels[i].b >= 128;
-            var include = blackMaskMeansInpaint ? !maskIsWhite : maskIsWhite;
-            if (!include)
+            if (maskPixels[i].r < 128 && maskPixels[i].g < 128 && maskPixels[i].b < 128)
                 continue;
 
             maskedPixels++;

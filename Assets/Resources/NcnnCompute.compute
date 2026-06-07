@@ -22,7 +22,6 @@
 #pragma kernel NcnnConv1x1Pack4
 #pragma kernel NcnnAddPack4
 #pragma kernel NcnnCopyPack4
-#pragma kernel NcnnBuildSdInpaintInput9Pack4
 #pragma kernel NcnnInterpPack4
 #pragma kernel NcnnInterp2xPack4
 #pragma kernel NcnnInterp2xNearestPack4
@@ -877,43 +876,6 @@ void NcnnCopyPack4(uint3 id : SV_DispatchThreadID)
     int outP = _CopyOutOffset + p;
     float4 v = _CopyInArr[int3((int)id.x, (int)id.y, inP)];
     _CopyOutArr[int3((int)id.x, (int)id.y, outP)] = v;
-}
-
-RWTexture2DArray<float4> _SdInpaintInputOutArr;
-Texture2DArray<float4> _SdInpaintLatentsArr;
-Texture2DArray<float4> _SdInpaintMaskArr;
-Texture2DArray<float4> _SdInpaintMaskedLatentsArr;
-
-[numthreads(8,8,1)]
-void NcnnBuildSdInpaintInput9Pack4(uint3 id : SV_DispatchThreadID)
-{
-    uint w, h, d;
-    _SdInpaintInputOutArr.GetDimensions(w, h, d);
-    if (id.x >= w || id.y >= h) return;
-    int p = (int)id.z;
-    if (p < 0 || p >= (int)d) return;
-
-    int x = (int)id.x;
-    int y = (int)id.y;
-    float4 outv = 0.0;
-
-    if (p == 0)
-    {
-        outv = _SdInpaintLatentsArr[int3(x, y, 0)];
-    }
-    else if (p == 1)
-    {
-        float4 masked = _SdInpaintMaskedLatentsArr[int3(x, y, 0)];
-        float mask = _SdInpaintMaskArr[int3(x, y, 0)].x;
-        outv = float4(mask, masked.x, masked.y, masked.z);
-    }
-    else if (p == 2)
-    {
-        float4 masked = _SdInpaintMaskedLatentsArr[int3(x, y, 0)];
-        outv = float4(masked.w, 0.0, 0.0, 0.0);
-    }
-
-    _SdInpaintInputOutArr[int3(x, y, p)] = outv;
 }
 
 RWTexture2DArray<float4> _InterpOutArr;

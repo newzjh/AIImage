@@ -297,7 +297,6 @@ namespace NcnnCompute
         private readonly uint[] _gpuIdleScratch = new uint[1];
         private readonly int _kAddPack4;
         private readonly int _kCopyPack4;
-        private readonly int _kBuildSdInpaintInput9Pack4;
         private readonly int _kInterpPack4;
         private readonly int _kInterp2xPack4;
         private readonly int _kInterp2xNearestPack4;
@@ -420,7 +419,6 @@ namespace NcnnCompute
             _kConv1x1Pack4 = _cs.FindKernel("NcnnConv1x1Pack4");
             _kAddPack4 = _cs.FindKernel("NcnnAddPack4");
             _kCopyPack4 = _cs.FindKernel("NcnnCopyPack4");
-            _kBuildSdInpaintInput9Pack4 = _cs.FindKernel("NcnnBuildSdInpaintInput9Pack4");
             _kInterpPack4 = _cs.FindKernel("NcnnInterpPack4");
             _kInterp2xPack4 = _cs.FindKernel("NcnnInterp2xPack4");
             _kInterp2xNearestPack4 = _cs.FindKernel("NcnnInterp2xNearestPack4");
@@ -1769,28 +1767,6 @@ namespace NcnnCompute
             _cs.SetTexture(_kCopyPack4, "_CopyInArr", src);
             _cs.SetTexture(_kCopyPack4, "_CopyOutArr", dst);
             Dispatch3D(_kCopyPack4, dst.width, dst.height, packs, 8, 8);
-        }
-
-        public void BuildSdInpaintInput9Pack4(RenderTexture latents, RenderTexture mask, RenderTexture maskedLatents, RenderTexture output)
-        {
-            if (latents == null) throw new ArgumentNullException(nameof(latents));
-            if (mask == null) throw new ArgumentNullException(nameof(mask));
-            if (maskedLatents == null) throw new ArgumentNullException(nameof(maskedLatents));
-            if (output == null) throw new ArgumentNullException(nameof(output));
-            if (latents.width != output.width || latents.height != output.height)
-                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires latents/output same width/height");
-            if (mask.width != output.width || mask.height != output.height)
-                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires mask/output same width/height");
-            if (maskedLatents.width != output.width || maskedLatents.height != output.height)
-                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires maskedLatents/output same width/height");
-            if (output.volumeDepth < 3)
-                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires output volumeDepth >= 3");
-
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintLatentsArr", latents);
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintMaskArr", mask);
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintMaskedLatentsArr", maskedLatents);
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintInputOutArr", output);
-            Dispatch3D(_kBuildSdInpaintInput9Pack4, output.width, output.height, 3, 8, 8);
         }
 
         public void CopyPack4(CommandBuffer cmd, ComputeTexture src, int srcPackOffset, ComputeTexture dst, int dstPackOffset, int packs)

@@ -272,15 +272,6 @@ namespace NcnnCompute
             var outWTex = NcnnRepro.ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
             var outHTex = NcnnRepro.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
             var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
-            var canUseSpecialized3x3TexturePath = conv.kernelW == 3
-                                                 && conv.kernelH == 3
-                                                 && conv.strideW == 1
-                                                 && conv.strideH == 1
-                                                 && conv.padLeft == conv.padRight
-                                                 && conv.padTop == conv.padBottom
-                                                 && conv.padLeft == conv.padTop
-                                                 && (conv.inC & 3) == 0
-                                                 && (conv.outC & 3) == 0;
 
             if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution)
             {
@@ -296,7 +287,13 @@ namespace NcnnCompute
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             }
-            else if (canUseSpecialized3x3TexturePath)
+            else if (conv.kernelW == 3
+                     && conv.kernelH == 3
+                     && conv.strideW == 1
+                     && conv.strideH == 1
+                     && conv.padLeft == conv.padRight
+                     && conv.padTop == conv.padBottom
+                     && conv.padLeft == conv.padTop)
             {
                 if (NcnnRepro.EnableWinograd23 && conv.useWinograd23)
                     owner.Ops.Conv3x3Pack4Winograd23(src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outRt);
@@ -372,21 +369,12 @@ namespace NcnnCompute
                                                 var outW = Mathf.Max(1, outShape.w);
                                                 var outH = Mathf.Max(1, outShape.h);
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                                                var canUseSpecialized3x3TexturePath = conv.kernelW == 3
-                                                    && conv.kernelH == 3
-                                                    && conv.padLeft == conv.padRight
-                                                    && conv.padLeft == conv.padTop
-                                                    && conv.padTop == conv.padBottom
-                                                    && conv.strideW == 1
-                                                    && conv.strideH == 1
-                                                    && (conv.inC & 3) == 0
-                                                    && (conv.outC & 3) == 0;
 
                                                 if (conv.kernelW == 1 && conv.kernelH == 1)
                                                 {
                                                     owner.Ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outArr);
                                                 }
-                                                else if (canUseSpecialized3x3TexturePath)
+                                                else if (conv.kernelW == 3 && conv.kernelH == 3 && conv.padLeft == conv.padRight && conv.padLeft == conv.padTop && conv.padTop == conv.padBottom)
                                                 {
                                                     var useWinograd = NcnnRepro.EnableWinograd23
                                                         && conv.packedWeightTm23 != null
