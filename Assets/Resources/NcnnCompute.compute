@@ -115,6 +115,7 @@
 #pragma kernel NcnnSdpaQkBuf
 #pragma kernel NcnnSdpaSoftmaxBuf
 #pragma kernel NcnnSdpaQkvBuf
+#pragma kernel NcnnSdpaAttentionFast
 
 RWTexture2D<float4> _NcnnOut;
 Texture2D<float4> _NcnnIn;
@@ -1165,6 +1166,7 @@ int _SdpaMaskH;
 int _SdpaMaskC;
 float _SdpaScale;
 groupshared float _SdpaReduce[64];
+groupshared float _SdpaScoresFast[4096];
 
 float NcnnResolveSdpaMask(int head, int row, int col)
 {
@@ -1362,6 +1364,85 @@ void NcnnSdpaQkvBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupTh
         float sum = 0.0;
         for (int col = 0; col < dst; col++)
             sum += _SdpaScores[scoreBase + col] * _SdpaV[valueBase + col * outEmbedDim + lane];
+        _SdpaOut[outBase + lane] = sum;
+    }
+}
+
+[numthreads(64,1,1)]
+void NcnnSdpaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    int row = (int)groupId.x;
+    int head = (int)groupId.y;
+    uint tid = groupThreadId.x;
+    if (row < 0 || head < 0) return;
+    if (row >= _SdpaSrcLen || head >= _SdpaNumHeads) return;
+
+    int dst = _SdpaDstLen;
+    int embedDim = _SdpaEmbedDim;
+    int outEmbedDim = _SdpaOutEmbedDim;
+    if (dst <= 0 || dst > 4096 || embedDim <= 0 || outEmbedDim <= 0) return;
+
+    int keyHead = head / max(1, _SdpaNumHeadsPerGroup);
+    int qBase = (head * _SdpaSrcLen + row) * embedDim;
+    int kBaseHead = keyHead * dst * embedDim;
+    int valueBase = keyHead * dst * outEmbedDim;
+    int outBase = (head * _SdpaSrcLen + row) * outEmbedDim;
+
+    for (int col = (int)tid; col < dst; col += 64)
+    {
+        int kBase = kBaseHead + col * embedDim;
+        float s = 0.0;
+        for (int i = 0; i < embedDim; i++)
+            s += _SdpaQ[qBase + i] * _SdpaK[kBase + i];
+        s *= _SdpaScale;
+        s += NcnnResolveSdpaMask(head, row, col);
+        _SdpaScoresFast[col] = s;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    float localMax = -3.402823466e+38;
+    for (int col = (int)tid; col < dst; col += 64)
+        localMax = max(localMax, _SdpaScoresFast[col]);
+    _SdpaReduce[tid] = localMax;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 32; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+            _SdpaReduce[tid] = max(_SdpaReduce[tid], _SdpaReduce[tid + stride]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    float maxValue = _SdpaReduce[0];
+    float localSum = 0.0;
+    for (int col = (int)tid; col < dst; col += 64)
+    {
+        float e = exp(_SdpaScoresFast[col] - maxValue);
+        _SdpaScoresFast[col] = e;
+        localSum += e;
+    }
+    _SdpaReduce[tid] = localSum;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride2 = 32; stride2 > 0; stride2 >>= 1)
+    {
+        if (tid < stride2)
+            _SdpaReduce[tid] += _SdpaReduce[tid + stride2];
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    float invSum = 1.0 / max(_SdpaReduce[0], 1e-20);
+    for (int col = (int)tid; col < dst; col += 64)
+        _SdpaScoresFast[col] *= invSum;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (int lane = (int)tid; lane < outEmbedDim; lane += 64)
+    {
+        float sum = 0.0;
+        for (int col = 0; col < dst; col++)
+            sum += _SdpaScoresFast[col] * _SdpaV[valueBase + col * outEmbedDim + lane];
         _SdpaOut[outBase + lane] = sum;
     }
 }

@@ -42,6 +42,7 @@ public static class NcnnDebugRunner
     private const string SdStepsEnvVar = "AIIMAGE_SD_STEPS";
     private const string SdSeedEnvVar = "AIIMAGE_SD_SEED";
     private const string SdStrengthEnvVar = "AIIMAGE_SD_STRENGTH";
+    private const string SdGuidanceScaleEnvVar = "AIIMAGE_SD_GUIDANCE_SCALE";
     private const string SdPositivePromptEnvVar = "AIIMAGE_SD_POSITIVE_PROMPT";
     private const string SdNegativePromptEnvVar = "AIIMAGE_SD_NEGATIVE_PROMPT";
     private const string SdInitImageEnvVar = "AIIMAGE_SD_INIT_IMAGE";
@@ -117,6 +118,9 @@ public static class NcnnDebugRunner
             case nameof(RunYoloSegDebugBatch):
                 RunYoloSegDebugBatch();
                 return;
+            case nameof(RunYoloAndInpaintingDebugBatch):
+                RunYoloAndInpaintingDebugBatch();
+                return;
             case nameof(RunStableDiffusionDebugBatch):
                 RunStableDiffusionDebugBatch();
                 return;
@@ -171,6 +175,12 @@ public static class NcnnDebugRunner
     public static void RunYoloSegDebugMenu()
     {
         RunYoloSegDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run YOLO + SD Inpainting Debug")]
+    public static void RunYoloAndInpaintingDebugMenu()
+    {
+        RunYoloAndInpaintingDebug().Forget();
     }
 
     [MenuItem("Tools/AIImage/Run Stable Diffusion Debug")]
@@ -339,6 +349,11 @@ public static class NcnnDebugRunner
         await RunYoloSegDebugInternal();
     }
 
+    public static async UniTaskVoid RunYoloAndInpaintingDebug()
+    {
+        await RunYoloAndInpaintingDebugInternal();
+    }
+
     public static async UniTaskVoid RunStableDiffusionDebug()
     {
         await RunStableDiffusionDebugInternal();
@@ -347,6 +362,8 @@ public static class NcnnDebugRunner
     public static void RunMattingDebugBatch() => RunBatchBlocking(nameof(RunMattingDebugBatch), RunMattingDebugInternal);
 
     public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
+
+    public static void RunYoloAndInpaintingDebugBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingDebugBatch), RunYoloAndInpaintingDebugInternal, TimeSpan.FromHours(4));
 
     public static async void RunYoloSegDebugBatchLegacy()
     {
@@ -569,6 +586,148 @@ public static class NcnnDebugRunner
             if (maskTex != null)
                 UnityEngine.Object.DestroyImmediate(maskTex);
             UnityEngine.Object.DestroyImmediate(go);
+        }
+    }
+
+    private static async UniTask RunYoloAndInpaintingDebugInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultReproStressImagePath);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+            throw new InvalidOperationException("Failed to load debug input: " + inputPath);
+
+        var enableDump = ResolveBoolEnv(SdEnableDumpEnvVar, false);
+        var outputDir = CreateGenericDumpDir("AIImage_YoloInpaintingRepro");
+        TryWriteTexturePng(tex, outputDir, "00_source.png");
+
+        var stepCount = ResolvePositiveIntEnv(SdStepsEnvVar, 12);
+        var seed = ResolveIntEnvAllowZero(SdSeedEnvVar, 123456);
+        var strength = Mathf.Clamp01(ResolveFloatEnvOrDefault(SdStrengthEnvVar, 1f));
+        var guidanceScale = Mathf.Max(1f, ResolveFloatEnvOrDefault(SdGuidanceScaleEnvVar, 7.5f));
+        var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, "best quality, realistic photo, clean background, natural scene, coherent texture, seamless fill, empty space, no people");
+        var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, "person, people, human, man, woman, child, face, body, duplicate, blurry, deformed, extra limbs, artifacts, text, watermark");
+
+        var go = new GameObject("YoloAndInpaintingDebugRunner");
+        YoloSegResult yoloResult = default;
+        SDInpaintingNcnnReproResult inpaintResult = default;
+        string yoloDumpDir = null;
+        try
+        {
+            var yoloRunner = go.AddComponent<YoloSegNcnnReproRunner>();
+            yoloRunner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
+            yoloRunner.enableDebugDump = enableDump;
+            yoloRunner.targetPersonOnly = true;
+            yoloRunner.enableMaskClose = true;
+            yoloRunner.enableMaskDilate = true;
+            yoloRunner.flipYInput = ResolveBoolEnv(YoloFlipYEnvVar, yoloRunner.flipYInput);
+            yoloRunner.ProgressChanged += (value, message) =>
+            {
+                Debug.Log("[YOLO+INPAINT][YOLO] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+            };
+
+            yoloResult = await yoloRunner.ProcessAsync(tex, CancellationToken.None);
+            yoloDumpDir = yoloRunner.LastDumpDir;
+            Debug.Log(
+                "YOLO + Inpainting debug | yoloError=" + (yoloResult.error ?? "")
+                + " | yoloElapsedMs=" + yoloResult.elapsedMs
+                + " | personCount=" + yoloResult.personCount.ToString(CultureInfo.InvariantCulture)
+                + " | coverage=" + yoloResult.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture)
+                + " | yoloDump=" + (yoloDumpDir ?? ""));
+
+            if (!string.IsNullOrWhiteSpace(yoloResult.error))
+                throw new InvalidOperationException("YOLO failed: " + yoloResult.error);
+            if (yoloResult.mask == null)
+                throw new InvalidOperationException("YOLO mask is null.");
+            if (yoloResult.personCount != 4)
+                throw new InvalidOperationException("Expected 4 persons on 02.png, got " + yoloResult.personCount + ".");
+
+            TryWriteTexturePng(yoloResult.mask, outputDir, "01_person_mask.png");
+            TryWriteTexturePng(yoloResult.texture, outputDir, "02_transparent_cutout.png");
+            TryWriteTexturePng(yoloResult.overlay, outputDir, "03_overlay.png");
+            if (yoloResult.texture != null)
+            {
+                UnityEngine.Object.DestroyImmediate(yoloResult.texture);
+                yoloResult.texture = null;
+            }
+            if (yoloResult.overlay != null)
+            {
+                UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
+                yoloResult.overlay = null;
+            }
+            UnityEngine.Object.DestroyImmediate(yoloRunner);
+            await UniTask.Yield();
+
+            var inpaintRunner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+            inpaintRunner.enableDebugDump = enableDump;
+            inpaintRunner.useOfficialUnetCache = false;
+            inpaintRunner.defaultStepCount = stepCount;
+            inpaintRunner.defaultStrength = strength;
+            inpaintRunner.defaultGuidanceScale = guidanceScale;
+            inpaintRunner.defaultPositivePrompt = positivePrompt;
+            inpaintRunner.defaultNegativePrompt = negativePrompt;
+            inpaintRunner.ProgressChanged += (value, message) =>
+            {
+                Debug.Log("[YOLO+INPAINT][SD] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+            };
+
+            inpaintResult = await inpaintRunner.ProcessAsync(
+                tex,
+                yoloResult.mask,
+                positivePrompt,
+                negativePrompt,
+                stepCount,
+                seed,
+                strength,
+                guidanceScale,
+                CancellationToken.None);
+
+            Debug.Log(
+                "YOLO + Inpainting debug | inpaintError=" + (inpaintResult.error ?? "")
+                + " | inpaintElapsedMs=" + inpaintResult.elapsedMs
+                + " | seed=" + inpaintResult.seed.ToString(CultureInfo.InvariantCulture)
+                + " | inpaintDump=" + (inpaintResult.dumpDir ?? inpaintRunner.LastDumpDir ?? ""));
+
+            if (!string.IsNullOrWhiteSpace(inpaintResult.error))
+                throw new InvalidOperationException("SD inpainting failed: " + inpaintResult.error);
+            if (inpaintResult.texture == null)
+                throw new InvalidOperationException("SD inpainting output texture is null.");
+
+            TryWriteTexturePng(inpaintResult.texture, outputDir, "07_final_output.png");
+
+            var maskedDiff = ComputeMaskedMeanAbsDiff(tex, inpaintResult.texture, yoloResult.mask, out var maskedPixels);
+            var summary = string.Join(
+                Environment.NewLine,
+                "input=" + inputPath,
+                "person_count=" + yoloResult.personCount.ToString(CultureInfo.InvariantCulture),
+                "mask_coverage=" + yoloResult.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture),
+                "masked_pixels=" + maskedPixels.ToString(CultureInfo.InvariantCulture),
+                "masked_mean_abs_diff_rgb=" + maskedDiff.ToString("0.0000", CultureInfo.InvariantCulture),
+                "seed=" + seed.ToString(CultureInfo.InvariantCulture),
+                "steps=" + stepCount.ToString(CultureInfo.InvariantCulture),
+                "strength=" + strength.ToString("0.0000", CultureInfo.InvariantCulture),
+                "guidance_scale=" + guidanceScale.ToString("0.0000", CultureInfo.InvariantCulture),
+                "yolo_dump=" + (yoloDumpDir ?? string.Empty),
+                "inpaint_dump=" + (inpaintResult.dumpDir ?? inpaintRunner.LastDumpDir ?? string.Empty));
+            File.WriteAllText(Path.Combine(outputDir, "summary.txt"), summary);
+            Debug.Log("[YOLO+INPAINT] summary\n" + summary);
+
+            if (maskedPixels <= 0)
+                throw new InvalidOperationException("YOLO mask has zero pixels.");
+            if (maskedDiff <= 1f)
+                throw new InvalidOperationException("Masked mean RGB diff is too small: " + maskedDiff.ToString("0.0000", CultureInfo.InvariantCulture));
+        }
+        finally
+        {
+            if (inpaintResult.texture != null)
+                UnityEngine.Object.DestroyImmediate(inpaintResult.texture);
+            if (yoloResult.texture != null)
+                UnityEngine.Object.DestroyImmediate(yoloResult.texture);
+            if (yoloResult.mask != null)
+                UnityEngine.Object.DestroyImmediate(yoloResult.mask);
+            if (yoloResult.overlay != null)
+                UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(tex);
         }
     }
 
@@ -1565,6 +1724,32 @@ public static class NcnnDebugRunner
         {
             return false;
         }
+    }
+
+    private static float ComputeMaskedMeanAbsDiff(Texture2D source, Texture2D candidate, Texture2D mask, out int maskedPixels)
+    {
+        maskedPixels = 0;
+        if (source == null || candidate == null || mask == null)
+            return 0f;
+        if (source.width != candidate.width || source.height != candidate.height || source.width != mask.width || source.height != mask.height)
+            return 0f;
+
+        var srcPixels = source.GetPixels32();
+        var dstPixels = candidate.GetPixels32();
+        var maskPixels = mask.GetPixels32();
+        double sumAbs = 0d;
+        for (var i = 0; i < srcPixels.Length; i++)
+        {
+            if (maskPixels[i].r < 128 && maskPixels[i].g < 128 && maskPixels[i].b < 128)
+                continue;
+
+            maskedPixels++;
+            sumAbs += Mathf.Abs(srcPixels[i].r - dstPixels[i].r);
+            sumAbs += Mathf.Abs(srcPixels[i].g - dstPixels[i].g);
+            sumAbs += Mathf.Abs(srcPixels[i].b - dstPixels[i].b);
+        }
+
+        return maskedPixels > 0 ? (float)(sumAbs / (maskedPixels * 3d)) : 0f;
     }
 
     private static void TryWriteTexturePng(Texture2D texture, string dir, string fileName)

@@ -934,31 +934,66 @@ public sealed class MainView2 : BasePageView
 
     private async UniTaskVoid ApplyYoloAndInpaintingReproAsync()
     {
-        if (_aiRunning || _adjustRunning || _lifetimeCts == null || Host?.YoloSegRunner == null)
+        if (_aiRunning || _adjustRunning || _lifetimeCts == null || Host?.YoloSegRunner == null || Host?.SDInpaintingRunner == null)
             return;
         var src = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
         if (src == null)
             return;
 
         _adjustRunning = true;
-        ShowProgress("YOLO Seg");
+        ShowProgress("YOLO + Inpainting");
         try
         {
             var oldTargetPersonOnly = Host.YoloSegRunner.targetPersonOnly;
-            Host.YoloSegRunner.targetPersonOnly = false;
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            Host.YoloSegRunner.ProgressChanged -= OnProgress;
-            Host.YoloSegRunner.ProgressChanged += OnProgress;
-            var result = await Host.YoloSegRunner.ProcessAsync(src, _lifetimeCts.Token);
-            Host.YoloSegRunner.ProgressChanged -= OnProgress;
-            Host.YoloSegRunner.targetPersonOnly = oldTargetPersonOnly;
+            Host.YoloSegRunner.targetPersonOnly = true;
+            void OnYoloProgress(float p, string t) => SetProgress(p * 0.35f, string.IsNullOrWhiteSpace(t) ? "YOLO Seg" : t);
+            void OnInpaintProgress(float p, string t) => SetProgress(0.35f + p * 0.65f, string.IsNullOrWhiteSpace(t) ? "SD Inpainting" : t);
+            Host.YoloSegRunner.ProgressChanged -= OnYoloProgress;
+            Host.YoloSegRunner.ProgressChanged += OnYoloProgress;
+            YoloSegResult result;
+            try
+            {
+                result = await Host.YoloSegRunner.ProcessAsync(src, _lifetimeCts.Token);
+            }
+            finally
+            {
+                Host.YoloSegRunner.ProgressChanged -= OnYoloProgress;
+                Host.YoloSegRunner.targetPersonOnly = oldTargetPersonOnly;
+            }
             if (!string.IsNullOrWhiteSpace(result.error))
             {
                 ShowToast(result.error, 3400);
                 return;
             }
-            if (result.overlay != null)
-                AddHistory(result.overlay, $"YOLO 识别 {result.detections?.Length ?? 0}");
+            if (result.personCount <= 0 || result.mask == null)
+            {
+                ShowToast("未检测到可修复的人物区域", 2600);
+                if (result.overlay != null)
+                    AddHistory(result.overlay, "YOLO 未检测到人物");
+                return;
+            }
+
+            Host.SDInpaintingRunner.ProgressChanged -= OnInpaintProgress;
+            Host.SDInpaintingRunner.ProgressChanged += OnInpaintProgress;
+            SDInpaintingNcnnReproResult inpaintResult;
+            try
+            {
+                inpaintResult = await Host.SDInpaintingRunner.ProcessAsync(src, result.mask, _lifetimeCts.Token);
+            }
+            finally
+            {
+                Host.SDInpaintingRunner.ProgressChanged -= OnInpaintProgress;
+            }
+            if (!string.IsNullOrWhiteSpace(inpaintResult.error))
+            {
+                ShowToast(inpaintResult.error, 3600);
+                if (result.overlay != null)
+                    AddHistory(result.overlay, $"YOLO 识别 {result.personCount}");
+                return;
+            }
+
+            if (inpaintResult.texture != null)
+                AddHistory(inpaintResult.texture, $"YOLO修复 {result.personCount}");
         }
         finally
         {

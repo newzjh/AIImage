@@ -78,6 +78,8 @@ namespace NcnnCompute
     public static class NcnnLayerTypes
     {
         public static readonly NcnnLayerTypeKey Input = NcnnLayerTypeKey.FromString("Input");
+        public static readonly NcnnLayerTypeKey PnnxExpression = NcnnLayerTypeKey.FromString("pnnx.Expression");
+        public static readonly NcnnLayerTypeKey AtenTo = NcnnLayerTypeKey.FromString("aten::to");
         public static readonly NcnnLayerTypeKey AbsVal = NcnnLayerTypeKey.FromString("AbsVal");
         public static readonly NcnnLayerTypeKey Split = NcnnLayerTypeKey.FromString("Split");
         public static readonly NcnnLayerTypeKey Concat = NcnnLayerTypeKey.FromString("Concat");
@@ -165,11 +167,24 @@ namespace NcnnCompute
             public string[] bottomNames;
             public string[] topNames;
             public Dictionary<int, string> intParams = new Dictionary<int, string>();
+            public Dictionary<string, string> stringParams = new Dictionary<string, string>(StringComparer.Ordinal);
 
             public string GetString(int key, string defaultValue = null)
             {
                 if (intParams != null && intParams.TryGetValue(key, out var v))
                     return v;
+                return defaultValue;
+            }
+
+            public string GetString(string key, string defaultValue = null)
+            {
+                if (!string.IsNullOrEmpty(key)
+                    && stringParams != null
+                    && stringParams.TryGetValue(key, out var v))
+                {
+                    return v;
+                }
+
                 return defaultValue;
             }
 
@@ -239,6 +254,23 @@ namespace NcnnCompute
                     return arr;
                 }
                 return defaultValue;
+            }
+
+            public void CopyStringParamsFrom(Layer other, bool overwriteExisting = false)
+            {
+                if (other?.stringParams == null || other.stringParams.Count == 0)
+                    return;
+
+                foreach (var kv in other.stringParams)
+                {
+                    if (string.IsNullOrEmpty(kv.Key))
+                        continue;
+
+                    if (!overwriteExisting && stringParams.ContainsKey(kv.Key))
+                        continue;
+
+                    stringParams[kv.Key] = kv.Value;
+                }
             }
         }
 
@@ -320,12 +352,50 @@ namespace NcnnCompute
                     {
                         layer.intParams[key] = vStr;
                     }
+                    else if (ShouldKeepNamedParam(kStr))
+                    {
+                        layer.stringParams[kStr] = vStr;
+                    }
                 }
 
                 model.layers.Add(layer);
             }
 
             return model;
+        }
+
+        public static int MergeStringParamsByLayerName(NcnnParamModel target, NcnnParamModel source, bool overwriteExisting = false)
+        {
+            if (target?.layers == null || source?.layers == null)
+                return 0;
+
+            var sourceByName = new Dictionary<string, NcnnParamModel.Layer>(StringComparer.Ordinal);
+            for (var i = 0; i < source.layers.Count; i++)
+            {
+                var layer = source.layers[i];
+                if (layer == null || string.IsNullOrEmpty(layer.name))
+                    continue;
+
+                sourceByName[layer.name] = layer;
+            }
+
+            var merged = 0;
+            for (var i = 0; i < target.layers.Count; i++)
+            {
+                var layer = target.layers[i];
+                if (layer == null || string.IsNullOrEmpty(layer.name))
+                    continue;
+
+                if (!sourceByName.TryGetValue(layer.name, out var sourceLayer) || sourceLayer == null)
+                    continue;
+
+                var before = layer.stringParams?.Count ?? 0;
+                layer.CopyStringParamsFrom(sourceLayer, overwriteExisting);
+                var after = layer.stringParams?.Count ?? 0;
+                merged += Math.Max(0, after - before);
+            }
+
+            return merged;
         }
 
         private static string[] SplitWs(string s)
@@ -364,6 +434,15 @@ namespace NcnnCompute
                 tokens.Add(current.ToString());
 
             return tokens.ToArray();
+        }
+
+        private static bool ShouldKeepNamedParam(string key)
+        {
+            if (string.IsNullOrEmpty(key))
+                return false;
+
+            var first = key[0];
+            return first != '#' && first != '@';
         }
     }
 }

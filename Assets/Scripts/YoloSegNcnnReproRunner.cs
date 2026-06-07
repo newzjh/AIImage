@@ -553,11 +553,51 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         if (!File.Exists(binPath))
             throw new FileNotFoundException("YOLO seg bin not found", binPath);
 
-        var paramText = await File.ReadAllTextAsync(paramPath, ct);
-        var binBytes = await File.ReadAllBytesAsync(binPath, ct);
+        UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded read-param start | " + paramPath);
+        string paramText;
+        if (Application.isBatchMode)
+        {
+            ct.ThrowIfCancellationRequested();
+            paramText = File.ReadAllText(paramPath);
+        }
+        else
+        {
+            paramText = await File.ReadAllTextAsync(paramPath, ct);
+        }
+
+        UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded read-param done | chars=" + (paramText != null ? paramText.Length : 0));
+        UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded read-bin start | " + binPath);
+        byte[] binBytes;
+        if (Application.isBatchMode)
+        {
+            ct.ThrowIfCancellationRequested();
+            binBytes = File.ReadAllBytes(binPath);
+        }
+        else
+        {
+            binBytes = await File.ReadAllBytesAsync(binPath, ct);
+        }
+
+        UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded read-bin done | bytes=" + (binBytes != null ? binBytes.Length : 0));
         using var ms = new MemoryStream(binBytes, false);
         using var br = new NcnnBinReader(ms);
-        _repro.LoadModel(paramText, br);
+        UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded load-model start");
+        _repro.LoadModel(paramText, br, progress =>
+        {
+            if (!string.Equals(progress.stage, "layer", StringComparison.Ordinal)
+                || progress.layerIndex <= 4
+                || progress.layerIndex == progress.layerCount
+                || (progress.layerIndex % 32) == 0)
+            {
+                UnityEngine.Debug.Log("[YoloSegRunner] model-progress"
+                    + " | stage=" + progress.stage
+                    + " | layer=" + progress.layerIndex + "/" + progress.layerCount
+                    + " | name=" + (progress.layerName ?? string.Empty)
+                    + " | type=" + (progress.layerType ?? string.Empty)
+                    + " | p=" + progress.progress01.ToString("F3", CultureInfo.InvariantCulture));
+            }
+        });
+        UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded load-model done");
         _loadedModelKey = modelKey;
     }
 

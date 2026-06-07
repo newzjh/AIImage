@@ -81,7 +81,14 @@ namespace NcnnCompute
             {
                 var spec = specs[i];
                 var outTensor = owner.RentTempTensorBuffer(spec.shape.dims, spec.shape.w, spec.shape.h, spec.shape.d, spec.shape.c);
-                owner.Ops.Slice(srcBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.d, spec.shape.c, outTensor.buffer);
+                if (srcView.dims == 1)
+                {
+                    owner.Ops.CopyBufPartial(srcBuf, spec.begin, outTensor.buffer, spec.shape.w);
+                }
+                else
+                {
+                    owner.Ops.Slice(srcBuf, srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.d, spec.shape.c, outTensor.buffer);
+                }
 
                 owner.PublishTensorBufferOutput(
                     layer.topNames[i],

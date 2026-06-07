@@ -929,6 +929,15 @@ namespace NcnnCompute
             }
         }
 
+        public int MergePnnxStringParams(string pnnxParamText, bool overwriteExisting = false)
+        {
+            if (string.IsNullOrWhiteSpace(pnnxParamText) || Model == null)
+                return 0;
+
+            var pnnxModel = NcnnParamParser.Parse(pnnxParamText);
+            return NcnnParamParser.MergeStringParamsByLayerName(Model, pnnxModel, overwriteExisting);
+        }
+
         public async UniTask LoadModelAsync(
             string paramText,
             NcnnBinReader br,

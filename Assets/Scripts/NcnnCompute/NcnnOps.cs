@@ -383,6 +383,7 @@ namespace NcnnCompute
         private readonly int _kSdpaQkBuf;
         private readonly int _kSdpaSoftmaxBuf;
         private readonly int _kSdpaQkvBuf;
+        private readonly int _kSdpaAttentionFast;
 
         public NcnnOps()
         {
@@ -503,6 +504,7 @@ namespace NcnnCompute
             _kSdpaQkBuf = _cs.FindKernel("NcnnSdpaQkBuf");
             _kSdpaSoftmaxBuf = _cs.FindKernel("NcnnSdpaSoftmaxBuf");
             _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
+            _kSdpaAttentionFast = _cs.FindKernel("NcnnSdpaAttentionFast");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -2900,6 +2902,53 @@ namespace NcnnCompute
             _cs.SetBuffer(_kSdpaQkvBuf, "_SdpaV", value);
             _cs.SetBuffer(_kSdpaQkvBuf, "_SdpaOut", output);
             _cs.Dispatch(_kSdpaQkvBuf, srcLen, numHeads, 1);
+        }
+
+        public void SdpaAttentionFast(
+            ComputeBuffer query,
+            ComputeBuffer key,
+            ComputeBuffer value,
+            ComputeBuffer mask,
+            int srcLen,
+            int dstLen,
+            int embedDim,
+            int outEmbedDim,
+            int numHeads,
+            int numGroups,
+            int maskDims,
+            int maskW,
+            int maskH,
+            int maskC,
+            float scale,
+            ComputeBuffer output)
+        {
+            if (query == null) throw new ArgumentNullException(nameof(query));
+            if (key == null) throw new ArgumentNullException(nameof(key));
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (srcLen <= 0 || dstLen <= 0 || embedDim <= 0 || outEmbedDim <= 0 || numHeads <= 0 || numGroups <= 0)
+                throw new ArgumentOutOfRangeException(nameof(srcLen));
+            if (dstLen > 4096)
+                throw new ArgumentOutOfRangeException(nameof(dstLen), "SDPA dstLen exceeds shared-memory kernel limit: " + dstLen);
+
+            _cs.SetInt("_SdpaSrcLen", srcLen);
+            _cs.SetInt("_SdpaDstLen", dstLen);
+            _cs.SetInt("_SdpaEmbedDim", embedDim);
+            _cs.SetInt("_SdpaOutEmbedDim", outEmbedDim);
+            _cs.SetInt("_SdpaNumHeads", numHeads);
+            _cs.SetInt("_SdpaNumGroups", numGroups);
+            _cs.SetInt("_SdpaNumHeadsPerGroup", Mathf.Max(1, numHeads / numGroups));
+            _cs.SetInt("_SdpaMaskDims", maskDims);
+            _cs.SetInt("_SdpaMaskW", maskW);
+            _cs.SetInt("_SdpaMaskH", maskH);
+            _cs.SetInt("_SdpaMaskC", maskC);
+            _cs.SetFloat("_SdpaScale", scale);
+            _cs.SetBuffer(_kSdpaAttentionFast, "_SdpaQ", query);
+            _cs.SetBuffer(_kSdpaAttentionFast, "_SdpaK", key);
+            _cs.SetBuffer(_kSdpaAttentionFast, "_SdpaV", value);
+            _cs.SetBuffer(_kSdpaAttentionFast, "_SdpaMask", mask ?? query);
+            _cs.SetBuffer(_kSdpaAttentionFast, "_SdpaOut", output);
+            _cs.Dispatch(_kSdpaAttentionFast, srcLen, numHeads, 1);
         }
 
         public void InnerProduct2D(ComputeBuffer input, int rows, int inFeatures, ComputeBuffer weightsOxi, ComputeBuffer biasO, int outFeatures, ComputeBuffer output)

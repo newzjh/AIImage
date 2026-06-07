@@ -116,27 +116,51 @@ namespace NcnnCompute
             if (dstSeqLen > 4096)
                 throw new InvalidOperationException("SDPA dst_seqlen exceeds current repro shader limit 4096: " + layer.name);
 
-            var scoreBuf = owner.RentTempBuffer(numHeads * srcSeqLen * dstSeqLen, sizeof(float));
             var outTensor = owner.RentTempTensorBuffer(3, outEmbedDim, srcSeqLen, 1, numHeads);
-            tempOwned.Add(scoreBuf);
+            var canUseFastPath = !sp.attnMask && !sp.kvCache;
+            if (canUseFastPath)
+            {
+                owner.Ops.SdpaAttentionFast(
+                    queryBuf,
+                    keyAllBuf,
+                    valueAllBuf,
+                    null,
+                    srcSeqLen,
+                    dstSeqLen,
+                    embedDim,
+                    outEmbedDim,
+                    numHeads,
+                    numGroup,
+                    0,
+                    0,
+                    0,
+                    0,
+                    scale,
+                    outTensor.buffer);
+            }
+            else
+            {
+                var scoreBuf = owner.RentTempBuffer(numHeads * srcSeqLen * dstSeqLen, sizeof(float));
+                tempOwned.Add(scoreBuf);
 
-            owner.Ops.SdpaQkBuf(
-                queryBuf,
-                keyAllBuf,
-                maskBuf,
-                srcSeqLen,
-                dstSeqLen,
-                embedDim,
-                numHeads,
-                numGroup,
-                attnMaskView?.dims ?? 0,
-                attnMaskView?.w ?? 0,
-                attnMaskView?.h ?? 0,
-                attnMaskView?.c ?? 0,
-                scale,
-                scoreBuf);
-            owner.Ops.SdpaSoftmaxBuf(scoreBuf, srcSeqLen, dstSeqLen, numHeads);
-            owner.Ops.SdpaQkvBuf(scoreBuf, valueAllBuf, srcSeqLen, dstSeqLen, outEmbedDim, numHeads, numGroup, outTensor.buffer);
+                owner.Ops.SdpaQkBuf(
+                    queryBuf,
+                    keyAllBuf,
+                    maskBuf,
+                    srcSeqLen,
+                    dstSeqLen,
+                    embedDim,
+                    numHeads,
+                    numGroup,
+                    attnMaskView?.dims ?? 0,
+                    attnMaskView?.w ?? 0,
+                    attnMaskView?.h ?? 0,
+                    attnMaskView?.c ?? 0,
+                    scale,
+                    scoreBuf);
+                owner.Ops.SdpaSoftmaxBuf(scoreBuf, srcSeqLen, dstSeqLen, numHeads);
+                owner.Ops.SdpaQkvBuf(scoreBuf, valueAllBuf, srcSeqLen, dstSeqLen, outEmbedDim, numHeads, numGroup, outTensor.buffer);
+            }
 
             owner.PublishTensorBufferOutput(
                 layer.topNames[0],

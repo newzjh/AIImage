@@ -126,6 +126,51 @@ public sealed class NcnnRunnerBatchValidationTests
     }
 
     [UnityTest]
+    public IEnumerator YoloSegAndInpainting_Runs_On_02()
+    {
+        var input = LoadTexture(Input02Path);
+        var go = new GameObject("YoloInpaintingRunnerTest");
+        var yoloRunner = go.AddComponent<YoloSegNcnnReproRunner>();
+        yoloRunner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
+        yoloRunner.enableDebugDump = false;
+        yoloRunner.targetPersonOnly = true;
+        yoloRunner.enableMaskClose = true;
+        yoloRunner.enableMaskDilate = true;
+
+        var inpaintRunner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+        inpaintRunner.enableDebugDump = false;
+        inpaintRunner.useOfficialUnetCache = false;
+        inpaintRunner.defaultStepCount = 8;
+        inpaintRunner.defaultStrength = 1f;
+        inpaintRunner.defaultGuidanceScale = 7.5f;
+
+        var task = RunYoloAndInpaintingAsync(input, yoloRunner, inpaintRunner, CancellationToken.None).AsTask();
+        yield return WaitForTask(task);
+
+        try
+        {
+            var result = task.Result;
+            Assert.That(result.yolo.error, Is.Null.Or.Empty, "YOLO error");
+            Assert.That(result.yolo.mask, Is.Not.Null, "YOLO mask");
+            Assert.That(result.yolo.personCount, Is.EqualTo(4), "YOLO person count");
+            Assert.That(result.inpaint.error, Is.Null.Or.Empty, "Inpainting error");
+            Assert.That(result.inpaint.texture, Is.Not.Null, "Inpainting output texture");
+            Assert.That(result.maskedPixels, Is.GreaterThan(0), "Masked pixels");
+            Assert.That(result.maskedMeanAbsDiffRgb, Is.GreaterThan(1f), "Masked mean abs diff");
+            Debug.Log("[NcnnRunnerBatchValidationTests] YOLO+Inpainting elapsedMs=" + result.inpaint.elapsedMs + " personCount=" + result.yolo.personCount + " maskedDiff=" + result.maskedMeanAbsDiffRgb.ToString("0.0000"));
+        }
+        finally
+        {
+            DestroyImmediateSafe(task.Result.yolo.texture);
+            DestroyImmediateSafe(task.Result.yolo.mask);
+            DestroyImmediateSafe(task.Result.yolo.overlay);
+            DestroyImmediateSafe(task.Result.inpaint.texture);
+            DestroyImmediateSafe(go);
+            DestroyImmediateSafe(input);
+        }
+    }
+
+    [UnityTest]
     public IEnumerator Clip_Runs_On_02()
     {
         var input = LoadTexture(Input02Path);
@@ -189,6 +234,46 @@ public sealed class NcnnRunnerBatchValidationTests
             Assert.Fail("Task was canceled.");
     }
 
+    private static async UniTask<(YoloSegResult yolo, SDInpaintingNcnnReproResult inpaint, float maskedMeanAbsDiffRgb, int maskedPixels)> RunYoloAndInpaintingAsync(
+        Texture2D input,
+        YoloSegNcnnReproRunner yoloRunner,
+        SDInpaintingNcnnReproRunner inpaintRunner,
+        CancellationToken ct)
+    {
+        var yoloResult = await yoloRunner.ProcessAsync(input, ct);
+        if (!string.IsNullOrWhiteSpace(yoloResult.error) || yoloResult.mask == null)
+            return (yoloResult, default, 0f, 0);
+
+        if (yoloResult.texture != null)
+        {
+            UnityEngine.Object.DestroyImmediate(yoloResult.texture);
+            yoloResult.texture = null;
+        }
+
+        if (yoloResult.overlay != null)
+        {
+            UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
+            yoloResult.overlay = null;
+        }
+
+        UnityEngine.Object.DestroyImmediate(yoloRunner);
+        await UniTask.Yield();
+
+        var inpaintResult = await inpaintRunner.ProcessAsync(
+            input,
+            yoloResult.mask,
+            inpaintRunner.defaultPositivePrompt,
+            inpaintRunner.defaultNegativePrompt,
+            inpaintRunner.defaultStepCount,
+            123456,
+            inpaintRunner.defaultStrength,
+            inpaintRunner.defaultGuidanceScale,
+            ct);
+
+        var maskedDiff = ComputeMaskedMeanAbsDiff(input, inpaintResult.texture, yoloResult.mask, out var maskedPixels);
+        return (yoloResult, inpaintResult, maskedDiff, maskedPixels);
+    }
+
     private static Texture2D LoadTexture(string path)
     {
         Assert.That(File.Exists(path), Is.True, "Input image missing: " + path);
@@ -214,5 +299,31 @@ public sealed class NcnnRunnerBatchValidationTests
     {
         if (obj != null)
             UnityEngine.Object.DestroyImmediate(obj);
+    }
+
+    private static float ComputeMaskedMeanAbsDiff(Texture2D source, Texture2D candidate, Texture2D mask, out int maskedPixels)
+    {
+        maskedPixels = 0;
+        if (source == null || candidate == null || mask == null)
+            return 0f;
+        if (source.width != candidate.width || source.height != candidate.height || source.width != mask.width || source.height != mask.height)
+            return 0f;
+
+        var srcPixels = source.GetPixels32();
+        var dstPixels = candidate.GetPixels32();
+        var maskPixels = mask.GetPixels32();
+        double sumAbs = 0d;
+        for (var i = 0; i < srcPixels.Length; i++)
+        {
+            if (maskPixels[i].r < 128 && maskPixels[i].g < 128 && maskPixels[i].b < 128)
+                continue;
+
+            maskedPixels++;
+            sumAbs += Mathf.Abs(srcPixels[i].r - dstPixels[i].r);
+            sumAbs += Mathf.Abs(srcPixels[i].g - dstPixels[i].g);
+            sumAbs += Mathf.Abs(srcPixels[i].b - dstPixels[i].b);
+        }
+
+        return maskedPixels > 0 ? (float)(sumAbs / (maskedPixels * 3d)) : 0f;
     }
 }

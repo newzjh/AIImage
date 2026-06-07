@@ -11,6 +11,8 @@ namespace NcnnCompute
         private static readonly Dictionary<NcnnLayerTypeKey, Func<NcnnBaseLayerRepro>> Registry = new Dictionary<NcnnLayerTypeKey, Func<NcnnBaseLayerRepro>>
         {
             { NcnnLayerTypes.Input, () => new NcnnInputLayerRepro() },
+            { NcnnLayerTypes.PnnxExpression, () => new NcnnPnnxExpressionLayerRepro() },
+            { NcnnLayerTypes.AtenTo, () => new NcnnAtenToLayerRepro() },
             { NcnnLayerTypes.AbsVal, () => new NcnnUnaryOpAliasLayerRepro(NcnnLayerTypes.AbsVal, 0) },
             { NcnnLayerTypes.Split, () => new NcnnSplitLayerRepro() },
             { NcnnLayerTypes.Concat, () => new NcnnConcatLayerRepro() },
@@ -145,6 +147,93 @@ namespace NcnnCompute
                 return string.Join(",", names);
             }
 
+            static string DescribeBlobState(
+                string name,
+                Dictionary<string, TensorRef> textureBlobs,
+                Dictionary<string, BufferShape> textureShapes,
+                Dictionary<string, ComputeBuffer> bufferBlobs,
+                Dictionary<string, NcnnTensorBuffer> bufferViews,
+                Dictionary<string, IndexRef> indexBlobs)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                    return "<empty>";
+
+                if (textureBlobs != null
+                    && textureBlobs.TryGetValue(name, out var tex)
+                    && tex != null
+                    && tex.texture != null)
+                {
+                    var shapeText = string.Empty;
+                    if (textureShapes != null && textureShapes.TryGetValue(name, out var shape))
+                    {
+                        shapeText =
+                            " logical=d" + shape.dims
+                            + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c;
+                    }
+
+                    return name
+                        + "=tex:"
+                        + tex.width + "x" + tex.height + "x" + tex.packs + "p"
+                        + shapeText;
+                }
+
+                if (bufferViews != null
+                    && bufferViews.TryGetValue(name, out var view)
+                    && view != null
+                    && view.buffer != null)
+                {
+                    return name
+                        + "=buf:d" + view.dims
+                        + ":" + view.w + "x" + view.h + "x" + view.d + "x" + view.c
+                        + " count=" + view.buffer.count;
+                }
+
+                if (bufferBlobs != null
+                    && bufferBlobs.TryGetValue(name, out var buffer)
+                    && buffer != null)
+                {
+                    return name + "=buf:count=" + buffer.count;
+                }
+
+                if (indexBlobs != null
+                    && indexBlobs.TryGetValue(name, out var index)
+                    && index != null)
+                {
+                    if (index.view != null && index.view.buffer != null)
+                    {
+                        return name
+                            + "=idxbuf:d" + index.view.dims
+                            + ":" + index.view.w + "x" + index.view.h + "x" + index.view.d + "x" + index.view.c
+                            + " count=" + index.view.buffer.count;
+                    }
+
+                    if (index.texture != null)
+                        return name + "=idxtex:" + index.width + "x" + index.height + "x" + index.packs + "p";
+                }
+
+                return name + "=missing";
+            }
+
+            static string DescribeBlobStates(
+                string[] names,
+                Dictionary<string, TensorRef> textureBlobs,
+                Dictionary<string, BufferShape> textureShapes,
+                Dictionary<string, ComputeBuffer> bufferBlobs,
+                Dictionary<string, NcnnTensorBuffer> bufferViews,
+                Dictionary<string, IndexRef> indexBlobs)
+            {
+                if (names == null || names.Length == 0)
+                    return "-";
+
+                var parts = new string[names.Length];
+                for (var i = 0; i < names.Length; i++)
+                {
+                    parts[i] = DescribeBlobState(names[i], textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs);
+                }
+
+                return string.Join("; ", parts);
+            }
+
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
             var textureBlobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
             var textureShapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal);
@@ -223,6 +312,17 @@ namespace NcnnCompute
                     {
                         layerRepro.ExecuteBuffer(this, layer, context);
                     }
+                    catch (Exception e)
+                    {
+                        throw new InvalidOperationException(
+                            "Layer execution failed"
+                            + " | idx=" + li + "/" + Model.layers.Count
+                            + " | name=" + (layer?.name ?? string.Empty)
+                            + " | type=" + (layer?.typeName ?? string.Empty)
+                            + " | bottoms=" + DescribeBlobStates(layer?.bottomNames, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs)
+                            + " | tops=" + JoinNames(layer?.topNames),
+                            e);
+                    }
                     finally
                     {
                         ClearCurrentExecutingLayer();
@@ -241,6 +341,17 @@ namespace NcnnCompute
                 try
                 {
                     layerRepro.ExecuteBuffer(this, layer, context);
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException(
+                        "Layer execution failed"
+                        + " | idx=" + li + "/" + Model.layers.Count
+                        + " | name=" + (layer?.name ?? string.Empty)
+                        + " | type=" + (layer?.typeName ?? string.Empty)
+                        + " | bottoms=" + DescribeBlobStates(layer?.bottomNames, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs)
+                        + " | tops=" + JoinNames(layer?.topNames),
+                        e);
                 }
                 finally
                 {
