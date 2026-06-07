@@ -26,6 +26,8 @@ namespace NcnnCompute
                                         mp.weightDataSize = layer.GetInt(2, 0);
                                         mp.kdim = layer.GetInt(3, mp.embedDim);
                                         mp.vdim = layer.GetInt(4, mp.embedDim);
+                                        mp.attnMask = layer.GetInt(5, 0) != 0;
+                                        mp.kvCache = layer.GetInt(7, 0) != 0;
                                         mp.scale = layer.GetFloat(6, 1f / Mathf.Sqrt(Mathf.Max(1, mp.embedDim / Mathf.Max(1, mp.numHeads))));
                                         mp.qdim = mp.embedDim > 0 ? mp.weightDataSize / Mathf.Max(1, mp.embedDim) : 0;
 
@@ -74,12 +76,23 @@ namespace NcnnCompute
                                                 if (!owner._multiHeadAttention.TryGetValue(layer.name, out var mp))
                                                     throw new InvalidOperationException("MultiHeadAttention not found: " + layer.name);
 
-                                                using var qTensor = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                using var kTensor = owner.GetReadableTensorInput(layer.bottomNames.Length > 1 ? layer.bottomNames[1] : layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                using var vTensor = owner.GetReadableTensorInput(layer.bottomNames.Length > 2 ? layer.bottomNames[2] : layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                ResolveBottomBlobIndices(layer.bottomNames?.Length ?? 0, mp.attnMask, mp.kvCache, out var qBlobIndex, out var kBlobIndex, out var vBlobIndex, out var attnMaskIndex);
+
+                                                using var qTensor = owner.GetReadableTensorInput(layer.bottomNames[qBlobIndex], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                using var kTensor = owner.GetReadableTensorInput(layer.bottomNames[kBlobIndex], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                using var vTensor = owner.GetReadableTensorInput(layer.bottomNames[vBlobIndex], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                                                 var qBuf = qTensor?.buffer;
                                                 var kBuf = kTensor?.buffer;
                                                 var vBuf = vTensor?.buffer;
+                                                ComputeBuffer attnMaskBuf = null;
+                                                NcnnTensorBuffer attnMaskView = null;
+                                                if (attnMaskIndex >= 0)
+                                                {
+                                                    attnMaskBuf = owner.GetOrConvertToBuffer(layer.bottomNames[attnMaskIndex], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                                                    attnMaskView = NcnnRepro.TryGetBufferView(layer.bottomNames[attnMaskIndex], bufferBlobs, bufferViews);
+                                                    if (attnMaskBuf == null || attnMaskView == null)
+                                                        throw new InvalidOperationException("MultiHeadAttention attention mask input not found: " + layer.name);
+                                                }
                                                 if (qBuf == null)
                                                     throw new InvalidOperationException("MultiHeadAttention q input not found: " + layer.name);
                                                 if (kBuf == null)
@@ -93,6 +106,7 @@ namespace NcnnCompute
 
                                                 var canFuseSelfAttentionQkv = owner.EnableMhaQkvFusion
                                                                               && owner.EnableMhaParallelSoftmax
+                                                                              && attnMaskBuf == null
                                                                               && ReferenceEquals(qBuf, kBuf)
                                                                               && ReferenceEquals(qBuf, vBuf)
                                                                               && mp.qdim == mp.kdim
@@ -117,7 +131,22 @@ namespace NcnnCompute
 
                                                     var qScaled = owner.RentTempBuffer(srcLen * mp.embedDim, sizeof(float));
                                                     owner.Ops.BinaryOpScalarBuf(qAff, mp.scale, qAff.count, 2, qScaled);
-                                                    owner.Ops.MhaAttention(qScaled, kAff, vAff, srcLen, dstLen, mp.embedDim, mp.numHeads, 1f, ctx, owner.EnableMhaParallelSoftmax);
+                                                    owner.Ops.MhaAttention(
+                                                        qScaled,
+                                                        kAff,
+                                                        vAff,
+                                                        attnMaskBuf,
+                                                        srcLen,
+                                                        dstLen,
+                                                        mp.embedDim,
+                                                        mp.numHeads,
+                                                        1f,
+                                                        attnMaskView?.dims ?? 0,
+                                                        attnMaskView?.w ?? 0,
+                                                        attnMaskView?.h ?? 0,
+                                                        attnMaskView?.c ?? 0,
+                                                        ctx,
+                                                        owner.EnableMhaParallelSoftmax);
 
                                                     tempOwned.Add(qAff);
                                                     tempOwned.Add(kAff);
@@ -168,6 +197,55 @@ namespace NcnnCompute
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, mp.qdim), srcLen, 1, 1);
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static void ResolveBottomBlobIndices(int bottomBlobCount, bool attnMask, bool kvCache, out int qBlobIndex, out int kBlobIndex, out int vBlobIndex, out int attnMaskIndex)
+        {
+            qBlobIndex = 0;
+            kBlobIndex = 0;
+            vBlobIndex = 0;
+            attnMaskIndex = -1;
+
+            if (kvCache)
+                throw new InvalidOperationException("MultiHeadAttention kv_cache path is not implemented in repro.");
+
+            if (attnMask)
+            {
+                switch (bottomBlobCount)
+                {
+                    case 2:
+                        attnMaskIndex = 1;
+                        return;
+                    case 3:
+                        kBlobIndex = 1;
+                        vBlobIndex = 1;
+                        attnMaskIndex = 2;
+                        return;
+                    case 4:
+                        kBlobIndex = 1;
+                        vBlobIndex = 2;
+                        attnMaskIndex = 3;
+                        return;
+                    default:
+                        throw new InvalidOperationException("Unsupported MultiHeadAttention bottom count with attn_mask: " + bottomBlobCount);
+                }
+            }
+
+            switch (bottomBlobCount)
+            {
+                case 1:
+                    return;
+                case 2:
+                    kBlobIndex = 1;
+                    vBlobIndex = 1;
+                    return;
+                case 3:
+                    kBlobIndex = 1;
+                    vBlobIndex = 2;
+                    return;
+                default:
+                    throw new InvalidOperationException("Unsupported MultiHeadAttention bottom count: " + bottomBlobCount);
+            }
         }
     }
 }

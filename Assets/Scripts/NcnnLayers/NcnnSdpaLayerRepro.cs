@@ -117,7 +117,7 @@ namespace NcnnCompute
                 throw new InvalidOperationException("SDPA dst_seqlen exceeds current repro shader limit 4096: " + layer.name);
 
             var outTensor = owner.RentTempTensorBuffer(3, outEmbedDim, srcSeqLen, 1, numHeads);
-            var canUseFastPath = !sp.attnMask && !sp.kvCache;
+            var canUseFastPath = false;
             if (canUseFastPath)
             {
                 owner.Ops.SdpaAttentionFast(

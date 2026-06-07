@@ -2981,7 +2981,22 @@ namespace NcnnCompute
             _cs.Dispatch(_kInnerProduct2D, gx, gy, 1);
         }
 
-        public void MhaAttention(ComputeBuffer q, ComputeBuffer k, ComputeBuffer v, int srcLen, int dstLen, int embedDim, int numHeads, float scale, ComputeBuffer outContext, bool parallelSoftmax = false)
+        public void MhaAttention(
+            ComputeBuffer q,
+            ComputeBuffer k,
+            ComputeBuffer v,
+            ComputeBuffer mask,
+            int srcLen,
+            int dstLen,
+            int embedDim,
+            int numHeads,
+            float scale,
+            int maskDims,
+            int maskW,
+            int maskH,
+            int maskC,
+            ComputeBuffer outContext,
+            bool parallelSoftmax = false)
         {
             if (q == null) throw new ArgumentNullException(nameof(q));
             if (k == null) throw new ArgumentNullException(nameof(k));
@@ -3002,10 +3017,15 @@ namespace NcnnCompute
             _cs.SetInt("_MhaNumHeads", numHeads);
             _cs.SetInt("_MhaHeadDim", embedDim / numHeads);
             _cs.SetFloat("_MhaScale", scale);
+            _cs.SetInt("_SdpaMaskDims", maskDims);
+            _cs.SetInt("_SdpaMaskW", maskW);
+            _cs.SetInt("_SdpaMaskH", maskH);
+            _cs.SetInt("_SdpaMaskC", maskC);
             var kernel = parallelSoftmax ? _kMhaAttentionFast : _kMhaAttention;
             _cs.SetBuffer(kernel, "_MhaQ", q);
             _cs.SetBuffer(kernel, "_MhaK", k);
             _cs.SetBuffer(kernel, "_MhaV", v);
+            _cs.SetBuffer(kernel, "_SdpaMask", mask ?? q);
             _cs.SetBuffer(kernel, "_MhaOut", outContext);
 
             _cs.Dispatch(kernel, srcLen, numHeads, 1);

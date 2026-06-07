@@ -1220,6 +1220,7 @@ void NcnnMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Group
         {
             s += (_MhaQ[qBase + dotIndex] * _MhaScale) * _MhaK[kBase + dotIndex];
         }
+        s += NcnnResolveSdpaMask(head, q, scoreIndex);
         _MhaScores[scoreIndex] = s;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -1471,6 +1472,7 @@ void NcnnMhaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_G
         {
             s += (_MhaQ[qBase + dotIndex] * _MhaScale) * _MhaK[kBase + dotIndex];
         }
+        s += NcnnResolveSdpaMask(head, q, scoreIndex);
         _MhaScores[scoreIndex] = s;
     }
     GroupMemoryBarrierWithGroupSync();

@@ -275,6 +275,39 @@ namespace NcnnCompute
                 tempOwned = tempOwned
             };
 
+            bool TryLogFirstNonFiniteLayerOutput(int layerIndex, NcnnParamModel.Layer layer)
+            {
+                if (!DebugBreakOnFirstNonFiniteLayerOutput || DebugLog == null || layer?.topNames == null)
+                    return false;
+
+                for (var i = 0; i < layer.topNames.Length; i++)
+                {
+                    var topName = layer.topNames[i];
+                    if (string.IsNullOrWhiteSpace(topName))
+                        continue;
+
+                    if (bufferViews.TryGetValue(topName, out var view) && view != null && view.buffer != null)
+                    {
+                        var logicalCount = Mathf.Max(1, view.w) * Mathf.Max(1, view.h) * Mathf.Max(1, view.d) * Mathf.Max(1, view.c);
+                        if (BufferHasAnyNonFinite(view.buffer, logicalCount, out var finiteCount, out var nanCount, out var infCount))
+                        {
+                            DebugLog("[LayerNonFinite] idx=" + layerIndex
+                                + " | name=" + (layer.name ?? string.Empty)
+                                + " | type=" + (layer.typeName ?? string.Empty)
+                                + " | top=" + topName
+                                + " | shape=d" + view.dims + ":" + view.w + "x" + view.h + "x" + view.d + "x" + view.c
+                                + " | finite=" + finiteCount
+                                + " | nan=" + nanCount
+                                + " | inf=" + infCount
+                                + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+
             var runtimeProfile = BeginLayerRuntimeProfile("buffer");
             for (var li = 0; li < Model.layers.Count; li++)
             {
@@ -333,6 +366,7 @@ namespace NcnnCompute
                             + " | name=" + (layer?.name ?? string.Empty)
                             + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
                     }
+                    TryLogFirstNonFiniteLayerOutput(li, layer);
                     continue;
                 }
 
@@ -373,6 +407,7 @@ namespace NcnnCompute
                         + " | name=" + (layer?.name ?? string.Empty)
                         + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
                 }
+                TryLogFirstNonFiniteLayerOutput(li, layer);
             }
 
             FinishLayerRuntimeProfile(runtimeProfile);

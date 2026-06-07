@@ -334,6 +334,8 @@ namespace NcnnCompute
             public int kdim;
             public int vdim;
             public int qdim;
+            public bool attnMask;
+            public bool kvCache;
             public float scale;
             public ComputeBuffer qW;
             public ComputeBuffer qB;
@@ -834,6 +836,7 @@ namespace NcnnCompute
         public bool DebugLogAllLayerOutputs { get; set; }
         public bool DebugLogAllLayerHeartbeats { get; set; }
         public bool DebugLogAllBufferMaterialize { get; set; }
+        public bool DebugBreakOnFirstNonFiniteLayerOutput { get; set; }
         public float CodeFormerSftMulScale { get; set; } = 1f;
         public float CodeFormerSftAddScale { get; set; } = 1f;
         public bool CodeFormerBypassSftMul { get; set; }
@@ -5712,6 +5715,41 @@ namespace NcnnCompute
                 + " min=" + (finite > 0 ? min.ToString("G9", CultureInfo.InvariantCulture) : "NaN")
                 + " max=" + (finite > 0 ? max.ToString("G9", CultureInfo.InvariantCulture) : "NaN")
                 + " sample=" + string.Join(",", preview));
+        }
+
+        internal bool BufferHasAnyNonFinite(ComputeBuffer buffer, int logicalCount, out int finiteCount, out int nanCount, out int infCount)
+        {
+            finiteCount = 0;
+            nanCount = 0;
+            infCount = 0;
+
+            if (buffer == null)
+                return false;
+
+            var count = logicalCount > 0 ? Mathf.Min(logicalCount, buffer.count) : buffer.count;
+            if (count <= 0)
+                return false;
+
+            var data = new float[count];
+            buffer.GetData(data, 0, 0, count);
+            for (var i = 0; i < data.Length; i++)
+            {
+                var v = data[i];
+                if (float.IsNaN(v))
+                {
+                    nanCount++;
+                }
+                else if (float.IsInfinity(v))
+                {
+                    infCount++;
+                }
+                else
+                {
+                    finiteCount++;
+                }
+            }
+
+            return nanCount > 0 || infCount > 0;
         }
     }
 }
