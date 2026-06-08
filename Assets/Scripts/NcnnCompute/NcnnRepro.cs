@@ -160,12 +160,12 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { packedWeight4?.Dispose(); } catch { }
-                try { packedBias4?.Dispose(); } catch { }
-                try { packedWeightTm23?.Dispose(); } catch { }
-                try { packedDepthWiseWeight4?.Dispose(); } catch { }
-                try { rawWeight?.Dispose(); } catch { }
-                try { rawBias?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeight4, "NcnnRepro.ConvPack.Dispose"); packedWeight4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedBias4, "NcnnRepro.ConvPack.Dispose"); packedBias4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeightTm23, "NcnnRepro.ConvPack.Dispose"); packedWeightTm23?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedDepthWiseWeight4, "NcnnRepro.ConvPack.Dispose"); packedDepthWiseWeight4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeight, "NcnnRepro.ConvPack.Dispose"); rawWeight?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(rawBias, "NcnnRepro.ConvPack.Dispose"); rawBias?.Dispose(); } catch { }
             }
         }
 
@@ -180,8 +180,8 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { w?.Dispose(); } catch { }
-                try { b?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(w, "NcnnRepro.InnerProductPack.Dispose"); w?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(b, "NcnnRepro.InnerProductPack.Dispose"); b?.Dispose(); } catch { }
             }
         }
 
@@ -215,10 +215,10 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { packedWeight4?.Dispose(); } catch { }
-                try { packedBias4?.Dispose(); } catch { }
-                try { rawWeight?.Dispose(); } catch { }
-                try { rawBias?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeight4, "NcnnRepro.DeconvPack.Dispose"); packedWeight4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedBias4, "NcnnRepro.DeconvPack.Dispose"); packedBias4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeight, "NcnnRepro.DeconvPack.Dispose"); rawWeight?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(rawBias, "NcnnRepro.DeconvPack.Dispose"); rawBias?.Dispose(); } catch { }
             }
         }
 
@@ -242,8 +242,8 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { bData?.Dispose(); } catch { }
-                try { cData?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(bData, "NcnnRepro.GemmPack.Dispose"); bData?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(cData, "NcnnRepro.GemmPack.Dispose"); cData?.Dispose(); } catch { }
             }
         }
 
@@ -258,7 +258,7 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { data?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(data, "NcnnRepro.MemoryDataPack.Dispose"); data?.Dispose(); } catch { }
             }
         }
 
@@ -273,8 +273,8 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { w?.Dispose(); } catch { }
-                try { b?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(w, "NcnnRepro.EmbedPack.Dispose"); w?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(b, "NcnnRepro.EmbedPack.Dispose"); b?.Dispose(); } catch { }
             }
         }
 
@@ -288,8 +288,8 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { gamma?.Dispose(); } catch { }
-                try { beta?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(gamma, "NcnnRepro.LayerNormPack.Dispose"); gamma?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(beta, "NcnnRepro.LayerNormPack.Dispose"); beta?.Dispose(); } catch { }
             }
         }
 
@@ -304,8 +304,8 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { gamma?.Dispose(); } catch { }
-                try { beta?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(gamma, "NcnnRepro.GroupNormPack.Dispose"); gamma?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(beta, "NcnnRepro.GroupNormPack.Dispose"); beta?.Dispose(); } catch { }
             }
         }
 
@@ -319,10 +319,10 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { biasA?.Dispose(); } catch { }
-                try { scaleB?.Dispose(); } catch { }
-                try { biasA4?.Dispose(); } catch { }
-                try { scaleB4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(biasA, "NcnnRepro.BatchNormPack.Dispose"); biasA?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(scaleB, "NcnnRepro.BatchNormPack.Dispose"); scaleB?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(biasA4, "NcnnRepro.BatchNormPack.Dispose"); biasA4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(scaleB4, "NcnnRepro.BatchNormPack.Dispose"); scaleB4?.Dispose(); } catch { }
             }
         }
 
@@ -348,14 +348,14 @@ namespace NcnnCompute
 
             public void Dispose()
             {
-                try { qW?.Dispose(); } catch { }
-                try { qB?.Dispose(); } catch { }
-                try { kW?.Dispose(); } catch { }
-                try { kB?.Dispose(); } catch { }
-                try { vW?.Dispose(); } catch { }
-                try { vB?.Dispose(); } catch { }
-                try { oW?.Dispose(); } catch { }
-                try { oB?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(qW, "NcnnRepro.MultiHeadAttentionPack.Dispose"); qW?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(qB, "NcnnRepro.MultiHeadAttentionPack.Dispose"); qB?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(kW, "NcnnRepro.MultiHeadAttentionPack.Dispose"); kW?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(kB, "NcnnRepro.MultiHeadAttentionPack.Dispose"); kB?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(vW, "NcnnRepro.MultiHeadAttentionPack.Dispose"); vW?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(vB, "NcnnRepro.MultiHeadAttentionPack.Dispose"); vB?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(oW, "NcnnRepro.MultiHeadAttentionPack.Dispose"); oW?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(oB, "NcnnRepro.MultiHeadAttentionPack.Dispose"); oB?.Dispose(); } catch { }
             }
         }
 
@@ -1130,7 +1130,9 @@ namespace NcnnCompute
                     var w4 = PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
                     var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
                     pack.packedWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(pack.packedWeight4, w4.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedWeight4:" + layer.name);
                     pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(pack.packedBias4, b4.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedBias4:" + layer.name);
                     pack.packedWeight4.SetData(w4);
                     pack.packedBias4.SetData(b4);
 
@@ -1148,6 +1150,7 @@ namespace NcnnCompute
                         pack.useWinograd23 = true;
                         var wTm = NcnnWinograd23.PackWeightTm23(w, pack.outC, pack.inC, pack.outPacks, pack.inPacks);
                         pack.packedWeightTm23 = new ComputeBuffer(wTm.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                        NcnnGpuResourceTracker.RegisterBuffer(pack.packedWeightTm23, wTm.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedWeightTm23:" + layer.name);
                         pack.packedWeightTm23.SetData(wTm);
                     }
                     phaseSw.Stop();
@@ -1159,7 +1162,9 @@ namespace NcnnCompute
                     var w4 = PackDepthWiseWeightsToP4K4(w, pack.outC, pack.kernelW, pack.outPacks);
                     var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
                     pack.packedDepthWiseWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(pack.packedDepthWiseWeight4, w4.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedDepthWiseWeight4:" + layer.name);
                     pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(pack.packedBias4, b4.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedBias4:" + layer.name);
                     pack.packedDepthWiseWeight4.SetData(w4);
                     pack.packedBias4.SetData(b4);
                     phaseSw.Stop();
@@ -1203,7 +1208,9 @@ namespace NcnnCompute
 
                 phaseSw.Restart();
                 pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(pack.rawWeight, w.Length, sizeof(float), "NcnnRepro.DeconvRawWeight:" + layer.name);
                 pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(pack.rawBias, b.Length, sizeof(float), "NcnnRepro.DeconvRawBias:" + layer.name);
                 pack.rawWeight.SetData(w);
                 pack.rawBias.SetData(b);
                 phaseSw.Stop();
@@ -1229,7 +1236,9 @@ namespace NcnnCompute
 
                 phaseSw.Restart();
                 ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(ip.w, w.Length, sizeof(float), "NcnnRepro.InnerProductWeight:" + layer.name);
                 ip.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(ip.b, b.Length, sizeof(float), "NcnnRepro.InnerProductBias:" + layer.name);
                 ip.w.SetData(w);
                 ip.b.SetData(b);
                 phaseSw.Stop();
@@ -1314,6 +1323,7 @@ namespace NcnnCompute
 
                 phaseSw.Restart();
                 var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(buf, a.Length, sizeof(float), "NcnnRepro.MemoryData:" + layer.name);
                 buf.SetData(a);
                 phaseSw.Stop();
                 uploadMs += phaseSw.ElapsedMilliseconds;
@@ -1351,10 +1361,12 @@ namespace NcnnCompute
 
                 phaseSw.Restart();
                 ep.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(ep.w, w.Length, sizeof(float), "NcnnRepro.EmbedWeight:" + layer.name);
                 ep.w.SetData(w);
                 if (b != null)
                 {
                     ep.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(ep.b, b.Length, sizeof(float), "NcnnRepro.EmbedBias:" + layer.name);
                     ep.b.SetData(b);
                 }
                 phaseSw.Stop();
@@ -1383,7 +1395,9 @@ namespace NcnnCompute
 
                     phaseSw.Restart();
                     lp.gamma = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(lp.gamma, gamma.Length, sizeof(float), "NcnnRepro.LayerNormGamma:" + layer.name);
                     lp.beta = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(lp.beta, beta.Length, sizeof(float), "NcnnRepro.LayerNormBeta:" + layer.name);
                     lp.gamma.SetData(gamma);
                     lp.beta.SetData(beta);
                     phaseSw.Stop();
@@ -1414,7 +1428,9 @@ namespace NcnnCompute
 
                     phaseSw.Restart();
                     gp.gamma = new ComputeBuffer(gamma.Length, sizeof(float), ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(gp.gamma, gamma.Length, sizeof(float), "NcnnRepro.GroupNormGamma:" + layer.name);
                     gp.beta = new ComputeBuffer(beta.Length, sizeof(float), ComputeBufferType.Structured);
+                    NcnnGpuResourceTracker.RegisterBuffer(gp.beta, beta.Length, sizeof(float), "NcnnRepro.GroupNormBeta:" + layer.name);
                     gp.gamma.SetData(gamma);
                     gp.beta.SetData(beta);
                     phaseSw.Stop();
@@ -1455,7 +1471,9 @@ namespace NcnnCompute
                 var a4 = PackBiasToO4(a, bp.channels, packs);
                 var b4 = PackBiasToO4(b, bp.channels, packs);
                 bp.biasA4 = new ComputeBuffer(a4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(bp.biasA4, a4.Length, sizeof(float) * 4, "NcnnRepro.BatchNormBiasA4:" + layer.name);
                 bp.scaleB4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(bp.scaleB4, b4.Length, sizeof(float) * 4, "NcnnRepro.BatchNormScaleB4:" + layer.name);
                 bp.biasA4.SetData(a4);
                 bp.scaleB4.SetData(b4);
                 phaseSw.Stop();
@@ -3171,6 +3189,7 @@ namespace NcnnCompute
         internal static ComputeBuffer NewBuffer(float[] data)
         {
             var buf = new ComputeBuffer(data.Length, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(buf, data.Length, sizeof(float), "NcnnRepro.NewBuffer");
             buf.SetData(data);
             return buf;
         }
@@ -5182,7 +5201,9 @@ namespace NcnnCompute
             if (bias == null)
                 throw new ArgumentNullException(nameof(bias));
             pack.rawWeight = new ComputeBuffer(weights.Length, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(pack.rawWeight, weights.Length, sizeof(float), "NcnnRepro.ConvRawWeight");
             pack.rawBias = new ComputeBuffer(bias.Length, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(pack.rawBias, bias.Length, sizeof(float), "NcnnRepro.ConvRawBias");
             pack.rawWeight.SetData(weights);
             pack.rawBias.SetData(bias);
         }

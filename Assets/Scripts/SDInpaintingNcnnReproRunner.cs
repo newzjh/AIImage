@@ -145,11 +145,19 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public bool blackMaskMeansInpaint = false;
     public bool useOfficialNoise = true;
     public bool enableEditorLowVramGuard = true;
-    [Range(1, 50)] public int defaultStepCount = 20;
-    [Range(0f, 1f)] public float defaultStrength = 1f;
-    [Range(1f, 20f)] public float defaultGuidanceScale = 7.5f;
-    [TextArea(2, 5)] public string defaultPositivePrompt = "best quality, realistic photo, clean background, natural scene, coherent texture, seamless fill, empty space, no people";
-    [TextArea(2, 5)] public string defaultNegativePrompt = "person, people, human, man, woman, child, face, body, duplicate, blurry, deformed, extra limbs, artifacts, text, watermark";
+    public const int PeopleRemovalRecommendedStepCount = 12;
+    public const float PeopleRemovalRecommendedStrength = 1f;
+    public const float PeopleRemovalRecommendedGuidanceScale = 10f;
+    public const string PeopleRemovalRecommendedPositivePrompt =
+        "best quality, realistic photo, empty indoor background, clean wall, shelf, table, furniture, coherent texture, seamless fill, background only, no people, no person, no human";
+    public const string PeopleRemovalRecommendedNegativePrompt =
+        "person, people, human, man, woman, child, face, portrait, head, body, skin, hands, arms, legs, crowd, group photo, selfie, mannequin, statue, reflection, silhouette, duplicate, blurry, deformed, extra limbs, artifacts, text, watermark";
+
+    [Range(1, 50)] public int defaultStepCount = PeopleRemovalRecommendedStepCount;
+    [Range(0f, 1f)] public float defaultStrength = PeopleRemovalRecommendedStrength;
+    [Range(1f, 20f)] public float defaultGuidanceScale = PeopleRemovalRecommendedGuidanceScale;
+    [TextArea(2, 5)] public string defaultPositivePrompt = PeopleRemovalRecommendedPositivePrompt;
+    [TextArea(2, 5)] public string defaultNegativePrompt = PeopleRemovalRecommendedNegativePrompt;
 
     public event Action<float, string> ProgressChanged;
 
@@ -325,6 +333,16 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             ct);
     }
 
+    public void ApplyPeopleRemovalPreset()
+    {
+        defaultStepCount = Mathf.Max(1, PeopleRemovalRecommendedStepCount);
+        defaultStrength = Mathf.Clamp01(PeopleRemovalRecommendedStrength);
+        defaultGuidanceScale = Mathf.Max(1f, PeopleRemovalRecommendedGuidanceScale);
+        defaultPositivePrompt = PeopleRemovalRecommendedPositivePrompt;
+        defaultNegativePrompt = PeopleRemovalRecommendedNegativePrompt;
+        blackMaskMeansInpaint = false;
+    }
+
     public async UniTask<SDInpaintingNcnnReproResult> ProcessAsync(
         Texture sourceImage,
         Texture maskImage,
@@ -342,6 +360,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         _unetDebugDumped = false;
         _resourceSnapshotLines.Clear();
         var actualSeed = ResolveSeed(seed);
+        var sourceOutputWidth = 0;
+        var sourceOutputHeight = 0;
+        var destroySourceReadable = false;
+        var destroyMaskReadable = false;
 
         SDInpaintingNcnnReproResult Finish(SDInpaintingNcnnReproResult result)
         {
@@ -398,11 +420,29 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             maskReadable = EnsureReadableTexture(maskImage);
             if (sourceReadable == null || maskReadable == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to read source or mask texture." });
+            sourceOutputWidth = sourceReadable.width;
+            sourceOutputHeight = sourceReadable.height;
+            destroySourceReadable = !ReferenceEquals(sourceReadable, sourceImage);
+            destroyMaskReadable = !ReferenceEquals(maskReadable, maskImage);
 
             resizedSource = ReadResizedTexture(sourceReadable, ModelImageSize, ModelImageSize);
             resizedMask = ReadResizedTexture(maskReadable, ModelImageSize, ModelImageSize);
             if (resizedSource == null || resizedMask == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to resize inpainting inputs." });
+
+            if (destroySourceReadable && sourceReadable != null)
+            {
+                DestroyImmediate(sourceReadable);
+                sourceReadable = null;
+                destroySourceReadable = false;
+            }
+
+            if (destroyMaskReadable && maskReadable != null)
+            {
+                DestroyImmediate(maskReadable);
+                maskReadable = null;
+                destroyMaskReadable = false;
+            }
 
             normalizedMask = NormalizeInpaintMask(resizedMask, blackMaskMeansInpaint);
             maskedSource = BuildMaskedTexture(resizedSource, normalizedMask);
@@ -474,6 +514,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 WriteBufferStatsSafe(Path.Combine(_lastDumpDir, "latent_masked_stats.txt"), maskedLatentBuf);
                 WriteBufferStatsSafe(Path.Combine(_lastDumpDir, "latent_noise_stats.txt"), initNoiseBuf);
             }
+
+            DestroyRuntimeTexture(ref resizedSource);
+            DestroyRuntimeTexture(ref resizedMask);
+            DestroyRuntimeTexture(ref normalizedMask);
+            DestroyRuntimeTexture(ref maskedSource);
+            DestroyRuntimeTexture(ref latentMaskTexture);
             DisposeVaeEncoderModel();
             await ForceStageCleanupAsync(ct, "after_vae_encoder");
             LogResourceSnapshot("after_vae_encoder_cleanup");
@@ -490,6 +536,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             latentsTex = useStrengthMax
                 ? BuildNoisyLatentsPack4(initNoiseBuf)
                 : BuildNoisyLatentsPack4(cleanLatentBuf, initNoiseBuf, activeTimesteps[0]);
+            DisposeBuffer(latentMaskBuf, "SDInpaint.LatentMask");
+            latentMaskBuf = null;
+            DisposeBuffer(maskedLatentBuf, "SDInpaint.MaskedLatents");
+            maskedLatentBuf = null;
+            DisposeBuffer(cleanLatentBuf, "SDInpaint.CleanLatents");
+            cleanLatentBuf = null;
+            DisposeBuffer(initNoiseBuf, "SDInpaint.InitNoise");
+            initNoiseBuf = null;
             LogResourceSnapshot("after_init_latents");
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
             {
@@ -547,6 +601,21 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 await UniTask.Yield();
             }
 
+            DisposeBuffer(condBuf, "SDInpaint.PromptCond");
+            condBuf = null;
+            DisposeBuffer(uncondBuf, "SDInpaint.PromptUncond");
+            uncondBuf = null;
+            if (maskedLatentTex != null)
+            {
+                _unetRepro?.ReturnTempArray(maskedLatentTex);
+                maskedLatentTex = null;
+            }
+            if (latentMaskTex != null)
+            {
+                _unetRepro?.ReturnTempArray(latentMaskTex);
+                latentMaskTex = null;
+            }
+
             latentsBuf = ExtractLatentPack4ToStandaloneBuffer(latentsTex);
             if (latentsBuf == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to materialize final latents." });
@@ -573,7 +642,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 return Finish(new SDInpaintingNcnnReproResult { error = "VAE decoder failed." });
             LogResourceSnapshot("after_decode");
 
-            generatedResized = ReadResizedTexture(generated512, sourceReadable.width, sourceReadable.height);
+            generatedResized = ReadResizedTexture(generated512, sourceOutputWidth, sourceOutputHeight);
             if (generatedResized == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to scale generated image back to source size." });
 
@@ -625,6 +694,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             DisposeUnetModel();
             DisposeVaeDecoderModel();
             DisposeVaeEncoderModel();
+            if (destroySourceReadable && sourceReadable != null)
+                DestroyImmediate(sourceReadable);
+            if (destroyMaskReadable && maskReadable != null)
+                DestroyImmediate(maskReadable);
             if (resizedSource != null)
                 DestroyImmediate(resizedSource);
             if (resizedMask != null)
@@ -655,6 +728,15 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "resource_snapshots.txt"), string.Join(Environment.NewLine, _resourceSnapshotLines));
         }
+    }
+
+    private static void DestroyRuntimeTexture(ref Texture2D texture)
+    {
+        if (texture == null)
+            return;
+
+        DestroyImmediate(texture);
+        texture = null;
     }
 
     private void LogResourceSnapshot(string stage)

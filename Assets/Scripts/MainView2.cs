@@ -68,6 +68,7 @@ public sealed class MainView2 : BasePageView
     private bool _gpuSharpenDumpStages;
     private bool _aiRunning;
     private bool _adjustRunning;
+    private static readonly List<string> YoloInpaintResourceSnapshotLines = new List<string>(256);
 
     private System.Threading.CancellationTokenSource _lifetimeCts;
     private System.Threading.CancellationTokenSource _faceMaskCts;
@@ -948,6 +949,7 @@ public sealed class MainView2 : BasePageView
         {
             NcnnGpuResourceTracker.Enabled = true;
             NcnnGpuResourceTracker.Reset("MainView2.YoloInpaint");
+            YoloInpaintResourceSnapshotLines.Clear();
             LogYoloInpaintResourceSnapshot("begin");
             var oldTargetPersonOnly = Host.YoloSegRunner.targetPersonOnly;
             Host.YoloSegRunner.targetPersonOnly = true;
@@ -1002,6 +1004,7 @@ public sealed class MainView2 : BasePageView
             Host.SDInpaintingRunner.tensorTextureFormat = RenderTextureFormat.ARGBHalf;
             Host.SDInpaintingRunner.encoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
             Host.SDInpaintingRunner.decoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
+            Host.SDInpaintingRunner.ApplyPeopleRemovalPreset();
             Host.SDInpaintingRunner.ReleaseRuntimeResources();
             await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
             LogYoloInpaintResourceSnapshot("before_inpaint_process");
@@ -1035,6 +1038,7 @@ public sealed class MainView2 : BasePageView
         finally
         {
             LogYoloInpaintResourceSnapshot("finally");
+            TryWriteYoloInpaintResourceReport();
             NcnnGpuResourceTracker.Enabled = false;
             _adjustRunning = false;
             HideProgress();
@@ -1063,18 +1067,43 @@ public sealed class MainView2 : BasePageView
             var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
             var gfxMb = GetGraphicsDriverMemoryMb();
             var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
-            UnityEngine.Debug.Log(
+            var line =
                 "[MainView2][YoloInpaint][Resources] stage=" + (stage ?? "")
                 + " | private_mb=" + privateMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
                 + " | working_set_mb=" + workingSetMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
                 + " | managed_mb=" + managedMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
                 + " | gfx_mb=" + gfxMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
                 + " | rt_objects=" + rtCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " | " + NcnnGpuResourceTracker.BuildSummary());
+                + " | " + NcnnGpuResourceTracker.BuildSummary();
+            UnityEngine.Debug.Log(line);
+            YoloInpaintResourceSnapshotLines.Add(line);
         }
         catch (Exception e)
         {
-            try { UnityEngine.Debug.Log("[MainView2][YoloInpaint][Resources] stage=" + (stage ?? "") + " | snapshot_failed=" + e.Message); } catch { }
+            try
+            {
+                var line = "[MainView2][YoloInpaint][Resources] stage=" + (stage ?? "") + " | snapshot_failed=" + e.Message;
+                UnityEngine.Debug.Log(line);
+                YoloInpaintResourceSnapshotLines.Add(line);
+            }
+            catch { }
+        }
+    }
+
+    private static void TryWriteYoloInpaintResourceReport()
+    {
+        try
+        {
+            var root = Path.Combine(Path.GetTempPath(), "YanQi", "AIImage");
+            Directory.CreateDirectory(root);
+            var dir = Path.Combine(root, "AIImage_MainView2_YoloInpaint_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            Directory.CreateDirectory(dir);
+            if (YoloInpaintResourceSnapshotLines.Count > 0)
+                File.WriteAllText(Path.Combine(dir, "resource_snapshots.txt"), string.Join(Environment.NewLine, YoloInpaintResourceSnapshotLines));
+            NcnnGpuResourceTracker.WriteReport(dir, "gpu_resource_stats.txt");
+        }
+        catch
+        {
         }
     }
 

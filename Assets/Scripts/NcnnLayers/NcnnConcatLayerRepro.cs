@@ -119,7 +119,7 @@ namespace NcnnCompute
 
             var outBuf = owner.RentTempBuffer(outCount, sizeof(float));
             outBuf.SetData(outData);
-            var outTensor = new NcnnTensorBuffer(outBuf, firstView.dims, outW, outH, outD, outC, false);
+            var outTensor = new NcnnTensorBuffer(outBuf, firstView.dims, outW, outH, outD, outC, true, owner.ReturnTempBuffer);
 
             owner.PublishTensorBufferOutput(
                 layer.topNames[0],

@@ -121,6 +121,9 @@ public static class NcnnDebugRunner
             case nameof(RunYoloAndInpaintingDebugBatch):
                 RunYoloAndInpaintingDebugBatch();
                 return;
+            case nameof(RunYoloAndInpaintingProbeBatch):
+                RunYoloAndInpaintingProbeBatch();
+                return;
             case nameof(RunStableDiffusionDebugBatch):
                 RunStableDiffusionDebugBatch();
                 return;
@@ -365,6 +368,8 @@ public static class NcnnDebugRunner
 
     public static void RunYoloAndInpaintingDebugBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingDebugBatch), RunYoloAndInpaintingDebugInternal, TimeSpan.FromHours(4));
 
+    public static void RunYoloAndInpaintingProbeBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingProbeBatch), RunYoloAndInpaintingProbeInternal, TimeSpan.FromHours(6));
+
     public static async void RunYoloSegDebugBatchLegacy()
     {
         try
@@ -592,23 +597,113 @@ public static class NcnnDebugRunner
     private static async UniTask RunYoloAndInpaintingDebugInternal()
     {
         var inputPath = ResolveInputPath(DefaultReproStressImagePath);
+        var enableDump = ResolveBoolEnv(SdEnableDumpEnvVar, false);
+        var stepCount = ResolvePositiveIntEnv(SdStepsEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStepCount);
+        var seed = ResolveIntEnvAllowZero(SdSeedEnvVar, 123456);
+        var strength = Mathf.Clamp01(ResolveFloatEnvOrDefault(SdStrengthEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStrength));
+        var guidanceScale = Mathf.Max(1f, ResolveFloatEnvOrDefault(SdGuidanceScaleEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedGuidanceScale));
+        var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedPositivePrompt);
+        var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedNegativePrompt);
+        var outputDir = CreateGenericDumpDir("AIImage_YoloInpaintingRepro");
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint");
+        try
+        {
+            await RunYoloAndInpaintingDebugOnce(
+                inputPath,
+                outputDir,
+                enableDump,
+                stepCount,
+                seed,
+                strength,
+                guidanceScale,
+                positivePrompt,
+                negativePrompt,
+                "batch");
+        }
+        finally
+        {
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private static async UniTask RunYoloAndInpaintingProbeInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultReproStressImagePath);
+        var enableDump = ResolveBoolEnv(SdEnableDumpEnvVar, false);
+        var iterations = ResolvePositiveIntEnv(StressCountEnvVar, 3);
+        var stepCount = ResolvePositiveIntEnv(SdStepsEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStepCount);
+        var seed = ResolveIntEnvAllowZero(SdSeedEnvVar, 123456);
+        var strength = Mathf.Clamp01(ResolveFloatEnvOrDefault(SdStrengthEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStrength));
+        var guidanceScale = Mathf.Max(1f, ResolveFloatEnvOrDefault(SdGuidanceScaleEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedGuidanceScale));
+        var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedPositivePrompt);
+        var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedNegativePrompt);
+        var outputDir = CreateGenericDumpDir("AIImage_YoloInpaintingProbe");
+        var summaryPath = Path.Combine(outputDir, "probe_summary.tsv");
+
+        Directory.CreateDirectory(outputDir);
+        using var sw = new StreamWriter(summaryPath, false);
+        sw.WriteLine("iter\tstage\tprivate_mb\tworking_set_mb\tmanaged_mb\tgfx_mb\trt_objects\tgpu_summary\toutput_dir");
+
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        try
+        {
+            for (var i = 0; i < iterations; i++)
+            {
+                var iteration = i + 1;
+                var iterationDir = Path.Combine(outputDir, "iter_" + iteration.ToString("00", CultureInfo.InvariantCulture));
+                Directory.CreateDirectory(iterationDir);
+
+                NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint.Probe." + iteration.ToString(CultureInfo.InvariantCulture));
+                LogResourceSnapshot("probe_iter_" + iteration.ToString(CultureInfo.InvariantCulture) + "_begin");
+                WriteResourceSummaryRow(sw, iteration, "begin", iterationDir);
+
+                await RunYoloAndInpaintingDebugOnce(
+                    inputPath,
+                    iterationDir,
+                    enableDump,
+                    stepCount,
+                    seed,
+                    strength,
+                    guidanceScale,
+                    positivePrompt,
+                    negativePrompt,
+                    "probe#" + iteration.ToString(CultureInfo.InvariantCulture));
+
+                LogResourceSnapshot("probe_iter_" + iteration.ToString(CultureInfo.InvariantCulture) + "_after_run");
+                WriteResourceSummaryRow(sw, iteration, "after_run", iterationDir);
+                await ReleaseGpuPressureAsync();
+                LogResourceSnapshot("probe_iter_" + iteration.ToString(CultureInfo.InvariantCulture) + "_after_release");
+                WriteResourceSummaryRow(sw, iteration, "after_release", iterationDir);
+                try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(iterationDir, "gpu_resource_stats.txt"); } catch { }
+                sw.Flush();
+            }
+        }
+        finally
+        {
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private static async UniTask RunYoloAndInpaintingDebugOnce(
+        string inputPath,
+        string outputDir,
+        bool enableDump,
+        int stepCount,
+        int seed,
+        float strength,
+        float guidanceScale,
+        string positivePrompt,
+        string negativePrompt,
+        string logTag)
+    {
         var tex = LoadTexture(inputPath);
         if (tex == null)
             throw new InvalidOperationException("Failed to load debug input: " + inputPath);
 
-        var enableDump = ResolveBoolEnv(SdEnableDumpEnvVar, false);
-        var outputDir = CreateGenericDumpDir("AIImage_YoloInpaintingRepro");
         TryWriteTexturePng(tex, outputDir, "00_source.png");
-
-        var stepCount = ResolvePositiveIntEnv(SdStepsEnvVar, 12);
-        var seed = ResolveIntEnvAllowZero(SdSeedEnvVar, 123456);
-        var strength = Mathf.Clamp01(ResolveFloatEnvOrDefault(SdStrengthEnvVar, 1f));
-        var guidanceScale = Mathf.Max(1f, ResolveFloatEnvOrDefault(SdGuidanceScaleEnvVar, 7.5f));
-        var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, "best quality, realistic photo, clean background, natural scene, coherent texture, seamless fill, empty space, no people");
-        var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, "person, people, human, man, woman, child, face, body, duplicate, blurry, deformed, extra limbs, artifacts, text, watermark");
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint");
-        LogResourceSnapshot("batch_yolo_inpaint_begin");
+        LogResourceSnapshot(logTag + "_yolo_inpaint_begin");
 
         var go = new GameObject("YoloAndInpaintingDebugRunner");
         YoloSegResult yoloResult = default;
@@ -625,14 +720,14 @@ public static class NcnnDebugRunner
             yoloRunner.flipYInput = ResolveBoolEnv(YoloFlipYEnvVar, yoloRunner.flipYInput);
             yoloRunner.ProgressChanged += (value, message) =>
             {
-                Debug.Log("[YOLO+INPAINT][YOLO] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+                Debug.Log("[" + logTag + "][YOLO] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             };
 
             yoloResult = await yoloRunner.ProcessAsync(tex, CancellationToken.None);
-            LogResourceSnapshot("batch_after_yolo_process");
+            LogResourceSnapshot(logTag + "_after_yolo_process");
             yoloDumpDir = yoloRunner.LastDumpDir;
             Debug.Log(
-                "YOLO + Inpainting debug | yoloError=" + (yoloResult.error ?? "")
+                "[" + logTag + "] yoloError=" + (yoloResult.error ?? "")
                 + " | yoloElapsedMs=" + yoloResult.elapsedMs
                 + " | personCount=" + yoloResult.personCount.ToString(CultureInfo.InvariantCulture)
                 + " | coverage=" + yoloResult.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture)
@@ -658,13 +753,18 @@ public static class NcnnDebugRunner
                 UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
                 yoloResult.overlay = null;
             }
+
+            TryInvokeReleaseMethod(yoloRunner);
             UnityEngine.Object.DestroyImmediate(yoloRunner);
-            await UniTask.Yield();
-            LogResourceSnapshot("batch_after_yolo_destroy");
+            await ReleaseGpuPressureAsync();
+            LogResourceSnapshot(logTag + "_after_yolo_release");
 
             var inpaintRunner = go.AddComponent<SDInpaintingNcnnReproRunner>();
             inpaintRunner.enableDebugDump = enableDump;
+            inpaintRunner.ApplyPeopleRemovalPreset();
             inpaintRunner.useOfficialUnetCache = false;
+            inpaintRunner.enableTempPool = false;
+            inpaintRunner.maxPooledPerShape = 0;
             inpaintRunner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, inpaintRunner.tensorTextureFormat);
             inpaintRunner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, inpaintRunner.decoderTensorTextureFormat);
             inpaintRunner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, inpaintRunner.encoderTensorTextureFormat);
@@ -676,7 +776,7 @@ public static class NcnnDebugRunner
             inpaintRunner.defaultNegativePrompt = negativePrompt;
             inpaintRunner.ProgressChanged += (value, message) =>
             {
-                Debug.Log("[YOLO+INPAINT][SD] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+                Debug.Log("[" + logTag + "][SD] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             };
 
             inpaintResult = await inpaintRunner.ProcessAsync(
@@ -689,10 +789,10 @@ public static class NcnnDebugRunner
                 strength,
                 guidanceScale,
                 CancellationToken.None);
-            LogResourceSnapshot("batch_after_inpaint_process");
+            LogResourceSnapshot(logTag + "_after_inpaint_process");
 
             Debug.Log(
-                "YOLO + Inpainting debug | inpaintError=" + (inpaintResult.error ?? "")
+                "[" + logTag + "] inpaintError=" + (inpaintResult.error ?? "")
                 + " | inpaintElapsedMs=" + inpaintResult.elapsedMs
                 + " | seed=" + inpaintResult.seed.ToString(CultureInfo.InvariantCulture)
                 + " | inpaintDump=" + (inpaintResult.dumpDir ?? inpaintRunner.LastDumpDir ?? ""));
@@ -724,7 +824,7 @@ public static class NcnnDebugRunner
                 "yolo_dump=" + (yoloDumpDir ?? string.Empty),
                 "inpaint_dump=" + (inpaintResult.dumpDir ?? inpaintRunner.LastDumpDir ?? string.Empty));
             File.WriteAllText(Path.Combine(outputDir, "summary.txt"), summary);
-            Debug.Log("[YOLO+INPAINT] summary\n" + summary);
+            Debug.Log("[" + logTag + "] summary\n" + summary);
 
             if (maskedPixels <= 0)
                 throw new InvalidOperationException("YOLO mask has zero pixels.");
@@ -733,7 +833,7 @@ public static class NcnnDebugRunner
         }
         finally
         {
-            LogResourceSnapshot("batch_yolo_inpaint_finally_begin");
+            LogResourceSnapshot(logTag + "_finally_begin");
             if (inpaintResult.texture != null)
                 UnityEngine.Object.DestroyImmediate(inpaintResult.texture);
             if (yoloResult.texture != null)
@@ -744,8 +844,8 @@ public static class NcnnDebugRunner
                 UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
-            LogResourceSnapshot("batch_yolo_inpaint_finally_end");
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            await ReleaseGpuPressureAsync();
+            LogResourceSnapshot(logTag + "_finally_end");
         }
     }
 
@@ -772,6 +872,46 @@ public static class NcnnDebugRunner
         {
             try { Debug.Log("[NcnnDebugRunner][Resources] stage=" + (stage ?? "") + " | snapshot_failed=" + e.Message); } catch { }
         }
+    }
+
+    private static void WriteResourceSummaryRow(StreamWriter sw, int iteration, string stage, string outputDir)
+    {
+        if (sw == null)
+            return;
+
+        var process = Process.GetCurrentProcess();
+        var privateMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+        var workingSetMb = process.WorkingSet64 / (1024.0 * 1024.0);
+        var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+        var gfxMb = GetGraphicsDriverMemoryMb();
+        var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
+        sw.WriteLine(
+            iteration.ToString(CultureInfo.InvariantCulture) + "\t"
+            + EscapeTsv(stage ?? string.Empty) + "\t"
+            + privateMb.ToString("F3", CultureInfo.InvariantCulture) + "\t"
+            + workingSetMb.ToString("F3", CultureInfo.InvariantCulture) + "\t"
+            + managedMb.ToString("F3", CultureInfo.InvariantCulture) + "\t"
+            + gfxMb.ToString("F3", CultureInfo.InvariantCulture) + "\t"
+            + rtCount.ToString(CultureInfo.InvariantCulture) + "\t"
+            + EscapeTsv(NcnnCompute.NcnnGpuResourceTracker.BuildSummary()) + "\t"
+            + EscapeTsv(outputDir ?? string.Empty));
+    }
+
+    private static async UniTask ReleaseGpuPressureAsync()
+    {
+        await UniTask.Yield();
+        RenderTexture.active = null;
+        if (!Application.isBatchMode)
+        {
+            var unloadOp = Resources.UnloadUnusedAssets();
+            if (unloadOp != null)
+                await unloadOp.ToUniTask();
+        }
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        RenderTexture.active = null;
+        await UniTask.Yield();
     }
 
     public static void RunCodeFormerDebugBatch() => RunBatchBlocking(nameof(RunCodeFormerDebugBatch), RunCodeFormerDebugInternal);
