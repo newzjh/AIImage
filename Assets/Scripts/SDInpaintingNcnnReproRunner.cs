@@ -205,13 +205,18 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
             var u1 = NextUniform();
             var u2 = NextUniform();
-            var radius = (float)Math.Sqrt(-2.0 * Math.Log(Math.Max(1e-12f, 1f - u2)));
+            var radius = (float)Math.Sqrt(-2.0 * Math.Log(1.0 - u2));
             var theta = 2f * Mathf.PI * u1;
             _nextNormal = radius * Mathf.Sin(theta);
             return radius * Mathf.Cos(theta);
         }
 
-        private float NextUniform()
+        public float NextUniform()
+        {
+            return NextUniformInternal();
+        }
+
+        private float NextUniformInternal()
         {
             // Match PyTorch's uniform_real<float> which uses the low 24 mantissa bits.
             return (NextUInt32() & 0x00ffffffu) * (1f / 16777216f);
@@ -236,10 +241,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             _left = StateCount;
             _next = 0;
 
-            for (var j = StateCount - StateM + 1; j > 0; j--, p++)
+            for (var j = StateCount - StateM; j > 0; j--, p++)
                 _state[p] = _state[p + StateM] ^ Twist(_state[p], _state[p + 1]);
 
-            for (var j = StateM; j > 0; j--, p++)
+            for (var j = StateM - 1; j > 0; j--, p++)
                 _state[p] = _state[p + StateM - StateCount] ^ Twist(_state[p], _state[p + 1]);
 
             _state[p] = _state[p + StateM - StateCount] ^ Twist(_state[p], _state[0]);
@@ -346,7 +351,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         Texture2D latentMaskTexture = null;
         Texture2D generated512 = null;
         Texture2D generatedResized = null;
-        Texture2D compositeMask = null;
         ComputeBuffer condBuf = null;
         ComputeBuffer uncondBuf = null;
         ComputeBuffer latentMaskBuf = null;
@@ -475,6 +479,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_mask_tex_stats.txt"), latentMaskTex, 1);
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_masked_tex_stats.txt"), maskedLatentTex, LatentChannels);
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_init_tex_stats.txt"), latentsTex, LatentChannels);
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_init_f32.bin"), latentsTex, LatentChannels);
             }
 
             if (latentMaskTex == null || maskedLatentTex == null || latentsTex == null)
@@ -496,14 +501,20 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 try
                 {
                     if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+                    {
                         DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "epsilon_step_" + i.ToString(CultureInfo.InvariantCulture) + "_stats.txt"), epsilonTex, LatentChannels);
+                        DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "epsilon_step_" + i.ToString(CultureInfo.InvariantCulture) + "_f32.bin"), epsilonTex, LatentChannels);
+                    }
 
                     var nextLatents = DdimStepPack4(latentsTex, epsilonTex, timestep, prevTimestep);
                     if (nextLatents == null)
                         return Finish(new SDInpaintingNcnnReproResult { error = "DDIM step failed at timestep " + timestep.ToString(CultureInfo.InvariantCulture) + "." });
 
                     if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+                    {
                         DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_step_" + i.ToString(CultureInfo.InvariantCulture) + "_stats.txt"), nextLatents, LatentChannels);
+                        DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_step_" + i.ToString(CultureInfo.InvariantCulture) + "_f32.bin"), nextLatents, LatentChannels);
+                    }
 
                     _unetRepro.ReturnTempArray(latentsTex);
                     latentsTex = nextLatents;
@@ -542,40 +553,25 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (generatedResized == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to scale generated image back to source size." });
 
-            compositeMask = maskReadable.width == sourceReadable.width && maskReadable.height == sourceReadable.height
-                ? NormalizeInpaintMask(maskReadable, blackMaskMeansInpaint)
-                : ReadResizedTexture(normalizedMask, sourceReadable.width, sourceReadable.height);
-            if (compositeMask == null)
-                return Finish(new SDInpaintingNcnnReproResult { error = "Failed to prepare composite mask." });
+            var finalTexture = generatedResized;
+            generatedResized = null;
 
-            try
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir))
             {
-                var finalTexture = CompositeWithMask(sourceReadable, generatedResized, compositeMask);
-                if (finalTexture == null)
-                    return Finish(new SDInpaintingNcnnReproResult { error = "Failed to composite inpainting result." });
-
-                if (!string.IsNullOrWhiteSpace(_lastDumpDir))
-                {
-                    TryWriteTexturePng(generated512, _lastDumpDir, "05_generated_512.png");
-                    TryWriteTexturePng(generatedResized, _lastDumpDir, "06_generated_fullres.png");
-                    TryWriteTexturePng(finalTexture, _lastDumpDir, "07_final_output.png");
-                    WriteAllTextSafe(
-                        Path.Combine(_lastDumpDir, "run_config.txt"),
-                        "seed=" + actualSeed.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
-                        + "steps=" + stepCount.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
-                        + "strength=" + strength.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
-                        + "guidance_scale=" + guidanceScale.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
-                        + "black_mask_means_inpaint=" + BoolText(blackMaskMeansInpaint));
-                }
-
-                ReportProgress(1f, string.Empty);
-                return Finish(new SDInpaintingNcnnReproResult { texture = finalTexture });
+                TryWriteTexturePng(generated512, _lastDumpDir, "05_generated_512.png");
+                TryWriteTexturePng(finalTexture, _lastDumpDir, "06_generated_fullres.png");
+                TryWriteTexturePng(finalTexture, _lastDumpDir, "07_final_output.png");
+                WriteAllTextSafe(
+                    Path.Combine(_lastDumpDir, "run_config.txt"),
+                    "seed=" + actualSeed.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
+                    + "steps=" + stepCount.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
+                    + "strength=" + strength.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
+                    + "guidance_scale=" + guidanceScale.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
+                    + "black_mask_means_inpaint=" + BoolText(blackMaskMeansInpaint));
             }
-            finally
-            {
-                if (compositeMask != null)
-                    DestroyImmediate(compositeMask);
-            }
+
+            ReportProgress(1f, string.Empty);
+            return Finish(new SDInpaintingNcnnReproResult { texture = finalTexture });
         }
         catch (OperationCanceledException)
         {
@@ -583,6 +579,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
         catch (Exception e)
         {
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+                WriteAllTextSafe(Path.Combine(_lastDumpDir, "exception.txt"), e.ToString());
+            UnityEngine.Debug.LogError("[SDInpaint] ProcessAsync failed: " + e);
             return Finish(new SDInpaintingNcnnReproResult { error = e.ToString() });
         }
         finally
@@ -1155,7 +1154,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         try
         {
             inputBuf = CreateEncoderInputBufferNcnn(source, ModelImageSize, ModelImageSize);
-            inputPack4 = _vaeEncoderRepro.RentTempArray(ModelImageSize, ModelImageSize, 1, RenderTextureFormat.ARGBHalf);
+            inputPack4 = _vaeEncoderRepro.RentTempArray(ModelImageSize, ModelImageSize, 1, encoderTensorTextureFormat);
             _ops.FillPack4FromBufferCHW(inputBuf, ModelImageSize, ModelImageSize, 3, inputPack4);
 
             using (var infer = _vaeEncoderRepro.Infer(
@@ -1234,7 +1233,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             _ops.CopyBuf(latentBuf, scaledLatent, latentBuf.count);
             _ops.MulScalarInplace(scaledLatent, InvLatentScale, scaledLatent.count);
 
-            inputTex = _vaeRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
+            inputTex = _vaeRepro.RentTempArray(LatentSize, LatentSize, 1, decoderTensorTextureFormat);
             _ops.FillPack4FromBufferCHW(scaledLatent, LatentSize, LatentSize, LatentChannels, inputTex);
 
             using (var infer = _vaeRepro.Infer(inputTex, 1, VaeDecoderInputBlobName, new HashSet<string>(StringComparer.Ordinal) { VaeDecoderOutputBlobName }))
@@ -1245,7 +1244,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (decodedTex == null)
                 return null;
 
-            clippedTex = _vaeRepro.RentTempArray(decodedTex.width, decodedTex.height, 1, RenderTextureFormat.ARGBHalf);
+            clippedTex = _vaeRepro.RentTempArray(decodedTex.width, decodedTex.height, 1, decoderTensorTextureFormat);
             _ops.ClipPack4(decodedTex, -1f, 1f, 1, clippedTex);
             rgbRt = GetTemporaryRt(decodedTex.width, decodedTex.height, RenderTextureFormat.ARGB32, true);
             _ops.Pack4ToRgb01(clippedTex, rgbRt, true);
@@ -1295,7 +1294,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             _ops.CopyBufPartial(maskBuf, 0, concatBuf, plane, plane * LatentChannels);
             _ops.CopyBufPartial(maskedLatentBuf, 0, concatBuf, plane * LatentChannels, plane * (LatentChannels + 1));
 
-            inputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, Mathf.CeilToInt(UnetInputChannels / 4f), RenderTextureFormat.ARGBHalf);
+            inputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, Mathf.CeilToInt(UnetInputChannels / 4f), tensorTextureFormat);
             _ops.FillPack4FromBufferCHW(concatBuf, LatentSize, LatentSize, UnetInputChannels, inputTex);
 
             timestepBuf = NewFloatBuffer(new[] { (float)timestep });
@@ -1388,7 +1387,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "unity_unet_uncond_out_stats.txt"), uncondOutTex, LatentChannels);
             }
 
-            finalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
+            finalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
             _ops.AddPack4(condOutTex, uncondOutTex, guidanceScale, 1f - guidanceScale, 1, finalTex);
 
             if (shouldDumpFirstStep)
@@ -1602,7 +1601,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (latentMaskBuf == null)
             return null;
 
-        var maskTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
+        var maskTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
         _ops.FillPack4FromBufferCHW(latentMaskBuf, LatentSize, LatentSize, 1, maskTex);
         return maskTex;
     }
@@ -1612,7 +1611,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (latentBuf == null)
             return null;
 
-        var latentTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
+        var latentTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
         _ops.FillPack4FromBufferCHW(latentBuf, LatentSize, LatentSize, LatentChannels, latentTex);
         return latentTex;
     }
@@ -1643,9 +1642,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (cleanTex == null || noiseTex == null)
                 return null;
 
-            scaledCleanTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
-            scaledNoiseTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
-            outputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
+            scaledCleanTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            scaledNoiseTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            outputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
             _ops.BinaryOpScalarPack4(cleanTex, sqrtAlpha, 1, 2, scaledCleanTex);
             _ops.BinaryOpScalarPack4(noiseTex, sqrtOneMinusAlpha, 1, 2, scaledNoiseTex);
             _ops.BinaryOpPack4(scaledCleanTex, scaledNoiseTex, 1, 0, outputTex);
@@ -1681,7 +1680,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         RenderTexture inputTex = null;
         try
         {
-            inputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, Mathf.CeilToInt(UnetInputChannels / 4f), RenderTextureFormat.ARGBHalf);
+            inputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, Mathf.CeilToInt(UnetInputChannels / 4f), tensorTextureFormat);
             _ops.BuildSdInpaintInput9Pack4(latentsTex, maskTex, maskedLatentTex, inputTex);
 
             var result = inputTex;
@@ -1716,12 +1715,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         RenderTexture outputTex = null;
         try
         {
-            scaledEpsilonTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
-            predOriginalNumeratorTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
-            predOriginalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
-            predDirectionTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
-            scaledOriginalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
-            outputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, RenderTextureFormat.ARGBHalf);
+            scaledEpsilonTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            predOriginalNumeratorTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            predOriginalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            predDirectionTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            scaledOriginalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            outputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
 
             _ops.BinaryOpScalarPack4(epsilonTex, sqrtBetaT, 1, 2, scaledEpsilonTex);
             _ops.BinaryOpPack4(sampleTex, scaledEpsilonTex, 1, 1, predOriginalNumeratorTex);
@@ -1938,9 +1937,56 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             throw new ArgumentNullException(nameof(rng));
 
         var data = new float[Mathf.Max(0, count)];
+        if (rng is TorchCpuNormalRng torchRng && data.Length >= 16)
+        {
+            FillTorchCpuGaussian(data, torchRng);
+            return data;
+        }
+
         for (var i = 0; i < data.Length; i++)
             data[i] = rng.NextNormal();
         return data;
+    }
+
+    private static void FillTorchCpuGaussian(float[] data, TorchCpuNormalRng rng)
+    {
+        if (data == null || data.Length == 0 || rng == null)
+            return;
+
+        var block = new float[16];
+        var full = data.Length - 15;
+        var offset = 0;
+        while (offset < full)
+        {
+            FillTorchCpuGaussianBlock(block, rng);
+            Array.Copy(block, 0, data, offset, 16);
+            offset += 16;
+        }
+
+        if ((data.Length % 16) != 0)
+        {
+            FillTorchCpuGaussianBlock(block, rng);
+            Array.Copy(block, 0, data, data.Length - 16, 16);
+        }
+    }
+
+    private static void FillTorchCpuGaussianBlock(float[] block, TorchCpuNormalRng rng)
+    {
+        if (block == null || block.Length < 16 || rng == null)
+            return;
+
+        for (var i = 0; i < 16; i++)
+            block[i] = rng.NextUniform();
+
+        for (var j = 0; j < 8; j++)
+        {
+            var u1 = 1f - block[j];
+            var u2 = block[j + 8];
+            var radius = Mathf.Sqrt(-2f * Mathf.Log(Mathf.Max(u1, 1e-12f)));
+            var theta = 2f * Mathf.PI * u2;
+            block[j] = radius * Mathf.Cos(theta);
+            block[j + 8] = radius * Mathf.Sin(theta);
+        }
     }
 
     private static int NormalizeSeed(int seed)
