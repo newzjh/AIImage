@@ -150,7 +150,7 @@ namespace NcnnCompute
             if (!owner._conv.TryGetValue(layer.name, out var conv))
                 throw new InvalidOperationException("Convolution not found: " + layer.name);
 
-            if (CanExecuteRenderTexturePath(owner, layer, context, conv))
+            if (!owner.ShouldForceCurrentLayerBufferPath() && CanExecuteRenderTexturePath(owner, layer, context, conv))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
                 return;
@@ -272,6 +272,15 @@ namespace NcnnCompute
             var outWTex = NcnnRepro.ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
             var outHTex = NcnnRepro.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
             var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
+            var canUseSpecialized3x3TexturePath = conv.kernelW == 3
+                                                 && conv.kernelH == 3
+                                                 && conv.strideW == 1
+                                                 && conv.strideH == 1
+                                                 && conv.padLeft == conv.padRight
+                                                 && conv.padTop == conv.padBottom
+                                                 && conv.padLeft == conv.padTop
+                                                 && (conv.inC & 3) == 0
+                                                 && (conv.outC & 3) == 0;
 
             if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution)
             {
@@ -287,13 +296,7 @@ namespace NcnnCompute
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             }
-            else if (conv.kernelW == 3
-                     && conv.kernelH == 3
-                     && conv.strideW == 1
-                     && conv.strideH == 1
-                     && conv.padLeft == conv.padRight
-                     && conv.padTop == conv.padBottom
-                     && conv.padLeft == conv.padTop)
+            else if (canUseSpecialized3x3TexturePath)
             {
                 if (NcnnRepro.EnableWinograd23 && conv.useWinograd23)
                     owner.Ops.Conv3x3Pack4Winograd23(src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outRt);
@@ -369,12 +372,21 @@ namespace NcnnCompute
                                                 var outW = Mathf.Max(1, outShape.w);
                                                 var outH = Mathf.Max(1, outShape.h);
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
+                                                var canUseSpecialized3x3TexturePath = conv.kernelW == 3
+                                                    && conv.kernelH == 3
+                                                    && conv.padLeft == conv.padRight
+                                                    && conv.padLeft == conv.padTop
+                                                    && conv.padTop == conv.padBottom
+                                                    && conv.strideW == 1
+                                                    && conv.strideH == 1
+                                                    && (conv.inC & 3) == 0
+                                                    && (conv.outC & 3) == 0;
 
                                                 if (conv.kernelW == 1 && conv.kernelH == 1)
                                                 {
                                                     owner.Ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outArr);
                                                 }
-                                                else if (conv.kernelW == 3 && conv.kernelH == 3 && conv.padLeft == conv.padRight && conv.padLeft == conv.padTop && conv.padTop == conv.padBottom)
+                                                else if (canUseSpecialized3x3TexturePath)
                                                 {
                                                     var useWinograd = NcnnRepro.EnableWinograd23
                                                         && conv.packedWeightTm23 != null
@@ -423,12 +435,32 @@ namespace NcnnCompute
 
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context, NcnnRepro.ConvPack conv)
         {
+            var canUseConv1x1TexturePath = !conv.isDepthWise
+                                           && conv.group == 1
+                                           && conv.kernelW == 1
+                                           && conv.kernelH == 1
+                                           && owner.EnableConv1x1TextureConvolution
+                                           && conv.packedWeight4 != null
+                                           && conv.packedBias4 != null;
             var canUseDepthWiseTexturePath = owner.EnableDepthWiseTextureConvolution
                                             && conv.isDepthWise
                                             && conv.group == conv.inC
                                             && conv.outC == conv.inC
                                             && conv.packedDepthWiseWeight4 != null
                                             && conv.packedBias4 != null;
+            var canUseSpecialized3x3TexturePath = !conv.isDepthWise
+                                                 && conv.group == 1
+                                                 && conv.kernelW == 3
+                                                 && conv.kernelH == 3
+                                                 && conv.strideW == 1
+                                                 && conv.strideH == 1
+                                                 && conv.padLeft == conv.padRight
+                                                 && conv.padTop == conv.padBottom
+                                                 && conv.padLeft == conv.padTop
+                                                 && (conv.inC & 3) == 0
+                                                 && (conv.outC & 3) == 0
+                                                 && conv.packedWeight4 != null
+                                                 && conv.packedBias4 != null;
             var canUseGeneralTexturePath = owner.EnableGeneralTextureConvolution
                                            && !conv.isDepthWise
                                            && conv.group == 1
@@ -437,6 +469,13 @@ namespace NcnnCompute
                                            && conv.kernelW > 0
                                            && conv.kernelH == conv.kernelW
                                            && !(conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
+            var hasSupportedTexturePath = canUseConv1x1TexturePath
+                                          || canUseDepthWiseTexturePath
+                                          || canUseSpecialized3x3TexturePath
+                                          || canUseGeneralTexturePath;
+
+            if (!hasSupportedTexturePath)
+                return false;
 
             var forceBufferThisConv = owner.ForceBufferConvolutionAll
                                       || (conv.useBufferPath && !canUseDepthWiseTexturePath && !canUseGeneralTexturePath)

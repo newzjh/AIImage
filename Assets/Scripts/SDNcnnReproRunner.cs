@@ -1721,6 +1721,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         repro.EnableGpuGeluBufferPath = true;
         repro.EnableConv1x1TextureConvolution = true;
         repro.EnableDepthWiseTextureConvolution = true;
+        repro.EnableGeneralTextureConvolution = true;
         repro.EnableGroupNormTexturePath = true;
         repro.KeepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
         repro.EnableMhaParallelSoftmax = ResolveMhaParallelSoftmax();

@@ -4754,12 +4754,39 @@ namespace NcnnCompute
                     return (1, aCount, bCount, bView);
             }
 
+            if (aView != null && bView != null)
+            {
+                if (IsChannelVectorBroadcastSource(aView, bView))
+                    return (3, bView.w * bView.h * bView.d, bCount, bView);
+                if (IsChannelVectorBroadcastSource(bView, aView))
+                    return (4, aView.w * aView.h * aView.d, aCount, aView);
+            }
+
             if (aCount < bCount && bCount % aCount == 0)
                 return (1, aCount, bCount, bView);
             if (bCount < aCount && aCount % bCount == 0)
                 return (2, bCount, aCount, aView);
 
             throw new InvalidOperationException("BinaryOp broadcast not supported: " + layerName + " | " + aCount + " vs " + bCount);
+        }
+
+        private static bool IsChannelVectorBroadcastSource(NcnnTensorBuffer vectorView, NcnnTensorBuffer tensorView)
+        {
+            if (vectorView == null || tensorView == null)
+                return false;
+            if (tensorView.dims < 3 || tensorView.c <= 0)
+                return false;
+            if (vectorView.elementCount != tensorView.c)
+                return false;
+
+            return vectorView.dims switch
+            {
+                1 => true,
+                2 => vectorView.w == 1 || vectorView.h == 1,
+                3 => vectorView.w == 1 && vectorView.h == 1,
+                4 => vectorView.w == 1 && vectorView.h == 1 && vectorView.d == 1,
+                _ => false
+            };
         }
 
         internal bool TryExpand2DBroadcastBuffer(
@@ -5120,6 +5147,8 @@ namespace NcnnCompute
             if (KeepRawConvWeightsForTexturePath)
                 return true;
             if (conv == null)
+                return true;
+            if (MatchesForceBufferToken(ForceBufferLayerNames, layerName))
                 return true;
             if (ForceBufferConvolutionAll || ForceBufferConvolution)
                 return true;

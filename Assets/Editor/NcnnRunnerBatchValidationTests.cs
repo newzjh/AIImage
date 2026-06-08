@@ -270,7 +270,12 @@ public sealed class NcnnRunnerBatchValidationTests
             inpaintRunner.defaultGuidanceScale,
             ct);
 
-        var maskedDiff = ComputeMaskedMeanAbsDiff(input, inpaintResult.texture, yoloResult.mask, out var maskedPixels);
+        var maskedDiff = ComputeMaskedMeanAbsDiff(
+            input,
+            inpaintResult.texture,
+            yoloResult.mask,
+            inpaintRunner.blackMaskMeansInpaint,
+            out var maskedPixels);
         return (yoloResult, inpaintResult, maskedDiff, maskedPixels);
     }
 
@@ -301,7 +306,7 @@ public sealed class NcnnRunnerBatchValidationTests
             UnityEngine.Object.DestroyImmediate(obj);
     }
 
-    private static float ComputeMaskedMeanAbsDiff(Texture2D source, Texture2D candidate, Texture2D mask, out int maskedPixels)
+    private static float ComputeMaskedMeanAbsDiff(Texture2D source, Texture2D candidate, Texture2D mask, bool blackMaskMeansInpaint, out int maskedPixels)
     {
         maskedPixels = 0;
         if (source == null || candidate == null || mask == null)
@@ -315,7 +320,9 @@ public sealed class NcnnRunnerBatchValidationTests
         double sumAbs = 0d;
         for (var i = 0; i < srcPixels.Length; i++)
         {
-            if (maskPixels[i].r < 128 && maskPixels[i].g < 128 && maskPixels[i].b < 128)
+            var maskIsWhite = maskPixels[i].r >= 128 || maskPixels[i].g >= 128 || maskPixels[i].b >= 128;
+            var include = blackMaskMeansInpaint ? !maskIsWhite : maskIsWhite;
+            if (!include)
                 continue;
 
             maskedPixels++;

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -117,7 +118,7 @@ namespace NcnnCompute
                 throw new InvalidOperationException("SDPA dst_seqlen exceeds current repro shader limit 4096: " + layer.name);
 
             var outTensor = owner.RentTempTensorBuffer(3, outEmbedDim, srcSeqLen, 1, numHeads);
-            var canUseFastPath = false;
+            var canUseFastPath = !sp.kvCache && ResolveSdpaFastPathEnabled();
             if (canUseFastPath)
             {
                 owner.Ops.SdpaAttentionFast(
@@ -254,6 +255,37 @@ namespace NcnnCompute
             var tensor = owner.RentTempTensorBuffer(dims, w, h, d, c);
             owner.Ops.CopyBuf(buffer, tensor.buffer, tensor.buffer.count);
             owner.PublishTensorBufferOutput(topName, tensor, preferTexture, textureBlobs, textureShapes, bufferBlobs, bufferRefs, bufferViews, tempOwned);
+        }
+
+        private static bool ResolveSdpaFastPathEnabled()
+        {
+            try
+            {
+                var env = Environment.GetEnvironmentVariable("AIIMAGE_SD_SDPA_FASTPATH");
+                if (string.IsNullOrWhiteSpace(env))
+                    return true;
+
+                env = env.Trim();
+                if (string.Equals(env, "0", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "false", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "off", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "no", StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "on", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                if (float.TryParse(env, NumberStyles.Float, CultureInfo.InvariantCulture, out var numeric))
+                    return numeric > 0f;
+            }
+            catch
+            {
+            }
+
+            return true;
         }
     }
 }

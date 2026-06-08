@@ -262,6 +262,51 @@ namespace NcnnCompute
             if (!owner.ForceBufferBinaryOpAll
                 && !isTargetSftAddLayer
                 && !isTargetSftMulLayer
+                && TryResolvePack4ChannelVectorBroadcast(
+                    owner,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    textureBlobs,
+                    textureShapes,
+                    bufferBlobs,
+                    bufferViews,
+                    out var vectorTexture,
+                    out var vectorTextureShape,
+                    out var channelVectorView,
+                    out var channelVectorIsA))
+            {
+                RenderTexture vectorBroadcastTexture = null;
+                RenderTexture finalTexture = null;
+                try
+                {
+                    var packedChannelView = channelVectorView.Reshape(3, 1, 1, 1, vectorTextureShape.c);
+                    vectorBroadcastTexture = owner.MaterializeTextureFromBufferView(channelVectorView.buffer, packedChannelView);
+                    if (vectorBroadcastTexture == null)
+                        throw new InvalidOperationException("Failed to materialize BinaryOp channel vector texture: " + layer.name);
+
+                    finalTexture = owner.RentTempArray(vectorTexture.width, vectorTexture.height, vectorTexture.packs, RenderTextureFormat.ARGBHalf);
+                    if (channelVectorIsA)
+                        owner.Ops.BinaryOpPack4Broadcast(vectorBroadcastTexture, vectorTexture.texture, vectorTexture.packs, opType, 1, finalTexture);
+                    else
+                        owner.Ops.BinaryOpPack4Broadcast(vectorTexture.texture, vectorBroadcastTexture, vectorTexture.packs, opType, 2, finalTexture);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, vectorTextureShape);
+                    finalTexture = null;
+                }
+                finally
+                {
+                    if (vectorBroadcastTexture != null)
+                        owner.ReturnTempArray(vectorBroadcastTexture);
+                    if (finalTexture != null)
+                        owner.ReturnTempArray(finalTexture);
+                }
+
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            if (!owner.ForceBufferBinaryOpAll
+                && !isTargetSftAddLayer
+                && !isTargetSftMulLayer
                 && TryResolvePack4BufferScalar(
                     owner,
                     layer.bottomNames[0],
@@ -371,6 +416,54 @@ namespace NcnnCompute
             return false;
         }
 
+        private static bool TryResolvePack4ChannelVectorBroadcast(
+            NcnnRepro owner,
+            string aName,
+            string bName,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.TensorRef texture,
+            out NcnnRepro.BufferShape textureShape,
+            out NcnnTensorBuffer channelVector,
+            out bool channelVectorIsA)
+        {
+            texture = null;
+            textureShape = default;
+            channelVector = null;
+            channelVectorIsA = false;
+
+            if (owner == null)
+                return false;
+
+            if (TryGetChannelVectorBuffer(bName, bufferBlobs, bufferViews, out var bVector)
+                && owner.TryGetPack4Texture(aName, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var aTex, out var aShape)
+                && aShape.dims == 3
+                && bVector.elementCount == aShape.c)
+            {
+                texture = aTex;
+                textureShape = aShape;
+                channelVector = bVector;
+                channelVectorIsA = false;
+                return true;
+            }
+
+            if (TryGetChannelVectorBuffer(aName, bufferBlobs, bufferViews, out var aVector)
+                && owner.TryGetPack4Texture(bName, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var bTex, out var bShape)
+                && bShape.dims == 3
+                && aVector.elementCount == bShape.c)
+            {
+                texture = bTex;
+                textureShape = bShape;
+                channelVector = aVector;
+                channelVectorIsA = true;
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool TryResolvePack4BufferScalar(
             NcnnRepro owner,
             string aName,
@@ -441,6 +534,34 @@ namespace NcnnCompute
             return true;
         }
 
+        private static bool TryGetChannelVectorBuffer(
+            string name,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnTensorBuffer vector)
+        {
+            vector = null;
+            if (string.IsNullOrEmpty(name) || bufferBlobs == null || bufferViews == null)
+                return false;
+            if (!bufferBlobs.TryGetValue(name, out var buffer) || buffer == null)
+                return false;
+            if (!bufferViews.TryGetValue(name, out var view) || view == null || view.buffer == null)
+                return false;
+
+            var isVector =
+                view.dims == 1
+                || (view.dims == 2 && (view.w == 1 || view.h == 1))
+                || (view.dims == 3 && view.w == 1 && view.h == 1)
+                || (view.dims == 4 && view.w == 1 && view.h == 1 && view.d == 1);
+            if (!isVector)
+                return false;
+            if (view.elementCount <= 1)
+                return false;
+
+            vector = view;
+            return true;
+        }
+
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             var opType = layer.GetInt(0, 0);
@@ -470,6 +591,25 @@ namespace NcnnCompute
 
             if (canUseTextureBinary && NcnnRepro.CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
                 return true;
+
+            if (!owner.ForceBufferBinaryOpAll
+                && !isTargetSftAddLayer
+                && !isTargetSftMulLayer
+                && TryResolvePack4ChannelVectorBroadcast(
+                    owner,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out _,
+                    out _,
+                    out _))
+            {
+                return true;
+            }
 
             if (!owner.ForceBufferBinaryOpAll
                 && !isTargetSftAddLayer
