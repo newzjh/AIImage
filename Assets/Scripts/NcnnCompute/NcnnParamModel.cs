@@ -92,6 +92,7 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey Squeeze = NcnnLayerTypeKey.FromString("Squeeze");
         public static readonly NcnnLayerTypeKey Crop = NcnnLayerTypeKey.FromString("Crop");
         public static readonly NcnnLayerTypeKey Convolution = NcnnLayerTypeKey.FromString("Convolution");
+        public static readonly NcnnLayerTypeKey Convolution3D = NcnnLayerTypeKey.FromString("Convolution3D");
         public static readonly NcnnLayerTypeKey Convolution1D = NcnnLayerTypeKey.FromString("Convolution1D");
         public static readonly NcnnLayerTypeKey ConvolutionDepthWise = NcnnLayerTypeKey.FromString("ConvolutionDepthWise");
         public static readonly NcnnLayerTypeKey Deconvolution = NcnnLayerTypeKey.FromString("Deconvolution");

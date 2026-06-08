@@ -266,6 +266,7 @@ namespace NcnnCompute
 
         private readonly ComputeShader _cs;
         private readonly int _kConv3x3;
+        private readonly int _kConv3dBuf;
         private readonly int _kDeconvolutionBuf;
         private readonly int _kTexToBuf3;
         private readonly int _kBufToTex3;
@@ -395,6 +396,7 @@ namespace NcnnCompute
             if (_cs == null)
                 throw new InvalidOperationException("ComputeShader not found: Resources/NcnnCompute.compute");
             _kConv3x3 = _cs.FindKernel("NcnnConv3x3");
+            _kConv3dBuf = _cs.FindKernel("NcnnConv3dBuf");
             _kDeconvolutionBuf = _cs.FindKernel("NcnnDeconvolutionBuf");
             _kConvDepthWise = _cs.FindKernel("NcnnConvDepthWise");
             _kTexToBuf3 = _cs.FindKernel("NcnnTexToBuf3");
@@ -3764,6 +3766,71 @@ namespace NcnnCompute
             _cs.SetBuffer(_kConvDepthWise, "_ConvB", biasO);
             _cs.SetBuffer(_kConvDepthWise, "_ConvOut", output.buffer);
             Dispatch3D(_kConvDepthWise, output.w, output.h, outC, 8, 8);
+        }
+
+        public void Conv3dBuf(
+            NcnnTensorBuffer input,
+            ComputeBuffer weightsOidhw,
+            ComputeBuffer biasO,
+            int outC,
+            int kernelW,
+            int kernelH,
+            int kernelD,
+            int strideW,
+            int strideH,
+            int strideD,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            int padFront,
+            int padBehind,
+            int dilationW,
+            int dilationH,
+            int dilationD,
+            int activationType,
+            float activationParam,
+            NcnnTensorBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsOidhw == null) throw new ArgumentNullException(nameof(weightsOidhw));
+            if (biasO == null) throw new ArgumentNullException(nameof(biasO));
+            if (input.dims != 4) throw new ArgumentOutOfRangeException(nameof(input), "Conv3dBuf expects dims=4 input");
+            if (output.dims != 4) throw new ArgumentOutOfRangeException(nameof(output), "Conv3dBuf expects dims=4 output");
+            if (outC <= 0) throw new ArgumentOutOfRangeException(nameof(outC));
+            if (kernelW <= 0 || kernelH <= 0 || kernelD <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            _cs.SetInt("_InW", input.w);
+            _cs.SetInt("_InH", input.h);
+            _cs.SetInt("_InD", input.d);
+            _cs.SetInt("_InC", input.c);
+            _cs.SetInt("_OutC", outC);
+            _cs.SetInt("_OutW", output.w);
+            _cs.SetInt("_OutH", output.h);
+            _cs.SetInt("_OutD", output.d);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_KernelDVar", kernelD);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_StrideDVar", Mathf.Max(1, strideD));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadRightVar", Mathf.Max(0, padRight));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_PadBottomVar", Mathf.Max(0, padBottom));
+            _cs.SetInt("_PadFrontVar", Mathf.Max(0, padFront));
+            _cs.SetInt("_PadBehindVar", Mathf.Max(0, padBehind));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_DilationDVar", Mathf.Max(1, dilationD));
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kConv3dBuf, "_ConvIn", input.buffer);
+            _cs.SetBuffer(_kConv3dBuf, "_ConvW", weightsOidhw);
+            _cs.SetBuffer(_kConv3dBuf, "_ConvB", biasO);
+            _cs.SetBuffer(_kConv3dBuf, "_ConvOut", output.buffer);
+            Dispatch3D(_kConv3dBuf, output.w, output.h, output.d * outC, 8, 8);
         }
 
         public void Deconvolution(

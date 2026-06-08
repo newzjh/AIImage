@@ -136,14 +136,19 @@ namespace NcnnCompute
             public int inPacks;
             public int kernelW;
             public int kernelH;
+            public int kernelD;
             public int dilationW;
             public int dilationH;
+            public int dilationD;
             public int strideW;
             public int strideH;
+            public int strideD;
             public int padLeft;
             public int padRight;
             public int padTop;
             public int padBottom;
+            public int padFront;
+            public int padBehind;
             public int biasTerm;
             public int weightSize;
             public int activationType;
@@ -3177,6 +3182,11 @@ namespace NcnnCompute
         {
             var kernelExtent = dilation * (kernel - 1) + 1;
             return Mathf.Max(1, (inSize + padBefore + padAfter - kernelExtent) / Mathf.Max(1, stride) + 1);
+        }
+
+        internal static int ComputeConv3dWeightCount(int outC, int inC, int kernelW, int kernelH, int kernelD)
+        {
+            return Mathf.Max(1, outC) * Mathf.Max(1, inC) * Mathf.Max(1, kernelW) * Mathf.Max(1, kernelH) * Mathf.Max(1, kernelD);
         }
 
         internal static int ComputeDeconvOut(int inSize, int kernel, int dilation, int stride, int padBefore, int padAfter, int outputPadAfter)

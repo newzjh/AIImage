@@ -25,6 +25,7 @@ namespace NcnnCompute
             { NcnnLayerTypes.Squeeze, () => new NcnnSqueezeLayerRepro() },
             { NcnnLayerTypes.Crop, () => new NcnnCropLayerRepro() },
             { NcnnLayerTypes.Convolution, () => new NcnnConvolutionLayerRepro() },
+            { NcnnLayerTypes.Convolution3D, () => new NcnnConvolution3DLayerRepro() },
             { NcnnLayerTypes.Convolution1D, () => new NcnnConvolution1DLayerRepro() },
             { NcnnLayerTypes.ConvolutionDepthWise, () => new NcnnConvolutionDepthWiseLayerRepro() },
             { NcnnLayerTypes.Deconvolution, () => new NcnnDeconvolutionLayerRepro() },

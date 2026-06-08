@@ -53,6 +53,18 @@ public static class NcnnDebugRunner
     private const string SdEnableDumpEnvVar = "AIIMAGE_SD_ENABLE_DUMP";
     private const string SdSyncStageTimingsEnvVar = "AIIMAGE_SD_SYNC_STAGE_TIMINGS";
     private const string SdKeepRawConvWeightsEnvVar = "AIIMAGE_SD_KEEP_RAW_CONV_WEIGHTS";
+    private const string MonaiBaselineManifestEnvVar = "AIIMAGE_MONAI_BASELINE_MANIFEST";
+    private const string MonaiInputPathsEnvVar = "AIIMAGE_MONAI_INPUT_PATHS";
+    private const string MonaiUseBaselineTensorEnvVar = "AIIMAGE_MONAI_USE_BASELINE_TENSOR";
+    private const string MonaiOutputDirEnvVar = "AIIMAGE_MONAI_OUTPUT_DIR";
+    private const string MonaiCaseNameEnvVar = "AIIMAGE_MONAI_CASE_NAME";
+    private const string MonaiThresholdEnvVar = "AIIMAGE_MONAI_THRESHOLD";
+    private const string MonaiCompareBaselineEnvVar = "AIIMAGE_MONAI_COMPARE_BASELINE";
+    private const string MonaiEnableDumpEnvVar = "AIIMAGE_MONAI_ENABLE_DUMP";
+    private const string MonaiForceBufferConvEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_CONV";
+    private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
+    private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
+    private const string BatchTimeoutMinutesEnvVar = "AIIMAGE_BATCH_TIMEOUT_MINUTES";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -63,6 +75,8 @@ public static class NcnnDebugRunner
     private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
     private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
     private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
+    private static readonly string DefaultMonaiBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "brats_mri_segmentation_baseline", "RegLib_C01_1", "baseline_manifest.json");
+    private static readonly string DefaultMonaiInputPath = @"E:\Projects\CTData\sliceexampledata2\MRBrainTumor1\RegLib_C01_1.nrrd";
     private static readonly string DefaultSdPositivePrompt = "floating hair, portrait, ((loli)), ((one girl)), cute face, hidden hands, asymmetrical bangs, beautiful detailed eyes, eye shadow, hair ornament, ribbons, bowties, buttons, pleated skirt, (((masterpiece))), ((best quality)), colorful";
     private static readonly string DefaultSdNegativePrompt = "((part of the head)), ((((mutated hands and fingers)))), deformed, blurry, bad anatomy, disfigured, poorly drawn face, mutation, mutated, extra limb, ugly, poorly drawn hands, missing limb, blurry, floating limbs, disconnected limbs, malformed hands, blur, out of focus, long neck, long body, Octane renderer, lowres, bad anatomy, bad hands, text";
     private static bool _autoBatchScheduled;
@@ -133,6 +147,9 @@ public static class NcnnDebugRunner
             case nameof(RunReproSuiteStressBatch):
                 RunReproSuiteStressBatch();
                 return;
+            case nameof(RunMonaiDebugBatch):
+                RunMonaiDebugBatch();
+                return;
             default:
                 throw new InvalidOperationException("Unknown batch method: " + methodName);
         }
@@ -190,6 +207,12 @@ public static class NcnnDebugRunner
     public static void RunStableDiffusionDebugMenu()
     {
         RunStableDiffusionDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run MONAI Debug")]
+    public static void RunMonaiDebugMenu()
+    {
+        RunMonaiDebug().Forget();
     }
 
     [MenuItem("Tools/AIImage/Run CodeFormer Stress (60x)")]
@@ -362,6 +385,11 @@ public static class NcnnDebugRunner
         await RunStableDiffusionDebugInternal();
     }
 
+    public static async UniTaskVoid RunMonaiDebug()
+    {
+        await RunMonaiDebugInternal();
+    }
+
     public static void RunMattingDebugBatch() => RunBatchBlocking(nameof(RunMattingDebugBatch), RunMattingDebugInternal);
 
     public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
@@ -503,6 +531,62 @@ public static class NcnnDebugRunner
         {
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    private static async UniTask RunMonaiDebugInternal()
+    {
+        var baselineManifestPath = ResolveOptionalExistingFile(MonaiBaselineManifestEnvVar) ?? DefaultMonaiBaselineManifestPath;
+        var inputPaths = ResolveMonaiInputPaths();
+        var useBaselineTensor = ResolveBoolEnv(MonaiUseBaselineTensorEnvVar, true);
+        var outputDir = ResolveStringEnv(MonaiOutputDirEnvVar, null);
+        var caseName = ResolveStringEnv(MonaiCaseNameEnvVar, null);
+        var compareBaseline = ResolveBoolEnv(MonaiCompareBaselineEnvVar, true);
+        var enableDump = ResolveBoolEnv(MonaiEnableDumpEnvVar, true);
+        var forceBufferConv = ResolveBoolEnv(MonaiForceBufferConvEnvVar, false);
+        var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
+        var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
+        var threshold = ResolveFloatEnvOrDefault(MonaiThresholdEnvVar, 0.5f);
+
+        var go = new GameObject("MonaiDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<MONAINcnnReproRunner>();
+            runner.enableDebugDump = enableDump;
+            runner.enableBaselineCompare = compareBaseline;
+            runner.forceBufferConvolution = forceBufferConv;
+            runner.keepRawConvWeightsForTexturePath = keepRawConv;
+            runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, runner.enableTempPool);
+            runner.logAllLayerHeartbeats = false;
+            runner.logAllLayerOutputs = false;
+            runner.logAllBufferMaterialize = false;
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[MONAI Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+
+            var request = new MonaiRunRequest
+            {
+                inputSource = useBaselineTensor ? MonaiInputSourceKind.BaselineTensorDump : MonaiInputSourceKind.MedicalVolumeFiles,
+                baselineManifestPath = baselineManifestPath,
+                inputVolumePaths = inputPaths,
+                caseName = caseName,
+                outputDir = outputDir,
+                threshold = threshold,
+                normalizeNonZero = normalizeNonZero,
+                compareWithBaseline = compareBaseline,
+                postprocessKind = MonaiPostprocessKind.BratsTumorSubregions,
+                channelFillMode = MonaiChannelFillMode.DuplicateFirst
+            };
+
+            var result = await runner.ProcessAsync(request, CancellationToken.None);
+            Debug.Log(
+                "MONAI Debug result | error=" + (result.error ?? "")
+                + " | elapsedMs=" + result.elapsedMs
+                + " | case=" + (result.caseName ?? "")
+                + " | dump=" + (result.outputDir ?? ""));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
         }
     }
 
@@ -926,12 +1010,14 @@ public static class NcnnDebugRunner
 
     public static void RunReproSuiteStressBatch() => RunBatchBlocking(nameof(RunReproSuiteStressBatch), RunReproSuiteStressInternal, TimeSpan.FromHours(2));
 
+    public static void RunMonaiDebugBatch() => RunBatchBlocking(nameof(RunMonaiDebugBatch), RunMonaiDebugInternal, TimeSpan.FromMinutes(10));
+
     private static void RunBatchBlocking(string methodName, Func<UniTask> taskFactory, TimeSpan? timeout = null)
     {
         try
         {
             Debug.Log("[NcnnDebugRunner] " + methodName + " start");
-            RunUniTaskBlocking(taskFactory, timeout ?? TimeSpan.FromMinutes(45));
+            RunUniTaskBlocking(taskFactory, ResolveBatchTimeout(timeout ?? TimeSpan.FromMinutes(45)));
             Debug.Log("[NcnnDebugRunner] " + methodName + " done");
             EditorApplication.Exit(0);
         }
@@ -992,6 +1078,19 @@ public static class NcnnDebugRunner
 
         EditorUpdatePumpMethod.Invoke(null, null);
         EditorDelayPumpMethod?.Invoke(null, null);
+    }
+
+    private static TimeSpan ResolveBatchTimeout(TimeSpan fallback)
+    {
+        var raw = Environment.GetEnvironmentVariable(BatchTimeoutMinutesEnvVar);
+        if (!string.IsNullOrWhiteSpace(raw)
+            && float.TryParse(raw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var minutes)
+            && minutes > 0f)
+        {
+            return TimeSpan.FromMinutes(minutes);
+        }
+
+        return fallback;
     }
 
     private static async UniTask RunFaceDebugInternal()
@@ -1582,6 +1681,28 @@ public static class NcnnDebugRunner
         }
 
         return null;
+    }
+
+    private static string[] ResolveMonaiInputPaths()
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(MonaiInputPathsEnvVar);
+            if (!string.IsNullOrWhiteSpace(env))
+            {
+                var parts = env.Split(new[] { '|', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(part => part.Trim())
+                    .Where(part => !string.IsNullOrWhiteSpace(part))
+                    .ToArray();
+                if (parts.Length > 0)
+                    return parts;
+            }
+        }
+        catch
+        {
+        }
+
+        return new[] { DefaultMonaiInputPath };
     }
 
     private static List<string> ResolveStressInputPaths(string fallbackPath)
