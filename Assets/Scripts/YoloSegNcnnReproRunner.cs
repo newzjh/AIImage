@@ -120,6 +120,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private const int MaskCoeffChannels = 32;
     private const int RegMax1 = 16;
     private const float PadColor01 = 114f / 255f;
+    private const string ResourceSnapshotEnvVar = "AIIMAGE_YOLOSEG_RESOURCE_SNAPSHOT";
 
     private static readonly int[] DefaultStrides = { 8, 16, 32 };
     private static readonly string[] DebugBlobNames =
@@ -216,12 +217,14 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             EnsureRuntimeObjects();
             ApplyReproOptions();
             UnityEngine.Debug.Log("[YoloSegRunner] ProcessAsync start");
+            LogResourceSnapshot("process_begin");
             if (enableDebugDump)
                 _lastDumpDir = CreateDumpDir();
 
             UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded begin");
             await EnsureLoaded(ct);
             UnityEngine.Debug.Log("[YoloSegRunner] EnsureLoaded end");
+            LogResourceSnapshot("after_loaded");
             ct.ThrowIfCancellationRequested();
 
             ReportProgress(0.08f, "Prepare input");
@@ -232,6 +235,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             UnityEngine.Debug.Log("[YoloSegRunner] Prepare input: EnsureReadable end");
             if (readableSrc == null)
                 return Finish(new YoloSegResult { error = "Prepare source pixels failed" });
+            LogResourceSnapshot("after_readable");
 
             var letterbox = ComputeLetterbox(readableSrc.width, readableSrc.height, Mathf.Max(32, targetSize), Mathf.Max(32, maxStride));
             _currentLetterbox = letterbox;
@@ -240,6 +244,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             UnityEngine.Debug.Log("[YoloSegRunner] Prepare input: ResizeTextureBilinear end");
             if (resizedRt == null)
                 return Finish(new YoloSegResult { error = "Resize input failed" });
+            LogResourceSnapshot("after_resize");
 
             UnityEngine.Debug.Log("[YoloSegRunner] Prepare input: RentTempArray core begin");
             corePack4 = _repro.RentTempArray(letterbox.resizedWidth, letterbox.resizedHeight, 1, RenderTextureFormat.ARGBHalf);
@@ -262,6 +267,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 new Vector4(PadColor01, PadColor01, PadColor01, 0f),
                 inputPack4);
             UnityEngine.Debug.Log("[YoloSegRunner] Prepare input: PaddingPack4 end");
+            LogResourceSnapshot("after_pack_input");
 
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             {
@@ -307,6 +313,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 }
             }
             UnityEngine.Debug.Log("[YoloSegRunner] Infer end");
+            LogResourceSnapshot("after_infer");
 
             if (predBlob.values == null || predBlob.values.Length == 0)
                 return Finish(new YoloSegResult { error = "YOLO pred blob missing" });
@@ -412,6 +419,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 unionMask = MorphClose(unionMask, readableSrc.width, readableSrc.height, maskCloseRadius);
             if (enableMaskDilate && maskDilateRadius > 0)
                 unionMask = MorphDilate(unionMask, readableSrc.width, readableSrc.height, maskDilateRadius);
+            LogResourceSnapshot("after_mask_build");
 
             ReportProgress(0.82f, "Build outputs");
             await YieldIfNeeded();
@@ -450,6 +458,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 TryWriteTextFile(_lastSummaryText, _lastDumpDir, "summary.txt");
                 TryWriteDebugLines(_lastLayerPathDebugLines, _lastDumpDir, "layer_path_debug.txt");
             }
+            LogResourceSnapshot("after_output_build");
 
             UnityEngine.Debug.Log("[YoloSegRunner] ProcessAsync success");
 
@@ -473,8 +482,9 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         }
         finally
         {
+            LogResourceSnapshot("process_finally_begin");
             if (resizedRt != null)
-                ReleaseTemporaryRt(resizedRt);
+                ReleaseTemporaryRt(resizedRt, "YoloSeg.ResizeTextureRt");
             if (corePack4 != null)
                 _repro?.ReturnTempArray(corePack4);
             if (inputPack4 != null)
@@ -482,6 +492,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             _repro?.ClearTempPool();
             if (readableSrc != null && readableSrc != src)
                 Destroy(readableSrc);
+            LogResourceSnapshot("process_finally_end");
             ReportProgress(1f, string.Empty);
         }
     }
@@ -619,6 +630,11 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         _lastLayerPathDebugLines = null;
     }
 
+    public void ReleaseRuntimeResources()
+    {
+        Release();
+    }
+
     private BlobData ReadBlobData(NcnnRepro.InferResult infer, string blobName)
     {
         if (infer == null)
@@ -642,13 +658,20 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             var packs = texture.volumeDepth > 0 ? texture.volumeDepth : 1;
             var physicalChannels = packs * 4;
             var physicalCount = texture.width * texture.height * physicalChannels;
-            using var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
-            _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, physicalChannels, physicalBuffer);
-            var physical = new float[physicalCount];
-            physicalBuffer.GetData(physical);
-            var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
-            values = new float[Mathf.Min(logicalCount, physical.Length)];
-            Array.Copy(physical, values, values.Length);
+            var physicalBuffer = NewTrackedBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured, "YoloSeg.ReadBlobPhysical");
+            try
+            {
+                _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, physicalChannels, physicalBuffer);
+                var physical = new float[physicalCount];
+                physicalBuffer.GetData(physical);
+                var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
+                values = new float[Mathf.Min(logicalCount, physical.Length)];
+                Array.Copy(physical, values, values.Length);
+            }
+            finally
+            {
+                DisposeBuffer(physicalBuffer, "YoloSeg.ReadBlobPhysical");
+            }
         }
 
         return new BlobData(blobName, values, dims, w, h, d, c);
@@ -1095,7 +1118,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     {
         if (src == null)
             return null;
-        var rt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, false);
+        var rt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, false, "YoloSeg.ResizeTextureRt");
         Graphics.Blit(src, rt);
         return rt;
     }
@@ -1120,7 +1143,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             }
             finally
             {
-                ReleaseTemporaryRt(rt);
+                ReleaseTemporaryRt(rt, "YoloSeg.ResizeTextureRt");
             }
         }
     }
@@ -1144,20 +1167,22 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, bool enableRandomWrite)
+    private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, bool enableRandomWrite, string label = null)
     {
         var rt = RenderTexture.GetTemporary(width, height, 0, format, RenderTextureReadWrite.Default);
         rt.enableRandomWrite = enableRandomWrite;
         rt.wrapMode = TextureWrapMode.Clamp;
         rt.filterMode = FilterMode.Bilinear;
         rt.Create();
+        NcnnGpuResourceTracker.RegisterTexture(rt, label ?? "YoloSeg.TempRt");
         return rt;
     }
 
-    private static void ReleaseTemporaryRt(RenderTexture rt)
+    private static void ReleaseTemporaryRt(RenderTexture rt, string label = null)
     {
         if (rt == null)
             return;
+        NcnnGpuResourceTracker.ReleaseTexture(rt, label ?? "YoloSeg.TempRt");
         RenderTexture.ReleaseTemporary(rt);
     }
 
@@ -1325,13 +1350,20 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     {
         var physicalChannels = Mathf.Max(4, ((channels + 3) / 4) * 4);
         var physicalCount = width * height * physicalChannels;
-        using var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
-        _ops.Pack4ToBufferCHW(texture, width, height, physicalChannels, physicalBuffer);
-        var physical = new float[physicalCount];
-        physicalBuffer.GetData(physical);
-        var logical = new float[width * height * channels];
-        Array.Copy(physical, logical, logical.Length);
-        return logical;
+        var physicalBuffer = NewTrackedBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured, "YoloSeg.ReadPack4Logical");
+        try
+        {
+            _ops.Pack4ToBufferCHW(texture, width, height, physicalChannels, physicalBuffer);
+            var physical = new float[physicalCount];
+            physicalBuffer.GetData(physical);
+            var logical = new float[width * height * channels];
+            Array.Copy(physical, logical, logical.Length);
+            return logical;
+        }
+        finally
+        {
+            DisposeBuffer(physicalBuffer, "YoloSeg.ReadPack4Logical");
+        }
     }
 
     private static Texture2D BuildRgbTextureFromChw(float[] chw, int width, int height, int channels)
@@ -1444,6 +1476,89 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private void ReportProgress(float progress01, string text)
     {
         try { ProgressChanged?.Invoke(Mathf.Clamp01(progress01), text ?? string.Empty); } catch { }
+    }
+
+    private void LogResourceSnapshot(string stage)
+    {
+        if (!ResolveBoolEnv(ResourceSnapshotEnvVar, true))
+            return;
+
+        try
+        {
+            var process = Process.GetCurrentProcess();
+            var privateMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+            var workingSetMb = process.WorkingSet64 / (1024.0 * 1024.0);
+            var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+            var gfxMb = GetGraphicsDriverMemoryMb();
+            var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
+            UnityEngine.Debug.Log(
+                "[YoloSegRunner][Resources] stage=" + (stage ?? "")
+                + " | private_mb=" + privateMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | working_set_mb=" + workingSetMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | managed_mb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | gfx_mb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | rt_objects=" + rtCount.ToString(CultureInfo.InvariantCulture)
+                + " | " + NcnnGpuResourceTracker.BuildSummary());
+        }
+        catch (Exception e)
+        {
+            try { UnityEngine.Debug.Log("[YoloSegRunner][Resources] stage=" + (stage ?? "") + " | snapshot_failed=" + e.Message); } catch { }
+        }
+    }
+
+    private static ComputeBuffer NewTrackedBuffer(int count, int stride, ComputeBufferType type, string label)
+    {
+        if (count <= 0 || stride <= 0)
+            return null;
+        var buffer = new ComputeBuffer(count, stride, type);
+        NcnnGpuResourceTracker.RegisterBuffer(buffer, count, stride, label ?? "YoloSeg.StandaloneBuffer");
+        return buffer;
+    }
+
+    private static void DisposeBuffer(ComputeBuffer buffer, string label = null)
+    {
+        if (buffer == null)
+            return;
+        NcnnGpuResourceTracker.ReleaseBuffer(buffer, label ?? "YoloSeg.StandaloneBuffer");
+        try { buffer.Dispose(); } catch { }
+    }
+
+    private static bool ResolveBoolEnv(string key, bool fallback)
+    {
+        try
+        {
+            var value = Environment.GetEnvironmentVariable(key);
+            if (string.IsNullOrWhiteSpace(value))
+                return fallback;
+            value = value.Trim();
+            if (string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "on", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (string.Equals(value, "0", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "false", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "no", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "off", StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        catch
+        {
+        }
+
+        return fallback;
+    }
+
+    private static float GetGraphicsDriverMemoryMb()
+    {
+        try
+        {
+            return UnityEngine.Profiling.Profiler.GetAllocatedMemoryForGraphicsDriver() / (1024f * 1024f);
+        }
+        catch
+        {
+            return 0f;
+        }
     }
 
     private static async UniTask YieldIfNeeded()

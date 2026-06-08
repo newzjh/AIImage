@@ -2089,12 +2089,17 @@ namespace NcnnCompute
             };
 
             var id = Shader.PropertyToID(Guid.NewGuid().ToString());
+            var allocLabel = "NcnnRepro.RentTempArrayCmd(" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture) + "x" + depth.ToString(CultureInfo.InvariantCulture) + ")";
             cmd.GetTemporaryRT(id, desc);
+            NcnnGpuResourceTracker.RegisterTextureHandle(id, w, h, depth, format, allocLabel + "|new");
             var t = new ComputeTexture
             {
                 nameID = id,
                 width = w,
                 height = h,
+                depth = depth,
+                format = format,
+                trackerLabel = allocLabel
             };
             _cmdSets.Add(t);
             return t;
@@ -2107,6 +2112,7 @@ namespace NcnnCompute
 
             if (_cmdSets.Contains(t))
             {
+                NcnnGpuResourceTracker.ReleaseTextureHandle(t.nameID, t.trackerLabel ?? "NcnnRepro.ReturnTempArrayCmd");
                 cmd.ReleaseTemporaryRT(t.nameID);
                 _cmdSets.Remove(t);
             }
@@ -2158,6 +2164,16 @@ namespace NcnnCompute
             Model = null;
             LayerRepros = null;
             _blobUseCount = null;
+            if (_cmdSets.Count > 0)
+            {
+                foreach (var cmdTex in _cmdSets)
+                {
+                    if (cmdTex == null)
+                        continue;
+                    NcnnGpuResourceTracker.ReleaseTextureHandle(cmdTex.nameID, cmdTex.trackerLabel ?? "NcnnRepro.ReleaseCmdTempArray");
+                }
+                _cmdSets.Clear();
+            }
             ClearTempPool();
         }
 

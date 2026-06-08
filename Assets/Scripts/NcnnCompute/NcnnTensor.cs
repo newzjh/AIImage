@@ -21,6 +21,7 @@ namespace NcnnCompute
             rt.wrapMode = TextureWrapMode.Clamp;
             rt.filterMode = FilterMode.Point;
             rt.Create();
+            NcnnGpuResourceTracker.RegisterTexture(rt, "NcnnTensor");
         }
 
         public void Dispose()
@@ -29,6 +30,7 @@ namespace NcnnCompute
             {
                 if (rt != null)
                 {
+                    NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnTensor");
                     rt.Release();
                     UnityEngine.Object.Destroy(rt);
                 }
@@ -39,4 +41,3 @@ namespace NcnnCompute
         }
     }
 }
-

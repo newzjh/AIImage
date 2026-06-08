@@ -606,6 +606,9 @@ public static class NcnnDebugRunner
         var guidanceScale = Mathf.Max(1f, ResolveFloatEnvOrDefault(SdGuidanceScaleEnvVar, 7.5f));
         var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, "best quality, realistic photo, clean background, natural scene, coherent texture, seamless fill, empty space, no people");
         var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, "person, people, human, man, woman, child, face, body, duplicate, blurry, deformed, extra limbs, artifacts, text, watermark");
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint");
+        LogResourceSnapshot("batch_yolo_inpaint_begin");
 
         var go = new GameObject("YoloAndInpaintingDebugRunner");
         YoloSegResult yoloResult = default;
@@ -626,6 +629,7 @@ public static class NcnnDebugRunner
             };
 
             yoloResult = await yoloRunner.ProcessAsync(tex, CancellationToken.None);
+            LogResourceSnapshot("batch_after_yolo_process");
             yoloDumpDir = yoloRunner.LastDumpDir;
             Debug.Log(
                 "YOLO + Inpainting debug | yoloError=" + (yoloResult.error ?? "")
@@ -656,6 +660,7 @@ public static class NcnnDebugRunner
             }
             UnityEngine.Object.DestroyImmediate(yoloRunner);
             await UniTask.Yield();
+            LogResourceSnapshot("batch_after_yolo_destroy");
 
             var inpaintRunner = go.AddComponent<SDInpaintingNcnnReproRunner>();
             inpaintRunner.enableDebugDump = enableDump;
@@ -684,6 +689,7 @@ public static class NcnnDebugRunner
                 strength,
                 guidanceScale,
                 CancellationToken.None);
+            LogResourceSnapshot("batch_after_inpaint_process");
 
             Debug.Log(
                 "YOLO + Inpainting debug | inpaintError=" + (inpaintResult.error ?? "")
@@ -727,6 +733,7 @@ public static class NcnnDebugRunner
         }
         finally
         {
+            LogResourceSnapshot("batch_yolo_inpaint_finally_begin");
             if (inpaintResult.texture != null)
                 UnityEngine.Object.DestroyImmediate(inpaintResult.texture);
             if (yoloResult.texture != null)
@@ -737,6 +744,33 @@ public static class NcnnDebugRunner
                 UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
+            LogResourceSnapshot("batch_yolo_inpaint_finally_end");
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private static void LogResourceSnapshot(string stage)
+    {
+        try
+        {
+            var process = Process.GetCurrentProcess();
+            var privateMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+            var workingSetMb = process.WorkingSet64 / (1024.0 * 1024.0);
+            var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+            var gfxMb = GetGraphicsDriverMemoryMb();
+            var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
+            Debug.Log(
+                "[NcnnDebugRunner][Resources] stage=" + (stage ?? "")
+                + " | private_mb=" + privateMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | working_set_mb=" + workingSetMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | managed_mb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | gfx_mb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
+                + " | rt_objects=" + rtCount.ToString(CultureInfo.InvariantCulture)
+                + " | " + NcnnCompute.NcnnGpuResourceTracker.BuildSummary());
+        }
+        catch (Exception e)
+        {
+            try { Debug.Log("[NcnnDebugRunner][Resources] stage=" + (stage ?? "") + " | snapshot_failed=" + e.Message); } catch { }
         }
     }
 

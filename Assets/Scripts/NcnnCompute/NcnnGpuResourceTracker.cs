@@ -117,25 +117,7 @@ namespace NcnnCompute
             if (!Enabled || texture == null)
                 return;
 
-            var id = texture.GetHashCode();
-            if (Textures.ContainsKey(id))
-                return;
-
-            var depth = Mathf.Max(1, texture.volumeDepth > 0 ? texture.volumeDepth : 1);
-            var bytesPerPixel = EstimateBytesPerPixel(texture.format);
-            var bytes = Math.Max(0L, (long)texture.width * texture.height * depth * bytesPerPixel);
-            Textures[id] = new TextureInfo
-            {
-                width = texture.width,
-                height = texture.height,
-                depth = depth,
-                format = texture.format,
-                bytes = bytes,
-                label = label ?? ""
-            };
-            _textureBytes += bytes;
-            RecordPeak();
-            AddTimeline("alloc_rt", label, bytes, texture.width + "x" + texture.height + "x" + depth + " " + texture.format);
+            RegisterTextureCore(texture.GetHashCode(), texture.width, texture.height, Mathf.Max(1, texture.volumeDepth > 0 ? texture.volumeDepth : 1), texture.format, label);
         }
 
         public static void ReleaseTexture(RenderTexture texture, string label)
@@ -143,13 +125,7 @@ namespace NcnnCompute
             if (!Enabled || texture == null)
                 return;
 
-            var id = texture.GetHashCode();
-            if (!Textures.TryGetValue(id, out var info))
-                return;
-
-            Textures.Remove(id);
-            _textureBytes -= info.bytes;
-            AddTimeline("free_rt", label ?? info.label, info.bytes, info.width + "x" + info.height + "x" + info.depth + " " + info.format);
+            ReleaseTextureCore(texture.GetHashCode(), label);
         }
 
         public static void ReuseTexture(RenderTexture texture, string label)
@@ -180,6 +156,22 @@ namespace NcnnCompute
             info.label = label ?? "";
         }
 
+        public static void RegisterTextureHandle(int handle, int width, int height, int depth, RenderTextureFormat format, string label)
+        {
+            if (!Enabled || handle == 0)
+                return;
+
+            RegisterTextureCore(ToVirtualTextureKey(handle), width, height, depth, format, label);
+        }
+
+        public static void ReleaseTextureHandle(int handle, string label)
+        {
+            if (!Enabled || handle == 0)
+                return;
+
+            ReleaseTextureCore(ToVirtualTextureKey(handle), label);
+        }
+
         public static void ReportLowMemoryWarning(string message)
         {
             if (!Enabled)
@@ -192,6 +184,9 @@ namespace NcnnCompute
         public static string BuildSummary()
         {
             return "gpu_resources"
+                + " | current_total_mb=" + ToMb(_bufferBytes + _textureBytes).ToString("F3", CultureInfo.InvariantCulture)
+                + " | live_buffers_mb=" + ToMb(_bufferBytes).ToString("F3", CultureInfo.InvariantCulture)
+                + " | live_rts_mb=" + ToMb(_textureBytes).ToString("F3", CultureInfo.InvariantCulture)
                 + " | peak_total_mb=" + ToMb(_peakTotalBytes).ToString("F3", CultureInfo.InvariantCulture)
                 + " | peak_buffers_mb=" + ToMb(_peakBufferBytes).ToString("F3", CultureInfo.InvariantCulture)
                 + " | peak_rts_mb=" + ToMb(_peakTextureBytes).ToString("F3", CultureInfo.InvariantCulture)
@@ -242,6 +237,43 @@ namespace NcnnCompute
                 + " | mb=" + ToMb(bytes).ToString("F3", CultureInfo.InvariantCulture)
                 + " | total_mb=" + ToMb(_bufferBytes + _textureBytes).ToString("F3", CultureInfo.InvariantCulture)
                 + " | detail=" + detail);
+        }
+
+        private static void RegisterTextureCore(int id, int width, int height, int depth, RenderTextureFormat format, string label)
+        {
+            if (Textures.ContainsKey(id))
+                return;
+
+            depth = Mathf.Max(1, depth);
+            var bytesPerPixel = EstimateBytesPerPixel(format);
+            var bytes = Math.Max(0L, (long)Mathf.Max(1, width) * Mathf.Max(1, height) * depth * bytesPerPixel);
+            Textures[id] = new TextureInfo
+            {
+                width = Mathf.Max(1, width),
+                height = Mathf.Max(1, height),
+                depth = depth,
+                format = format,
+                bytes = bytes,
+                label = label ?? ""
+            };
+            _textureBytes += bytes;
+            RecordPeak();
+            AddTimeline("alloc_rt", label, bytes, width + "x" + height + "x" + depth + " " + format);
+        }
+
+        private static void ReleaseTextureCore(int id, string label)
+        {
+            if (!Textures.TryGetValue(id, out var info))
+                return;
+
+            Textures.Remove(id);
+            _textureBytes -= info.bytes;
+            AddTimeline("free_rt", label ?? info.label, info.bytes, info.width + "x" + info.height + "x" + info.depth + " " + info.format);
+        }
+
+        private static int ToVirtualTextureKey(int handle)
+        {
+            return unchecked(handle ^ int.MinValue);
         }
 
         private static void RecordPeak()

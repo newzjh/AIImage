@@ -243,6 +243,9 @@ namespace NcnnCompute
         public int nameID;
         public int width;
         public int height;
+        public int depth;
+        public RenderTextureFormat format;
+        public string trackerLabel;
     }
 
     public sealed class NcnnOps

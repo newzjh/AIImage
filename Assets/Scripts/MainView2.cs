@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using Cysharp.Threading.Tasks;
+using NcnnCompute;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -944,6 +946,9 @@ public sealed class MainView2 : BasePageView
         ShowProgress("YOLO + Inpainting");
         try
         {
+            NcnnGpuResourceTracker.Enabled = true;
+            NcnnGpuResourceTracker.Reset("MainView2.YoloInpaint");
+            LogYoloInpaintResourceSnapshot("begin");
             var oldTargetPersonOnly = Host.YoloSegRunner.targetPersonOnly;
             Host.YoloSegRunner.targetPersonOnly = true;
             void OnYoloProgress(float p, string t) => SetProgress(p * 0.35f, string.IsNullOrWhiteSpace(t) ? "YOLO Seg" : t);
@@ -954,6 +959,7 @@ public sealed class MainView2 : BasePageView
             try
             {
                 result = await Host.YoloSegRunner.ProcessAsync(src, _lifetimeCts.Token);
+                LogYoloInpaintResourceSnapshot("after_yolo_process");
             }
             finally
             {
@@ -973,12 +979,40 @@ public sealed class MainView2 : BasePageView
                 return;
             }
 
+            if (result.texture != null)
+            {
+                Destroy(result.texture);
+                result.texture = null;
+            }
+
+            if (result.overlay != null)
+            {
+                Destroy(result.overlay);
+                result.overlay = null;
+            }
+
+            Host.YoloSegRunner.ReleaseRuntimeResources();
+            await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
+            LogYoloInpaintResourceSnapshot("after_yolo_release");
+
+            Host.SDInpaintingRunner.useOfficialUnetCache = false;
+            Host.SDInpaintingRunner.enableTempPool = false;
+            Host.SDInpaintingRunner.maxPooledPerShape = 0;
+            Host.SDInpaintingRunner.keepRawConvWeightsForTexturePath = false;
+            Host.SDInpaintingRunner.tensorTextureFormat = RenderTextureFormat.ARGBHalf;
+            Host.SDInpaintingRunner.encoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
+            Host.SDInpaintingRunner.decoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
+            Host.SDInpaintingRunner.ReleaseRuntimeResources();
+            await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
+            LogYoloInpaintResourceSnapshot("before_inpaint_process");
+
             Host.SDInpaintingRunner.ProgressChanged -= OnInpaintProgress;
             Host.SDInpaintingRunner.ProgressChanged += OnInpaintProgress;
             SDInpaintingNcnnReproResult inpaintResult;
             try
             {
                 inpaintResult = await Host.SDInpaintingRunner.ProcessAsync(src, result.mask, _lifetimeCts.Token);
+                LogYoloInpaintResourceSnapshot("after_inpaint_process");
             }
             finally
             {
@@ -993,12 +1027,66 @@ public sealed class MainView2 : BasePageView
             }
 
             if (inpaintResult.texture != null)
+            {
                 AddHistory(inpaintResult.texture, $"YOLO修复 {result.personCount}");
+                LogYoloInpaintResourceSnapshot("after_add_history");
+            }
         }
         finally
         {
+            LogYoloInpaintResourceSnapshot("finally");
+            NcnnGpuResourceTracker.Enabled = false;
             _adjustRunning = false;
             HideProgress();
+        }
+    }
+
+    private static async UniTask ReleaseGpuPressureBeforeInpaintAsync(CancellationToken ct)
+    {
+        await UniTask.Yield(PlayerLoopTiming.Update, ct);
+        var unloadOp = Resources.UnloadUnusedAssets();
+        if (unloadOp != null)
+            await unloadOp.ToUniTask(cancellationToken: ct);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        await UniTask.Yield(PlayerLoopTiming.Update, ct);
+    }
+
+    private static void LogYoloInpaintResourceSnapshot(string stage)
+    {
+        try
+        {
+            var process = Process.GetCurrentProcess();
+            var privateMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+            var workingSetMb = process.WorkingSet64 / (1024.0 * 1024.0);
+            var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+            var gfxMb = GetGraphicsDriverMemoryMb();
+            var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
+            UnityEngine.Debug.Log(
+                "[MainView2][YoloInpaint][Resources] stage=" + (stage ?? "")
+                + " | private_mb=" + privateMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
+                + " | working_set_mb=" + workingSetMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
+                + " | managed_mb=" + managedMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
+                + " | gfx_mb=" + gfxMb.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)
+                + " | rt_objects=" + rtCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " | " + NcnnGpuResourceTracker.BuildSummary());
+        }
+        catch (Exception e)
+        {
+            try { UnityEngine.Debug.Log("[MainView2][YoloInpaint][Resources] stage=" + (stage ?? "") + " | snapshot_failed=" + e.Message); } catch { }
+        }
+    }
+
+    private static float GetGraphicsDriverMemoryMb()
+    {
+        try
+        {
+            return UnityEngine.Profiling.Profiler.GetAllocatedMemoryForGraphicsDriver() / (1024f * 1024f);
+        }
+        catch
+        {
+            return 0f;
         }
     }
 
