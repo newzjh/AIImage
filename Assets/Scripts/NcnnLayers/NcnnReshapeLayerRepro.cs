@@ -82,6 +82,28 @@ namespace NcnnCompute
                     return;
                 }
 
+                if (srcTensor != null
+                    && TryResolveAttentionContextFlattenOutput(owner, layer, srcTensor, out var attentionFlattenTensor))
+                {
+                    owner.DebugLog?.Invoke(
+                        "TryResolveAttentionContextFlattenOutput applied"
+                        + " | layer=" + layer.name
+                        + " | src=" + srcTensor.dims + ":" + srcTensor.w + "x" + srcTensor.h + "x" + srcTensor.d + "x" + srcTensor.c
+                        + " | dst=" + attentionFlattenTensor.dims + ":" + attentionFlattenTensor.w + "x" + attentionFlattenTensor.h + "x" + attentionFlattenTensor.d + "x" + attentionFlattenTensor.c);
+                    owner.PublishTensorBufferOutput(
+                        layer.topNames[0],
+                        attentionFlattenTensor,
+                        preferTexture: true,
+                        textureBlobs,
+                        textureShapes,
+                        bufferBlobs,
+                        bufferRefs,
+                        bufferViews,
+                        tempOwned);
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
                 if (srcTensor != null)
                 {
                     // Some lowered attention reshapes perform a real data reorder and must publish
@@ -170,13 +192,35 @@ namespace NcnnCompute
                             bufferViews,
                             tempOwned);
                         scratchTensor.Dispose();
-                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                        return;
-                    }
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
 
-                    var attentionTensor = TryResolveImplicitAttentionReshape(owner, layer, scratchTensor);
-                    if (attentionTensor != null)
-                    {
+                if (TryResolveAttentionContextFlattenOutput(owner, layer, scratchTensor, out var attentionFlattenTensor))
+                {
+                    owner.DebugLog?.Invoke(
+                        "TryResolveAttentionContextFlattenOutput applied"
+                        + " | layer=" + layer.name
+                        + " | src=" + scratchTensor.dims + ":" + scratchTensor.w + "x" + scratchTensor.h + "x" + scratchTensor.d + "x" + scratchTensor.c
+                        + " | dst=" + attentionFlattenTensor.dims + ":" + attentionFlattenTensor.w + "x" + attentionFlattenTensor.h + "x" + attentionFlattenTensor.d + "x" + attentionFlattenTensor.c);
+                    owner.PublishTensorBufferOutput(
+                        layer.topNames[0],
+                        attentionFlattenTensor,
+                        preferTexture: true,
+                        textureBlobs,
+                        textureShapes,
+                        bufferBlobs,
+                        bufferRefs,
+                        bufferViews,
+                        tempOwned);
+                    scratchTensor.Dispose();
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
+                var attentionTensor = TryResolveImplicitAttentionReshape(owner, layer, scratchTensor);
+                if (attentionTensor != null)
+                {
                         owner.PublishTensorBufferOutput(
                             layer.topNames[0],
                             attentionTensor,
@@ -718,6 +762,93 @@ namespace NcnnCompute
             groupsA = groupsB = groupsC = groupsEdge;
             tokensA = tokensB = tokensC = tokensEdge;
             return true;
+        }
+
+        private static bool TryResolveAttentionContextFlattenOutput(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnTensorBuffer src,
+            out NcnnTensorBuffer outTensor)
+        {
+            outTensor = null;
+            if (src == null || src.buffer == null)
+                return false;
+            if (!TryResolveAttentionContextFlattenShape(owner, layer, new NcnnRepro.BufferShape(src.dims, src.w, src.h, src.d, src.c), out var outShape))
+                return false;
+
+            var source = NcnnRepro.ReadFloatBuffer(src.buffer);
+            var destination = new float[source.Length];
+            var headDim = src.w;
+            var tokens = src.h;
+            var windows = src.d;
+            var heads = src.c;
+
+            for (var window = 0; window < windows; window++)
+            {
+                for (var token = 0; token < tokens; token++)
+                {
+                    var dstBase = ((window * tokens) + token) * outShape.w;
+                    for (var dim = 0; dim < headDim; dim++)
+                    {
+                        for (var head = 0; head < heads; head++)
+                        {
+                            var srcIndex = ((((head * windows) + window) * tokens) + token) * headDim + dim;
+                            var dstIndex = dstBase + dim * heads + head;
+                            destination[dstIndex] = source[srcIndex];
+                        }
+                    }
+                }
+            }
+
+            var outBuffer = owner.RentTempBuffer(destination.Length, sizeof(float));
+            outBuffer.SetData(destination);
+            outTensor = new NcnnTensorBuffer(
+                outBuffer,
+                outShape.dims,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                true,
+                owner.ReturnTempBuffer);
+            return true;
+        }
+
+        private static bool TryResolveAttentionContextFlattenShape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            out NcnnRepro.BufferShape outShape)
+        {
+            outShape = default;
+            if (owner?.Model?.layers == null || layer == null)
+                return false;
+            if (srcShape.dims != 4 || srcShape.w <= 0 || srcShape.h <= 0 || srcShape.d <= 0 || srcShape.c <= 0)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length == 0 || string.IsNullOrWhiteSpace(layer.bottomNames[0]))
+                return false;
+
+            var producer = FindSingleProducer(owner.Model, layer.bottomNames[0]);
+            if (producer == null || producer.type != NcnnLayerTypes.MatMul)
+                return false;
+
+            outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer);
+            if (outShape.dims != 2 && outShape.dims != 3)
+                return false;
+            if (outShape.w != srcShape.w * srcShape.c)
+                return false;
+
+            var collapsesWindowsIntoTokens =
+                outShape.h == srcShape.h * srcShape.d
+                && (outShape.dims != 3 || outShape.c == 1);
+            if (collapsesWindowsIntoTokens)
+                return true;
+
+            var preservesWindowAxis =
+                outShape.dims == 3
+                && outShape.h == srcShape.h
+                && outShape.c == srcShape.d;
+            return preservesWindowAxis;
         }
 
         private static bool TryMatchWindowPartitionProducerChain(NcnnParamModel model, NcnnParamModel.Layer layer)

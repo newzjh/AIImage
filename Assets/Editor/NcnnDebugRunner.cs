@@ -62,8 +62,10 @@ public static class NcnnDebugRunner
     private const string MonaiThresholdEnvVar = "AIIMAGE_MONAI_THRESHOLD";
     private const string MonaiCompareBaselineEnvVar = "AIIMAGE_MONAI_COMPARE_BASELINE";
     private const string MonaiEnableDumpEnvVar = "AIIMAGE_MONAI_ENABLE_DUMP";
+    private const string MonaiDumpLargeTensorsEnvVar = "AIIMAGE_MONAI_DUMP_LARGE_TENSORS";
     private const string MonaiForceBufferConvEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_CONV";
     private const string MonaiForceBufferBinaryEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_BINARY";
+    private const string MonaiForceCpuGemmEnvVar = "AIIMAGE_MONAI_FORCE_CPU_GEMM";
     private const string MonaiForceBufferAllEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_ALL";
     private const string MonaiForceBufferOutputsDims4EnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_OUTPUTS_DIMS4";
     private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
@@ -76,6 +78,9 @@ public static class NcnnDebugRunner
     private const string MonaiClearTempPoolEachPatchEnvVar = "AIIMAGE_MONAI_CLEAR_TEMP_POOL_EACH_PATCH";
     private const string MonaiTempPoolClearIntervalEnvVar = "AIIMAGE_MONAI_TEMP_POOL_CLEAR_INTERVAL";
     private const string MonaiYieldIntervalEnvVar = "AIIMAGE_MONAI_YIELD_INTERVAL";
+    private const string MonaiManagedCleanupIntervalEnvVar = "AIIMAGE_MONAI_MANAGED_CLEANUP_INTERVAL";
+    private const string MonaiResourceSnapshotIntervalEnvVar = "AIIMAGE_MONAI_RESOURCE_SNAPSHOT_INTERVAL";
+    private const string MonaiAbortPrivateMemoryMbEnvVar = "AIIMAGE_MONAI_ABORT_PRIVATE_MEMORY_MB";
     private const string BatchTimeoutMinutesEnvVar = "AIIMAGE_BATCH_TIMEOUT_MINUTES";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -555,8 +560,10 @@ public static class NcnnDebugRunner
         var caseName = ResolveStringEnv(MonaiCaseNameEnvVar, null);
         var compareBaseline = ResolveBoolEnv(MonaiCompareBaselineEnvVar, true);
         var enableDump = ResolveBoolEnv(MonaiEnableDumpEnvVar, true);
+        var dumpLargeTensors = ResolveBoolEnv(MonaiDumpLargeTensorsEnvVar, true);
         var forceBufferConv = ResolveBoolEnv(MonaiForceBufferConvEnvVar, false);
         var forceBufferBinary = ResolveBoolEnv(MonaiForceBufferBinaryEnvVar, false);
+        var forceCpuGemm = ResolveBoolEnv(MonaiForceCpuGemmEnvVar, false);
         var forceBufferAll = ResolveBoolEnv(MonaiForceBufferAllEnvVar, false);
         var forceBufferOutputsDims4 = ResolveBoolEnv(MonaiForceBufferOutputsDims4EnvVar, false);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
@@ -582,9 +589,11 @@ public static class NcnnDebugRunner
                 runner.bundleManifestRelativePath = monaiConfig.bundleManifestPath;
             runner.defaultPostprocessKind = monaiConfig.postprocessKind;
             runner.enableDebugDump = enableDump;
+            runner.dumpLargeTensorFiles = dumpLargeTensors;
             runner.enableBaselineCompare = compareBaseline;
             runner.forceBufferConvolution = forceBufferConv;
             runner.forceBufferBinaryOp = forceBufferBinary;
+            runner.forceCpuGemm = forceCpuGemm;
             runner.forceBufferAllLayers = forceBufferAll;
             runner.forceBufferOutputsForDims4 = forceBufferOutputsDims4;
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
@@ -594,6 +603,9 @@ public static class NcnnDebugRunner
             runner.clearTempPoolAfterEachSlidingWindowPatch = ResolveBoolEnv(MonaiClearTempPoolEachPatchEnvVar, true);
             runner.slidingWindowTempPoolClearInterval = ResolvePositiveIntEnvAllowZero(MonaiTempPoolClearIntervalEnvVar, 1);
             runner.slidingWindowYieldInterval = ResolvePositiveIntEnvAllowZero(MonaiYieldIntervalEnvVar, 1);
+            runner.slidingWindowManagedCleanupInterval = ResolvePositiveIntEnvAllowZero(MonaiManagedCleanupIntervalEnvVar, 1);
+            runner.slidingWindowResourceSnapshotInterval = ResolvePositiveIntEnvAllowZero(MonaiResourceSnapshotIntervalEnvVar, 1);
+            runner.slidingWindowAbortIfPrivateMemoryExceedsMb = Mathf.Max(0f, ResolveFloatEnvOrDefault(MonaiAbortPrivateMemoryMbEnvVar, 8192f));
             runner.logAllLayerHeartbeats = false;
             runner.logAllLayerOutputs = false;
             runner.logAllBufferMaterialize = false;
@@ -1060,10 +1072,7 @@ public static class NcnnDebugRunner
     {
         try
         {
-            var process = Process.GetCurrentProcess();
-            var privateMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
-            var workingSetMb = process.WorkingSet64 / (1024.0 * 1024.0);
-            var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+            GetProcessMemorySnapshotMb(out var privateMb, out var workingSetMb, out var managedMb);
             var gfxMb = GetGraphicsDriverMemoryMb();
             var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
             Debug.Log(
@@ -1086,10 +1095,7 @@ public static class NcnnDebugRunner
         if (sw == null)
             return;
 
-        var process = Process.GetCurrentProcess();
-        var privateMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
-        var workingSetMb = process.WorkingSet64 / (1024.0 * 1024.0);
-        var managedMb = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+        GetProcessMemorySnapshotMb(out var privateMb, out var workingSetMb, out var managedMb);
         var gfxMb = GetGraphicsDriverMemoryMb();
         var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
         sw.WriteLine(
@@ -1119,6 +1125,38 @@ public static class NcnnDebugRunner
         GC.Collect();
         RenderTexture.active = null;
         await UniTask.Yield();
+    }
+
+    private static void GetProcessMemorySnapshotMb(out double privateMb, out double workingSetMb, out double managedMb)
+    {
+        privateMb = 0d;
+        workingSetMb = 0d;
+        managedMb = GC.GetTotalMemory(false) / (1024d * 1024d);
+
+        try
+        {
+            var process = Process.GetCurrentProcess();
+            privateMb = process.PrivateMemorySize64 / (1024d * 1024d);
+            workingSetMb = process.WorkingSet64 / (1024d * 1024d);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var reservedMb = Profiler.GetTotalReservedMemoryLong() / (1024d * 1024d);
+            var allocatedMb = Profiler.GetTotalAllocatedMemoryLong() / (1024d * 1024d);
+            if (privateMb <= 0d)
+                privateMb = Math.Max(allocatedMb, reservedMb);
+            if (workingSetMb <= 0d)
+                workingSetMb = Math.Max(allocatedMb, reservedMb);
+            if (managedMb <= 0d)
+                managedMb = allocatedMb;
+        }
+        catch
+        {
+        }
     }
 
     public static void RunCodeFormerDebugBatch() => RunBatchBlocking(nameof(RunCodeFormerDebugBatch), RunCodeFormerDebugInternal);

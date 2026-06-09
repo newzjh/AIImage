@@ -778,6 +778,7 @@ namespace NcnnCompute
         public IReadOnlyList<NcnnBaseLayerRepro> LayerRepros { get; private set; }
         public ModelLoadProfile LastLoadProfile { get; private set; }
         public bool ForceBufferBinaryOpAll { get; set; }
+        public bool ForceCpuGemmAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
         // Default false: some runners intentionally use the buffer GELU fallback as a GPU sync point via SetData.
         public bool EnableGpuGeluBufferPath { get; set; }
@@ -3528,7 +3529,7 @@ namespace NcnnCompute
             return data;
         }
 
-        internal static float[] RunGemmCpu(ComputeBuffer aBuf, NcnnTensorBuffer aView, GemmPack gp)
+        internal static float[] RunGemmCpu(ComputeBuffer aBuf, NcnnTensorBuffer aView, GemmPack gp, float[] cDataOverride = null)
         {
             if (aBuf == null)
                 throw new ArgumentNullException(nameof(aBuf));
@@ -3542,7 +3543,7 @@ namespace NcnnCompute
             var n = gp.constantN;
             var a = ReadFloatBuffer(aBuf);
             var b = gp.bDataCpu;
-            var c = gp.cDataCpu;
+            var c = cDataOverride ?? gp.cDataCpu;
             var output = new float[m * n];
 
             for (var row = 0; row < m; row++)

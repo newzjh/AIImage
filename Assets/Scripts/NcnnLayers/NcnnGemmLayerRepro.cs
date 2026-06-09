@@ -138,21 +138,43 @@ namespace NcnnCompute
 
                                                 var useC = false;
                                                 ComputeBuffer cBuf = null;
+                                                float[] cCpu = null;
                                                 if (gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null)
                                                 {
                                                     useC = true;
                                                     cBuf = gp.cData;
+                                                    cCpu = gp.cDataCpu;
                                                 }
                                                 else if (!gp.constantC && layer.bottomNames.Length > 2)
                                                 {
                                                     cBuf = owner.GetOrConvertToBuffer(layer.bottomNames[2], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
                                                     useC = cBuf != null;
+                                                    if (useC)
+                                                        cCpu = NcnnRepro.ReadFloatBuffer(cBuf);
                                                 }
 
                                                 var outTensor = m == 1 && srcView.dims == 1
                                                     ? owner.RentTempTensorBuffer(1, n)
                                                     : owner.RentTempTensorBuffer(2, n, m);
-                                                owner.Ops.Gemm2D(srcBuf, bBuf, cBuf, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outTensor.buffer);
+                                                if (owner.ForceCpuGemmAll)
+                                                {
+                                                    if (!gp.constantB)
+                                                        throw new InvalidOperationException("ForceCpuGemmAll currently requires constantB=1: " + layer.name);
+
+                                                    var cpuOut = NcnnRepro.RunGemmCpu(srcBuf, srcView, gp, cCpu);
+                                                    outTensor.buffer.SetData(cpuOut);
+                                                    owner.DebugLog?.Invoke(
+                                                        "ForceCpuGemmAll applied"
+                                                        + " | layer=" + layer.name
+                                                        + " | m=" + m.ToString(CultureInfo.InvariantCulture)
+                                                        + " | n=" + n.ToString(CultureInfo.InvariantCulture)
+                                                        + " | k=" + k.ToString(CultureInfo.InvariantCulture)
+                                                        + " | useC=" + useC.ToString());
+                                                }
+                                                else
+                                                {
+                                                    owner.Ops.Gemm2D(srcBuf, bBuf, cBuf, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outTensor.buffer);
+                                                }
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],
                                                     outTensor,

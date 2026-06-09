@@ -10,6 +10,7 @@ using ICSharpCode.SharpZipLib.GZip;
 using NcnnCompute;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
+using UnityEngine.Profiling;
 
 public enum MonaiInputSourceKind
 {
@@ -164,14 +165,19 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public float defaultThreshold = 0.5f;
     public bool defaultNormalizeNonZero = true;
     public bool enableDebugDump = true;
+    public bool dumpLargeTensorFiles = true;
     public bool enableBaselineCompare = true;
     public bool enableTempPool = false;
     public int maxPooledPerShape = 0;
     public bool clearTempPoolAfterEachSlidingWindowPatch = true;
     public int slidingWindowTempPoolClearInterval = 1;
     public int slidingWindowYieldInterval = 1;
+    public int slidingWindowManagedCleanupInterval = 1;
+    public int slidingWindowResourceSnapshotInterval = 1;
+    public float slidingWindowAbortIfPrivateMemoryExceedsMb = 0f;
     public bool forceBufferConvolution = false;
     public bool forceBufferBinaryOp = false;
+    public bool forceCpuGemm = false;
     public bool forceBufferAllLayers = false;
     public bool forceBufferOutputsForDims4 = false;
     public bool keepRawConvWeightsForTexturePath = true;
@@ -190,6 +196,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private string _lastDumpDir;
     private string _lastSummaryText;
     private readonly List<string> _debugLines = new List<string>();
+    private int _flushedDebugLineCount;
 
     public string LastDumpDir => _lastDumpDir;
     public string LastSummaryText => _lastSummaryText;
@@ -242,6 +249,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _lastDumpDir = null;
         _lastSummaryText = null;
         _debugLines.Clear();
+        _flushedDebugLineCount = 0;
 
         MonaiSegmentationResult Finish(MonaiSegmentationResult result)
         {
@@ -258,7 +266,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
             _lastDumpDir = resolved.outputDir;
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+            {
                 Directory.CreateDirectory(_lastDumpDir);
+                WriteText(Path.Combine(_lastDumpDir, "runtime_debug.log"), string.Empty);
+            }
 
             ReportProgress(0.06f, "Load MONAI ncnn model");
             await EnsureLoadedAsync(resolved, ct);
@@ -424,10 +435,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             {
                 Directory.CreateDirectory(_lastDumpDir);
-                WriteFloatArray(Path.Combine(_lastDumpDir, "logits_ncdhw_f32.bin"), logits);
-                WriteFloatArray(Path.Combine(_lastDumpDir, "probs_ncdhw_f32.bin"), probs);
-                if (masks != null)
-                    WriteByteArray(Path.Combine(_lastDumpDir, "masks_ncdhw_u8.bin"), masks);
+                if (dumpLargeTensorFiles)
+                {
+                    WriteFloatArray(Path.Combine(_lastDumpDir, "logits_ncdhw_f32.bin"), logits);
+                    WriteFloatArray(Path.Combine(_lastDumpDir, "probs_ncdhw_f32.bin"), probs);
+                    if (masks != null)
+                        WriteByteArray(Path.Combine(_lastDumpDir, "masks_ncdhw_u8.bin"), masks);
+                }
                 if (labelMap16 != null)
                 {
                     WriteUInt16Array(Path.Combine(_lastDumpDir, "labelmap_dhw_u16.bin"), labelMap16);
@@ -511,6 +525,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _repro.UseNcnnStyleGroupNorm = true;
         _repro.ForceBufferConvolution = forceBufferConvolution;
         _repro.ForceBufferBinaryOpAll = forceBufferBinaryOp;
+        _repro.ForceCpuGemmAll = forceCpuGemm;
         _repro.ForceBufferLayerTypes = forceBufferAllLayers
             ? new HashSet<string>(StringComparer.Ordinal) { "*" }
             : null;
@@ -1082,6 +1097,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         0.68f,
                         "Run MONAI inference patch ",
                         ct);
+                    await MaybeRunSlidingWindowMaintenanceAsync(patchIndex, patchCount, "logits_patch", ct);
                 }
             }
         }
@@ -1185,11 +1201,28 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var patchCount = startsD.Count * startsH.Count * startsW.Count;
         var patchIndex = 0;
 
+        var fullPlane = checked(fullH * fullW);
+        var fullVoxelCount = checked(fullD * fullPlane);
         var featurePatchElementCount = checked(featureChannels * roiD * roiH * roiW);
-        var featureAccumElementCount = checked(featureChannels * fullD * fullH * fullW);
-        float[] featureAccum = null;
-        float[] weight = null;
+        var bandDepthCapacity = Mathf.Min(roiD, fullD);
+        var featureBandElementCount = checked(featureChannels * bandDepthCapacity * fullPlane);
+        var weightBandElementCount = checked(bandDepthCapacity * fullPlane);
+        AppendDebugLine(
+            "RunSlidingWindowFeatureAggregationInference memory_estimate"
+            + " | featurePatchMiB=" + FormatMiBFromFloatCount(featurePatchElementCount)
+            + " | featureBandMiB=" + FormatMiBFromFloatCount(featureBandElementCount)
+            + " | weightBandMiB=" + FormatMiBFromFloatCount(weightBandElementCount)
+            + " | labelMapMiB=" + ((fullVoxelCount * (double)sizeof(ushort)) / (1024d * 1024d)).ToString("F3", CultureInfo.InvariantCulture)
+            + " | bandDepth=" + bandDepthCapacity.ToString(CultureInfo.InvariantCulture)
+            + " | fullShape=" + fullD.ToString(CultureInfo.InvariantCulture) + "x" + fullH.ToString(CultureInfo.InvariantCulture) + "x" + fullW.ToString(CultureInfo.InvariantCulture));
+        ThrowIfSlidingWindowMemoryLimitExceeded("before_feature_band_alloc", 0, patchCount);
+
+        var labelMap = new ushort[fullVoxelCount];
+        var featureBand = new float[featureBandElementCount];
+        var weightBand = new float[weightBandElementCount];
         var featurePatch = new float[featurePatchElementCount];
+        var bandBaseDepth = 0;
+        var activeBandDepth = 0;
 
         using var inputTensor = new NcnnTensorBuffer(roiW, roiH, roiD, inputChannels);
         var patchTensor = new float[checked(inputChannels * roiD * roiH * roiW)];
@@ -1246,25 +1279,39 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                             + featureView.w + "x" + featureView.h + "x" + featureView.d + "x" + featureView.c);
                     }
 
-                    if (featureAccum == null)
+                    featureView.buffer.GetData(featurePatch);
+                    var localStartDepth = startD - bandBaseDepth;
+                    if (localStartDepth < 0)
                     {
-                        featureAccum = new float[featureAccumElementCount];
-                        weight = new float[checked(fullD * fullH * fullW)];
+                        throw new InvalidOperationException(
+                            "Sliding window feature band underflow: bandBaseDepth="
+                            + bandBaseDepth.ToString(CultureInfo.InvariantCulture)
+                            + " startDepth=" + startD.ToString(CultureInfo.InvariantCulture));
+                    }
+                    var localEndDepth = checked(localStartDepth + roiD);
+                    if (localEndDepth > bandDepthCapacity)
+                    {
+                        throw new InvalidOperationException(
+                            "Sliding window feature band overflow: localEndDepth="
+                            + localEndDepth.ToString(CultureInfo.InvariantCulture)
+                            + " bandDepthCapacity=" + bandDepthCapacity.ToString(CultureInfo.InvariantCulture)
+                            + " | startDepth=" + startD.ToString(CultureInfo.InvariantCulture)
+                            + " | bandBaseDepth=" + bandBaseDepth.ToString(CultureInfo.InvariantCulture));
                     }
 
-                    featureView.buffer.GetData(featurePatch);
-                    AccumulatePatchLogits(
-                        featureAccum,
-                        weight,
+                    activeBandDepth = Math.Max(activeBandDepth, localEndDepth);
+                    AccumulatePatchToDepthBand(
+                        featureBand,
+                        weightBand,
+                        bandDepthCapacity,
                         featurePatch,
-                        fullD,
                         fullH,
                         fullW,
                         roiD,
                         roiH,
                         roiW,
                         featureChannels,
-                        startD,
+                        localStartDepth,
                         startH,
                         startW);
 
@@ -1277,28 +1324,56 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         0.64f,
                         "Run MONAI feature patch ",
                         ct);
+                    await MaybeRunSlidingWindowMaintenanceAsync(patchIndex, patchCount, "feature_patch", ct);
                 }
             }
+
+            var nextDepthStart = (iz + 1) < startsD.Count ? startsD[iz + 1] : fullD;
+            var finalizedDepthCount = Mathf.Clamp(nextDepthStart - bandBaseDepth, 0, activeBandDepth);
+            if (finalizedDepthCount <= 0)
+                continue;
+
+            NormalizeAccumulatedBandRange(featureBand, weightBand, featureChannels, bandDepthCapacity, finalizedDepthCount, fullPlane);
+            FillLabelMapFromFeatureBand(
+                featureBand,
+                bandDepthCapacity,
+                0,
+                finalizedDepthCount,
+                fullW,
+                fullH,
+                outputHead,
+                labelMap,
+                bandBaseDepth,
+                ct);
+            SlideAccumulatedFeatureBand(
+                featureBand,
+                weightBand,
+                featureChannels,
+                bandDepthCapacity,
+                fullPlane,
+                finalizedDepthCount,
+                ref activeBandDepth);
+
+            bandBaseDepth += finalizedDepthCount;
+            AppendDebugLine(
+                "RunSlidingWindowFeatureAggregationInference flush_depth"
+                + " | flushedDepth=" + finalizedDepthCount.ToString(CultureInfo.InvariantCulture)
+                + " | nextBandBaseDepth=" + bandBaseDepth.ToString(CultureInfo.InvariantCulture)
+                + " | remainingActiveDepth=" + activeBandDepth.ToString(CultureInfo.InvariantCulture));
         }
 
-        if (featureAccum == null || weight == null)
+        if (patchCount <= 0)
             throw new InvalidOperationException("Sliding window feature inference did not produce any patches.");
+        if (bandBaseDepth != fullD || activeBandDepth != 0)
+        {
+            throw new InvalidOperationException(
+                "Sliding window feature band drain incomplete: bandBaseDepth="
+                + bandBaseDepth.ToString(CultureInfo.InvariantCulture)
+                + " fullDepth=" + fullD.ToString(CultureInfo.InvariantCulture)
+                + " activeBandDepth=" + activeBandDepth.ToString(CultureInfo.InvariantCulture));
+        }
 
-        NormalizeAccumulatedLogits(featureAccum, weight, featureChannels, fullD, fullH, fullW);
-        ReportProgress(0.66f, "Classify aggregated MONAI features");
-        var labelMap = BuildLabelMapFromAggregatedFeatures(
-            featureAccum,
-            fullW,
-            fullH,
-            fullD,
-            outputHead,
-            progress01 =>
-            {
-                ReportProgress(
-                    Mathf.Lerp(0.66f, 0.70f, progress01),
-                    "Classify aggregated MONAI features");
-            },
-            ct);
+        ReportProgress(0.70f, "Classify aggregated MONAI features");
 
         return new InferenceRunResult
         {
@@ -1307,7 +1382,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             height = fullH,
             depth = fullD,
             channels = outputHead.outputChannels,
-            executionNote = "sliding_window_feature_head:" + outputHead.featureBlobName,
+            executionNote = "sliding_window_feature_head_band:" + outputHead.featureBlobName,
             executedPatchCount = patchCount,
             totalPatchCount = patchCount
         };
@@ -1391,6 +1466,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         0.62f,
                         "Run MONAI probe patch ",
                         ct);
+                    await MaybeRunSlidingWindowMaintenanceAsync(executedPatchCount, maxPatchCount, "probe_patch", ct);
                 }
             }
         }
@@ -1441,6 +1517,334 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             await UniTask.Yield(PlayerLoopTiming.Update, ct);
             RenderTexture.active = null;
         }
+    }
+
+    private async UniTask MaybeRunSlidingWindowMaintenanceAsync(
+        int patchIndex,
+        int patchCount,
+        string stage,
+        CancellationToken ct)
+    {
+        if (slidingWindowResourceSnapshotInterval > 0
+            && (patchIndex % slidingWindowResourceSnapshotInterval) == 0)
+        {
+            AppendDebugLine(BuildSlidingWindowResourceSnapshot(stage, patchIndex, patchCount));
+        }
+
+        ThrowIfSlidingWindowMemoryLimitExceeded(stage, patchIndex, patchCount);
+
+        if (slidingWindowManagedCleanupInterval > 0
+            && (patchIndex % slidingWindowManagedCleanupInterval) == 0)
+        {
+            RenderTexture.active = null;
+            await UniTask.Yield(PlayerLoopTiming.Update, ct);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            RenderTexture.active = null;
+            await UniTask.Yield(PlayerLoopTiming.Update, ct);
+
+            if (slidingWindowResourceSnapshotInterval > 0
+                && (patchIndex % slidingWindowResourceSnapshotInterval) == 0)
+            {
+                AppendDebugLine(BuildSlidingWindowResourceSnapshot(stage + "_after_gc", patchIndex, patchCount));
+            }
+
+            ThrowIfSlidingWindowMemoryLimitExceeded(stage + "_after_gc", patchIndex, patchCount);
+        }
+    }
+
+    private string BuildSlidingWindowResourceSnapshot(string stage, int patchIndex, int patchCount)
+    {
+        GetProcessMemorySnapshotMb(out var privateMb, out var workingSetMb, out var managedMb);
+        var gfxMb = TryGetGraphicsDriverMemoryMb();
+        var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
+        var text =
+            "SlidingWindowResources"
+            + " | stage=" + (stage ?? string.Empty)
+            + " | patch=" + patchIndex.ToString(CultureInfo.InvariantCulture)
+            + "/" + patchCount.ToString(CultureInfo.InvariantCulture)
+            + " | privateMb=" + privateMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | workingSetMb=" + workingSetMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | managedMb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | gfxMb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | rtCount=" + rtCount.ToString(CultureInfo.InvariantCulture);
+        if (_repro != null)
+            text += " | gpu=" + NcnnGpuResourceTracker.BuildSummary();
+        return text;
+    }
+
+    private void ThrowIfSlidingWindowMemoryLimitExceeded(string stage, int patchIndex, int patchCount)
+    {
+        if (slidingWindowAbortIfPrivateMemoryExceedsMb <= 0f)
+            return;
+
+        GetProcessMemorySnapshotMb(out var privateMb, out _, out _);
+        if (privateMb <= slidingWindowAbortIfPrivateMemoryExceedsMb)
+            return;
+
+        var snapshot = BuildSlidingWindowResourceSnapshot(stage + "_abort", patchIndex, patchCount);
+        AppendDebugLine(snapshot);
+        throw new InvalidOperationException(
+            "Abort MONAI sliding window due to private memory limit"
+            + " | limitMb=" + slidingWindowAbortIfPrivateMemoryExceedsMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | privateMb=" + privateMb.ToString("F3", CultureInfo.InvariantCulture)
+            + " | stage=" + (stage ?? string.Empty));
+    }
+
+    private static double TryGetGraphicsDriverMemoryMb()
+    {
+        try
+        {
+            return Profiler.GetAllocatedMemoryForGraphicsDriver() / (1024d * 1024d);
+        }
+        catch
+        {
+            return -1d;
+        }
+    }
+
+    private static void GetProcessMemorySnapshotMb(out double privateMb, out double workingSetMb, out double managedMb)
+    {
+        privateMb = 0d;
+        workingSetMb = 0d;
+        managedMb = GC.GetTotalMemory(false) / (1024d * 1024d);
+
+        try
+        {
+            var process = Process.GetCurrentProcess();
+            privateMb = process.PrivateMemorySize64 / (1024d * 1024d);
+            workingSetMb = process.WorkingSet64 / (1024d * 1024d);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var reservedMb = Profiler.GetTotalReservedMemoryLong() / (1024d * 1024d);
+            var allocatedMb = Profiler.GetTotalAllocatedMemoryLong() / (1024d * 1024d);
+            if (privateMb <= 0d)
+                privateMb = Math.Max(allocatedMb, reservedMb);
+            if (workingSetMb <= 0d)
+                workingSetMb = Math.Max(allocatedMb, reservedMb);
+            if (managedMb <= 0d)
+                managedMb = allocatedMb;
+        }
+        catch
+        {
+        }
+    }
+
+    private static string FormatMiBFromFloatCount(int count)
+    {
+        return ((count * (double)sizeof(float)) / (1024d * 1024d)).ToString("F3", CultureInfo.InvariantCulture);
+    }
+
+    private static void AccumulatePatchToDepthBand(
+        float[] accum,
+        float[] weight,
+        int depthCapacity,
+        float[] patch,
+        int fullHeight,
+        int fullWidth,
+        int patchDepth,
+        int patchHeight,
+        int patchWidth,
+        int channels,
+        int startDepthLocal,
+        int startHeight,
+        int startWidth)
+    {
+        var fullPlane = checked(fullHeight * fullWidth);
+        var bandVolume = checked(depthCapacity * fullPlane);
+        var patchPlane = checked(patchHeight * patchWidth);
+        var patchVolume = checked(patchDepth * patchPlane);
+        for (var c = 0; c < channels; c++)
+        {
+            var accumChannel = c * bandVolume;
+            var patchChannel = c * patchVolume;
+            for (var z = 0; z < patchDepth; z++)
+            {
+                var dstZ = startDepthLocal + z;
+                var accumZOffset = accumChannel + dstZ * fullPlane;
+                var weightZOffset = dstZ * fullPlane;
+                var patchZOffset = patchChannel + z * patchPlane;
+                for (var y = 0; y < patchHeight; y++)
+                {
+                    var accumOffset = accumZOffset + (startHeight + y) * fullWidth + startWidth;
+                    var weightOffset = weightZOffset + (startHeight + y) * fullWidth + startWidth;
+                    var patchOffset = patchZOffset + y * patchWidth;
+                    for (var x = 0; x < patchWidth; x++)
+                    {
+                        accum[accumOffset + x] += patch[patchOffset + x];
+                        if (c == 0)
+                            weight[weightOffset + x] += 1f;
+                    }
+                }
+            }
+        }
+    }
+
+    private static void NormalizeAccumulatedBandRange(
+        float[] accum,
+        float[] weight,
+        int channels,
+        int depthCapacity,
+        int depthCount,
+        int plane)
+    {
+        var bandVolume = checked(depthCapacity * plane);
+        var voxelCount = checked(depthCount * plane);
+        for (var voxel = 0; voxel < voxelCount; voxel++)
+        {
+            var w = weight[voxel];
+            if (w <= 1e-12f)
+                continue;
+
+            var inv = 1f / w;
+            for (var c = 0; c < channels; c++)
+                accum[(c * bandVolume) + voxel] *= inv;
+        }
+    }
+
+    private void FillLabelMapFromFeatureBand(
+        float[] featureBand,
+        int sourceDepthCapacity,
+        int localStartDepth,
+        int depthCount,
+        int width,
+        int height,
+        OutputHeadInfo outputHead,
+        ushort[] labelMap,
+        int labelMapStartDepth,
+        CancellationToken ct)
+    {
+        if (featureBand == null)
+            throw new ArgumentNullException(nameof(featureBand));
+        if (labelMap == null)
+            throw new ArgumentNullException(nameof(labelMap));
+        if (outputHead?.conv == null)
+            throw new ArgumentNullException(nameof(outputHead));
+        if (depthCount <= 0)
+            return;
+
+        var plane = checked(width * height);
+        var featureChannels = outputHead.featureChannels;
+        var outputChannels = outputHead.outputChannels;
+        var baseChunkDepth = Math.Max(1, Math.Min(8, depthCount));
+        var baseChunkVoxelCount = checked(baseChunkDepth * plane);
+
+        var featureChunk = new float[checked(featureChannels * baseChunkVoxelCount)];
+        var logitsChunk = new float[checked(outputChannels * baseChunkVoxelCount)];
+        using var featureTensor = new NcnnTensorBuffer(width, height, baseChunkDepth, featureChannels);
+        using var logitsTensor = new NcnnTensorBuffer(width, height, baseChunkDepth, outputChannels);
+
+        for (var relativeStartDepth = 0; relativeStartDepth < depthCount; relativeStartDepth += baseChunkDepth)
+        {
+            ct.ThrowIfCancellationRequested();
+            var chunkDepth = Math.Min(baseChunkDepth, depthCount - relativeStartDepth);
+            var chunkVoxelCount = checked(chunkDepth * plane);
+            var featureCount = checked(featureChannels * chunkVoxelCount);
+            var logitsCount = checked(outputChannels * chunkVoxelCount);
+
+            if (chunkDepth == baseChunkDepth)
+            {
+                for (var c = 0; c < featureChannels; c++)
+                {
+                    var srcOffset = checked(((c * sourceDepthCapacity) + localStartDepth + relativeStartDepth) * plane);
+                    var dstOffset = c * chunkVoxelCount;
+                    Array.Copy(featureBand, srcOffset, featureChunk, dstOffset, chunkVoxelCount);
+                }
+
+                featureTensor.buffer.SetData(featureChunk);
+                _ops.Conv3dBuf(
+                    featureTensor,
+                    outputHead.conv.rawWeight,
+                    outputHead.conv.rawBias,
+                    outputChannels,
+                    1, 1, 1,
+                    1, 1, 1,
+                    0, 0, 0, 0, 0, 0,
+                    1, 1, 1,
+                    outputHead.conv.activationType,
+                    outputHead.conv.activationSlope,
+                    logitsTensor);
+                logitsTensor.buffer.GetData(logitsChunk);
+                FillArgmaxLabels(labelMap, labelMapStartDepth + relativeStartDepth, plane, chunkVoxelCount, outputChannels, logitsChunk);
+            }
+            else
+            {
+                var featureChunkTail = new float[featureCount];
+                var logitsChunkTail = new float[logitsCount];
+                using var featureTensorTail = new NcnnTensorBuffer(width, height, chunkDepth, featureChannels);
+                using var logitsTensorTail = new NcnnTensorBuffer(width, height, chunkDepth, outputChannels);
+                for (var c = 0; c < featureChannels; c++)
+                {
+                    var srcOffset = checked(((c * sourceDepthCapacity) + localStartDepth + relativeStartDepth) * plane);
+                    var dstOffset = c * chunkVoxelCount;
+                    Array.Copy(featureBand, srcOffset, featureChunkTail, dstOffset, chunkVoxelCount);
+                }
+
+                featureTensorTail.buffer.SetData(featureChunkTail);
+                _ops.Conv3dBuf(
+                    featureTensorTail,
+                    outputHead.conv.rawWeight,
+                    outputHead.conv.rawBias,
+                    outputChannels,
+                    1, 1, 1,
+                    1, 1, 1,
+                    0, 0, 0, 0, 0, 0,
+                    1, 1, 1,
+                    outputHead.conv.activationType,
+                    outputHead.conv.activationSlope,
+                    logitsTensorTail);
+                logitsTensorTail.buffer.GetData(logitsChunkTail);
+                FillArgmaxLabels(labelMap, labelMapStartDepth + relativeStartDepth, plane, chunkVoxelCount, outputChannels, logitsChunkTail);
+            }
+        }
+    }
+
+    private static void SlideAccumulatedFeatureBand(
+        float[] featureBand,
+        float[] weightBand,
+        int channels,
+        int depthCapacity,
+        int plane,
+        int depthShift,
+        ref int activeDepth)
+    {
+        if (depthShift <= 0)
+            return;
+
+        var remainingDepth = Math.Max(0, activeDepth - depthShift);
+        var clearDepth = Math.Max(0, depthCapacity - remainingDepth);
+        var remainingVoxelCount = checked(remainingDepth * plane);
+        var clearVoxelCount = checked(clearDepth * plane);
+
+        if (remainingVoxelCount > 0)
+            Array.Copy(weightBand, depthShift * plane, weightBand, 0, remainingVoxelCount);
+        if (clearVoxelCount > 0)
+            Array.Clear(weightBand, remainingVoxelCount, clearVoxelCount);
+
+        var bandVolume = checked(depthCapacity * plane);
+        for (var c = 0; c < channels; c++)
+        {
+            var channelOffset = c * bandVolume;
+            if (remainingVoxelCount > 0)
+            {
+                Array.Copy(
+                    featureBand,
+                    channelOffset + depthShift * plane,
+                    featureBand,
+                    channelOffset,
+                    remainingVoxelCount);
+            }
+            if (clearVoxelCount > 0)
+                Array.Clear(featureBand, channelOffset + remainingVoxelCount, clearVoxelCount);
+        }
+
+        activeDepth = remainingDepth;
     }
 
     private ushort[] BuildLabelMapFromAggregatedFeatures(
@@ -2683,7 +3087,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         try
         {
-            WriteText(Path.Combine(_lastDumpDir, "runtime_debug.log"), string.Join(Environment.NewLine, _debugLines));
+            if (_flushedDebugLineCount > _debugLines.Count)
+                _flushedDebugLineCount = 0;
+            if (_flushedDebugLineCount >= _debugLines.Count)
+                return;
+
+            var path = Path.Combine(_lastDumpDir, "runtime_debug.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            using var sw = new StreamWriter(path, true, Encoding.UTF8);
+            for (var i = _flushedDebugLineCount; i < _debugLines.Count; i++)
+                sw.WriteLine(_debugLines[i]);
+            _flushedDebugLineCount = _debugLines.Count;
         }
         catch
         {
