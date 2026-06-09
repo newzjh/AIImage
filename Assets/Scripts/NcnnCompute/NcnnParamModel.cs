@@ -96,6 +96,7 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey Convolution1D = NcnnLayerTypeKey.FromString("Convolution1D");
         public static readonly NcnnLayerTypeKey ConvolutionDepthWise = NcnnLayerTypeKey.FromString("ConvolutionDepthWise");
         public static readonly NcnnLayerTypeKey Deconvolution = NcnnLayerTypeKey.FromString("Deconvolution");
+        public static readonly NcnnLayerTypeKey Deconvolution3D = NcnnLayerTypeKey.FromString("Deconvolution3D");
         public static readonly NcnnLayerTypeKey DeconvolutionDepthWise = NcnnLayerTypeKey.FromString("DeconvolutionDepthWise");
         public static readonly NcnnLayerTypeKey Interp = NcnnLayerTypeKey.FromString("Interp");
         public static readonly NcnnLayerTypeKey Dropout = NcnnLayerTypeKey.FromString("Dropout");
@@ -136,6 +137,7 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey Softmax = NcnnLayerTypeKey.FromString("Softmax");
         public static readonly NcnnLayerTypeKey Padding = NcnnLayerTypeKey.FromString("Padding");
         public static readonly NcnnLayerTypeKey Pooling = NcnnLayerTypeKey.FromString("Pooling");
+        public static readonly NcnnLayerTypeKey Pooling3D = NcnnLayerTypeKey.FromString("Pooling3D");
         public static readonly NcnnLayerTypeKey InnerProduct = NcnnLayerTypeKey.FromString("InnerProduct");
         public static readonly NcnnLayerTypeKey MatMul = NcnnLayerTypeKey.FromString("MatMul");
         public static readonly NcnnLayerTypeKey Gemm = NcnnLayerTypeKey.FromString("Gemm");

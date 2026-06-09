@@ -51,41 +51,23 @@ namespace NcnnCompute
             var softBuf = softTensor?.buffer;
             if (softBuf != null)
             {
+                var axis = layer.GetInt(0, 0);
+                if (axis < 0)
+                    axis += softTensor.dims;
                 var outTensor = owner.RentTempTensorBuffer(
                     softTensor.dims,
                     softTensor.w,
                     softTensor.h,
                     softTensor.d,
                     softTensor.c);
-                if (softTensor.dims == 3)
+
+                if (TryResolveContiguousSoftmax2D(softTensor, axis, out var rows, out var cols))
                 {
-                    var batch = softTensor.c;
-                    var rows = softTensor.h;
-                    var cols = softTensor.w;
-                    var matrixCount = rows * cols;
-                    var sliceIn = owner.RentTempBuffer(matrixCount, sizeof(float));
-                    var sliceOut = owner.RentTempBuffer(matrixCount, sizeof(float));
-                    try
-                    {
-                        for (var p = 0; p < batch; p++)
-                        {
-                            var offset = p * matrixCount;
-                            owner.Ops.CopyBufPartial(softBuf, offset, sliceIn, matrixCount);
-                            owner.Ops.Softmax2D(sliceIn, sliceOut, rows, cols);
-                            owner.Ops.CopyBufPartial(sliceOut, 0, outTensor.buffer, matrixCount, offset);
-                        }
-                    }
-                    finally
-                    {
-                        owner.ReturnTempBuffer(sliceIn);
-                        owner.ReturnTempBuffer(sliceOut);
-                    }
+                    owner.Ops.Softmax2D(softBuf, outTensor.buffer, rows, cols);
                 }
                 else
                 {
-                    var rows = softTensor.dims == 2 ? softTensor.h : 1;
-                    var cols = softTensor.dims == 2 ? softTensor.w : softBuf.count;
-                    owner.Ops.Softmax2D(softBuf, outTensor.buffer, rows, cols);
+                    throw new InvalidOperationException("Softmax buffer path unsupported axis for dims=" + softTensor.dims + ": " + layer.name + " axis=" + axis);
                 }
                 owner.PublishTensorBufferOutput(
                     layer.topNames[0],
@@ -192,6 +174,39 @@ namespace NcnnCompute
                 && srcShape.h == src.height
                 && srcShape.c > 0
                 && srcShape.c <= src.packs * 4;
+        }
+
+        private static bool TryResolveContiguousSoftmax2D(NcnnTensorBuffer tensor, int axis, out int rows, out int cols)
+        {
+            rows = 0;
+            cols = 0;
+            if (tensor == null)
+                return false;
+
+            if (axis < 0)
+                axis += tensor.dims;
+
+            switch (tensor.dims)
+            {
+                case 1 when axis == 0:
+                    rows = 1;
+                    cols = tensor.w;
+                    return true;
+                case 2 when axis == 1:
+                    rows = tensor.h;
+                    cols = tensor.w;
+                    return true;
+                case 3 when axis == 2:
+                    rows = tensor.h * tensor.c;
+                    cols = tensor.w;
+                    return true;
+                case 4 when axis == 3:
+                    rows = tensor.h * tensor.d * tensor.c;
+                    cols = tensor.w;
+                    return true;
+                default:
+                    return false;
+            }
         }
     }
 }

@@ -47,6 +47,63 @@ namespace NcnnCompute
 
             if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var reshapeBuf) && reshapeBuf != null)
             {
+                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                if (srcTensor != null
+                    && TryResolveWindowPartitionOutput(owner, layer, srcTensor, out var partitionTensor))
+                {
+                    owner.PublishTensorBufferOutput(
+                        layer.topNames[0],
+                        partitionTensor,
+                        preferTexture: true,
+                        textureBlobs,
+                        textureShapes,
+                        bufferBlobs,
+                        bufferRefs,
+                        bufferViews,
+                        tempOwned);
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
+                if (srcTensor != null
+                    && TryResolveWindowUnpartitionOutput(owner, layer, srcTensor, out var unpartitionTensor))
+                {
+                    owner.PublishTensorBufferOutput(
+                        layer.topNames[0],
+                        unpartitionTensor,
+                        preferTexture: true,
+                        textureBlobs,
+                        textureShapes,
+                        bufferBlobs,
+                        bufferRefs,
+                        bufferViews,
+                        tempOwned);
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
+                if (srcTensor != null)
+                {
+                    // Some lowered attention reshapes perform a real data reorder and must publish
+                    // the newly produced buffer instead of aliasing the original input buffer.
+                    var attentionTensor = TryResolveImplicitAttentionReshape(owner, layer, srcTensor);
+                    if (attentionTensor != null)
+                    {
+                        owner.PublishTensorBufferOutput(
+                            layer.topNames[0],
+                            attentionTensor,
+                            preferTexture: false,
+                            textureBlobs,
+                            textureShapes,
+                            bufferBlobs,
+                            bufferRefs,
+                            bufferViews,
+                            tempOwned);
+                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        return;
+                    }
+                }
+
                 bufferBlobs[layer.topNames[0]] = reshapeBuf;
                 if (bufferRefs.TryGetValue(layer.bottomNames[0], out var reshapeRef) && reshapeRef != null)
                 {
@@ -54,7 +111,6 @@ namespace NcnnCompute
                     reshapeRef.refs++;
                 }
 
-                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
                 if (srcTensor != null)
                 {
                     var outView = NcnnRepro.ResolveReshapeTensor(srcTensor, layer, bottomShapes);
@@ -84,6 +140,58 @@ namespace NcnnCompute
                 if (!canAliasTexture)
                 {
                     var scratchTensor = owner.RentScratchTensorFromTexture(src, srcShape);
+                    if (TryResolveWindowPartitionOutput(owner, layer, scratchTensor, out var partitionTensor))
+                    {
+                        owner.PublishTensorBufferOutput(
+                            layer.topNames[0],
+                            partitionTensor,
+                            preferTexture: true,
+                            textureBlobs,
+                            textureShapes,
+                            bufferBlobs,
+                            bufferRefs,
+                            bufferViews,
+                            tempOwned);
+                        scratchTensor.Dispose();
+                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        return;
+                    }
+
+                    if (TryResolveWindowUnpartitionOutput(owner, layer, scratchTensor, out var unpartitionTensor))
+                    {
+                        owner.PublishTensorBufferOutput(
+                            layer.topNames[0],
+                            unpartitionTensor,
+                            preferTexture: true,
+                            textureBlobs,
+                            textureShapes,
+                            bufferBlobs,
+                            bufferRefs,
+                            bufferViews,
+                            tempOwned);
+                        scratchTensor.Dispose();
+                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        return;
+                    }
+
+                    var attentionTensor = TryResolveImplicitAttentionReshape(owner, layer, scratchTensor);
+                    if (attentionTensor != null)
+                    {
+                        owner.PublishTensorBufferOutput(
+                            layer.topNames[0],
+                            attentionTensor,
+                            preferTexture: false,
+                            textureBlobs,
+                            textureShapes,
+                            bufferBlobs,
+                            bufferRefs,
+                            bufferViews,
+                            tempOwned);
+                        scratchTensor.Dispose();
+                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        return;
+                    }
+
                     var outView = NcnnRepro.ResolveReshapeTensor(scratchTensor, layer, bottomShapes);
                     var outTensor = new NcnnTensorBuffer(
                         scratchTensor.buffer,
@@ -288,8 +396,491 @@ namespace NcnnCompute
             if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var src, out var srcShape))
                 return false;
 
+            if (TryResolveImplicitAttentionReshapeShape(owner, layer, srcShape, out _))
+                return false;
+            if (TryResolveWindowPartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
+                return false;
+            if (TryResolveWindowUnpartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
+                return false;
+
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
             return CanAliasTextureLayout(srcShape, outShape) && src != null && src.texture != null;
+        }
+
+        private static NcnnTensorBuffer TryResolveImplicitAttentionReshape(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnTensorBuffer src)
+        {
+            if (src == null)
+                return null;
+            if (!TryResolveImplicitAttentionReshapeShape(owner, layer, new NcnnRepro.BufferShape(src.dims, src.w, src.h, src.d, src.c), out var outShape))
+                return null;
+
+            var source = NcnnRepro.ReadFloatBuffer(src.buffer);
+            var destination = new float[source.Length];
+            var headDim = outShape.w;
+            var tokens = outShape.h;
+            var windows = outShape.d;
+            var qkvHeadChannels = outShape.c;
+
+            for (var window = 0; window < windows; window++)
+            {
+                for (var token = 0; token < tokens; token++)
+                {
+                    var srcBase = ((window * src.h) + token) * src.w;
+                    for (var qkvHead = 0; qkvHead < qkvHeadChannels; qkvHead++)
+                    {
+                        var dstBase = (((qkvHead * windows) + window) * tokens + token) * headDim;
+                        Array.Copy(
+                            source,
+                            srcBase + (qkvHead * headDim),
+                            destination,
+                            dstBase,
+                            headDim);
+                    }
+                }
+            }
+
+            var outBuffer = owner.RentTempBuffer(destination.Length, sizeof(float));
+            outBuffer.SetData(destination);
+            return new NcnnTensorBuffer(
+                outBuffer,
+                outShape.dims,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                true,
+                owner.ReturnTempBuffer);
+        }
+
+        private static bool TryResolveImplicitAttentionReshapeShape(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnRepro.BufferShape srcShape, out NcnnRepro.BufferShape outShape)
+        {
+            outShape = default;
+            if (owner?.Model?.layers == null || layer == null)
+                return false;
+            if (!IsParamlessReshape(layer))
+                return false;
+            if (srcShape.dims != 3 || srcShape.w <= 0 || srcShape.h <= 0 || srcShape.c <= 0)
+                return false;
+            if (layer.topNames == null || layer.topNames.Length == 0 || string.IsNullOrWhiteSpace(layer.topNames[0]))
+                return false;
+
+            var permute = FindSingleConsumer(owner.Model, layer.topNames[0]);
+            if (permute == null || permute.type != NcnnLayerTypes.Permute || permute.GetInt(0, -1) != 0)
+                return false;
+            if (permute.topNames == null || permute.topNames.Length == 0 || string.IsNullOrWhiteSpace(permute.topNames[0]))
+                return false;
+
+            var slice = FindSingleConsumer(owner.Model, permute.topNames[0]);
+            if (slice == null || slice.type != NcnnLayerTypes.Slice || slice.topNames == null || slice.topNames.Length != 3)
+                return false;
+            var positiveAxis = slice.GetInt(1, 0);
+            if (positiveAxis < 0)
+                positiveAxis += srcShape.dims;
+            if (positiveAxis != 0)
+                return false;
+
+            if (!TryInferAttentionHeadDim(owner.Model, slice, out var headDim))
+                return false;
+            if (headDim <= 0 || (srcShape.w % headDim) != 0)
+                return false;
+
+            var totalChannels = srcShape.w / headDim;
+            if (totalChannels <= 0 || (totalChannels % 3) != 0)
+                return false;
+
+            outShape = new NcnnRepro.BufferShape(4, headDim, srcShape.h, srcShape.c, totalChannels);
+            return true;
+        }
+
+        private static bool TryResolveWindowPartitionOutput(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnTensorBuffer src,
+            out NcnnTensorBuffer outTensor)
+        {
+            outTensor = null;
+            if (src == null || src.buffer == null)
+                return false;
+            if (!TryResolveWindowPartitionPattern(
+                    owner,
+                    layer,
+                    new NcnnRepro.BufferShape(src.dims, src.w, src.h, src.d, src.c),
+                    out var outShape,
+                    out var groupsA,
+                    out var groupsB,
+                    out var groupsC,
+                    out var tokensA,
+                    out var tokensB,
+                    out var tokensC))
+            {
+                return false;
+            }
+
+            var axisA = src.c;
+            var axisB = src.d;
+            var axisC = src.h;
+            var embedDim = src.w;
+            var source = NcnnRepro.ReadFloatBuffer(src.buffer);
+            var destination = new float[source.Length];
+            var outputGroups = outShape.c;
+            var outputTokens = outShape.h;
+
+            for (var groupA = 0; groupA < groupsA; groupA++)
+            {
+                for (var groupB = 0; groupB < groupsB; groupB++)
+                {
+                    for (var groupC = 0; groupC < groupsC; groupC++)
+                    {
+                        var outputGroup = ((groupA * groupsB) + groupB) * groupsC + groupC;
+                        for (var tokenA = 0; tokenA < tokensA; tokenA++)
+                        {
+                            var inputA = groupA * tokensA + tokenA;
+                            for (var tokenB = 0; tokenB < tokensB; tokenB++)
+                            {
+                                var inputB = groupB * tokensB + tokenB;
+                                for (var tokenC = 0; tokenC < tokensC; tokenC++)
+                                {
+                                    var inputC = groupC * tokensC + tokenC;
+                                    var outputToken = ((tokenA * tokensB) + tokenB) * tokensC + tokenC;
+                                    var sourceBase = (((inputA * axisB) + inputB) * axisC + inputC) * embedDim;
+                                    var destinationBase = ((outputGroup * outputTokens) + outputToken) * embedDim;
+                                    System.Array.Copy(source, sourceBase, destination, destinationBase, embedDim);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            var outBuffer = owner.RentTempBuffer(destination.Length, sizeof(float));
+            outBuffer.SetData(destination);
+            outTensor = new NcnnTensorBuffer(outBuffer, outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, true, owner.ReturnTempBuffer);
+            return true;
+        }
+
+        private static bool TryResolveWindowPartitionPattern(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            out NcnnRepro.BufferShape outShape,
+            out int groupsA,
+            out int groupsB,
+            out int groupsC,
+            out int tokensA,
+            out int tokensB,
+            out int tokensC)
+        {
+            outShape = default;
+            groupsA = 0;
+            groupsB = 0;
+            groupsC = 0;
+            tokensA = 0;
+            tokensB = 0;
+            tokensC = 0;
+
+            if (owner?.Model?.layers == null || layer == null)
+                return false;
+            if (srcShape.dims != 4 || srcShape.w <= 0 || srcShape.h <= 0 || srcShape.d <= 0 || srcShape.c <= 0)
+                return false;
+            if (srcShape.h != srcShape.d || srcShape.d != srcShape.c)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length == 0 || string.IsNullOrWhiteSpace(layer.bottomNames[0]))
+                return false;
+
+            outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer);
+            if (outShape.dims != 3 || outShape.w != srcShape.w || outShape.h <= 0 || outShape.c <= 0)
+                return false;
+            if ((srcShape.c * srcShape.d * srcShape.h) != (outShape.c * outShape.h))
+                return false;
+
+            if (!TryMatchWindowPartitionProducerChain(owner.Model, layer))
+                return false;
+            if (!TryResolvePerfectCube(outShape.c, out var groupsEdge))
+                return false;
+            if (!TryResolvePerfectCube(outShape.h, out var tokensEdge))
+                return false;
+            if ((groupsEdge * tokensEdge) != srcShape.h)
+                return false;
+
+            groupsA = groupsB = groupsC = groupsEdge;
+            tokensA = tokensB = tokensC = tokensEdge;
+            return true;
+        }
+
+        private static bool TryResolveWindowUnpartitionOutput(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnTensorBuffer src,
+            out NcnnTensorBuffer outTensor)
+        {
+            outTensor = null;
+            if (src == null || src.buffer == null)
+                return false;
+            if (!TryResolveWindowUnpartitionPattern(
+                    owner,
+                    layer,
+                    new NcnnRepro.BufferShape(src.dims, src.w, src.h, src.d, src.c),
+                    out var outShape,
+                    out var groupsA,
+                    out var groupsB,
+                    out var groupsC,
+                    out var tokensA,
+                    out var tokensB,
+                    out var tokensC))
+            {
+                return false;
+            }
+
+            var axisA = outShape.c;
+            var axisB = outShape.d;
+            var axisC = outShape.h;
+            var embedDim = src.w;
+            var source = NcnnRepro.ReadFloatBuffer(src.buffer);
+            var destination = new float[source.Length];
+            var inputTokens = src.h;
+
+            for (var groupA = 0; groupA < groupsA; groupA++)
+            {
+                for (var groupB = 0; groupB < groupsB; groupB++)
+                {
+                    for (var groupC = 0; groupC < groupsC; groupC++)
+                    {
+                        var inputGroup = ((groupA * groupsB) + groupB) * groupsC + groupC;
+                        for (var tokenA = 0; tokenA < tokensA; tokenA++)
+                        {
+                            var outputA = groupA * tokensA + tokenA;
+                            for (var tokenB = 0; tokenB < tokensB; tokenB++)
+                            {
+                                var outputB = groupB * tokensB + tokenB;
+                                for (var tokenC = 0; tokenC < tokensC; tokenC++)
+                                {
+                                    var outputC = groupC * tokensC + tokenC;
+                                    var inputToken = ((tokenA * tokensB) + tokenB) * tokensC + tokenC;
+                                    var sourceBase = ((inputGroup * inputTokens) + inputToken) * embedDim;
+                                    var destinationBase = (((outputA * axisB) + outputB) * axisC + outputC) * embedDim;
+                                    System.Array.Copy(source, sourceBase, destination, destinationBase, embedDim);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            var outBuffer = owner.RentTempBuffer(destination.Length, sizeof(float));
+            outBuffer.SetData(destination);
+            outTensor = new NcnnTensorBuffer(outBuffer, outShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, true, owner.ReturnTempBuffer);
+            return true;
+        }
+
+        private static bool TryResolveWindowUnpartitionPattern(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            out NcnnRepro.BufferShape outShape,
+            out int groupsA,
+            out int groupsB,
+            out int groupsC,
+            out int tokensA,
+            out int tokensB,
+            out int tokensC)
+        {
+            outShape = default;
+            groupsA = 0;
+            groupsB = 0;
+            groupsC = 0;
+            tokensA = 0;
+            tokensB = 0;
+            tokensC = 0;
+
+            if (owner?.Model?.layers == null || layer == null)
+                return false;
+            if (srcShape.dims != 3 || srcShape.w <= 0 || srcShape.h <= 0 || srcShape.c <= 0)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length == 0 || string.IsNullOrWhiteSpace(layer.bottomNames[0]))
+                return false;
+
+            outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer);
+            if (outShape.dims != 4 || outShape.w != srcShape.w || outShape.h <= 0 || outShape.d <= 0 || outShape.c <= 0)
+                return false;
+            if (outShape.h != outShape.d || outShape.d != outShape.c)
+                return false;
+            if ((srcShape.c * srcShape.h) != (outShape.c * outShape.d * outShape.h))
+                return false;
+            if (!TryMatchWindowUnpartitionProducerChain(owner.Model, layer))
+                return false;
+            if (!TryResolvePerfectCube(srcShape.c, out var groupsEdge))
+                return false;
+            if (!TryResolvePerfectCube(srcShape.h, out var tokensEdge))
+                return false;
+            if (outShape.h != (groupsEdge * tokensEdge))
+                return false;
+
+            groupsA = groupsB = groupsC = groupsEdge;
+            tokensA = tokensB = tokensC = tokensEdge;
+            return true;
+        }
+
+        private static bool TryMatchWindowPartitionProducerChain(NcnnParamModel model, NcnnParamModel.Layer layer)
+        {
+            if (model?.layers == null || layer?.bottomNames == null || layer.bottomNames.Length == 0)
+                return false;
+
+            var permute0 = FindSingleProducer(model, layer.bottomNames[0]);
+            if (permute0 == null || permute0.type != NcnnLayerTypes.Permute || permute0.GetInt(0, -1) != 0)
+                return false;
+            if (permute0.bottomNames == null || permute0.bottomNames.Length == 0 || string.IsNullOrWhiteSpace(permute0.bottomNames[0]))
+                return false;
+
+            var reshapeMarker = FindSingleProducer(model, permute0.bottomNames[0]);
+            if (reshapeMarker == null || reshapeMarker.type != NcnnLayerTypes.Reshape || !IsParamlessReshape(reshapeMarker))
+                return false;
+            if (reshapeMarker.bottomNames == null || reshapeMarker.bottomNames.Length == 0 || string.IsNullOrWhiteSpace(reshapeMarker.bottomNames[0]))
+                return false;
+
+            var permute9 = FindSingleProducer(model, reshapeMarker.bottomNames[0]);
+            return permute9 != null && permute9.type == NcnnLayerTypes.Permute && permute9.GetInt(0, -1) == 9;
+        }
+
+        private static bool TryMatchWindowUnpartitionProducerChain(NcnnParamModel model, NcnnParamModel.Layer layer)
+        {
+            if (model?.layers == null || layer?.bottomNames == null || layer.bottomNames.Length == 0)
+                return false;
+
+            var permute0 = FindSingleProducer(model, layer.bottomNames[0]);
+            if (permute0 == null || permute0.type != NcnnLayerTypes.Permute || permute0.GetInt(0, -1) != 0)
+                return false;
+            if (permute0.bottomNames == null || permute0.bottomNames.Length == 0 || string.IsNullOrWhiteSpace(permute0.bottomNames[0]))
+                return false;
+
+            var reshapeMarker = FindSingleProducer(model, permute0.bottomNames[0]);
+            return reshapeMarker != null
+                && reshapeMarker.type == NcnnLayerTypes.Reshape
+                && IsParamlessReshape(reshapeMarker);
+        }
+
+        private static bool TryResolvePerfectCube(int value, out int edge)
+        {
+            edge = 0;
+            if (value <= 0)
+                return false;
+
+            var candidate = Mathf.RoundToInt(Mathf.Pow(value, 1f / 3f));
+            for (var delta = -1; delta <= 1; delta++)
+            {
+                var test = candidate + delta;
+                if (test <= 0)
+                    continue;
+                if ((test * test * test) != value)
+                    continue;
+                edge = test;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryInferAttentionHeadDim(NcnnParamModel model, NcnnParamModel.Layer slice, out int headDim)
+        {
+            headDim = 0;
+            if (model?.layers == null || slice?.topNames == null)
+                return false;
+
+            for (var i = 0; i < slice.topNames.Length; i++)
+            {
+                var branchTop = slice.topNames[i];
+                if (string.IsNullOrWhiteSpace(branchTop))
+                    continue;
+
+                var reshape = FindSingleConsumer(model, branchTop);
+                if (reshape == null || reshape.type != NcnnLayerTypes.Reshape || !IsParamlessReshape(reshape))
+                    continue;
+                if (reshape.topNames == null || reshape.topNames.Length == 0 || string.IsNullOrWhiteSpace(reshape.topNames[0]))
+                    continue;
+
+                var matmul = FindSingleConsumer(model, reshape.topNames[0]);
+                if (matmul == null || matmul.type != NcnnLayerTypes.MatMul)
+                    continue;
+                if (matmul.topNames == null || matmul.topNames.Length == 0 || string.IsNullOrWhiteSpace(matmul.topNames[0]))
+                    continue;
+
+                var mul = FindSingleConsumer(model, matmul.topNames[0]);
+                if (mul == null || mul.type != NcnnLayerTypes.BinaryOp || mul.GetInt(0, -1) != 2)
+                    continue;
+
+                var scale = mul.GetFloat(2, 0f);
+                if (!(scale > 0f))
+                    continue;
+
+                var inferred = Mathf.RoundToInt(1f / (scale * scale));
+                if (inferred <= 0)
+                    continue;
+
+                var reconstructed = 1f / Mathf.Sqrt(inferred);
+                if (Mathf.Abs(reconstructed - scale) > 1e-3f)
+                    continue;
+
+                headDim = inferred;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsParamlessReshape(NcnnParamModel.Layer layer)
+        {
+            if (layer == null)
+                return false;
+            if (!string.IsNullOrWhiteSpace(layer.GetString(6, null)))
+                return false;
+            return layer.GetInt(0, -233) == -233
+                && layer.GetInt(1, -233) == -233
+                && layer.GetInt(11, -233) == -233
+                && layer.GetInt(2, -233) == -233;
+        }
+
+        private static NcnnParamModel.Layer FindSingleConsumer(NcnnParamModel model, string blobName)
+        {
+            if (model?.layers == null || string.IsNullOrWhiteSpace(blobName))
+                return null;
+
+            NcnnParamModel.Layer found = null;
+            for (var i = 0; i < model.layers.Count; i++)
+            {
+                var candidate = model.layers[i];
+                if (candidate?.bottomNames == null)
+                    continue;
+                for (var j = 0; j < candidate.bottomNames.Length; j++)
+                {
+                    if (!string.Equals(candidate.bottomNames[j], blobName, StringComparison.Ordinal))
+                        continue;
+                    if (found != null)
+                        return null;
+                    found = candidate;
+                    break;
+                }
+            }
+
+            return found;
+        }
+
+        private static NcnnParamModel.Layer FindSingleProducer(NcnnParamModel model, string blobName)
+        {
+            if (model?.layers == null || string.IsNullOrWhiteSpace(blobName))
+                return null;
+
+            for (var i = 0; i < model.layers.Count; i++)
+            {
+                var candidate = model.layers[i];
+                if (candidate?.topNames == null)
+                    continue;
+                for (var j = 0; j < candidate.topNames.Length; j++)
+                {
+                    if (string.Equals(candidate.topNames[j], blobName, StringComparison.Ordinal))
+                        return candidate;
+                }
+            }
+
+            return null;
         }
 
         private static System.Collections.Generic.List<NcnnRepro.BufferShape> BuildCmdBottomShapes(

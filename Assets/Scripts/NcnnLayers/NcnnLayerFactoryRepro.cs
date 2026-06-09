@@ -29,6 +29,7 @@ namespace NcnnCompute
             { NcnnLayerTypes.Convolution1D, () => new NcnnConvolution1DLayerRepro() },
             { NcnnLayerTypes.ConvolutionDepthWise, () => new NcnnConvolutionDepthWiseLayerRepro() },
             { NcnnLayerTypes.Deconvolution, () => new NcnnDeconvolutionLayerRepro() },
+            { NcnnLayerTypes.Deconvolution3D, () => new NcnnDeconvolution3DLayerRepro() },
             { NcnnLayerTypes.DeconvolutionDepthWise, () => new NcnnDeconvolutionDepthWiseLayerRepro() },
             { NcnnLayerTypes.Interp, () => new NcnnInterpLayerRepro() },
             { NcnnLayerTypes.Dropout, () => new NcnnDropoutLayerRepro() },
@@ -69,6 +70,7 @@ namespace NcnnCompute
             { NcnnLayerTypes.Softmax, () => new NcnnSoftmaxLayerRepro() },
             { NcnnLayerTypes.Padding, () => new NcnnPaddingLayerRepro() },
             { NcnnLayerTypes.Pooling, () => new NcnnPoolingLayerRepro() },
+            { NcnnLayerTypes.Pooling3D, () => new NcnnPooling3DLayerRepro() },
             { NcnnLayerTypes.InnerProduct, () => new NcnnInnerProductLayerRepro() },
             { NcnnLayerTypes.MatMul, () => new NcnnMatMulLayerRepro() },
             { NcnnLayerTypes.Gemm, () => new NcnnGemmLayerRepro() },
@@ -124,7 +126,8 @@ namespace NcnnCompute
             Dictionary<string, RenderTexture> textureInputs,
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
             ICollection<string> pinnedNames = null,
-            Dictionary<string, BufferShape> textureInputShapes = null)
+            Dictionary<string, BufferShape> textureInputShapes = null,
+            string stopAfterTopName = null)
         {
             static bool HasStrideBlob(string[] names)
             {
@@ -368,6 +371,13 @@ namespace NcnnCompute
                             + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
                     }
                     TryLogFirstNonFiniteLayerOutput(li, layer);
+                    if (!string.IsNullOrWhiteSpace(stopAfterTopName)
+                        && layer?.topNames != null
+                        && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0
+                        && AreAllLayerTopsAlreadyAvailable(layer, textureBlobs, bufferBlobs, indexBlobs))
+                    {
+                        break;
+                    }
                     continue;
                 }
 
@@ -409,6 +419,13 @@ namespace NcnnCompute
                         + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
                 }
                 TryLogFirstNonFiniteLayerOutput(li, layer);
+                if (!string.IsNullOrWhiteSpace(stopAfterTopName)
+                    && layer?.topNames != null
+                    && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0
+                    && AreAllLayerTopsAlreadyAvailable(layer, textureBlobs, bufferBlobs, indexBlobs))
+                {
+                    break;
+                }
             }
 
             FinishLayerRuntimeProfile(runtimeProfile);

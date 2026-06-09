@@ -1,0 +1,161 @@
+using System;
+using System.Diagnostics;
+using UnityEngine;
+
+namespace NcnnCompute
+{
+    public sealed class NcnnDeconvolution3DLayerRepro : NcnnBaseLayerRepro
+    {
+        public NcnnDeconvolution3DLayerRepro()
+            : base(NcnnLayerTypes.Deconvolution3D, supportsBufferPath: true, supportsCommandBufferPath: true)
+        {
+        }
+
+        public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
+        {
+            var bytesStart = br.Position;
+            long readMs = 0;
+            long uploadMs = 0;
+            long packMs = 0;
+            var phaseSw = new Stopwatch();
+
+            var pack = new NcnnRepro.DeconvPack
+            {
+                outC = layer.GetInt(0, 0),
+                group = 1,
+                kernelW = layer.GetInt(1, 0),
+                kernelH = layer.GetInt(11, layer.GetInt(1, 0)),
+                kernelD = layer.GetInt(21, layer.GetInt(1, 0)),
+                dilationW = layer.GetInt(2, 1),
+                dilationH = layer.GetInt(12, layer.GetInt(2, 1)),
+                dilationD = layer.GetInt(22, layer.GetInt(2, 1)),
+                strideW = layer.GetInt(3, 1),
+                strideH = layer.GetInt(13, layer.GetInt(3, 1)),
+                strideD = layer.GetInt(23, layer.GetInt(3, 1)),
+                padLeft = layer.GetInt(4, 0),
+                padRight = layer.GetInt(15, layer.GetInt(4, 0)),
+                padTop = layer.GetInt(14, layer.GetInt(4, 0)),
+                padBottom = layer.GetInt(16, layer.GetInt(14, layer.GetInt(4, 0))),
+                padFront = layer.GetInt(24, layer.GetInt(4, 0)),
+                padBehind = layer.GetInt(17, layer.GetInt(24, layer.GetInt(4, 0))),
+                outputPadRight = layer.GetInt(18, 0),
+                outputPadBottom = layer.GetInt(19, layer.GetInt(18, 0)),
+                outputPadBehind = layer.GetInt(20, layer.GetInt(18, 0)),
+                biasTerm = layer.GetInt(5, 0),
+                weightSize = layer.GetInt(6, 0),
+                activationType = layer.GetInt(9, 0),
+            };
+
+            var actParams = NcnnRepro.ParseActivationParams(layer);
+            pack.activationSlope = actParams.Length > 0 ? actParams[0] : NcnnRepro.ParseLeakySlope(layer);
+
+            var kernelVolume = Mathf.Max(1, pack.kernelW * pack.kernelH * pack.kernelD);
+            pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * kernelVolume));
+            pack.inPacks = (pack.inC + 3) / 4;
+            pack.outPacks = (pack.outC + 3) / 4;
+
+            phaseSw.Restart();
+            var w = NcnnRepro.ReadPackedOrRawWeightArray(br, pack.weightSize, layer.name);
+            var b = pack.biasTerm != 0 ? br.ReadFloat32Array(pack.outC) : new float[pack.outC];
+            phaseSw.Stop();
+            readMs += phaseSw.ElapsedMilliseconds;
+
+            phaseSw.Restart();
+            pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(pack.rawWeight, w.Length, sizeof(float), "NcnnRepro.Deconv3DRawWeight:" + layer.name);
+            pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(pack.rawBias, b.Length, sizeof(float), "NcnnRepro.Deconv3DRawBias:" + layer.name);
+            pack.rawWeight.SetData(w);
+            pack.rawBias.SetData(b);
+            phaseSw.Stop();
+            uploadMs += phaseSw.ElapsedMilliseconds;
+
+            owner._deconv[layer.name] = pack;
+            return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+        }
+
+        [Obsolete(ComputeBufferPathObsoleteMessage)]
+        public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            if (!owner._deconv.TryGetValue(layer.name, out var deconv))
+                throw new InvalidOperationException("Deconvolution3D not found: " + layer.name);
+
+            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+            if (srcBuf == null || srcView == null || srcView.dims != 4)
+                throw new InvalidOperationException("Deconvolution3D expects dims=4 tensor input: " + layer.name);
+            if (deconv.rawWeight == null || deconv.rawBias == null)
+                throw new InvalidOperationException("Deconvolution3D raw weights unavailable: " + layer.name);
+
+            var outW = NcnnRepro.ComputeDeconvOut(srcView.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight);
+            var outH = NcnnRepro.ComputeDeconvOut(srcView.h, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom);
+            var outD = NcnnRepro.ComputeDeconvOut(srcView.d, deconv.kernelD, deconv.dilationD, deconv.strideD, deconv.padFront, deconv.padBehind, deconv.outputPadBehind);
+            var outTensor = owner.RentTempTensorBuffer(4, outW, outH, outD, deconv.outC);
+
+            owner.Ops.Deconvolution3D(
+                srcView,
+                deconv.rawWeight,
+                deconv.rawBias,
+                deconv.outC,
+                deconv.kernelW,
+                deconv.kernelH,
+                deconv.kernelD,
+                deconv.strideW,
+                deconv.strideH,
+                deconv.strideD,
+                deconv.padLeft,
+                deconv.padRight,
+                deconv.padTop,
+                deconv.padBottom,
+                deconv.padFront,
+                deconv.padBehind,
+                deconv.outputPadRight,
+                deconv.outputPadBottom,
+                deconv.outputPadBehind,
+                deconv.dilationW,
+                deconv.dilationH,
+                deconv.dilationD,
+                deconv.activationType,
+                deconv.activationSlope,
+                outTensor);
+
+            owner.PublishTensorBufferOutput(
+                layer.topNames[0],
+                outTensor,
+                preferTexture: false,
+                textureBlobs,
+                textureShapes,
+                bufferBlobs,
+                bufferRefs,
+                bufferViews,
+                tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (srcShape.dims != 4)
+                throw new InvalidOperationException("Deconvolution3D command-buffer placeholder expects dims=4 input: " + layer.name);
+
+            var outShape = new NcnnRepro.BufferShape(
+                4,
+                NcnnRepro.ComputeDeconvOut(srcShape.w, layer.GetInt(1, 0), layer.GetInt(2, 1), layer.GetInt(3, 1), layer.GetInt(4, 0), layer.GetInt(15, layer.GetInt(4, 0)), layer.GetInt(18, 0)),
+                NcnnRepro.ComputeDeconvOut(srcShape.h, layer.GetInt(11, layer.GetInt(1, 0)), layer.GetInt(12, layer.GetInt(2, 1)), layer.GetInt(13, layer.GetInt(3, 1)), layer.GetInt(14, layer.GetInt(4, 0)), layer.GetInt(16, layer.GetInt(14, layer.GetInt(4, 0))), layer.GetInt(19, layer.GetInt(18, 0))),
+                NcnnRepro.ComputeDeconvOut(srcShape.d, layer.GetInt(21, layer.GetInt(1, 0)), layer.GetInt(22, layer.GetInt(2, 1)), layer.GetInt(23, layer.GetInt(3, 1)), layer.GetInt(24, layer.GetInt(4, 0)), layer.GetInt(17, layer.GetInt(24, layer.GetInt(4, 0))), layer.GetInt(20, layer.GetInt(18, 0))),
+                Mathf.Max(1, layer.GetInt(0, 0)));
+
+            owner.PublishCmdPlaceholder(context.commandBuffer, layer.topNames[0], outShape, context.blobs, context.shapes);
+            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+        }
+    }
+}

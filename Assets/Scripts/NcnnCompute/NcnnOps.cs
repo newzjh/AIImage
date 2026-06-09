@@ -269,6 +269,7 @@ namespace NcnnCompute
         private readonly int _kConv3dBuf;
         private readonly int _kConv3dPack4Cdhw;
         private readonly int _kDeconvolutionBuf;
+        private readonly int _kDeconvolution3dBuf;
         private readonly int _kTexToBuf3;
         private readonly int _kBufToTex3;
         private readonly int _kLeakyReluBuf;
@@ -417,6 +418,7 @@ namespace NcnnCompute
             _kConv3dBuf = _cs.FindKernel("NcnnConv3dBuf");
             _kConv3dPack4Cdhw = _cs.FindKernel("NcnnConv3dPack4CDHW");
             _kDeconvolutionBuf = _cs.FindKernel("NcnnDeconvolutionBuf");
+            _kDeconvolution3dBuf = _cs.FindKernel("NcnnDeconvolution3dBuf");
             _kConvDepthWise = _cs.FindKernel("NcnnConvDepthWise");
             _kTexToBuf3 = _cs.FindKernel("NcnnTexToBuf3");
             _kBufToTex3 = _cs.FindKernel("NcnnBufToTex3");
@@ -4105,6 +4107,96 @@ namespace NcnnCompute
             _cs.SetBuffer(_kDeconvolutionBuf, "_ConvB", biasO);
             _cs.SetBuffer(_kDeconvolutionBuf, "_ConvOut", output.buffer);
             Dispatch3D(_kDeconvolutionBuf, output.w, output.h, outC, 8, 8);
+        }
+
+        public void Deconvolution3D(
+            NcnnTensorBuffer input,
+            ComputeBuffer weightsOidhw,
+            ComputeBuffer biasO,
+            int outC,
+            int kernelW,
+            int kernelH,
+            int kernelD,
+            int strideW,
+            int strideH,
+            int strideD,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            int padFront,
+            int padBehind,
+            int outputPadRight,
+            int outputPadBottom,
+            int outputPadBehind,
+            int dilationW,
+            int dilationH,
+            int dilationD,
+            int activationType,
+            float activationParam,
+            NcnnTensorBuffer output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsOidhw == null) throw new ArgumentNullException(nameof(weightsOidhw));
+            if (biasO == null) throw new ArgumentNullException(nameof(biasO));
+            if (input.dims != 4) throw new ArgumentOutOfRangeException(nameof(input), "Deconvolution3D expects dims=4 input");
+            if (output.dims != 4) throw new ArgumentOutOfRangeException(nameof(output), "Deconvolution3D expects dims=4 output");
+            if (outC <= 0) throw new ArgumentOutOfRangeException(nameof(outC));
+            if (kernelW <= 0 || kernelH <= 0 || kernelD <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            var kernelExtentW = Mathf.Max(1, dilationW) * (kernelW - 1) + 1;
+            var kernelExtentH = Mathf.Max(1, dilationH) * (kernelH - 1) + 1;
+            var kernelExtentD = Mathf.Max(1, dilationD) * (kernelD - 1) + 1;
+            var borderedOutW = (input.w - 1) * Mathf.Max(1, strideW) + kernelExtentW + Mathf.Max(0, outputPadRight);
+            var borderedOutH = (input.h - 1) * Mathf.Max(1, strideH) + kernelExtentH + Mathf.Max(0, outputPadBottom);
+            var borderedOutD = (input.d - 1) * Mathf.Max(1, strideD) + kernelExtentD + Mathf.Max(0, outputPadBehind);
+            var expectedOutW = borderedOutW - Mathf.Max(0, padLeft) - Mathf.Max(0, padRight);
+            var expectedOutH = borderedOutH - Mathf.Max(0, padTop) - Mathf.Max(0, padBottom);
+            var expectedOutD = borderedOutD - Mathf.Max(0, padFront) - Mathf.Max(0, padBehind);
+            if (output.w != expectedOutW || output.h != expectedOutH || output.d != expectedOutD)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(output),
+                    "deconvolution3d output shape mismatch expected "
+                    + expectedOutW.ToString(CultureInfo.InvariantCulture) + "x"
+                    + expectedOutH.ToString(CultureInfo.InvariantCulture) + "x"
+                    + expectedOutD.ToString(CultureInfo.InvariantCulture) + " but got "
+                    + output.w.ToString(CultureInfo.InvariantCulture) + "x"
+                    + output.h.ToString(CultureInfo.InvariantCulture) + "x"
+                    + output.d.ToString(CultureInfo.InvariantCulture));
+            }
+
+            _cs.SetInt("_InW", input.w);
+            _cs.SetInt("_InH", input.h);
+            _cs.SetInt("_InD", input.d);
+            _cs.SetInt("_InC", input.c);
+            _cs.SetInt("_OutC", outC);
+            _cs.SetInt("_OutW", output.w);
+            _cs.SetInt("_OutH", output.h);
+            _cs.SetInt("_OutD", output.d);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_KernelDVar", kernelD);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_StrideDVar", Mathf.Max(1, strideD));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadRightVar", Mathf.Max(0, padRight));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_PadBottomVar", Mathf.Max(0, padBottom));
+            _cs.SetInt("_PadFrontVar", Mathf.Max(0, padFront));
+            _cs.SetInt("_PadBehindVar", Mathf.Max(0, padBehind));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_DilationDVar", Mathf.Max(1, dilationD));
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvIn", input.buffer);
+            _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvW", weightsOidhw);
+            _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvB", biasO);
+            _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvOut", output.buffer);
+            Dispatch3D(_kDeconvolution3dBuf, output.w, output.h, output.d * outC, 8, 8);
         }
 
         public void LeakyReluInplace(NcnnTensorBuffer t, float slope)

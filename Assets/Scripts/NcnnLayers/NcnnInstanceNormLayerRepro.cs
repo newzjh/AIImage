@@ -84,15 +84,16 @@ namespace NcnnCompute
                 throw new InvalidOperationException("InstanceNorm pack not found: " + layer.name);
             var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-            if (srcBuf == null || srcView == null || srcView.dims != 3)
-                throw new InvalidOperationException("InstanceNorm expects dims=3 tensor input: " + layer.name);
+            if (srcBuf == null || srcView == null || (srcView.dims != 3 && srcView.dims != 4))
+                throw new InvalidOperationException("InstanceNorm expects dims=3/4 tensor input: " + layer.name);
 
-            var outTensor = owner.RentTempTensorBuffer(3, srcView.w, srcView.h, 1, srcView.c);
+            var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
             owner.Ops.CopyBuf(srcBuf, outTensor.buffer, srcBuf.count);
             var channelStats = owner.RentTempBuffer(srcView.c, sizeof(float) * 4);
             try
             {
-                owner.Ops.GroupNormInplace(outTensor.buffer, srcView.w, srcView.h, srcView.c, srcView.c, gp.eps, gp.affine, gp.gamma, gp.beta, channelStats, true);
+                var spatial = srcView.w * srcView.h * Mathf.Max(1, srcView.d);
+                owner.Ops.GroupNormInplace(outTensor.buffer, spatial, 1, srcView.c, srcView.c, gp.eps, gp.affine, gp.gamma, gp.beta, channelStats, true);
             }
             finally
             {

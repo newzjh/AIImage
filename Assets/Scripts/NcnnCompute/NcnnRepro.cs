@@ -199,16 +199,22 @@ namespace NcnnCompute
             public int inPacks;
             public int kernelW;
             public int kernelH;
+            public int kernelD;
             public int dilationW;
             public int dilationH;
+            public int dilationD;
             public int strideW;
             public int strideH;
+            public int strideD;
             public int padLeft;
             public int padRight;
             public int padTop;
             public int padBottom;
+            public int padFront;
+            public int padBehind;
             public int outputPadRight;
             public int outputPadBottom;
+            public int outputPadBehind;
             public int biasTerm;
             public int weightSize;
             public int activationType;
@@ -859,6 +865,7 @@ namespace NcnnCompute
         public bool LayerRuntimeProfileSyncGpu { get; set; }
         public LayerRuntimeProfile LastRuntimeProfile { get; private set; }
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
+        private const int FallbackMaxTextureArraySlices = 2048;
         private string _currentExecutingLayerName;
         private string _currentExecutingLayerTypeName;
 
@@ -900,6 +907,23 @@ namespace NcnnCompute
             if (!string.IsNullOrWhiteSpace(_currentExecutingLayerTypeName) || !string.IsNullOrWhiteSpace(_currentExecutingLayerName))
                 return (_currentExecutingLayerTypeName ?? "Unknown") + ":" + (_currentExecutingLayerName ?? "Unknown");
             return "outside-layer";
+        }
+
+        private static int GetMaxTextureArraySlices()
+        {
+            try
+            {
+                return Mathf.Max(1, SystemInfo.maxTextureArraySlices);
+            }
+            catch
+            {
+                return FallbackMaxTextureArraySlices;
+            }
+        }
+
+        private bool WouldExceedTextureArraySliceLimit(int depth)
+        {
+            return Mathf.Max(1, depth) > GetMaxTextureArraySlices();
         }
 
         private InvalidOperationException CreateDisallowedBufferPathException(string reason, string blobName, string detail = null)
@@ -1589,21 +1613,22 @@ namespace NcnnCompute
                 bufferInputs[kv.Key] = new NcnnTensorBuffer(kv.Value, 1, kv.Value.count, 1, 1, 1, false);
             }
 
-            return InferWithMultiInputs(null, bufferInputs, null);
+            return InferWithMultiInputs(null, bufferInputs, null, null, stopAfterTopName);
         }
 
         public InferResult InferWithMultiInputs(
             Dictionary<string, RenderTexture> textureInputs,
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
             ICollection<string> pinnedNames = null,
-            Dictionary<string, BufferShape> textureInputShapes = null)
+            Dictionary<string, BufferShape> textureInputShapes = null,
+            string stopAfterTopName = null)
         {
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
             if ((textureInputs == null || textureInputs.Count == 0) && (bufferInputs == null || bufferInputs.Count == 0))
                 throw new ArgumentNullException(nameof(textureInputs));
             if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
-                return InferWithMultiInputsByLayerRepros(textureInputs, bufferInputs, pinnedNames, textureInputShapes);
+                return InferWithMultiInputsByLayerRepros(textureInputs, bufferInputs, pinnedNames, textureInputShapes, stopAfterTopName);
 
             return null;
         }
@@ -2070,6 +2095,15 @@ namespace NcnnCompute
             depth = Mathf.Max(1, depth);
             if (format == RenderTextureFormat.ARGBHalf)
                 format = TensorTextureFormat;
+            if (WouldExceedTextureArraySliceLimit(depth))
+            {
+                throw new InvalidOperationException(
+                    "Texture2DArray slice limit exceeded"
+                    + " | site=" + DescribeCurrentExecutionSite()
+                    + " | requested_depth=" + depth.ToString(CultureInfo.InvariantCulture)
+                    + " | max_slices=" + GetMaxTextureArraySlices().ToString(CultureInfo.InvariantCulture)
+                    + " | size=" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture));
+            }
 
             var allocLabel = "NcnnRepro.RentTempArray(" + (callerMember ?? "?") + ":" + callerLine.ToString(CultureInfo.InvariantCulture) + ")";
 
@@ -2106,6 +2140,15 @@ namespace NcnnCompute
             depth = Mathf.Max(1, depth);
             if (format == RenderTextureFormat.ARGBHalf)
                 format = TensorTextureFormat;
+            if (WouldExceedTextureArraySliceLimit(depth))
+            {
+                throw new InvalidOperationException(
+                    "Texture2DArray slice limit exceeded"
+                    + " | site=" + DescribeCurrentExecutionSite()
+                    + " | requested_depth=" + depth.ToString(CultureInfo.InvariantCulture)
+                    + " | max_slices=" + GetMaxTextureArraySlices().ToString(CultureInfo.InvariantCulture)
+                    + " | size=" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture));
+            }
 
             var desc = new RenderTextureDescriptor(w, h, format, 0)
             {
@@ -2287,6 +2330,17 @@ namespace NcnnCompute
             var sliceCount = view.dims == 4
                 ? Mathf.Max(1, view.d) * channelPacks
                 : channelPacks;
+            if (WouldExceedTextureArraySliceLimit(sliceCount))
+            {
+                DebugLog?.Invoke(
+                    "[BufferMaterialize] skip-texture-slice-limit"
+                    + " | site=" + DescribeCurrentExecutionSite()
+                    + " | dims=" + view.dims
+                    + " | shape=" + view.w + "x" + view.h + "x" + view.d + "x" + view.c
+                    + " | slices=" + sliceCount.ToString(CultureInfo.InvariantCulture)
+                    + " | max_slices=" + GetMaxTextureArraySlices().ToString(CultureInfo.InvariantCulture));
+                return null;
+            }
             var rt = RentTempArray(texW, texH, sliceCount, ResolveTensorTextureFormat(view.dims));
             if (view.dims == 4)
                 _ops.FillPack4FromBufferCDHW(buffer, texW, texH, view.d, channels, rt);
@@ -2346,6 +2400,17 @@ namespace NcnnCompute
             var sliceCount = view.dims == 4
                 ? Mathf.Max(1, view.d) * channelPacks
                 : channelPacks;
+            if (WouldExceedTextureArraySliceLimit(sliceCount))
+            {
+                DebugLog?.Invoke(
+                    "[BufferMaterialize] skip-cmd-texture-slice-limit"
+                    + " | site=" + DescribeCurrentExecutionSite()
+                    + " | dims=" + view.dims
+                    + " | shape=" + view.w + "x" + view.h + "x" + view.d + "x" + view.c
+                    + " | slices=" + sliceCount.ToString(CultureInfo.InvariantCulture)
+                    + " | max_slices=" + GetMaxTextureArraySlices().ToString(CultureInfo.InvariantCulture));
+                return null;
+            }
             var rt = RentTempArray(cmd, texW, texH, sliceCount, ResolveTensorTextureFormat(view.dims));
             if (view.dims == 4)
                 _ops.FillPack4FromBufferCDHW(cmd, buffer, texW, texH, view.d, channels, rt);
@@ -2380,7 +2445,18 @@ namespace NcnnCompute
 
             var materialized = MaterializeTextureFromBuffer(name, bufferBlobs, bufferViews);
             if (materialized == null)
+            {
+                if (bufferViews.TryGetValue(name, out var materializeView) && materializeView != null)
+                {
+                    var channelPacks = Mathf.Max(1, Mathf.CeilToInt(materializeView.c / 4f));
+                    var sliceCount = materializeView.dims == 4
+                        ? Mathf.Max(1, materializeView.d) * channelPacks
+                        : channelPacks;
+                    if (WouldExceedTextureArraySliceLimit(sliceCount))
+                        throw new InvalidOperationException("blob texture materialization skipped by slice limit: " + name);
+                }
                 throw new InvalidOperationException("blob not found: " + name);
+            }
 
             var shape = bufferViews.TryGetValue(name, out var view) && view != null
                 ? new BufferShape(view.dims, view.w, view.h, view.d, view.c)
@@ -3519,13 +3595,42 @@ namespace NcnnCompute
                     cols = view.w;
                     return;
                 }
-                if (view.dims == 2 || view.dims == 3)
+                if (view.dims == 2 || view.dims == 3 || view.dims == 4)
                 {
                     rows = view.h;
                     cols = view.w;
                     return;
                 }
-                throw new InvalidOperationException("MatMul currently supports dims 1/2/3 only");
+                throw new InvalidOperationException("MatMul currently supports dims 1/2/3/4 only");
+            }
+
+            static int GetBatchDepth(NcnnTensorBuffer view)
+            {
+                if (view == null)
+                    throw new ArgumentNullException(nameof(view));
+                return view.dims == 4 ? view.d : 1;
+            }
+
+            static int GetBatchChannels(NcnnTensorBuffer view)
+            {
+                if (view == null)
+                    throw new ArgumentNullException(nameof(view));
+                if (view.dims == 4 || view.dims == 3)
+                    return view.c;
+                return 1;
+            }
+
+            static int GetMatrixOffset(NcnnTensorBuffer view, int depthIndex, int channelIndex)
+            {
+                if (view == null)
+                    throw new ArgumentNullException(nameof(view));
+
+                var matrixCount = view.w * view.h;
+                if (view.dims == 4)
+                    return ((channelIndex * view.d) + depthIndex) * matrixCount;
+                if (view.dims == 3)
+                    return channelIndex * matrixCount;
+                return 0;
             }
 
             GetMatrixShape(aView, out var aRows, out var aCols);
@@ -3537,49 +3642,71 @@ namespace NcnnCompute
             if (k != kFromB)
                 throw new InvalidOperationException("MatMul K mismatch: " + k + " vs " + kFromB);
 
-            var batchA = aView.dims == 3 ? aView.c : 1;
-            var batchB = bView.dims == 3 ? bView.c : 1;
-            var batch = Mathf.Max(batchA, batchB);
-            if (batchA != 1 && batchA != batch)
-                throw new InvalidOperationException("MatMul batchA mismatch: " + batchA + " vs " + batch);
-            if (batchB != 1 && batchB != batch)
-                throw new InvalidOperationException("MatMul batchB mismatch: " + batchB + " vs " + batch);
+            var batchDepthA = GetBatchDepth(aView);
+            var batchDepthB = GetBatchDepth(bView);
+            var batchChannelsA = GetBatchChannels(aView);
+            var batchChannelsB = GetBatchChannels(bView);
+            var batchDepth = Mathf.Max(batchDepthA, batchDepthB);
+            var batchChannels = Mathf.Max(batchChannelsA, batchChannelsB);
+
+            if (batchDepthA != 1 && batchDepthA != batchDepth)
+                throw new InvalidOperationException("MatMul batchDepthA mismatch: " + batchDepthA + " vs " + batchDepth);
+            if (batchDepthB != 1 && batchDepthB != batchDepth)
+                throw new InvalidOperationException("MatMul batchDepthB mismatch: " + batchDepthB + " vs " + batchDepth);
+            if (batchChannelsA != 1 && batchChannelsA != batchChannels)
+                throw new InvalidOperationException("MatMul batchA mismatch: " + batchChannelsA + " vs " + batchChannels);
+            if (batchChannelsB != 1 && batchChannelsB != batchChannels)
+                throw new InvalidOperationException("MatMul batchB mismatch: " + batchChannelsB + " vs " + batchChannels);
 
             var aCount = aRows * aCols;
             var bCount = bRows * bCols;
             var outCount = aRows * n;
+            var maxDims = Mathf.Max(aView.dims, bView.dims);
 
-            if (batch == 1)
+            if (batchDepth == 1 && batchChannels == 1)
             {
                 var outTensor2D = RentTempTensorBuffer(2, n, aRows);
                 Ops.MatMul2D(aBuf, bBuf, aRows, n, k, transB, outTensor2D.buffer);
                 return outTensor2D;
             }
 
-            var outTensor = RentTempTensorBuffer(3, n, aRows, 1, batch);
-            var tempA = batchA == 1 ? null : RentTempBuffer(aCount, sizeof(float));
-            var tempB = batchB == 1 ? null : RentTempBuffer(bCount, sizeof(float));
+            var outTensor = maxDims >= 4
+                ? RentTempTensorBuffer(4, n, aRows, batchDepth, batchChannels)
+                : RentTempTensorBuffer(3, n, aRows, 1, batchChannels);
+            var tempA = (batchDepthA == 1 && batchChannelsA == 1) ? null : RentTempBuffer(aCount, sizeof(float));
+            var tempB = (batchDepthB == 1 && batchChannelsB == 1) ? null : RentTempBuffer(bCount, sizeof(float));
             var tempOut = RentTempBuffer(outCount, sizeof(float));
             try
             {
-                for (var p = 0; p < batch; p++)
+                for (var pc = 0; pc < batchChannels; pc++)
                 {
-                    var aSrc = aBuf;
-                    var bSrc = bBuf;
-                    if (batchA != 1)
+                    var aChannelIndex = batchChannelsA == 1 ? 0 : pc;
+                    var bChannelIndex = batchChannelsB == 1 ? 0 : pc;
+                    for (var pd = 0; pd < batchDepth; pd++)
                     {
-                        Ops.CopyBufPartial(aBuf, p * aCount, tempA, aCount);
-                        aSrc = tempA;
-                    }
+                        var aDepthIndex = batchDepthA == 1 ? 0 : pd;
+                        var bDepthIndex = batchDepthB == 1 ? 0 : pd;
 
-                    if (batchB != 1)
-                    {
-                        Ops.CopyBufPartial(bBuf, p * bCount, tempB, bCount);
-                        bSrc = tempB;
-                    }
+                        var aSrc = aBuf;
+                        var bSrc = bBuf;
+                        if (tempA != null)
+                        {
+                            Ops.CopyBufPartial(aBuf, GetMatrixOffset(aView, aDepthIndex, aChannelIndex), tempA, aCount);
+                            aSrc = tempA;
+                        }
 
-                    Ops.MatMul2D(aSrc, bSrc, aRows, n, k, transB, tempOut);
-                    Ops.CopyBufPartial(tempOut, 0, outTensor.buffer, outCount, p * outCount);
+                        if (tempB != null)
+                        {
+                            Ops.CopyBufPartial(bBuf, GetMatrixOffset(bView, bDepthIndex, bChannelIndex), tempB, bCount);
+                            bSrc = tempB;
+                        }
+
+                        Ops.MatMul2D(aSrc, bSrc, aRows, n, k, transB, tempOut);
+                        var outOffset = maxDims >= 4
+                            ? ((pc * batchDepth) + pd) * outCount
+                            : pc * outCount;
+                        Ops.CopyBufPartial(tempOut, 0, outTensor.buffer, outCount, outOffset);
+                    }
                 }
             }
             finally
@@ -3739,6 +3866,13 @@ namespace NcnnCompute
             var outh = layer.GetInt(1, -233);
             var outd = layer.GetInt(11, -233);
             var outc = layer.GetInt(2, -233);
+            if (outw == -233 && outh == -233 && outd == -233 && outc == -233)
+            {
+                // Some pnnx-lowered graphs emit param-less Reshape nodes as logical rank markers.
+                // Native ncnn does not preserve >4D tensor metadata here, so keep the current view
+                // and let the surrounding lowered layers consume the existing buffer layout.
+                return src;
+            }
             var ndim = 4;
             if (outd == -233) ndim = 3;
             if (outc == -233) ndim = 2;
@@ -3808,6 +3942,8 @@ namespace NcnnCompute
             var outh = layer.GetInt(1, -233);
             var outd = layer.GetInt(11, -233);
             var outc = layer.GetInt(2, -233);
+            if (outw == -233 && outh == -233 && outd == -233 && outc == -233)
+                return src;
             var ndim = 4;
             if (outd == -233) ndim = 3;
             if (outc == -233) ndim = 2;

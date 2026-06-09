@@ -8,6 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using Cysharp.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Profiling;
@@ -62,12 +63,19 @@ public static class NcnnDebugRunner
     private const string MonaiCompareBaselineEnvVar = "AIIMAGE_MONAI_COMPARE_BASELINE";
     private const string MonaiEnableDumpEnvVar = "AIIMAGE_MONAI_ENABLE_DUMP";
     private const string MonaiForceBufferConvEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_CONV";
+    private const string MonaiForceBufferBinaryEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_BINARY";
     private const string MonaiForceBufferAllEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_ALL";
     private const string MonaiForceBufferOutputsDims4EnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_OUTPUTS_DIMS4";
     private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
     private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
     private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
     private const string MonaiDebugPinnedBlobsEnvVar = "AIIMAGE_MONAI_DEBUG_PINNED_BLOBS";
+    private const string MonaiOutputBlobEnvVar = "AIIMAGE_MONAI_OUTPUT_BLOB";
+    private const string MonaiProbeOnlyEnvVar = "AIIMAGE_MONAI_PROBE_ONLY";
+    private const string MonaiMaxPatchesEnvVar = "AIIMAGE_MONAI_MAX_PATCHES";
+    private const string MonaiClearTempPoolEachPatchEnvVar = "AIIMAGE_MONAI_CLEAR_TEMP_POOL_EACH_PATCH";
+    private const string MonaiTempPoolClearIntervalEnvVar = "AIIMAGE_MONAI_TEMP_POOL_CLEAR_INTERVAL";
+    private const string MonaiYieldIntervalEnvVar = "AIIMAGE_MONAI_YIELD_INTERVAL";
     private const string BatchTimeoutMinutesEnvVar = "AIIMAGE_BATCH_TIMEOUT_MINUTES";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -548,25 +556,44 @@ public static class NcnnDebugRunner
         var compareBaseline = ResolveBoolEnv(MonaiCompareBaselineEnvVar, true);
         var enableDump = ResolveBoolEnv(MonaiEnableDumpEnvVar, true);
         var forceBufferConv = ResolveBoolEnv(MonaiForceBufferConvEnvVar, false);
+        var forceBufferBinary = ResolveBoolEnv(MonaiForceBufferBinaryEnvVar, false);
         var forceBufferAll = ResolveBoolEnv(MonaiForceBufferAllEnvVar, false);
         var forceBufferOutputsDims4 = ResolveBoolEnv(MonaiForceBufferOutputsDims4EnvVar, false);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
         var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
         var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
+        var outputBlobName = ResolveStringEnv(MonaiOutputBlobEnvVar, null);
+        var probeOnly = ResolveBoolEnv(MonaiProbeOnlyEnvVar, false);
+        var maxPatchCount = ResolvePositiveIntEnvAllowZero(MonaiMaxPatchesEnvVar, probeOnly ? 1 : 0);
         var threshold = ResolveFloatEnvOrDefault(MonaiThresholdEnvVar, 0.5f);
+        var monaiConfig = ResolveMonaiModelConfig(baselineManifestPath);
 
         var go = new GameObject("MonaiDebugRunner");
         try
         {
             var runner = go.AddComponent<MONAINcnnReproRunner>();
+            if (!string.IsNullOrWhiteSpace(monaiConfig.modelParamPath))
+                runner.modelParamRelativePath = monaiConfig.modelParamPath;
+            if (!string.IsNullOrWhiteSpace(monaiConfig.modelBinPath))
+                runner.modelBinRelativePath = monaiConfig.modelBinPath;
+            if (!string.IsNullOrWhiteSpace(monaiConfig.pnnxParamPath))
+                runner.pnnxParamRelativePath = monaiConfig.pnnxParamPath;
+            if (!string.IsNullOrWhiteSpace(monaiConfig.bundleManifestPath))
+                runner.bundleManifestRelativePath = monaiConfig.bundleManifestPath;
+            runner.defaultPostprocessKind = monaiConfig.postprocessKind;
             runner.enableDebugDump = enableDump;
             runner.enableBaselineCompare = compareBaseline;
             runner.forceBufferConvolution = forceBufferConv;
+            runner.forceBufferBinaryOp = forceBufferBinary;
             runner.forceBufferAllLayers = forceBufferAll;
             runner.forceBufferOutputsForDims4 = forceBufferOutputsDims4;
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
             runner.debugPinnedBlobNamesCsv = debugPinnedBlobsCsv;
-            runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, runner.enableTempPool);
+            runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, false);
+            runner.maxPooledPerShape = runner.enableTempPool ? 1 : 0;
+            runner.clearTempPoolAfterEachSlidingWindowPatch = ResolveBoolEnv(MonaiClearTempPoolEachPatchEnvVar, true);
+            runner.slidingWindowTempPoolClearInterval = ResolvePositiveIntEnvAllowZero(MonaiTempPoolClearIntervalEnvVar, 1);
+            runner.slidingWindowYieldInterval = ResolvePositiveIntEnvAllowZero(MonaiYieldIntervalEnvVar, 1);
             runner.logAllLayerHeartbeats = false;
             runner.logAllLayerOutputs = false;
             runner.logAllBufferMaterialize = false;
@@ -590,13 +617,16 @@ public static class NcnnDebugRunner
                 inputVolumePaths = inputPaths,
                 caseName = caseName,
                 outputDir = outputDir,
+                outputBlobName = string.IsNullOrWhiteSpace(outputBlobName) ? null : outputBlobName.Trim(),
                 threshold = threshold,
                 normalizeNonZero = normalizeNonZero,
                 compareWithBaseline = compareBaseline,
+                probeOnly = probeOnly,
+                maxSlidingWindowPatches = maxPatchCount,
                 debugPinnedBlobNames = string.IsNullOrWhiteSpace(debugPinnedBlobsCsv)
                     ? null
                     : debugPinnedBlobsCsv.Split(new[] { ',', ';', '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries),
-                postprocessKind = MonaiPostprocessKind.BratsTumorSubregions,
+                postprocessKind = monaiConfig.postprocessKind,
                 channelFillMode = MonaiChannelFillMode.DuplicateFirst
             };
 
@@ -609,7 +639,10 @@ public static class NcnnDebugRunner
         }
         finally
         {
+            try { LogResourceSnapshot("monai_before_destroy"); } catch { }
             UnityEngine.Object.DestroyImmediate(go);
+            await ReleaseGpuPressureAsync();
+            try { LogResourceSnapshot("monai_after_release"); } catch { }
         }
     }
 
@@ -732,6 +765,73 @@ public static class NcnnDebugRunner
         {
             try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
             NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private readonly struct MonaiModelConfig
+    {
+        public readonly string modelParamPath;
+        public readonly string modelBinPath;
+        public readonly string pnnxParamPath;
+        public readonly string bundleManifestPath;
+        public readonly MonaiPostprocessKind postprocessKind;
+
+        public MonaiModelConfig(string modelParamPath, string modelBinPath, string pnnxParamPath, string bundleManifestPath, MonaiPostprocessKind postprocessKind)
+        {
+            this.modelParamPath = modelParamPath;
+            this.modelBinPath = modelBinPath;
+            this.pnnxParamPath = pnnxParamPath;
+            this.bundleManifestPath = bundleManifestPath;
+            this.postprocessKind = postprocessKind;
+        }
+    }
+
+    private static MonaiModelConfig ResolveMonaiModelConfig(string baselineManifestPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(baselineManifestPath) || !File.Exists(baselineManifestPath))
+                return new MonaiModelConfig(null, null, null, null, MonaiPostprocessKind.BratsTumorSubregions);
+
+            var baseline = JObject.Parse(File.ReadAllText(baselineManifestPath));
+            var bundleRoot = baseline["bundle_root"]?.Value<string>();
+            var bundleName = !string.IsNullOrWhiteSpace(bundleRoot) ? Path.GetFileName(bundleRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) : null;
+            if (string.IsNullOrWhiteSpace(bundleName))
+                return new MonaiModelConfig(null, null, null, null, MonaiPostprocessKind.BratsTumorSubregions);
+
+            var outputDir = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "outputs", bundleName);
+            var postprocess = string.Equals(baseline["task_mode"]?.Value<string>(), "multiclass", StringComparison.OrdinalIgnoreCase)
+                ? MonaiPostprocessKind.MulticlassArgmax
+                : MonaiPostprocessKind.BratsTumorSubregions;
+
+            var pnnxParam = Path.Combine(outputDir, bundleName + ".sim.pnnx.param");
+            if (!File.Exists(pnnxParam))
+            {
+                var altPnnx = Path.Combine(outputDir, bundleName + ".sim.onnx");
+                altPnnx = Path.ChangeExtension(altPnnx, ".pnnx.param");
+                if (File.Exists(altPnnx))
+                    pnnxParam = altPnnx;
+            }
+
+            var modelParam = Path.Combine(outputDir, bundleName + ".param");
+            var modelBin = Path.Combine(outputDir, bundleName + ".bin");
+            if (!File.Exists(modelParam) || !File.Exists(modelBin))
+            {
+                var fallbackParam = Path.Combine(outputDir, bundleName + ".sim.ncnn.param");
+                var fallbackBin = Path.Combine(outputDir, bundleName + ".sim.ncnn.bin");
+                if (File.Exists(fallbackParam) && File.Exists(fallbackBin))
+                {
+                    modelParam = fallbackParam;
+                    modelBin = fallbackBin;
+                }
+            }
+
+            var bundleManifest = Path.Combine(outputDir, "manifest.json");
+            return new MonaiModelConfig(modelParam, modelBin, pnnxParam, bundleManifest, postprocess);
+        }
+        catch
+        {
+            return new MonaiModelConfig(null, null, null, null, MonaiPostprocessKind.BratsTumorSubregions);
         }
     }
 
@@ -1821,6 +1921,23 @@ public static class NcnnDebugRunner
         }
 
         return Mathf.Max(1, fallback);
+    }
+
+    private static int ResolvePositiveIntEnvAllowZero(string envName, int fallback)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env)
+                && int.TryParse(env.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                && parsed >= 0)
+                return parsed;
+        }
+        catch
+        {
+        }
+
+        return Mathf.Max(0, fallback);
     }
 
     private static int ResolveIntEnvAllowZero(string envName, int fallback)

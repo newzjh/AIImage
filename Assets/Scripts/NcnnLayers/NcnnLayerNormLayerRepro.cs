@@ -65,11 +65,12 @@ namespace NcnnCompute
                                                 if (!owner._layerNorm.TryGetValue(layer.name, out var lp))
                                                     throw new InvalidOperationException("LayerNorm not found: " + layer.name);
                                                 using var srcView = owner.GetReadableTensorInput(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-                                                if (srcView == null || srcView.buffer == null || srcView.dims != 2)
-                                                    throw new InvalidOperationException("LayerNorm expects dims=2 buffer input: " + layer.name);
+                                                if (srcView == null || srcView.buffer == null)
+                                                    throw new InvalidOperationException("LayerNorm source not found: " + layer.name);
+                                                ResolveLayerNormRowsCols(srcView, lp.affineSize, layer.name, out var rows, out var cols);
                                                 var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
                                                 owner.Ops.CopyBuf(srcView.buffer, outTensor.buffer, srcView.buffer.count);
-                                                owner.Ops.LayerNorm2DInplace(outTensor.buffer, srcView.h, srcView.w, lp.eps, lp.affine, lp.gamma, lp.beta);
+                                                owner.Ops.LayerNorm2DInplace(outTensor.buffer, rows, cols, lp.eps, lp.affine, lp.gamma, lp.beta);
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],
                                                     outTensor,
@@ -90,6 +91,88 @@ namespace NcnnCompute
 #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
+        }
+
+        private static void ResolveLayerNormRowsCols(NcnnTensorBuffer srcView, int affineSize, string layerName, out int rows, out int cols)
+        {
+            if (srcView == null)
+                throw new ArgumentNullException(nameof(srcView));
+
+            var w = srcView.w;
+            var h = Mathf.Max(1, srcView.h);
+            var d = Mathf.Max(1, srcView.d);
+            var c = Mathf.Max(1, srcView.c);
+            rows = 0;
+            cols = 0;
+
+            switch (srcView.dims)
+            {
+                case 1:
+                {
+                    rows = 1;
+                    cols = w;
+                    return;
+                }
+                case 2:
+                {
+                    rows = h;
+                    cols = w;
+                    return;
+                }
+                case 3:
+                {
+                    if (affineSize <= 0 || affineSize == w)
+                    {
+                        rows = h * c;
+                        cols = w;
+                        return;
+                    }
+
+                    if (affineSize == w * h)
+                    {
+                        rows = c;
+                        cols = w * h;
+                        return;
+                    }
+
+                    break;
+                }
+                case 4:
+                {
+                    if (affineSize <= 0 || affineSize == w)
+                    {
+                        rows = h * d * c;
+                        cols = w;
+                        return;
+                    }
+
+                    if (affineSize == w * h)
+                    {
+                        rows = d * c;
+                        cols = w * h;
+                        return;
+                    }
+
+                    if (affineSize == w * h * d)
+                    {
+                        rows = c;
+                        cols = w * h * d;
+                        return;
+                    }
+
+                    break;
+                }
+            }
+
+            throw new InvalidOperationException(
+                "Unsupported LayerNorm shape"
+                + " | layer=" + layerName
+                + " | dims=" + srcView.dims
+                + " | w=" + srcView.w
+                + " | h=" + srcView.h
+                + " | d=" + srcView.d
+                + " | c=" + srcView.c
+                + " | affineSize=" + affineSize);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

@@ -82,6 +82,31 @@ namespace NcnnCompute
                 else outC += v.c;
             }
 
+            var concatChannelAxis = firstView.dims == 4 ? 3 : 2;
+            if (tensorAxis == concatChannelAxis)
+            {
+                var fastOutTensor = owner.RentTempTensorBuffer(firstView.dims, outW, outH, outD, outC);
+                var dstElementOffset = 0;
+                for (var i = 0; i < partViews.Length; i++)
+                {
+                    owner.Ops.CopyBufPartial(partBuffers[i], 0, fastOutTensor.buffer, partViews[i].elementCount, dstElementOffset);
+                    dstElementOffset += partViews[i].elementCount;
+                }
+
+                owner.PublishTensorBufferOutput(
+                    layer.topNames[0],
+                    fastOutTensor,
+                    preferTexture: firstView.dims <= 3,
+                    textureBlobs,
+                    textureShapes,
+                    bufferBlobs,
+                    bufferRefs,
+                    bufferViews,
+                    tempOwned);
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
             var outCount = outW * outH * outD * outC;
             var outData = new float[outCount];
             var dstAxisOffset = 0;
