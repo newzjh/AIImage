@@ -2,6 +2,7 @@
 #pragma kernel NcnnLeakyRelu
 #pragma kernel NcnnConv3x3
 #pragma kernel NcnnConv3dBuf
+#pragma kernel NcnnConv3dPack4CDHW
 #pragma kernel NcnnConvDepthWise
 #pragma kernel NcnnDeconvolutionBuf
 #pragma kernel NcnnTexToBuf3
@@ -25,14 +26,17 @@
 #pragma kernel NcnnCopyPack4
 #pragma kernel NcnnBuildSdInpaintInput9Pack4
 #pragma kernel NcnnInterpPack4
+#pragma kernel NcnnInterpPack4CDHW
 #pragma kernel NcnnInterp2xPack4
 #pragma kernel NcnnInterp2xNearestPack4
 #pragma kernel NcnnInterpDown2Pack4
 #pragma kernel NcnnInterpDown2NearestPack4
 #pragma kernel NcnnPack4ToBufferCHW
+#pragma kernel NcnnPack4ToBufferCDHW
 #pragma kernel NcnnInnerProduct
 #pragma kernel NcnnPackRgbToPack4Gfpgan
 #pragma kernel NcnnFillPack4FromBufferCHW
+#pragma kernel NcnnFillPack4FromBufferCDHW
 #pragma kernel NcnnScalePack4
 #pragma kernel NcnnAddBiasPack4
 #pragma kernel NcnnBatchNormPack4
@@ -220,6 +224,8 @@ float _ScaleX;
 float _ScaleY;
 float _InterpScaleFactorX;
 float _InterpScaleFactorY;
+float _InterpScaleFactorZ;
+int _InterpResizeType;
 int _FlipY;
 
 [numthreads(32,32,1)]
@@ -929,6 +935,98 @@ void NcnnBuildSdInpaintInput9Pack4(uint3 id : SV_DispatchThreadID)
 RWTexture2DArray<float4> _InterpOutArr;
 Texture2DArray<float4> _InterpInArr;
 
+float4 NcnnReadInterpPack4CDHW(int x, int y, int z, int pack, int srcW, int srcH, int srcD, int srcPacks)
+{
+    x = clamp(x, 0, max(0, srcW - 1));
+    y = clamp(y, 0, max(0, srcH - 1));
+    z = clamp(z, 0, max(0, srcD - 1));
+    pack = clamp(pack, 0, max(0, srcPacks - 1));
+    return _InterpInArr[int3(x, y, z * srcPacks + pack)];
+}
+
+[numthreads(8,8,1)]
+void NcnnInterpPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _InterpOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+
+    int outSlice = (int)id.z;
+    if (outSlice < 0 || outSlice >= (int)od) return;
+
+    int outPacks = max(1, _OutPacks);
+    int srcPacks = max(1, _InPacks);
+    int oz = outSlice / outPacks;
+    int op = outSlice - oz * outPacks;
+    if (oz < 0 || oz >= _OutD || op < 0 || op >= outPacks) return;
+
+    float scaleX = _InterpScaleFactorX > 0.0 ? _InterpScaleFactorX : ((float)_OutW / max(1.0, (float)_InW));
+    float scaleY = _InterpScaleFactorY > 0.0 ? _InterpScaleFactorY : ((float)_OutH / max(1.0, (float)_InH));
+    float scaleZ = _InterpScaleFactorZ > 0.0 ? _InterpScaleFactorZ : ((float)_OutD / max(1.0, (float)_InD));
+
+    if (_InterpResizeType == 1)
+    {
+        int sxn = min((int)((float)id.x / max(scaleX, 1e-6)), max(0, _InW - 1));
+        int syn = min((int)((float)id.y / max(scaleY, 1e-6)), max(0, _InH - 1));
+        int szn = min((int)((float)oz / max(scaleZ, 1e-6)), max(0, _InD - 1));
+        _InterpOutArr[int3((int)id.x, (int)id.y, outSlice)] = NcnnReadInterpPack4CDHW(sxn, syn, szn, op, _InW, _InH, _InD, srcPacks);
+        return;
+    }
+
+    float fx = ((float)id.x + 0.5) / max(scaleX, 1e-6) - 0.5;
+    float fy = ((float)id.y + 0.5) / max(scaleY, 1e-6) - 0.5;
+    float fz = ((float)oz + 0.5) / max(scaleZ, 1e-6) - 0.5;
+
+    int x0 = (int)floor(fx);
+    int y0 = (int)floor(fy);
+    int z0 = (int)floor(fz);
+    float tx = fx - x0;
+    float ty = fy - y0;
+    float tz = fz - z0;
+
+    if (_InW <= 1) { x0 = 0; tx = 0.0; }
+    else
+    {
+        if (x0 < 0) { x0 = 0; tx = 0.0; }
+        if (x0 >= _InW - 1) { x0 = max(0, _InW - 2); tx = 1.0; }
+    }
+
+    if (_InH <= 1) { y0 = 0; ty = 0.0; }
+    else
+    {
+        if (y0 < 0) { y0 = 0; ty = 0.0; }
+        if (y0 >= _InH - 1) { y0 = max(0, _InH - 2); ty = 1.0; }
+    }
+
+    if (_InD <= 1) { z0 = 0; tz = 0.0; }
+    else
+    {
+        if (z0 < 0) { z0 = 0; tz = 0.0; }
+        if (z0 >= _InD - 1) { z0 = max(0, _InD - 2); tz = 1.0; }
+    }
+
+    int x1 = min(x0 + 1, max(0, _InW - 1));
+    int y1 = min(y0 + 1, max(0, _InH - 1));
+    int z1 = min(z0 + 1, max(0, _InD - 1));
+
+    float4 c000 = NcnnReadInterpPack4CDHW(x0, y0, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c100 = NcnnReadInterpPack4CDHW(x1, y0, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c010 = NcnnReadInterpPack4CDHW(x0, y1, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c110 = NcnnReadInterpPack4CDHW(x1, y1, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c001 = NcnnReadInterpPack4CDHW(x0, y0, z1, op, _InW, _InH, _InD, srcPacks);
+    float4 c101 = NcnnReadInterpPack4CDHW(x1, y0, z1, op, _InW, _InH, _InD, srcPacks);
+    float4 c011 = NcnnReadInterpPack4CDHW(x0, y1, z1, op, _InW, _InH, _InD, srcPacks);
+    float4 c111 = NcnnReadInterpPack4CDHW(x1, y1, z1, op, _InW, _InH, _InD, srcPacks);
+
+    float4 c00 = lerp(c000, c100, tx);
+    float4 c10 = lerp(c010, c110, tx);
+    float4 c01 = lerp(c001, c101, tx);
+    float4 c11 = lerp(c011, c111, tx);
+    float4 c0 = lerp(c00, c10, ty);
+    float4 c1 = lerp(c01, c11, ty);
+    _InterpOutArr[int3((int)id.x, (int)id.y, outSlice)] = lerp(c0, c1, tz);
+}
+
 [numthreads(8,8,1)]
 void NcnnInterpPack4(uint3 id : SV_DispatchThreadID)
 {
@@ -1106,6 +1204,7 @@ Texture2DArray<float4> _Pack4InArr;
 RWStructuredBuffer<float> _Pack4Out;
 int _Pack4W;
 int _Pack4H;
+int _Pack4D;
 int _Pack4C;
 
 [numthreads(256,1,1)]
@@ -1121,6 +1220,30 @@ void NcnnPack4ToBufferCHW(uint3 id : SV_DispatchThreadID)
     int pack = (int)(c >> 2);
     int lane = (int)(c & 3);
     float4 v = _Pack4InArr[int3((int)x, (int)y, pack)];
+    float o = lane == 0 ? v.x : (lane == 1 ? v.y : (lane == 2 ? v.z : v.w));
+    _Pack4Out[idx] = o;
+}
+
+[numthreads(256,1,1)]
+void NcnnPack4ToBufferCDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = _BaseIndex + id.x;
+    uint wh = (uint)(_Pack4W * _Pack4H);
+    uint whd = wh * (uint)max(_Pack4D, 1);
+    uint c = idx / whd;
+    if (c >= (uint)_Pack4C) return;
+
+    uint rem = idx - c * whd;
+    uint z = rem / wh;
+    rem -= z * wh;
+    uint y = rem / (uint)_Pack4W;
+    uint x = rem - y * (uint)_Pack4W;
+
+    int packCount = max(1, (_Pack4C + 3) / 4);
+    int pack = (int)(c >> 2);
+    int lane = (int)(c & 3);
+    int slice = (int)(z * (uint)packCount) + pack;
+    float4 v = _Pack4InArr[int3((int)x, (int)y, slice)];
     float o = lane == 0 ? v.x : (lane == 1 ? v.y : (lane == 2 ? v.z : v.w));
     _Pack4Out[idx] = o;
 }
@@ -1731,6 +1854,7 @@ StructuredBuffer<float> _FillIn;
 RWTexture2DArray<float4> _FillOutArr;
 int _FillW;
 int _FillH;
+int _FillD;
 int _FillC;
 
 [numthreads(8,8,1)]
@@ -1755,6 +1879,41 @@ void NcnnFillPack4FromBufferCHW(uint3 id : SV_DispatchThreadID)
     float x2 = c2 < _FillC ? _FillIn[idx2] : 0.0;
     float x3 = c3 < _FillC ? _FillIn[idx3] : 0.0;
     _FillOutArr[int3((int)id.x, (int)id.y, p)] = float4(x0, x1, x2, x3);
+}
+
+[numthreads(8,8,1)]
+void NcnnFillPack4FromBufferCDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _FillOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int slice = (int)id.z;
+    if (slice < 0 || slice >= (int)d) return;
+
+    int packCount = max(1, (_FillC + 3) / 4);
+    int z = slice / packCount;
+    int pack = slice - z * packCount;
+    if (z < 0 || z >= _FillD)
+    {
+        _FillOutArr[int3((int)id.x, (int)id.y, slice)] = 0.0;
+        return;
+    }
+
+    uint wh = w * h;
+    uint spatial = id.y * w + id.x;
+    int c0 = pack * 4 + 0;
+    int c1 = pack * 4 + 1;
+    int c2 = pack * 4 + 2;
+    int c3 = pack * 4 + 3;
+    uint idx0 = ((uint)c0 * (uint)_FillD + (uint)z) * wh + spatial;
+    uint idx1 = ((uint)c1 * (uint)_FillD + (uint)z) * wh + spatial;
+    uint idx2 = ((uint)c2 * (uint)_FillD + (uint)z) * wh + spatial;
+    uint idx3 = ((uint)c3 * (uint)_FillD + (uint)z) * wh + spatial;
+    float x0 = c0 < _FillC ? _FillIn[idx0] : 0.0;
+    float x1 = c1 < _FillC ? _FillIn[idx1] : 0.0;
+    float x2 = c2 < _FillC ? _FillIn[idx2] : 0.0;
+    float x3 = c3 < _FillC ? _FillIn[idx3] : 0.0;
+    _FillOutArr[int3((int)id.x, (int)id.y, slice)] = float4(x0, x1, x2, x3);
 }
 
 Texture2DArray<float4> _ScaleInArr;
@@ -2024,6 +2183,62 @@ void NcnnConv3dBuf(uint3 id : SV_DispatchThreadID)
 
     int outIndex = (((oc * _OutD) + oz) * _OutH + (int)id.y) * _OutW + (int)id.x;
     _ConvOut[outIndex] = NcnnApplyActivationScalar(sum);
+}
+
+[numthreads(8,8,1)]
+void NcnnConv3dPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+
+    int outSlice = (int)id.z;
+    if (outSlice < 0 || outSlice >= (int)od) return;
+
+    int outPackCount = max(1, _OutPacks);
+    int oz = outSlice / outPackCount;
+    int op = outSlice - oz * outPackCount;
+    if (oz < 0 || oz >= _OutD || op < 0 || op >= _OutPacks) return;
+
+    float4 sum = _ConvB4[op];
+    int kernelPlane = _KernelWVar * _KernelHVar;
+    int kernelVolume = kernelPlane * _KernelDVar;
+
+    for (int ip = 0; ip < _InPacks; ip++)
+    {
+        for (int kz = 0; kz < _KernelDVar; kz++)
+        {
+            int sz = oz * _StrideDVar - _PadFrontVar + kz * _DilationDVar;
+            if (sz < 0 || sz >= _InD) continue;
+
+            for (int ky = 0; ky < _KernelHVar; ky++)
+            {
+                int sy = (int)id.y * _StrideHVar - _PadTopVar + ky * _DilationHVar;
+                if (sy < 0 || sy >= _InH) continue;
+
+                for (int kx = 0; kx < _KernelWVar; kx++)
+                {
+                    int sx = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
+                    if (sx < 0 || sx >= _InW) continue;
+
+                    int inSlice = sz * _InPacks + ip;
+                    float4 v = _ConvInArr[int3(sx, sy, inSlice)];
+                    int kernelIndex = (kz * kernelPlane) + (ky * _KernelWVar) + kx;
+                    int weightBase = ((((op * _InPacks) + ip) * kernelVolume) + kernelIndex) * 4;
+                    float4 w0 = _ConvW4[weightBase + 0];
+                    float4 w1 = _ConvW4[weightBase + 1];
+                    float4 w2 = _ConvW4[weightBase + 2];
+                    float4 w3 = _ConvW4[weightBase + 3];
+                    sum.x += dot(v, w0);
+                    sum.y += dot(v, w1);
+                    sum.z += dot(v, w2);
+                    sum.w += dot(v, w3);
+                }
+            }
+        }
+    }
+
+    _ConvOutArr[int3((int)id.x, (int)id.y, outSlice)] = NcnnApplyActivation(sum);
 }
 
 [numthreads(8,8,1)]
@@ -2584,6 +2799,7 @@ RWStructuredBuffer<float4> _GnStatsOut;
 int _GnW;
 int _GnH;
 int _GnC;
+int _GnD;
 int _GnGroup;
 int _GnChannelsG;
 float _GnEps;
@@ -3857,11 +4073,16 @@ void NcnnGroupNormApplyMeanVar(uint3 groupId : SV_GroupID, uint3 groupThreadId :
 
 float NcnnGnReadPack4(uint c, uint s)
 {
-    uint x = s % (uint)_GnW;
-    uint y = s / (uint)_GnW;
+    uint wh = (uint)(_GnW * _GnH);
+    uint z = s / wh;
+    uint rem = s - z * wh;
+    uint y = rem / (uint)_GnW;
+    uint x = rem - y * (uint)_GnW;
+    int packCount = max(1, (_GnC + 3) / 4);
     int pack = (int)(c >> 2);
     int lane = (int)(c & 3u);
-    float4 v = _GnTexInArr[int3((int)x, (int)y, pack)];
+    int slice = (int)z * packCount + pack;
+    float4 v = _GnTexInArr[int3((int)x, (int)y, slice)];
     return lane == 0 ? v.x : (lane == 1 ? v.y : (lane == 2 ? v.z : v.w));
 }
 
@@ -3872,7 +4093,7 @@ void NcnnGroupNormPack4Mean(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV
     int tid = (int)groupThreadId.x;
     if (g < 0 || g >= _GnGroup) return;
 
-    uint size = (uint)(_GnW * _GnH);
+    uint size = (uint)(_GnW * _GnH * max(_GnD, 1));
     uint total = (uint)_GnChannelsG * size;
     uint chBase = (uint)g * (uint)_GnChannelsG;
 
@@ -3910,7 +4131,7 @@ void NcnnGroupNormPack4Variance(uint3 groupId : SV_GroupID, uint3 groupThreadId 
     int tid = (int)groupThreadId.x;
     if (g < 0 || g >= _GnGroup) return;
 
-    uint size = (uint)(_GnW * _GnH);
+    uint size = (uint)(_GnW * _GnH * max(_GnD, 1));
     uint total = (uint)_GnChannelsG * size;
     uint chBase = (uint)g * (uint)_GnChannelsG;
     float mean = _GnStatsOut[g].x;
@@ -3965,11 +4186,14 @@ void NcnnGroupNormPack4ApplyMeanVar(uint3 id : SV_DispatchThreadID)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
 
+    int packCount = max(1, (_GnC + 3) / 4);
+    int z = p / packCount;
+    int pack = p - z * packCount;
     float4 v = _GnTexInArr[int3((int)id.x, (int)id.y, p)];
-    int c0 = p * 4 + 0;
-    int c1 = p * 4 + 1;
-    int c2 = p * 4 + 2;
-    int c3 = p * 4 + 3;
+    int c0 = pack * 4 + 0;
+    int c1 = pack * 4 + 1;
+    int c2 = pack * 4 + 2;
+    int c3 = pack * 4 + 3;
     _GnTexOutArr[int3((int)id.x, (int)id.y, p)] = float4(
         NcnnGnApplyOne(v.x, c0),
         NcnnGnApplyOne(v.y, c1),
@@ -3984,7 +4208,7 @@ void NcnnGroupNormPack4MeanTex(uint3 groupId : SV_GroupID, uint3 groupThreadId :
     int tid = (int)groupThreadId.x;
     if (g < 0 || g >= _GnGroup) return;
 
-    uint size = (uint)(_GnW * _GnH);
+    uint size = (uint)(_GnW * _GnH * max(_GnD, 1));
     uint total = (uint)_GnChannelsG * size;
     uint chBase = (uint)g * (uint)_GnChannelsG;
 
@@ -4022,7 +4246,7 @@ void NcnnGroupNormPack4VarianceTex(uint3 groupId : SV_GroupID, uint3 groupThread
     int tid = (int)groupThreadId.x;
     if (g < 0 || g >= _GnGroup) return;
 
-    uint size = (uint)(_GnW * _GnH);
+    uint size = (uint)(_GnW * _GnH * max(_GnD, 1));
     uint total = (uint)_GnChannelsG * size;
     uint chBase = (uint)g * (uint)_GnChannelsG;
     float mean = _GnStatsTexIn[int3(g, 0, 0)].x;
@@ -4073,11 +4297,14 @@ void NcnnGroupNormPack4ApplyMeanVarTex(uint3 id : SV_DispatchThreadID)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
 
+    int packCount = max(1, (_GnC + 3) / 4);
+    int z = p / packCount;
+    int pack = p - z * packCount;
     float4 v = _GnTexInArr[int3((int)id.x, (int)id.y, p)];
-    int c0 = p * 4 + 0;
-    int c1 = p * 4 + 1;
-    int c2 = p * 4 + 2;
-    int c3 = p * 4 + 3;
+    int c0 = pack * 4 + 0;
+    int c1 = pack * 4 + 1;
+    int c2 = pack * 4 + 2;
+    int c3 = pack * 4 + 3;
     _GnTexOutArr[int3((int)id.x, (int)id.y, p)] = float4(
         NcnnGnApplyOneTex(v.x, c0),
         NcnnGnApplyOneTex(v.y, c1),

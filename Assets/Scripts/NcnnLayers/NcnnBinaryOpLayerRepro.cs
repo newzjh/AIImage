@@ -190,7 +190,8 @@ namespace NcnnCompute
                     throw new InvalidOperationException("BinaryOp render-texture scalar path requires existing texture input: " + layer.name);
                 }
 
-                var outRtScalar = owner.RentTempArray(aTexScalar.width, aTexScalar.height, aTexScalar.packs, RenderTextureFormat.ARGBHalf);
+                var outDepthScalar = aTexShapeScalar.dims == 4 ? aTexShapeScalar.d * aTexScalar.packs : aTexScalar.packs;
+                var outRtScalar = owner.RentTempArray(aTexScalar.width, aTexScalar.height, outDepthScalar, RenderTextureFormat.ARGBHalf);
                 owner.Ops.BinaryOpScalarPack4(aTexScalar.texture, scalarB, aTexScalar.packs, opType, outRtScalar);
                 NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRtScalar, aTexShapeScalar);
                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -222,12 +223,14 @@ namespace NcnnCompute
                     var rhsTexture = bTex.texture;
                     if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
                     {
-                        scaledBTexture = owner.RentTempArray(bTex.width, bTex.height, bTex.packs, RenderTextureFormat.ARGBHalf);
+                        var scaledBDepth = bTexShape.dims == 4 ? bTexShape.d * bTex.packs : bTex.packs;
+                        scaledBTexture = owner.RentTempArray(bTex.width, bTex.height, scaledBDepth, RenderTextureFormat.ARGBHalf);
                         owner.Ops.ScalePack4(bTex.texture, owner.CodeFormerSftAddScale, bTex.packs, scaledBTexture);
                         rhsTexture = scaledBTexture;
                     }
 
-                    finalTexture = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
+                    var exactOutDepth = aTexShape.dims == 4 ? aTexShape.d * aTex.packs : aTex.packs;
+                    finalTexture = owner.RentTempArray(aTex.width, aTex.height, exactOutDepth, RenderTextureFormat.ARGBHalf);
                     if (isCodeFormerSftMul && owner.CodeFormerBypassSftMul)
                     {
                         owner.Ops.CopyPack4(aTex.texture, 0, finalTexture, 0, aTex.packs);
@@ -237,7 +240,7 @@ namespace NcnnCompute
                         owner.Ops.BinaryOpPack4(aTex.texture, rhsTexture, aTex.packs, opType, finalTexture);
                         if (isCodeFormerSftMul && owner.CodeFormerSftMulScale != 1f)
                         {
-                            var scaledOutTexture = owner.RentTempArray(aTex.width, aTex.height, aTex.packs, RenderTextureFormat.ARGBHalf);
+                            var scaledOutTexture = owner.RentTempArray(aTex.width, aTex.height, exactOutDepth, RenderTextureFormat.ARGBHalf);
                             owner.Ops.ScalePack4(finalTexture, owner.CodeFormerSftMulScale, aTex.packs, scaledOutTexture);
                             owner.ReturnTempArray(finalTexture);
                             finalTexture = scaledOutTexture;
@@ -284,7 +287,8 @@ namespace NcnnCompute
                     if (vectorBroadcastTexture == null)
                         throw new InvalidOperationException("Failed to materialize BinaryOp channel vector texture: " + layer.name);
 
-                    finalTexture = owner.RentTempArray(vectorTexture.width, vectorTexture.height, vectorTexture.packs, RenderTextureFormat.ARGBHalf);
+                    var vectorOutDepth = vectorTextureShape.dims == 4 ? vectorTextureShape.d * vectorTexture.packs : vectorTexture.packs;
+                    finalTexture = owner.RentTempArray(vectorTexture.width, vectorTexture.height, vectorOutDepth, RenderTextureFormat.ARGBHalf);
                     if (channelVectorIsA)
                         owner.Ops.BinaryOpPack4Broadcast(vectorBroadcastTexture, vectorTexture.texture, vectorTexture.packs, opType, 1, finalTexture);
                     else
@@ -323,7 +327,8 @@ namespace NcnnCompute
                 RenderTexture finalTexture = null;
                 try
                 {
-                    finalTexture = owner.RentTempArray(scalarTexture.width, scalarTexture.height, scalarTexture.packs, RenderTextureFormat.ARGBHalf);
+                    var scalarOutDepth = scalarTextureShape.dims == 4 ? scalarTextureShape.d * scalarTexture.packs : scalarTexture.packs;
+                    finalTexture = owner.RentTempArray(scalarTexture.width, scalarTexture.height, scalarOutDepth, RenderTextureFormat.ARGBHalf);
                     owner.Ops.BinaryOpPack4BufferScalar(scalarTexture.texture, scalarBuffer, scalarTexture.packs, opType, scalarIsA, finalTexture);
                     NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalarTextureShape);
                     finalTexture = null;
@@ -346,7 +351,8 @@ namespace NcnnCompute
                 RenderTexture finalTexture = null;
                 try
                 {
-                    finalTexture = owner.RentTempArray(outWidth, outHeight, outPacks, RenderTextureFormat.ARGBHalf);
+                    var spatialOutDepth = outShape.dims == 4 ? outShape.d * outPacks : outPacks;
+                    finalTexture = owner.RentTempArray(outWidth, outHeight, spatialOutDepth, RenderTextureFormat.ARGBHalf);
                     owner.Ops.BinaryOpPack4Broadcast(aTex.texture, bTex.texture, outPacks, opType, broadcastMode, finalTexture);
                     NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, outShape);
                     finalTexture = null;
@@ -383,13 +389,13 @@ namespace NcnnCompute
 
             if (aTex == null || bTex == null || aTex.texture == null || bTex.texture == null)
                 return false;
-            if (aShape.dims != 3 || bShape.dims != 3)
+            if ((aShape.dims != 3 && aShape.dims != 4) || aShape.dims != bShape.dims)
                 return false;
             if (aShape.c != bShape.c || aTex.packs != bTex.packs)
                 return false;
 
-            var aIsScalarSpatial = aShape.w == 1 && aShape.h == 1 && aTex.width == 1 && aTex.height == 1;
-            var bIsScalarSpatial = bShape.w == 1 && bShape.h == 1 && bTex.width == 1 && bTex.height == 1;
+            var aIsScalarSpatial = aShape.w == 1 && aShape.h == 1 && aShape.d == 1 && aTex.width == 1 && aTex.height == 1;
+            var bIsScalarSpatial = bShape.w == 1 && bShape.h == 1 && bShape.d == 1 && bTex.width == 1 && bTex.height == 1;
             var aIsOutputSpatial = aShape.w == aTex.width && aShape.h == aTex.height;
             var bIsOutputSpatial = bShape.w == bTex.width && bShape.h == bTex.height;
 
@@ -399,7 +405,7 @@ namespace NcnnCompute
                 outWidth = bTex.width;
                 outHeight = bTex.height;
                 outPacks = bTex.packs;
-                outShape = new NcnnRepro.BufferShape(3, bShape.w, bShape.h, 1, bShape.c);
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
                 return true;
             }
 
@@ -409,7 +415,7 @@ namespace NcnnCompute
                 outWidth = aTex.width;
                 outHeight = aTex.height;
                 outPacks = aTex.packs;
-                outShape = new NcnnRepro.BufferShape(3, aShape.w, aShape.h, 1, aShape.c);
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
                 return true;
             }
 
@@ -699,10 +705,11 @@ namespace NcnnCompute
                 && b != null
                 && a.texture != null
                 && b.texture != null
-                && aShape.dims == 3
-                && bShape.dims == 3
+                && (aShape.dims == 3 || aShape.dims == 4)
+                && aShape.dims == bShape.dims
                 && aShape.w == bShape.w
                 && aShape.h == bShape.h
+                && aShape.d == bShape.d
                 && aShape.c == bShape.c
                 && a.width == b.width
                 && a.height == b.height
@@ -728,13 +735,13 @@ namespace NcnnCompute
 
             if (a == null || b == null || a.texture == null || b.texture == null)
                 return false;
-            if (aShape.dims != 3 || bShape.dims != 3)
+            if ((aShape.dims != 3 && aShape.dims != 4) || aShape.dims != bShape.dims)
                 return false;
             if (aShape.c != bShape.c || a.packs != b.packs)
                 return false;
 
-            var aIsScalarSpatial = aShape.w == 1 && aShape.h == 1 && a.width == 1 && a.height == 1;
-            var bIsScalarSpatial = bShape.w == 1 && bShape.h == 1 && b.width == 1 && b.height == 1;
+            var aIsScalarSpatial = aShape.w == 1 && aShape.h == 1 && aShape.d == 1 && a.width == 1 && a.height == 1;
+            var bIsScalarSpatial = bShape.w == 1 && bShape.h == 1 && bShape.d == 1 && b.width == 1 && b.height == 1;
             var aIsOutputSpatial = aShape.w == a.width && aShape.h == a.height;
             var bIsOutputSpatial = bShape.w == b.width && bShape.h == b.height;
 
@@ -744,7 +751,7 @@ namespace NcnnCompute
                 outWidth = b.width;
                 outHeight = b.height;
                 outPacks = b.packs;
-                outShape = new NcnnRepro.BufferShape(3, bShape.w, bShape.h, 1, bShape.c);
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
                 return true;
             }
 
@@ -754,7 +761,7 @@ namespace NcnnCompute
                 outWidth = a.width;
                 outHeight = a.height;
                 outPacks = a.packs;
-                outShape = new NcnnRepro.BufferShape(3, aShape.w, aShape.h, 1, aShape.c);
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
                 return true;
             }
 

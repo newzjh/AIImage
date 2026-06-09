@@ -52,6 +52,7 @@ public sealed class MonaiRunRequest
     public MonaiChannelFillMode channelFillMode = MonaiChannelFillMode.DuplicateFirst;
     public MonaiPostprocessKind postprocessKind = MonaiPostprocessKind.BratsTumorSubregions;
     public bool compareWithBaseline = true;
+    public string[] debugPinnedBlobNames;
 }
 
 public struct MonaiSegmentationResult
@@ -129,6 +130,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public MonaiChannelFillMode channelFillMode;
         public MonaiPostprocessKind postprocessKind;
         public bool compareWithBaseline;
+        public string[] debugPinnedBlobNames;
         public JObject bundleManifest;
         public JObject baselineManifest;
     }
@@ -150,7 +152,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public bool enableTempPool = true;
     public int maxPooledPerShape = 2;
     public bool forceBufferConvolution = false;
+    public bool forceBufferAllLayers = false;
+    public bool forceBufferOutputsForDims4 = false;
     public bool keepRawConvWeightsForTexturePath = true;
+    public string debugPinnedBlobNamesCsv = string.Empty;
     public bool logAllLayerHeartbeats = false;
     public bool logAllLayerOutputs = false;
     public bool logAllBufferMaterialize = false;
@@ -261,10 +266,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             using (var inputTensor = new NcnnTensorBuffer(resolved.inputWidth, resolved.inputHeight, resolved.inputDepth, resolved.inputChannels))
             {
                 inputTensor.buffer.SetData(prepared.tensorNcdhw);
+                var pinnedBlobNames = BuildPinnedBlobNames(resolved.outputBlobName, resolved.debugPinnedBlobNames);
                 using var infer = _repro.InferWithMultiInputs(
                     null,
                     new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { { resolved.inputBlobName, inputTensor } },
-                    null,
+                    pinnedBlobNames,
                     null);
 
                 var outputView = infer.GetBufferView(resolved.outputBlobName);
@@ -278,6 +284,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 outH = outputView.h;
                 outD = outputView.d;
                 outC = outputView.c;
+
+                if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                    DumpPinnedBlobOutputs(infer, pinnedBlobNames);
             }
 
             if (logits == null || logits.Length == 0)
@@ -377,7 +386,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
+        _repro.EnableGroupNormTexturePath = true;
+        _repro.UseNcnnStyleGroupNorm = true;
         _repro.ForceBufferConvolution = forceBufferConvolution;
+        _repro.ForceBufferLayerTypes = forceBufferAllLayers
+            ? new HashSet<string>(StringComparer.Ordinal) { "*" }
+            : null;
+        _repro.ForceBufferOutputsForDims4 = forceBufferOutputsForDims4;
         _repro.KeepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
         _repro.DebugLogAllLayerHeartbeats = logAllLayerHeartbeats;
         _repro.DebugLogAllLayerOutputs = logAllLayerOutputs;
@@ -508,6 +523,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             compareWithBaseline = request.compareWithBaseline
         };
 
+        resolved.debugPinnedBlobNames = request.debugPinnedBlobNames != null && request.debugPinnedBlobNames.Length > 0
+            ? CloneArray(request.debugPinnedBlobNames)
+            : SplitNameList(debugPinnedBlobNamesCsv);
+
         if (request.threshold <= 0f)
             resolved.threshold = defaultThreshold;
         if (request.channelFillMode == 0 && defaultChannelFillMode != 0 && string.IsNullOrWhiteSpace(request.baselineManifestPath))
@@ -577,12 +596,14 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
     private async UniTask<PreparedInput> PrepareBaselineInputAsync(ResolvedRequest request, CancellationToken ct)
     {
+        AppendDebugLine("PrepareBaselineInputAsync begin | manifest=" + (request?.baselineManifestPath ?? string.Empty));
         if (request.baselineManifest == null)
             throw new FileNotFoundException("MONAI baseline manifest not found", request.baselineManifestPath);
 
         var caseDir = Path.GetDirectoryName(request.baselineManifestPath);
         if (string.IsNullOrWhiteSpace(caseDir))
             throw new InvalidOperationException("MONAI baseline manifest directory is empty");
+        AppendDebugLine("PrepareBaselineInputAsync case dir | dir=" + caseDir);
 
         var inputFileName = request.baselineManifest.SelectToken("files.input_tensor_f32_bin")?.Value<string>();
         if (string.IsNullOrWhiteSpace(inputFileName))
@@ -591,13 +612,19 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var inputTensorPath = Path.Combine(caseDir, inputFileName);
         if (!File.Exists(inputTensorPath))
             throw new FileNotFoundException("MONAI baseline input tensor not found", inputTensorPath);
+        AppendDebugLine("PrepareBaselineInputAsync tensor path | path=" + inputTensorPath);
+        AppendDebugLine("PrepareBaselineInputAsync tensor bytes | bytes=" + new FileInfo(inputTensorPath).Length.ToString(CultureInfo.InvariantCulture));
 
         ct.ThrowIfCancellationRequested();
-        var tensor = await ReadFloatArrayAsync(inputTensorPath, ct);
+        AppendDebugLine("PrepareBaselineInputAsync read tensor start");
+        var tensor = await UniTask.RunOnThreadPool(() => ReadFloatArray(inputTensorPath), cancellationToken: ct);
+        AppendDebugLine("PrepareBaselineInputAsync read tensor done | floats=" + tensor.Length.ToString(CultureInfo.InvariantCulture));
         var expected = checked(request.inputChannels * request.inputDepth * request.inputHeight * request.inputWidth);
+        AppendDebugLine("PrepareBaselineInputAsync validate tensor | expected=" + expected.ToString(CultureInfo.InvariantCulture) + " | actual=" + tensor.Length.ToString(CultureInfo.InvariantCulture));
         if (tensor.Length != expected)
             throw new InvalidOperationException("MONAI baseline input tensor size mismatch: expected " + expected + " got " + tensor.Length);
 
+        AppendDebugLine("PrepareBaselineInputAsync complete | case=" + (request.baselineManifest["case_name"]?.Value<string>() ?? request.caseName ?? string.Empty));
         return new PreparedInput
         {
             caseName = request.baselineManifest["case_name"]?.Value<string>() ?? request.caseName,
@@ -1428,6 +1455,104 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         for (var i = 0; i < array.Count; i++)
             values[i] = array[i].Value<float>();
         return values;
+    }
+
+    private static string[] SplitNameList(string csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv))
+            return Array.Empty<string>();
+
+        var raw = csv.Split(new[] { ',', ';', '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (raw == null || raw.Length == 0)
+            return Array.Empty<string>();
+
+        var names = new List<string>(raw.Length);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < raw.Length; i++)
+        {
+            var item = raw[i]?.Trim();
+            if (string.IsNullOrWhiteSpace(item) || !seen.Add(item))
+                continue;
+            names.Add(item);
+        }
+
+        return names.ToArray();
+    }
+
+    private static string[] BuildPinnedBlobNames(string outputBlobName, string[] debugPinnedBlobNames)
+    {
+        var names = new List<string>(8);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        if (!string.IsNullOrWhiteSpace(outputBlobName) && seen.Add(outputBlobName))
+            names.Add(outputBlobName);
+
+        if (debugPinnedBlobNames != null)
+        {
+            for (var i = 0; i < debugPinnedBlobNames.Length; i++)
+            {
+                var name = debugPinnedBlobNames[i]?.Trim();
+                if (string.IsNullOrWhiteSpace(name) || !seen.Add(name))
+                    continue;
+                names.Add(name);
+            }
+        }
+
+        return names.ToArray();
+    }
+
+    private void DumpPinnedBlobOutputs(NcnnRepro.InferResult infer, string[] pinnedBlobNames)
+    {
+        if (infer == null || pinnedBlobNames == null || pinnedBlobNames.Length == 0 || string.IsNullOrWhiteSpace(_lastDumpDir))
+            return;
+
+        var dumpDir = Path.Combine(_lastDumpDir, "intermediate_blobs");
+        Directory.CreateDirectory(dumpDir);
+
+        var manifest = new JObject();
+        for (var i = 0; i < pinnedBlobNames.Length; i++)
+        {
+            var blobName = pinnedBlobNames[i];
+            if (string.IsNullOrWhiteSpace(blobName))
+                continue;
+
+            try
+            {
+                var view = infer.GetBufferView(blobName);
+                if (view == null || view.buffer == null)
+                    continue;
+
+                var data = infer.GetBufferData(blobName);
+                var safeName = SanitizeFileName(blobName);
+                var fileName = safeName + "_d" + view.dims.ToString(CultureInfo.InvariantCulture)
+                    + "_" + view.w.ToString(CultureInfo.InvariantCulture)
+                    + "x" + view.h.ToString(CultureInfo.InvariantCulture)
+                    + "x" + view.d.ToString(CultureInfo.InvariantCulture)
+                    + "x" + view.c.ToString(CultureInfo.InvariantCulture)
+                    + "_f32.bin";
+                WriteFloatArray(Path.Combine(dumpDir, fileName), data);
+
+                manifest[blobName] = new JObject
+                {
+                    ["dims"] = view.dims,
+                    ["w"] = view.w,
+                    ["h"] = view.h,
+                    ["d"] = view.d,
+                    ["c"] = view.c,
+                    ["element_count"] = data.Length,
+                    ["file"] = fileName
+                };
+            }
+            catch (Exception e)
+            {
+                manifest[blobName] = new JObject
+                {
+                    ["error"] = e.Message
+                };
+            }
+        }
+
+        WriteText(Path.Combine(dumpDir, "manifest.json"), manifest.ToString());
     }
 
     private string CreateDefaultDumpDir(string caseName)

@@ -128,12 +128,12 @@ namespace NcnnCompute
                 throw new InvalidOperationException("InstanceNorm render-texture path requires affine supported pack4 input: " + layer.name);
             }
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs, RenderTextureFormat.ARGBHalf);
             var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
             var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
             try
             {
-                owner.Ops.GroupNormPack4Tex(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outRt);
+                owner.Ops.GroupNormPack4Tex(srcTex.texture, srcShape.w, srcShape.h, srcShape.dims == 4 ? srcShape.d : 1, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outRt);
                 NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
                 outRt = null;
             }
@@ -168,7 +168,7 @@ namespace NcnnCompute
                 var statsA = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
                 var statsB = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
                 var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.GroupNormPack4Tex(cmd, src.texture, srcShape.w, srcShape.h, srcShape.c, src.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outArr);
+                owner.Ops.GroupNormPack4Tex(cmd, src.texture, srcShape.w, srcShape.h, 1, srcShape.c, src.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outArr);
                 owner.ReturnTempArray(cmd, statsA);
                 owner.ReturnTempArray(cmd, statsB);
                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef

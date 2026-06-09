@@ -55,7 +55,7 @@ namespace NcnnCompute
             owner.PublishTensorBufferOutput(
                 layer.topNames[0],
                 outTensor,
-                preferTexture: srcView.dims <= 3,
+                preferTexture: srcView.dims <= 4,
                 textureBlobs,
                 textureShapes,
                 bufferBlobs,
@@ -71,12 +71,17 @@ namespace NcnnCompute
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
             var bufferViews = context.bufferViews;
+            var bufferRefs = context.bufferRefs;
+            var tempOwned = context.tempOwned;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
             var slope = layer.GetFloat(0, 0f);
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
                 throw new InvalidOperationException("ReLU render-texture path requires pack4 texture input: " + layer.name);
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            var outDepth = srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs;
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outDepth, RenderTextureFormat.ARGBHalf);
             owner.Ops.LeakyReluPack4(srcTex.texture, slope, srcTex.packs, outRt);
             textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
             {
@@ -104,7 +109,8 @@ namespace NcnnCompute
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
                                                 var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 var slope = layer.GetFloat(0, 0f);
-                                                var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
+                                                var outDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
+                                                var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, RenderTextureFormat.ARGBHalf);
                                                 owner.Ops.LeakyReluPack4(cmd, src.texture, slope, src.packs, outArr);
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                                                 {

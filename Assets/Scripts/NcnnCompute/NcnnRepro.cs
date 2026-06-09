@@ -621,12 +621,15 @@ namespace NcnnCompute
                 if (_bufferViews.TryGetValue(name, out var view) && view != null)
                     _textureShapes[name] = new BufferShape(view.dims, view.w, view.h, view.d, view.c);
 
+                var logicalShape = _textureShapes.TryGetValue(name, out var existingShape)
+                    ? existingShape
+                    : new BufferShape(3, materialized.width, materialized.height, 1, Mathf.Max(1, materialized.volumeDepth > 0 ? materialized.volumeDepth : 1) * 4);
                 _textureBlobs[name] = new TensorRef
                 {
                     texture = materialized,
                     width = materialized.width,
                     height = materialized.height,
-                    packs = materialized.volumeDepth > 0 ? materialized.volumeDepth : 1,
+                    packs = GetTexturePackCount(logicalShape, materialized),
                     refs = 1,
                     owned = true
                 };
@@ -832,6 +835,7 @@ namespace NcnnCompute
         public bool DisallowBufferAccess { get; set; }
         public bool DisallowBufferOutputs { get; set; }
         public bool DisallowBufferToTextureMaterialization { get; set; }
+        public bool ForceBufferOutputsForDims4 { get; set; }
         public ISet<string> ForceBufferLayerTypes { get; set; }
         public ISet<string> ForceBufferLayerNames { get; set; }
         public ISet<string> DebugCompareTextureLayers { get; set; }
@@ -2205,6 +2209,36 @@ namespace NcnnCompute
             Release();
         }
 
+        internal static RenderTextureFormat ResolveTensorTextureFormat(int dims)
+        {
+            return dims >= 4 ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        }
+
+        internal static int GetTexturePackCount(BufferShape shape, RenderTexture texture)
+        {
+            if (texture == null)
+                return 1;
+
+            var volumeDepth = Mathf.Max(1, texture.volumeDepth > 0 ? texture.volumeDepth : 1);
+            if (shape.dims == 4)
+                return Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f));
+            return volumeDepth;
+        }
+
+        internal static int GetTextureSliceCount(BufferShape shape, RenderTexture texture)
+        {
+            if (texture == null)
+                return 1;
+
+            var volumeDepth = Mathf.Max(1, texture.volumeDepth > 0 ? texture.volumeDepth : 1);
+            if (shape.dims == 4)
+            {
+                var packs = Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f));
+                return Mathf.Max(1, volumeDepth / packs);
+            }
+            return volumeDepth;
+        }
+
         private RenderTexture MaterializeTextureFromBufferViewCore(ComputeBuffer buffer, NcnnTensorBuffer view, bool ignoreGuard)
         {
             if (buffer == null || view == null)
@@ -2238,14 +2272,26 @@ namespace NcnnCompute
                 texH = view.h;
                 channels = view.c;
             }
+            else if (view.dims == 4)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = view.c;
+            }
             else
             {
                 return null;
             }
 
-            var packs = Mathf.CeilToInt(channels / 4f);
-            var rt = RentTempArray(texW, texH, packs, RenderTextureFormat.ARGBHalf);
-            _ops.FillPack4FromBufferCHW(buffer, texW, texH, channels, rt);
+            var channelPacks = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            var sliceCount = view.dims == 4
+                ? Mathf.Max(1, view.d) * channelPacks
+                : channelPacks;
+            var rt = RentTempArray(texW, texH, sliceCount, ResolveTensorTextureFormat(view.dims));
+            if (view.dims == 4)
+                _ops.FillPack4FromBufferCDHW(buffer, texW, texH, view.d, channels, rt);
+            else
+                _ops.FillPack4FromBufferCHW(buffer, texW, texH, channels, rt);
             return rt;
         }
 
@@ -2285,14 +2331,26 @@ namespace NcnnCompute
                 texH = view.h;
                 channels = view.c;
             }
+            else if (view.dims == 4)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = view.c;
+            }
             else
             {
                 return null;
             }
 
-            var packs = Mathf.CeilToInt(channels / 4f);
-            var rt = RentTempArray(cmd, texW, texH, packs, RenderTextureFormat.ARGBHalf);
-            _ops.FillPack4FromBufferCHW(cmd, buffer, texW, texH, channels, rt);
+            var channelPacks = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            var sliceCount = view.dims == 4
+                ? Mathf.Max(1, view.d) * channelPacks
+                : channelPacks;
+            var rt = RentTempArray(cmd, texW, texH, sliceCount, ResolveTensorTextureFormat(view.dims));
+            if (view.dims == 4)
+                _ops.FillPack4FromBufferCDHW(cmd, buffer, texW, texH, view.d, channels, rt);
+            else
+                _ops.FillPack4FromBufferCHW(cmd, buffer, texW, texH, channels, rt);
             return rt;
         }
 
@@ -2324,10 +2382,10 @@ namespace NcnnCompute
             if (materialized == null)
                 throw new InvalidOperationException("blob not found: " + name);
 
-            var packs = materialized.volumeDepth > 0 ? materialized.volumeDepth : 1;
             var shape = bufferViews.TryGetValue(name, out var view) && view != null
                 ? new BufferShape(view.dims, view.w, view.h, view.d, view.c)
-                : new BufferShape(3, materialized.width, materialized.height, 1, packs * 4);
+                : new BufferShape(3, materialized.width, materialized.height, 1, Mathf.Max(1, materialized.volumeDepth > 0 ? materialized.volumeDepth : 1) * 4);
+            var packs = GetTexturePackCount(shape, materialized);
 
             tr = new TensorRef
             {
@@ -2373,8 +2431,9 @@ namespace NcnnCompute
             if (texture == null || texture.texture == null)
                 throw new ArgumentNullException(nameof(texture));
 
+            var sliceCount = GetTextureSliceCount(shape, texture.texture);
             var physicalChannels = Mathf.Max(1, texture.packs * 4);
-            var physicalCount = Mathf.Max(1, texture.width * texture.height * physicalChannels);
+            var physicalCount = Mathf.Max(1, texture.width * texture.height * sliceCount * physicalChannels);
             var logicalCount = Mathf.Max(1, shape.w) * Mathf.Max(1, shape.h) * Mathf.Max(1, shape.d) * Mathf.Max(1, shape.c);
             if (logicalCount > physicalCount)
                 throw new InvalidOperationException("texture logical shape exceeds physical storage");
@@ -2382,14 +2441,20 @@ namespace NcnnCompute
             var converted = RentTempBuffer(logicalCount, sizeof(float), ComputeBufferType.Structured, callerMember, callerLine);
             if (physicalCount == logicalCount)
             {
-                _ops.Pack4ToBufferCHW(texture.texture, texture.width, texture.height, physicalChannels, converted);
+                if (shape.dims == 4)
+                    _ops.Pack4ToBufferCDHW(texture.texture, texture.width, texture.height, shape.d, shape.c, converted);
+                else
+                    _ops.Pack4ToBufferCHW(texture.texture, texture.width, texture.height, physicalChannels, converted);
                 return new NcnnTensorBuffer(converted, shape.dims, shape.w, shape.h, shape.d, shape.c, true, ReturnTempBuffer);
             }
 
             var physical = RentTempBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured, callerMember, callerLine);
             try
             {
-                _ops.Pack4ToBufferCHW(texture.texture, texture.width, texture.height, physicalChannels, physical);
+                if (shape.dims == 4)
+                    _ops.Pack4ToBufferCDHW(texture.texture, texture.width, texture.height, shape.d, shape.c, physical);
+                else
+                    _ops.Pack4ToBufferCHW(texture.texture, texture.width, texture.height, physicalChannels, physical);
                 _ops.CopyBufPartial(physical, 0, converted, logicalCount);
             }
             finally
@@ -2432,8 +2497,8 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(topName));
             if (tensor == null || tensor.buffer == null)
                 throw new ArgumentNullException(nameof(tensor));
-            if (tensor.dims > 3)
-                throw new InvalidOperationException("scratch texture outputs currently require dims<=3: " + topName);
+            if (tensor.dims > 4)
+                throw new InvalidOperationException("scratch texture outputs currently require dims<=4: " + topName);
 
             var rt = MaterializeScratchTextureFromBufferView(tensor.buffer, tensor);
             if (rt == null)
@@ -2480,11 +2545,13 @@ namespace NcnnCompute
                 var rt = kv.Value;
                 var packs = rt.volumeDepth > 0 ? rt.volumeDepth : 1;
                 var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
-                var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
-                    ? suppliedShape
-                    : new BufferShape(3, rt.width, rt.height, 1, ResolveInputLogicalChannels(kv.Key, packs * 4));
+            var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
+                ? suppliedShape
+                : new BufferShape(3, rt.width, rt.height, 1, ResolveInputLogicalChannels(kv.Key, packs * 4));
+                packs = GetTexturePackCount(logicalShape, rt);
 
-                var physicalCount = rt.width * rt.height * packs * 4;
+                var sliceCount = GetTextureSliceCount(logicalShape, rt);
+                var physicalCount = rt.width * rt.height * sliceCount * packs * 4;
                 var logicalCount = Mathf.Max(1, logicalShape.w) * Mathf.Max(1, logicalShape.h) * Mathf.Max(1, logicalShape.d) * Mathf.Max(1, logicalShape.c);
                 if (logicalCount > physicalCount)
                     throw new InvalidOperationException("texture input logical shape exceeds physical storage: " + kv.Key);
@@ -2524,7 +2591,7 @@ namespace NcnnCompute
                     return false;
 
                 shape = GetTextureShape(textureShapes, texture, name);
-                return shape.dims == 3;
+                return shape.dims == 3 || shape.dims == 4;
             }
             catch
             {
@@ -2910,7 +2977,7 @@ namespace NcnnCompute
                 texture = texture,
                 width = texture.width,
                 height = texture.height,
-                packs = texture.volumeDepth > 0 ? texture.volumeDepth : 1,
+                packs = GetTexturePackCount(logicalShape, texture),
                 refs = 1,
                 owned = true
             };
@@ -2934,7 +3001,7 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(tensor));
             if (DisallowBufferOutputs)
             {
-                if (preferTexture && tensor.dims <= 3)
+                if (preferTexture && tensor.dims <= 4)
                 {
                     PublishScratchTextureOutput(topName, tensor, textureBlobs, textureShapes);
                     if (tensor.ownsBuffer)
@@ -2953,7 +3020,10 @@ namespace NcnnCompute
             bufferRefs[topName] = NewBufferRef(tensor.buffer, tensor.ownsBuffer);
             bufferViews[topName] = new NcnnTensorBuffer(tensor.buffer, tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c, false);
 
-            if (preferTexture && tensor.dims <= 3)
+            if (ForceBufferOutputsForDims4 && tensor.dims == 4)
+                return;
+
+            if (preferTexture && tensor.dims <= 4)
             {
                 var rt = MaterializeTextureFromBufferView(tensor.buffer, tensor);
                 if (rt != null)
@@ -3150,10 +3220,11 @@ namespace NcnnCompute
                 && b != null
                 && a.texture != null
                 && b.texture != null
-                && aShape.dims == 3
-                && bShape.dims == 3
+                && (aShape.dims == 3 || aShape.dims == 4)
+                && aShape.dims == bShape.dims
                 && aShape.w == bShape.w
                 && aShape.h == bShape.h
+                && aShape.d == bShape.d
                 && aShape.c == bShape.c
                 && a.width == b.width
                 && a.height == b.height
@@ -3168,9 +3239,9 @@ namespace NcnnCompute
                 && gp.affine
                 && gp.gamma != null
                 && gp.beta != null
-                && shape.dims == 3
+                && (shape.dims == 3 || shape.dims == 4)
                 && shape.w == src.width
-                && shape.h == src.height
+                && (shape.dims == 4 ? shape.h * shape.d : shape.h) == src.height
                 && shape.c == gp.channels
                 && gp.channels > 0
                 && gp.group > 0
@@ -3278,14 +3349,16 @@ namespace NcnnCompute
             }
 
             var shape = GetTextureShape(textureShapes, tr, name);
+            var sliceCount = GetTextureSliceCount(shape, tr.texture);
             var physicalChannels = tr.packs * 4;
-            var physicalCount = tr.width * tr.height * physicalChannels;
+            var physicalCount = tr.width * tr.height * sliceCount * physicalChannels;
             var logicalCount = shape.w * shape.h * shape.d * shape.c;
             if (emitMaterializeLog)
             {
                 DebugLog("[BufferMaterialize] convert-start | site=" + site + " | name=" + name
                     + " | size=" + tr.width + "x" + tr.height
                     + " | packs=" + tr.packs
+                    + " | slices=" + sliceCount
                     + " | physical=" + physicalCount
                     + " | logical=" + logicalCount
                     + " | dims=" + shape.dims
@@ -3294,7 +3367,10 @@ namespace NcnnCompute
             if (physicalCount == logicalCount)
             {
                 var convertedExact = RentTempBuffer(logicalCount, sizeof(float));
-                _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, convertedExact);
+                if (shape.dims == 4)
+                    _ops.Pack4ToBufferCDHW(tr.texture, tr.width, tr.height, shape.d, shape.c, convertedExact);
+                else
+                    _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, convertedExact);
                 bufferBlobs[name] = convertedExact;
                 bufferViews[name] = new NcnnTensorBuffer(convertedExact, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
                 tempOwned.Add(convertedExact);
@@ -3306,7 +3382,10 @@ namespace NcnnCompute
             if (logicalCount > 0 && logicalCount < physicalCount)
             {
                 var physicalBuffer = RentTempBuffer(physicalCount, sizeof(float));
-                _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, physicalBuffer);
+                if (shape.dims == 4)
+                    _ops.Pack4ToBufferCDHW(tr.texture, tr.width, tr.height, shape.d, shape.c, physicalBuffer);
+                else
+                    _ops.Pack4ToBufferCHW(tr.texture, tr.width, tr.height, physicalChannels, physicalBuffer);
                 tempOwned.Add(physicalBuffer);
 
                 var converted = RentTempBuffer(logicalCount, sizeof(float));
@@ -5103,6 +5182,50 @@ namespace NcnnCompute
                     }
                 }
             }
+            return packed;
+        }
+
+        public static Vector4[] PackWeightsToO4I4K3D(float[] w, int outC, int inC, int kernelW, int kernelH, int kernelD, int outPacks, int inPacks)
+        {
+            var kernelPlane = Mathf.Max(1, kernelW * kernelH);
+            var kernelVolume = kernelPlane * Mathf.Max(1, kernelD);
+            var packed = new Vector4[outPacks * inPacks * kernelVolume * 4];
+            if (w == null || w.Length == 0 || outC <= 0 || inC <= 0 || kernelW <= 0 || kernelH <= 0 || kernelD <= 0)
+                return packed;
+
+            for (var op = 0; op < outPacks; op++)
+            {
+                for (var ip = 0; ip < inPacks; ip++)
+                {
+                    for (var kz = 0; kz < kernelD; kz++)
+                    {
+                        for (var ky = 0; ky < kernelH; ky++)
+                        {
+                            for (var kx = 0; kx < kernelW; kx++)
+                            {
+                                var kernelIndex = (kz * kernelPlane) + (ky * kernelW) + kx;
+                                var dstBase = ((((op * inPacks + ip) * kernelVolume) + kernelIndex) * 4);
+                                for (var ocLane = 0; ocLane < 4; ocLane++)
+                                {
+                                    var oc = op * 4 + ocLane;
+                                    var v = Vector4.zero;
+                                    for (var icLane = 0; icLane < 4; icLane++)
+                                    {
+                                        var ic = ip * 4 + icLane;
+                                        if (oc < outC && ic < inC)
+                                        {
+                                            var srcIndex = ((((oc * inC + ic) * kernelD + kz) * kernelH + ky) * kernelW + kx);
+                                            v[icLane] = w[srcIndex];
+                                        }
+                                    }
+                                    packed[dstBase + ocLane] = v;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             return packed;
         }
 

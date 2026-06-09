@@ -62,8 +62,12 @@ public static class NcnnDebugRunner
     private const string MonaiCompareBaselineEnvVar = "AIIMAGE_MONAI_COMPARE_BASELINE";
     private const string MonaiEnableDumpEnvVar = "AIIMAGE_MONAI_ENABLE_DUMP";
     private const string MonaiForceBufferConvEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_CONV";
+    private const string MonaiForceBufferAllEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_ALL";
+    private const string MonaiForceBufferOutputsDims4EnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_OUTPUTS_DIMS4";
+    private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
     private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
     private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
+    private const string MonaiDebugPinnedBlobsEnvVar = "AIIMAGE_MONAI_DEBUG_PINNED_BLOBS";
     private const string BatchTimeoutMinutesEnvVar = "AIIMAGE_BATCH_TIMEOUT_MINUTES";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
@@ -544,8 +548,11 @@ public static class NcnnDebugRunner
         var compareBaseline = ResolveBoolEnv(MonaiCompareBaselineEnvVar, true);
         var enableDump = ResolveBoolEnv(MonaiEnableDumpEnvVar, true);
         var forceBufferConv = ResolveBoolEnv(MonaiForceBufferConvEnvVar, false);
+        var forceBufferAll = ResolveBoolEnv(MonaiForceBufferAllEnvVar, false);
+        var forceBufferOutputsDims4 = ResolveBoolEnv(MonaiForceBufferOutputsDims4EnvVar, false);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
         var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
+        var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
         var threshold = ResolveFloatEnvOrDefault(MonaiThresholdEnvVar, 0.5f);
 
         var go = new GameObject("MonaiDebugRunner");
@@ -555,11 +562,24 @@ public static class NcnnDebugRunner
             runner.enableDebugDump = enableDump;
             runner.enableBaselineCompare = compareBaseline;
             runner.forceBufferConvolution = forceBufferConv;
+            runner.forceBufferAllLayers = forceBufferAll;
+            runner.forceBufferOutputsForDims4 = forceBufferOutputsDims4;
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
+            runner.debugPinnedBlobNamesCsv = debugPinnedBlobsCsv;
             runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, runner.enableTempPool);
             runner.logAllLayerHeartbeats = false;
             runner.logAllLayerOutputs = false;
             runner.logAllBufferMaterialize = false;
+            if (ResolveBoolEnv(MonaiPack4OnlyGuardEnvVar, false))
+            {
+                var reproField = typeof(MONAINcnnReproRunner).GetField("_repro", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (reproField?.GetValue(runner) is NcnnCompute.NcnnRepro repro)
+                {
+                    repro.DisallowBufferAccess = true;
+                    repro.DisallowBufferOutputs = true;
+                    repro.DisallowBufferToTextureMaterialization = true;
+                }
+            }
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[MONAI Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
 
@@ -573,6 +593,9 @@ public static class NcnnDebugRunner
                 threshold = threshold,
                 normalizeNonZero = normalizeNonZero,
                 compareWithBaseline = compareBaseline,
+                debugPinnedBlobNames = string.IsNullOrWhiteSpace(debugPinnedBlobsCsv)
+                    ? null
+                    : debugPinnedBlobsCsv.Split(new[] { ',', ';', '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries),
                 postprocessKind = MonaiPostprocessKind.BratsTumorSubregions,
                 channelFillMode = MonaiChannelFillMode.DuplicateFirst
             };

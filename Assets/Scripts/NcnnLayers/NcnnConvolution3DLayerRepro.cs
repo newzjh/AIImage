@@ -11,6 +11,28 @@ namespace NcnnCompute
         {
         }
 
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (!owner.ShouldForceCurrentLayerBufferPath()
+                && owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out var srcShape)
+                && srcShape.dims == 4)
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
             var bytesStart = br.Position;
@@ -70,6 +92,26 @@ namespace NcnnCompute
             NcnnRepro.UploadRawConvWeights(pack, w, b);
             phaseSw.Stop();
             uploadMs += phaseSw.ElapsedMilliseconds;
+
+            phaseSw.Restart();
+            var w4 = NcnnRepro.PackWeightsToO4I4K3D(
+                w,
+                pack.outC,
+                pack.inC,
+                pack.kernelW,
+                pack.kernelH,
+                pack.kernelD,
+                pack.outPacks,
+                pack.inPacks);
+            var b4 = NcnnRepro.PackBiasToO4(b, pack.outC, pack.outPacks);
+            pack.packedWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(pack.packedWeight4, w4.Length, sizeof(float) * 4, "NcnnRepro.Conv3DPackedWeight4:" + layer.name);
+            pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(pack.packedBias4, b4.Length, sizeof(float) * 4, "NcnnRepro.Conv3DPackedBias4:" + layer.name);
+            pack.packedWeight4.SetData(w4);
+            pack.packedBias4.SetData(b4);
+            phaseSw.Stop();
+            packMs += phaseSw.ElapsedMilliseconds;
 
             owner._conv[layer.name] = pack;
             owner.DebugLog?.Invoke(
@@ -150,9 +192,83 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+            var tempOwned = context.tempOwned;
+
+            if (!owner._conv.TryGetValue(layer.name, out var conv))
+                throw new InvalidOperationException("Convolution3D not found: " + layer.name);
+
+            if (!owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    textureBlobs,
+                    textureShapes,
+                    bufferBlobs,
+                    bufferViews,
+                    out var srcTex,
+                    out var srcShape))
+            {
+                throw new InvalidOperationException("Convolution3D render-texture path requires pack4 texture input: " + layer.name);
+            }
+
+            if (srcShape.dims != 4)
+            {
 #pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
+                ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
+                return;
+            }
+            if (conv.packedWeight4 == null || conv.packedBias4 == null)
+                throw new InvalidOperationException("Convolution3D packed weights unavailable: " + layer.name);
+
+            var outW = NcnnRepro.ComputeConvOut(srcShape.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
+            var outH = NcnnRepro.ComputeConvOut(srcShape.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
+            var outD = NcnnRepro.ComputeConvOut(srcShape.d, conv.kernelD, conv.dilationD, conv.strideD, conv.padFront, conv.padBehind);
+            var outRt = owner.RentTempArray(outW, outH, outD * conv.outPacks, NcnnRepro.ResolveTensorTextureFormat(4));
+
+            owner.Ops.Conv3dPack4CDHW(
+                srcTex.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                conv.inPacks,
+                conv.packedWeight4,
+                conv.packedBias4,
+                outW,
+                outH,
+                outD,
+                conv.outPacks,
+                conv.kernelW,
+                conv.kernelH,
+                conv.kernelD,
+                conv.strideW,
+                conv.strideH,
+                conv.strideD,
+                conv.padLeft,
+                conv.padRight,
+                conv.padTop,
+                conv.padBottom,
+                conv.padFront,
+                conv.padBehind,
+                conv.dilationW,
+                conv.dilationH,
+                conv.dilationD,
+                conv.activationType,
+                conv.activationSlope,
+                outRt);
+
+            NcnnRepro.SetTextureBlob(
+                textureBlobs,
+                textureShapes,
+                layer.topNames[0],
+                outRt,
+                new NcnnRepro.BufferShape(4, outW, outH, outD, conv.outC));
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

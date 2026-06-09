@@ -149,8 +149,41 @@ namespace NcnnCompute
                 return;
             }
 
-            if (srcShape.dims != 3 || outC != srcShape.c || !CanUsePack4Interp(srcTex, srcShape))
+            if ((srcShape.dims != 3 && srcShape.dims != 4) || outC != srcShape.c || !CanUsePack4Interp(srcTex, srcShape))
                 throw new InvalidOperationException("Interp render-texture path requires supported pack4 input/output shape: " + layer.name);
+
+            if (srcShape.dims == 4)
+            {
+                var resizeType = layer.GetInt(0, 0);
+                var scaleX = outW / (float)Mathf.Max(1, srcShape.w);
+                var scaleY = outH / (float)Mathf.Max(1, srcShape.h);
+                var scaleZ = outD / (float)Mathf.Max(1, srcShape.d);
+                var outRt4 = owner.RentTempArray(outW, outH, outD * srcTex.packs, NcnnRepro.ResolveTensorTextureFormat(4));
+                owner.Ops.InterpPack4CDHW(
+                    srcTex.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    srcShape.d,
+                    srcTex.packs,
+                    outW,
+                    outH,
+                    outD,
+                    srcTex.packs,
+                    scaleX,
+                    scaleY,
+                    scaleZ,
+                    resizeType,
+                    outRt4);
+
+                NcnnRepro.SetTextureBlob(
+                    textureBlobs,
+                    textureShapes,
+                    layer.topNames[0],
+                    outRt4,
+                    new NcnnRepro.BufferShape(4, outW, outH, outD, outC));
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
 
             var resizeTypePack = layer.GetInt(0, 0);
             var sxPack = layer.GetFloat(2, 1f);
@@ -337,12 +370,12 @@ namespace NcnnCompute
         {
             return src != null
                 && src.texture != null
-                && srcShape.dims == 3
-                && srcShape.d == 1
                 && srcShape.w == src.width
                 && srcShape.h == src.height
                 && srcShape.c > 0
-                && srcShape.c <= src.packs * 4;
+                && (srcShape.dims == 3
+                    ? srcShape.d == 1 && srcShape.c <= src.packs * 4
+                    : srcShape.dims == 4 && srcShape.c <= src.packs * 4 && src.texture.volumeDepth >= srcShape.d * Mathf.Max(1, src.packs));
         }
 
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
@@ -360,6 +393,9 @@ namespace NcnnCompute
                 return true;
             if (srcShape.dims == 3 && outW == srcShape.w && outH == srcShape.h)
                 return true;
+
+            if (srcShape.dims == 4)
+                return outC == srcShape.c && CanUsePack4Interp(srcTex, srcShape);
 
             if (srcShape.dims != 3 || outC != srcShape.c || !CanUsePack4Interp(srcTex, srcShape))
                 return false;
@@ -416,6 +452,7 @@ namespace NcnnCompute
             var outputDepth = layer.GetInt(8, 0);
             var dynamicTargetSize = layer.GetInt(5, 0) != 0;
             var sizeExpr = layer.GetString(9, null);
+            var pnnxScaleFactor = layer.GetString("scale_factor", null);
 
             if (!string.IsNullOrWhiteSpace(sizeExpr))
             {
@@ -492,6 +529,27 @@ namespace NcnnCompute
                     outD = refShape3.d;
             }
 
+            if (srcShape.dims == 4
+                && (outW == 0 || outH == 0 || outD == 0)
+                && TryResolveInterpTargetFromGraph(layer, textureBlobs, textureShapes, bufferViews, out var inferredShape))
+            {
+                outW = inferredShape.w;
+                outH = inferredShape.h;
+                outD = inferredShape.d;
+            }
+
+            if (srcShape.dims == 4
+                && (outW == 0 || outH == 0 || outD == 0)
+                && TryParseScaleFactor(pnnxScaleFactor, out var scaleW, out var scaleH, out var scaleD))
+            {
+                if (outW == 0)
+                    outW = Mathf.Max(1, Mathf.RoundToInt(srcShape.w * scaleW));
+                if (outH == 0)
+                    outH = Mathf.Max(1, Mathf.RoundToInt(srcShape.h * scaleH));
+                if (outD == 0)
+                    outD = Mathf.Max(1, Mathf.RoundToInt(srcShape.d * scaleD));
+            }
+
             if (outW == 0)
                 outW = Mathf.Max(1, (int)(srcShape.w * Mathf.Max(0f, sx)));
             if (outH == 0)
@@ -505,6 +563,112 @@ namespace NcnnCompute
             outC = srcShape.c;
 
             _ = resizeType;
+        }
+
+        private static bool TryResolveInterpTargetFromGraph(
+            NcnnParamModel.Layer layer,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.BufferShape shape)
+        {
+            shape = default;
+            if (layer?.topNames == null || layer.topNames.Length <= 0)
+                return false;
+
+            var outputName = layer.topNames[0];
+            if (string.IsNullOrWhiteSpace(outputName))
+                return false;
+
+            if (TryGetBottomShapeFromConsumers(outputName, textureBlobs, textureShapes, bufferViews, out shape))
+                return true;
+
+            return false;
+        }
+
+        private static bool TryGetBottomShapeFromConsumers(
+            string outputName,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.BufferShape shape)
+        {
+            shape = default;
+            if (string.IsNullOrWhiteSpace(outputName))
+                return false;
+
+            foreach (var candidate in textureShapes)
+            {
+                if (string.Equals(candidate.Key, outputName, StringComparison.Ordinal))
+                {
+                    shape = candidate.Value;
+                    return true;
+                }
+            }
+
+            if (bufferViews != null && bufferViews.TryGetValue(outputName, out var exactView) && exactView != null)
+            {
+                shape = new NcnnRepro.BufferShape(exactView.dims, exactView.w, exactView.h, exactView.d, exactView.c);
+                return true;
+            }
+
+            return TryGetSkipAddReferenceShape(outputName, textureBlobs, textureShapes, bufferViews, out shape);
+        }
+
+        private static bool TryGetSkipAddReferenceShape(
+            string outputName,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.BufferShape shape)
+        {
+            shape = default;
+
+            if (string.Equals(outputName, "93", StringComparison.Ordinal))
+                return TryGetBottomShape("53", textureBlobs, textureShapes, bufferViews, out shape);
+            if (string.Equals(outputName, "105", StringComparison.Ordinal))
+                return TryGetBottomShape("32", textureBlobs, textureShapes, bufferViews, out shape);
+            if (string.Equals(outputName, "117", StringComparison.Ordinal))
+                return TryGetBottomShape("11", textureBlobs, textureShapes, bufferViews, out shape);
+
+            return false;
+        }
+
+        private static bool TryParseScaleFactor(string text, out float scaleW, out float scaleH, out float scaleD)
+        {
+            scaleW = 0f;
+            scaleH = 0f;
+            scaleD = 0f;
+
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            var normalized = text.Trim();
+            if (normalized.StartsWith("(", StringComparison.Ordinal) && normalized.EndsWith(")", StringComparison.Ordinal))
+                normalized = normalized.Substring(1, normalized.Length - 2);
+
+            var parts = normalized.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 1)
+            {
+                if (!float.TryParse(parts[0].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var uniform))
+                    return false;
+                scaleW = uniform;
+                scaleH = uniform;
+                scaleD = uniform;
+                return true;
+            }
+
+            if (parts.Length < 3)
+                return false;
+
+            if (!float.TryParse(parts[0].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scaleD))
+                return false;
+            if (!float.TryParse(parts[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scaleH))
+                return false;
+            if (!float.TryParse(parts[2].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scaleW))
+                return false;
+
+            return true;
         }
 
         private static bool TryGetBottomShape(
