@@ -211,6 +211,12 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def ensure_bundle_pythonpath(bundle_root: Path) -> None:
+    bundle_path = str(bundle_root.resolve())
+    if bundle_path not in sys.path:
+        sys.path.insert(0, bundle_path)
+
+
 def find_network_config(bundle_root: Path, logger: logging.Logger) -> tuple[Path, dict[str, Any]]:
     config_dir = bundle_root / "configs"
     if not config_dir.exists():
@@ -318,6 +324,7 @@ def export_onnx_from_weights(
     weight_path: Path,
     config_path: Path,
     config: dict[str, Any],
+    bundle_root: Path,
     output_path: Path,
     input_shape: tuple[int, ...],
     opset: int,
@@ -327,6 +334,7 @@ def export_onnx_from_weights(
     from monai.networks import copy_model_state
 
     logger.info("Reconstruct network from config: %s", config_path)
+    ensure_bundle_pythonpath(bundle_root)
     net = build_network_from_config(config, logger)
     payload = torch.load(str(weight_path), map_location="cpu", weights_only=True)
     state_dict = extract_state_dict(payload)
@@ -390,12 +398,16 @@ def find_pnnx(logger: logging.Logger) -> Path:
     candidates = [
         Path(sys.executable).with_name("pnnx.exe"),
         Path(sys.executable).with_name("pnnx"),
+        Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages" / "pnnx" / "pnnx.exe",
+        Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages" / "pnnx" / "pnnx",
     ]
     for candidate in candidates:
         if candidate.exists():
+            logger.info("Using pnnx candidate: %s", candidate)
             return candidate
     found = shutil.which("pnnx.exe") or shutil.which("pnnx")
     if found:
+        logger.info("Using pnnx from PATH: %s", found)
         return Path(found)
     raise ConversionError("pnnx was not found in the active environment.")
 
@@ -421,28 +433,78 @@ def convert_with_pnnx(
     pnnx_bin = output_dir / f"{stem}.pnnx.bin"
     pnnx_py = output_dir / f"{stem}_pnnx.py"
     pnnx_onnx = output_dir / f"{stem}.pnnx.onnx"
+    fallback_ncnn_param = output_dir / f"{stem}.ncnn.param"
+    fallback_ncnn_bin = output_dir / f"{stem}.ncnn.bin"
     ncnn_py = output_dir / f"{stem}_ncnn.py"
     shape_text = ",".join(str(v) for v in input_shape)
 
-    run_command(
-        [
-            str(pnnx_path),
-            str(input_path),
-            f"inputshape=[{shape_text}]",
-            f"pnnxparam={pnnx_param}",
-            f"pnnxbin={pnnx_bin}",
-            f"pnnxpy={pnnx_py}",
-            f"pnnxonnx={pnnx_onnx}",
-            f"ncnnparam={final_param}",
-            f"ncnnbin={final_bin}",
-            f"ncnnpy={ncnn_py}",
-        ],
-        logger=logger,
-        cwd=output_dir,
-    )
+    command = [
+        str(pnnx_path),
+        str(input_path),
+        f"inputshape=[{shape_text}]",
+        f"pnnxparam={pnnx_param}",
+        f"pnnxbin={pnnx_bin}",
+        f"pnnxpy={pnnx_py}",
+        f"pnnxonnx={pnnx_onnx}",
+        f"ncnnparam={final_param}",
+        f"ncnnbin={final_bin}",
+        f"ncnnpy={ncnn_py}",
+    ]
+
+    try:
+        run_command(command, logger=logger, cwd=output_dir)
+    except ConversionError as error:
+        generated_candidates = [
+            final_param,
+            final_bin,
+            fallback_ncnn_param,
+            fallback_ncnn_bin,
+            pnnx_param,
+            pnnx_bin,
+            pnnx_onnx,
+            ncnn_py,
+        ]
+        if not any(path.exists() for path in generated_candidates):
+            raise
+        logger.warning("pnnx returned a non-zero exit code but generated output files exist; continuing with best-effort outputs. error=%s", error)
+
+    if not final_param.exists() and fallback_ncnn_param.exists():
+        shutil.copyfile(fallback_ncnn_param, final_param)
+    if not final_bin.exists() and fallback_ncnn_bin.exists():
+        shutil.copyfile(fallback_ncnn_bin, final_bin)
+
     if not final_param.exists() or not final_bin.exists():
-        raise ConversionError("pnnx fallback did not create the expected .param/.bin outputs.")
+        raise ConversionError("pnnx fallback did not create usable .param/.bin outputs.")
+
+    validate_generated_ncnn_python(ncnn_py, output_dir, logger)
     return "pnnx"
+
+
+def validate_generated_ncnn_python(ncnn_py: Path, cwd: Path, logger: logging.Logger) -> None:
+    if not ncnn_py.exists():
+        logger.warning("Skip sim_ncnn validation because generated script is missing: %s", ncnn_py)
+        return
+
+    logger.info("Validate generated ncnn sim script: %s", ncnn_py)
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.run(
+        [sys.executable, str(ncnn_py)],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    if proc.stdout:
+        logger.info(proc.stdout.rstrip())
+    if proc.stderr:
+        logger.info(proc.stderr.rstrip())
+    if proc.returncode != 0:
+        raise ConversionError(
+            f"Generated sim_ncnn.py failed validation with exit code {proc.returncode}: {ncnn_py}"
+        )
 
 
 def write_manifest(
@@ -532,6 +594,7 @@ def main() -> int:
                 weight_path=weight_path,
                 config_path=config_path,
                 config=config,
+                bundle_root=bundle_root,
                 output_path=raw_onnx,
                 input_shape=input_shape,
                 opset=args.opset,
