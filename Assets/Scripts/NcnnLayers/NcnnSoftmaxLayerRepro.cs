@@ -14,9 +14,7 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            var axis = layer.GetInt(0, 0);
-            if (axis == 0
-                && owner.TryGetPack4Texture(
+            if (owner.TryGetPack4Texture(
                     layer.bottomNames[0],
                     context.textureBlobs,
                     context.textureShapes,
@@ -24,6 +22,7 @@ namespace NcnnCompute
                     context.bufferViews,
                     out var softSrcTex,
                     out var softSrcShape)
+                && TryResolvePack4SoftmaxWidthAxis(layer, softSrcShape, out _)
                 && CanUsePack4Softmax(softSrcTex, softSrcShape))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
@@ -102,10 +101,6 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            var axis = layer.GetInt(0, 0);
-            if (axis != 0)
-                throw new InvalidOperationException("Softmax render-texture path currently supports axis == 0 only: " + layer.name);
-
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -117,9 +112,22 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Softmax render-texture path requires supported pack4 input: " + layer.name);
             }
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.SoftmaxChannelPack4(srcTex.texture, srcTex.packs, outRt);
-            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            if (!TryResolvePack4SoftmaxWidthAxis(layer, srcShape, out var tensorAxis))
+                throw new InvalidOperationException("Softmax render-texture path currently supports softmax over tensor width axis only: " + layer.name);
+
+            if (srcShape.dims == 4 && tensorAxis == 0)
+            {
+                var outSlices = Mathf.Max(1, srcShape.d) * Mathf.Max(1, Mathf.CeilToInt(srcShape.c / 4f));
+                var outRt4 = owner.RentTempArray(srcTex.width, srcTex.height, outSlices, NcnnRepro.ResolveTensorTextureFormat(srcShape.dims));
+                owner.Ops.SoftmaxPack4Cdhw(srcTex.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, outRt4);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt4, srcShape, srcShape);
+            }
+            else
+            {
+                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.SoftmaxChannelPack4(srcTex.texture, srcTex.packs, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -156,8 +164,8 @@ namespace NcnnCompute
         {
             return src != null
                 && src.texture != null
-                && srcShape.dims == 3
-                && srcShape.d == 1
+                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && (srcShape.dims != 3 || srcShape.d == 1)
                 && srcShape.w == src.width
                 && srcShape.h == src.height
                 && srcShape.c > 0
@@ -168,12 +176,28 @@ namespace NcnnCompute
         {
             return src != null
                 && src.texture != null
-                && srcShape.dims == 3
-                && srcShape.d == 1
+                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && (srcShape.dims != 3 || srcShape.d == 1)
                 && srcShape.w == src.width
                 && srcShape.h == src.height
                 && srcShape.c > 0
                 && srcShape.c <= src.packs * 4;
+        }
+
+        private static bool TryResolvePack4SoftmaxWidthAxis(NcnnParamModel.Layer layer, NcnnRepro.BufferShape srcShape, out int tensorAxis)
+        {
+            tensorAxis = -1;
+            if (layer == null)
+                return false;
+
+            var axis = layer.GetInt(0, 0);
+            if (axis < 0)
+                axis += srcShape.dims;
+            if (axis < 0 || axis >= srcShape.dims)
+                return false;
+
+            tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(srcShape.dims, axis);
+            return tensorAxis == 0;
         }
 
         private static bool TryResolveContiguousSoftmax2D(NcnnTensorBuffer tensor, int axis, out int rows, out int cols)

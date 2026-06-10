@@ -10,6 +10,19 @@ namespace NcnnCompute
         {
         }
 
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (CanExecuteRenderTexturePath(owner, layer, context))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -220,6 +233,101 @@ namespace NcnnCompute
                 bufferRefs,
                 bufferViews,
                 tempOwned);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+        }
+
+        public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+                || srcShape.dims != 4)
+            {
+                throw new InvalidOperationException("Pooling3D render-texture path requires dims=4 pack4 input: " + layer.name);
+            }
+
+            var poolType = layer.GetInt(0, 0);
+            var kernelW = Mathf.Max(1, layer.GetInt(1, 0));
+            var kernelH = Mathf.Max(1, layer.GetInt(11, kernelW));
+            var kernelD = Mathf.Max(1, layer.GetInt(21, kernelW));
+            var strideW = Mathf.Max(1, layer.GetInt(2, 1));
+            var strideH = Mathf.Max(1, layer.GetInt(12, strideW));
+            var strideD = Mathf.Max(1, layer.GetInt(22, strideW));
+            var padLeft = layer.GetInt(3, 0);
+            var padRight = layer.GetInt(14, padLeft);
+            var padTop = layer.GetInt(13, padLeft);
+            var padBottom = layer.GetInt(15, padTop);
+            var padFront = layer.GetInt(23, padLeft);
+            var padBehind = layer.GetInt(16, padFront);
+            var globalPooling = layer.GetInt(4, 0) != 0;
+            var padMode = layer.GetInt(5, 0);
+            var includePad = layer.GetInt(6, 0) != 0;
+            var adaptivePooling = layer.GetInt(7, 0) != 0;
+            var adaptiveOutW = layer.GetInt(8, 0);
+            var adaptiveOutH = layer.GetInt(18, adaptiveOutW);
+            var adaptiveOutD = layer.GetInt(28, adaptiveOutW);
+
+            ResolveOutputShape(
+                srcShape,
+                globalPooling,
+                adaptivePooling,
+                kernelW,
+                kernelH,
+                kernelD,
+                strideW,
+                strideH,
+                strideD,
+                padLeft,
+                padRight,
+                padTop,
+                padBottom,
+                padFront,
+                padBehind,
+                padMode,
+                adaptiveOutW,
+                adaptiveOutH,
+                adaptiveOutD,
+                out var outW,
+                out var outH,
+                out var outD,
+                out var resolvedPadLeft,
+                out var resolvedPadTop,
+                out var resolvedPadFront);
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(srcShape.c / 4f));
+            var outSlices = Mathf.Max(1, outD) * outPacks;
+            var outRt = owner.RentTempArray(outW, outH, outSlices, NcnnRepro.ResolveTensorTextureFormat(4));
+            owner.Ops.PoolingPack4Cdhw(
+                srcTex.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                kernelW,
+                kernelH,
+                kernelD,
+                strideW,
+                strideH,
+                strideD,
+                resolvedPadLeft,
+                resolvedPadTop,
+                resolvedPadFront,
+                poolType,
+                includePad,
+                adaptivePooling,
+                globalPooling,
+                outW,
+                outH,
+                outD,
+                srcShape.c,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, new NcnnRepro.BufferShape(4, outW, outH, outD, srcShape.c), new NcnnRepro.BufferShape(4, outW, outH, outD, srcShape.c));
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
@@ -438,6 +546,20 @@ namespace NcnnCompute
             resolvedPadLeft = totalPadLeft;
             resolvedPadTop = totalPadTop;
             resolvedPadFront = totalPadFront;
+        }
+
+        private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            return !owner.ShouldForceCurrentLayerBufferPath()
+                && owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out var srcShape)
+                && srcShape.dims == 4;
         }
     }
 }

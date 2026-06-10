@@ -1078,7 +1078,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             resolved.networkInputDepth,
             resolved.inputChannels);
         inputTensor.buffer.SetData(prepared.tensorNcdhw);
-        var pinnedBlobNames = BuildPinnedBlobNames(resolved.outputBlobName, resolved.debugPinnedBlobNames);
+        var probeHead = resolved.probeOnly
+            && resolved.postprocessKind == MonaiPostprocessKind.MulticlassArgmax
+            && TryResolveLinearOutputHead(resolved.outputBlobName, out var singlePassOutputHead)
+            ? singlePassOutputHead
+            : null;
+        var probeBlobName = probeHead != null ? probeHead.featureBlobName : resolved.outputBlobName;
+        var pinnedBlobNames = BuildPinnedBlobNames(probeBlobName, resolved.debugPinnedBlobNames);
         using var inferHandle = RunInferenceWithPatchInput(
             resolved,
             inputTensor,
@@ -1086,10 +1092,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             resolved.networkInputHeight,
             resolved.networkInputWidth,
             pinnedBlobNames,
-            resolved.probeOnly ? resolved.outputBlobName : null);
+            resolved.probeOnly ? probeBlobName : null);
         var infer = inferHandle.infer;
 
-        var outputView = GetInferOutputShape(infer, resolved.outputBlobName, "MONAI output blob missing: ");
+        var outputView = GetInferOutputShape(infer, probeBlobName, "MONAI output blob missing: ");
 
         if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             DumpPinnedBlobOutputs(infer, pinnedBlobNames);
@@ -1102,8 +1108,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 width = outputView.w,
                 height = outputView.h,
                 depth = outputView.d,
-                channels = outputView.c,
-                executionNote = "probe_blob:" + resolved.outputBlobName,
+                channels = probeHead != null ? probeHead.outputChannels : outputView.c,
+                executionNote = "probe_blob:" + probeBlobName,
                 pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
                 probeOnly = true,
                 executedPatchCount = 1,
@@ -1559,7 +1565,12 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var startsD = BuildSlidingWindowStarts(inferD, roiD, resolved.slidingWindowOverlap);
         var startsH = BuildSlidingWindowStarts(inferH, roiH, resolved.slidingWindowOverlap);
         var startsW = BuildSlidingWindowStarts(inferW, roiW, resolved.slidingWindowOverlap);
-        var pinnedBlobNames = BuildPinnedBlobNames(resolved.outputBlobName, resolved.debugPinnedBlobNames);
+        var probeHead = resolved.postprocessKind == MonaiPostprocessKind.MulticlassArgmax
+            && TryResolveLinearOutputHead(resolved.outputBlobName, out var slidingProbeOutputHead)
+            ? slidingProbeOutputHead
+            : null;
+        var probeBlobName = probeHead != null ? probeHead.featureBlobName : resolved.outputBlobName;
+        var pinnedBlobNames = BuildPinnedBlobNames(probeBlobName, resolved.debugPinnedBlobNames);
         var totalPatchCount = startsD.Count * startsH.Count * startsW.Count;
         var maxPatchCount = resolved.maxSlidingWindowPatches > 0
             ? Mathf.Min(resolved.maxSlidingWindowPatches, totalPatchCount)
@@ -1605,10 +1616,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         roiH,
                         roiW,
                         pinnedBlobNames,
-                        resolved.outputBlobName);
+                        probeBlobName);
                     var infer = inferHandle.infer;
 
-                    outputView = GetInferOutputShape(infer, resolved.outputBlobName, "MONAI sliding window probe blob missing: ");
+                    outputView = GetInferOutputShape(infer, probeBlobName, "MONAI sliding window probe blob missing: ");
 
                     if (executedPatchCount == 1 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                         DumpPinnedBlobOutputs(infer, pinnedBlobNames);
@@ -1633,8 +1644,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             width = outputView.Value.w,
             height = outputView.Value.h,
             depth = outputView.Value.d,
-            channels = outputView.Value.c,
-            executionNote = "probe_blob:" + resolved.outputBlobName,
+            channels = probeHead != null ? probeHead.outputChannels : outputView.Value.c,
+            executionNote = "probe_blob:" + probeBlobName,
             pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
             probeOnly = true,
             executedPatchCount = executedPatchCount,

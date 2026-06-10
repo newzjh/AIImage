@@ -317,6 +317,12 @@ namespace NcnnCompute
                 return;
             }
 
+            if (TryExecuteRenderTextureImplicitAttentionReshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
+            {
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
 
             if (!CanAliasTextureLayout(srcShape, outShape))
@@ -542,7 +548,7 @@ namespace NcnnCompute
                 return false;
 
             if (TryResolveImplicitAttentionReshapeShape(owner, layer, srcShape, out _))
-                return false;
+                return src != null && src.texture != null;
             if (TryResolveWindowPartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
                 return src != null && src.texture != null;
             if (TryResolveWindowUnpartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
@@ -660,6 +666,44 @@ namespace NcnnCompute
                 tokensC,
                 outRt);
             NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureImplicitAttentionReshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!TryResolveImplicitAttentionReshapeShape(owner, layer, srcShape, out var outShape))
+                return false;
+            if (srcShape.dims != 3 || outShape.dims != 4)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.c <= 0 || outShape.w <= 0 || outShape.d <= 0 || outShape.c <= 0)
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = Mathf.Max(1, outShape.d) * outPacks;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.AttentionReshapePack4(
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.c,
+                outShape.w,
+                outShape.d,
+                outShape.c,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            owner.DebugLog?.Invoke(
+                "[AttentionReshapePack4] applied"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | dst=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
             return true;
         }
 

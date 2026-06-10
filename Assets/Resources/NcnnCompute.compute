@@ -26,6 +26,7 @@
 #pragma kernel NcnnConv1x1Pack4
 #pragma kernel NcnnAddPack4
 #pragma kernel NcnnCopyPack4
+#pragma kernel NcnnConcatPack4CDHW
 #pragma kernel NcnnBuildSdInpaintInput9Pack4
 #pragma kernel NcnnInterpPack4
 #pragma kernel NcnnInterpPack4CDHW
@@ -51,6 +52,7 @@
 #pragma kernel NcnnProbeSeams
 #pragma kernel NcnnPaddingPack4
 #pragma kernel NcnnPoolingPack4
+#pragma kernel NcnnPoolingPack4CDHW
 #pragma kernel NcnnMaxPoolingIndPack4
 #pragma kernel NcnnMaxPoolingIndicesFromValuePack4
 #pragma kernel NcnnMaxUnPoolingPack4
@@ -67,16 +69,20 @@
 #pragma kernel NcnnWindowPartitionPack4
 #pragma kernel NcnnWindowUnpartitionPack4
 #pragma kernel NcnnReshapeScalar2DToPack4
+#pragma kernel NcnnAttentionReshapePack4
+#pragma kernel NcnnSlicePack4CDHW
 #pragma kernel NcnnSwishPack4
 #pragma kernel NcnnSigmoidPack4
 #pragma kernel NcnnGeluPack4
 #pragma kernel NcnnMatMul2D
+#pragma kernel NcnnMatMulPack4CDHW
 #pragma kernel NcnnVistaTailPromptDotPack4
 #pragma kernel NcnnGemm2DTextureA
 #pragma kernel NcnnGemm2D
 #pragma kernel NcnnGemm2D16
 #pragma kernel NcnnLayerNorm2D
 #pragma kernel NcnnSoftmax2D
+#pragma kernel NcnnSoftmaxPack4CDHW
 #pragma kernel NcnnEmbed
 #pragma kernel NcnnPermute
 #pragma kernel NcnnSlice
@@ -901,6 +907,53 @@ void NcnnCopyPack4(uint3 id : SV_DispatchThreadID)
     int outP = _CopyOutOffset + p;
     float4 v = _CopyInArr[int3((int)id.x, (int)id.y, inP)];
     _CopyOutArr[int3((int)id.x, (int)id.y, outP)] = v;
+}
+
+RWTexture2DArray<float4> _ConcatPack4CDHWOutArr;
+Texture2DArray<float4> _ConcatPack4CDHWAInArr;
+Texture2DArray<float4> _ConcatPack4CDHWBInArr;
+int _ConcatPack4CDHWW;
+int _ConcatPack4CDHWH;
+int _ConcatPack4CDHWD;
+int _ConcatPack4CDHWAC;
+int _ConcatPack4CDHWBC;
+int _ConcatPack4CDHWOutC;
+
+[numthreads(8,8,1)]
+void NcnnConcatPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _ConcatPack4CDHWOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int slice = (int)id.z;
+    int outPacks = max(1, (_ConcatPack4CDHWOutC + 3) / 4);
+    int outZ = slice / outPacks;
+    int outPack = slice - outZ * outPacks;
+    if (outZ < 0 || outZ >= _ConcatPack4CDHWD)
+    {
+        _ConcatPack4CDHWOutArr[int3(outX, outY, slice)] = 0.0;
+        return;
+    }
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outC = outPack * 4 + lane;
+        if (outC >= _ConcatPack4CDHWOutC)
+            continue;
+
+        float scalar = outC < _ConcatPack4CDHWAC
+            ? NcnnReadPack4ChannelCDHW(_ConcatPack4CDHWAInArr, outX, outY, outZ, outC, _ConcatPack4CDHWAC)
+            : NcnnReadPack4ChannelCDHW(_ConcatPack4CDHWBInArr, outX, outY, outZ, outC - _ConcatPack4CDHWAC, _ConcatPack4CDHWBC);
+        NcnnWriteLane(o, lane, scalar);
+    }
+
+    _ConcatPack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
 RWTexture2DArray<float4> _SdInpaintInputOutArr;
@@ -2792,6 +2845,29 @@ int _PoolStrideH;
 int _PoolPadLeft;
 int _PoolPadTop;
 int _PoolType;
+Texture2DArray<float4> _Pool4DInArr;
+RWTexture2DArray<float4> _Pool4DOutArr;
+int _Pool4DInW;
+int _Pool4DInH;
+int _Pool4DInD;
+int _Pool4DInC;
+int _Pool4DKernelW;
+int _Pool4DKernelH;
+int _Pool4DKernelD;
+int _Pool4DStrideW;
+int _Pool4DStrideH;
+int _Pool4DStrideD;
+int _Pool4DPadLeft;
+int _Pool4DPadTop;
+int _Pool4DPadFront;
+int _Pool4DPoolType;
+int _Pool4DIncludePad;
+int _Pool4DAdaptive;
+int _Pool4DGlobal;
+int _Pool4DOutW;
+int _Pool4DOutH;
+int _Pool4DOutD;
+int _Pool4DOutC;
 
 Texture2DArray<float4> _SoftmaxInArr;
 RWTexture2DArray<float4> _SoftmaxOutArr;
@@ -2829,6 +2905,18 @@ int _SlicePack4Begin;
 int _SlicePack4OutW;
 int _SlicePack4OutH;
 int _SlicePack4OutC;
+Texture2DArray<float4> _SlicePack4CDHWInArr;
+RWTexture2DArray<float4> _SlicePack4CDHWOutArr;
+int _SlicePack4CDHWInW;
+int _SlicePack4CDHWInH;
+int _SlicePack4CDHWInD;
+int _SlicePack4CDHWInC;
+int _SlicePack4CDHWAxis;
+int _SlicePack4CDHWBegin;
+int _SlicePack4CDHWOutW;
+int _SlicePack4CDHWOutH;
+int _SlicePack4CDHWOutD;
+int _SlicePack4CDHWOutC;
 Texture2DArray<float4> _PermutePack4InArr;
 RWTexture2DArray<float4> _PermutePack4OutArr;
 int _PermutePack4InW;
@@ -2893,6 +2981,14 @@ int _ReshapeScalar2DOutH;
 int _ReshapeScalar2DOutD;
 int _ReshapeScalar2DOutC;
 int _ReshapeScalar2DOutDims;
+Texture2DArray<float4> _AttentionReshapeInArr;
+RWTexture2DArray<float4> _AttentionReshapeOutArr;
+int _AttentionReshapeInW;
+int _AttentionReshapeInH;
+int _AttentionReshapeInC;
+int _AttentionReshapeHeadDim;
+int _AttentionReshapeOutD;
+int _AttentionReshapeOutC;
 
 
 Texture2DArray<float4> _ActInArr;
@@ -2905,6 +3001,9 @@ StructuredBuffer<float> _MatC;
 RWStructuredBuffer<float> _MatOut;
 Texture2DArray<float4> _GemmTexAInArr;
 RWTexture2DArray<float4> _GemmTexOutArr;
+Texture2DArray<float4> _MatPack4AInArr;
+Texture2DArray<float4> _MatPack4BInArr;
+RWTexture2DArray<float4> _MatPack4OutArr;
 int _MatM;
 int _MatN;
 int _MatK;
@@ -2913,6 +3012,12 @@ int _MatUseC;
 int _MatBroadcastTypeC;
 float _MatAlpha;
 float _MatBeta;
+int _MatPack4ABatchD;
+int _MatPack4ABatchC;
+int _MatPack4BBatchD;
+int _MatPack4BBatchC;
+int _MatPack4OutBatchD;
+int _MatPack4OutBatchC;
 int _GemmTexAInW;
 int _GemmTexAInH;
 Texture2DArray<float4> _VistaTailInArr;
@@ -2935,6 +3040,12 @@ StructuredBuffer<float> _SoftIn;
 RWStructuredBuffer<float> _SoftOut;
 int _SoftRows;
 int _SoftCols;
+Texture2DArray<float4> _SoftmaxPack4CDHWInArr;
+RWTexture2DArray<float4> _SoftmaxPack4CDHWOutArr;
+int _SoftmaxPack4CDHWW;
+int _SoftmaxPack4CDHWH;
+int _SoftmaxPack4CDHWD;
+int _SoftmaxPack4CDHWC;
 
 StructuredBuffer<int> _EmbedIdx;
 StructuredBuffer<float> _EmbedW;
@@ -3224,6 +3335,123 @@ void NcnnPoolingPack4(uint3 id : SV_DispatchThreadID)
     _PoolOutArr[int3(ox, oy, p)] = acc;
 }
 
+[numthreads(8,8,1)]
+void NcnnPoolingPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _Pool4DOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int ox = (int)id.x;
+    int oy = (int)id.y;
+    int slice = (int)id.z;
+    int packCount = max(1, (_Pool4DOutC + 3) / 4);
+    int oz = slice / packCount;
+    int outPack = slice - oz * packCount;
+    if (oz < 0 || oz >= _Pool4DOutD)
+    {
+        _Pool4DOutArr[int3(ox, oy, slice)] = 0.0;
+        return;
+    }
+
+    float4 acc = _Pool4DPoolType == 0
+        ? float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38)
+        : 0.0;
+    int4 counts = 0;
+
+    int sx0;
+    int sy0;
+    int sz0;
+    int sx1;
+    int sy1;
+    int sz1;
+
+    if (_Pool4DGlobal != 0)
+    {
+        sx0 = 0; sy0 = 0; sz0 = 0;
+        sx1 = _Pool4DInW; sy1 = _Pool4DInH; sz1 = _Pool4DInD;
+    }
+    else if (_Pool4DAdaptive != 0)
+    {
+        sx0 = (_Pool4DInW * ox) / max(1, _Pool4DOutW);
+        sx1 = (_Pool4DInW * (ox + 1) + max(1, _Pool4DOutW) - 1) / max(1, _Pool4DOutW);
+        sy0 = (_Pool4DInH * oy) / max(1, _Pool4DOutH);
+        sy1 = (_Pool4DInH * (oy + 1) + max(1, _Pool4DOutH) - 1) / max(1, _Pool4DOutH);
+        sz0 = (_Pool4DInD * oz) / max(1, _Pool4DOutD);
+        sz1 = (_Pool4DInD * (oz + 1) + max(1, _Pool4DOutD) - 1) / max(1, _Pool4DOutD);
+    }
+    else
+    {
+        sx0 = ox * _Pool4DStrideW - _Pool4DPadLeft;
+        sy0 = oy * _Pool4DStrideH - _Pool4DPadTop;
+        sz0 = oz * _Pool4DStrideD - _Pool4DPadFront;
+        sx1 = sx0 + _Pool4DKernelW;
+        sy1 = sy0 + _Pool4DKernelH;
+        sz1 = sz0 + _Pool4DKernelD;
+    }
+
+    for (int kz = sz0; kz < sz1; kz++)
+    {
+        bool validZ = kz >= 0 && kz < _Pool4DInD;
+        for (int ky = sy0; ky < sy1; ky++)
+        {
+            bool validZY = validZ && ky >= 0 && ky < _Pool4DInH;
+            for (int kx = sx0; kx < sx1; kx++)
+            {
+                bool valid = validZY && kx >= 0 && kx < _Pool4DInW;
+                [unroll]
+                for (int lane = 0; lane < 4; lane++)
+                {
+                    int outC = outPack * 4 + lane;
+                    if (outC >= _Pool4DOutC)
+                        continue;
+
+                    if (_Pool4DPoolType == 0)
+                    {
+                        if (!valid)
+                            continue;
+                        float v = NcnnReadPack4ChannelCDHW(_Pool4DInArr, kx, ky, kz, outC, _Pool4DInC);
+                        if (lane == 0) acc.x = max(acc.x, v);
+                        else if (lane == 1) acc.y = max(acc.y, v);
+                        else if (lane == 2) acc.z = max(acc.z, v);
+                        else acc.w = max(acc.w, v);
+                    }
+                    else
+                    {
+                        if (valid)
+                        {
+                            float v = NcnnReadPack4ChannelCDHW(_Pool4DInArr, kx, ky, kz, outC, _Pool4DInC);
+                            if (lane == 0) acc.x += v;
+                            else if (lane == 1) acc.y += v;
+                            else if (lane == 2) acc.z += v;
+                            else acc.w += v;
+                        }
+
+                        if (_Pool4DAdaptive != 0 || _Pool4DIncludePad != 0 || valid)
+                        {
+                            if (lane == 0) counts.x += 1;
+                            else if (lane == 1) counts.y += 1;
+                            else if (lane == 2) counts.z += 1;
+                            else counts.w += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (_Pool4DPoolType != 0)
+    {
+        if (counts.x > 0) acc.x /= (float)counts.x; else acc.x = 0.0;
+        if (counts.y > 0) acc.y /= (float)counts.y; else acc.y = 0.0;
+        if (counts.z > 0) acc.z /= (float)counts.z; else acc.z = 0.0;
+        if (counts.w > 0) acc.w /= (float)counts.w; else acc.w = 0.0;
+    }
+
+    _Pool4DOutArr[int3(ox, oy, slice)] = acc;
+}
+
 RWTexture2DArray<float4> _MaxPoolOutArr;
 RWTexture2DArray<float4> _MaxPoolIndicesArr;
 Texture2DArray<float4> _MaxPoolInArr;
@@ -3413,6 +3641,56 @@ void NcnnSoftmaxChannelPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnSoftmaxPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _SoftmaxPack4CDHWOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int slice = (int)id.z;
+    int packCount = max(1, (_SoftmaxPack4CDHWC + 3) / 4);
+    int outZ = slice / packCount;
+    int outPack = slice - outZ * packCount;
+    if (outZ < 0 || outZ >= _SoftmaxPack4CDHWD)
+    {
+        _SoftmaxPack4CDHWOutArr[int3(outX, outY, slice)] = 0.0;
+        return;
+    }
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int c = outPack * 4 + lane;
+        if (c >= _SoftmaxPack4CDHWC)
+            continue;
+
+        float maxv = -3.402823466e+38;
+        for (int xx = 0; xx < _SoftmaxPack4CDHWW; xx++)
+        {
+            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, xx, outY, outZ, c, _SoftmaxPack4CDHWC);
+            maxv = max(maxv, v);
+        }
+
+        float sum = 0.0;
+        for (int xx = 0; xx < _SoftmaxPack4CDHWW; xx++)
+        {
+            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, xx, outY, outZ, c, _SoftmaxPack4CDHWC);
+            sum += exp(v - maxv);
+        }
+
+        float current = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, outX, outY, outZ, c, _SoftmaxPack4CDHWC);
+        float value = sum > 0.0 ? exp(current - maxv) / sum : 0.0;
+        NcnnWriteLane(o, lane, value);
+    }
+
+    _SoftmaxPack4CDHWOutArr[int3(outX, outY, slice)] = o;
+}
+
+[numthreads(8,8,1)]
 void NcnnUnaryOpPack4(uint3 id : SV_DispatchThreadID)
 {
     uint w, h, d;
@@ -3537,6 +3815,14 @@ float NcnnReadLane(float4 v, int lane)
     if (lane == 1) return v.y;
     if (lane == 2) return v.z;
     return v.w;
+}
+
+void NcnnWriteLane(inout float4 v, int lane, float value)
+{
+    if (lane <= 0) v.x = value;
+    else if (lane == 1) v.y = value;
+    else if (lane == 2) v.z = value;
+    else v.w = value;
 }
 
 float NcnnReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel)
@@ -4784,6 +5070,56 @@ void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThre
 }
 
 [numthreads(8,8,1)]
+void NcnnMatMulPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _MatPack4OutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outCol = (int)id.x;
+    int outRow = (int)id.y;
+    int slice = (int)id.z;
+    int outPackCount = max(1, (_MatPack4OutBatchC + 3) / 4);
+    int outBatchD = slice / outPackCount;
+    int outBatchCPack = slice - outBatchD * outPackCount;
+    if (outBatchD < 0 || outBatchD >= _MatPack4OutBatchD)
+    {
+        _MatPack4OutArr[int3(outCol, outRow, slice)] = 0.0;
+        return;
+    }
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outBatchC = outBatchCPack * 4 + lane;
+        if (outBatchC >= _MatPack4OutBatchC)
+            continue;
+
+        int aBatchD = min(_MatPack4ABatchD - 1, (_MatPack4ABatchD > 1) ? outBatchD : 0);
+        int aBatchC = min(_MatPack4ABatchC - 1, (_MatPack4ABatchC > 1) ? outBatchC : 0);
+        int bBatchD = min(_MatPack4BBatchD - 1, (_MatPack4BBatchD > 1) ? outBatchD : 0);
+        int bBatchC = min(_MatPack4BBatchC - 1, (_MatPack4BBatchC > 1) ? outBatchC : 0);
+
+        float acc = 0.0;
+        [loop]
+        for (int kk = 0; kk < _MatK; kk++)
+        {
+            float a = NcnnReadPack4ChannelCDHW(_MatPack4AInArr, kk, outRow, aBatchD, aBatchC, _MatPack4ABatchC);
+            float b = _MatTransB != 0
+                ? NcnnReadPack4ChannelCDHW(_MatPack4BInArr, kk, outCol, bBatchD, bBatchC, _MatPack4BBatchC)
+                : NcnnReadPack4ChannelCDHW(_MatPack4BInArr, outCol, kk, bBatchD, bBatchC, _MatPack4BBatchC);
+            acc += a * b;
+        }
+
+        NcnnWriteLane(o, lane, acc);
+    }
+
+    _MatPack4OutArr[int3(outCol, outRow, slice)] = o;
+}
+
+[numthreads(8,8,1)]
 void NcnnVistaTailPromptDotPack4(uint3 id : SV_DispatchThreadID)
 {
     uint w, h, slices;
@@ -4873,6 +5209,107 @@ void NcnnReshapeScalar2DToPack4(uint3 id : SV_DispatchThreadID)
     }
 
     _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = value;
+}
+
+[numthreads(8,8,1)]
+void NcnnAttentionReshapePack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _AttentionReshapeOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int slice = (int)id.z;
+    int outPacks = max(1, (_AttentionReshapeOutC + 3) / 4);
+    int outZ = slice / outPacks;
+    int outPack = slice - outZ * outPacks;
+    if (outZ < 0 || outZ >= _AttentionReshapeOutD)
+    {
+        _AttentionReshapeOutArr[int3(outX, outY, slice)] = 0.0;
+        return;
+    }
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outC = outPack * 4 + lane;
+        if (outC >= _AttentionReshapeOutC)
+            continue;
+
+        int srcWindow = outZ;
+        int srcToken = outY;
+        int srcChannel = outC * _AttentionReshapeHeadDim + outX;
+        if (outX < 0 || outX >= _AttentionReshapeHeadDim)
+            continue;
+        if (srcWindow < 0 || srcWindow >= _AttentionReshapeInC)
+            continue;
+        if (srcToken < 0 || srcToken >= _AttentionReshapeInH)
+            continue;
+        if (srcChannel < 0 || srcChannel >= _AttentionReshapeInW)
+            continue;
+
+        float scalar = NcnnReadPack4Channel(_AttentionReshapeInArr, srcChannel, srcToken, srcWindow);
+        NcnnWriteLane(o, lane, scalar);
+    }
+
+    _AttentionReshapeOutArr[int3(outX, outY, slice)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnSlicePack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _SlicePack4CDHWOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int slice = (int)id.z;
+    int outPacks = max(1, (_SlicePack4CDHWOutC + 3) / 4);
+    int outZ = slice / outPacks;
+    int outPack = slice - outZ * outPacks;
+    if (outZ < 0 || outZ >= _SlicePack4CDHWOutD)
+    {
+        _SlicePack4CDHWOutArr[int3(outX, outY, slice)] = 0.0;
+        return;
+    }
+
+    int srcX = outX;
+    int srcY = outY;
+    int srcZ = outZ;
+    if (_SlicePack4CDHWAxis == 0)
+        srcX += _SlicePack4CDHWBegin;
+    else if (_SlicePack4CDHWAxis == 1)
+        srcY += _SlicePack4CDHWBegin;
+    else if (_SlicePack4CDHWAxis == 2)
+        srcZ += _SlicePack4CDHWBegin;
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outC = outPack * 4 + lane;
+        if (outC >= _SlicePack4CDHWOutC)
+            continue;
+
+        int srcC = _SlicePack4CDHWAxis == 3
+            ? outC + _SlicePack4CDHWBegin
+            : outC;
+        float scalar = NcnnReadPack4ChannelCDHW(
+            _SlicePack4CDHWInArr,
+            srcX,
+            srcY,
+            srcZ,
+            srcC,
+            _SlicePack4CDHWInC);
+        NcnnWriteLane(o, lane, scalar);
+    }
+
+    _SlicePack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
 [numthreads(8,8,1)]

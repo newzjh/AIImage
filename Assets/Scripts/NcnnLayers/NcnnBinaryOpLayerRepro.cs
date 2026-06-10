@@ -185,7 +185,7 @@ namespace NcnnCompute
             {
                 if (owner.ShouldForceCurrentLayerBufferPath()
                     || !NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var aTexScalar, out var aTexShapeScalar)
-                    || aTexShapeScalar.dims > 3)
+                    || (aTexShapeScalar.dims != 3 && aTexShapeScalar.dims != 4))
                 {
                     throw new InvalidOperationException("BinaryOp render-texture scalar path requires existing texture input: " + layer.name);
                 }
@@ -577,7 +577,7 @@ namespace NcnnCompute
             {
                 return !owner.ShouldForceCurrentLayerBufferPath()
                     && NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out _, out var scalarTexShape)
-                    && scalarTexShape.dims <= 3;
+                    && (scalarTexShape.dims == 3 || scalarTexShape.dims == 4);
             }
 
             var isTargetSftAddLayer = string.IsNullOrEmpty(owner.CodeFormerTargetSftAddLayer)

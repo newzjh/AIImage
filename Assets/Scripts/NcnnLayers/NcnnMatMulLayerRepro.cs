@@ -61,6 +61,9 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (TryExecutePack4AttentionMatMulPath(owner, layer, context))
+                return;
+
             if (TryExecuteVistaTailPack4Path(owner, layer, context))
                 return;
 
@@ -111,6 +114,94 @@ namespace NcnnCompute
                 : new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, aRows), 1, 1);
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecutePack4AttentionMatMulPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length != 2 || layer.topNames == null || layer.topNames.Length != 1)
+                return false;
+            if (!owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var aTex,
+                    out var aShape)
+                || !owner.TryGetPack4Texture(
+                    layer.bottomNames[1],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var bTex,
+                    out var bShape))
+            {
+                return false;
+            }
+
+            if (!CanUsePack4AttentionMatMul(aTex, aShape) || !CanUsePack4AttentionMatMul(bTex, bShape))
+                return false;
+
+            var transB = layer.GetInt(0, 0) != 0;
+            GetMatrixShape(aShape, out var aRows, out var aCols);
+            GetMatrixShape(bShape, out var bRows, out var bCols);
+            var k = aCols;
+            var kFromB = transB ? bCols : bRows;
+            var n = transB ? bRows : bCols;
+            if (k <= 0 || aRows <= 0 || n <= 0 || k != kFromB)
+                return false;
+
+            var outBatchD = Mathf.Max(aShape.d, bShape.d);
+            var outBatchC = Mathf.Max(aShape.c, bShape.c);
+            if ((aShape.d != 1 && aShape.d != outBatchD)
+                || (bShape.d != 1 && bShape.d != outBatchD)
+                || (aShape.c != 1 && aShape.c != outBatchC)
+                || (bShape.c != 1 && bShape.c != outBatchC))
+            {
+                return false;
+            }
+
+            var outShape = new NcnnRepro.BufferShape(4, Mathf.Max(1, n), Mathf.Max(1, aRows), Mathf.Max(1, outBatchD), Mathf.Max(1, outBatchC));
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = Mathf.Max(1, outShape.d) * outPacks;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.MatMulPack4Cdhw(
+                aTex.texture,
+                aRows,
+                aCols,
+                aShape.d,
+                aShape.c,
+                bTex.texture,
+                bRows,
+                bCols,
+                bShape.d,
+                bShape.c,
+                transB,
+                outShape.d,
+                outShape.c,
+                outRt);
+            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            owner.DebugLog?.Invoke(
+                "[MatMulPack4CDHW] applied"
+                + " | layer=" + layer.name
+                + " | transB=" + (transB ? "1" : "0")
+                + " | a=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            owner.Consume(
+                context.textureBlobs,
+                context.bufferBlobs,
+                context.bufferRefs,
+                context.bufferViews,
+                context.remaining,
+                layer.bottomNames,
+                context.pinnedNames);
+            return true;
         }
 
         private static bool TryExecuteVistaTailPack4Path(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
@@ -312,6 +403,37 @@ namespace NcnnCompute
             }
 
             return producer;
+        }
+
+        private static void GetMatrixShape(NcnnRepro.BufferShape shape, out int rows, out int cols)
+        {
+            if (shape.dims == 1)
+            {
+                rows = 1;
+                cols = shape.w;
+                return;
+            }
+
+            if (shape.dims == 2 || shape.dims == 3 || shape.dims == 4)
+            {
+                rows = shape.h;
+                cols = shape.w;
+                return;
+            }
+
+            throw new InvalidOperationException("MatMul currently supports dims 1/2/3/4 only");
+        }
+
+        private static bool CanUsePack4AttentionMatMul(NcnnRepro.TensorRef src, NcnnRepro.BufferShape shape)
+        {
+            return src != null
+                && src.texture != null
+                && shape.dims == 4
+                && shape.w == src.width
+                && shape.h == src.height
+                && shape.d > 0
+                && shape.c > 0
+                && src.packs == Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f));
         }
     }
 }

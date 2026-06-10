@@ -131,9 +131,31 @@ namespace NcnnCompute
                 }
 
                 var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
-                var outRt = owner.RentTempArray(spec.shape.w, spec.shape.h, outPacks, RenderTextureFormat.ARGBHalf);
-                owner.Ops.SlicePack4(srcTex.texture, texShape.w, texShape.h, texShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[i], outRt, spec.shape);
+                if (texShape.dims == 4)
+                {
+                    var outSlices = Mathf.Max(1, spec.shape.d) * outPacks;
+                    var outRt = owner.RentTempArray(spec.shape.w, spec.shape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(spec.shape.dims));
+                    owner.Ops.SlicePack4Cdhw(
+                        srcTex.texture,
+                        texShape.w,
+                        texShape.h,
+                        texShape.d,
+                        texShape.c,
+                        spec.axis,
+                        spec.begin,
+                        spec.shape.w,
+                        spec.shape.h,
+                        spec.shape.d,
+                        spec.shape.c,
+                        outRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[i], outRt, spec.shape, spec.shape);
+                }
+                else
+                {
+                    var outRt = owner.RentTempArray(spec.shape.w, spec.shape.h, outPacks, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.SlicePack4(srcTex.texture, texShape.w, texShape.h, texShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[i], outRt, spec.shape);
+                }
             }
 
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
@@ -249,20 +271,20 @@ namespace NcnnCompute
         {
             return srcTex != null
                 && srcTex.texture != null
-                && srcShape.dims == 3
+                && (srcShape.dims == 3 || srcShape.dims == 4)
                 && srcShape.w == srcTex.width
                 && srcShape.h == srcTex.height
-                && srcShape.d == 1;
+                && (srcShape.dims != 4 || srcShape.d > 0);
         }
 
         private static bool CanUsePack4Slice(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
         {
             return src != null
                 && src.texture != null
-                && srcShape.dims == 3
+                && (srcShape.dims == 3 || srcShape.dims == 4)
                 && srcShape.w == src.width
                 && srcShape.h == src.height
-                && srcShape.d == 1;
+                && (srcShape.dims != 4 || srcShape.d > 0);
         }
 
         private static bool IsIdentitySlice(NcnnRepro.BufferShape srcShape, SliceSpec spec)

@@ -194,7 +194,8 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Concat axis out of range: " + layer.name);
 
             var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(firstShape.dims, positiveAxis);
-            if (firstShape.dims != 3 || tensorAxis != 2)
+            var concatChannelAxis = firstShape.dims == 4 ? 3 : 2;
+            if ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis)
                 return false;
 
             for (var i = 0; i < layer.bottomNames.Length; i++)
@@ -202,10 +203,10 @@ namespace NcnnCompute
                 if (!TryResolvePack4ConcatSource(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var shape, out var width, out var height, out var packs))
                     return false;
 
-                if (shape.dims != 3
-                    || shape.d != 1
+                if (shape.dims != firstShape.dims
                     || shape.w != firstShape.w
                     || shape.h != firstShape.h
+                    || shape.d != firstShape.d
                     || width != firstWidth
                     || height != firstHeight
                     || shape.c <= 0
@@ -242,7 +243,7 @@ namespace NcnnCompute
                 width = existingTexture.width;
                 height = existingTexture.height;
                 packs = existingTexture.packs;
-                return shape.dims == 3;
+                return shape.dims == 3 || shape.dims == 4;
             }
 
             if (bufferBlobs != null
@@ -256,7 +257,7 @@ namespace NcnnCompute
                 width = view.w;
                 height = view.h;
                 packs = Mathf.Max(1, Mathf.CeilToInt(view.c / 4f));
-                return view.dims == 3 && view.d == 1 && view.c > 0;
+                return (view.dims == 3 || view.dims == 4) && view.c > 0;
             }
 
             return false;
@@ -283,7 +284,8 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Concat axis out of range: " + layer.name);
 
             var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(firstShape.dims, positiveAxis);
-            if (firstShape.dims != 3 || tensorAxis != 2)
+            var concatChannelAxis = firstShape.dims == 4 ? 3 : 2;
+            if ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis)
                 return false;
 
             var parts = new NcnnRepro.TensorRef[layer.bottomNames.Length];
@@ -303,10 +305,10 @@ namespace NcnnCompute
 
                 var shape = shapes[i];
                 var tex = parts[i];
-                if (shape.dims != 3
-                    || shape.d != 1
+                if (shape.dims != firstShape.dims
                     || shape.w != firstShape.w
                     || shape.h != firstShape.h
+                    || shape.d != firstShape.d
                     || shape.w != tex.width
                     || shape.h != tex.height
                     || shape.c <= 0
@@ -319,17 +321,60 @@ namespace NcnnCompute
                     return false;
             }
 
-            var outShape = new NcnnRepro.BufferShape(3, firstShape.w, firstShape.h, 1, outC);
-            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
-            var outRt = owner.RentTempArray(outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
-            var packOffset = 0;
-            for (var i = 0; i < parts.Length; i++)
+            if (parts.Length == 1)
             {
-                owner.Ops.CopyPack4(parts[i].texture, 0, outRt, packOffset, parts[i].packs);
-                packOffset += parts[i].packs;
+                textureBlobs[layer.topNames[0]] = firstTex;
+                textureShapes[layer.topNames[0]] = firstShape;
+                firstTex.refs++;
+                return true;
             }
 
-            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+            if (firstShape.dims == 3)
+            {
+                var outShape = new NcnnRepro.BufferShape(3, firstShape.w, firstShape.h, 1, outC);
+                var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+                var outRt = owner.RentTempArray(outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
+                var packOffset = 0;
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    owner.Ops.CopyPack4(parts[i].texture, 0, outRt, packOffset, parts[i].packs);
+                    packOffset += parts[i].packs;
+                }
+
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+                return true;
+            }
+
+            var currentTexture = parts[0].texture;
+            var currentShape = shapes[0];
+            var currentOwned = false;
+
+            for (var i = 1; i < parts.Length; i++)
+            {
+                var nextShape = shapes[i];
+                var combinedShape = new NcnnRepro.BufferShape(4, currentShape.w, currentShape.h, currentShape.d, currentShape.c + nextShape.c);
+                var outSlices = currentShape.d * Mathf.Max(1, Mathf.CeilToInt(combinedShape.c / 4f));
+                var outRt = owner.RentTempArray(combinedShape.w, combinedShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(4));
+                owner.Ops.ConcatPack4Cdhw(
+                    currentTexture,
+                    parts[i].texture,
+                    combinedShape.w,
+                    combinedShape.h,
+                    combinedShape.d,
+                    currentShape.c,
+                    nextShape.c,
+                    combinedShape.c,
+                    outRt);
+
+                if (currentOwned && currentTexture != null)
+                    owner.ReturnTempArray(currentTexture);
+
+                currentTexture = outRt;
+                currentShape = combinedShape;
+                currentOwned = true;
+            }
+
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], currentTexture, currentShape);
             return true;
         }
 
