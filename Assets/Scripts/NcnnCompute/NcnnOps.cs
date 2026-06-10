@@ -341,11 +341,16 @@ namespace NcnnCompute
         private readonly int _kCropPack4;
         private readonly int _kSlicePack4;
         private readonly int _kPermutePack4;
+        private readonly int _kPermutePack4Cdhw;
+        private readonly int _kWindowPartitionPack4;
+        private readonly int _kWindowUnpartitionPack4;
+        private readonly int _kReshapeScalar2DToPack4;
         private readonly int _kSwishPack4;
         private readonly int _kSigmoidPack4;
         private readonly int _kGeluPack4;
         private readonly int _kMatMul2D;
         private readonly int _kVistaTailPromptDotPack4;
+        private readonly int _kGemm2DTextureA;
         private readonly int _kGemm2D;
         private readonly int _kGemm2D16;
         private readonly int _kLayerNorm2D;
@@ -486,11 +491,16 @@ namespace NcnnCompute
             _kCropPack4 = _cs.FindKernel("NcnnCropPack4");
             _kSlicePack4 = _cs.FindKernel("NcnnSlicePack4");
             _kPermutePack4 = _cs.FindKernel("NcnnPermutePack4");
+            _kPermutePack4Cdhw = _cs.FindKernel("NcnnPermutePack4CDHW");
+            _kWindowPartitionPack4 = _cs.FindKernel("NcnnWindowPartitionPack4");
+            _kWindowUnpartitionPack4 = _cs.FindKernel("NcnnWindowUnpartitionPack4");
+            _kReshapeScalar2DToPack4 = _cs.FindKernel("NcnnReshapeScalar2DToPack4");
             _kSwishPack4 = _cs.FindKernel("NcnnSwishPack4");
             _kSigmoidPack4 = _cs.FindKernel("NcnnSigmoidPack4");
             _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
             _kMatMul2D = _cs.FindKernel("NcnnMatMul2D");
             _kVistaTailPromptDotPack4 = _cs.FindKernel("NcnnVistaTailPromptDotPack4");
+            _kGemm2DTextureA = _cs.FindKernel("NcnnGemm2DTextureA");
             _kGemm2D = _cs.FindKernel("NcnnGemm2D");
             _kGemm2D16 = _cs.FindKernel("NcnnGemm2D16");
             _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
@@ -985,6 +995,182 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_PermutePack4InArr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_PermutePack4OutArr", output.nameID);
             Dispatch3D(cmd, _kPermutePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
+        public void PermutePack4Cdhw(RenderTexture input, int inW, int inH, int inD, int inC, Vector4Int axes, int outW, int outH, int outD, int outC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PermutePack4CDHWInW", inW);
+            _cs.SetInt("_PermutePack4CDHWInH", inH);
+            _cs.SetInt("_PermutePack4CDHWInD", inD);
+            _cs.SetInt("_PermutePack4CDHWInC", inC);
+            _cs.SetInt("_PermutePack4CDHWOutW", outW);
+            _cs.SetInt("_PermutePack4CDHWOutH", outH);
+            _cs.SetInt("_PermutePack4CDHWOutD", outD);
+            _cs.SetInt("_PermutePack4CDHWOutC", outC);
+            _cs.SetInt("_PermutePack4CDHWAxis0", axes.x);
+            _cs.SetInt("_PermutePack4CDHWAxis1", axes.y);
+            _cs.SetInt("_PermutePack4CDHWAxis2", axes.z);
+            _cs.SetInt("_PermutePack4CDHWAxis3", axes.w);
+            _cs.SetTexture(_kPermutePack4Cdhw, "_PermutePack4CDHWInArr", input);
+            _cs.SetTexture(_kPermutePack4Cdhw, "_PermutePack4CDHWOutArr", output);
+            Dispatch3D(_kPermutePack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void PermutePack4Cdhw(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, Vector4Int axes, int outW, int outH, int outD, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInW", inW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInH", inH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInD", inD);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInC", inC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutD", outD);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutC", outC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis0", axes.x);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis1", axes.y);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis2", axes.z);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis3", axes.w);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4Cdhw, "_PermutePack4CDHWInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4Cdhw, "_PermutePack4CDHWOutArr", output.nameID);
+            Dispatch3D(cmd, _kPermutePack4Cdhw, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
+        public void WindowPartitionPack4(RenderTexture input, int inW, int inH, int inD, int inC, int outW, int outH, int outC, int groupsA, int groupsB, int groupsC, int tokensA, int tokensB, int tokensC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_WindowPartitionPack4InW", inW);
+            _cs.SetInt("_WindowPartitionPack4InH", inH);
+            _cs.SetInt("_WindowPartitionPack4InD", inD);
+            _cs.SetInt("_WindowPartitionPack4InC", inC);
+            _cs.SetInt("_WindowPartitionPack4OutW", outW);
+            _cs.SetInt("_WindowPartitionPack4OutH", outH);
+            _cs.SetInt("_WindowPartitionPack4OutC", outC);
+            _cs.SetInt("_WindowPartitionPack4GroupsA", groupsA);
+            _cs.SetInt("_WindowPartitionPack4GroupsB", groupsB);
+            _cs.SetInt("_WindowPartitionPack4GroupsC", groupsC);
+            _cs.SetInt("_WindowPartitionPack4TokensA", tokensA);
+            _cs.SetInt("_WindowPartitionPack4TokensB", tokensB);
+            _cs.SetInt("_WindowPartitionPack4TokensC", tokensC);
+            _cs.SetTexture(_kWindowPartitionPack4, "_WindowPartitionPack4InArr", input);
+            _cs.SetTexture(_kWindowPartitionPack4, "_WindowPartitionPack4OutArr", output);
+            Dispatch3D(_kWindowPartitionPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void WindowPartitionPack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int outW, int outH, int outC, int groupsA, int groupsB, int groupsC, int tokensA, int tokensB, int tokensC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4InW", inW);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4InH", inH);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4InD", inD);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4InC", inC);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4OutC", outC);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4GroupsA", groupsA);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4GroupsB", groupsB);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4GroupsC", groupsC);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4TokensA", tokensA);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4TokensB", tokensB);
+            cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4TokensC", tokensC);
+            cmd.SetComputeTextureParam(_cs, _kWindowPartitionPack4, "_WindowPartitionPack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kWindowPartitionPack4, "_WindowPartitionPack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kWindowPartitionPack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
+        public void WindowUnpartitionPack4(RenderTexture input, int inW, int inH, int inC, int outW, int outH, int outD, int outC, int groupsA, int groupsB, int groupsC, int tokensA, int tokensB, int tokensC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_WindowUnpartitionPack4InW", inW);
+            _cs.SetInt("_WindowUnpartitionPack4InH", inH);
+            _cs.SetInt("_WindowUnpartitionPack4InC", inC);
+            _cs.SetInt("_WindowUnpartitionPack4OutW", outW);
+            _cs.SetInt("_WindowUnpartitionPack4OutH", outH);
+            _cs.SetInt("_WindowUnpartitionPack4OutD", outD);
+            _cs.SetInt("_WindowUnpartitionPack4OutC", outC);
+            _cs.SetInt("_WindowUnpartitionPack4GroupsA", groupsA);
+            _cs.SetInt("_WindowUnpartitionPack4GroupsB", groupsB);
+            _cs.SetInt("_WindowUnpartitionPack4GroupsC", groupsC);
+            _cs.SetInt("_WindowUnpartitionPack4TokensA", tokensA);
+            _cs.SetInt("_WindowUnpartitionPack4TokensB", tokensB);
+            _cs.SetInt("_WindowUnpartitionPack4TokensC", tokensC);
+            _cs.SetTexture(_kWindowUnpartitionPack4, "_WindowUnpartitionPack4InArr", input);
+            _cs.SetTexture(_kWindowUnpartitionPack4, "_WindowUnpartitionPack4OutArr", output);
+            Dispatch3D(_kWindowUnpartitionPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void WindowUnpartitionPack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inC, int outW, int outH, int outD, int outC, int groupsA, int groupsB, int groupsC, int tokensA, int tokensB, int tokensC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4InW", inW);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4InH", inH);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4InC", inC);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4OutD", outD);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4OutC", outC);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4GroupsA", groupsA);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4GroupsB", groupsB);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4GroupsC", groupsC);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4TokensA", tokensA);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4TokensB", tokensB);
+            cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4TokensC", tokensC);
+            cmd.SetComputeTextureParam(_cs, _kWindowUnpartitionPack4, "_WindowUnpartitionPack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kWindowUnpartitionPack4, "_WindowUnpartitionPack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kWindowUnpartitionPack4, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
+        public void ReshapeScalar2DToPack4(RenderTexture input, int inW, int inH, int outW, int outH, int outD, int outC, int outDims, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_ReshapeScalar2DInW", inW);
+            _cs.SetInt("_ReshapeScalar2DInH", inH);
+            _cs.SetInt("_ReshapeScalar2DOutW", outW);
+            _cs.SetInt("_ReshapeScalar2DOutH", outH);
+            _cs.SetInt("_ReshapeScalar2DOutD", outD);
+            _cs.SetInt("_ReshapeScalar2DOutC", outC);
+            _cs.SetInt("_ReshapeScalar2DOutDims", outDims);
+            _cs.SetTexture(_kReshapeScalar2DToPack4, "_ReshapeScalar2DInArr", input);
+            _cs.SetTexture(_kReshapeScalar2DToPack4, "_ReshapeScalar2DOutArr", output);
+            Dispatch3D(_kReshapeScalar2DToPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void Gemm2DTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetInt("_GemmTexAInW", k);
+            _cs.SetInt("_GemmTexAInH", m);
+            _cs.SetTexture(_kGemm2DTextureA, "_GemmTexAInArr", a);
+            _cs.SetBuffer(_kGemm2DTextureA, "_MatB", b);
+            _cs.SetBuffer(_kGemm2DTextureA, "_MatC", useC ? c : b);
+            _cs.SetTexture(_kGemm2DTextureA, "_GemmTexOutArr", output);
+            Dispatch3D(_kGemm2DTextureA, n, m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void SftPack4(RenderTexture input, RenderTexture condMul, RenderTexture condAdd, int outPacks, int halfPacks, RenderTexture output)

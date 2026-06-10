@@ -94,6 +94,10 @@ namespace NcnnCompute
             public int packs;
             public int refs;
             public bool owned;
+            public bool hasLogicalShape;
+            public BufferShape logicalShape;
+            public bool hasStorageShape;
+            public BufferShape storageShape;
         }
 
         public sealed class IndexRef
@@ -118,6 +122,10 @@ namespace NcnnCompute
             public int packs;
             public int refs;
             public bool owned;
+            public bool hasLogicalShape;
+            public BufferShape logicalShape;
+            public bool hasStorageShape;
+            public BufferShape storageShape;
         }
 
         public sealed class BufferRef
@@ -637,7 +645,11 @@ namespace NcnnCompute
                     height = materialized.height,
                     packs = GetTexturePackCount(logicalShape, materialized),
                     refs = 1,
-                    owned = true
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = logicalShape,
+                    hasStorageShape = true,
+                    storageShape = logicalShape
                 };
                 return materialized;
             }
@@ -2112,6 +2124,8 @@ namespace NcnnCompute
         {
             if (tensor == null)
                 throw new ArgumentNullException(nameof(tensor));
+            if (tensor.hasLogicalShape)
+                return tensor.logicalShape;
             return new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4));
         }
 
@@ -2558,7 +2572,11 @@ namespace NcnnCompute
                 height = materialized.height,
                 packs = packs,
                 refs = 1,
-                owned = true
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = shape,
+                hasStorageShape = true,
+                storageShape = shape
             };
             textureBlobs[name] = tr;
             textureShapes[name] = shape;
@@ -2727,7 +2745,11 @@ namespace NcnnCompute
                     height = rt.height,
                     packs = packs,
                     refs = useCount,
-                    owned = false
+                    owned = false,
+                    hasLogicalShape = true,
+                    logicalShape = logicalShape,
+                    hasStorageShape = true,
+                    storageShape = logicalShape
                 };
                 textureShapes[kv.Key] = logicalShape;
             }
@@ -3145,7 +3167,35 @@ namespace NcnnCompute
                 height = texture.height,
                 packs = GetTexturePackCount(logicalShape, texture),
                 refs = 1,
-                owned = true
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = logicalShape,
+                hasStorageShape = true,
+                storageShape = logicalShape
+            };
+            textureShapes[name] = logicalShape;
+        }
+
+        internal static void SetTextureBlob(
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            string name,
+            RenderTexture texture,
+            BufferShape logicalShape,
+            BufferShape storageShape)
+        {
+            textureBlobs[name] = new TensorRef
+            {
+                texture = texture,
+                width = texture.width,
+                height = texture.height,
+                packs = GetTexturePackCount(storageShape, texture),
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = logicalShape,
+                hasStorageShape = true,
+                storageShape = storageShape
             };
             textureShapes[name] = logicalShape;
         }
@@ -3249,7 +3299,11 @@ namespace NcnnCompute
                 height = rt.height,
                 packs = Mathf.Max(1, Mathf.CeilToInt(tensor.c / 4f)),
                 refs = 1,
-                owned = true
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c),
+                hasStorageShape = true,
+                storageShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c)
             };
             if (shapes != null)
                 shapes[topName] = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
@@ -3280,7 +3334,11 @@ namespace NcnnCompute
                 height = height,
                 packs = packs,
                 refs = 1,
-                owned = true
+                owned = true,
+                hasLogicalShape = logicalShape.HasValue,
+                logicalShape = logicalShape ?? default,
+                hasStorageShape = logicalShape.HasValue,
+                storageShape = logicalShape ?? default
             };
             if (shapes != null)
                 shapes[topName] = logicalShape ?? new BufferShape(3, Mathf.Max(1, width), Mathf.Max(1, height), 1, Mathf.Max(1, packs * 4));
@@ -4560,9 +4618,25 @@ namespace NcnnCompute
 
         internal static BufferShape GetTextureShape(Dictionary<string, BufferShape> textureShapes, TensorRef tr, string name)
         {
-            if (textureShapes.TryGetValue(name, out var shape))
+            if (textureShapes != null && textureShapes.TryGetValue(name, out var shape))
                 return shape;
+            if (tr != null && tr.hasLogicalShape)
+                return tr.logicalShape;
             return new BufferShape(3, tr.width, tr.height, 1, tr.packs * 4);
+        }
+
+        internal static BufferShape GetTextureStorageShape(TensorRef tr, BufferShape fallbackLogicalShape)
+        {
+            if (tr != null && tr.hasStorageShape)
+                return tr.storageShape;
+            return fallbackLogicalShape;
+        }
+
+        internal static BufferShape GetCmdStorageShape(CmdTensorRef tr, BufferShape fallbackLogicalShape)
+        {
+            if (tr != null && tr.hasStorageShape)
+                return tr.storageShape;
+            return fallbackLogicalShape;
         }
 
         internal int ResolveInputLogicalChannels(string inputBlobName, int fallbackChannels)

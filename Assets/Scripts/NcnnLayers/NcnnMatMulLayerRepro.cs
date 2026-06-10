@@ -14,8 +14,9 @@ namespace NcnnCompute
 
         private sealed class VistaTailPack4Plan
         {
-            public string featureBlobName;
+            public string featureTextureBlobName;
             public string promptBlobName;
+            public NcnnRepro.BufferShape featureShape;
             public NcnnRepro.BufferShape outputShape;
             public string promptMemoryLayerName;
         }
@@ -120,14 +121,10 @@ namespace NcnnCompute
                 return false;
             if (!TryResolveVistaTailPack4Plan(owner, layer, context, out var plan))
                 return false;
-            if (!owner.TryGetPack4Texture(
-                    plan.featureBlobName,
-                    context.textureBlobs,
-                    context.textureShapes,
-                    context.bufferBlobs,
-                    context.bufferViews,
-                    out var featureTex,
-                    out var featureShape))
+            if (context.textureBlobs == null
+                || !context.textureBlobs.TryGetValue(plan.featureTextureBlobName, out var featureTex)
+                || featureTex == null
+                || featureTex.texture == null)
             {
                 return false;
             }
@@ -162,6 +159,7 @@ namespace NcnnCompute
             }
             if (promptBuf == null || promptView == null)
                 return false;
+            var featureShape = plan.featureShape;
             if (promptView.dims != 1 || promptView.w != featureShape.c)
                 return false;
             if (featureShape.dims != 4 || featureShape.c <= 0 || featureTex.packs != Mathf.CeilToInt(featureShape.c / 4f))
@@ -183,7 +181,7 @@ namespace NcnnCompute
             owner.DebugLog?.Invoke(
                 "[VistaTailPack4] specialized path"
                 + " | layer=" + layer.name
-                + " | feature=" + plan.featureBlobName
+                + " | feature=" + plan.featureTextureBlobName
                 + " | prompt=" + plan.promptBlobName
                 + " | output=" + layer.topNames[0]
                 + " | featureShape=d" + featureShape.dims + ":" + featureShape.w + "x" + featureShape.h + "x" + featureShape.d + "x" + featureShape.c
@@ -228,14 +226,16 @@ namespace NcnnCompute
             if (!string.Equals(reshape.name, "reshape_124", StringComparison.Ordinal))
                 return false;
 
-            var featureBlobName = bName;
-            if (!context.textureShapes.TryGetValue(featureBlobName, out var featureShape))
+            var featureSourceBlobName = reshape.bottomNames[0];
+            if (!TryGetBlobShape(context, featureSourceBlobName, out var featureShape))
                 return false;
             if (featureShape.dims != 4)
                 return false;
-            if (featureShape.w != 128 || featureShape.h != 128 || featureShape.d != 128 || featureShape.c != aShape.w)
+            if (featureShape.w <= 0 || featureShape.h <= 0 || featureShape.d <= 0 || featureShape.c != aShape.w)
                 return false;
             if (bShape.w != featureShape.w * featureShape.h * featureShape.d)
+                return false;
+            if (bShape.h != featureShape.c)
                 return false;
 
             string promptMemoryLayerName = null;
@@ -245,8 +245,9 @@ namespace NcnnCompute
 
             plan = new VistaTailPack4Plan
             {
-                featureBlobName = featureBlobName,
+                featureTextureBlobName = bName,
                 promptBlobName = aName,
+                featureShape = featureShape,
                 outputShape = new NcnnRepro.BufferShape(4, featureShape.w, featureShape.h, featureShape.d, 1),
                 promptMemoryLayerName = promptMemoryLayerName
             };
@@ -262,6 +263,19 @@ namespace NcnnCompute
             if (context == null || string.IsNullOrWhiteSpace(blobName))
                 return false;
 
+            if (context.textureShapes != null && context.textureShapes.TryGetValue(blobName, out shape))
+                return true;
+
+            if (context.textureBlobs != null
+                && context.textureBlobs.TryGetValue(blobName, out var textureRef)
+                && textureRef != null
+                && textureRef.texture != null
+                && textureRef.hasLogicalShape)
+            {
+                shape = textureRef.logicalShape;
+                return true;
+            }
+
             if (context.bufferViews != null
                 && context.bufferViews.TryGetValue(blobName, out var view)
                 && view != null
@@ -270,9 +284,6 @@ namespace NcnnCompute
                 shape = new NcnnRepro.BufferShape(view.dims, view.w, view.h, view.d, view.c);
                 return true;
             }
-
-            if (context.textureShapes != null && context.textureShapes.TryGetValue(blobName, out shape))
-                return true;
 
             return false;
         }

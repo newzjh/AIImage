@@ -63,11 +63,16 @@
 #pragma kernel NcnnCropPack4
 #pragma kernel NcnnSlicePack4
 #pragma kernel NcnnPermutePack4
+#pragma kernel NcnnPermutePack4CDHW
+#pragma kernel NcnnWindowPartitionPack4
+#pragma kernel NcnnWindowUnpartitionPack4
+#pragma kernel NcnnReshapeScalar2DToPack4
 #pragma kernel NcnnSwishPack4
 #pragma kernel NcnnSigmoidPack4
 #pragma kernel NcnnGeluPack4
 #pragma kernel NcnnMatMul2D
 #pragma kernel NcnnVistaTailPromptDotPack4
+#pragma kernel NcnnGemm2DTextureA
 #pragma kernel NcnnGemm2D
 #pragma kernel NcnnGemm2D16
 #pragma kernel NcnnLayerNorm2D
@@ -2835,6 +2840,59 @@ int _PermutePack4OutC;
 int _PermutePack4Axis0;
 int _PermutePack4Axis1;
 int _PermutePack4Axis2;
+Texture2DArray<float4> _PermutePack4CDHWInArr;
+RWTexture2DArray<float4> _PermutePack4CDHWOutArr;
+int _PermutePack4CDHWInW;
+int _PermutePack4CDHWInH;
+int _PermutePack4CDHWInD;
+int _PermutePack4CDHWInC;
+int _PermutePack4CDHWOutW;
+int _PermutePack4CDHWOutH;
+int _PermutePack4CDHWOutD;
+int _PermutePack4CDHWOutC;
+int _PermutePack4CDHWAxis0;
+int _PermutePack4CDHWAxis1;
+int _PermutePack4CDHWAxis2;
+int _PermutePack4CDHWAxis3;
+Texture2DArray<float4> _WindowPartitionPack4InArr;
+RWTexture2DArray<float4> _WindowPartitionPack4OutArr;
+int _WindowPartitionPack4InW;
+int _WindowPartitionPack4InH;
+int _WindowPartitionPack4InD;
+int _WindowPartitionPack4InC;
+int _WindowPartitionPack4OutW;
+int _WindowPartitionPack4OutH;
+int _WindowPartitionPack4OutC;
+int _WindowPartitionPack4GroupsA;
+int _WindowPartitionPack4GroupsB;
+int _WindowPartitionPack4GroupsC;
+int _WindowPartitionPack4TokensA;
+int _WindowPartitionPack4TokensB;
+int _WindowPartitionPack4TokensC;
+Texture2DArray<float4> _WindowUnpartitionPack4InArr;
+RWTexture2DArray<float4> _WindowUnpartitionPack4OutArr;
+int _WindowUnpartitionPack4InW;
+int _WindowUnpartitionPack4InH;
+int _WindowUnpartitionPack4InC;
+int _WindowUnpartitionPack4OutW;
+int _WindowUnpartitionPack4OutH;
+int _WindowUnpartitionPack4OutD;
+int _WindowUnpartitionPack4OutC;
+int _WindowUnpartitionPack4GroupsA;
+int _WindowUnpartitionPack4GroupsB;
+int _WindowUnpartitionPack4GroupsC;
+int _WindowUnpartitionPack4TokensA;
+int _WindowUnpartitionPack4TokensB;
+int _WindowUnpartitionPack4TokensC;
+Texture2DArray<float4> _ReshapeScalar2DInArr;
+RWTexture2DArray<float4> _ReshapeScalar2DOutArr;
+int _ReshapeScalar2DInW;
+int _ReshapeScalar2DInH;
+int _ReshapeScalar2DOutW;
+int _ReshapeScalar2DOutH;
+int _ReshapeScalar2DOutD;
+int _ReshapeScalar2DOutC;
+int _ReshapeScalar2DOutDims;
 
 
 Texture2DArray<float4> _ActInArr;
@@ -2845,6 +2903,8 @@ StructuredBuffer<float> _MatA;
 StructuredBuffer<float> _MatB;
 StructuredBuffer<float> _MatC;
 RWStructuredBuffer<float> _MatOut;
+Texture2DArray<float4> _GemmTexAInArr;
+RWTexture2DArray<float4> _GemmTexOutArr;
 int _MatM;
 int _MatN;
 int _MatK;
@@ -2853,6 +2913,8 @@ int _MatUseC;
 int _MatBroadcastTypeC;
 float _MatAlpha;
 float _MatBeta;
+int _GemmTexAInW;
+int _GemmTexAInH;
 Texture2DArray<float4> _VistaTailInArr;
 StructuredBuffer<float> _VistaTailPrompt;
 RWTexture2DArray<float4> _VistaTailOutArr;
@@ -3483,6 +3545,14 @@ float NcnnReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel
     return NcnnReadLane(v, channel % 4);
 }
 
+float NcnnReadPack4ChannelCDHW(Texture2DArray<float4> tex, int x, int y, int z, int channel, int channelCount)
+{
+    int packCount = max(1, (channelCount + 3) / 4);
+    int slice = z * packCount + channel / 4;
+    float4 v = tex[int3(x, y, slice)];
+    return NcnnReadLane(v, channel % 4);
+}
+
 [numthreads(8,8,1)]
 void NcnnShuffleChannelPack4(uint3 id : SV_DispatchThreadID)
 {
@@ -3627,6 +3697,208 @@ void NcnnPermutePack4(uint3 id : SV_DispatchThreadID)
     }
 
     _PermutePack4OutArr[int3(x, y, p)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnPermutePack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _PermutePack4CDHWOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int slice = (int)id.z;
+    if (slice < 0 || slice >= (int)d) return;
+
+    int outPackCount = max(1, (_PermutePack4CDHWOutC + 3) / 4);
+    int outZ = slice / outPackCount;
+    int outPack = slice - outZ * outPackCount;
+    if (outZ < 0 || outZ >= _PermutePack4CDHWOutD)
+    {
+        _PermutePack4CDHWOutArr[int3((int)id.x, (int)id.y, slice)] = 0.0;
+        return;
+    }
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int4 oc4 = outPack * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    if (oc4.x < _PermutePack4CDHWOutC)
+    {
+        int srcW = _PermutePack4CDHWAxis0 == 0 ? outX : (_PermutePack4CDHWAxis1 == 0 ? outY : (_PermutePack4CDHWAxis2 == 0 ? outZ : oc4.x));
+        int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.x));
+        int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.x));
+        int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.x));
+        o.x = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+    }
+    if (oc4.y < _PermutePack4CDHWOutC)
+    {
+        int srcW = _PermutePack4CDHWAxis0 == 0 ? outX : (_PermutePack4CDHWAxis1 == 0 ? outY : (_PermutePack4CDHWAxis2 == 0 ? outZ : oc4.y));
+        int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.y));
+        int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.y));
+        int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.y));
+        o.y = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+    }
+    if (oc4.z < _PermutePack4CDHWOutC)
+    {
+        int srcW = _PermutePack4CDHWAxis0 == 0 ? outX : (_PermutePack4CDHWAxis1 == 0 ? outY : (_PermutePack4CDHWAxis2 == 0 ? outZ : oc4.z));
+        int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.z));
+        int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.z));
+        int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.z));
+        o.z = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+    }
+    if (oc4.w < _PermutePack4CDHWOutC)
+    {
+        int srcW = _PermutePack4CDHWAxis0 == 0 ? outX : (_PermutePack4CDHWAxis1 == 0 ? outY : (_PermutePack4CDHWAxis2 == 0 ? outZ : oc4.w));
+        int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.w));
+        int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.w));
+        int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.w));
+        o.w = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+    }
+
+    _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnWindowPartitionPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _WindowPartitionPack4OutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int pack = (int)id.z;
+    if (pack < 0 || pack >= (int)d) return;
+
+    int outX = (int)id.x;
+    int outToken = (int)id.y;
+    int4 outWindow4 = pack * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    int tokenStrideBC = _WindowPartitionPack4TokensB * _WindowPartitionPack4TokensC;
+    int tokenA = outToken / max(1, tokenStrideBC);
+    int tokenRem = outToken - tokenA * tokenStrideBC;
+    int tokenB = tokenRem / max(1, _WindowPartitionPack4TokensC);
+    int tokenC = tokenRem - tokenB * _WindowPartitionPack4TokensC;
+
+    if (outWindow4.x < _WindowPartitionPack4OutC)
+    {
+        int groupA = outWindow4.x / max(1, _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC);
+        int groupRem = outWindow4.x - groupA * _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC;
+        int groupB = groupRem / max(1, _WindowPartitionPack4GroupsC);
+        int groupC = groupRem - groupB * _WindowPartitionPack4GroupsC;
+        int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
+        int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
+        int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
+        o.x = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+    }
+    if (outWindow4.y < _WindowPartitionPack4OutC)
+    {
+        int groupA = outWindow4.y / max(1, _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC);
+        int groupRem = outWindow4.y - groupA * _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC;
+        int groupB = groupRem / max(1, _WindowPartitionPack4GroupsC);
+        int groupC = groupRem - groupB * _WindowPartitionPack4GroupsC;
+        int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
+        int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
+        int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
+        o.y = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+    }
+    if (outWindow4.z < _WindowPartitionPack4OutC)
+    {
+        int groupA = outWindow4.z / max(1, _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC);
+        int groupRem = outWindow4.z - groupA * _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC;
+        int groupB = groupRem / max(1, _WindowPartitionPack4GroupsC);
+        int groupC = groupRem - groupB * _WindowPartitionPack4GroupsC;
+        int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
+        int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
+        int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
+        o.z = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+    }
+    if (outWindow4.w < _WindowPartitionPack4OutC)
+    {
+        int groupA = outWindow4.w / max(1, _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC);
+        int groupRem = outWindow4.w - groupA * _WindowPartitionPack4GroupsB * _WindowPartitionPack4GroupsC;
+        int groupB = groupRem / max(1, _WindowPartitionPack4GroupsC);
+        int groupC = groupRem - groupB * _WindowPartitionPack4GroupsC;
+        int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
+        int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
+        int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
+        o.w = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+    }
+
+    _WindowPartitionPack4OutArr[int3(outX, outToken, pack)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnWindowUnpartitionPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _WindowUnpartitionPack4OutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int slice = (int)id.z;
+    if (slice < 0 || slice >= (int)d) return;
+
+    int outPackCount = max(1, (_WindowUnpartitionPack4OutC + 3) / 4);
+    int outZ = slice / outPackCount;
+    int outPack = slice - outZ * outPackCount;
+    if (outZ < 0 || outZ >= _WindowUnpartitionPack4OutD)
+    {
+        _WindowUnpartitionPack4OutArr[int3((int)id.x, (int)id.y, slice)] = 0.0;
+        return;
+    }
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int4 outC4 = outPack * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    if (outC4.x < _WindowUnpartitionPack4OutC)
+    {
+        int groupA = outC4.x / max(1, _WindowUnpartitionPack4TokensA);
+        int tokenA = outC4.x - groupA * _WindowUnpartitionPack4TokensA;
+        int groupB = outZ / max(1, _WindowUnpartitionPack4TokensB);
+        int tokenB = outZ - groupB * _WindowUnpartitionPack4TokensB;
+        int groupC = outY / max(1, _WindowUnpartitionPack4TokensC);
+        int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
+        int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
+        int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
+        o.x = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+    }
+    if (outC4.y < _WindowUnpartitionPack4OutC)
+    {
+        int groupA = outC4.y / max(1, _WindowUnpartitionPack4TokensA);
+        int tokenA = outC4.y - groupA * _WindowUnpartitionPack4TokensA;
+        int groupB = outZ / max(1, _WindowUnpartitionPack4TokensB);
+        int tokenB = outZ - groupB * _WindowUnpartitionPack4TokensB;
+        int groupC = outY / max(1, _WindowUnpartitionPack4TokensC);
+        int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
+        int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
+        int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
+        o.y = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+    }
+    if (outC4.z < _WindowUnpartitionPack4OutC)
+    {
+        int groupA = outC4.z / max(1, _WindowUnpartitionPack4TokensA);
+        int tokenA = outC4.z - groupA * _WindowUnpartitionPack4TokensA;
+        int groupB = outZ / max(1, _WindowUnpartitionPack4TokensB);
+        int tokenB = outZ - groupB * _WindowUnpartitionPack4TokensB;
+        int groupC = outY / max(1, _WindowUnpartitionPack4TokensC);
+        int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
+        int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
+        int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
+        o.z = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+    }
+    if (outC4.w < _WindowUnpartitionPack4OutC)
+    {
+        int groupA = outC4.w / max(1, _WindowUnpartitionPack4TokensA);
+        int tokenA = outC4.w - groupA * _WindowUnpartitionPack4TokensA;
+        int groupB = outZ / max(1, _WindowUnpartitionPack4TokensB);
+        int tokenB = outZ - groupB * _WindowUnpartitionPack4TokensB;
+        int groupC = outY / max(1, _WindowUnpartitionPack4TokensC);
+        int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
+        int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
+        int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
+        o.w = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+    }
+
+    _WindowUnpartitionPack4OutArr[int3(outX, outY, slice)] = o;
 }
 
 [numthreads(8,8,1)]
@@ -4542,6 +4814,110 @@ void NcnnVistaTailPromptDotPack4(uint3 id : SV_DispatchThreadID)
     }
 
     _VistaTailOutArr[int3(x, y, z)] = float4(sum, 0.0, 0.0, 0.0);
+}
+
+static float NcnnReadScalar2DLinear(uint linear, int inW, int inH)
+{
+    if (inW <= 0 || inH <= 0)
+        return 0.0;
+
+    uint width = (uint)inW;
+    uint x = linear % width;
+    uint y = linear / width;
+    if (y >= (uint)inH)
+        return 0.0;
+
+    return _ReshapeScalar2DInArr[int3((int)x, (int)y, 0)].x;
+}
+
+[numthreads(8,8,1)]
+void NcnnReshapeScalar2DToPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ReshapeScalar2DOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int slice = (int)id.z;
+    int outPacks = max(1, (_ReshapeScalar2DOutC + 3) / 4);
+    int z = 0;
+    int pack = slice;
+    if (_ReshapeScalar2DOutDims >= 4)
+    {
+        z = slice / outPacks;
+        pack = slice - z * outPacks;
+        if (z < 0 || z >= max(1, _ReshapeScalar2DOutD))
+        {
+            _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = 0.0;
+            return;
+        }
+    }
+
+    float4 value = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int c = pack * 4 + lane;
+        if (c >= _ReshapeScalar2DOutC)
+            continue;
+
+        uint linear = _ReshapeScalar2DOutDims >= 4
+            ? (((uint)c * (uint)max(1, _ReshapeScalar2DOutD) + (uint)z) * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x
+            : ((uint)c * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x;
+
+        float scalar = NcnnReadScalar2DLinear(linear, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
+        if (lane == 0) value.x = scalar;
+        else if (lane == 1) value.y = scalar;
+        else if (lane == 2) value.z = scalar;
+        else value.w = scalar;
+    }
+
+    _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = value;
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DTextureA(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int row = (int)id.y;
+    int col = (int)id.x;
+    if (row < 0 || row >= _MatM || col < 0 || col >= _MatN)
+        return;
+
+    float sum = 0.0;
+    if (_MatUseC != 0)
+    {
+        if (_MatBroadcastTypeC == 0)
+            sum = _MatC[0];
+        else if (_MatBroadcastTypeC == 1)
+            sum = _MatC[row];
+        else if (_MatBroadcastTypeC == 3)
+            sum = _MatC[row * _MatN + col];
+        else if (_MatBroadcastTypeC == 4)
+            sum = _MatC[col];
+        sum *= _MatBeta;
+    }
+
+    float acc = 0.0;
+    [loop]
+    for (int kk = 0; kk < _MatK; kk++)
+    {
+        float a = 0.0;
+        if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
+            a = _GemmTexAInArr[int3(kk, row, 0)].x;
+
+        float b = _MatTransB != 0
+            ? _MatB[col * _MatK + kk]
+            : _MatB[kk * _MatN + col];
+        acc += a * b;
+    }
+
+    sum += acc * _MatAlpha;
+    _GemmTexOutArr[int3(col, row, 0)] = float4(sum, 0.0, 0.0, 0.0);
 }
 
 [numthreads(8,8,1)]

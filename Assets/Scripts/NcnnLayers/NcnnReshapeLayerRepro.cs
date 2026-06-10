@@ -159,6 +159,15 @@ namespace NcnnCompute
                 var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
                 var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
 
+                if (ShouldKeepVistaTailFeatureTextureAlias(layer, srcShape, outShape))
+                {
+                    textureBlobs[layer.topNames[0]] = src;
+                    textureShapes[layer.topNames[0]] = outShape;
+                    src.refs++;
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
                 if (!canAliasTexture)
                 {
                     var scratchTensor = owner.RentScratchTensorFromTexture(src, srcShape);
@@ -259,7 +268,7 @@ namespace NcnnCompute
                     if (TryShouldKeepVistaTailFeatureTexture(layer, srcShape, outView))
                     {
                         textureBlobs[layer.topNames[0]] = src;
-                        textureShapes[layer.topNames[0]] = srcShape;
+                        textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
                         src.refs++;
                     }
                 }
@@ -289,6 +298,24 @@ namespace NcnnCompute
             var bottomShapes = BuildBottomShapes(owner, layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, tempOwned, !string.IsNullOrWhiteSpace(shapeExpr));
             if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var src, out var srcShape))
                 throw new InvalidOperationException("Reshape render-texture path requires existing texture input: " + layer.name);
+
+            if (TryExecuteRenderTextureWindowPartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
+            {
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            if (TryExecuteRenderTextureWindowUnpartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
+            {
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            if (TryExecuteRenderTextureScalar2DToPack4Reshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
+            {
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
 
@@ -487,6 +514,23 @@ namespace NcnnCompute
                 && outView.h == srcShape.c;
         }
 
+        private static bool ShouldKeepVistaTailFeatureTextureAlias(
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.BufferShape outShape)
+        {
+            if (layer == null)
+                return false;
+            if (!string.Equals(layer.name, "reshape_124", StringComparison.Ordinal))
+                return false;
+            if (srcShape.dims != 4 || outShape.dims != 2)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.d <= 0 || srcShape.c <= 0)
+                return false;
+            return outShape.w == srcShape.w * srcShape.h * srcShape.d
+                && outShape.h == srcShape.c;
+        }
+
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             if (owner.ShouldForceCurrentLayerBufferPath())
@@ -500,12 +544,123 @@ namespace NcnnCompute
             if (TryResolveImplicitAttentionReshapeShape(owner, layer, srcShape, out _))
                 return false;
             if (TryResolveWindowPartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
-                return false;
+                return src != null && src.texture != null;
             if (TryResolveWindowUnpartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
-                return false;
+                return src != null && src.texture != null;
+            if (TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out _))
+                return src != null && src.texture != null;
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
             return CanAliasTextureLayout(srcShape, outShape) && src != null && src.texture != null;
+        }
+
+        private static bool TryExecuteRenderTextureWindowPartition(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!TryResolveWindowPartitionPattern(owner, layer, srcShape, out var outShape, out var groupsA, out var groupsB, out var groupsC, out var tokensA, out var tokensB, out var tokensC))
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            if (storageShape.dims != 4)
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
+            owner.Ops.WindowPartitionPack4(
+                src.texture,
+                storageShape.w,
+                storageShape.h,
+                storageShape.d,
+                storageShape.c,
+                outShape.w,
+                outShape.h,
+                outShape.c,
+                groupsA,
+                groupsB,
+                groupsC,
+                tokensA,
+                tokensB,
+                tokensC,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureScalar2DToPack4Reshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out var outShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.ReshapeScalar2DToPack4(
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                outShape.dims,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureWindowUnpartition(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!TryResolveWindowUnpartitionPattern(owner, layer, srcShape, out var outShape, out var groupsA, out var groupsB, out var groupsC, out var tokensA, out var tokensB, out var tokensC))
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            if (storageShape.dims != 3)
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = Mathf.Max(1, outShape.d) * outPacks;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.WindowUnpartitionPack4(
+                src.texture,
+                storageShape.w,
+                storageShape.h,
+                storageShape.c,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                groupsA,
+                groupsB,
+                groupsC,
+                tokensA,
+                tokensB,
+                tokensC,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            return true;
         }
 
         private static NcnnTensorBuffer TryResolveImplicitAttentionReshape(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnTensorBuffer src)
@@ -590,6 +745,29 @@ namespace NcnnCompute
                 return false;
 
             outShape = new NcnnRepro.BufferShape(4, headDim, srcShape.h, srcShape.c, totalChannels);
+            return true;
+        }
+
+        private static bool TryResolveScalar2DToPack4ReshapeShape(
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            out NcnnRepro.BufferShape outShape)
+        {
+            outShape = default;
+            if (layer == null)
+                return false;
+            if (srcShape.dims != 2 || srcShape.w <= 0 || srcShape.h <= 0)
+                return false;
+
+            outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer);
+            if ((outShape.dims != 3 && outShape.dims != 4) || outShape.w <= 0 || outShape.h <= 0 || outShape.c <= 0)
+                return false;
+
+            var srcCount = srcShape.w * srcShape.h;
+            var outCount = outShape.w * outShape.h * Mathf.Max(1, outShape.d) * outShape.c;
+            if (srcCount != outCount)
+                return false;
+
             return true;
         }
 

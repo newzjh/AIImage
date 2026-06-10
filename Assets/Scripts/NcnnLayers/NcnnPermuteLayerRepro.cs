@@ -89,10 +89,32 @@ namespace NcnnCompute
             }
             else
             {
-                var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
-                var outRt = owner.RentTempArray(outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
-                owner.Ops.PermutePack4(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, axes, outShape.w, outShape.h, outShape.c, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+                if (srcShape.dims == 4)
+                {
+                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+                    var outSlices = Mathf.Max(1, outShape.d) * outPacks;
+                    var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                    owner.Ops.PermutePack4Cdhw(
+                        srcTex.texture,
+                        srcShape.w,
+                        srcShape.h,
+                        srcShape.d,
+                        srcShape.c,
+                        axes,
+                        outShape.w,
+                        outShape.h,
+                        outShape.d,
+                        outShape.c,
+                        outRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+                }
+                else
+                {
+                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+                    var outRt = owner.RentTempArray(outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PermutePack4(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, axes, outShape.w, outShape.h, outShape.c, outRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+                }
             }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
@@ -119,8 +141,29 @@ namespace NcnnCompute
                 else
                 {
                     var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
-                    var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
-                    owner.Ops.PermutePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.c, axes, outShape.w, outShape.h, outShape.c, outArr);
+                    var outDepth = srcShape.dims == 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
+                    var outFormat = srcShape.dims == 4 ? NcnnRepro.ResolveTensorTextureFormat(outShape.dims) : RenderTextureFormat.ARGBHalf;
+                    var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outDepth, outFormat);
+                    if (srcShape.dims == 4)
+                    {
+                        owner.Ops.PermutePack4Cdhw(
+                            cmd,
+                            src.texture,
+                            srcShape.w,
+                            srcShape.h,
+                            srcShape.d,
+                            srcShape.c,
+                            axes,
+                            outShape.w,
+                            outShape.h,
+                            outShape.d,
+                            outShape.c,
+                            outArr);
+                    }
+                    else
+                    {
+                        owner.Ops.PermutePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.c, axes, outShape.w, outShape.h, outShape.c, outArr);
+                    }
                     blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                     {
                         texture = outArr,
@@ -128,7 +171,11 @@ namespace NcnnCompute
                         height = outShape.h,
                         packs = outPacks,
                         refs = 1,
-                        owned = true
+                        owned = true,
+                        hasLogicalShape = true,
+                        logicalShape = outShape,
+                        hasStorageShape = true,
+                        storageShape = outShape
                     };
                     shapes[layer.topNames[0]] = outShape;
                 }
@@ -164,12 +211,21 @@ namespace NcnnCompute
         {
             axes = default;
             outShape = default;
-            if (srcShape.dims != 3 || srcShape.d != 1)
-                return false;
+            if (srcShape.dims == 3 && srcShape.d == 1)
+            {
+                axes = NcnnRepro.ResolvePermuteAxes(3, orderType, "PermutePack4");
+                outShape = NcnnRepro.ResolvePermuteShape(srcShape, 3, axes);
+                return outShape.dims == 3 && outShape.d == 1;
+            }
 
-            axes = NcnnRepro.ResolvePermuteAxes(3, orderType, "PermutePack4");
-            outShape = NcnnRepro.ResolvePermuteShape(srcShape, 3, axes);
-            return outShape.dims == 3 && outShape.d == 1;
+            if (srcShape.dims == 4)
+            {
+                axes = NcnnRepro.ResolvePermuteAxes(4, orderType, "PermutePack4CDHW");
+                outShape = NcnnRepro.ResolvePermuteShape(srcShape, 4, axes);
+                return outShape.dims == 4;
+            }
+
+            return false;
         }
     }
 }
