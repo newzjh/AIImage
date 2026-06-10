@@ -269,6 +269,7 @@ namespace NcnnCompute
         private readonly int _kConv3dBuf;
         private readonly int _kConv3dPack4Cdhw;
         private readonly int _kDeconvolutionBuf;
+        private readonly int _kDeconvolution3dPack4Cdhw;
         private readonly int _kDeconvolution3dBuf;
         private readonly int _kTexToBuf3;
         private readonly int _kBufToTex3;
@@ -344,6 +345,7 @@ namespace NcnnCompute
         private readonly int _kSigmoidPack4;
         private readonly int _kGeluPack4;
         private readonly int _kMatMul2D;
+        private readonly int _kVistaTailPromptDotPack4;
         private readonly int _kGemm2D;
         private readonly int _kGemm2D16;
         private readonly int _kLayerNorm2D;
@@ -418,6 +420,7 @@ namespace NcnnCompute
             _kConv3dBuf = _cs.FindKernel("NcnnConv3dBuf");
             _kConv3dPack4Cdhw = _cs.FindKernel("NcnnConv3dPack4CDHW");
             _kDeconvolutionBuf = _cs.FindKernel("NcnnDeconvolutionBuf");
+            _kDeconvolution3dPack4Cdhw = _cs.FindKernel("NcnnDeconvolution3dPack4CDHW");
             _kDeconvolution3dBuf = _cs.FindKernel("NcnnDeconvolution3dBuf");
             _kConvDepthWise = _cs.FindKernel("NcnnConvDepthWise");
             _kTexToBuf3 = _cs.FindKernel("NcnnTexToBuf3");
@@ -487,6 +490,7 @@ namespace NcnnCompute
             _kSigmoidPack4 = _cs.FindKernel("NcnnSigmoidPack4");
             _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
             _kMatMul2D = _cs.FindKernel("NcnnMatMul2D");
+            _kVistaTailPromptDotPack4 = _cs.FindKernel("NcnnVistaTailPromptDotPack4");
             _kGemm2D = _cs.FindKernel("NcnnGemm2D");
             _kGemm2D16 = _cs.FindKernel("NcnnGemm2D16");
             _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
@@ -3312,6 +3316,25 @@ namespace NcnnCompute
             Dispatch2D(_cs, _kMatMul2D, n, m, 8, 8);
         }
 
+        public void VistaTailPromptDotPack4(RenderTexture featureTex, int width, int height, int depth, int packs, ComputeBuffer prompt, RenderTexture output)
+        {
+            if (featureTex == null) throw new ArgumentNullException(nameof(featureTex));
+            if (prompt == null) throw new ArgumentNullException(nameof(prompt));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (width <= 0 || height <= 0 || depth <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+            if (prompt.count < packs * 4) throw new ArgumentOutOfRangeException(nameof(prompt), "prompt vector is smaller than required packed channel count");
+
+            _cs.SetInt("_VistaTailW", width);
+            _cs.SetInt("_VistaTailH", height);
+            _cs.SetInt("_VistaTailD", depth);
+            _cs.SetInt("_VistaTailPacks", packs);
+            _cs.SetTexture(_kVistaTailPromptDotPack4, "_VistaTailInArr", featureTex);
+            _cs.SetBuffer(_kVistaTailPromptDotPack4, "_VistaTailPrompt", prompt);
+            _cs.SetTexture(_kVistaTailPromptDotPack4, "_VistaTailOutArr", output);
+            Dispatch3D(_kVistaTailPromptDotPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, depth), 8, 8);
+        }
+
         public void Gemm2D(ComputeBuffer a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, ComputeBuffer output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -4197,6 +4220,77 @@ namespace NcnnCompute
             _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvB", biasO);
             _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvOut", output.buffer);
             Dispatch3D(_kDeconvolution3dBuf, output.w, output.h, output.d * outC, 8, 8);
+        }
+
+        public void Deconvolution3dPack4CDHW(
+            RenderTexture input,
+            int inW,
+            int inH,
+            int inD,
+            int inPacks,
+            ComputeBuffer weightsO4I4K3,
+            ComputeBuffer biasO4,
+            int outW,
+            int outH,
+            int outD,
+            int outPacks,
+            int kernelW,
+            int kernelH,
+            int kernelD,
+            int strideW,
+            int strideH,
+            int strideD,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            int padFront,
+            int padBehind,
+            int dilationW,
+            int dilationH,
+            int dilationD,
+            int activationType,
+            float activationParam,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsO4I4K3 == null) throw new ArgumentNullException(nameof(weightsO4I4K3));
+            if (biasO4 == null) throw new ArgumentNullException(nameof(biasO4));
+            if (inW <= 0 || inH <= 0 || inD <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0 || outD <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+            if (inPacks <= 0 || outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+
+            _cs.SetInt("_InW", inW);
+            _cs.SetInt("_InH", inH);
+            _cs.SetInt("_InD", inD);
+            _cs.SetInt("_OutW", outW);
+            _cs.SetInt("_OutH", outH);
+            _cs.SetInt("_OutD", outD);
+            _cs.SetInt("_InPacks", inPacks);
+            _cs.SetInt("_OutPacks", outPacks);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_KernelDVar", kernelD);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_StrideDVar", Mathf.Max(1, strideD));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadRightVar", Mathf.Max(0, padRight));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_PadBottomVar", Mathf.Max(0, padBottom));
+            _cs.SetInt("_PadFrontVar", Mathf.Max(0, padFront));
+            _cs.SetInt("_PadBehindVar", Mathf.Max(0, padBehind));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_DilationDVar", Mathf.Max(1, dilationD));
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kDeconvolution3dPack4Cdhw, "_ConvW4", weightsO4I4K3);
+            _cs.SetBuffer(_kDeconvolution3dPack4Cdhw, "_ConvB4", biasO4);
+            _cs.SetTexture(_kDeconvolution3dPack4Cdhw, "_ConvInArr", input);
+            _cs.SetTexture(_kDeconvolution3dPack4Cdhw, "_ConvOutArr", output);
+            Dispatch3D(_kDeconvolution3dPack4Cdhw, outW, outH, ResolveRenderTextureDispatchDepth(output, outD * outPacks), 8, 8);
         }
 
         public void LeakyReluInplace(NcnnTensorBuffer t, float slope)

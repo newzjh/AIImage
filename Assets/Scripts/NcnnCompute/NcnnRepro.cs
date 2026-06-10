@@ -658,6 +658,18 @@ namespace NcnnCompute
                 return materialized;
             }
 
+            public bool TryGetExistingTexture(string name, out RenderTexture texture)
+            {
+                texture = null;
+                if (_textureBlobs.TryGetValue(name, out var tr) && tr != null && tr.texture != null)
+                {
+                    texture = tr.texture;
+                    return true;
+                }
+
+                return false;
+            }
+
             public ComputeBuffer GetBuffer(string name)
             {
                 return GetOrMaterializeBuffer(name);
@@ -690,6 +702,15 @@ namespace NcnnCompute
                 view = new NcnnTensorBuffer(buf, 1, buf.count, 1, 1, 1, false);
                 _bufferViews[name] = view;
                 return view;
+            }
+
+            public bool TryGetExistingBufferView(string name, out NcnnTensorBuffer view)
+            {
+                if (_bufferViews.TryGetValue(name, out view) && view != null && view.buffer != null)
+                    return true;
+
+                view = null;
+                return false;
             }
 
             public bool TryGetLogicalShape(string name, out int dims, out int w, out int h, out int d, out int c)
@@ -864,6 +885,7 @@ namespace NcnnCompute
         public bool useExperimentalIteratePath = false;
         public bool LayerRuntimeProfileEnabled { get; set; }
         public bool LayerRuntimeProfileSyncGpu { get; set; }
+        public string LayerRuntimeProfilePathKindOverride { get; set; }
         public LayerRuntimeProfile LastRuntimeProfile { get; private set; }
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
         private const int FallbackMaxTextureArraySlices = 2048;
@@ -2789,7 +2811,9 @@ namespace NcnnCompute
             var profile = new LayerRuntimeProfile
             {
                 inferenceIndex = ++_runtimeProfileInferenceIndex,
-                pathKind = string.IsNullOrWhiteSpace(pathKind) ? "buffer" : pathKind,
+                pathKind = string.IsNullOrWhiteSpace(LayerRuntimeProfilePathKindOverride)
+                    ? (string.IsNullOrWhiteSpace(pathKind) ? "buffer" : pathKind)
+                    : LayerRuntimeProfilePathKindOverride,
                 syncGpu = LayerRuntimeProfileSyncGpu
             };
             LastRuntimeProfile = profile;

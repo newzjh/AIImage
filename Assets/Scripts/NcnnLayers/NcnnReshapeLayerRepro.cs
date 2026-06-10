@@ -256,6 +256,12 @@ namespace NcnnCompute
                         bufferRefs,
                         bufferViews,
                         tempOwned);
+                    if (TryShouldKeepVistaTailFeatureTexture(layer, srcShape, outView))
+                    {
+                        textureBlobs[layer.topNames[0]] = src;
+                        textureShapes[layer.topNames[0]] = srcShape;
+                        src.refs++;
+                    }
                 }
                 else
                 {
@@ -415,7 +421,11 @@ namespace NcnnCompute
         private static bool CanAliasTextureLayout(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
         {
             if (srcShape.dims > 3 || outShape.dims > 3)
+            {
+                if (CanAliasVistaTailTextureLayout(srcShape, outShape))
+                    return true;
                 return false;
+            }
 
             // A 4D tensor flattened into 2D/3D often changes the logical row-major interpretation
             // even if the pack4 texture dimensions happen to match. Keep those cases on the buffer
@@ -434,6 +444,47 @@ namespace NcnnCompute
             NcnnRepro.ResolveCmdTextureLayout(srcShape, out var srcW, out var srcH, out var srcPacks);
             NcnnRepro.ResolveCmdTextureLayout(outShape, out var outW, out var outH, out var outPacks);
             return srcW == outW && srcH == outH && srcPacks == outPacks;
+        }
+
+        private static bool CanAliasVistaTailTextureLayout(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
+        {
+            if (srcShape.dims == 4 && outShape.dims == 4)
+            {
+                return srcShape.w == outShape.w
+                    && srcShape.h == outShape.h
+                    && srcShape.d == outShape.d
+                    && srcShape.c == outShape.c;
+            }
+
+            if (srcShape.dims != 2 || outShape.dims != 4)
+                return false;
+            if (srcShape.h != 1 || srcShape.c != 1 || outShape.c != 1)
+                return false;
+
+            var srcCount = srcShape.w;
+            var outCount = outShape.w * outShape.h * outShape.d * outShape.c;
+            if (srcCount != outCount)
+                return false;
+
+            var expectedFlatW = outShape.w * outShape.h * outShape.d;
+            return srcShape.w == expectedFlatW;
+        }
+
+        private static bool TryShouldKeepVistaTailFeatureTexture(
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            NcnnTensorBuffer outView)
+        {
+            if (layer == null || outView == null)
+                return false;
+            if (!string.Equals(layer.name, "reshape_124", StringComparison.Ordinal))
+                return false;
+            if (srcShape.dims != 4 || outView.dims != 2)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.d <= 0 || srcShape.c <= 0)
+                return false;
+            return outView.w == srcShape.w * srcShape.h * srcShape.d
+                && outView.h == srcShape.c;
         }
 
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)

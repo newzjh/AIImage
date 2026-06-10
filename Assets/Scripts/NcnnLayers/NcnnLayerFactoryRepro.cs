@@ -316,6 +316,7 @@ namespace NcnnCompute
             for (var li = 0; li < Model.layers.Count; li++)
             {
                 var layer = Model.layers[li];
+                var layerOutputPath = string.Empty;
                 var emitHeartbeat = DebugLog != null
                     && (DebugLogAllLayerHeartbeats
                         || li < 8
@@ -364,11 +365,12 @@ namespace NcnnCompute
                     {
                         ClearCurrentExecutingLayer();
                     }
+                    layerOutputPath = DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs);
                     if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
                     {
                         DebugLog("[LayerOutput] idx=" + li
                             + " | name=" + (layer?.name ?? string.Empty)
-                            + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
+                            + " | path=" + layerOutputPath);
                     }
                     TryLogFirstNonFiniteLayerOutput(li, layer);
                     if (!string.IsNullOrWhiteSpace(stopAfterTopName)
@@ -405,18 +407,19 @@ namespace NcnnCompute
                 if (LayerRuntimeProfileSyncGpu)
                     Ops.DebugSyncGpu();
                 layerSw.Stop();
+                layerOutputPath = DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs);
                 RecordLayerRuntime(
                     runtimeProfile,
                     li,
                     layer,
-                    DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs),
+                    layerOutputPath,
                     layerSw.ElapsedTicks);
 
                 if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
                 {
                     DebugLog("[LayerOutput] idx=" + li
                         + " | name=" + (layer?.name ?? string.Empty)
-                        + " | path=" + DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs));
+                        + " | path=" + layerOutputPath);
                 }
                 TryLogFirstNonFiniteLayerOutput(li, layer);
                 if (!string.IsNullOrWhiteSpace(stopAfterTopName)

@@ -5,6 +5,7 @@
 #pragma kernel NcnnConv3dPack4CDHW
 #pragma kernel NcnnConvDepthWise
 #pragma kernel NcnnDeconvolutionBuf
+#pragma kernel NcnnDeconvolution3dPack4CDHW
 #pragma kernel NcnnDeconvolution3dBuf
 #pragma kernel NcnnTexToBuf3
 #pragma kernel NcnnBufToTex3
@@ -66,6 +67,7 @@
 #pragma kernel NcnnSigmoidPack4
 #pragma kernel NcnnGeluPack4
 #pragma kernel NcnnMatMul2D
+#pragma kernel NcnnVistaTailPromptDotPack4
 #pragma kernel NcnnGemm2D
 #pragma kernel NcnnGemm2D16
 #pragma kernel NcnnLayerNorm2D
@@ -2243,6 +2245,74 @@ void NcnnConv3dPack4CDHW(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnDeconvolution3dPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+
+    int outSlice = (int)id.z;
+    if (outSlice < 0 || outSlice >= (int)od) return;
+
+    int outPackCount = max(1, _OutPacks);
+    int oz = outSlice / outPackCount;
+    int op = outSlice - oz * outPackCount;
+    if (oz < 0 || oz >= _OutD || op < 0 || op >= _OutPacks) return;
+
+    int borderedX = (int)id.x + _PadLeftVar;
+    int borderedY = (int)id.y + _PadTopVar;
+    int borderedZ = oz + _PadFrontVar;
+    int kernelPlane = _KernelWVar * _KernelHVar;
+    int kernelVolume = kernelPlane * _KernelDVar;
+    float4 sum = _ConvB4[op];
+
+    for (int ip = 0; ip < _InPacks; ip++)
+    {
+        for (int kz = 0; kz < _KernelDVar; kz++)
+        {
+            int izNumerator = borderedZ - kz * _DilationDVar;
+            if (izNumerator < 0) continue;
+            if ((izNumerator % _StrideDVar) != 0) continue;
+            int iz = izNumerator / _StrideDVar;
+            if (iz < 0 || iz >= _InD) continue;
+
+            for (int ky = 0; ky < _KernelHVar; ky++)
+            {
+                int iyNumerator = borderedY - ky * _DilationHVar;
+                if (iyNumerator < 0) continue;
+                if ((iyNumerator % _StrideHVar) != 0) continue;
+                int iy = iyNumerator / _StrideHVar;
+                if (iy < 0 || iy >= _InH) continue;
+
+                for (int kx = 0; kx < _KernelWVar; kx++)
+                {
+                    int ixNumerator = borderedX - kx * _DilationWVar;
+                    if (ixNumerator < 0) continue;
+                    if ((ixNumerator % _StrideWVar) != 0) continue;
+                    int ix = ixNumerator / _StrideWVar;
+                    if (ix < 0 || ix >= _InW) continue;
+
+                    int inSlice = iz * _InPacks + ip;
+                    float4 v = _ConvInArr[int3(ix, iy, inSlice)];
+                    int kernelIndex = (kz * kernelPlane) + (ky * _KernelWVar) + kx;
+                    int weightBase = ((((op * _InPacks) + ip) * kernelVolume) + kernelIndex) * 4;
+                    float4 w0 = _ConvW4[weightBase + 0];
+                    float4 w1 = _ConvW4[weightBase + 1];
+                    float4 w2 = _ConvW4[weightBase + 2];
+                    float4 w3 = _ConvW4[weightBase + 3];
+                    sum.x += dot(v, w0);
+                    sum.y += dot(v, w1);
+                    sum.z += dot(v, w2);
+                    sum.w += dot(v, w3);
+                }
+            }
+        }
+    }
+
+    _ConvOutArr[int3((int)id.x, (int)id.y, outSlice)] = NcnnApplyActivation(sum);
+}
+
+[numthreads(8,8,1)]
 void NcnnDeconvolutionBuf(uint3 id : SV_DispatchThreadID)
 {
     if ((int)id.x >= _OutW || (int)id.y >= _OutH || (int)id.z >= _OutC) return;
@@ -2783,6 +2853,13 @@ int _MatUseC;
 int _MatBroadcastTypeC;
 float _MatAlpha;
 float _MatBeta;
+Texture2DArray<float4> _VistaTailInArr;
+StructuredBuffer<float> _VistaTailPrompt;
+RWTexture2DArray<float4> _VistaTailOutArr;
+int _VistaTailW;
+int _VistaTailH;
+int _VistaTailD;
+int _VistaTailPacks;
 
 RWStructuredBuffer<float> _LnInOut;
 StructuredBuffer<float> _LnGamma;
@@ -4432,6 +4509,39 @@ void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThre
 
     if (valid)
         _MatOut[row * _MatN + col] = acc;
+}
+
+[numthreads(8,8,1)]
+void NcnnVistaTailPromptDotPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, slices;
+    _VistaTailOutArr.GetDimensions(w, h, slices);
+    if (id.x >= w || id.y >= h || id.z >= slices)
+        return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int z = (int)id.z;
+    if (x < 0 || x >= _VistaTailW || y < 0 || y >= _VistaTailH || z < 0 || z >= _VistaTailD)
+        return;
+
+    float sum = 0.0;
+    int promptBase = 0;
+    int featureSliceBase = z * _VistaTailPacks;
+    [loop]
+    for (int pack = 0; pack < _VistaTailPacks; pack++)
+    {
+        float4 feat = _VistaTailInArr[int3(x, y, featureSliceBase + pack)];
+        float4 prompt4 = float4(
+            _VistaTailPrompt[promptBase + 0],
+            _VistaTailPrompt[promptBase + 1],
+            _VistaTailPrompt[promptBase + 2],
+            _VistaTailPrompt[promptBase + 3]);
+        sum += dot(feat, prompt4);
+        promptBase += 4;
+    }
+
+    _VistaTailOutArr[int3(x, y, z)] = float4(sum, 0.0, 0.0, 0.0);
 }
 
 [numthreads(8,8,1)]

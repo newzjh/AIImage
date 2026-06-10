@@ -9,6 +9,51 @@ namespace NcnnCompute
 {
     public static class NcnnGpuResourceTracker
     {
+        public readonly struct StatsSnapshot
+        {
+            public readonly long currentBufferBytes;
+            public readonly long currentTextureBytes;
+            public readonly long peakBufferBytes;
+            public readonly long peakTextureBytes;
+            public readonly long peakTotalBytes;
+            public readonly int liveBufferCount;
+            public readonly int liveTextureCount;
+            public readonly int peakBufferCount;
+            public readonly int peakTextureCount;
+            public readonly int lowMemoryWarningCount;
+
+            public StatsSnapshot(
+                long currentBufferBytes,
+                long currentTextureBytes,
+                long peakBufferBytes,
+                long peakTextureBytes,
+                long peakTotalBytes,
+                int liveBufferCount,
+                int liveTextureCount,
+                int peakBufferCount,
+                int peakTextureCount,
+                int lowMemoryWarningCount)
+            {
+                this.currentBufferBytes = currentBufferBytes;
+                this.currentTextureBytes = currentTextureBytes;
+                this.peakBufferBytes = peakBufferBytes;
+                this.peakTextureBytes = peakTextureBytes;
+                this.peakTotalBytes = peakTotalBytes;
+                this.liveBufferCount = liveBufferCount;
+                this.liveTextureCount = liveTextureCount;
+                this.peakBufferCount = peakBufferCount;
+                this.peakTextureCount = peakTextureCount;
+                this.lowMemoryWarningCount = lowMemoryWarningCount;
+            }
+
+            public double currentBufferMb => ToMb(currentBufferBytes);
+            public double currentTextureMb => ToMb(currentTextureBytes);
+            public double currentTotalMb => ToMb(currentBufferBytes + currentTextureBytes);
+            public double peakBufferMb => ToMb(peakBufferBytes);
+            public double peakTextureMb => ToMb(peakTextureBytes);
+            public double peakTotalMb => ToMb(peakTotalBytes);
+        }
+
         private sealed class BufferInfo
         {
             public int count;
@@ -195,6 +240,21 @@ namespace NcnnCompute
                 + " | peak_buffer_count=" + _peakBufferCount
                 + " | peak_rt_count=" + _peakTextureCount
                 + " | low_memory_warnings=" + _lowMemoryWarningCount;
+        }
+
+        public static StatsSnapshot GetStatsSnapshot()
+        {
+            return new StatsSnapshot(
+                _bufferBytes,
+                _textureBytes,
+                _peakBufferBytes,
+                _peakTextureBytes,
+                _peakTotalBytes,
+                Buffers.Count,
+                Textures.Count,
+                _peakBufferCount,
+                _peakTextureCount,
+                _lowMemoryWarningCount);
         }
 
         public static void WriteReport(string directoryPath, string fileName = "gpu_resource_stats.txt")

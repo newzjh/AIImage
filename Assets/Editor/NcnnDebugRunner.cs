@@ -69,6 +69,7 @@ public static class NcnnDebugRunner
     private const string MonaiForceBufferAllEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_ALL";
     private const string MonaiForceBufferOutputsDims4EnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_OUTPUTS_DIMS4";
     private const string MonaiForceBufferNamesEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_NAMES";
+    private const string MonaiPatchInputModeEnvVar = "AIIMAGE_MONAI_PATCH_INPUT_MODE";
     private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
     private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
     private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
@@ -580,6 +581,7 @@ public static class NcnnDebugRunner
         var forceBufferAll = ResolveBoolEnv(MonaiForceBufferAllEnvVar, false);
         var forceBufferOutputsDims4 = ResolveBoolEnv(MonaiForceBufferOutputsDims4EnvVar, false);
         var forceBufferNames = ResolveTokenSetEnv(MonaiForceBufferNamesEnvVar);
+        var patchInputMode = ResolveStringEnv(MonaiPatchInputModeEnvVar, null);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
         var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
         var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
@@ -602,6 +604,9 @@ public static class NcnnDebugRunner
         }
 
         var go = new GameObject("MonaiDebugRunner");
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.MONAI");
+        string monaiOutputDir = null;
         try
         {
             var runner = go.AddComponent<MONAINcnnReproRunner>();
@@ -622,7 +627,7 @@ public static class NcnnDebugRunner
             runner.forceCpuGemm = forceCpuGemm;
             runner.forceBufferAllLayers = forceBufferAll;
             runner.forceBufferOutputsForDims4 = forceBufferOutputsDims4;
-            runner.useTextureInputForMonaiPatches = !forceBufferAll;
+            runner.useTextureInputForMonaiPatches = ResolveMonaiPatchInputMode(forceBufferAll, patchInputMode);
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
             runner.debugPinnedBlobNamesCsv = debugPinnedBlobsCsv;
             runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, false);
@@ -636,6 +641,8 @@ public static class NcnnDebugRunner
             runner.logAllLayerHeartbeats = false;
             runner.logAllLayerOutputs = false;
             runner.logAllBufferMaterialize = false;
+            runner.enableLayerRuntimeProfile = true;
+            runner.syncLayerRuntimeProfile = false;
             if (runner.useTextureInputForMonaiPatches)
                 runner.forceBufferLayerNames = forceBufferNames;
             if (ResolveBoolEnv(MonaiPack4OnlyGuardEnvVar, false))
@@ -679,9 +686,29 @@ public static class NcnnDebugRunner
         finally
         {
             try { LogResourceSnapshot("monai_before_destroy"); } catch { }
+            try
+            {
+                monaiOutputDir = ResolveStringEnv(MonaiOutputDirEnvVar, null);
+                if (string.IsNullOrWhiteSpace(monaiOutputDir))
+                    monaiOutputDir = FindLatestMonaiOutputDir();
+                if (!string.IsNullOrWhiteSpace(monaiOutputDir))
+                    NcnnCompute.NcnnGpuResourceTracker.WriteReport(monaiOutputDir, "gpu_resource_stats.txt");
+            }
+            catch
+            {
+            }
             UnityEngine.Object.DestroyImmediate(go);
             await ReleaseGpuPressureAsync();
             try { LogResourceSnapshot("monai_after_release"); } catch { }
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(monaiOutputDir))
+                    NcnnCompute.NcnnGpuResourceTracker.WriteReport(monaiOutputDir, "gpu_resource_stats_after_release.txt");
+            }
+            catch
+            {
+            }
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
         }
     }
 
@@ -1217,6 +1244,23 @@ public static class NcnnDebugRunner
     public static void RunReproSuiteStressBatch() => RunBatchBlocking(nameof(RunReproSuiteStressBatch), RunReproSuiteStressInternal, TimeSpan.FromHours(2));
 
     public static void RunMonaiDebugBatch() => RunBatchBlocking(nameof(RunMonaiDebugBatch), () => RunMonaiDebugInternal(), TimeSpan.FromMinutes(10));
+
+    private static string FindLatestMonaiOutputDir()
+    {
+        try
+        {
+            var root = Path.Combine(Directory.GetCurrentDirectory(), "Logs", "MONAINcnnRepro");
+            if (!Directory.Exists(root))
+                return null;
+            return Directory.GetDirectories(root)
+                .OrderByDescending(Directory.GetLastWriteTimeUtc)
+                .FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static void RunBatchBlocking(string methodName, Func<UniTask> taskFactory, TimeSpan? timeout = null)
     {
@@ -2004,6 +2048,23 @@ public static class NcnnDebugRunner
         }
 
         return Mathf.Max(1, fallback);
+    }
+
+    private static bool ResolveMonaiPatchInputMode(bool forceBufferAll, string rawMode)
+    {
+        if (!string.IsNullOrWhiteSpace(rawMode))
+        {
+            var mode = rawMode.Trim();
+            if (string.Equals(mode, "compute_buffer", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mode, "buffer", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (string.Equals(mode, "pack4_rt", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mode, "rendertexture", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(mode, "texture", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return !forceBufferAll;
     }
 
     private static int ResolvePositiveIntEnvAllowZero(string envName, int fallback)

@@ -12,6 +12,14 @@ namespace NcnnCompute
     {
         public NcnnMatMulLayerRepro() : base(NcnnLayerTypes.MatMul, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
+        private sealed class VistaTailPack4Plan
+        {
+            public string featureBlobName;
+            public string promptBlobName;
+            public NcnnRepro.BufferShape outputShape;
+            public string promptMemoryLayerName;
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -52,6 +60,9 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (TryExecuteVistaTailPack4Path(owner, layer, context))
+                return;
+
 #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
@@ -99,6 +110,197 @@ namespace NcnnCompute
                 : new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, aRows), 1, 1);
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteVistaTailPack4Path(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!TryResolveVistaTailPack4Plan(owner, layer, context, out var plan))
+                return false;
+            if (!owner.TryGetPack4Texture(
+                    plan.featureBlobName,
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var featureTex,
+                    out var featureShape))
+            {
+                return false;
+            }
+
+            var promptView = NcnnRepro.TryGetBufferView(plan.promptBlobName, context.bufferBlobs, context.bufferViews);
+            var promptBuf = promptView?.buffer;
+            if (promptBuf == null
+                && !string.IsNullOrWhiteSpace(plan.promptMemoryLayerName)
+                && owner._memoryData.TryGetValue(plan.promptMemoryLayerName, out var memoryDataPack)
+                && memoryDataPack?.data != null)
+            {
+                promptBuf = memoryDataPack.data;
+                promptView = new NcnnTensorBuffer(
+                    memoryDataPack.data,
+                    memoryDataPack.dims,
+                    memoryDataPack.w,
+                    memoryDataPack.h,
+                    memoryDataPack.d,
+                    memoryDataPack.c,
+                    false);
+            }
+            if (promptBuf == null)
+            {
+                promptBuf = owner.GetOrConvertToBuffer(
+                    plan.promptBlobName,
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.textureShapes,
+                    context.bufferViews,
+                    context.tempOwned);
+                promptView = NcnnRepro.TryGetBufferView(plan.promptBlobName, context.bufferBlobs, context.bufferViews);
+            }
+            if (promptBuf == null || promptView == null)
+                return false;
+            if (promptView.dims != 1 || promptView.w != featureShape.c)
+                return false;
+            if (featureShape.dims != 4 || featureShape.c <= 0 || featureTex.packs != Mathf.CeilToInt(featureShape.c / 4f))
+                return false;
+
+            var outDepth = Mathf.Max(1, plan.outputShape.d);
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(plan.outputShape.c / 4f));
+            var outSlices = outDepth * outPacks;
+            var outRt = owner.RentTempArray(plan.outputShape.w, plan.outputShape.h, outSlices, RenderTextureFormat.ARGBFloat);
+            owner.Ops.VistaTailPromptDotPack4(
+                featureTex.texture,
+                plan.outputShape.w,
+                plan.outputShape.h,
+                outDepth,
+                featureTex.packs,
+                promptBuf,
+                outRt);
+            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, plan.outputShape);
+            owner.DebugLog?.Invoke(
+                "[VistaTailPack4] specialized path"
+                + " | layer=" + layer.name
+                + " | feature=" + plan.featureBlobName
+                + " | prompt=" + plan.promptBlobName
+                + " | output=" + layer.topNames[0]
+                + " | featureShape=d" + featureShape.dims + ":" + featureShape.w + "x" + featureShape.h + "x" + featureShape.d + "x" + featureShape.c
+                + " | outputShape=d" + plan.outputShape.dims + ":" + plan.outputShape.w + "x" + plan.outputShape.h + "x" + plan.outputShape.d + "x" + plan.outputShape.c);
+            owner.Consume(
+                context.textureBlobs,
+                context.bufferBlobs,
+                context.bufferRefs,
+                context.bufferViews,
+                context.remaining,
+                layer.bottomNames,
+                context.pinnedNames);
+            return true;
+        }
+
+        private static bool TryResolveVistaTailPack4Plan(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerBufferContext context,
+            out VistaTailPack4Plan plan)
+        {
+            plan = null;
+            if (owner?.Model?.layers == null || layer == null)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length != 2 || layer.topNames == null || layer.topNames.Length != 1)
+                return false;
+            if (layer.GetInt(0, 0) != 0)
+                return false;
+
+            var aName = layer.bottomNames[0];
+            var bName = layer.bottomNames[1];
+            if (!TryGetBlobShape(context, aName, out var aShape) || !TryGetBlobShape(context, bName, out var bShape))
+                return false;
+            if (aShape.dims != 1 || bShape.dims != 2)
+                return false;
+            if (aShape.w <= 0 || bShape.h != aShape.w || bShape.w <= 0)
+                return false;
+
+            var reshape = FindSingleProducer(owner.Model, bName);
+            if (reshape == null || reshape.type != NcnnLayerTypes.Reshape || reshape.bottomNames == null || reshape.bottomNames.Length != 1)
+                return false;
+            if (!string.Equals(reshape.name, "reshape_124", StringComparison.Ordinal))
+                return false;
+
+            var featureBlobName = bName;
+            if (!context.textureShapes.TryGetValue(featureBlobName, out var featureShape))
+                return false;
+            if (featureShape.dims != 4)
+                return false;
+            if (featureShape.w != 128 || featureShape.h != 128 || featureShape.d != 128 || featureShape.c != aShape.w)
+                return false;
+            if (bShape.w != featureShape.w * featureShape.h * featureShape.d)
+                return false;
+
+            string promptMemoryLayerName = null;
+            var promptProducer = FindSingleProducer(owner.Model, aName);
+            if (promptProducer != null && promptProducer.type == NcnnLayerTypes.MemoryData)
+                promptMemoryLayerName = promptProducer.name;
+
+            plan = new VistaTailPack4Plan
+            {
+                featureBlobName = featureBlobName,
+                promptBlobName = aName,
+                outputShape = new NcnnRepro.BufferShape(4, featureShape.w, featureShape.h, featureShape.d, 1),
+                promptMemoryLayerName = promptMemoryLayerName
+            };
+            return true;
+        }
+
+        private static bool TryGetBlobShape(
+            NcnnLayerBufferContext context,
+            string blobName,
+            out NcnnRepro.BufferShape shape)
+        {
+            shape = default;
+            if (context == null || string.IsNullOrWhiteSpace(blobName))
+                return false;
+
+            if (context.bufferViews != null
+                && context.bufferViews.TryGetValue(blobName, out var view)
+                && view != null
+                && view.buffer != null)
+            {
+                shape = new NcnnRepro.BufferShape(view.dims, view.w, view.h, view.d, view.c);
+                return true;
+            }
+
+            if (context.textureShapes != null && context.textureShapes.TryGetValue(blobName, out shape))
+                return true;
+
+            return false;
+        }
+
+        private static NcnnParamModel.Layer FindSingleProducer(NcnnParamModel model, string blobName)
+        {
+            if (model?.layers == null || string.IsNullOrWhiteSpace(blobName))
+                return null;
+
+            NcnnParamModel.Layer producer = null;
+            for (var i = 0; i < model.layers.Count; i++)
+            {
+                var candidate = model.layers[i];
+                var tops = candidate?.topNames;
+                if (tops == null)
+                    continue;
+
+                for (var ti = 0; ti < tops.Length; ti++)
+                {
+                    if (!string.Equals(tops[ti], blobName, StringComparison.Ordinal))
+                        continue;
+                    if (producer != null)
+                        return null;
+                    producer = candidate;
+                }
+            }
+
+            return producer;
         }
     }
 }
