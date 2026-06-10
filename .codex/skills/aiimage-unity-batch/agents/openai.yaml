@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIImage Unity Batch"
+  short_description: "AIImage MONAI or VISTA batch workflow, safety defaults, and launch conventions."
+  default_prompt: "Use $aiimage-unity-batch to run or troubleshoot AIImage MONAI or VISTA Unity batch workflows."
