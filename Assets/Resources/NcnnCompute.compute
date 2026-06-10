@@ -166,6 +166,11 @@ int _TileH;
 RWStructuredBuffer<uint> _TouchOut;
 int _TouchValue;
 
+float NcnnReadLane(float4 v, int lane);
+void NcnnWriteLane(inout float4 v, int lane, float value);
+float NcnnReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel);
+float NcnnReadPack4ChannelCDHW(Texture2DArray<float4> tex, int x, int y, int z, int channel, int channelCount);
+
 int _UnaryOpType;
 int _SrcOffset;
 int _DstOffset;
@@ -5152,14 +5157,14 @@ void NcnnVistaTailPromptDotPack4(uint3 id : SV_DispatchThreadID)
     _VistaTailOutArr[int3(x, y, z)] = float4(sum, 0.0, 0.0, 0.0);
 }
 
-static float NcnnReadScalar2DLinear(uint linear, int inW, int inH)
+static float NcnnReadScalar2DLinear(uint linearIndex, int inW, int inH)
 {
     if (inW <= 0 || inH <= 0)
         return 0.0;
 
     uint width = (uint)inW;
-    uint x = linear % width;
-    uint y = linear / width;
+    uint x = linearIndex % width;
+    uint y = linearIndex / width;
     if (y >= (uint)inH)
         return 0.0;
 
@@ -5197,11 +5202,11 @@ void NcnnReshapeScalar2DToPack4(uint3 id : SV_DispatchThreadID)
         if (c >= _ReshapeScalar2DOutC)
             continue;
 
-        uint linear = _ReshapeScalar2DOutDims >= 4
+        uint linearIndex = _ReshapeScalar2DOutDims >= 4
             ? (((uint)c * (uint)max(1, _ReshapeScalar2DOutD) + (uint)z) * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x
             : ((uint)c * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x;
 
-        float scalar = NcnnReadScalar2DLinear(linear, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
+        float scalar = NcnnReadScalar2DLinear(linearIndex, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
         if (lane == 0) value.x = scalar;
         else if (lane == 1) value.y = scalar;
         else if (lane == 2) value.z = scalar;

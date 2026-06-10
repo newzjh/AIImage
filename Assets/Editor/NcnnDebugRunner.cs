@@ -75,8 +75,14 @@ public static class NcnnDebugRunner
     private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
     private const string MonaiDebugPinnedBlobsEnvVar = "AIIMAGE_MONAI_DEBUG_PINNED_BLOBS";
     private const string MonaiOutputBlobEnvVar = "AIIMAGE_MONAI_OUTPUT_BLOB";
+    private const string MonaiLogAllLayerHeartbeatsEnvVar = "AIIMAGE_MONAI_LOG_ALL_LAYER_HEARTBEATS";
+    private const string MonaiLogAllLayerOutputsEnvVar = "AIIMAGE_MONAI_LOG_ALL_LAYER_OUTPUTS";
+    private const string MonaiLogAllBufferMaterializeEnvVar = "AIIMAGE_MONAI_LOG_ALL_BUFFER_MATERIALIZE";
+    private const string MonaiPack4SelfTestEnvVar = "AIIMAGE_MONAI_PACK4_SELFTEST";
+    private const string MonaiPack4SelfTestFormatEnvVar = "AIIMAGE_MONAI_PACK4_SELFTEST_FORMAT";
     private const string MonaiProbeOnlyEnvVar = "AIIMAGE_MONAI_PROBE_ONLY";
     private const string MonaiMaxPatchesEnvVar = "AIIMAGE_MONAI_MAX_PATCHES";
+    private const string MonaiProbePatchOrdinalEnvVar = "AIIMAGE_MONAI_PROBE_PATCH_ORDINAL";
     private const string MonaiClearTempPoolEachPatchEnvVar = "AIIMAGE_MONAI_CLEAR_TEMP_POOL_EACH_PATCH";
     private const string MonaiTempPoolClearIntervalEnvVar = "AIIMAGE_MONAI_TEMP_POOL_CLEAR_INTERVAL";
     private const string MonaiYieldIntervalEnvVar = "AIIMAGE_MONAI_YIELD_INTERVAL";
@@ -565,6 +571,12 @@ public static class NcnnDebugRunner
         string[] inputPathsOverride = null,
         bool? useBaselineTensorOverride = null)
     {
+        if (ResolveBoolEnv(MonaiPack4SelfTestEnvVar, false))
+        {
+            await RunMonaiPack4SelfTestInternal();
+            return;
+        }
+
         var baselineManifestPath = !string.IsNullOrWhiteSpace(baselineManifestOverride)
             ? baselineManifestOverride
             : (ResolveOptionalExistingFile(MonaiBaselineManifestEnvVar) ?? DefaultMonaiBaselineManifestPath);
@@ -586,8 +598,12 @@ public static class NcnnDebugRunner
         var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
         var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
         var outputBlobName = ResolveStringEnv(MonaiOutputBlobEnvVar, null);
+        var logAllLayerHeartbeats = ResolveBoolEnv(MonaiLogAllLayerHeartbeatsEnvVar, false);
+        var logAllLayerOutputs = ResolveBoolEnv(MonaiLogAllLayerOutputsEnvVar, false);
+        var logAllBufferMaterialize = ResolveBoolEnv(MonaiLogAllBufferMaterializeEnvVar, false);
         var probeOnly = ResolveBoolEnv(MonaiProbeOnlyEnvVar, false);
         var maxPatchCount = ResolvePositiveIntEnvAllowZero(MonaiMaxPatchesEnvVar, probeOnly ? 1 : 0);
+        var probePatchOrdinal = ResolvePositiveIntEnvAllowZero(MonaiProbePatchOrdinalEnvVar, 0);
         var threshold = ResolveFloatEnvOrDefault(MonaiThresholdEnvVar, 0.5f);
         var monaiConfig = ResolveMonaiModelConfig(baselineManifestPath);
         ushort binaryForegroundLabelValue = 0;
@@ -638,9 +654,9 @@ public static class NcnnDebugRunner
             runner.slidingWindowManagedCleanupInterval = ResolvePositiveIntEnvAllowZero(MonaiManagedCleanupIntervalEnvVar, 1);
             runner.slidingWindowResourceSnapshotInterval = ResolvePositiveIntEnvAllowZero(MonaiResourceSnapshotIntervalEnvVar, 1);
             runner.slidingWindowAbortIfPrivateMemoryExceedsMb = Mathf.Max(0f, ResolveFloatEnvOrDefault(MonaiAbortPrivateMemoryMbEnvVar, 8192f));
-            runner.logAllLayerHeartbeats = false;
-            runner.logAllLayerOutputs = false;
-            runner.logAllBufferMaterialize = false;
+            runner.logAllLayerHeartbeats = logAllLayerHeartbeats;
+            runner.logAllLayerOutputs = logAllLayerOutputs;
+            runner.logAllBufferMaterialize = logAllBufferMaterialize;
             runner.enableLayerRuntimeProfile = true;
             runner.syncLayerRuntimeProfile = false;
             if (runner.useTextureInputForMonaiPatches)
@@ -668,6 +684,7 @@ public static class NcnnDebugRunner
                 compareWithBaseline = compareBaseline,
                 probeOnly = probeOnly,
                 maxSlidingWindowPatches = maxPatchCount,
+                probePatchOrdinal = probePatchOrdinal,
                 binaryForegroundLabelValue = binaryForegroundLabelValue,
                 debugPinnedBlobNames = string.IsNullOrWhiteSpace(debugPinnedBlobsCsv)
                     ? null
@@ -708,6 +725,51 @@ public static class NcnnDebugRunner
             catch
             {
             }
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private static async UniTask RunMonaiPack4SelfTestInternal()
+    {
+        var outputDir = ResolveStringEnv(MonaiOutputDirEnvVar, null);
+        if (string.IsNullOrWhiteSpace(outputDir))
+            outputDir = CreateGenericDumpDir("AIImage_MONAI_Pack4SelfTest");
+        Directory.CreateDirectory(outputDir);
+
+        var textureFormat = ResolveRenderTextureFormatEnv(MonaiPack4SelfTestFormatEnvVar, RenderTextureFormat.ARGBHalf);
+        var go = new GameObject("MonaiPack4SelfTestRunner");
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.MONAI.Pack4SelfTest");
+        try
+        {
+            var runner = go.AddComponent<MONAINcnnReproRunner>();
+            runner.enableDebugDump = true;
+            runner.enableTempPool = false;
+            runner.maxPooledPerShape = 0;
+            runner.clearTempPoolAfterEachSlidingWindowPatch = true;
+            runner.slidingWindowTempPoolClearInterval = 1;
+            runner.slidingWindowYieldInterval = 1;
+            runner.slidingWindowManagedCleanupInterval = 1;
+            runner.slidingWindowResourceSnapshotInterval = 1;
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[MONAI SelfTest Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+
+            var summary = runner.RunPack4RoundtripSelfTest(outputDir, textureFormat);
+            Debug.Log(
+                "MONAI Pack4 SelfTest result"
+                + " | format=" + textureFormat
+                + " | dump=" + outputDir
+                + " | gpu=" + NcnnCompute.NcnnGpuResourceTracker.BuildSummary()
+                + " | summary=" + summary.Replace(Environment.NewLine, " | "));
+        }
+        finally
+        {
+            try { LogResourceSnapshot("monai_pack4_selftest_before_destroy"); } catch { }
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            UnityEngine.Object.DestroyImmediate(go);
+            await ReleaseGpuPressureAsync();
+            try { LogResourceSnapshot("monai_pack4_selftest_after_release"); } catch { }
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats_after_release.txt"); } catch { }
             NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
         }
     }

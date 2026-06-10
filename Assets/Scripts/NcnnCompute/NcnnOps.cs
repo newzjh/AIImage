@@ -2181,18 +2181,18 @@ namespace NcnnCompute
 
         public void CopyPack4(CommandBuffer cmd, ComputeTexture src, int srcPackOffset, ComputeTexture dst, int dstPackOffset, int packs)
         {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (src == null) throw new ArgumentNullException(nameof(src));
             if (dst == null) throw new ArgumentNullException(nameof(dst));
             if (packs <= 0) return;
             if (src.width != dst.width || src.height != dst.height)
                 throw new InvalidOperationException("CopyPack4 requires same width/height");
-
-            for (var p = 0; p < packs; p++)
-            {
-                var sp = srcPackOffset + p;
-                var dp = dstPackOffset + p;
-                cmd.CopyTexture(src.nameID, sp, 0, 0, 0, src.width, src.height, dst.nameID, dp, 0, 0, 0);
-            }
+            cmd.SetComputeIntParam(_cs, "_CopyInOffset", srcPackOffset);
+            cmd.SetComputeIntParam(_cs, "_CopyOutOffset", dstPackOffset);
+            cmd.SetComputeIntParam(_cs, "_CopyPacks", packs);
+            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_CopyInArr", src.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_CopyOutArr", dst.nameID);
+            Dispatch3D(cmd, _kCopyPack4, dst.width, dst.height, packs, 8, 8);
         }
 
         public void Interp2xPack4(RenderTexture input, int packs, RenderTexture output)

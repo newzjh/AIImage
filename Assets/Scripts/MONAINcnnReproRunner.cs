@@ -58,6 +58,7 @@ public sealed class MonaiRunRequest
     public string[] debugPinnedBlobNames;
     public bool probeOnly;
     public int maxSlidingWindowPatches;
+    public int probePatchOrdinal;
     public ushort binaryForegroundLabelValue;
 }
 
@@ -155,6 +156,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public float slidingWindowOverlap;
         public bool probeOnly;
         public int maxSlidingWindowPatches;
+        public int probePatchOrdinal;
         public ushort binaryForegroundLabelValue;
     }
 
@@ -213,6 +215,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private string _lastLayerRuntimeProfileText;
     private string _lastPathMode = string.Empty;
     private int _flushedDebugLineCount;
+    private bool _loggedPatchInputTextureRoundtrip;
 
     public string LastDumpDir => _lastDumpDir;
     public string LastSummaryText => _lastSummaryText;
@@ -271,6 +274,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _lastLayerRuntimeProfileText = null;
         _lastPathMode = string.Empty;
         _flushedDebugLineCount = 0;
+        _loggedPatchInputTextureRoundtrip = false;
 
         MonaiSegmentationResult Finish(MonaiSegmentationResult result)
         {
@@ -729,6 +733,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             slidingWindowOverlap = 0f,
             probeOnly = request.probeOnly,
             maxSlidingWindowPatches = Math.Max(0, request.maxSlidingWindowPatches),
+            probePatchOrdinal = Math.Max(0, request.probePatchOrdinal),
             binaryForegroundLabelValue = request.binaryForegroundLabelValue
         };
 
@@ -1572,6 +1577,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var probeBlobName = probeHead != null ? probeHead.featureBlobName : resolved.outputBlobName;
         var pinnedBlobNames = BuildPinnedBlobNames(probeBlobName, resolved.debugPinnedBlobNames);
         var totalPatchCount = startsD.Count * startsH.Count * startsW.Count;
+        var targetPatchOrdinal = Mathf.Clamp(resolved.probePatchOrdinal, 0, totalPatchCount);
         var maxPatchCount = resolved.maxSlidingWindowPatches > 0
             ? Mathf.Min(resolved.maxSlidingWindowPatches, totalPatchCount)
             : 1;
@@ -1579,7 +1585,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             maxPatchCount = 1;
 
         var executedPatchCount = 0;
+        var enumeratedPatchOrdinal = 0;
         InferOutputShape? outputView = null;
+        var executedStartD = 0;
+        var executedStartH = 0;
+        var executedStartW = 0;
 
         using var inputTensor = new NcnnTensorBuffer(roiW, roiH, roiD, channelCount);
         var patchTensor = new float[checked(channelCount * roiD * roiH * roiW)];
@@ -1593,7 +1603,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 {
                     ct.ThrowIfCancellationRequested();
                     var startW = startsW[ix];
+                    enumeratedPatchOrdinal++;
+                    if (targetPatchOrdinal > 0 && enumeratedPatchOrdinal != targetPatchOrdinal)
+                        continue;
                     executedPatchCount++;
+                    executedStartD = startD;
+                    executedStartH = startH;
+                    executedStartW = startW;
                     ExtractPatchNcdhw(
                         prepared.tensorNcdhw,
                         channelCount,
@@ -1645,7 +1661,12 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             height = outputView.Value.h,
             depth = outputView.Value.d,
             channels = probeHead != null ? probeHead.outputChannels : outputView.Value.c,
-            executionNote = "probe_blob:" + probeBlobName,
+            executionNote =
+                "probe_blob:" + probeBlobName
+                + " | patch_ordinal=" + (targetPatchOrdinal > 0 ? targetPatchOrdinal : executedPatchCount).ToString(CultureInfo.InvariantCulture)
+                + " | patch_start_dhw=" + executedStartD.ToString(CultureInfo.InvariantCulture)
+                + "," + executedStartH.ToString(CultureInfo.InvariantCulture)
+                + "," + executedStartW.ToString(CultureInfo.InvariantCulture),
             pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
             probeOnly = true,
             executedPatchCount = executedPatchCount,
@@ -1682,10 +1703,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         var packCount = Mathf.Max(1, Mathf.CeilToInt(resolved.inputChannels / 4f));
         var sliceCount = checked(Mathf.Max(1, depth) * packCount);
-        var inputPack4 = _repro.RentTempArray(width, height, sliceCount, RenderTextureFormat.ARGBHalf);
+        var inputPack4 = _repro.RentTempArray(width, height, sliceCount, NcnnRepro.ResolveTensorTextureFormat(4));
         try
         {
             _ops.FillPack4FromBufferCDHW(inputTensor.buffer, width, height, depth, resolved.inputChannels, inputPack4);
+            TryLogPatchInputTextureRoundtrip(resolved, inputTensor, width, height, depth, inputPack4);
             var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
                 { resolved.inputBlobName, inputPack4 }
@@ -1709,10 +1731,159 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         }
     }
 
+    private void TryLogPatchInputTextureRoundtrip(
+        ResolvedRequest resolved,
+        NcnnTensorBuffer inputTensor,
+        int width,
+        int height,
+        int depth,
+        RenderTexture inputPack4)
+    {
+        if (_loggedPatchInputTextureRoundtrip
+            || !enableDebugDump
+            || resolved == null
+            || !resolved.probeOnly
+            || inputTensor == null
+            || inputTensor.buffer == null
+            || inputPack4 == null
+            || _repro == null
+            || _ops == null)
+        {
+            return;
+        }
+
+        _loggedPatchInputTextureRoundtrip = true;
+
+        var count = checked(width * height * depth * Mathf.Max(1, resolved.inputChannels));
+        var roundtrip = _repro.RentTempBuffer(count, sizeof(float));
+        try
+        {
+            _ops.DebugSyncGpu();
+            _ops.Pack4ToBufferCDHW(inputPack4, width, height, depth, resolved.inputChannels, roundtrip);
+            _ops.DebugSyncGpu();
+
+            var src = new float[count];
+            var dst = new float[count];
+            inputTensor.buffer.GetData(src);
+            roundtrip.GetData(dst);
+            var cpuSliceDst = ReadPack4TextureToNcdhwCpu(inputPack4, width, height, depth, resolved.inputChannels);
+
+            var srcNz = 0;
+            var dstNz = 0;
+            var cpuNz = 0;
+            double sumAbs = 0d;
+            double cpuSumAbs = 0d;
+            float maxAbs = 0f;
+            float cpuMaxAbs = 0f;
+            for (var i = 0; i < count; i++)
+            {
+                var a = src[i];
+                var b = dst[i];
+                var c = cpuSliceDst[i];
+                if (a != 0f)
+                    srcNz++;
+                if (b != 0f)
+                    dstNz++;
+                if (c != 0f)
+                    cpuNz++;
+                var diff = Mathf.Abs(a - b);
+                var cpuDiff = Mathf.Abs(a - c);
+                sumAbs += diff;
+                cpuSumAbs += cpuDiff;
+                if (diff > maxAbs)
+                    maxAbs = diff;
+                if (cpuDiff > cpuMaxAbs)
+                    cpuMaxAbs = cpuDiff;
+            }
+
+            AppendDebugLine(
+                "PatchInputTextureRoundtrip"
+                + " | shape=" + width.ToString(CultureInfo.InvariantCulture)
+                + "x" + height.ToString(CultureInfo.InvariantCulture)
+                + "x" + depth.ToString(CultureInfo.InvariantCulture)
+                + "x" + resolved.inputChannels.ToString(CultureInfo.InvariantCulture)
+                + " | tex=" + inputPack4.width.ToString(CultureInfo.InvariantCulture)
+                + "x" + inputPack4.height.ToString(CultureInfo.InvariantCulture)
+                + "x" + inputPack4.volumeDepth.ToString(CultureInfo.InvariantCulture)
+                + " | srcNz=" + srcNz.ToString(CultureInfo.InvariantCulture)
+                + "/" + count.ToString(CultureInfo.InvariantCulture)
+                + " | dstNz=" + dstNz.ToString(CultureInfo.InvariantCulture)
+                + "/" + count.ToString(CultureInfo.InvariantCulture)
+                + " | cpuNz=" + cpuNz.ToString(CultureInfo.InvariantCulture)
+                + "/" + count.ToString(CultureInfo.InvariantCulture)
+                + " | meanAbs=" + (sumAbs / Math.Max(1, count)).ToString("G9", CultureInfo.InvariantCulture)
+                + " | maxAbs=" + maxAbs.ToString("G9", CultureInfo.InvariantCulture)
+                + " | cpuMeanAbs=" + (cpuSumAbs / Math.Max(1, count)).ToString("G9", CultureInfo.InvariantCulture)
+                + " | cpuMaxAbs=" + cpuMaxAbs.ToString("G9", CultureInfo.InvariantCulture)
+                + " | src0=" + src[0].ToString("G9", CultureInfo.InvariantCulture)
+                + " | dst0=" + dst[0].ToString("G9", CultureInfo.InvariantCulture)
+                + " | cpu0=" + cpuSliceDst[0].ToString("G9", CultureInfo.InvariantCulture));
+        }
+        finally
+        {
+            _repro.ReturnTempBuffer(roundtrip);
+        }
+    }
+
+    private static float[] ReadPack4TextureToNcdhwCpu(RenderTexture inputPack4, int width, int height, int depth, int channels)
+    {
+        if (inputPack4 == null)
+            throw new ArgumentNullException(nameof(inputPack4));
+
+        var packCount = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+        var sliceCount = checked(Mathf.Max(1, depth) * packCount);
+        var plane = checked(width * height);
+        var data = new float[checked(plane * Math.Max(1, depth) * Math.Max(1, channels))];
+        var prevActive = RenderTexture.active;
+        var tex2D = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+        try
+        {
+            for (var slice = 0; slice < sliceCount; slice++)
+            {
+                Graphics.SetRenderTarget(inputPack4, 0, CubemapFace.Unknown, slice);
+                tex2D.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                tex2D.Apply(false, false);
+                var pixels = tex2D.GetPixels();
+
+                var z = slice / packCount;
+                var pack = slice - z * packCount;
+                for (var i = 0; i < pixels.Length; i++)
+                {
+                    var c0 = pack * 4 + 0;
+                    var c1 = pack * 4 + 1;
+                    var c2 = pack * 4 + 2;
+                    var c3 = pack * 4 + 3;
+                    var baseIndex0 = ((c0 * depth + z) * plane) + i;
+                    if (c0 < channels)
+                        data[baseIndex0] = pixels[i].r;
+                    if (c1 < channels)
+                        data[((c1 * depth + z) * plane) + i] = pixels[i].g;
+                    if (c2 < channels)
+                        data[((c2 * depth + z) * plane) + i] = pixels[i].b;
+                    if (c3 < channels)
+                        data[((c3 * depth + z) * plane) + i] = pixels[i].a;
+                }
+            }
+
+            return data;
+        }
+        finally
+        {
+            RenderTexture.active = prevActive;
+            UnityEngine.Object.DestroyImmediate(tex2D);
+        }
+    }
+
     private InferOutputShape GetInferOutputShape(NcnnRepro.InferResult infer, string blobName, string missingPrefix)
     {
         if (infer == null)
             throw new ArgumentNullException(nameof(infer));
+
+        if (infer.TryGetExistingTexture(blobName, out var existingTexture) && existingTexture != null
+            && infer.TryGetLogicalShape(blobName, out var textureDims, out var textureW, out var textureH, out var textureD, out var textureC))
+        {
+            return new InferOutputShape(textureDims, textureW, textureH, textureD, textureC);
+        }
 
         if (infer.TryGetExistingBufferView(blobName, out var existingView) && existingView != null && existingView.buffer != null)
             return new InferOutputShape(existingView.dims, existingView.w, existingView.h, existingView.d, existingView.c);
@@ -3515,6 +3686,406 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         File.WriteAllText(path, text ?? string.Empty, Encoding.UTF8);
     }
 
+    public string RunPack4RoundtripSelfTest(string outputDir, RenderTextureFormat textureFormat)
+    {
+        EnsureRuntimeObjects();
+        ApplyReproOptions();
+
+        _debugLines.Clear();
+        _resourceSnapshotLines.Clear();
+        _timingMs.Clear();
+        _lastDumpDir = outputDir;
+        _lastSummaryText = null;
+        _flushedDebugLineCount = 0;
+
+        if (string.IsNullOrWhiteSpace(outputDir))
+            outputDir = Path.Combine(Path.GetTempPath(), "YanQi", "AIImage", "pack4_roundtrip_selftest");
+        Directory.CreateDirectory(outputDir);
+
+        NcnnGpuResourceTracker.Enabled = true;
+        NcnnGpuResourceTracker.Reset("MONAI.pack4_roundtrip_selftest");
+
+        var sw = Stopwatch.StartNew();
+        var prevActive = RenderTexture.active;
+        Texture2D cpuSlice = null;
+        RenderTexture rt = null;
+        ComputeBuffer roundtrip = null;
+        float[] src = null;
+        float[] dst = null;
+        float[] cpu = null;
+        RenderTexture chwRt = null;
+        ComputeBuffer chwRoundtrip = null;
+        float[] chwSrc = null;
+        float[] chwDst = null;
+        float[] chwCpu = null;
+        Texture2D rgbSrc = null;
+        RenderTexture rgbPack4 = null;
+        RenderTexture rgbOut = null;
+        float[] rgbPixels = null;
+        string summary;
+
+        try
+        {
+            const int width = 3;
+            const int height = 2;
+            const int depth = 2;
+            const int channels = 5;
+            const int chwChannels = 5;
+            var packCount = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            var sliceCount = depth * packCount;
+            var elementCount = checked(width * height * depth * channels);
+            src = new float[elementCount];
+            for (var c = 0; c < channels; c++)
+            {
+                for (var z = 0; z < depth; z++)
+                {
+                    for (var y = 0; y < height; y++)
+                    {
+                        for (var x = 0; x < width; x++)
+                        {
+                            var index = (((c * depth) + z) * height + y) * width + x;
+                            src[index] = (c + 1) * 1000f + z * 100f + y * 10f + x + 0.25f;
+                        }
+                    }
+                }
+            }
+
+            var chwPackCount = Mathf.Max(1, Mathf.CeilToInt(chwChannels / 4f));
+            var chwElementCount = checked(width * height * chwChannels);
+            chwSrc = new float[chwElementCount];
+            for (var c = 0; c < chwChannels; c++)
+            {
+                for (var y = 0; y < height; y++)
+                {
+                    for (var x = 0; x < width; x++)
+                    {
+                        var index = ((c * height) + y) * width + x;
+                        chwSrc[index] = (c + 1) * 100f + y * 10f + x + 0.5f;
+                    }
+                }
+            }
+
+            AppendDebugLine(
+                "Pack4RoundtripSelfTest begin"
+                + " | format=" + textureFormat
+                + " | shape=" + width + "x" + height + "x" + depth + "x" + channels
+                + " | packCount=" + packCount
+                + " | slices=" + sliceCount);
+
+            using (var tensor = new NcnnTensorBuffer(width, height, depth, channels))
+            {
+                tensor.buffer.SetData(src);
+                rt = CreateArrayRenderTextureForSelfTest(width, height, sliceCount, textureFormat, "pack4_selftest_cdhw");
+                _ops.FillPack4FromBufferCDHW(tensor.buffer, width, height, depth, channels, rt);
+                _ops.DebugSyncGpu();
+
+                roundtrip = _repro.RentTempBuffer(elementCount, sizeof(float));
+                _ops.Pack4ToBufferCDHW(rt, width, height, depth, channels, roundtrip);
+                _ops.DebugSyncGpu();
+
+                dst = new float[elementCount];
+                roundtrip.GetData(dst);
+
+                cpu = new float[elementCount];
+                cpuSlice = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+                for (var slice = 0; slice < sliceCount; slice++)
+                {
+                    Graphics.SetRenderTarget(rt, 0, CubemapFace.Unknown, slice);
+                    cpuSlice.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                    cpuSlice.Apply(false, false);
+                    var pixels = cpuSlice.GetPixels();
+                    var z = slice / packCount;
+                    var pack = slice - z * packCount;
+                    for (var i = 0; i < pixels.Length; i++)
+                    {
+                        var c0 = pack * 4 + 0;
+                        var c1 = pack * 4 + 1;
+                        var c2 = pack * 4 + 2;
+                        var c3 = pack * 4 + 3;
+                        if (c0 < channels) cpu[((c0 * depth + z) * height * width) + i] = pixels[i].r;
+                        if (c1 < channels) cpu[((c1 * depth + z) * height * width) + i] = pixels[i].g;
+                        if (c2 < channels) cpu[((c2 * depth + z) * height * width) + i] = pixels[i].b;
+                        if (c3 < channels) cpu[((c3 * depth + z) * height * width) + i] = pixels[i].a;
+                    }
+                }
+            }
+
+            using (var chwTensor = new NcnnTensorBuffer(width, height, chwChannels))
+            {
+                chwTensor.buffer.SetData(chwSrc);
+                chwRt = CreateArrayRenderTextureForSelfTest(width, height, chwPackCount, textureFormat, "pack4_selftest_chw");
+                _ops.FillPack4FromBufferCHW(chwTensor.buffer, width, height, chwChannels, chwRt);
+                _ops.DebugSyncGpu();
+
+                chwRoundtrip = _repro.RentTempBuffer(chwElementCount, sizeof(float));
+                _ops.Pack4ToBufferCHW(chwRt, width, height, chwChannels, chwRoundtrip);
+                _ops.DebugSyncGpu();
+
+                chwDst = new float[chwElementCount];
+                chwRoundtrip.GetData(chwDst);
+
+                if (cpuSlice == null)
+                    cpuSlice = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+                chwCpu = new float[chwElementCount];
+                for (var slice = 0; slice < chwPackCount; slice++)
+                {
+                    Graphics.SetRenderTarget(chwRt, 0, CubemapFace.Unknown, slice);
+                    cpuSlice.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                    cpuSlice.Apply(false, false);
+                    var pixels = cpuSlice.GetPixels();
+                    var pack = slice;
+                    for (var i = 0; i < pixels.Length; i++)
+                    {
+                        var c0 = pack * 4 + 0;
+                        var c1 = pack * 4 + 1;
+                        var c2 = pack * 4 + 2;
+                        var c3 = pack * 4 + 3;
+                        if (c0 < chwChannels) chwCpu[(c0 * height * width) + i] = pixels[i].r;
+                        if (c1 < chwChannels) chwCpu[(c1 * height * width) + i] = pixels[i].g;
+                        if (c2 < chwChannels) chwCpu[(c2 * height * width) + i] = pixels[i].b;
+                        if (c3 < chwChannels) chwCpu[(c3 * height * width) + i] = pixels[i].a;
+                    }
+                }
+            }
+
+            rgbSrc = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+            var rgbColors = new Color[width * height];
+            for (var y = 0; y < height; y++)
+            {
+                for (var x = 0; x < width; x++)
+                {
+                    var i = y * width + x;
+                    var r = ((x + 1) * 2f - 3f) / 2f;
+                    var g = ((y + 1) * 2f - 3f) / 2f;
+                    var b = (((x + y) + 1) * 2f - 3f) / 2f;
+                    rgbColors[i] = new Color(r, g, b, 1f);
+                }
+            }
+            rgbSrc.SetPixels(rgbColors);
+            rgbSrc.Apply(false, false);
+            rgbPack4 = CreateArrayRenderTextureForSelfTest(width, height, 1, textureFormat, "pack4_selftest_rgb");
+            _ops.PackRgbToPack4(rgbSrc, 0, 0, 1f, 1f, rgbPack4, false);
+            _ops.DebugSyncGpu();
+            rgbOut = new RenderTexture(width, height, 0, RenderTextureFormat.ARGBFloat)
+            {
+                enableRandomWrite = true
+            };
+            rgbOut.Create();
+            _ops.Pack4ToRgb01(rgbPack4, rgbOut, false);
+            _ops.DebugSyncGpu();
+            Graphics.SetRenderTarget(rgbOut);
+            if (cpuSlice == null || cpuSlice.width != width || cpuSlice.height != height)
+            {
+                if (cpuSlice != null)
+                    UnityEngine.Object.DestroyImmediate(cpuSlice);
+                cpuSlice = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+            }
+            cpuSlice.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+            cpuSlice.Apply(false, false);
+            var rgbCpuColors = cpuSlice.GetPixels();
+            rgbPixels = new float[rgbCpuColors.Length * 3];
+            for (var i = 0; i < rgbCpuColors.Length; i++)
+            {
+                rgbPixels[i * 3 + 0] = rgbCpuColors[i].r;
+                rgbPixels[i * 3 + 1] = rgbCpuColors[i].g;
+                rgbPixels[i * 3 + 2] = rgbCpuColors[i].b;
+            }
+
+            var srcNz = 0;
+            var dstNz = 0;
+            var cpuNz = 0;
+            double dstSumAbs = 0d;
+            double cpuSumAbs = 0d;
+            float dstMaxAbs = 0f;
+            float cpuMaxAbs = 0f;
+            for (var i = 0; i < src.Length; i++)
+            {
+                if (src[i] != 0f)
+                    srcNz++;
+                if (dst[i] != 0f)
+                    dstNz++;
+                if (cpu[i] != 0f)
+                    cpuNz++;
+                var dstDiff = Mathf.Abs(src[i] - dst[i]);
+                var cpuDiff = Mathf.Abs(src[i] - cpu[i]);
+                dstSumAbs += dstDiff;
+                cpuSumAbs += cpuDiff;
+                if (dstDiff > dstMaxAbs)
+                    dstMaxAbs = dstDiff;
+                if (cpuDiff > cpuMaxAbs)
+                    cpuMaxAbs = cpuDiff;
+            }
+
+            var chwSrcNz = 0;
+            var chwDstNz = 0;
+            var chwCpuNz = 0;
+            double chwDstSumAbs = 0d;
+            double chwCpuSumAbs = 0d;
+            float chwDstMaxAbs = 0f;
+            float chwCpuMaxAbs = 0f;
+            for (var i = 0; i < chwSrc.Length; i++)
+            {
+                if (chwSrc[i] != 0f)
+                    chwSrcNz++;
+                if (chwDst[i] != 0f)
+                    chwDstNz++;
+                if (chwCpu[i] != 0f)
+                    chwCpuNz++;
+                var chwDstDiff = Mathf.Abs(chwSrc[i] - chwDst[i]);
+                var chwCpuDiff = Mathf.Abs(chwSrc[i] - chwCpu[i]);
+                chwDstSumAbs += chwDstDiff;
+                chwCpuSumAbs += chwCpuDiff;
+                if (chwDstDiff > chwDstMaxAbs)
+                    chwDstMaxAbs = chwDstDiff;
+                if (chwCpuDiff > chwCpuMaxAbs)
+                    chwCpuMaxAbs = chwCpuDiff;
+            }
+
+            double rgbMeanAbs = 0d;
+            float rgbMaxAbs = 0f;
+            for (var i = 0; i < rgbColors.Length; i++)
+            {
+                var expectedR = rgbColors[i].r * 0.5f + 0.5f;
+                var expectedG = rgbColors[i].g * 0.5f + 0.5f;
+                var expectedB = rgbColors[i].b * 0.5f + 0.5f;
+                var dr = Mathf.Abs(expectedR - rgbPixels[i * 3 + 0]);
+                var dg = Mathf.Abs(expectedG - rgbPixels[i * 3 + 1]);
+                var db = Mathf.Abs(expectedB - rgbPixels[i * 3 + 2]);
+                rgbMeanAbs += dr + dg + db;
+                rgbMaxAbs = Mathf.Max(rgbMaxAbs, Mathf.Max(dr, Mathf.Max(dg, db)));
+            }
+            rgbMeanAbs /= Math.Max(1, rgbColors.Length * 3);
+
+            var sb = new StringBuilder(2048);
+            sb.AppendLine("Pack4RoundtripSelfTest");
+            sb.AppendLine("format=" + textureFormat);
+            sb.AppendLine("cdhw_shape=" + width + "x" + height + "x" + depth + "x" + channels);
+            sb.AppendLine("cdhw_tex=" + (rt != null ? (rt.width + "x" + rt.height + "x" + rt.volumeDepth + " " + rt.format) : "null"));
+            sb.AppendLine("cdhw_src_nz=" + srcNz + "/" + src.Length);
+            sb.AppendLine("cdhw_dst_nz=" + dstNz + "/" + src.Length);
+            sb.AppendLine("cdhw_cpu_nz=" + cpuNz + "/" + src.Length);
+            sb.AppendLine("cdhw_dst_mean_abs=" + (dstSumAbs / Math.Max(1, src.Length)).ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("cdhw_dst_max_abs=" + dstMaxAbs.ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("cdhw_cpu_mean_abs=" + (cpuSumAbs / Math.Max(1, src.Length)).ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("cdhw_cpu_max_abs=" + cpuMaxAbs.ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("cdhw_src_first16=" + string.Join(",", FormatFloatSample(src, 16)));
+            sb.AppendLine("cdhw_dst_first16=" + string.Join(",", FormatFloatSample(dst, 16)));
+            sb.AppendLine("cdhw_cpu_first16=" + string.Join(",", FormatFloatSample(cpu, 16)));
+            sb.AppendLine("chw_shape=" + width + "x" + height + "x" + chwChannels);
+            sb.AppendLine("chw_tex=" + (chwRt != null ? (chwRt.width + "x" + chwRt.height + "x" + chwRt.volumeDepth + " " + chwRt.format) : "null"));
+            sb.AppendLine("chw_src_nz=" + chwSrcNz + "/" + chwSrc.Length);
+            sb.AppendLine("chw_dst_nz=" + chwDstNz + "/" + chwSrc.Length);
+            sb.AppendLine("chw_cpu_nz=" + chwCpuNz + "/" + chwSrc.Length);
+            sb.AppendLine("chw_dst_mean_abs=" + (chwDstSumAbs / Math.Max(1, chwSrc.Length)).ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("chw_dst_max_abs=" + chwDstMaxAbs.ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("chw_cpu_mean_abs=" + (chwCpuSumAbs / Math.Max(1, chwSrc.Length)).ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("chw_cpu_max_abs=" + chwCpuMaxAbs.ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("chw_src_first16=" + string.Join(",", FormatFloatSample(chwSrc, 16)));
+            sb.AppendLine("chw_dst_first16=" + string.Join(",", FormatFloatSample(chwDst, 16)));
+            sb.AppendLine("chw_cpu_first16=" + string.Join(",", FormatFloatSample(chwCpu, 16)));
+            sb.AppendLine("rgb_pack4_tex=" + (rgbPack4 != null ? (rgbPack4.width + "x" + rgbPack4.height + "x" + rgbPack4.volumeDepth + " " + rgbPack4.format) : "null"));
+            sb.AppendLine("rgb_out_mean_abs=" + rgbMeanAbs.ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("rgb_out_max_abs=" + rgbMaxAbs.ToString("G9", CultureInfo.InvariantCulture));
+            sb.AppendLine("rgb_out_first12=" + string.Join(",", FormatFloatSample(rgbPixels, 12)));
+            sb.AppendLine("gpu_summary=" + NcnnGpuResourceTracker.BuildSummary());
+            summary = sb.ToString();
+
+            AppendDebugLine(
+                "Pack4RoundtripSelfTest result"
+                + " | format=" + textureFormat
+                + " | cdhwDstNz=" + dstNz + "/" + src.Length
+                + " | cdhwCpuNz=" + cpuNz + "/" + src.Length
+                + " | chwDstNz=" + chwDstNz + "/" + chwSrc.Length
+                + " | chwCpuNz=" + chwCpuNz + "/" + chwSrc.Length
+                + " | rgbMeanAbs=" + rgbMeanAbs.ToString("G9", CultureInfo.InvariantCulture));
+
+            _lastSummaryText = summary;
+            WriteFloatArray(Path.Combine(outputDir, "src_ncdhw_f32.bin"), src);
+            WriteFloatArray(Path.Combine(outputDir, "dst_roundtrip_f32.bin"), dst);
+            WriteFloatArray(Path.Combine(outputDir, "cpu_readback_f32.bin"), cpu);
+            WriteFloatArray(Path.Combine(outputDir, "src_chw_f32.bin"), chwSrc);
+            WriteFloatArray(Path.Combine(outputDir, "dst_chw_roundtrip_f32.bin"), chwDst);
+            WriteFloatArray(Path.Combine(outputDir, "cpu_chw_readback_f32.bin"), chwCpu);
+            WriteText(Path.Combine(outputDir, "summary.txt"), summary);
+            WriteText(Path.Combine(outputDir, "runtime_debug.log"), string.Join(Environment.NewLine, _debugLines));
+            NcnnGpuResourceTracker.WriteReport(outputDir);
+            return summary;
+        }
+        finally
+        {
+            sw.Stop();
+            _timingMs["pack4_selftest_elapsed_ms"] = sw.ElapsedMilliseconds;
+            if (!string.IsNullOrWhiteSpace(outputDir))
+                WriteText(Path.Combine(outputDir, "timings.json"), new JObject { ["pack4_selftest_elapsed_ms"] = sw.ElapsedMilliseconds }.ToString());
+            if (roundtrip != null)
+                _repro?.ReturnTempBuffer(roundtrip);
+            if (rt != null)
+            {
+                NcnnGpuResourceTracker.ReleaseTexture(rt, "RunPack4RoundtripSelfTest.manualRt");
+                rt.Release();
+                UnityEngine.Object.DestroyImmediate(rt);
+            }
+            if (chwRoundtrip != null)
+                _repro?.ReturnTempBuffer(chwRoundtrip);
+            if (chwRt != null)
+            {
+                NcnnGpuResourceTracker.ReleaseTexture(chwRt, "RunPack4RoundtripSelfTest.manualChwRt");
+                chwRt.Release();
+                UnityEngine.Object.DestroyImmediate(chwRt);
+            }
+            if (cpuSlice != null)
+                UnityEngine.Object.DestroyImmediate(cpuSlice);
+            if (rgbSrc != null)
+                UnityEngine.Object.DestroyImmediate(rgbSrc);
+            if (rgbOut != null)
+            {
+                rgbOut.Release();
+                UnityEngine.Object.DestroyImmediate(rgbOut);
+            }
+            if (rgbPack4 != null)
+            {
+                NcnnGpuResourceTracker.ReleaseTexture(rgbPack4, "RunPack4RoundtripSelfTest.manualRgbRt");
+                rgbPack4.Release();
+                UnityEngine.Object.DestroyImmediate(rgbPack4);
+            }
+            RenderTexture.active = prevActive;
+        }
+    }
+
+    private static RenderTexture CreateArrayRenderTextureForSelfTest(int width, int height, int depth, RenderTextureFormat format, string label)
+    {
+        var desc = new RenderTextureDescriptor(width, height, format, 0)
+        {
+            dimension = UnityEngine.Rendering.TextureDimension.Tex2DArray,
+            volumeDepth = depth,
+            enableRandomWrite = true,
+            msaaSamples = 1,
+            mipCount = 1,
+            useMipMap = false,
+            autoGenerateMips = false,
+            sRGB = false
+        };
+        var rt = new RenderTexture(desc)
+        {
+            name = label ?? "pack4_selftest_array",
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        rt.Create();
+        NcnnGpuResourceTracker.RegisterTexture(rt, "MONAI." + (label ?? "pack4_selftest_array"));
+        return rt;
+    }
+
+    private static IEnumerable<string> FormatFloatSample(float[] values, int count)
+    {
+        if (values == null || values.Length == 0 || count <= 0)
+            yield break;
+
+        var limit = Math.Min(count, values.Length);
+        for (var i = 0; i < limit; i++)
+            yield return values[i].ToString("G9", CultureInfo.InvariantCulture);
+    }
+
     private static ushort[] ReadUInt16Array(byte[] bytes)
     {
         if (bytes == null || bytes.Length == 0)
@@ -3645,7 +4216,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             {
                 InferOutputShape view;
                 float[] data;
-                if (infer.TryGetExistingBufferView(blobName, out var bufferView) && bufferView != null && bufferView.buffer != null)
+                if (infer.TryGetExistingTexture(blobName, out var existingTexture) && existingTexture != null
+                    && infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
+                {
+                    view = new InferOutputShape(dims, w, h, d, c);
+                    data = ReadTextureOutputData(existingTexture, view);
+                }
+                else if (infer.TryGetExistingBufferView(blobName, out var bufferView) && bufferView != null && bufferView.buffer != null)
                 {
                     view = new InferOutputShape(bufferView.dims, bufferView.w, bufferView.h, bufferView.d, bufferView.c);
                     data = infer.GetBufferData(blobName);
