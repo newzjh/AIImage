@@ -29,7 +29,8 @@ public enum MonaiPostprocessKind
 {
     None,
     BratsTumorSubregions,
-    MulticlassArgmax
+    MulticlassArgmax,
+    BinaryLabelPrompt
 }
 
 public sealed class MonaiRunRequest
@@ -57,6 +58,7 @@ public sealed class MonaiRunRequest
     public string[] debugPinnedBlobNames;
     public bool probeOnly;
     public int maxSlidingWindowPatches;
+    public ushort binaryForegroundLabelValue;
 }
 
 public struct MonaiSegmentationResult
@@ -135,6 +137,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public int fullInputDepth;
         public int fullInputHeight;
         public int fullInputWidth;
+        public int processedInputDepth;
+        public int processedInputHeight;
+        public int processedInputWidth;
         public float threshold;
         public bool normalizeNonZero;
         public MonaiChannelFillMode channelFillMode;
@@ -150,6 +155,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public float slidingWindowOverlap;
         public bool probeOnly;
         public int maxSlidingWindowPatches;
+        public ushort binaryForegroundLabelValue;
     }
 
     public string modelParamRelativePath = DefaultModelParamRelativePath;
@@ -180,6 +186,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public bool forceCpuGemm = false;
     public bool forceBufferAllLayers = false;
     public bool forceBufferOutputsForDims4 = false;
+    public ISet<string> forceBufferLayerNames = null;
+    public bool useTextureInputForMonaiPatches = false;
+    public bool disallowBufferAccess = false;
+    public bool disallowBufferOutputs = false;
+    public bool disallowBufferToTextureMaterialization = false;
     public bool keepRawConvWeightsForTexturePath = true;
     public string debugPinnedBlobNamesCsv = string.Empty;
     public bool logAllLayerHeartbeats = false;
@@ -385,6 +396,27 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                     return Finish(new MonaiSegmentationResult { error = "BraTS postprocess expects 3 output channels but got " + outC });
                 labelMap16 = ConvertToU16(BuildBratsLabelMap(masks, outW, outH, outD));
             }
+            else if (resolved.postprocessKind == MonaiPostprocessKind.BinaryLabelPrompt)
+            {
+                if (logits == null || logits.Length == 0)
+                    return Finish(new MonaiSegmentationResult { error = "Binary label prompt postprocess requires logits output" });
+
+                if (outC != 1)
+                    return Finish(new MonaiSegmentationResult { error = "Binary label prompt postprocess expects 1 output channel but got " + outC });
+
+                probs = new float[logits.Length];
+                masks = new byte[logits.Length];
+                var foregroundLabel = resolved.binaryForegroundLabelValue > 0 ? resolved.binaryForegroundLabelValue : (ushort)1;
+                labelMap16 = new ushort[voxelCount];
+                for (var i = 0; i < logits.Length; i++)
+                {
+                    var p = Sigmoid(logits[i]);
+                    probs[i] = p;
+                    var active = p >= resolved.threshold;
+                    masks[i] = active ? (byte)1 : (byte)0;
+                    labelMap16[i] = active ? foregroundLabel : (ushort)0;
+                }
+            }
             else if (resolved.postprocessKind == MonaiPostprocessKind.MulticlassArgmax)
             {
                 if (labelMap16 != null && labelMap16.Length != voxelCount)
@@ -529,7 +561,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _repro.ForceBufferLayerTypes = forceBufferAllLayers
             ? new HashSet<string>(StringComparer.Ordinal) { "*" }
             : null;
+        _repro.ForceBufferLayerNames = forceBufferLayerNames;
         _repro.ForceBufferOutputsForDims4 = forceBufferOutputsForDims4;
+        _repro.DisallowBufferAccess = disallowBufferAccess;
+        _repro.DisallowBufferOutputs = disallowBufferOutputs;
+        _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
         _repro.KeepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
         _repro.DebugLogAllLayerHeartbeats = logAllLayerHeartbeats;
         _repro.DebugLogAllLayerOutputs = logAllLayerOutputs;
@@ -660,7 +696,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             compareWithBaseline = request.compareWithBaseline,
             slidingWindowOverlap = 0f,
             probeOnly = request.probeOnly,
-            maxSlidingWindowPatches = Math.Max(0, request.maxSlidingWindowPatches)
+            maxSlidingWindowPatches = Math.Max(0, request.maxSlidingWindowPatches),
+            binaryForegroundLabelValue = request.binaryForegroundLabelValue
         };
 
         resolved.debugPinnedBlobNames = request.debugPinnedBlobNames != null && request.debugPinnedBlobNames.Length > 0
@@ -698,6 +735,14 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 }
             }
 
+            var processedShape = ReadIntArray(resolved.baselineManifest["processed_volume_shape_dhw"]);
+            if (processedShape != null && processedShape.Length >= 3)
+            {
+                resolved.processedInputDepth = processedShape[0];
+                resolved.processedInputHeight = processedShape[1];
+                resolved.processedInputWidth = processedShape[2];
+            }
+
             var thresholdToken = resolved.baselineManifest["threshold"];
             if (thresholdToken != null && request.threshold <= 0f)
                 resolved.threshold = thresholdToken.Value<float>();
@@ -733,6 +778,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
             var inferMode = resolved.baselineManifest["infer_mode"]?.Value<string>();
             resolved.useSlidingWindow = string.Equals(inferMode, "monai-sliding-window", StringComparison.OrdinalIgnoreCase);
+
+            if (resolved.binaryForegroundLabelValue == 0)
+            {
+                resolved.binaryForegroundLabelValue = (ushort?)resolved.baselineManifest["prompt"]?["foreground_label_value"]?.Value<int>() ?? (ushort)0;
+            }
         }
 
         if ((resolved.inputChannels <= 0 || resolved.networkInputDepth <= 0 || resolved.networkInputHeight <= 0 || resolved.networkInputWidth <= 0) && resolved.bundleManifest != null)
@@ -750,11 +800,18 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (resolved.inputChannels <= 0 || resolved.networkInputDepth <= 0 || resolved.networkInputHeight <= 0 || resolved.networkInputWidth <= 0)
             throw new InvalidOperationException("MONAI input shape is unresolved. Please provide bundle/baseline manifest or explicit shape.");
 
+        if (resolved.processedInputDepth <= 0 || resolved.processedInputHeight <= 0 || resolved.processedInputWidth <= 0)
+        {
+            resolved.processedInputDepth = resolved.networkInputDepth;
+            resolved.processedInputHeight = resolved.networkInputHeight;
+            resolved.processedInputWidth = resolved.networkInputWidth;
+        }
+
         if (resolved.fullInputDepth <= 0 || resolved.fullInputHeight <= 0 || resolved.fullInputWidth <= 0)
         {
-            resolved.fullInputDepth = resolved.networkInputDepth;
-            resolved.fullInputHeight = resolved.networkInputHeight;
-            resolved.fullInputWidth = resolved.networkInputWidth;
+            resolved.fullInputDepth = resolved.processedInputDepth;
+            resolved.fullInputHeight = resolved.processedInputHeight;
+            resolved.fullInputWidth = resolved.processedInputWidth;
         }
 
         if (resolved.slidingWindowDepth <= 0 || resolved.slidingWindowHeight <= 0 || resolved.slidingWindowWidth <= 0)
@@ -815,7 +872,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         AppendDebugLine("PrepareBaselineInputAsync read tensor start");
         var tensor = await UniTask.RunOnThreadPool(() => ReadFloatArray(inputTensorPath), cancellationToken: ct);
         AppendDebugLine("PrepareBaselineInputAsync read tensor done | floats=" + tensor.Length.ToString(CultureInfo.InvariantCulture));
-        var expected = checked(request.inputChannels * request.fullInputDepth * request.fullInputHeight * request.fullInputWidth);
+        var expected = checked(request.inputChannels * request.processedInputDepth * request.processedInputHeight * request.processedInputWidth);
         AppendDebugLine("PrepareBaselineInputAsync validate tensor | expected=" + expected.ToString(CultureInfo.InvariantCulture) + " | actual=" + tensor.Length.ToString(CultureInfo.InvariantCulture));
         if (tensor.Length != expected)
             throw new InvalidOperationException("MONAI baseline input tensor size mismatch: expected " + expected + " got " + tensor.Length);
@@ -885,9 +942,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var channels = FillInputChannels(volumes, request.inputChannels, request.channelFillMode);
         var tensor = CropOrPadAndNormalize(
             channels,
-            request.fullInputDepth,
-            request.fullInputHeight,
-            request.fullInputWidth,
+            request.processedInputDepth,
+            request.processedInputHeight,
+            request.processedInputWidth,
             request.normalizeNonZero);
         return new PreparedInput
         {
@@ -925,6 +982,47 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public NcnnRepro.ConvPack conv;
     }
 
+    private readonly struct InferOutputShape
+    {
+        public readonly int dims;
+        public readonly int w;
+        public readonly int h;
+        public readonly int d;
+        public readonly int c;
+
+        public InferOutputShape(int dims, int w, int h, int d, int c)
+        {
+            this.dims = dims;
+            this.w = w;
+            this.h = h;
+            this.d = d;
+            this.c = c;
+        }
+    }
+
+    private readonly struct PatchInferHandle : IDisposable
+    {
+        public readonly NcnnRepro.InferResult infer;
+        private readonly NcnnRepro _repro;
+        private readonly RenderTexture _ownedInputTexture;
+
+        public PatchInferHandle(NcnnRepro.InferResult infer, NcnnRepro repro, RenderTexture ownedInputTexture)
+        {
+            this.infer = infer;
+            _repro = repro;
+            _ownedInputTexture = ownedInputTexture;
+        }
+
+        public void Dispose()
+        {
+            try { infer?.Dispose(); } catch { }
+            if (_ownedInputTexture != null)
+            {
+                try { _repro?.ReturnTempArray(_ownedInputTexture); } catch { }
+            }
+        }
+    }
+
     private InferenceRunResult RunSinglePassInference(ResolvedRequest resolved, PreparedInput prepared)
     {
         using var inputTensor = new NcnnTensorBuffer(
@@ -934,16 +1032,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             resolved.inputChannels);
         inputTensor.buffer.SetData(prepared.tensorNcdhw);
         var pinnedBlobNames = BuildPinnedBlobNames(resolved.outputBlobName, resolved.debugPinnedBlobNames);
-        using var infer = _repro.InferWithMultiInputs(
-            null,
-            new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { { resolved.inputBlobName, inputTensor } },
+        using var inferHandle = RunInferenceWithPatchInput(
+            resolved,
+            inputTensor,
+            resolved.networkInputDepth,
+            resolved.networkInputHeight,
+            resolved.networkInputWidth,
             pinnedBlobNames,
-            null,
             resolved.probeOnly ? resolved.outputBlobName : null);
+        var infer = inferHandle.infer;
 
-        var outputView = infer.GetBufferView(resolved.outputBlobName);
-        if (outputView == null || outputView.buffer == null)
-            throw new InvalidOperationException("MONAI output blob missing: " + resolved.outputBlobName);
+        var outputView = GetInferOutputShape(infer, resolved.outputBlobName, "MONAI output blob missing: ");
 
         if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             DumpPinnedBlobOutputs(infer, pinnedBlobNames);
@@ -968,7 +1067,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         return new InferenceRunResult
         {
-            logits = infer.GetBufferData(resolved.outputBlobName),
+            logits = ExtractInferOutputData(infer, resolved.outputBlobName, outputView),
             width = outputView.w,
             height = outputView.h,
             depth = outputView.d,
@@ -992,17 +1091,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var roiD = resolved.slidingWindowDepth;
         var roiH = resolved.slidingWindowHeight;
         var roiW = resolved.slidingWindowWidth;
-        var fullD = resolved.fullInputDepth;
-        var fullH = resolved.fullInputHeight;
-        var fullW = resolved.fullInputWidth;
+        var inferD = resolved.processedInputDepth;
+        var inferH = resolved.processedInputHeight;
+        var inferW = resolved.processedInputWidth;
         var channelCount = resolved.inputChannels;
 
         if (roiD <= 0 || roiH <= 0 || roiW <= 0)
             throw new InvalidOperationException("Sliding window roi size is invalid.");
 
-        var startsD = BuildSlidingWindowStarts(fullD, roiD, resolved.slidingWindowOverlap);
-        var startsH = BuildSlidingWindowStarts(fullH, roiH, resolved.slidingWindowOverlap);
-        var startsW = BuildSlidingWindowStarts(fullW, roiW, resolved.slidingWindowOverlap);
+        var startsD = BuildSlidingWindowStarts(inferD, roiD, resolved.slidingWindowOverlap);
+        var startsH = BuildSlidingWindowStarts(inferH, roiH, resolved.slidingWindowOverlap);
+        var startsW = BuildSlidingWindowStarts(inferW, roiW, resolved.slidingWindowOverlap);
         var pinnedBlobNames = BuildPinnedBlobNames(resolved.outputBlobName, resolved.debugPinnedBlobNames);
 
         float[] accum = null;
@@ -1027,9 +1126,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                     ExtractPatchNcdhw(
                         prepared.tensorNcdhw,
                         channelCount,
-                        fullD,
-                        fullH,
-                        fullW,
+                        inferD,
+                        inferH,
+                        inferW,
                         startD,
                         startH,
                         startW,
@@ -1039,15 +1138,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         patchTensor);
                     inputTensor.buffer.SetData(patchTensor);
 
-                    using var infer = _repro.InferWithMultiInputs(
-                        null,
-                        new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { { resolved.inputBlobName, inputTensor } },
+                    using var inferHandle = RunInferenceWithPatchInput(
+                        resolved,
+                        inputTensor,
+                        roiD,
+                        roiH,
+                        roiW,
                         pinnedBlobNames,
                         null);
+                    var infer = inferHandle.infer;
 
-                    var outputView = infer.GetBufferView(resolved.outputBlobName);
-                    if (outputView == null || outputView.buffer == null)
-                        throw new InvalidOperationException("MONAI sliding window output blob missing: " + resolved.outputBlobName);
+                    var outputView = GetInferOutputShape(infer, resolved.outputBlobName, "MONAI sliding window output blob missing: ");
                     if (outputView.dims != 4)
                         throw new InvalidOperationException("MONAI sliding window output dims expected 4 but got " + outputView.dims);
                     if (outputView.w != roiW || outputView.h != roiH || outputView.d != roiD)
@@ -1058,15 +1159,15 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                             + " got " + outputView.w + "x" + outputView.h + "x" + outputView.d);
                     }
 
-                    var patchLogits = infer.GetBufferData(resolved.outputBlobName);
+                    var patchLogits = ExtractInferOutputData(infer, resolved.outputBlobName, outputView);
                     if (patchLogits == null || patchLogits.Length == 0)
                         throw new InvalidOperationException("MONAI sliding window logits are empty.");
 
                     if (accum == null)
                     {
                         outC = outputView.c;
-                        accum = new float[checked(outC * fullD * fullH * fullW)];
-                        weight = new float[checked(fullD * fullH * fullW)];
+                        accum = new float[checked(outC * inferD * inferH * inferW)];
+                        weight = new float[checked(inferD * inferH * inferW)];
                     }
                     else if (outputView.c != outC)
                     {
@@ -1077,9 +1178,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         accum,
                         weight,
                         patchLogits,
-                        fullD,
-                        fullH,
-                        fullW,
+                        inferD,
+                        inferH,
+                        inferW,
                         roiD,
                         roiH,
                         roiW,
@@ -1105,13 +1206,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (accum == null || weight == null || outC <= 0)
             throw new InvalidOperationException("Sliding window inference did not produce any patches.");
 
-        NormalizeAccumulatedLogits(accum, weight, outC, fullD, fullH, fullW);
+        NormalizeAccumulatedLogits(accum, weight, outC, inferD, inferH, inferW);
         return new InferenceRunResult
         {
             logits = accum,
-            width = fullW,
-            height = fullH,
-            depth = fullD,
+            width = inferW,
+            height = inferH,
+            depth = inferD,
             channels = outC,
             executedPatchCount = patchCount,
             totalPatchCount = patchCount
@@ -1176,9 +1277,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var roiD = resolved.slidingWindowDepth;
         var roiH = resolved.slidingWindowHeight;
         var roiW = resolved.slidingWindowWidth;
-        var fullD = resolved.fullInputDepth;
-        var fullH = resolved.fullInputHeight;
-        var fullW = resolved.fullInputWidth;
+        var inferD = resolved.processedInputDepth;
+        var inferH = resolved.processedInputHeight;
+        var inferW = resolved.processedInputWidth;
         var inputChannels = resolved.inputChannels;
         var featureChannels = outputHead.featureChannels;
 
@@ -1194,17 +1295,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             + " | outputChannels=" + outputHead.outputChannels.ToString(CultureInfo.InvariantCulture)
             + " | headLayer=" + (outputHead.layerName ?? string.Empty));
 
-        var startsD = BuildSlidingWindowStarts(fullD, roiD, resolved.slidingWindowOverlap);
-        var startsH = BuildSlidingWindowStarts(fullH, roiH, resolved.slidingWindowOverlap);
-        var startsW = BuildSlidingWindowStarts(fullW, roiW, resolved.slidingWindowOverlap);
+        var startsD = BuildSlidingWindowStarts(inferD, roiD, resolved.slidingWindowOverlap);
+        var startsH = BuildSlidingWindowStarts(inferH, roiH, resolved.slidingWindowOverlap);
+        var startsW = BuildSlidingWindowStarts(inferW, roiW, resolved.slidingWindowOverlap);
         var pinnedBlobNames = BuildPinnedBlobNames(outputHead.featureBlobName, resolved.debugPinnedBlobNames);
         var patchCount = startsD.Count * startsH.Count * startsW.Count;
         var patchIndex = 0;
 
-        var fullPlane = checked(fullH * fullW);
-        var fullVoxelCount = checked(fullD * fullPlane);
+        var fullPlane = checked(inferH * inferW);
+        var fullVoxelCount = checked(inferD * fullPlane);
         var featurePatchElementCount = checked(featureChannels * roiD * roiH * roiW);
-        var bandDepthCapacity = Mathf.Min(roiD, fullD);
+        var bandDepthCapacity = Mathf.Min(roiD, inferD);
         var featureBandElementCount = checked(featureChannels * bandDepthCapacity * fullPlane);
         var weightBandElementCount = checked(bandDepthCapacity * fullPlane);
         AppendDebugLine(
@@ -1214,7 +1315,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             + " | weightBandMiB=" + FormatMiBFromFloatCount(weightBandElementCount)
             + " | labelMapMiB=" + ((fullVoxelCount * (double)sizeof(ushort)) / (1024d * 1024d)).ToString("F3", CultureInfo.InvariantCulture)
             + " | bandDepth=" + bandDepthCapacity.ToString(CultureInfo.InvariantCulture)
-            + " | fullShape=" + fullD.ToString(CultureInfo.InvariantCulture) + "x" + fullH.ToString(CultureInfo.InvariantCulture) + "x" + fullW.ToString(CultureInfo.InvariantCulture));
+            + " | fullShape=" + inferD.ToString(CultureInfo.InvariantCulture) + "x" + inferH.ToString(CultureInfo.InvariantCulture) + "x" + inferW.ToString(CultureInfo.InvariantCulture));
         ThrowIfSlidingWindowMemoryLimitExceeded("before_feature_band_alloc", 0, patchCount);
 
         var labelMap = new ushort[fullVoxelCount];
@@ -1240,9 +1341,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                     ExtractPatchNcdhw(
                         prepared.tensorNcdhw,
                         inputChannels,
-                        fullD,
-                        fullH,
-                        fullW,
+                        inferD,
+                        inferH,
+                        inferW,
                         startD,
                         startH,
                         startW,
@@ -1252,19 +1353,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         patchTensor);
                     inputTensor.buffer.SetData(patchTensor);
 
-                    using var infer = _repro.InferWithMultiInputs(
-                        null,
-                        new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { { resolved.inputBlobName, inputTensor } },
+                    using var inferHandle = RunInferenceWithPatchInput(
+                        resolved,
+                        inputTensor,
+                        roiD,
+                        roiH,
+                        roiW,
                         pinnedBlobNames,
-                        null,
                         outputHead.featureBlobName);
+                    var infer = inferHandle.infer;
 
-                    var featureView = infer.GetBufferView(outputHead.featureBlobName);
-                    if (featureView == null || featureView.buffer == null)
-                    {
-                        throw new InvalidOperationException(
-                            "MONAI sliding window feature blob missing: " + outputHead.featureBlobName);
-                    }
+                    var featureView = GetInferOutputShape(infer, outputHead.featureBlobName, "MONAI sliding window feature blob missing: ");
                     if (featureView.dims != 4)
                     {
                         throw new InvalidOperationException(
@@ -1279,7 +1378,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                             + featureView.w + "x" + featureView.h + "x" + featureView.d + "x" + featureView.c);
                     }
 
-                    featureView.buffer.GetData(featurePatch);
+                    var featureData = ExtractInferOutputData(infer, outputHead.featureBlobName, featureView);
+                    Array.Copy(featureData, featurePatch, featurePatch.Length);
                     var localStartDepth = startD - bandBaseDepth;
                     if (localStartDepth < 0)
                     {
@@ -1305,8 +1405,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         weightBand,
                         bandDepthCapacity,
                         featurePatch,
-                        fullH,
-                        fullW,
+                        inferH,
+                        inferW,
                         roiD,
                         roiH,
                         roiW,
@@ -1328,7 +1428,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 }
             }
 
-            var nextDepthStart = (iz + 1) < startsD.Count ? startsD[iz + 1] : fullD;
+            var nextDepthStart = (iz + 1) < startsD.Count ? startsD[iz + 1] : inferD;
             var finalizedDepthCount = Mathf.Clamp(nextDepthStart - bandBaseDepth, 0, activeBandDepth);
             if (finalizedDepthCount <= 0)
                 continue;
@@ -1339,8 +1439,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 bandDepthCapacity,
                 0,
                 finalizedDepthCount,
-                fullW,
-                fullH,
+                inferW,
+                inferH,
                 outputHead,
                 labelMap,
                 bandBaseDepth,
@@ -1364,12 +1464,12 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         if (patchCount <= 0)
             throw new InvalidOperationException("Sliding window feature inference did not produce any patches.");
-        if (bandBaseDepth != fullD || activeBandDepth != 0)
+        if (bandBaseDepth != inferD || activeBandDepth != 0)
         {
             throw new InvalidOperationException(
                 "Sliding window feature band drain incomplete: bandBaseDepth="
                 + bandBaseDepth.ToString(CultureInfo.InvariantCulture)
-                + " fullDepth=" + fullD.ToString(CultureInfo.InvariantCulture)
+                + " fullDepth=" + inferD.ToString(CultureInfo.InvariantCulture)
                 + " activeBandDepth=" + activeBandDepth.ToString(CultureInfo.InvariantCulture));
         }
 
@@ -1378,9 +1478,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return new InferenceRunResult
         {
             labelMap = labelMap,
-            width = fullW,
-            height = fullH,
-            depth = fullD,
+            width = inferW,
+            height = inferH,
+            depth = inferD,
             channels = outputHead.outputChannels,
             executionNote = "sliding_window_feature_head_band:" + outputHead.featureBlobName,
             executedPatchCount = patchCount,
@@ -1393,17 +1493,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var roiD = resolved.slidingWindowDepth;
         var roiH = resolved.slidingWindowHeight;
         var roiW = resolved.slidingWindowWidth;
-        var fullD = resolved.fullInputDepth;
-        var fullH = resolved.fullInputHeight;
-        var fullW = resolved.fullInputWidth;
+        var inferD = resolved.processedInputDepth;
+        var inferH = resolved.processedInputHeight;
+        var inferW = resolved.processedInputWidth;
         var channelCount = resolved.inputChannels;
 
         if (roiD <= 0 || roiH <= 0 || roiW <= 0)
             throw new InvalidOperationException("Sliding window roi size is invalid.");
 
-        var startsD = BuildSlidingWindowStarts(fullD, roiD, resolved.slidingWindowOverlap);
-        var startsH = BuildSlidingWindowStarts(fullH, roiH, resolved.slidingWindowOverlap);
-        var startsW = BuildSlidingWindowStarts(fullW, roiW, resolved.slidingWindowOverlap);
+        var startsD = BuildSlidingWindowStarts(inferD, roiD, resolved.slidingWindowOverlap);
+        var startsH = BuildSlidingWindowStarts(inferH, roiH, resolved.slidingWindowOverlap);
+        var startsW = BuildSlidingWindowStarts(inferW, roiW, resolved.slidingWindowOverlap);
         var pinnedBlobNames = BuildPinnedBlobNames(resolved.outputBlobName, resolved.debugPinnedBlobNames);
         var totalPatchCount = startsD.Count * startsH.Count * startsW.Count;
         var maxPatchCount = resolved.maxSlidingWindowPatches > 0
@@ -1413,7 +1513,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             maxPatchCount = 1;
 
         var executedPatchCount = 0;
-        NcnnTensorBuffer outputView = null;
+        InferOutputShape? outputView = null;
 
         using var inputTensor = new NcnnTensorBuffer(roiW, roiH, roiD, channelCount);
         var patchTensor = new float[checked(channelCount * roiD * roiH * roiW)];
@@ -1431,9 +1531,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                     ExtractPatchNcdhw(
                         prepared.tensorNcdhw,
                         channelCount,
-                        fullD,
-                        fullH,
-                        fullW,
+                        inferD,
+                        inferH,
+                        inferW,
                         startD,
                         startH,
                         startW,
@@ -1443,19 +1543,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         patchTensor);
                     inputTensor.buffer.SetData(patchTensor);
 
-                    using var infer = _repro.InferWithMultiInputs(
-                        null,
-                        new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { { resolved.inputBlobName, inputTensor } },
+                    using var inferHandle = RunInferenceWithPatchInput(
+                        resolved,
+                        inputTensor,
+                        roiD,
+                        roiH,
+                        roiW,
                         pinnedBlobNames,
-                        null,
                         resolved.outputBlobName);
+                    var infer = inferHandle.infer;
 
-                    outputView = infer.GetBufferView(resolved.outputBlobName);
-                    if (outputView == null || outputView.buffer == null)
-                    {
-                        throw new InvalidOperationException(
-                            "MONAI sliding window probe blob missing: " + resolved.outputBlobName);
-                    }
+                    outputView = GetInferOutputShape(infer, resolved.outputBlobName, "MONAI sliding window probe blob missing: ");
 
                     if (executedPatchCount == 1 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                         DumpPinnedBlobOutputs(infer, pinnedBlobNames);
@@ -1471,20 +1569,134 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             }
         }
 
-        if (outputView == null)
+        if (!outputView.HasValue)
             throw new InvalidOperationException("Sliding window probe did not execute any patches.");
 
         return new InferenceRunResult
         {
-            width = outputView.w,
-            height = outputView.h,
-            depth = outputView.d,
-            channels = outputView.c,
+            width = outputView.Value.w,
+            height = outputView.Value.h,
+            depth = outputView.Value.d,
+            channels = outputView.Value.c,
             executionNote = "probe_blob:" + resolved.outputBlobName,
             probeOnly = true,
             executedPatchCount = executedPatchCount,
             totalPatchCount = totalPatchCount
         };
+    }
+
+    private PatchInferHandle RunInferenceWithPatchInput(
+        ResolvedRequest resolved,
+        NcnnTensorBuffer inputTensor,
+        int depth,
+        int height,
+        int width,
+        string[] pinnedBlobNames,
+        string stopAfterTopName)
+    {
+        if (_repro == null)
+            throw new InvalidOperationException("MONAI ncnn repro is not initialized.");
+        if (inputTensor == null || inputTensor.buffer == null)
+            throw new ArgumentNullException(nameof(inputTensor));
+
+        if (!useTextureInputForMonaiPatches)
+        {
+            return new PatchInferHandle(
+                _repro.InferWithMultiInputs(
+                null,
+                new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { { resolved.inputBlobName, inputTensor } },
+                pinnedBlobNames,
+                null,
+                stopAfterTopName),
+                _repro,
+                null);
+        }
+
+        var packCount = Mathf.Max(1, Mathf.CeilToInt(resolved.inputChannels / 4f));
+        var sliceCount = checked(Mathf.Max(1, depth) * packCount);
+        var inputPack4 = _repro.RentTempArray(width, height, sliceCount, RenderTextureFormat.ARGBHalf);
+        try
+        {
+            _ops.FillPack4FromBufferCDHW(inputTensor.buffer, width, height, depth, resolved.inputChannels, inputPack4);
+            var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+            {
+                { resolved.inputBlobName, inputPack4 }
+            };
+            var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            {
+                { resolved.inputBlobName, new NcnnRepro.BufferShape(4, width, height, depth, resolved.inputChannels) }
+            };
+            var infer = _repro.InferWithMultiInputs(
+                textureInputs,
+                null,
+                pinnedBlobNames,
+                textureInputShapes,
+                stopAfterTopName);
+            return new PatchInferHandle(infer, _repro, inputPack4);
+        }
+        catch
+        {
+            _repro.ReturnTempArray(inputPack4);
+            throw;
+        }
+    }
+
+    private InferOutputShape GetInferOutputShape(NcnnRepro.InferResult infer, string blobName, string missingPrefix)
+    {
+        if (infer == null)
+            throw new ArgumentNullException(nameof(infer));
+
+        try
+        {
+            var view = infer.GetBufferView(blobName);
+            if (view != null && view.buffer != null)
+                return new InferOutputShape(view.dims, view.w, view.h, view.d, view.c);
+        }
+        catch (Exception e)
+        {
+            AppendDebugLine("GetInferOutputShape buffer path unavailable | blob=" + blobName + " | " + e.Message);
+        }
+
+        if (infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
+            return new InferOutputShape(dims, w, h, d, c);
+
+        throw new InvalidOperationException((missingPrefix ?? "Infer output missing: ") + blobName);
+    }
+
+    private float[] ExtractInferOutputData(NcnnRepro.InferResult infer, string blobName, InferOutputShape outputView)
+    {
+        if (infer == null)
+            throw new ArgumentNullException(nameof(infer));
+
+        try
+        {
+            return infer.GetBufferData(blobName);
+        }
+        catch (Exception e)
+        {
+            AppendDebugLine("ExtractInferOutputData buffer path unavailable | blob=" + blobName + " | " + e.Message);
+        }
+
+        var texture = infer.ExtractTexture(blobName);
+        if (texture == null)
+            throw new InvalidOperationException("Infer texture output missing: " + blobName);
+
+        try
+        {
+            var count = checked(Mathf.Max(1, outputView.w) * Mathf.Max(1, outputView.h) * Mathf.Max(1, outputView.d) * Mathf.Max(1, outputView.c));
+            using var outputBuffer = new ComputeBuffer(count, sizeof(float), ComputeBufferType.Structured);
+            if (outputView.dims == 4)
+                _ops.Pack4ToBufferCDHW(texture, outputView.w, outputView.h, outputView.d, outputView.c, outputBuffer);
+            else
+                _ops.Pack4ToBufferCHW(texture, outputView.w, outputView.h, outputView.c, outputBuffer);
+            var data = new float[count];
+            outputBuffer.GetData(data);
+            return data;
+        }
+        finally
+        {
+            _repro?.ReturnTempArray(texture);
+        }
     }
 
     private async UniTask HandleSlidingWindowPatchCompletedAsync(
@@ -1656,34 +1868,20 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         int startHeight,
         int startWidth)
     {
-        var fullPlane = checked(fullHeight * fullWidth);
-        var bandVolume = checked(depthCapacity * fullPlane);
-        var patchPlane = checked(patchHeight * patchWidth);
-        var patchVolume = checked(patchDepth * patchPlane);
-        for (var c = 0; c < channels; c++)
-        {
-            var accumChannel = c * bandVolume;
-            var patchChannel = c * patchVolume;
-            for (var z = 0; z < patchDepth; z++)
-            {
-                var dstZ = startDepthLocal + z;
-                var accumZOffset = accumChannel + dstZ * fullPlane;
-                var weightZOffset = dstZ * fullPlane;
-                var patchZOffset = patchChannel + z * patchPlane;
-                for (var y = 0; y < patchHeight; y++)
-                {
-                    var accumOffset = accumZOffset + (startHeight + y) * fullWidth + startWidth;
-                    var weightOffset = weightZOffset + (startHeight + y) * fullWidth + startWidth;
-                    var patchOffset = patchZOffset + y * patchWidth;
-                    for (var x = 0; x < patchWidth; x++)
-                    {
-                        accum[accumOffset + x] += patch[patchOffset + x];
-                        if (c == 0)
-                            weight[weightOffset + x] += 1f;
-                    }
-                }
-            }
-        }
+        AccumulatePatchIntoVolume(
+            accum,
+            weight,
+            depthCapacity,
+            fullHeight,
+            fullWidth,
+            patch,
+            patchDepth,
+            patchHeight,
+            patchWidth,
+            channels,
+            startDepthLocal,
+            startHeight,
+            startWidth);
     }
 
     private static void NormalizeAccumulatedBandRange(
@@ -2276,6 +2474,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         float[] dst)
     {
         Array.Clear(dst, 0, dst.Length);
+        var padDepthBefore = Math.Max(0, (patchDepth - srcDepth) / 2);
+        var padHeightBefore = Math.Max(0, (patchHeight - srcHeight) / 2);
+        var padWidthBefore = Math.Max(0, (patchWidth - srcWidth) / 2);
         var srcPlane = checked(srcHeight * srcWidth);
         var srcVolume = checked(srcDepth * srcPlane);
         var dstPlane = checked(patchHeight * patchWidth);
@@ -2286,14 +2487,33 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             var dstChannel = c * dstVolume;
             for (var z = 0; z < patchDepth; z++)
             {
-                var srcZ = startDepth + z;
+                var srcZ = startDepth - padDepthBefore + z;
+                if (srcZ < 0 || srcZ >= srcDepth)
+                    continue;
+
                 var srcZOffset = srcChannel + srcZ * srcPlane;
                 var dstZOffset = dstChannel + z * dstPlane;
                 for (var y = 0; y < patchHeight; y++)
                 {
-                    var srcOffset = srcZOffset + (startHeight + y) * srcWidth + startWidth;
-                    var dstOffset = dstZOffset + y * patchWidth;
-                    Array.Copy(src, srcOffset, dst, dstOffset, patchWidth);
+                    var srcY = startHeight - padHeightBefore + y;
+                    if (srcY < 0 || srcY >= srcHeight)
+                        continue;
+
+                    var srcX = startWidth - padWidthBefore;
+                    var dstX = 0;
+                    if (srcX < 0)
+                    {
+                        dstX = -srcX;
+                        srcX = 0;
+                    }
+
+                    var copyWidth = Math.Min(patchWidth - dstX, srcWidth - srcX);
+                    if (copyWidth <= 0)
+                        continue;
+
+                    var srcOffset = srcZOffset + srcY * srcWidth + srcX;
+                    var dstOffset = dstZOffset + y * patchWidth + dstX;
+                    Array.Copy(src, srcOffset, dst, dstOffset, copyWidth);
                 }
             }
         }
@@ -2314,6 +2534,40 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         int startHeight,
         int startWidth)
     {
+        AccumulatePatchIntoVolume(
+            accum,
+            weight,
+            fullDepth,
+            fullHeight,
+            fullWidth,
+            patch,
+            patchDepth,
+            patchHeight,
+            patchWidth,
+            channels,
+            startDepth,
+            startHeight,
+            startWidth);
+    }
+
+    private static void AccumulatePatchIntoVolume(
+        float[] accum,
+        float[] weight,
+        int fullDepth,
+        int fullHeight,
+        int fullWidth,
+        float[] patch,
+        int patchDepth,
+        int patchHeight,
+        int patchWidth,
+        int channels,
+        int startDepth,
+        int startHeight,
+        int startWidth)
+    {
+        var padDepthBefore = Math.Max(0, (patchDepth - fullDepth) / 2);
+        var padHeightBefore = Math.Max(0, (patchHeight - fullHeight) / 2);
+        var padWidthBefore = Math.Max(0, (patchWidth - fullWidth) / 2);
         var fullPlane = checked(fullHeight * fullWidth);
         var fullVolume = checked(fullDepth * fullPlane);
         var patchPlane = checked(patchHeight * patchWidth);
@@ -2324,16 +2578,35 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             var patchChannel = c * patchVolume;
             for (var z = 0; z < patchDepth; z++)
             {
-                var dstZ = startDepth + z;
+                var dstZ = startDepth - padDepthBefore + z;
+                if (dstZ < 0 || dstZ >= fullDepth)
+                    continue;
+
                 var accumZOffset = accumChannel + dstZ * fullPlane;
                 var weightZOffset = dstZ * fullPlane;
                 var patchZOffset = patchChannel + z * patchPlane;
                 for (var y = 0; y < patchHeight; y++)
                 {
-                    var accumOffset = accumZOffset + (startHeight + y) * fullWidth + startWidth;
-                    var weightOffset = weightZOffset + (startHeight + y) * fullWidth + startWidth;
-                    var patchOffset = patchZOffset + y * patchWidth;
-                    for (var x = 0; x < patchWidth; x++)
+                    var dstY = startHeight - padHeightBefore + y;
+                    if (dstY < 0 || dstY >= fullHeight)
+                        continue;
+
+                    var dstX = startWidth - padWidthBefore;
+                    var patchX = 0;
+                    if (dstX < 0)
+                    {
+                        patchX = -dstX;
+                        dstX = 0;
+                    }
+
+                    var copyWidth = Math.Min(patchWidth - patchX, fullWidth - dstX);
+                    if (copyWidth <= 0)
+                        continue;
+
+                    var accumOffset = accumZOffset + dstY * fullWidth + dstX;
+                    var weightOffset = weightZOffset + dstY * fullWidth + dstX;
+                    var patchOffset = patchZOffset + y * patchWidth + patchX;
+                    for (var x = 0; x < copyWidth; x++)
                     {
                         accum[accumOffset + x] += patch[patchOffset + x];
                         if (c == 0)
@@ -2610,8 +2883,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             ["execution_note"] = executionNote ?? string.Empty,
             ["preparation_note"] = prepared?.preparationNote ?? string.Empty,
             ["network_input_shape_ncdhw"] = new JArray(1, request.inputChannels, request.networkInputDepth, request.networkInputHeight, request.networkInputWidth),
+            ["processed_input_shape_ncdhw"] = new JArray(1, request.inputChannels, request.processedInputDepth, request.processedInputHeight, request.processedInputWidth),
             ["full_input_shape_ncdhw"] = new JArray(1, request.inputChannels, request.fullInputDepth, request.fullInputHeight, request.fullInputWidth),
-            ["unity_input_shape_whdc"] = new JArray(request.fullInputWidth, request.fullInputHeight, request.fullInputDepth, request.inputChannels),
+            ["unity_input_shape_whdc"] = new JArray(request.processedInputWidth, request.processedInputHeight, request.processedInputDepth, request.inputChannels),
             ["model_output_shape_ncdhw"] = new JArray(1, outC, outD, outH, outW),
             ["unity_output_shape_whdc"] = new JArray(outW, outH, outD, outC)
         };
@@ -2645,7 +2919,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         root["stats"] = new JObject
         {
-            ["input_tensor"] = BuildFloatStats(prepared?.tensorNcdhw, new[] { request.inputChannels, request.fullInputDepth, request.fullInputHeight, request.fullInputWidth }),
+            ["input_tensor"] = BuildFloatStats(prepared?.tensorNcdhw, new[] { request.inputChannels, request.processedInputDepth, request.processedInputHeight, request.processedInputWidth }),
             ["logits"] = BuildFloatStats(logits, new[] { outC, outD, outH, outW }),
             ["probs"] = BuildFloatStats(probs, new[] { outC, outD, outH, outW }),
             ["masks"] = masks != null ? BuildByteStats(masks, new[] { outC, outD, outH, outW }) : null,
@@ -2788,8 +3062,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         sb.AppendLine("input_blob=" + request.inputBlobName);
         sb.AppendLine("output_blob=" + request.outputBlobName);
         sb.AppendLine("network_input_shape_ncdhw=1," + request.inputChannels + "," + request.networkInputDepth + "," + request.networkInputHeight + "," + request.networkInputWidth);
+        sb.AppendLine("processed_input_shape_ncdhw=1," + request.inputChannels + "," + request.processedInputDepth + "," + request.processedInputHeight + "," + request.processedInputWidth);
         sb.AppendLine("full_input_shape_ncdhw=1," + request.inputChannels + "," + request.fullInputDepth + "," + request.fullInputHeight + "," + request.fullInputWidth);
-        sb.AppendLine("unity_input_shape_whdc=" + request.fullInputWidth + "," + request.fullInputHeight + "," + request.fullInputDepth + "," + request.inputChannels);
+        sb.AppendLine("unity_input_shape_whdc=" + request.processedInputWidth + "," + request.processedInputHeight + "," + request.processedInputDepth + "," + request.inputChannels);
         sb.AppendLine("sliding_window_enabled=" + request.useSlidingWindow);
         sb.AppendLine("sliding_window_roi_dhw=" + request.slidingWindowDepth + "," + request.slidingWindowHeight + "," + request.slidingWindowWidth);
         sb.AppendLine("sliding_window_overlap=" + request.slidingWindowOverlap.ToString("0.######", CultureInfo.InvariantCulture));
@@ -2797,6 +3072,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         sb.AppendLine("normalize_nonzero=" + request.normalizeNonZero);
         sb.AppendLine("threshold=" + request.threshold.ToString("0.######", CultureInfo.InvariantCulture));
         sb.AppendLine("postprocess=" + request.postprocessKind);
+        if (request.postprocessKind == MonaiPostprocessKind.BinaryLabelPrompt)
+            sb.AppendLine("binary_foreground_label=" + request.binaryForegroundLabelValue.ToString(CultureInfo.InvariantCulture));
         sb.AppendLine("baseline_manifest=" + (request.baselineManifestPath ?? string.Empty));
         if (prepared?.sourcePaths != null && prepared.sourcePaths.Length > 0)
         {
@@ -2842,6 +3119,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         sb.AppendLine("model_param=" + (request.modelParamPath ?? string.Empty));
         sb.AppendLine("output_dir=" + (_lastDumpDir ?? string.Empty));
         sb.AppendLine("network_input_shape_ncdhw=1," + request.inputChannels + "," + request.networkInputDepth + "," + request.networkInputHeight + "," + request.networkInputWidth);
+        sb.AppendLine("processed_input_shape_ncdhw=1," + request.inputChannels + "," + request.processedInputDepth + "," + request.processedInputHeight + "," + request.processedInputWidth);
         sb.AppendLine("full_input_shape_ncdhw=1," + request.inputChannels + "," + request.fullInputDepth + "," + request.fullInputHeight + "," + request.fullInputWidth);
         sb.AppendLine("output_shape_ncdhw=1," + outC + "," + outD + "," + outH + "," + outW);
         sb.AppendLine("sliding_window_enabled=" + request.useSlidingWindow);
@@ -2851,6 +3129,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         sb.AppendLine("normalize_nonzero=" + request.normalizeNonZero);
         sb.AppendLine("threshold=" + request.threshold.ToString("0.######", CultureInfo.InvariantCulture));
         sb.AppendLine("postprocess=" + request.postprocessKind);
+        if (request.postprocessKind == MonaiPostprocessKind.BinaryLabelPrompt)
+            sb.AppendLine("binary_foreground_label=" + request.binaryForegroundLabelValue.ToString(CultureInfo.InvariantCulture));
         sb.AppendLine("probe_only=" + probeOnly);
         sb.AppendLine("result_mode=" + (labelMapOnlyMode ? "labelmap_only" : "full_logits"));
         sb.AppendLine("has_logits=" + hasLogits);
@@ -2862,6 +3142,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             sb.AppendLine("note=BraTS bundle predicts tumor subregions (TC/WT/ET), not skull or ventricles");
         else if (request.postprocessKind == MonaiPostprocessKind.MulticlassArgmax)
             sb.AppendLine("note=Multiclass bundle uses softmax + argmax label decoding");
+        else if (request.postprocessKind == MonaiPostprocessKind.BinaryLabelPrompt)
+            sb.AppendLine("note=Fixed-prompt Vista3D bundle uses sigmoid thresholding and writes the configured foreground label value");
 
         if (labelMap != null)
         {

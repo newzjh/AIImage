@@ -417,6 +417,12 @@ namespace NcnnCompute
             if (srcShape.dims > 3 || outShape.dims > 3)
                 return false;
 
+            // A 4D tensor flattened into 2D/3D often changes the logical row-major interpretation
+            // even if the pack4 texture dimensions happen to match. Keep those cases on the buffer
+            // path so downstream matrix-style consumers read the intended linear order.
+            if (srcShape.dims != outShape.dims)
+                return false;
+
             var srcCount = srcShape.w * srcShape.h * srcShape.d * srcShape.c;
             var outCount = outShape.w * outShape.h * outShape.d * outShape.c;
             if (srcCount != outCount)

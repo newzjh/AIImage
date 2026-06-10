@@ -867,6 +867,7 @@ namespace NcnnCompute
         public LayerRuntimeProfile LastRuntimeProfile { get; private set; }
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
         private const int FallbackMaxTextureArraySlices = 2048;
+        private const int FallbackMaxTextureSize = 16384;
         private string _currentExecutingLayerName;
         private string _currentExecutingLayerTypeName;
 
@@ -896,6 +897,11 @@ namespace NcnnCompute
             return false;
         }
 
+        internal bool ShouldAllowCurrentLayerBufferGuardBypass()
+        {
+            return ShouldForceCurrentLayerBufferPath();
+        }
+
         private static bool MatchesForceBufferToken(ISet<string> set, string value)
         {
             if (set == null || set.Count == 0 || string.IsNullOrWhiteSpace(value))
@@ -922,9 +928,112 @@ namespace NcnnCompute
             }
         }
 
+        private static int GetMaxTextureSize()
+        {
+            try
+            {
+                return Mathf.Max(1, SystemInfo.maxTextureSize);
+            }
+            catch
+            {
+                return FallbackMaxTextureSize;
+            }
+        }
+
         private bool WouldExceedTextureArraySliceLimit(int depth)
         {
             return Mathf.Max(1, depth) > GetMaxTextureArraySlices();
+        }
+
+        private bool WouldExceedTextureSizeLimit(int width, int height)
+        {
+            var max = GetMaxTextureSize();
+            return Mathf.Max(1, width) > max || Mathf.Max(1, height) > max;
+        }
+
+        private bool TryResolveTensorTextureMaterialization(
+            NcnnTensorBuffer view,
+            out int texW,
+            out int texH,
+            out int channels,
+            out int sliceCount,
+            out RenderTextureFormat format,
+            bool logSkipReason = true)
+        {
+            texW = 0;
+            texH = 0;
+            channels = 0;
+            sliceCount = 0;
+            format = default;
+            if (view == null)
+                return false;
+
+            if (view.dims == 1)
+            {
+                texW = view.w;
+                texH = 1;
+                channels = 1;
+            }
+            else if (view.dims == 2)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = 1;
+            }
+            else if (view.dims == 3)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = view.c;
+            }
+            else if (view.dims == 4)
+            {
+                texW = view.w;
+                texH = view.h;
+                channels = view.c;
+            }
+            else
+            {
+                return false;
+            }
+
+            var channelPacks = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            sliceCount = view.dims == 4
+                ? Mathf.Max(1, view.d) * channelPacks
+                : channelPacks;
+            format = ResolveTensorTextureFormat(view.dims);
+
+            if (WouldExceedTextureSizeLimit(texW, texH))
+            {
+                if (logSkipReason)
+                {
+                    DebugLog?.Invoke(
+                        "[BufferMaterialize] skip-texture-size-limit"
+                        + " | site=" + DescribeCurrentExecutionSite()
+                        + " | dims=" + view.dims
+                        + " | shape=" + view.w + "x" + view.h + "x" + view.d + "x" + view.c
+                        + " | requested_size=" + texW.ToString(CultureInfo.InvariantCulture) + "x" + texH.ToString(CultureInfo.InvariantCulture)
+                        + " | max_size=" + GetMaxTextureSize().ToString(CultureInfo.InvariantCulture));
+                }
+                return false;
+            }
+
+            if (WouldExceedTextureArraySliceLimit(sliceCount))
+            {
+                if (logSkipReason)
+                {
+                    DebugLog?.Invoke(
+                        "[BufferMaterialize] skip-texture-slice-limit"
+                        + " | site=" + DescribeCurrentExecutionSite()
+                        + " | dims=" + view.dims
+                        + " | shape=" + view.w + "x" + view.h + "x" + view.d + "x" + view.c
+                        + " | slices=" + sliceCount.ToString(CultureInfo.InvariantCulture)
+                        + " | max_slices=" + GetMaxTextureArraySlices().ToString(CultureInfo.InvariantCulture));
+                }
+                return false;
+            }
+
+            return true;
         }
 
         private InvalidOperationException CreateDisallowedBufferPathException(string reason, string blobName, string detail = null)
@@ -2287,7 +2396,7 @@ namespace NcnnCompute
         {
             if (buffer == null || view == null)
                 return null;
-            if (!ignoreGuard && DisallowBufferToTextureMaterialization)
+            if (!ignoreGuard && DisallowBufferToTextureMaterialization && !ShouldAllowCurrentLayerBufferGuardBypass())
             {
                 throw CreateDisallowedBufferPathException(
                     "pack4-only guard: buffer-to-texture materialization disallowed",
@@ -2295,54 +2404,10 @@ namespace NcnnCompute
                     "dims=" + view.dims + " w=" + view.w + " h=" + view.h + " d=" + view.d + " c=" + view.c);
             }
 
-            int texW;
-            int texH;
-            int channels;
-            if (view.dims == 1)
-            {
-                texW = view.w;
-                texH = 1;
-                channels = 1;
-            }
-            else if (view.dims == 2)
-            {
-                texW = view.w;
-                texH = view.h;
-                channels = 1;
-            }
-            else if (view.dims == 3)
-            {
-                texW = view.w;
-                texH = view.h;
-                channels = view.c;
-            }
-            else if (view.dims == 4)
-            {
-                texW = view.w;
-                texH = view.h;
-                channels = view.c;
-            }
-            else
-            {
+            if (!TryResolveTensorTextureMaterialization(view, out var texW, out var texH, out var channels, out var sliceCount, out var format))
                 return null;
-            }
 
-            var channelPacks = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
-            var sliceCount = view.dims == 4
-                ? Mathf.Max(1, view.d) * channelPacks
-                : channelPacks;
-            if (WouldExceedTextureArraySliceLimit(sliceCount))
-            {
-                DebugLog?.Invoke(
-                    "[BufferMaterialize] skip-texture-slice-limit"
-                    + " | site=" + DescribeCurrentExecutionSite()
-                    + " | dims=" + view.dims
-                    + " | shape=" + view.w + "x" + view.h + "x" + view.d + "x" + view.c
-                    + " | slices=" + sliceCount.ToString(CultureInfo.InvariantCulture)
-                    + " | max_slices=" + GetMaxTextureArraySlices().ToString(CultureInfo.InvariantCulture));
-                return null;
-            }
-            var rt = RentTempArray(texW, texH, sliceCount, ResolveTensorTextureFormat(view.dims));
+            var rt = RentTempArray(texW, texH, sliceCount, format);
             if (view.dims == 4)
                 _ops.FillPack4FromBufferCDHW(buffer, texW, texH, view.d, channels, rt);
             else
@@ -2429,7 +2494,7 @@ namespace NcnnCompute
                 return null;
             if (!bufferViews.TryGetValue(name, out var view) || view == null)
                 return null;
-            if (DisallowBufferToTextureMaterialization)
+            if (DisallowBufferToTextureMaterialization && !ShouldAllowCurrentLayerBufferGuardBypass())
                 throw CreateDisallowedBufferPathException("pack4-only guard: buffer-to-texture materialization disallowed", name);
             return MaterializeTextureFromBufferView(buffer, view);
         }
@@ -3076,9 +3141,19 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(topName));
             if (tensor == null || tensor.buffer == null)
                 throw new ArgumentNullException(nameof(tensor));
-            if (DisallowBufferOutputs)
+            var canRepresentAsTexture = preferTexture
+                && tensor.dims <= 4
+                && TryResolveTensorTextureMaterialization(
+                    tensor,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    logSkipReason: false);
+            if (DisallowBufferOutputs && !ShouldAllowCurrentLayerBufferGuardBypass())
             {
-                if (preferTexture && tensor.dims <= 4)
+                if (preferTexture && tensor.dims <= 4 && canRepresentAsTexture)
                 {
                     PublishScratchTextureOutput(topName, tensor, textureBlobs, textureShapes);
                     if (tensor.ownsBuffer)
@@ -3086,10 +3161,23 @@ namespace NcnnCompute
                     return;
                 }
 
-                throw CreateDisallowedBufferPathException(
-                    "pack4-only guard: buffer output disallowed",
-                    topName,
-                    "dims=" + tensor.dims + " w=" + tensor.w + " h=" + tensor.h + " d=" + tensor.d + " c=" + tensor.c + " preferTexture=" + preferTexture);
+                if (preferTexture && tensor.dims <= 4 && !canRepresentAsTexture)
+                {
+                    DebugLog?.Invoke(
+                        "[BufferMaterialize] keep-buffer-only"
+                        + " | site=" + DescribeCurrentExecutionSite()
+                        + " | blob=" + topName
+                        + " | dims=" + tensor.dims
+                        + " | shape=" + tensor.w + "x" + tensor.h + "x" + tensor.d + "x" + tensor.c);
+                }
+                else
+                {
+                    throw CreateDisallowedBufferPathException(
+                        "pack4-only guard: buffer output disallowed",
+                        topName,
+                        "dims=" + tensor.dims + " w=" + tensor.w + " h=" + tensor.h + " d=" + tensor.d + " c=" + tensor.c + " preferTexture=" + preferTexture);
+                }
+
             }
 
             var logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
@@ -3100,7 +3188,7 @@ namespace NcnnCompute
             if (ForceBufferOutputsForDims4 && tensor.dims == 4)
                 return;
 
-            if (preferTexture && tensor.dims <= 4)
+            if (preferTexture && tensor.dims <= 4 && canRepresentAsTexture)
             {
                 var rt = MaterializeTextureFromBufferView(tensor.buffer, tensor);
                 if (rt != null)
@@ -3310,6 +3398,8 @@ namespace NcnnCompute
 
         internal static bool CanUseGroupNormPack4Path(TensorRef src, BufferShape shape, GroupNormPack gp)
         {
+            var logicalDepth = shape.dims == 4 ? Mathf.Max(1, shape.d) : 1;
+            var expectedVolumeDepth = logicalDepth * Mathf.Max(1, src?.packs ?? 0);
             return src != null
                 && src.texture != null
                 && gp != null
@@ -3318,7 +3408,8 @@ namespace NcnnCompute
                 && gp.beta != null
                 && (shape.dims == 3 || shape.dims == 4)
                 && shape.w == src.width
-                && (shape.dims == 4 ? shape.h * shape.d : shape.h) == src.height
+                && shape.h == src.height
+                && (shape.dims != 4 || Mathf.Max(1, src.texture.volumeDepth) == expectedVolumeDepth)
                 && shape.c == gp.channels
                 && gp.channels > 0
                 && gp.group > 0
@@ -3400,7 +3491,7 @@ namespace NcnnCompute
             Dictionary<string, NcnnTensorBuffer> bufferViews,
             List<IDisposable> tempOwned)
         {
-            if (DisallowBufferAccess)
+            if (DisallowBufferAccess && !ShouldAllowCurrentLayerBufferGuardBypass())
             {
                 var detail = bufferBlobs != null && bufferBlobs.TryGetValue(name, out var existing) && existing != null
                     ? "mode=existing-buffer"
@@ -3586,6 +3677,41 @@ namespace NcnnCompute
 
         internal NcnnTensorBuffer RunMatMulLayer(ComputeBuffer aBuf, NcnnTensorBuffer aView, ComputeBuffer bBuf, NcnnTensorBuffer bView, bool transB)
         {
+            static bool ExceedsDispatchLimit(int width, int height, int tileSize)
+            {
+                const int maxGroups = 65535;
+                return Mathf.CeilToInt(width / (float)tileSize) > maxGroups
+                    || Mathf.CeilToInt(height / (float)tileSize) > maxGroups;
+            }
+
+            static void RunMatMulCpu(ComputeBuffer aBufCpu, ComputeBuffer bBufCpu, int rows, int cols, int shared, bool transBCpu, ComputeBuffer outputCpu)
+            {
+                var aData = ReadFloatBuffer(aBufCpu);
+                var bData = ReadFloatBuffer(bBufCpu);
+                var outputData = new float[rows * cols];
+                for (var row = 0; row < rows; row++)
+                {
+                    var aBase = row * shared;
+                    var outBase = row * cols;
+                    for (var col = 0; col < cols; col++)
+                    {
+                        double sum = 0d;
+                        for (var kk = 0; kk < shared; kk++)
+                        {
+                            var aValue = aData[aBase + kk];
+                            var bValue = transBCpu
+                                ? bData[col * shared + kk]
+                                : bData[kk * cols + col];
+                            sum += aValue * bValue;
+                        }
+
+                        outputData[outBase + col] = (float)sum;
+                    }
+                }
+
+                outputCpu.SetData(outputData);
+            }
+
             static void GetMatrixShape(NcnnTensorBuffer view, out int rows, out int cols)
             {
                 if (view == null)
@@ -3663,11 +3789,24 @@ namespace NcnnCompute
             var bCount = bRows * bCols;
             var outCount = aRows * n;
             var maxDims = Mathf.Max(aView.dims, bView.dims);
+            var useCpuFallback = ExceedsDispatchLimit(n, aRows, 8);
+            if (useCpuFallback)
+            {
+                DebugLog?.Invoke(
+                    "[MatMul] cpu-fallback-dispatch-limit"
+                    + " | rows=" + aRows.ToString(CultureInfo.InvariantCulture)
+                    + " | cols=" + n.ToString(CultureInfo.InvariantCulture)
+                    + " | k=" + k.ToString(CultureInfo.InvariantCulture)
+                    + " | transB=" + transB.ToString());
+            }
 
             if (batchDepth == 1 && batchChannels == 1)
             {
                 var outTensor2D = RentTempTensorBuffer(2, n, aRows);
-                Ops.MatMul2D(aBuf, bBuf, aRows, n, k, transB, outTensor2D.buffer);
+                if (useCpuFallback)
+                    RunMatMulCpu(aBuf, bBuf, aRows, n, k, transB, outTensor2D.buffer);
+                else
+                    Ops.MatMul2D(aBuf, bBuf, aRows, n, k, transB, outTensor2D.buffer);
                 return outTensor2D;
             }
 
@@ -3702,7 +3841,10 @@ namespace NcnnCompute
                             bSrc = tempB;
                         }
 
-                        Ops.MatMul2D(aSrc, bSrc, aRows, n, k, transB, tempOut);
+                        if (useCpuFallback)
+                            RunMatMulCpu(aSrc, bSrc, aRows, n, k, transB, tempOut);
+                        else
+                            Ops.MatMul2D(aSrc, bSrc, aRows, n, k, transB, tempOut);
                         var outOffset = maxDims >= 4
                             ? ((pc * batchDepth) + pd) * outCount
                             : pc * outCount;

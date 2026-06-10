@@ -131,7 +131,7 @@ namespace NcnnCompute
             owner.PublishTensorBufferOutput(
                 layer.topNames[0],
                 outTensor,
-                preferTexture: false,
+                preferTexture: true,
                 textureBlobs,
                 textureShapes,
                 bufferBlobs,

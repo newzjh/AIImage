@@ -68,6 +68,7 @@ public static class NcnnDebugRunner
     private const string MonaiForceCpuGemmEnvVar = "AIIMAGE_MONAI_FORCE_CPU_GEMM";
     private const string MonaiForceBufferAllEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_ALL";
     private const string MonaiForceBufferOutputsDims4EnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_OUTPUTS_DIMS4";
+    private const string MonaiForceBufferNamesEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_NAMES";
     private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
     private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
     private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
@@ -94,6 +95,8 @@ public static class NcnnDebugRunner
     private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
     private static readonly string DefaultMonaiBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "brats_mri_segmentation_baseline", "RegLib_C01_1", "baseline_manifest.json");
     private static readonly string DefaultMonaiInputPath = @"E:\Projects\CTData\sliceexampledata2\MRBrainTumor1\RegLib_C01_1.nrrd";
+    private static readonly string DefaultVistaBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "vista3d_ct_philips_heart_baseline", "ct_philips_heart", "baseline_manifest.json");
+    private static readonly string DefaultVistaInputPath = @"E:\Projects\CTData\sliceexampledata2\CT_Philips\CT_Philips.nii.gz";
     private static readonly string DefaultSdPositivePrompt = "floating hair, portrait, ((loli)), ((one girl)), cute face, hidden hands, asymmetrical bangs, beautiful detailed eyes, eye shadow, hair ornament, ribbons, bowties, buttons, pleated skirt, (((masterpiece))), ((best quality)), colorful";
     private static readonly string DefaultSdNegativePrompt = "((part of the head)), ((((mutated hands and fingers)))), deformed, blurry, bad anatomy, disfigured, poorly drawn face, mutation, mutated, extra limb, ugly, poorly drawn hands, missing limb, blurry, floating limbs, disconnected limbs, malformed hands, blur, out of focus, long neck, long body, Octane renderer, lowres, bad anatomy, bad hands, text";
     private static bool _autoBatchScheduled;
@@ -407,6 +410,11 @@ public static class NcnnDebugRunner
         await RunMonaiDebugInternal();
     }
 
+    public static async UniTaskVoid RunVista3dDebug()
+    {
+        await RunMonaiDebugInternal(DefaultVistaBaselineManifestPath, new[] { DefaultVistaInputPath }, true);
+    }
+
     public static void RunMattingDebugBatch() => RunBatchBlocking(nameof(RunMattingDebugBatch), RunMattingDebugInternal);
 
     public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
@@ -551,11 +559,16 @@ public static class NcnnDebugRunner
         }
     }
 
-    private static async UniTask RunMonaiDebugInternal()
+    private static async UniTask RunMonaiDebugInternal(
+        string baselineManifestOverride = null,
+        string[] inputPathsOverride = null,
+        bool? useBaselineTensorOverride = null)
     {
-        var baselineManifestPath = ResolveOptionalExistingFile(MonaiBaselineManifestEnvVar) ?? DefaultMonaiBaselineManifestPath;
-        var inputPaths = ResolveMonaiInputPaths();
-        var useBaselineTensor = ResolveBoolEnv(MonaiUseBaselineTensorEnvVar, true);
+        var baselineManifestPath = !string.IsNullOrWhiteSpace(baselineManifestOverride)
+            ? baselineManifestOverride
+            : (ResolveOptionalExistingFile(MonaiBaselineManifestEnvVar) ?? DefaultMonaiBaselineManifestPath);
+        var inputPaths = inputPathsOverride != null && inputPathsOverride.Length > 0 ? inputPathsOverride : ResolveMonaiInputPaths();
+        var useBaselineTensor = useBaselineTensorOverride ?? ResolveBoolEnv(MonaiUseBaselineTensorEnvVar, true);
         var outputDir = ResolveStringEnv(MonaiOutputDirEnvVar, null);
         var caseName = ResolveStringEnv(MonaiCaseNameEnvVar, null);
         var compareBaseline = ResolveBoolEnv(MonaiCompareBaselineEnvVar, true);
@@ -566,6 +579,7 @@ public static class NcnnDebugRunner
         var forceCpuGemm = ResolveBoolEnv(MonaiForceCpuGemmEnvVar, false);
         var forceBufferAll = ResolveBoolEnv(MonaiForceBufferAllEnvVar, false);
         var forceBufferOutputsDims4 = ResolveBoolEnv(MonaiForceBufferOutputsDims4EnvVar, false);
+        var forceBufferNames = ResolveTokenSetEnv(MonaiForceBufferNamesEnvVar);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
         var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
         var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
@@ -574,6 +588,18 @@ public static class NcnnDebugRunner
         var maxPatchCount = ResolvePositiveIntEnvAllowZero(MonaiMaxPatchesEnvVar, probeOnly ? 1 : 0);
         var threshold = ResolveFloatEnvOrDefault(MonaiThresholdEnvVar, 0.5f);
         var monaiConfig = ResolveMonaiModelConfig(baselineManifestPath);
+        ushort binaryForegroundLabelValue = 0;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(baselineManifestPath) && File.Exists(baselineManifestPath))
+            {
+                var baseline = JObject.Parse(File.ReadAllText(baselineManifestPath));
+                binaryForegroundLabelValue = (ushort?)baseline["prompt"]?["foreground_label_value"]?.Value<int>() ?? (ushort)0;
+            }
+        }
+        catch
+        {
+        }
 
         var go = new GameObject("MonaiDebugRunner");
         try
@@ -596,6 +622,7 @@ public static class NcnnDebugRunner
             runner.forceCpuGemm = forceCpuGemm;
             runner.forceBufferAllLayers = forceBufferAll;
             runner.forceBufferOutputsForDims4 = forceBufferOutputsDims4;
+            runner.useTextureInputForMonaiPatches = !forceBufferAll;
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
             runner.debugPinnedBlobNamesCsv = debugPinnedBlobsCsv;
             runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, false);
@@ -609,15 +636,14 @@ public static class NcnnDebugRunner
             runner.logAllLayerHeartbeats = false;
             runner.logAllLayerOutputs = false;
             runner.logAllBufferMaterialize = false;
+            if (runner.useTextureInputForMonaiPatches)
+                runner.forceBufferLayerNames = forceBufferNames;
             if (ResolveBoolEnv(MonaiPack4OnlyGuardEnvVar, false))
             {
-                var reproField = typeof(MONAINcnnReproRunner).GetField("_repro", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (reproField?.GetValue(runner) is NcnnCompute.NcnnRepro repro)
-                {
-                    repro.DisallowBufferAccess = true;
-                    repro.DisallowBufferOutputs = true;
-                    repro.DisallowBufferToTextureMaterialization = true;
-                }
+                runner.useTextureInputForMonaiPatches = true;
+                runner.disallowBufferAccess = true;
+                runner.disallowBufferOutputs = true;
+                runner.disallowBufferToTextureMaterialization = true;
             }
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[MONAI Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
@@ -635,6 +661,7 @@ public static class NcnnDebugRunner
                 compareWithBaseline = compareBaseline,
                 probeOnly = probeOnly,
                 maxSlidingWindowPatches = maxPatchCount,
+                binaryForegroundLabelValue = binaryForegroundLabelValue,
                 debugPinnedBlobNames = string.IsNullOrWhiteSpace(debugPinnedBlobsCsv)
                     ? null
                     : debugPinnedBlobsCsv.Split(new[] { ',', ';', '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries),
@@ -815,8 +842,14 @@ public static class NcnnDebugRunner
             var postprocess = string.Equals(baseline["task_mode"]?.Value<string>(), "multiclass", StringComparison.OrdinalIgnoreCase)
                 ? MonaiPostprocessKind.MulticlassArgmax
                 : MonaiPostprocessKind.BratsTumorSubregions;
+            if (string.Equals(baseline["task_mode"]?.Value<string>(), "binary_label_prompt", StringComparison.OrdinalIgnoreCase))
+                postprocess = MonaiPostprocessKind.BinaryLabelPrompt;
 
-            var pnnxParam = Path.Combine(outputDir, bundleName + ".sim.pnnx.param");
+            var ncnnAssets = baseline["ncnn_assets"] as JObject;
+
+            var pnnxParam = ncnnAssets?["pnnx_param_path"]?.Value<string>();
+            if (string.IsNullOrWhiteSpace(pnnxParam))
+                pnnxParam = Path.Combine(outputDir, bundleName + ".sim.pnnx.param");
             if (!File.Exists(pnnxParam))
             {
                 var altPnnx = Path.Combine(outputDir, bundleName + ".sim.onnx");
@@ -825,8 +858,12 @@ public static class NcnnDebugRunner
                     pnnxParam = altPnnx;
             }
 
-            var modelParam = Path.Combine(outputDir, bundleName + ".param");
-            var modelBin = Path.Combine(outputDir, bundleName + ".bin");
+            var modelParam = ncnnAssets?["model_param_path"]?.Value<string>();
+            var modelBin = ncnnAssets?["model_bin_path"]?.Value<string>();
+            if (string.IsNullOrWhiteSpace(modelParam))
+                modelParam = Path.Combine(outputDir, bundleName + ".param");
+            if (string.IsNullOrWhiteSpace(modelBin))
+                modelBin = Path.Combine(outputDir, bundleName + ".bin");
             if (!File.Exists(modelParam) || !File.Exists(modelBin))
             {
                 var fallbackParam = Path.Combine(outputDir, bundleName + ".sim.ncnn.param");
@@ -838,13 +875,21 @@ public static class NcnnDebugRunner
                 }
             }
 
-            var bundleManifest = Path.Combine(outputDir, "manifest.json");
+            var bundleManifest = ncnnAssets?["bundle_manifest_path"]?.Value<string>();
+            if (string.IsNullOrWhiteSpace(bundleManifest))
+                bundleManifest = Path.Combine(outputDir, "manifest.json");
             return new MonaiModelConfig(modelParam, modelBin, pnnxParam, bundleManifest, postprocess);
         }
         catch
         {
             return new MonaiModelConfig(null, null, null, null, MonaiPostprocessKind.BratsTumorSubregions);
         }
+    }
+
+    [MenuItem("Tools/AIImage/Run VISTA3D Debug")]
+    public static void RunVista3dDebugMenu()
+    {
+        RunVista3dDebug().Forget();
     }
 
     private static async UniTask RunYoloAndInpaintingProbeInternal()
@@ -1171,7 +1216,7 @@ public static class NcnnDebugRunner
 
     public static void RunReproSuiteStressBatch() => RunBatchBlocking(nameof(RunReproSuiteStressBatch), RunReproSuiteStressInternal, TimeSpan.FromHours(2));
 
-    public static void RunMonaiDebugBatch() => RunBatchBlocking(nameof(RunMonaiDebugBatch), RunMonaiDebugInternal, TimeSpan.FromMinutes(10));
+    public static void RunMonaiDebugBatch() => RunBatchBlocking(nameof(RunMonaiDebugBatch), () => RunMonaiDebugInternal(), TimeSpan.FromMinutes(10));
 
     private static void RunBatchBlocking(string methodName, Func<UniTask> taskFactory, TimeSpan? timeout = null)
     {
@@ -2091,6 +2136,31 @@ public static class NcnnDebugRunner
         }
 
         return fallback;
+    }
+
+    private static ISet<string> ResolveTokenSetEnv(string envName)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (string.IsNullOrWhiteSpace(env))
+                return null;
+
+            var parts = env.Split(new[] { ',', ';', '|', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                var value = parts[i]?.Trim();
+                if (!string.IsNullOrWhiteSpace(value))
+                    set.Add(value);
+            }
+
+            return set.Count > 0 ? set : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string ResolveOptionalExistingFile(string envName)
