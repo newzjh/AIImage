@@ -2247,7 +2247,7 @@ namespace NcnnCompute
             _cs.SetBuffer(_kConv1x1Pack4, "_ConvB4", b4);
             _cs.SetTexture(_kConv1x1Pack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConv1x1Pack4, "_ConvOutArr", dstPack4);
-            Dispatch3D(_kConv1x1Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+            Dispatch3D(_kConv1x1Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
         }
 
         public void Conv1x1Pack4(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int activationType, float activationParam, ComputeTexture dstPack4)
@@ -2268,7 +2268,7 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, _kConv1x1Pack4, "_ConvB4", b4);
             cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvOutArr", dstPack4.nameID);
-            Dispatch3D(cmd, _kConv1x1Pack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+            Dispatch3D(cmd, _kConv1x1Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
         }
 
         public void AddPack4(RenderTexture a, RenderTexture b, float coeffA, float coeffB, int packs, RenderTexture output)

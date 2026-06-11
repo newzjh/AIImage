@@ -726,33 +726,138 @@ void NcnnWinograd23TransformOutputPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
-void NcnnConv1x1Pack4(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID, uint3 id : SV_DispatchThreadID)
+void NcnnConv1x1Pack4(uint3 id : SV_DispatchThreadID)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
-    if (id.x >= ow || id.y >= oh) return;
-    int op = (int)id.z;
-    if (op < 0 || op >= _OutPacks) return;
 
-    float4 sum = _ConvB4[op];
+    int ox = (int)id.x * 2;
+    int oy = (int)id.y * 2;
+    int op = (int)id.z * 2;
+    if (ox >= (int)ow || oy >= (int)oh || op < 0 || op >= _OutPacks)
+        return;
+
+    int op1 = op + 1;
+    bool hasX1 = ox + 1 < (int)ow;
+    bool hasY1 = oy + 1 < (int)oh;
+    bool hasOp1 = op1 < _OutPacks;
+
+    float4 bias0 = _ConvB4[op];
+    float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
+
+    float4 sum00 = bias0;
+    float4 sum01 = bias0;
+    float4 sum10 = bias0;
+    float4 sum11 = bias0;
+
+    float4 sum20 = bias1;
+    float4 sum21 = bias1;
+    float4 sum30 = bias1;
+    float4 sum31 = bias1;
 
     for (int ip0 = 0; ip0 < _InPacks; ip0++)
     {
-        float4 inV = _ConvInArr[int3((int)id.x, (int)id.y, ip0)];
-        int base = ((op * _InPacks + ip0) * 4);
-        float4 w0 = _ConvW4[base + 0];
-        float4 w1 = _ConvW4[base + 1];
-        float4 w2 = _ConvW4[base + 2];
-        float4 w3 = _ConvW4[base + 3];
-        sum.x += dot(inV, w0);
-        sum.y += dot(inV, w1);
-        sum.z += dot(inV, w2);
-        sum.w += dot(inV, w3);
+        float4 v00 = _ConvInArr[int3(ox, oy, ip0)];
+        float4 v01 = hasX1 ? _ConvInArr[int3(ox + 1, oy, ip0)] : 0.0;
+        float4 v10 = hasY1 ? _ConvInArr[int3(ox, oy + 1, ip0)] : 0.0;
+        float4 v11 = (hasX1 && hasY1) ? _ConvInArr[int3(ox + 1, oy + 1, ip0)] : 0.0;
+
+        int base0 = ((op * _InPacks + ip0) * 4);
+        float4 w00 = _ConvW4[base0 + 0];
+        float4 w01 = _ConvW4[base0 + 1];
+        float4 w02 = _ConvW4[base0 + 2];
+        float4 w03 = _ConvW4[base0 + 3];
+
+        sum00.x += dot(v00, w00);
+        sum00.y += dot(v00, w01);
+        sum00.z += dot(v00, w02);
+        sum00.w += dot(v00, w03);
+
+        if (hasX1)
+        {
+            sum01.x += dot(v01, w00);
+            sum01.y += dot(v01, w01);
+            sum01.z += dot(v01, w02);
+            sum01.w += dot(v01, w03);
+        }
+
+        if (hasY1)
+        {
+            sum10.x += dot(v10, w00);
+            sum10.y += dot(v10, w01);
+            sum10.z += dot(v10, w02);
+            sum10.w += dot(v10, w03);
+        }
+
+        if (hasX1 && hasY1)
+        {
+            sum11.x += dot(v11, w00);
+            sum11.y += dot(v11, w01);
+            sum11.z += dot(v11, w02);
+            sum11.w += dot(v11, w03);
+        }
+
+        if (!hasOp1)
+            continue;
+
+        int base1 = ((op1 * _InPacks + ip0) * 4);
+        float4 w10 = _ConvW4[base1 + 0];
+        float4 w11 = _ConvW4[base1 + 1];
+        float4 w12 = _ConvW4[base1 + 2];
+        float4 w13 = _ConvW4[base1 + 3];
+
+        sum20.x += dot(v00, w10);
+        sum20.y += dot(v00, w11);
+        sum20.z += dot(v00, w12);
+        sum20.w += dot(v00, w13);
+
+        if (hasX1)
+        {
+            sum21.x += dot(v01, w10);
+            sum21.y += dot(v01, w11);
+            sum21.z += dot(v01, w12);
+            sum21.w += dot(v01, w13);
+        }
+
+        if (hasY1)
+        {
+            sum30.x += dot(v10, w10);
+            sum30.y += dot(v10, w11);
+            sum30.z += dot(v10, w12);
+            sum30.w += dot(v10, w13);
+        }
+
+        if (hasX1 && hasY1)
+        {
+            sum31.x += dot(v11, w10);
+            sum31.y += dot(v11, w11);
+            sum31.z += dot(v11, w12);
+            sum31.w += dot(v11, w13);
+        }
     }
 
-    sum = NcnnApplyActivation(sum);
+    sum00 = NcnnApplyActivation(sum00);
+    if (hasX1) sum01 = NcnnApplyActivation(sum01);
+    if (hasY1) sum10 = NcnnApplyActivation(sum10);
+    if (hasX1 && hasY1) sum11 = NcnnApplyActivation(sum11);
 
-    _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+    _ConvOutArr[int3(ox, oy, op)] = sum00;
+    if (hasX1) _ConvOutArr[int3(ox + 1, oy, op)] = sum01;
+    if (hasY1) _ConvOutArr[int3(ox, oy + 1, op)] = sum10;
+    if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, op)] = sum11;
+
+    if (!hasOp1)
+        return;
+
+    sum20 = NcnnApplyActivation(sum20);
+    if (hasX1) sum21 = NcnnApplyActivation(sum21);
+    if (hasY1) sum30 = NcnnApplyActivation(sum30);
+    if (hasX1 && hasY1) sum31 = NcnnApplyActivation(sum31);
+
+    _ConvOutArr[int3(ox, oy, op1)] = sum20;
+    if (hasX1) _ConvOutArr[int3(ox + 1, oy, op1)] = sum21;
+    if (hasY1) _ConvOutArr[int3(ox, oy + 1, op1)] = sum30;
+    if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, op1)] = sum31;
 }
 
 [numthreads(8,8,1)]

@@ -113,6 +113,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private ClipLabelScore[] _cachedTextScores;
     private float[][] _cachedTextEmbeddings;
     private string _lastDumpDir;
+    private string _lastLayerRuntimeProfileText;
     private List<string> _imageCompareLines;
 
     public string LastDumpDir => _lastDumpDir;
@@ -134,6 +135,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
         var totalSw = Stopwatch.StartNew();
         _lastDumpDir = null;
+        _lastLayerRuntimeProfileText = null;
 
         ClipClassificationResult Finish(ClipClassificationResult result)
         {
@@ -202,6 +204,20 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             }
             imageInferSw.Stop();
             imageInferMs = imageInferSw.ElapsedMilliseconds;
+            if (enableLayerRuntimeProfile)
+            {
+                _lastLayerRuntimeProfileText = _imageRepro?.FormatLastLayerRuntimeProfile(256);
+                if (!string.IsNullOrWhiteSpace(_lastLayerRuntimeProfileText))
+                {
+                    try
+                    {
+                        UnityEngine.Debug.Log("[LAYER-PROFILE] CLIP(image)\n" + _lastLayerRuntimeProfileText);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
 
             if (imageEmbedding == null || imageEmbedding.Length != EmbeddingSize)
                 return Finish(new ClipClassificationResult { error = "Image embedding missing or invalid" });
@@ -242,6 +258,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 DumpScores(_lastDumpDir, modelLevel, scores);
                 if (_imageCompareLines != null && _imageCompareLines.Count > 0)
                     File.WriteAllLines(Path.Combine(_lastDumpDir, "image_conv_compare.txt"), _imageCompareLines);
+                if (!string.IsNullOrWhiteSpace(_lastLayerRuntimeProfileText))
+                    File.WriteAllText(Path.Combine(_lastDumpDir, "layer_runtime_profile.tsv"), _lastLayerRuntimeProfileText);
             }
 
             UnityEngine.Debug.Log("[CLIP] Run | model=" + ResolveModelKey()
