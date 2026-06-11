@@ -11,14 +11,6 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            if (context.bufferBlobs.TryGetValue(layer.bottomNames[0], out var existingBuffer) && existingBuffer != null)
-            {
-#pragma warning disable CS0618
-                ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
-                return;
-            }
-
             if (CanExecuteRenderTexturePath(owner, layer, context))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
@@ -99,7 +91,8 @@ namespace NcnnCompute
                         bufferBlobs,
                         bufferRefs,
                         bufferViews,
-                        tempOwned);
+                        tempOwned,
+                        RenderTextureFormat.ARGBFloat);
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     return;
                 }
@@ -142,7 +135,7 @@ namespace NcnnCompute
                     {
                         var srcShape = NcnnRepro.GetTextureShape(textureShapes, reshapeTex, layer.bottomNames[0]);
                         var outShape = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
-                        var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
+                        var canAliasTexture = CanAliasTextureLayout(owner, srcShape, outShape);
                         if (canAliasTexture)
                         {
                             textureBlobs[layer.topNames[0]] = reshapeTex;
@@ -157,9 +150,9 @@ namespace NcnnCompute
                 var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                 var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                 var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
-                var canAliasTexture = CanAliasTextureLayout(srcShape, outShape);
+                var canAliasTexture = CanAliasTextureLayout(owner, srcShape, outShape);
 
-                if (ShouldKeepVistaTailFeatureTextureAlias(layer, srcShape, outShape))
+                if (ShouldKeepVistaTailFeatureTextureAlias(owner, layer, srcShape, outShape))
                 {
                     textureBlobs[layer.topNames[0]] = src;
                     textureShapes[layer.topNames[0]] = outShape;
@@ -221,7 +214,8 @@ namespace NcnnCompute
                         bufferBlobs,
                         bufferRefs,
                         bufferViews,
-                        tempOwned);
+                        tempOwned,
+                        RenderTextureFormat.ARGBFloat);
                     scratchTensor.Dispose();
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     return;
@@ -255,6 +249,9 @@ namespace NcnnCompute
                         outView.c,
                         true,
                         owner.ReturnTempBuffer);
+                    var textureFormatOverride = ShouldPromoteGemmPrepTexture(owner, layer, outView)
+                        ? RenderTextureFormat.ARGBFloat
+                        : (RenderTextureFormat?)null;
                     owner.PublishTensorBufferOutput(
                         layer.topNames[0],
                         outTensor,
@@ -264,8 +261,9 @@ namespace NcnnCompute
                         bufferBlobs,
                         bufferRefs,
                         bufferViews,
-                        tempOwned);
-                    if (TryShouldKeepVistaTailFeatureTexture(layer, srcShape, outView))
+                        tempOwned,
+                        textureFormatOverride);
+                    if (TryShouldKeepVistaTailFeatureTexture(owner, layer, srcShape, outView))
                     {
                         textureBlobs[layer.topNames[0]] = src;
                         textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
@@ -325,7 +323,7 @@ namespace NcnnCompute
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
 
-            if (!CanAliasTextureLayout(srcShape, outShape))
+            if (!CanAliasTextureLayout(owner, srcShape, outShape))
                 throw new InvalidOperationException("Reshape render-texture path only supports alias-compatible layout: " + layer.name);
 
             textureBlobs[layer.topNames[0]] = src;
@@ -451,11 +449,22 @@ namespace NcnnCompute
         return shapes;
     }
 
-        private static bool CanAliasTextureLayout(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
+        private static bool CanAliasTextureLayout(NcnnRepro owner, NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
         {
             if (srcShape.dims > 3 || outShape.dims > 3)
             {
-                if (CanAliasVistaTailTextureLayout(srcShape, outShape))
+                if (srcShape.dims == outShape.dims
+                    && srcShape.w == outShape.w
+                    && srcShape.h == outShape.h
+                    && srcShape.d == outShape.d
+                    && srcShape.c == outShape.c)
+                {
+                    // Paramless 4D reshapes are often just graph markers around later pack4
+                    // window/attention transforms. Preserve the existing array texture when the
+                    // logical shape is unchanged so pack4-only validation can stay on the RT path.
+                    return true;
+                }
+                if (CanAliasVistaTailTextureLayout(owner, srcShape, outShape))
                     return true;
                 return false;
             }
@@ -479,8 +488,11 @@ namespace NcnnCompute
             return srcW == outW && srcH == outH && srcPacks == outPacks;
         }
 
-        private static bool CanAliasVistaTailTextureLayout(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
+        private static bool CanAliasVistaTailTextureLayout(NcnnRepro owner, NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)
         {
+            if (owner == null || !owner.EnableVistaTailPack4Specializations)
+                return false;
+
             if (srcShape.dims == 4 && outShape.dims == 4)
             {
                 return srcShape.w == outShape.w
@@ -504,10 +516,13 @@ namespace NcnnCompute
         }
 
         private static bool TryShouldKeepVistaTailFeatureTexture(
+            NcnnRepro owner,
             NcnnParamModel.Layer layer,
             NcnnRepro.BufferShape srcShape,
             NcnnTensorBuffer outView)
         {
+            if (owner == null || !owner.EnableVistaTailPack4Specializations)
+                return false;
             if (layer == null || outView == null)
                 return false;
             if (!string.Equals(layer.name, "reshape_124", StringComparison.Ordinal))
@@ -521,10 +536,13 @@ namespace NcnnCompute
         }
 
         private static bool ShouldKeepVistaTailFeatureTextureAlias(
+            NcnnRepro owner,
             NcnnParamModel.Layer layer,
             NcnnRepro.BufferShape srcShape,
             NcnnRepro.BufferShape outShape)
         {
+            if (owner == null || !owner.EnableVistaTailPack4Specializations)
+                return false;
             if (layer == null)
                 return false;
             if (!string.Equals(layer.name, "reshape_124", StringComparison.Ordinal))
@@ -557,7 +575,7 @@ namespace NcnnCompute
                 return src != null && src.texture != null;
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
-            return CanAliasTextureLayout(srcShape, outShape) && src != null && src.texture != null;
+            return CanAliasTextureLayout(owner, srcShape, outShape) && src != null && src.texture != null;
         }
 
         private static bool TryExecuteRenderTextureWindowPartition(
@@ -1271,6 +1289,29 @@ namespace NcnnCompute
             }
 
             return found;
+        }
+
+        private static bool ShouldPromoteGemmPrepTexture(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnTensorBuffer outView)
+        {
+            if (outView == null)
+                return false;
+            return ShouldPromoteGemmPrepTexture(
+                owner,
+                layer,
+                new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c));
+        }
+
+        private static bool ShouldPromoteGemmPrepTexture(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnRepro.BufferShape outShape)
+        {
+            if (owner?.Model?.layers == null || layer?.topNames == null || layer.topNames.Length == 0)
+                return false;
+            if (outShape.dims != 2)
+                return false;
+
+            var consumer = FindSingleConsumer(owner.Model, layer.topNames[0]);
+            return consumer != null
+                && consumer.type == NcnnLayerTypes.Gemm
+                && consumer.GetInt(5, 0) != 0;
         }
 
         private static NcnnParamModel.Layer FindSingleProducer(NcnnParamModel model, string blobName)

@@ -71,6 +71,9 @@ namespace NcnnCompute
                                                 var outTensor = owner.RentTempTensorBuffer(srcView.dims, srcView.w, srcView.h, srcView.d, srcView.c);
                                                 owner.Ops.CopyBuf(srcView.buffer, outTensor.buffer, srcView.buffer.count);
                                                 owner.Ops.LayerNorm2DInplace(outTensor.buffer, rows, cols, lp.eps, lp.affine, lp.gamma, lp.beta);
+                                                var textureFormatOverride = ShouldPromoteAttentionPrepTexture(owner, layer)
+                                                    ? RenderTextureFormat.ARGBFloat
+                                                    : (RenderTextureFormat?)null;
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],
                                                     outTensor,
@@ -80,7 +83,8 @@ namespace NcnnCompute
                                                     bufferBlobs,
                                                     bufferRefs,
                                                     bufferViews,
-                                                    tempOwned);
+                                                    tempOwned,
+                                                    textureFormatOverride);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
@@ -173,6 +177,46 @@ namespace NcnnCompute
                 + " | d=" + srcView.d
                 + " | c=" + srcView.c
                 + " | affineSize=" + affineSize);
+        }
+
+        private static bool ShouldPromoteAttentionPrepTexture(NcnnRepro owner, NcnnParamModel.Layer layer)
+        {
+            if (owner?.Model?.layers == null || layer?.topNames == null || layer.topNames.Length == 0)
+                return false;
+
+            var reshape = FindSingleConsumer(owner.Model, layer.topNames[0]);
+            if (reshape == null || reshape.type != NcnnLayerTypes.Reshape || reshape.topNames == null || reshape.topNames.Length == 0)
+                return false;
+
+            var gemm = FindSingleConsumer(owner.Model, reshape.topNames[0]);
+            return gemm != null
+                && gemm.type == NcnnLayerTypes.Gemm
+                && gemm.GetInt(5, 0) != 0;
+        }
+
+        private static NcnnParamModel.Layer FindSingleConsumer(NcnnParamModel model, string blobName)
+        {
+            if (model?.layers == null || string.IsNullOrWhiteSpace(blobName))
+                return null;
+
+            NcnnParamModel.Layer found = null;
+            for (var i = 0; i < model.layers.Count; i++)
+            {
+                var candidate = model.layers[i];
+                if (candidate?.bottomNames == null)
+                    continue;
+                for (var j = 0; j < candidate.bottomNames.Length; j++)
+                {
+                    if (!string.Equals(candidate.bottomNames[j], blobName, StringComparison.Ordinal))
+                        continue;
+                    if (found != null)
+                        return null;
+                    found = candidate;
+                    break;
+                }
+            }
+
+            return found;
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

@@ -14,7 +14,8 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            if (owner.TryGetPack4Texture(
+            if (!owner.ShouldForceCurrentLayerBufferPath()
+                && owner.TryGetPack4Texture(
                     layer.bottomNames[0],
                     context.textureBlobs,
                     context.textureShapes,

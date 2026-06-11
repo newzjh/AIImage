@@ -570,6 +570,9 @@ namespace NcnnCompute
 
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+
             var opType = layer.GetInt(0, 0);
             var withScalar = layer.GetInt(1, 0);
 

@@ -3363,7 +3363,7 @@ void NcnnPoolingPack4CDHW(uint3 id : SV_DispatchThreadID)
     float4 acc = _Pool4DPoolType == 0
         ? float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38)
         : 0.0;
-    int4 counts = 0;
+    int count = 0;
 
     int sx0;
     int sy0;
@@ -3396,62 +3396,53 @@ void NcnnPoolingPack4CDHW(uint3 id : SV_DispatchThreadID)
         sz1 = sz0 + _Pool4DKernelD;
     }
 
-    for (int kz = sz0; kz < sz1; kz++)
+    if (_Pool4DPoolType == 0)
     {
-        bool validZ = kz >= 0 && kz < _Pool4DInD;
-        for (int ky = sy0; ky < sy1; ky++)
+        int kz0 = max(sz0, 0);
+        int kz1 = min(sz1, _Pool4DInD);
+        int ky0 = max(sy0, 0);
+        int ky1 = min(sy1, _Pool4DInH);
+        int kx0 = max(sx0, 0);
+        int kx1 = min(sx1, _Pool4DInW);
+
+        for (int kz = kz0; kz < kz1; kz++)
         {
-            bool validZY = validZ && ky >= 0 && ky < _Pool4DInH;
-            for (int kx = sx0; kx < sx1; kx++)
+            int inSlice = kz * packCount + outPack;
+            for (int ky = ky0; ky < ky1; ky++)
             {
-                bool valid = validZY && kx >= 0 && kx < _Pool4DInW;
-                [unroll]
-                for (int lane = 0; lane < 4; lane++)
+                for (int kx = kx0; kx < kx1; kx++)
                 {
-                    int outC = outPack * 4 + lane;
-                    if (outC >= _Pool4DOutC)
-                        continue;
-
-                    if (_Pool4DPoolType == 0)
-                    {
-                        if (!valid)
-                            continue;
-                        float v = NcnnReadPack4ChannelCDHW(_Pool4DInArr, kx, ky, kz, outC, _Pool4DInC);
-                        if (lane == 0) acc.x = max(acc.x, v);
-                        else if (lane == 1) acc.y = max(acc.y, v);
-                        else if (lane == 2) acc.z = max(acc.z, v);
-                        else acc.w = max(acc.w, v);
-                    }
-                    else
-                    {
-                        if (valid)
-                        {
-                            float v = NcnnReadPack4ChannelCDHW(_Pool4DInArr, kx, ky, kz, outC, _Pool4DInC);
-                            if (lane == 0) acc.x += v;
-                            else if (lane == 1) acc.y += v;
-                            else if (lane == 2) acc.z += v;
-                            else acc.w += v;
-                        }
-
-                        if (_Pool4DAdaptive != 0 || _Pool4DIncludePad != 0 || valid)
-                        {
-                            if (lane == 0) counts.x += 1;
-                            else if (lane == 1) counts.y += 1;
-                            else if (lane == 2) counts.z += 1;
-                            else counts.w += 1;
-                        }
-                    }
+                    float4 v = _Pool4DInArr[int3(kx, ky, inSlice)];
+                    acc = max(acc, v);
                 }
             }
         }
     }
-
-    if (_Pool4DPoolType != 0)
+    else
     {
-        if (counts.x > 0) acc.x /= (float)counts.x; else acc.x = 0.0;
-        if (counts.y > 0) acc.y /= (float)counts.y; else acc.y = 0.0;
-        if (counts.z > 0) acc.z /= (float)counts.z; else acc.z = 0.0;
-        if (counts.w > 0) acc.w /= (float)counts.w; else acc.w = 0.0;
+        for (int kz = sz0; kz < sz1; kz++)
+        {
+            bool validZ = kz >= 0 && kz < _Pool4DInD;
+            int inSlice = kz * packCount + outPack;
+            for (int ky = sy0; ky < sy1; ky++)
+            {
+                bool validZY = validZ && ky >= 0 && ky < _Pool4DInH;
+                for (int kx = sx0; kx < sx1; kx++)
+                {
+                    bool valid = validZY && kx >= 0 && kx < _Pool4DInW;
+                    if (valid)
+                        acc += _Pool4DInArr[int3(kx, ky, inSlice)];
+
+                    if (_Pool4DAdaptive != 0 || _Pool4DIncludePad != 0 || valid)
+                        count += 1;
+                }
+            }
+        }
+
+        if (count > 0)
+            acc /= (float)count;
+        else
+            acc = 0.0;
     }
 
     _Pool4DOutArr[int3(ox, oy, slice)] = acc;

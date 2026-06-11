@@ -71,6 +71,7 @@ public static class NcnnDebugRunner
     private const string MonaiForceBufferNamesEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_NAMES";
     private const string MonaiPatchInputModeEnvVar = "AIIMAGE_MONAI_PATCH_INPUT_MODE";
     private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
+    private const string MonaiEnableAttentionMatMulPack4EnvVar = "AIIMAGE_MONAI_ENABLE_ATTENTION_MATMUL_PACK4";
     private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
     private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
     private const string MonaiDebugPinnedBlobsEnvVar = "AIIMAGE_MONAI_DEBUG_PINNED_BLOBS";
@@ -594,6 +595,7 @@ public static class NcnnDebugRunner
         var forceBufferOutputsDims4 = ResolveBoolEnv(MonaiForceBufferOutputsDims4EnvVar, false);
         var forceBufferNames = ResolveTokenSetEnv(MonaiForceBufferNamesEnvVar);
         var patchInputMode = ResolveStringEnv(MonaiPatchInputModeEnvVar, null);
+        var enableAttentionMatMulPack4 = ResolveBoolEnv(MonaiEnableAttentionMatMulPack4EnvVar, false);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
         var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
         var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
@@ -644,6 +646,7 @@ public static class NcnnDebugRunner
             runner.forceBufferAllLayers = forceBufferAll;
             runner.forceBufferOutputsForDims4 = forceBufferOutputsDims4;
             runner.useTextureInputForMonaiPatches = ResolveMonaiPatchInputMode(forceBufferAll, patchInputMode);
+            runner.enableAttentionMatMulPack4Specializations = enableAttentionMatMulPack4;
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
             runner.debugPinnedBlobNamesCsv = debugPinnedBlobsCsv;
             runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, false);

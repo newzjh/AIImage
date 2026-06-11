@@ -120,6 +120,8 @@ namespace NcnnCompute
         {
             if (owner == null || layer == null || context == null)
                 return false;
+            if (!owner.EnableAttentionMatMulPack4Specializations)
+                return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
             if (layer.bottomNames == null || layer.bottomNames.Length != 2 || layer.topNames == null || layer.topNames.Length != 1)
@@ -207,6 +209,8 @@ namespace NcnnCompute
         private static bool TryExecuteVistaTailPack4Path(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             if (owner == null || layer == null || context == null)
+                return false;
+            if (!owner.EnableVistaTailPack4Specializations)
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
@@ -296,6 +300,8 @@ namespace NcnnCompute
         {
             plan = null;
             if (owner?.Model?.layers == null || layer == null)
+                return false;
+            if (!owner.EnableVistaTailPack4Specializations)
                 return false;
             if (layer.bottomNames == null || layer.bottomNames.Length != 2 || layer.topNames == null || layer.topNames.Length != 1)
                 return false;

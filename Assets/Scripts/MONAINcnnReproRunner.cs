@@ -190,6 +190,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public bool forceBufferOutputsForDims4 = false;
     public ISet<string> forceBufferLayerNames = null;
     public bool useTextureInputForMonaiPatches = false;
+    public bool enableAttentionMatMulPack4Specializations = false;
     public bool disallowBufferAccess = false;
     public bool disallowBufferOutputs = false;
     public bool disallowBufferToTextureMaterialization = false;
@@ -287,6 +288,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             EnsureRuntimeObjects();
             ApplyReproOptions();
             var resolved = ResolveRequest(request);
+            _repro.EnableVistaTailPack4Specializations = resolved.postprocessKind == MonaiPostprocessKind.BinaryLabelPrompt;
             ct.ThrowIfCancellationRequested();
 
             _lastDumpDir = resolved.outputDir;
@@ -608,6 +610,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
         _repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfile;
         _repro.LayerRuntimeProfilePathKindOverride = ResolvePathMode(useTextureInputForMonaiPatches);
+        _repro.EnableAttentionMatMulPack4Specializations = enableAttentionMatMulPack4Specializations;
+        _repro.EnableVistaTailPack4Specializations = false;
         _repro.DebugLog = AppendDebugLine;
     }
 

@@ -53,7 +53,8 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.GroupNormPack gp)
                 throw new InvalidOperationException("InstanceNorm pack not found: " + layer.name);
 
-            if (owner.EnableGroupNormTexturePath
+            if (!owner.ShouldForceCurrentLayerBufferPath()
+                && owner.EnableGroupNormTexturePath
                 && owner.UseNcnnStyleGroupNorm
                 && gp.affine
                 && owner.TryGetPack4Texture(layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out var srcTex, out var srcShape)

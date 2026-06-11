@@ -134,7 +134,11 @@ namespace NcnnCompute
                 throw new InvalidOperationException("GroupNorm render-texture path requires supported pack4 input: " + layer.name);
             }
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, NcnnRepro.GetTextureSliceCount(srcShape, srcTex.texture) * srcTex.packs / Mathf.Max(1, srcTex.packs), RenderTextureFormat.ARGBHalf);
+            var outRt = owner.RentTempArray(
+                srcTex.width,
+                srcTex.height,
+                srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs,
+                RenderTextureFormat.ARGBHalf);
             var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
             var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
             var logicalD = srcShape.dims == 4 ? srcShape.d : 1;

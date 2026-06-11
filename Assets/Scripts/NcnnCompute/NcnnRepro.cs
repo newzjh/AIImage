@@ -871,6 +871,8 @@ namespace NcnnCompute
         public bool KeepRawConvWeightsForTexturePath { get; set; } = true;
         public bool EnableMhaParallelSoftmax { get; set; }
         public bool EnableMhaQkvFusion { get; set; }
+        public bool EnableAttentionMatMulPack4Specializations { get; set; }
+        public bool EnableVistaTailPack4Specializations { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
         public bool DisallowBufferAccess { get; set; }
         public bool DisallowBufferOutputs { get; set; }
@@ -2403,6 +2405,11 @@ namespace NcnnCompute
             return dims >= 4 ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         }
 
+        private static RenderTextureFormat ResolveTensorTextureFormatWithOverride(int dims, RenderTextureFormat? formatOverride)
+        {
+            return formatOverride ?? ResolveTensorTextureFormat(dims);
+        }
+
         internal static int GetTexturePackCount(BufferShape shape, RenderTexture texture)
         {
             if (texture == null)
@@ -2428,7 +2435,7 @@ namespace NcnnCompute
             return volumeDepth;
         }
 
-        private RenderTexture MaterializeTextureFromBufferViewCore(ComputeBuffer buffer, NcnnTensorBuffer view, bool ignoreGuard)
+        private RenderTexture MaterializeTextureFromBufferViewCore(ComputeBuffer buffer, NcnnTensorBuffer view, bool ignoreGuard, RenderTextureFormat? formatOverride = null)
         {
             if (buffer == null || view == null)
                 return null;
@@ -2443,7 +2450,7 @@ namespace NcnnCompute
             if (!TryResolveTensorTextureMaterialization(view, out var texW, out var texH, out var channels, out var sliceCount, out var format))
                 return null;
 
-            var rt = RentTempArray(texW, texH, sliceCount, format);
+            var rt = RentTempArray(texW, texH, sliceCount, ResolveTensorTextureFormatWithOverride(view.dims, formatOverride));
             if (view.dims == 4)
                 _ops.FillPack4FromBufferCDHW(buffer, texW, texH, view.d, channels, rt);
             else
@@ -2451,14 +2458,14 @@ namespace NcnnCompute
             return rt;
         }
 
-        internal RenderTexture MaterializeTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view)
+        internal RenderTexture MaterializeTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view, RenderTextureFormat? formatOverride = null)
         {
-            return MaterializeTextureFromBufferViewCore(buffer, view, ignoreGuard: false);
+            return MaterializeTextureFromBufferViewCore(buffer, view, ignoreGuard: false, formatOverride);
         }
 
-        internal RenderTexture MaterializeScratchTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view)
+        internal RenderTexture MaterializeScratchTextureFromBufferView(ComputeBuffer buffer, NcnnTensorBuffer view, RenderTextureFormat? formatOverride = null)
         {
-            return MaterializeTextureFromBufferViewCore(buffer, view, ignoreGuard: true);
+            return MaterializeTextureFromBufferViewCore(buffer, view, ignoreGuard: true, formatOverride);
         }
 
         internal ComputeTexture MaterializeCmdTextureFromBufferView(CommandBuffer cmd, ComputeBuffer buffer, NcnnTensorBuffer view)
@@ -2673,7 +2680,8 @@ namespace NcnnCompute
             string topName,
             NcnnTensorBuffer tensor,
             Dictionary<string, TensorRef> textureBlobs,
-            Dictionary<string, BufferShape> textureShapes)
+            Dictionary<string, BufferShape> textureShapes,
+            RenderTextureFormat? textureFormatOverride = null)
         {
             if (string.IsNullOrWhiteSpace(topName))
                 throw new ArgumentNullException(nameof(topName));
@@ -2682,7 +2690,7 @@ namespace NcnnCompute
             if (tensor.dims > 4)
                 throw new InvalidOperationException("scratch texture outputs currently require dims<=4: " + topName);
 
-            var rt = MaterializeScratchTextureFromBufferView(tensor.buffer, tensor);
+            var rt = MaterializeScratchTextureFromBufferView(tensor.buffer, tensor, textureFormatOverride);
             if (rt == null)
                 throw new InvalidOperationException("failed to materialize scratch texture output: " + topName);
 
@@ -2699,12 +2707,13 @@ namespace NcnnCompute
             ComputeBuffer buffer,
             BufferShape logicalShape,
             Dictionary<string, TensorRef> textureBlobs,
-            Dictionary<string, BufferShape> textureShapes)
+            Dictionary<string, BufferShape> textureShapes,
+            RenderTextureFormat? textureFormatOverride = null)
         {
             if (buffer == null)
                 throw new ArgumentNullException(nameof(buffer));
             var view = new NcnnTensorBuffer(buffer, logicalShape.dims, logicalShape.w, logicalShape.h, logicalShape.d, logicalShape.c, false);
-            var rt = MaterializeScratchTextureFromBufferView(buffer, view);
+            var rt = MaterializeScratchTextureFromBufferView(buffer, view, textureFormatOverride);
             if (rt == null)
                 throw new InvalidOperationException("failed to materialize scratch texture output: " + topName);
             SetTextureBlob(textureBlobs, textureShapes, topName, rt, logicalShape);
@@ -3209,7 +3218,8 @@ namespace NcnnCompute
             Dictionary<string, ComputeBuffer> bufferBlobs,
             Dictionary<string, BufferRef> bufferRefs,
             Dictionary<string, NcnnTensorBuffer> bufferViews,
-            List<IDisposable> tempOwned)
+            List<IDisposable> tempOwned,
+            RenderTextureFormat? textureFormatOverride = null)
         {
             if (string.IsNullOrEmpty(topName))
                 throw new ArgumentNullException(nameof(topName));
@@ -3229,7 +3239,7 @@ namespace NcnnCompute
             {
                 if (preferTexture && tensor.dims <= 4 && canRepresentAsTexture)
                 {
-                    PublishScratchTextureOutput(topName, tensor, textureBlobs, textureShapes);
+                    PublishScratchTextureOutput(topName, tensor, textureBlobs, textureShapes, textureFormatOverride);
                     if (tensor.ownsBuffer)
                         tensor.Dispose();
                     return;
@@ -3264,7 +3274,7 @@ namespace NcnnCompute
 
             if (preferTexture && tensor.dims <= 4 && canRepresentAsTexture)
             {
-                var rt = MaterializeTextureFromBufferView(tensor.buffer, tensor);
+                var rt = MaterializeTextureFromBufferView(tensor.buffer, tensor, textureFormatOverride);
                 if (rt != null)
                     SetTextureBlob(textureBlobs, textureShapes, topName, rt, logicalShape);
             }

@@ -175,6 +175,9 @@ namespace NcnnCompute
                                                 {
                                                     owner.Ops.Gemm2D(srcBuf, bBuf, cBuf, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outTensor.buffer);
                                                 }
+                                                var textureFormatOverride = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
+                                                    ? RenderTextureFormat.ARGBFloat
+                                                    : (RenderTextureFormat?)null;
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],
                                                     outTensor,
@@ -184,7 +187,8 @@ namespace NcnnCompute
                                                     bufferBlobs,
                                                     bufferRefs,
                                                     bufferViews,
-                                                    tempOwned);
+                                                    tempOwned,
+                                                    textureFormatOverride);
                                                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                                                 continue;
                         } while (false);
@@ -283,7 +287,10 @@ namespace NcnnCompute
 
             var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
-            var outRt = owner.RentTempArray(outShape.w, outShape.h, 1, RenderTextureFormat.ARGBHalf);
+            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGBHalf;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
             owner.Ops.Gemm2DTextureA(
                 srcTex.texture,
                 gp.bData,
@@ -307,6 +314,58 @@ namespace NcnnCompute
                 layer.bottomNames,
                 context.pinnedNames);
             return true;
+        }
+
+        private static bool ShouldPromoteAttentionGemmOutputTexture(NcnnRepro owner, NcnnParamModel.Layer layer)
+        {
+            if (owner?.Model?.layers == null || layer?.topNames == null || layer.topNames.Length == 0)
+                return false;
+
+            var reshape = FindSingleConsumer(owner.Model, layer.topNames[0]);
+            if (reshape == null || reshape.type != NcnnLayerTypes.Reshape || reshape.topNames == null || reshape.topNames.Length == 0)
+                return false;
+
+            var next = FindSingleConsumer(owner.Model, reshape.topNames[0]);
+            return next != null
+                && next.type == NcnnLayerTypes.Reshape
+                && IsParamlessReshape(next);
+        }
+
+        private static bool IsParamlessReshape(NcnnParamModel.Layer layer)
+        {
+            if (layer == null)
+                return false;
+            if (!string.IsNullOrWhiteSpace(layer.GetString(6, null)))
+                return false;
+            return layer.GetInt(0, -233) == -233
+                && layer.GetInt(1, -233) == -233
+                && layer.GetInt(11, -233) == -233
+                && layer.GetInt(2, -233) == -233;
+        }
+
+        private static NcnnParamModel.Layer FindSingleConsumer(NcnnParamModel model, string blobName)
+        {
+            if (model?.layers == null || string.IsNullOrWhiteSpace(blobName))
+                return null;
+
+            NcnnParamModel.Layer found = null;
+            for (var i = 0; i < model.layers.Count; i++)
+            {
+                var candidate = model.layers[i];
+                if (candidate?.bottomNames == null)
+                    continue;
+                for (var j = 0; j < candidate.bottomNames.Length; j++)
+                {
+                    if (!string.Equals(candidate.bottomNames[j], blobName, StringComparison.Ordinal))
+                        continue;
+                    if (found != null)
+                        return null;
+                    found = candidate;
+                    break;
+                }
+            }
+
+            return found;
         }
     }
 }

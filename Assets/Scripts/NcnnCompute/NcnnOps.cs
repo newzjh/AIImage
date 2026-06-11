@@ -1579,7 +1579,7 @@ namespace NcnnCompute
             _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryA", a);
             _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryB", b);
             _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryOutArr", output);
-            Dispatch3D(_kBinaryOpPack4Broadcast, output.width, output.height, packs, 8, 8);
+            Dispatch3D(_kBinaryOpPack4Broadcast, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
         public void BinaryOpPack4BufferScalar(RenderTexture texture, ComputeBuffer scalar, int packs, int opType, bool scalarIsA, RenderTexture output)
@@ -1593,7 +1593,7 @@ namespace NcnnCompute
             _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_BinaryA", texture);
             _cs.SetBuffer(_kBinaryOpPack4BufferScalar, "_BufB", scalar);
             _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_BinaryOutArr", output);
-            Dispatch3D(_kBinaryOpPack4BufferScalar, output.width, output.height, packs, 8, 8);
+            Dispatch3D(_kBinaryOpPack4BufferScalar, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
         public void BinaryOpPack4(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int packs, int opType, ComputeTexture output)
@@ -1655,7 +1655,7 @@ namespace NcnnCompute
             _cs.SetTexture(_kBinaryOpPack4, "_BinaryA", a);
             _cs.SetTexture(_kBinaryOpPack4, "_BinaryB", a);
             _cs.SetTexture(_kBinaryOpPack4, "_BinaryOutArr", output);
-            Dispatch3D(_kBinaryOpPack4, output.width, output.height, packs, 8, 8);
+            Dispatch3D(_kBinaryOpPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
         public void BinaryOpScalarPack4(CommandBuffer cmd, ComputeTexture a, float b, int packs, int opType, ComputeTexture output)
