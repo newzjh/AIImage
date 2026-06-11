@@ -35,6 +35,7 @@
 #pragma kernel NcnnInterpDown2Pack4
 #pragma kernel NcnnInterpDown2NearestPack4
 #pragma kernel NcnnPack4ToBufferCHW
+#pragma kernel NcnnPack4ChannelsToWidth
 #pragma kernel NcnnPack4ToBufferCDHW
 #pragma kernel NcnnInnerProduct
 #pragma kernel NcnnPackRgbToPack4Gfpgan
@@ -208,6 +209,9 @@ StructuredBuffer<float> _ConvIn;
 StructuredBuffer<float> _ConvW;
 StructuredBuffer<float> _ConvB;
 RWStructuredBuffer<float> _ConvOut;
+Texture2DArray<float4> _Pack4ChannelInArr;
+RWTexture2DArray<float4> _Pack4ChannelOutArr;
+int _Pack4ChannelCount;
 int _InW;
 int _InH;
 int _InD;
@@ -855,6 +859,9 @@ void NcnnConvDepthWisePack4(uint3 id : SV_DispatchThreadID)
     if (pack < 0 || pack >= _OutPacks) return;
 
     float4 sum = _DwConvB4[pack];
+    int group = max(1, _ConvGroup);
+    bool isOneToOneDepthWise = _OutC == group;
+    int outch_g = max(1, _OutC / group);
 
     for (int ky = 0; ky < _KernelHVar; ky++)
     {
@@ -866,9 +873,27 @@ void NcnnConvDepthWisePack4(uint3 id : SV_DispatchThreadID)
             int ix = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
             if (ix < 0 || ix >= _InW) continue;
 
-            float4 v = _ConvInArr[int3(ix, iy, pack)];
             float4 w = _DwConvW4[(pack * _KernelHVar + ky) * _KernelWVar + kx];
-            sum += v * w;
+            if (isOneToOneDepthWise)
+            {
+                float4 v = _ConvInArr[int3(ix, iy, pack)];
+                sum += v * w;
+                continue;
+            }
+
+            [unroll]
+            for (int lane = 0; lane < 4; lane++)
+            {
+                int oc = pack * 4 + lane;
+                if (oc < 0 || oc >= _OutC)
+                    continue;
+
+                int g = min(group - 1, oc / outch_g);
+                float inputValue = NcnnReadPack4Channel(_ConvInArr, ix, iy, g);
+                float weightValue = NcnnReadLane(w, lane);
+                float laneSum = NcnnReadLane(sum, lane) + inputValue * weightValue;
+                NcnnWriteLane(sum, lane, laneSum);
+            }
         }
     }
 
@@ -2305,6 +2330,25 @@ void NcnnConv3dPack4CDHW(uint3 id : SV_DispatchThreadID)
     }
 
     _ConvOutArr[int3((int)id.x, (int)id.y, outSlice)] = NcnnApplyActivation(sum);
+}
+
+[numthreads(8,8,1)]
+void NcnnPack4ChannelsToWidth(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _Pack4ChannelOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    if (outX < 0 || outX >= _Pack4ChannelCount)
+    {
+        _Pack4ChannelOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = 0.0;
+        return;
+    }
+
+    float scalar = NcnnReadPack4Channel(_Pack4ChannelInArr, 0, 0, outX);
+    _Pack4ChannelOutArr[int3(outX, 0, 0)] = float4(scalar, 0.0, 0.0, 0.0);
 }
 
 [numthreads(8,8,1)]

@@ -29,6 +29,16 @@ public static class NcnnDebugRunner
     private const string ClipInputDirEnvVar = "AIIMAGE_CLIP_INPUT_DIR";
     private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
     private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
+    private const string ClipForceFullRtEnvVar = "AIIMAGE_CLIP_FORCE_FULL_RT";
+    private const string ClipEnableGeneralTexConvEnvVar = "AIIMAGE_CLIP_ENABLE_GENERAL_TEX";
+    private const string ClipEnableAttentionMatMulPack4EnvVar = "AIIMAGE_CLIP_ENABLE_ATTENTION_MATMUL_PACK4";
+    private const string ClipPack4OnlyGuardEnvVar = "AIIMAGE_CLIP_PACK4_ONLY_GUARD";
+    private const string ClipEnableLayerPathLogEnvVar = "AIIMAGE_CLIP_ENABLE_LAYER_PATH_LOG";
+    private const string ClipLogAllLayerHeartbeatsEnvVar = "AIIMAGE_CLIP_LOG_ALL_LAYER_HEARTBEATS";
+    private const string ClipLogAllLayerOutputsEnvVar = "AIIMAGE_CLIP_LOG_ALL_LAYER_OUTPUTS";
+    private const string ClipLogAllBufferMaterializeEnvVar = "AIIMAGE_CLIP_LOG_ALL_BUFFER_MATERIALIZE";
+    private const string ClipEnableLayerRuntimeProfileEnvVar = "AIIMAGE_CLIP_ENABLE_LAYER_RUNTIME_PROFILE";
+    private const string ClipLayerRuntimeProfileSyncGpuEnvVar = "AIIMAGE_CLIP_LAYER_RUNTIME_PROFILE_SYNC_GPU";
     private const string YoloFlipYEnvVar = "AIIMAGE_YOLOSEG_FLIPY";
     private const string YoloForceBufferConvEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_CONV";
     private const string YoloForceBufferBinaryEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_BINARY";
@@ -360,10 +370,12 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<ClipNcnnReproRunner>();
-            runner.enableDebugDump = true;
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
             runner.modelLevel = ResolveClipModelLevel();
+            ConfigureClipRunnerFromEnv(runner, defaultEnableDebugDump: true);
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[CLIP-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("CLIP Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | best=" + (result.bestLabel ?? "") + " | prob=" + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture) + " | dump=" + (runner.LastDumpDir ?? ""));
         }
@@ -1478,10 +1490,12 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<ClipNcnnReproRunner>();
-            runner.enableDebugDump = ResolveBoolEnv(ClipEnableDumpEnvVar, false);
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
             runner.modelLevel = ResolveClipModelLevel();
+            ConfigureClipRunnerFromEnv(runner, defaultEnableDebugDump: false);
+            runner.ProgressChanged += (value, message) =>
+                Debug.Log("[CLIP-DIR-PROGRESS] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
 
             using var sw = new StreamWriter(summaryPath, false);
             sw.WriteLine("image\tstatus\telapsed_ms\tbest_label\tbest_prob\ttop3\terror\tgpu_summary\trt_count\tmanaged_mb\tgfx_driver_mb\tdump");
@@ -1545,6 +1559,38 @@ public static class NcnnDebugRunner
             NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
             UnityEngine.Object.DestroyImmediate(go);
         }
+    }
+
+    private static void ConfigureClipRunnerFromEnv(ClipNcnnReproRunner runner, bool defaultEnableDebugDump)
+    {
+        if (runner == null)
+            return;
+
+        runner.enableDebugDump = ResolveBoolEnv(ClipEnableDumpEnvVar, defaultEnableDebugDump);
+        runner.forceFullRenderTexturePath = ResolveBoolEnv(ClipForceFullRtEnvVar, runner.forceFullRenderTexturePath);
+        runner.enableGeneralTextureConvolution = ResolveBoolEnv(
+            ClipEnableGeneralTexConvEnvVar,
+            runner.enableGeneralTextureConvolution || runner.forceFullRenderTexturePath);
+        runner.enableAttentionMatMulPack4Specializations = ResolveBoolEnv(
+            ClipEnableAttentionMatMulPack4EnvVar,
+            runner.enableAttentionMatMulPack4Specializations || runner.forceFullRenderTexturePath);
+
+        var pack4OnlyGuard = ResolveBoolEnv(ClipPack4OnlyGuardEnvVar, false);
+        runner.disallowBufferAccess = pack4OnlyGuard;
+        runner.disallowBufferOutputs = pack4OnlyGuard;
+        runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
+
+        runner.logAllLayerHeartbeats = ResolveBoolEnv(ClipLogAllLayerHeartbeatsEnvVar, false);
+        runner.logAllLayerOutputs = ResolveBoolEnv(ClipLogAllLayerOutputsEnvVar, false);
+        runner.logAllBufferMaterialize = ResolveBoolEnv(ClipLogAllBufferMaterializeEnvVar, false);
+        runner.enableLayerRuntimeProfile = ResolveBoolEnv(ClipEnableLayerRuntimeProfileEnvVar, false);
+        runner.layerRuntimeProfileSyncGpu = ResolveBoolEnv(ClipLayerRuntimeProfileSyncGpuEnvVar, false);
+        runner.forwardReproDebugLogToUnity = ResolveBoolEnv(
+            ClipEnableLayerPathLogEnvVar,
+            pack4OnlyGuard
+                || runner.logAllLayerHeartbeats
+                || runner.logAllLayerOutputs
+                || runner.logAllBufferMaterialize);
     }
 
     private static async UniTask RunCodeFormerDebugInternal()
