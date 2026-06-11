@@ -74,16 +74,13 @@ namespace NcnnCompute
                                                                      && !(pack.kernelW == 1 && pack.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
                                         var needDepthWiseTexturePack = !owner.ForceBufferConvolutionAll
                                                                        && owner.EnableDepthWiseTextureConvolution
-                                                                       && pack.isDepthWise
-                                                                       && pack.group == pack.inC
-                                                                       && pack.outC == pack.inC
-                                                                       && pack.kernelW == 3
-                                                                       && pack.kernelH == 3
-                                                                       && pack.dilationW == 1
-                                                                       && pack.dilationH == 1
-                                                                       && pack.padLeft == pack.padRight
-                                                                       && pack.padTop == pack.padBottom
-                                                                       && pack.padLeft == pack.padTop;
+                                                                       && SupportsDepthWiseTexturePath(pack)
+                                                                       && pack.kernelW > 0
+                                                                       && pack.kernelH > 0
+                                                                       && pack.strideW > 0
+                                                                       && pack.strideH > 0
+                                                                       && pack.dilationW > 0
+                                                                       && pack.dilationH > 0;
 
                                         if (owner.ShouldKeepRawConvWeightsForTexturePath(layer.name, pack, needGeneralTexturePack, needDepthWiseTexturePack))
                                         {
@@ -125,7 +122,7 @@ namespace NcnnCompute
                                         else if (needDepthWiseTexturePack)
                                         {
                                             phaseSw.Restart();
-                                            var w4 = NcnnRepro.PackDepthWiseWeightsToP4K4(w, pack.outC, pack.kernelW, pack.outPacks);
+                                            var w4 = NcnnRepro.PackDepthWiseWeightsToP4KhKw(w, pack.outC, pack.kernelW, pack.kernelH, pack.outPacks);
                                             var b4 = NcnnRepro.PackBiasToO4(b, pack.outC, pack.outPacks);
                                             pack.packedDepthWiseWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -221,9 +218,7 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Convolution not found: " + layer.name);
 
             var canUseDepthWiseTexturePath = owner.EnableDepthWiseTextureConvolution
-                                            && conv.isDepthWise
-                                            && conv.group == conv.inC
-                                            && conv.outC == conv.inC
+                                            && SupportsDepthWiseTexturePath(conv)
                                             && conv.packedDepthWiseWeight4 != null
                                             && conv.packedBias4 != null;
 
@@ -268,7 +263,7 @@ namespace NcnnCompute
             }
             else if (canUseDepthWiseTexturePath)
             {
-                owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
+                owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             }
@@ -323,20 +318,9 @@ namespace NcnnCompute
                                                 var outShape = ResolveCmdOutputShape(srcShape, conv);
                                                 var canUseTextureConv = CanUsePack4CmdPath(src, srcShape, conv)
                                                                         && owner.EnableDepthWiseTextureConvolution
-                                                                        && conv.isDepthWise
-                                                                        && conv.group == conv.inC
-                                                                        && conv.outC == conv.inC
+                                                                        && SupportsDepthWiseTexturePath(conv)
                                                                         && conv.packedDepthWiseWeight4 != null
-                                                                        && conv.packedBias4 != null
-                                                                        && conv.kernelW == 3
-                                                                        && conv.kernelH == 3
-                                                                        && conv.strideW == 1
-                                                                        && conv.strideH == 1
-                                                                        && conv.dilationW == 1
-                                                                        && conv.dilationH == 1
-                                                                        && conv.padLeft == conv.padRight
-                                                                        && conv.padTop == conv.padBottom
-                                                                        && conv.padLeft == conv.padTop;
+                                                                        && conv.packedBias4 != null;
 
                                                 if (!canUseTextureConv)
                                                 {
@@ -350,7 +334,7 @@ namespace NcnnCompute
                                                 var outH = Mathf.Max(1, outShape.h);
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
 
-                                                owner.Ops.ConvDepthWisePack4(cmd, src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outArr);
+                                                owner.Ops.ConvDepthWisePack4(cmd, src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outArr);
 
                                                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = conv.outPacks, refs = 1, owned = true };
                                                 if (shapes != null)
@@ -375,9 +359,7 @@ namespace NcnnCompute
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context, NcnnRepro.ConvPack conv)
         {
             var canUseDepthWiseTexturePath = owner.EnableDepthWiseTextureConvolution
-                                            && conv.isDepthWise
-                                            && conv.group == conv.inC
-                                            && conv.outC == conv.inC
+                                            && SupportsDepthWiseTexturePath(conv)
                                             && conv.packedDepthWiseWeight4 != null
                                             && conv.packedBias4 != null;
 
@@ -406,6 +388,16 @@ namespace NcnnCompute
             var outW = Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight));
             var outH = Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom));
             return new NcnnRepro.BufferShape(3, outW, outH, 1, Mathf.Max(1, conv.outC));
+        }
+
+        private static bool SupportsDepthWiseTexturePath(NcnnRepro.ConvPack conv)
+        {
+            return conv != null
+                && conv.isDepthWise
+                && conv.group > 0
+                && conv.group == conv.inC
+                && conv.outC > 0
+                && conv.outC % conv.group == 0;
         }
     }
 }

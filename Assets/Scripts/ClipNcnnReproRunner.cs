@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Collections.Generic;
+using System.Text;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
 using UnityEngine;
@@ -72,6 +73,18 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
     public bool enableDebugDump = false;
+    public bool forceFullRenderTexturePath = false;
+    public bool enableGeneralTextureConvolution = false;
+    public bool enableAttentionMatMulPack4Specializations = false;
+    public bool disallowBufferAccess = false;
+    public bool disallowBufferOutputs = false;
+    public bool disallowBufferToTextureMaterialization = false;
+    public bool logAllLayerHeartbeats = false;
+    public bool logAllLayerOutputs = false;
+    public bool logAllBufferMaterialize = false;
+    public bool enableLayerRuntimeProfile = false;
+    public bool layerRuntimeProfileSyncGpu = false;
+    public bool forwardReproDebugLogToUnity = false;
     public ClipLabelDefinition[] labelDefinitions =
     {
         new ClipLabelDefinition { label = "Portrait", prompt = "a portrait photo" },
@@ -174,7 +187,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                     for (var i = 0; i < DebugImageBlobNames.Length; i++)
                         TryDumpAnyBlob(infer, DebugImageBlobNames[i], Path.Combine(_lastDumpDir, "image_blob_" + DebugImageBlobNames[i] + ".txt"));
                 }
-                imageEmbedding = infer.GetBufferData(OutputBlobName);
+                if (ShouldUseTextureReadbackForImageOutput(infer))
+                    _imageRepro?.Ops?.DebugSyncGpu();
+                imageEmbedding = await ReadImageEmbeddingAsync(infer, ct);
             }
             imageInferSw.Stop();
             imageInferMs = imageInferSw.ElapsedMilliseconds;
@@ -242,7 +257,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
         catch (Exception e)
         {
-            return Finish(new ClipClassificationResult { error = e.Message });
+            if (ShouldForwardReproDebugLogToUnity())
+                UnityEngine.Debug.LogError("[CLIP] " + e);
+            return Finish(new ClipClassificationResult { error = FormatExceptionSummary(e) });
         }
         finally
         {
@@ -291,33 +308,31 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ApplyOptions(_imageRepro);
         ApplyOptions(_textRepro);
         ApplyOptions(_projectionRepro);
+        var strictImageReference = !forceFullRenderTexturePath;
+        var strictTextReference = !forceFullRenderTexturePath && modelLevel == ClipModelLevel.S0;
+        var strictProjectionReference = false;
+        var allowGeneralTextureConvolution = enableGeneralTextureConvolution || forceFullRenderTexturePath;
+        var allowAttentionMatMulPack4 = enableAttentionMatMulPack4Specializations || forceFullRenderTexturePath;
+        var captureImageDebugLog = enableDebugDump;
+        var enableAnyDebugLogSink = captureImageDebugLog || ShouldForwardReproDebugLogToUnity();
         if (_imageRepro != null)
         {
-            ConfigureClipRepro(_imageRepro, true);
-            if (enableDebugDump)
-            {
-                _imageRepro.DebugCompareTextureLayers = new HashSet<string>(DebugImageCompareLayers, StringComparer.Ordinal);
-                _imageCompareLines = new List<string>();
-                _imageRepro.DebugLog = line =>
-                {
-                    if (!string.IsNullOrWhiteSpace(line))
-                        _imageCompareLines.Add(line);
-                };
-            }
-            else
-            {
-                _imageRepro.DebugCompareTextureLayers = null;
-                _imageRepro.DebugLog = null;
-                _imageCompareLines = null;
-            }
+            ConfigureClipRepro(_imageRepro, strictImageReference, allowGeneralTextureConvolution, allowAttentionMatMulPack4);
+            _imageRepro.DebugCompareTextureLayers = enableDebugDump
+                ? new HashSet<string>(DebugImageCompareLayers, StringComparer.Ordinal)
+                : null;
+            _imageCompareLines = captureImageDebugLog ? new List<string>() : null;
+            _imageRepro.DebugLog = enableAnyDebugLogSink ? CreateReproDebugLogSink("image", captureImageDebugLog) : null;
         }
         if (_textRepro != null)
         {
-            ConfigureClipRepro(_textRepro, modelLevel == ClipModelLevel.S0);
+            ConfigureClipRepro(_textRepro, strictTextReference, allowGeneralTextureConvolution, allowAttentionMatMulPack4);
+            _textRepro.DebugLog = enableAnyDebugLogSink ? CreateReproDebugLogSink("text", captureForDump: false) : null;
         }
         if (_projectionRepro != null)
         {
-            ConfigureClipRepro(_projectionRepro, false);
+            ConfigureClipRepro(_projectionRepro, strictProjectionReference, allowGeneralTextureConvolution, allowAttentionMatMulPack4);
+            _projectionRepro.DebugLog = enableAnyDebugLogSink ? CreateReproDebugLogSink("projection", captureForDump: false) : null;
         }
     }
 
@@ -328,9 +343,21 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         repro.EnableTempPool = enableTempPool;
         repro.MaxPooledPerShape = maxPooledPerShape;
         repro.ForceBufferConvolutionAll = false;
+        repro.DisallowBufferAccess = disallowBufferAccess;
+        repro.DisallowBufferOutputs = disallowBufferOutputs;
+        repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
+        repro.DebugLogAllLayerHeartbeats = logAllLayerHeartbeats;
+        repro.DebugLogAllLayerOutputs = logAllLayerOutputs;
+        repro.DebugLogAllBufferMaterialize = logAllBufferMaterialize;
+        repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
+        repro.LayerRuntimeProfileSyncGpu = layerRuntimeProfileSyncGpu;
     }
 
-    private static void ConfigureClipRepro(NcnnRepro repro, bool strictReference)
+    private static void ConfigureClipRepro(
+        NcnnRepro repro,
+        bool strictReference,
+        bool allowGeneralTextureConvolution,
+        bool allowAttentionMatMulPack4)
     {
         if (repro == null)
             return;
@@ -340,6 +367,54 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         repro.ForceBufferGeluAll = strictReference;
         repro.EnableDepthWiseTextureConvolution = !strictReference;
         repro.EnableConv1x1TextureConvolution = !strictReference;
+        repro.EnableGeneralTextureConvolution = !strictReference && allowGeneralTextureConvolution;
+        repro.EnableAttentionMatMulPack4Specializations = !strictReference && allowAttentionMatMulPack4;
+        repro.EnableVistaTailPack4Specializations = false;
+    }
+
+    private bool ShouldForwardReproDebugLogToUnity()
+    {
+        return forwardReproDebugLogToUnity
+            || logAllLayerHeartbeats
+            || logAllLayerOutputs
+            || logAllBufferMaterialize
+            || disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
+    }
+
+    private Action<string> CreateReproDebugLogSink(string stage, bool captureForDump)
+    {
+        return line =>
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            if (captureForDump)
+                _imageCompareLines?.Add(line);
+
+            if (ShouldForwardReproDebugLogToUnity())
+                UnityEngine.Debug.Log("[CLIP-REPRO][" + stage + "] " + line);
+        };
+    }
+
+    private static string FormatExceptionSummary(Exception e)
+    {
+        if (e == null)
+            return null;
+
+        var sb = new StringBuilder();
+        var current = e;
+        while (current != null)
+        {
+            if (sb.Length > 0)
+                sb.Append(" --> ");
+            sb.Append(current.GetType().Name);
+            if (!string.IsNullOrWhiteSpace(current.Message))
+                sb.Append(": ").Append(current.Message);
+            current = current.InnerException;
+        }
+        return sb.ToString();
     }
 
     private async UniTask EnsureLoaded(CancellationToken ct)
@@ -546,9 +621,10 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             throw new FileNotFoundException("Model bin not found", binPath);
 
         ReportProgress(progressStart, "Read " + modelLabel);
-        var paramText = await File.ReadAllTextAsync(paramPath, ct);
+        var paramText = File.ReadAllText(paramPath);
         ct.ThrowIfCancellationRequested();
 
+        ReportProgress(Mathf.Min(progressEnd, progressStart + 0.002f), "Prepare " + modelLabel);
         await UniTask.Yield();
 
         using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, false);
@@ -1125,6 +1201,110 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         catch
         {
         }
+    }
+
+    private async UniTask<float[]> ReadImageEmbeddingAsync(NcnnRepro.InferResult infer, CancellationToken ct)
+    {
+        if (infer == null)
+            return null;
+
+        if (ShouldUseTextureReadbackForImageOutput(infer))
+        {
+            var texture = infer.GetTexture(OutputBlobName);
+            if (texture != null)
+            {
+                var values = await ReadWidthVectorTextureAsync(texture, EmbeddingSize, ct);
+                if (values != null && values.Length == EmbeddingSize)
+                    return values;
+            }
+        }
+
+        return infer.GetBufferData(OutputBlobName);
+    }
+
+    private bool ShouldUseTextureReadbackForImageOutput(NcnnRepro.InferResult infer)
+    {
+        if (infer == null)
+            return false;
+        if (!forceFullRenderTexturePath && !disallowBufferAccess)
+            return false;
+        return infer.TryGetLogicalShape(OutputBlobName, out var dims, out var w, out var h, out var d, out var c)
+            && dims == 1
+            && w == EmbeddingSize
+            && h == 1
+            && d == 1
+            && c == 1;
+    }
+
+    private static UniTask<float[]> ReadWidthVectorTextureAsync(RenderTexture texture, int width, CancellationToken ct)
+    {
+        if (texture == null || width <= 0)
+            return UniTask.FromResult<float[]>(null);
+
+        var prevActive = RenderTexture.active;
+        Texture2D readbackTex = null;
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            if (Application.isBatchMode)
+            {
+                UnityEngine.Debug.Log("[CLIP] image embedding readback start | tex="
+                    + texture.width + "x" + texture.height + "x" + Mathf.Max(1, texture.volumeDepth)
+                    + " | requestedWidth=" + width);
+            }
+
+            Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, 0);
+            readbackTex = new Texture2D(width, 1, TextureFormat.RGBAHalf, false, true);
+            readbackTex.ReadPixels(new Rect(0, 0, width, 1), 0, 0, false);
+            readbackTex.Apply(false, false);
+
+            var raw = readbackTex.GetRawTextureData<ushort>();
+            if (raw.Length < width * 4)
+                throw new InvalidOperationException("Readback payload too small for CLIP image embedding: " + raw.Length);
+
+            var values = new float[width];
+            for (var i = 0; i < width; i++)
+                values[i] = HalfBitsToFloat(raw[i * 4]);
+
+            if (Application.isBatchMode)
+                UnityEngine.Debug.Log("[CLIP] image embedding readback done | values=" + values.Length);
+
+            return UniTask.FromResult(values);
+        }
+        finally
+        {
+            RenderTexture.active = prevActive;
+            if (readbackTex != null)
+                UnityEngine.Object.DestroyImmediate(readbackTex);
+        }
+    }
+
+    private static float HalfBitsToFloat(ushort bits)
+    {
+        var sign = (bits >> 15) & 0x1;
+        var exponent = (bits >> 10) & 0x1F;
+        var mantissa = bits & 0x03FF;
+
+        if (exponent == 0)
+        {
+            if (mantissa == 0)
+                return sign == 0 ? 0f : -0f;
+
+            var value = mantissa / 1024f;
+            value *= Mathf.Pow(2f, -14f);
+            return sign == 0 ? value : -value;
+        }
+
+        if (exponent == 31)
+        {
+            if (mantissa == 0)
+                return sign == 0 ? float.PositiveInfinity : float.NegativeInfinity;
+            return float.NaN;
+        }
+
+        var normalized = 1f + mantissa / 1024f;
+        normalized *= Mathf.Pow(2f, exponent - 15f);
+        return sign == 0 ? normalized : -normalized;
     }
 
     private void ReportProgress(float progress01, string text)

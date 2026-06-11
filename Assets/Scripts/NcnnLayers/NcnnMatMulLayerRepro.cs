@@ -168,7 +168,20 @@ namespace NcnnCompute
                 return false;
             }
 
-            var outShape = new NcnnRepro.BufferShape(4, Mathf.Max(1, n), Mathf.Max(1, aRows), Mathf.Max(1, outBatchD), Mathf.Max(1, outBatchC));
+            var maxDims = Mathf.Max(aShape.dims, bShape.dims);
+            NcnnRepro.BufferShape outShape;
+            if (outBatchD == 1 && outBatchC == 1)
+            {
+                outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, aRows), 1, 1);
+            }
+            else if (maxDims >= 4 || outBatchD > 1)
+            {
+                outShape = new NcnnRepro.BufferShape(4, Mathf.Max(1, n), Mathf.Max(1, aRows), Mathf.Max(1, outBatchD), Mathf.Max(1, outBatchC));
+            }
+            else
+            {
+                outShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, n), Mathf.Max(1, aRows), 1, Mathf.Max(1, outBatchC));
+            }
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
             var outSlices = Mathf.Max(1, outShape.d) * outPacks;
             var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
@@ -434,11 +447,12 @@ namespace NcnnCompute
         {
             return src != null
                 && src.texture != null
-                && shape.dims == 4
+                && (shape.dims == 3 || shape.dims == 4)
                 && shape.w == src.width
                 && shape.h == src.height
                 && shape.d > 0
                 && shape.c > 0
+                && (shape.dims != 3 || shape.d == 1)
                 && src.packs == Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f));
         }
     }

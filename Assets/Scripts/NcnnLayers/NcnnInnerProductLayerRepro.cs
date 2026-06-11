@@ -12,6 +12,16 @@ namespace NcnnCompute
     {
         public NcnnInnerProductLayerRepro() : base(NcnnLayerTypes.InnerProduct, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (TryExecuteRenderTexturePath(owner, layer, context))
+                return;
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
                         var bytesStart = br.Position;
@@ -91,6 +101,9 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (TryExecuteRenderTexturePath(owner, layer, context))
+                return;
+
 #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
@@ -114,6 +127,52 @@ namespace NcnnCompute
                 : new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!owner._innerProduct.TryGetValue(layer.name, out var ip))
+                return false;
+            if (ip.w == null || ip.b == null)
+                return false;
+            if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
+                return false;
+            if (srcTex == null || srcTex.texture == null)
+                return false;
+            if (srcShape.dims != 1 || srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.height != 1 || srcTex.packs != 1)
+                return false;
+
+            var outRt = owner.RentTempArray(ip.outFeatures, 1, 1, RenderTextureFormat.ARGBHalf);
+            owner.Ops.Gemm2DTextureA(
+                srcTex.texture,
+                ip.w,
+                ip.b,
+                1,
+                ip.outFeatures,
+                ip.inFeatures,
+                transB: true,
+                alpha: 1f,
+                beta: 1f,
+                useC: true,
+                broadcastTypeC: 4,
+                output: outRt);
+
+            var logicalShape = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+            var storageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, logicalShape, storageShape);
+            owner.Consume(
+                context.textureBlobs,
+                context.bufferBlobs,
+                context.bufferRefs,
+                context.bufferViews,
+                context.remaining,
+                layer.bottomNames,
+                context.pinnedNames);
+            return true;
         }
     }
 }

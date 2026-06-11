@@ -132,7 +132,7 @@ namespace NcnnCompute
                                         else if (needDepthWiseTexturePack)
                                         {
                                             phaseSw.Restart();
-                                            var w4 = NcnnRepro.PackDepthWiseWeightsToP4K4(w, pack.outC, pack.kernelW, pack.outPacks);
+                                            var w4 = NcnnRepro.PackDepthWiseWeightsToP4KhKw(w, pack.outC, pack.kernelW, pack.kernelH, pack.outPacks);
                                             var b4 = NcnnRepro.PackBiasToO4(b, pack.outC, pack.outPacks);
                                             pack.packedDepthWiseWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -292,7 +292,7 @@ namespace NcnnCompute
             }
             else if (canUseDepthWiseTexturePath)
             {
-                owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
+                owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             }

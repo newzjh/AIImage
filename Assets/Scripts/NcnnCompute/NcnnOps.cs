@@ -313,6 +313,7 @@ namespace NcnnCompute
         private readonly int _kInterpDown2Pack4;
         private readonly int _kInterpDown2NearestPack4;
         private readonly int _kPack4ToBufferChw;
+        private readonly int _kPack4ChannelsToWidth;
         private readonly int _kPack4ToBufferCdhw;
         private readonly int _kInnerProduct;
         private readonly int _kPackRgbToPack4Gfpgan;
@@ -469,6 +470,7 @@ namespace NcnnCompute
             _kInterpDown2Pack4 = _cs.FindKernel("NcnnInterpDown2Pack4");
             _kInterpDown2NearestPack4 = _cs.FindKernel("NcnnInterpDown2NearestPack4");
             _kPack4ToBufferChw = _cs.FindKernel("NcnnPack4ToBufferCHW");
+            _kPack4ChannelsToWidth = _cs.FindKernel("NcnnPack4ChannelsToWidth");
             _kPack4ToBufferCdhw = _cs.FindKernel("NcnnPack4ToBufferCDHW");
             _kInnerProduct = _cs.FindKernel("NcnnInnerProduct");
             _kPackRgbToPack4Gfpgan = _cs.FindKernel("NcnnPackRgbToPack4Gfpgan");
@@ -786,19 +788,25 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kBatchNormPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void ConvDepthWisePack4(CommandBuffer cmd, ComputeTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)
+        public void ConvDepthWisePack4(CommandBuffer cmd, ComputeTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int inputChannels, int outputChannels, int group, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
             if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
             if (w4 == null) throw new ArgumentNullException(nameof(w4));
             if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(inputChannels));
+            if (outputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
             if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
 
             cmd.SetComputeIntParam(_cs, "_InW", srcPack4.width);
             cmd.SetComputeIntParam(_cs, "_InH", srcPack4.height);
+            cmd.SetComputeIntParam(_cs, "_InC", inputChannels);
+            cmd.SetComputeIntParam(_cs, "_OutC", outputChannels);
             cmd.SetComputeIntParam(_cs, "_OutW", dstPack4.width);
             cmd.SetComputeIntParam(_cs, "_OutH", dstPack4.height);
+            cmd.SetComputeIntParam(_cs, "_ConvGroup", group);
             cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
             cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
             cmd.SetComputeIntParam(_cs, "_StrideWVar", Mathf.Max(1, strideW));
@@ -1814,18 +1822,24 @@ namespace NcnnCompute
             Dispatch3D(_kDeconvolutionPack4General, dstPack4.width, dstPack4.height, outPacks, 8, 8);
         }
 
-        public void ConvDepthWisePack4(RenderTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
+        public void ConvDepthWisePack4(RenderTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int inputChannels, int outputChannels, int group, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
         {
             if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
             if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
             if (w4 == null) throw new ArgumentNullException(nameof(w4));
             if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(inputChannels));
+            if (outputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
             if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
 
             _cs.SetInt("_InW", srcPack4.width);
             _cs.SetInt("_InH", srcPack4.height);
+            _cs.SetInt("_InC", inputChannels);
+            _cs.SetInt("_OutC", outputChannels);
             _cs.SetInt("_OutW", dstPack4.width);
             _cs.SetInt("_OutH", dstPack4.height);
+            _cs.SetInt("_ConvGroup", group);
             _cs.SetInt("_KernelWVar", kernelW);
             _cs.SetInt("_KernelHVar", kernelH);
             _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
@@ -3628,6 +3642,18 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kPack4ToBufferCdhw, "_Pack4InArr", input.nameID);
             cmd.SetComputeBufferParam(_cs, _kPack4ToBufferCdhw, "_Pack4Out", output);
             Dispatch1D(cmd, _kPack4ToBufferCdhw, total, 256);
+        }
+
+        public void Pack4ChannelsToWidth(RenderTexture input, int channels, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+
+            _cs.SetInt("_Pack4ChannelCount", channels);
+            _cs.SetTexture(_kPack4ChannelsToWidth, "_Pack4ChannelInArr", input);
+            _cs.SetTexture(_kPack4ChannelsToWidth, "_Pack4ChannelOutArr", output);
+            Dispatch3D(_kPack4ChannelsToWidth, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void InnerProduct(ComputeBuffer input, int inFeatures, ComputeBuffer weights, ComputeBuffer bias, int outFeatures, ComputeBuffer output)

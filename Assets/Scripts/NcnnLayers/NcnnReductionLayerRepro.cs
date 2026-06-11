@@ -12,6 +12,16 @@ namespace NcnnCompute
     {
         public NcnnReductionLayerRepro() : base(NcnnLayerTypes.Reduction, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (TryExecuteRenderTexturePath(owner, layer, context))
+                return;
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -152,6 +162,9 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (TryExecuteRenderTexturePath(owner, layer, context))
+                return;
+
 #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
@@ -256,6 +269,148 @@ namespace NcnnCompute
 
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out var srcTex,
+                    out var srcShape))
+                return false;
+
+            var reduceAll = layer.GetInt(1, 1) != 0;
+            var keepDims = layer.GetInt(4, 0) != 0;
+            var op = layer.GetInt(0, 0);
+            var coeff = layer.GetFloat(2, 1f);
+            var axes = layer.GetInts(-23303, null);
+
+            if (srcShape.dims != 3 || srcShape.d != 1 || !NcnnRepro.MatchesPack4TextureStorage(srcTex, srcShape))
+                return false;
+            if (!TryResolveSpatialReductionAxes(srcShape, reduceAll, axes, out var reduceSpatialOnly, out var reduceSpatialAndChannels))
+                return false;
+            if (op != 3 && op != 0)
+                return false;
+            if (!reduceSpatialOnly && !reduceSpatialAndChannels)
+                return false;
+
+            var area = Mathf.Max(1, srcShape.w * srcShape.h);
+            var outTop = layer.topNames[0];
+
+            if (reduceSpatialOnly && keepDims)
+            {
+                var outRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PoolingPack4(srcTex.texture, srcTex.packs, srcShape.w, srcShape.h, 1, 1, 0, 0, 1, outRt);
+                if (op == 0 && Mathf.Abs(coeff - area) > 1e-6f)
+                {
+                    var scaledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(outRt, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff * area, 0f, scaledRt);
+                    owner.ReturnTempArray(outRt);
+                    outRt = scaledRt;
+                }
+                else if (op == 3 && Mathf.Abs(coeff - 1f) > 1e-6f)
+                {
+                    var scaledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(outRt, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff, 0f, scaledRt);
+                    owner.ReturnTempArray(outRt);
+                    outRt = scaledRt;
+                }
+
+                var outShape = new NcnnRepro.BufferShape(3, 1, 1, 1, srcShape.c);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, outTop, outRt, outShape, outShape);
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
+
+            if (reduceSpatialAndChannels && !keepDims)
+            {
+                var pooledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PoolingPack4(srcTex.texture, srcTex.packs, srcShape.w, srcShape.h, 1, 1, 0, 0, 1, pooledRt);
+                if (op == 0 && Mathf.Abs(coeff - area) > 1e-6f)
+                {
+                    var scaledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(pooledRt, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff * area, 0f, scaledRt);
+                    owner.ReturnTempArray(pooledRt);
+                    pooledRt = scaledRt;
+                }
+                else if (op == 3 && Mathf.Abs(coeff - 1f) > 1e-6f)
+                {
+                    var scaledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(pooledRt, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff, 0f, scaledRt);
+                    owner.ReturnTempArray(pooledRt);
+                    pooledRt = scaledRt;
+                }
+
+                var outRt = owner.RentTempArray(srcShape.c, 1, 1, RenderTextureFormat.ARGBHalf);
+                owner.Ops.Pack4ChannelsToWidth(pooledRt, srcShape.c, outRt);
+                owner.ReturnTempArray(pooledRt);
+                var logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                var storageShape = new NcnnRepro.BufferShape(3, srcShape.c, 1, 1, 1);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, outTop, outRt, logicalShape, storageShape);
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveSpatialReductionAxes(
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAll,
+            int[] axes,
+            out bool reduceSpatialOnly,
+            out bool reduceSpatialAndChannels)
+        {
+            reduceSpatialOnly = false;
+            reduceSpatialAndChannels = false;
+            if (srcShape.dims != 3)
+                return false;
+
+            if (reduceAll)
+            {
+                reduceSpatialAndChannels = true;
+                return true;
+            }
+
+            if (axes == null || axes.Length == 0)
+                return false;
+
+            var normalized = new HashSet<int>();
+            for (var i = 0; i < axes.Length; i++)
+            {
+                var axis = axes[i];
+                if (axis < 0)
+                    axis += srcShape.dims;
+                if (axis < 0 || axis >= srcShape.dims)
+                    return false;
+                normalized.Add(axis);
+            }
+
+            reduceSpatialOnly = normalized.SetEquals(new[] { 1, 2 });
+            reduceSpatialAndChannels = normalized.SetEquals(new[] { 0, 1, 2 });
+            return reduceSpatialOnly || reduceSpatialAndChannels;
         }
     }
 }

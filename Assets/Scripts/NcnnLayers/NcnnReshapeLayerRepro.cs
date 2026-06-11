@@ -11,6 +11,19 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            // Preserve the older buffer-first behavior for generic models. The newer
+            // pack4 reshape transforms are intended for explicit attention / VISTA
+            // opt-in flows and should not silently change CLIP execution.
+            if (context.bufferBlobs.TryGetValue(layer.bottomNames[0], out var existingBuffer)
+                && existingBuffer != null
+                && !ShouldAllowAnyPack4ReshapeSpecializations(owner))
+            {
+#pragma warning disable CS0618
+                ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+                return;
+            }
+
             if (CanExecuteRenderTexturePath(owner, layer, context))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
@@ -297,28 +310,31 @@ namespace NcnnCompute
             if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var src, out var srcShape))
                 throw new InvalidOperationException("Reshape render-texture path requires existing texture input: " + layer.name);
 
-            if (TryExecuteRenderTextureWindowPartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
+            if (ShouldAllowAttentionPack4ReshapeSpecializations(owner))
             {
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
+                if (TryExecuteRenderTextureWindowPartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
 
-            if (TryExecuteRenderTextureWindowUnpartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
-            {
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
+                if (TryExecuteRenderTextureWindowUnpartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
 
-            if (TryExecuteRenderTextureScalar2DToPack4Reshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
-            {
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
-            }
+                if (TryExecuteRenderTextureScalar2DToPack4Reshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
 
-            if (TryExecuteRenderTextureImplicitAttentionReshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
-            {
-                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
-                return;
+                if (TryExecuteRenderTextureImplicitAttentionReshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
             }
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
@@ -565,14 +581,17 @@ namespace NcnnCompute
             if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var src, out var srcShape))
                 return false;
 
-            if (TryResolveImplicitAttentionReshapeShape(owner, layer, srcShape, out _))
-                return src != null && src.texture != null;
-            if (TryResolveWindowPartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
-                return src != null && src.texture != null;
-            if (TryResolveWindowUnpartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
-                return src != null && src.texture != null;
-            if (TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out _))
-                return src != null && src.texture != null;
+            if (ShouldAllowAttentionPack4ReshapeSpecializations(owner))
+            {
+                if (TryResolveImplicitAttentionReshapeShape(owner, layer, srcShape, out _))
+                    return src != null && src.texture != null;
+                if (TryResolveWindowPartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
+                    return src != null && src.texture != null;
+                if (TryResolveWindowUnpartitionPattern(owner, layer, srcShape, out _, out _, out _, out _, out _, out _, out _))
+                    return src != null && src.texture != null;
+                if (TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out _))
+                    return src != null && src.texture != null;
+            }
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
             return CanAliasTextureLayout(owner, srcShape, outShape) && src != null && src.texture != null;
@@ -1303,6 +1322,8 @@ namespace NcnnCompute
 
         private static bool ShouldPromoteGemmPrepTexture(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnRepro.BufferShape outShape)
         {
+            if (!ShouldAllowAttentionPack4ReshapeSpecializations(owner))
+                return false;
             if (owner?.Model?.layers == null || layer?.topNames == null || layer.topNames.Length == 0)
                 return false;
             if (outShape.dims != 2)
@@ -1312,6 +1333,17 @@ namespace NcnnCompute
             return consumer != null
                 && consumer.type == NcnnLayerTypes.Gemm
                 && consumer.GetInt(5, 0) != 0;
+        }
+
+        private static bool ShouldAllowAttentionPack4ReshapeSpecializations(NcnnRepro owner)
+        {
+            return owner != null && owner.EnableAttentionMatMulPack4Specializations;
+        }
+
+        private static bool ShouldAllowAnyPack4ReshapeSpecializations(NcnnRepro owner)
+        {
+            return owner != null
+                && (owner.EnableAttentionMatMulPack4Specializations || owner.EnableVistaTailPack4Specializations);
         }
 
         private static NcnnParamModel.Layer FindSingleProducer(NcnnParamModel model, string blobName)

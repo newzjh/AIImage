@@ -115,9 +115,10 @@ namespace NcnnCompute
             if (!TryResolvePack4SoftmaxWidthAxis(layer, srcShape, out var tensorAxis))
                 throw new InvalidOperationException("Softmax render-texture path currently supports softmax over tensor width axis only: " + layer.name);
 
-            if (srcShape.dims == 4 && tensorAxis == 0)
+            if (tensorAxis == 0)
             {
-                var outSlices = Mathf.Max(1, srcShape.d) * Mathf.Max(1, Mathf.CeilToInt(srcShape.c / 4f));
+                var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
+                var outSlices = logicalDepth * Mathf.Max(1, Mathf.CeilToInt(srcShape.c / 4f));
                 var outRt4 = owner.RentTempArray(srcTex.width, srcTex.height, outSlices, NcnnRepro.ResolveTensorTextureFormat(srcShape.dims));
                 owner.Ops.SoftmaxPack4Cdhw(srcTex.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, outRt4);
                 NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt4, srcShape, srcShape);

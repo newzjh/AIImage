@@ -1287,13 +1287,12 @@ namespace NcnnCompute
                                                && pack.isDepthWise
                                                && pack.group == pack.inC
                                                && pack.outC == pack.inC
-                                               && pack.kernelW == 3
-                                               && pack.kernelH == 3
-                                               && pack.dilationW == 1
-                                               && pack.dilationH == 1
-                                               && pack.padLeft == pack.padRight
-                                               && pack.padTop == pack.padBottom
-                                               && pack.padLeft == pack.padTop;
+                                               && pack.kernelW > 0
+                                               && pack.kernelH > 0
+                                               && pack.strideW > 0
+                                               && pack.strideH > 0
+                                               && pack.dilationW > 0
+                                               && pack.dilationH > 0;
 
                 if (ShouldKeepRawConvWeightsForTexturePath(layer.name, pack, needGeneralTexturePack, needDepthWiseTexturePack))
                 {
@@ -1338,7 +1337,7 @@ namespace NcnnCompute
                 else if (needDepthWiseTexturePack)
                 {
                     phaseSw.Restart();
-                    var w4 = PackDepthWiseWeightsToP4K4(w, pack.outC, pack.kernelW, pack.outPacks);
+                    var w4 = PackDepthWiseWeightsToP4KhKw(w, pack.outC, pack.kernelW, pack.kernelH, pack.outPacks);
                     var b4 = PackBiasToO4(b, pack.outC, pack.outPacks);
                     pack.packedDepthWiseWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                     NcnnGpuResourceTracker.RegisterBuffer(pack.packedDepthWiseWeight4, w4.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedDepthWiseWeight4:" + layer.name);
@@ -5701,23 +5700,23 @@ namespace NcnnCompute
             }
         }
 
-        public static Vector4[] PackDepthWiseWeightsToP4K4(float[] w, int channels, int k, int packs)
+        public static Vector4[] PackDepthWiseWeightsToP4KhKw(float[] w, int channels, int kernelW, int kernelH, int packs)
         {
-            var packed = new Vector4[packs * k * k];
+            var packed = new Vector4[packs * kernelW * kernelH];
             for (var p = 0; p < packs; p++)
             {
-                for (var ky = 0; ky < k; ky++)
+                for (var ky = 0; ky < kernelH; ky++)
                 {
-                    for (var kx = 0; kx < k; kx++)
+                    for (var kx = 0; kx < kernelW; kx++)
                     {
-                        var baseIndex = (p * k + ky) * k + kx;
+                        var baseIndex = (p * kernelH + ky) * kernelW + kx;
                         var v = Vector4.zero;
                         for (var lane = 0; lane < 4; lane++)
                         {
                             var c = p * 4 + lane;
                             if (c < channels)
                             {
-                                var srcIndex = ((c * k + ky) * k + kx);
+                                var srcIndex = ((c * kernelH + ky) * kernelW + kx);
                                 v[lane] = w[srcIndex];
                             }
                         }
