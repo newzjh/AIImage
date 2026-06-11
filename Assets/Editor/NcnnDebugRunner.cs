@@ -627,7 +627,8 @@ public static class NcnnDebugRunner
         var patchInputMode = ResolveStringEnv(MonaiPatchInputModeEnvVar, null);
         var enableAttentionMatMulPack4 = ResolveBoolEnv(MonaiEnableAttentionMatMulPack4EnvVar, false);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
-        var normalizeNonZero = ResolveBoolEnv(MonaiNormalizeNonZeroEnvVar, true);
+        var normalizeNonZeroOverride = ResolveOptionalBoolEnv(MonaiNormalizeNonZeroEnvVar);
+        var normalizeNonZero = normalizeNonZeroOverride ?? true;
         var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
         var outputBlobName = ResolveStringEnv(MonaiOutputBlobEnvVar, null);
         var logAllLayerHeartbeats = ResolveBoolEnv(MonaiLogAllLayerHeartbeatsEnvVar, false);
@@ -697,6 +698,7 @@ public static class NcnnDebugRunner
             if (ResolveBoolEnv(MonaiPack4OnlyGuardEnvVar, false))
             {
                 runner.useTextureInputForMonaiPatches = true;
+                runner.enableAttentionMatMulPack4Specializations = true;
                 runner.disallowBufferAccess = true;
                 runner.disallowBufferOutputs = true;
                 runner.disallowBufferToTextureMaterialization = true;
@@ -714,6 +716,7 @@ public static class NcnnDebugRunner
                 outputBlobName = string.IsNullOrWhiteSpace(outputBlobName) ? null : outputBlobName.Trim(),
                 threshold = threshold,
                 normalizeNonZero = normalizeNonZero,
+                normalizeNonZeroOverride = normalizeNonZeroOverride,
                 compareWithBaseline = compareBaseline,
                 probeOnly = probeOnly,
                 maxSlidingWindowPatches = maxPatchCount,

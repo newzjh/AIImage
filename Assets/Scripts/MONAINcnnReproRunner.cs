@@ -52,6 +52,7 @@ public sealed class MonaiRunRequest
     public int inputWidth;
     public float threshold = 0.5f;
     public bool normalizeNonZero = true;
+    public bool? normalizeNonZeroOverride;
     public MonaiChannelFillMode channelFillMode = MonaiChannelFillMode.DuplicateFirst;
     public MonaiPostprocessKind postprocessKind = MonaiPostprocessKind.BratsTumorSubregions;
     public bool compareWithBaseline = true;
@@ -730,11 +731,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             inputBlobName = string.IsNullOrWhiteSpace(request.inputBlobName) ? inputBlobName : request.inputBlobName,
             outputBlobName = string.IsNullOrWhiteSpace(request.outputBlobName) ? outputBlobName : request.outputBlobName,
             threshold = request.threshold > 0f ? request.threshold : defaultThreshold,
-            normalizeNonZero = request.normalizeNonZero,
+            normalizeNonZero = request.normalizeNonZeroOverride ?? request.normalizeNonZero,
             channelFillMode = request.channelFillMode,
             postprocessKind = request.postprocessKind,
             compareWithBaseline = request.compareWithBaseline,
-            slidingWindowOverlap = 0f,
+            slidingWindowOverlap = -1f,
             probeOnly = request.probeOnly,
             maxSlidingWindowPatches = Math.Max(0, request.maxSlidingWindowPatches),
             probePatchOrdinal = Math.Max(0, request.probePatchOrdinal),
@@ -787,6 +788,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             var thresholdToken = resolved.baselineManifest["threshold"];
             if (thresholdToken != null && request.threshold <= 0f)
                 resolved.threshold = thresholdToken.Value<float>();
+
+            var baselineNormalize = resolved.baselineManifest["normalize_nonzero"];
+            if (baselineNormalize != null && !request.normalizeNonZeroOverride.HasValue)
+                resolved.normalizeNonZero = baselineNormalize.Value<bool>();
 
             var baselineOriginalShape = ReadIntArray(resolved.baselineManifest["original_volume_shape_dhw"]);
             if (baselineOriginalShape != null && baselineOriginalShape.Length >= 3)
@@ -862,7 +867,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             resolved.slidingWindowWidth = resolved.networkInputWidth;
         }
 
-        if (resolved.slidingWindowOverlap <= 0f)
+        if (resolved.slidingWindowOverlap < 0f)
             resolved.slidingWindowOverlap = 0.25f;
 
         if (resolved.probeOnly)
@@ -4294,24 +4299,196 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             return;
 
         var reference = prepared.referenceVolume;
-        if (reference.dim0 != depth || reference.dim1 != height || reference.dim2 != width)
-            return;
-
         try
         {
-            if (string.Equals(reference.sourceFormat, "nrrd", StringComparison.OrdinalIgnoreCase))
+            var restored = labelMap;
+            if (reference.dim0 != depth || reference.dim1 != height || reference.dim2 != width)
             {
-                WriteNrrdLabelMap(Path.Combine(outputDir, "labelmap_restored.nrrd"), labelMap, reference);
+                restored = CenterCropOrPadLabelMap(
+                    labelMap,
+                    depth,
+                    height,
+                    width,
+                    reference.dim0,
+                    reference.dim1,
+                    reference.dim2);
+                AppendDebugLine(
+                    "TryWriteRestoredLabelMap restore_shape"
+                    + " | src=" + depth + "x" + height + "x" + width
+                    + " | dst=" + reference.dim0 + "x" + reference.dim1 + "x" + reference.dim2);
             }
-            else
-            {
-                WriteNiftiLabelMap(Path.Combine(outputDir, "labelmap_restored.nii.gz"), labelMap, reference);
-            }
+
+            WriteLabelMapForReference(outputDir, "labelmap_restored", restored, reference);
+            TryWriteLabelSubsetMasks(outputDir, prepared.baselineManifest, restored, reference);
         }
         catch (Exception e)
         {
             AppendDebugLine("TryWriteRestoredLabelMap failed | " + e.Message);
         }
+    }
+
+    private void TryWriteLabelSubsetMasks(string outputDir, JObject baselineManifest, ushort[] restoredLabelMap, MonaiVolumeData reference)
+    {
+        if (string.IsNullOrWhiteSpace(outputDir)
+            || baselineManifest == null
+            || restoredLabelMap == null
+            || reference == null)
+        {
+            return;
+        }
+
+        var subsetToken = baselineManifest["label_subset"];
+        if (subsetToken == null || subsetToken.Type == JTokenType.Null)
+            return;
+
+        var labelValues = ReadLabelSubsetValues(subsetToken);
+        if (labelValues == null || labelValues.Length == 0)
+            return;
+
+        var labelName = SanitizeFileName(subsetToken["label_name"]?.Value<string>() ?? "subset");
+        var subsetMask = BuildBinarySubsetMask(restoredLabelMap, labelValues);
+        var subsetPath = ResolveSubsetOutputPath(outputDir, reference, subsetToken["restored_binary_mask"]?.Value<string>(), labelName);
+        WriteLabelMapFile(subsetPath, subsetMask, reference);
+
+        try
+        {
+            var subsetDir = Path.Combine(outputDir, "label_subsets");
+            Directory.CreateDirectory(subsetDir);
+            var manifestPath = Path.Combine(subsetDir, "manifest.json");
+            var manifest = new JObject
+            {
+                ["label_name"] = labelName,
+                ["restored_binary_mask"] = Path.GetFileName(subsetPath)
+            };
+            if (labelValues.Length == 1)
+                manifest["label_value"] = labelValues[0];
+            else
+                manifest["label_values"] = new JArray(Array.ConvertAll(labelValues, value => (int)value));
+            WriteText(manifestPath, manifest.ToString());
+        }
+        catch (Exception e)
+        {
+            AppendDebugLine("TryWriteLabelSubsetMasks manifest failed | " + e.Message);
+        }
+    }
+
+    private static ushort[] ReadLabelSubsetValues(JToken subsetToken)
+    {
+        if (subsetToken == null)
+            return null;
+
+        var values = ReadIntArray(subsetToken["label_values"]);
+        if (values != null && values.Length > 0)
+        {
+            var result = new ushort[values.Length];
+            for (var i = 0; i < values.Length; i++)
+                result[i] = (ushort)Mathf.Max(0, values[i]);
+            return result;
+        }
+
+        var single = subsetToken["label_value"];
+        if (single != null && single.Type != JTokenType.Null)
+            return new[] { (ushort)Mathf.Max(0, single.Value<int>()) };
+
+        return null;
+    }
+
+    private static ushort[] BuildBinarySubsetMask(ushort[] source, ushort[] labelValues)
+    {
+        if (source == null || labelValues == null || labelValues.Length == 0)
+            return null;
+
+        var wanted = new HashSet<ushort>(labelValues);
+        var result = new ushort[source.Length];
+        for (var i = 0; i < source.Length; i++)
+            result[i] = wanted.Contains(source[i]) ? (ushort)1 : (ushort)0;
+        return result;
+    }
+
+    private static string ResolveSubsetOutputPath(string outputDir, MonaiVolumeData reference, string relativePath, string labelName)
+    {
+        var normalized = relativePath?.Trim();
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            normalized = normalized.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+            if (Path.IsPathRooted(normalized))
+                return Path.GetFullPath(normalized);
+            if (!normalized.Contains(Path.DirectorySeparatorChar.ToString()))
+                return Path.Combine(outputDir, "label_subsets", normalized);
+            return Path.Combine(outputDir, normalized);
+        }
+
+        var extension = string.Equals(reference?.sourceFormat, "nrrd", StringComparison.OrdinalIgnoreCase)
+            ? ".nrrd"
+            : ".nii.gz";
+        return Path.Combine(outputDir, "label_subsets", labelName + "_mask_restored" + extension);
+    }
+
+    private static ushort[] CenterCropOrPadLabelMap(
+        ushort[] source,
+        int srcDepth,
+        int srcHeight,
+        int srcWidth,
+        int dstDepth,
+        int dstHeight,
+        int dstWidth)
+    {
+        if (source == null)
+            return null;
+        if (srcDepth == dstDepth && srcHeight == dstHeight && srcWidth == dstWidth)
+            return source;
+
+        var result = new ushort[checked(dstDepth * dstHeight * dstWidth)];
+        var copyDepth = Math.Min(srcDepth, dstDepth);
+        var copyHeight = Math.Min(srcHeight, dstHeight);
+        var copyWidth = Math.Min(srcWidth, dstWidth);
+        var srcDepthStart = Math.Max(0, (srcDepth - copyDepth) / 2);
+        var srcHeightStart = Math.Max(0, (srcHeight - copyHeight) / 2);
+        var srcWidthStart = Math.Max(0, (srcWidth - copyWidth) / 2);
+        var dstDepthStart = Math.Max(0, (dstDepth - copyDepth) / 2);
+        var dstHeightStart = Math.Max(0, (dstHeight - copyHeight) / 2);
+        var dstWidthStart = Math.Max(0, (dstWidth - copyWidth) / 2);
+
+        for (var z = 0; z < copyDepth; z++)
+        {
+            var srcZ = srcDepthStart + z;
+            var dstZ = dstDepthStart + z;
+            for (var y = 0; y < copyHeight; y++)
+            {
+                var srcY = srcHeightStart + y;
+                var dstY = dstHeightStart + y;
+                var srcOffset = ((srcZ * srcHeight) + srcY) * srcWidth + srcWidthStart;
+                var dstOffset = ((dstZ * dstHeight) + dstY) * dstWidth + dstWidthStart;
+                Array.Copy(source, srcOffset, result, dstOffset, copyWidth);
+            }
+        }
+
+        return result;
+    }
+
+    private static string WriteLabelMapForReference(string outputDir, string fileStem, ushort[] values, MonaiVolumeData reference)
+    {
+        if (string.Equals(reference.sourceFormat, "nrrd", StringComparison.OrdinalIgnoreCase))
+        {
+            var path = Path.Combine(outputDir, fileStem + ".nrrd");
+            WriteNrrdLabelMap(path, values, reference);
+            return path;
+        }
+
+        var niftiPath = Path.Combine(outputDir, fileStem + ".nii.gz");
+        WriteNiftiLabelMap(niftiPath, values, reference);
+        return niftiPath;
+    }
+
+    private static void WriteLabelMapFile(string path, ushort[] values, MonaiVolumeData reference)
+    {
+        if (string.Equals(Path.GetExtension(path), ".nrrd", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteNrrdLabelMap(path, values, reference);
+            return;
+        }
+
+        WriteNiftiLabelMap(path, values, reference);
     }
 
     private string GuessCaseName(MonaiRunRequest request, ResolvedRequest resolved)
