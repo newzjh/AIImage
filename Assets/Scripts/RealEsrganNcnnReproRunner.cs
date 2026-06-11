@@ -23,12 +23,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public bool enableSeamProbe = false;
     public bool useCommandBuffer = false;
     public bool enableGpuLayerProfiling = false;
+    public bool enableLayerRuntimeProfile = false;
+    public bool syncLayerRuntimeProfile = false;
 
     public event Action<float, string> ProgressChanged;
 
     private NcnnRepro _repro;
     private bool _loaded;
     private bool _useCmdThisRun;
+    private string _lastLayerRuntimeProfileText;
     private readonly Dictionary<string, GpuLayerProfileStat> _gpuLayerProfileStats = new Dictionary<string, GpuLayerProfileStat>(StringComparer.Ordinal);
     private readonly Dictionary<string, GpuShapeProfileStat> _gpuShapeProfileStats = new Dictionary<string, GpuShapeProfileStat>(StringComparer.Ordinal);
 
@@ -567,9 +570,24 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (src == null)
             return default;
 
+        try
+        {
+            UnityEngine.Debug.Log("[RealESRGAN(repro)] ProcessAsync start | mode=" + (useCommandBuffer ? "command_buffer" : "immediate") + " | input=" + src.width + "x" + src.height);
+        }
+        catch
+        {
+        }
+
         EnsureRuntimeObjects();
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
+        var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
+        _useCmdThisRun = useCommandBuffer && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
+        var effectiveEnableTempPool = enableTempPool && !Application.isBatchMode;
+        var effectiveMaxPooledPerShape = effectiveEnableTempPool ? maxPooledPerShape : 0;
+        _repro.EnableTempPool = effectiveEnableTempPool;
+        _repro.MaxPooledPerShape = effectiveMaxPooledPerShape;
+        _repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
+        _repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfile;
+        _repro.LayerRuntimeProfilePathKindOverride = _useCmdThisRun ? "cmd" : "pack4_rt";
         await EnsureLoaded();
 
         var originalW = src.width;
@@ -603,10 +621,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var effectiveTilePad = tilePad > 0 ? tilePad : 10;
 
         ReportProgress(0f, "准备输入");
-        await UniTask.Yield();
+        await YieldIfNeeded();
 
-        var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
-        _useCmdThisRun = useCommandBuffer && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
         var attemptTiles = new[]
         {
             Mathf.Max(16, baseTileSize),
@@ -620,6 +636,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var effectiveTileSize = attemptTiles[attempt];
             try
             {
+                try
+                {
+                    UnityEngine.Debug.Log("[RealESRGAN(repro)] attempt start | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate") + " | tile=" + effectiveTileSize);
+                }
+                catch
+                {
+                }
                 var r = await ProcessOnceAsync(src, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
                 return Finish(r);
             }
@@ -628,7 +651,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 lastErr = e;
                 if (!IsLikelyVulkanOom(e))
                     break;
-                await UniTask.Yield();
+                await YieldIfNeeded();
             }
         }
 
@@ -658,6 +681,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         Stopwatch swTileAll = default;
         try
         {
+            try
+            {
+                UnityEngine.Debug.Log("[RealESRGAN(repro)] ProcessOnce start | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate") + " | run_in=" + runInW + "x" + runInH + " | out=" + originalW + "x" + originalH + " | tile=" + effectiveTileSize + " | pad=" + effectiveTilePad);
+            }
+            catch
+            {
+            }
             //if (runInW != originalW || runInH != originalH)
             //{
             //    runInput = ResizeTextureBilinear(src, runInW, runInH);
@@ -755,6 +785,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                             outArr2 = _repro.ForwardPack4(rowCmd, inArr2, 1);
                         else
                             outArr = _repro.ForwardPack4(inArr, 1);
+                        _lastLayerRuntimeProfileText = _repro?.FormatLastLayerRuntimeProfile(256);
+                        if (enableLayerRuntimeProfile && tileIndex == 0 && !string.IsNullOrWhiteSpace(_lastLayerRuntimeProfileText))
+                        {
+                            try
+                            {
+                                UnityEngine.Debug.Log("[LAYER-PROFILE] ESRGAN(repro.tile0)\n" + _lastLayerRuntimeProfileText);
+                            }
+                            catch
+                            {
+                            }
+                        }
                         forwardMs += swFwd.ElapsedMilliseconds;
 
                         var tilePad = effectiveTilePad * runFactor;
@@ -814,14 +855,42 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 {
                     var sC = Stopwatch.StartNew();
                     Graphics.ExecuteCommandBufferAsync(rowCmd, ComputeQueueType.Default);
+                    try
+                    {
+                        UnityEngine.Debug.Log("[RealESRGAN(repro)] submitted command buffer row | y=" + ty + " | tiles_done=" + tileIndex + "/" + tileCount);
+                    }
+                    catch
+                    {
+                    }
                     rowCmd.Dispose();
                     cmdMs += sC.ElapsedMilliseconds;
+                }
+
+                if (Application.isBatchMode)
+                {
+                    try
+                    {
+                        UnityEngine.Debug.Log("[RealESRGAN(repro)] row gpu sync start | y=" + ty + " | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate"));
+                    }
+                    catch
+                    {
+                    }
+
+                    _repro?.Ops?.DebugSyncGpu();
+
+                    try
+                    {
+                        UnityEngine.Debug.Log("[RealESRGAN(repro)] row gpu sync done | y=" + ty + " | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate"));
+                    }
+                    catch
+                    {
+                    }
                 }
 
                 var tileProgress = (float)tileIndex / tileCount;
                 ReportProgress(tileProgress, "推理分块 " + (tileIndex + 1) + "/" + tileCount);
                 var sw = Stopwatch.StartNew();
-                await UniTask.Yield();
+                await YieldForGpuProgressAsync();
                 yieldMs += sw.ElapsedMilliseconds;
             }
 
@@ -857,7 +926,43 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
 
             ReportProgress(0.99f, "读取结果");
+            if (Application.isBatchMode)
+            {
+                try
+                {
+                    UnityEngine.Debug.Log("[RealESRGAN(repro)] pre-readback gpu sync start");
+                }
+                catch
+                {
+                }
+
+                _repro?.Ops?.DebugSyncGpu();
+                _repro?.ClearTempPool();
+                await YieldForGpuProgressAsync();
+
+                try
+                {
+                    UnityEngine.Debug.Log("[RealESRGAN(repro)] pre-readback gpu sync done");
+                }
+                catch
+                {
+                }
+            }
+            try
+            {
+                UnityEngine.Debug.Log("[RealESRGAN(repro)] readback start | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate") + " | size=" + outRt.width + "x" + outRt.height);
+            }
+            catch
+            {
+            }
             var scaledTex = await ReadbackTextureAsync(outRt, outRt.width, outRt.height, ct);
+            try
+            {
+                UnityEngine.Debug.Log("[RealESRGAN(repro)] readback done | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate") + " | ok=" + (scaledTex != null));
+            }
+            catch
+            {
+            }
             if (scaledTex == null)
                 return new RealEsrganResult { error = "readback failed" };
 
@@ -971,6 +1076,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             {
             }
 
+            if (enableLayerRuntimeProfile && !string.IsNullOrWhiteSpace(_lastLayerRuntimeProfileText))
+            {
+                try
+                {
+                    UnityEngine.Debug.Log("[LAYER-PROFILE] ESRGAN(repro)\n" + _lastLayerRuntimeProfileText);
+                }
+                catch
+                {
+                }
+            }
+
             Texture2D finalTex = scaledTex;
             if (finalTex == null)
                 return new RealEsrganResult { error = "resize output failed" };
@@ -1003,6 +1119,14 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (_loaded)
             return;
 
+        try
+        {
+            UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model start");
+        }
+        catch
+        {
+        }
+
         EnsureRuntimeObjects();
 
         var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
@@ -1010,13 +1134,63 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         var binPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".bin");
 
         ReportProgress(0.02f, "Reading Model File...");
-        await UniTask.Yield();
+        await YieldIfNeeded();
 
-        var paramText = await File.ReadAllTextAsync(paramPath);
-        var bytes = await File.ReadAllBytesAsync(binPath);
+        string paramText;
+        byte[] bytes;
+        if (Application.isBatchMode)
+        {
+            try
+            {
+                UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model batch file read start");
+            }
+            catch
+            {
+            }
+
+            paramText = File.ReadAllText(paramPath);
+            bytes = File.ReadAllBytes(binPath);
+
+            try
+            {
+                UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model batch file read done | param_chars=" + paramText.Length + " | bin_bytes=" + bytes.Length);
+            }
+            catch
+            {
+            }
+        }
+        else
+        {
+            try
+            {
+                UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model async file read start");
+            }
+            catch
+            {
+            }
+
+            paramText = await File.ReadAllTextAsync(paramPath);
+            bytes = await File.ReadAllBytesAsync(binPath);
+
+            try
+            {
+                UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model async file read done | param_chars=" + paramText.Length + " | bin_bytes=" + bytes.Length);
+            }
+            catch
+            {
+            }
+        }
 
         ReportProgress(0.06f, "Loading Model...");
-        await UniTask.Yield();
+        await YieldIfNeeded();
+
+        try
+        {
+            UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model deserialize start");
+        }
+        catch
+        {
+        }
 
         MemoryStream ms = new MemoryStream(bytes);
         using (var br = new NcnnBinReader(ms))
@@ -1025,10 +1199,25 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         }
         ms.Dispose();
 
+        try
+        {
+            UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model deserialize done");
+        }
+        catch
+        {
+        }
+
         ReportProgress(0.1f, "Loading Model...");
-        await UniTask.Yield();
+        await YieldIfNeeded();
 
         _loaded = true;
+        try
+        {
+            UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model done");
+        }
+        catch
+        {
+        }
 
     }
 
@@ -1040,8 +1229,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             _repro.OnConvComplete += OnConvCompleteHandler;
         }
 
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
+        var effectiveEnableTempPool = enableTempPool && !Application.isBatchMode;
+        var effectiveMaxPooledPerShape = effectiveEnableTempPool ? maxPooledPerShape : 0;
+        _repro.EnableTempPool = effectiveEnableTempPool;
+        _repro.MaxPooledPerShape = effectiveMaxPooledPerShape;
+        _repro.ForceBufferConvolution = false;
+        _repro.ForceBufferConvolutionAll = false;
+        _repro.ForceBufferBinaryOpAll = false;
+        _repro.ForceBufferGeluAll = false;
+        _repro.EnableConv1x1TextureConvolution = true;
+        _repro.EnableDepthWiseTextureConvolution = true;
+        _repro.EnableGeneralTextureConvolution = true;
         _repro.gpuLayerProfileEnabled = _gpuLayerProfileEnabled;
     }
 
@@ -1054,9 +1252,29 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     
     private async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
+        if (Application.isBatchMode)
+        {
+            ct.ThrowIfCancellationRequested();
+            var prev = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = rt;
+                var syncTex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+                syncTex.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
+                syncTex.Apply(false, false);
+                syncTex.wrapMode = TextureWrapMode.Clamp;
+                syncTex.filterMode = FilterMode.Bilinear;
+                return syncTex;
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+            }
+        }
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
-        var r = await tcs.Task;
+        var r = await tcs.Task.AttachExternalCancellation(ct);
         ct.ThrowIfCancellationRequested();
         if (r.hasError)
             return null;
@@ -1134,6 +1352,17 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private void ReportProgress(float p, string t)
     {
         try { ProgressChanged?.Invoke(Mathf.Clamp01(p), t ?? ""); } catch { }
+    }
+
+    private static async UniTask YieldIfNeeded()
+    {
+        if (!Application.isBatchMode)
+            await UniTask.Yield();
+    }
+
+    private static async UniTask YieldForGpuProgressAsync()
+    {
+        await UniTask.Yield();
     }
 
     private static int AutoTileSize()

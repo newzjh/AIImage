@@ -3483,6 +3483,8 @@ namespace NcnnCompute
                 && aShape.h == bShape.h
                 && aShape.d == bShape.d
                 && aShape.c == bShape.c
+                && MatchesPack4TextureStorage(a, aShape)
+                && MatchesPack4TextureStorage(b, bShape)
                 && a.width == b.width
                 && a.height == b.height
                 && a.packs == b.packs;
@@ -4647,6 +4649,48 @@ namespace NcnnCompute
             if (tr != null && tr.hasStorageShape)
                 return tr.storageShape;
             return fallbackLogicalShape;
+        }
+
+        internal static bool MatchesPack4TextureStorage(TensorRef tr, BufferShape logicalShape)
+        {
+            if (tr == null || tr.texture == null)
+                return false;
+
+            var storageShape = GetTextureStorageShape(tr, logicalShape);
+            if (storageShape.w != tr.width || storageShape.h != tr.height)
+                return false;
+
+            var expectedPacks = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, storageShape.c) / 4f));
+            if (storageShape.dims == 4)
+            {
+                if (tr.packs != expectedPacks)
+                    return false;
+                var expectedVolumeDepth = Mathf.Max(1, storageShape.d) * expectedPacks;
+                return Mathf.Max(1, tr.texture.volumeDepth) == expectedVolumeDepth;
+            }
+
+            return tr.packs == Mathf.Max(1, tr.texture.volumeDepth);
+        }
+
+        internal static bool MatchesPack4TextureStorage(CmdTensorRef tr, BufferShape logicalShape)
+        {
+            if (tr == null || tr.texture == null)
+                return false;
+
+            var storageShape = GetCmdStorageShape(tr, logicalShape);
+            if (storageShape.w != tr.width || storageShape.h != tr.height)
+                return false;
+
+            var expectedPacks = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, storageShape.c) / 4f));
+            if (storageShape.dims == 4)
+            {
+                if (tr.packs != expectedPacks)
+                    return false;
+                var expectedDepth = Mathf.Max(1, storageShape.d) * expectedPacks;
+                return Mathf.Max(1, tr.texture.depth) == expectedDepth;
+            }
+
+            return tr.packs == Mathf.Max(1, tr.texture.depth);
         }
 
         internal int ResolveInputLogicalChannels(string inputBlobName, int fallbackChannels)

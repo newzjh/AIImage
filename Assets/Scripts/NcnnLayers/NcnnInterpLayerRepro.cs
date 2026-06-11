@@ -360,22 +360,18 @@ namespace NcnnCompute
                 && src.texture != null
                 && srcShape.dims == 3
                 && srcShape.d == 1
-                && srcShape.w == src.width
-                && srcShape.h == src.height
                 && srcShape.c > 0
-                && srcShape.c <= src.packs * 4;
+                && NcnnRepro.MatchesPack4TextureStorage(src, srcShape);
         }
 
         private static bool CanUsePack4Interp(NcnnRepro.TensorRef src, NcnnRepro.BufferShape srcShape)
         {
             return src != null
                 && src.texture != null
-                && srcShape.w == src.width
-                && srcShape.h == src.height
                 && srcShape.c > 0
                 && (srcShape.dims == 3
-                    ? srcShape.d == 1 && srcShape.c <= src.packs * 4
-                    : srcShape.dims == 4 && srcShape.c <= src.packs * 4 && src.texture.volumeDepth >= srcShape.d * Mathf.Max(1, src.packs));
+                    ? srcShape.d == 1 && NcnnRepro.MatchesPack4TextureStorage(src, srcShape)
+                    : srcShape.dims == 4 && NcnnRepro.MatchesPack4TextureStorage(src, srcShape));
         }
 
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)

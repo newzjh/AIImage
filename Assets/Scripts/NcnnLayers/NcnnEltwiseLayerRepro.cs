@@ -258,7 +258,9 @@ namespace NcnnCompute
                     || currentTex.width != otherTex.width
                     || currentTex.height != otherTex.height
                     || currentTex.packs != otherTex.packs
-                    || currentShape.c != otherShape.c)
+                    || currentShape.c != otherShape.c
+                    || !NcnnRepro.MatchesPack4TextureStorage(currentTex, currentShape)
+                    || !NcnnRepro.MatchesPack4TextureStorage(otherTex, otherShape))
                 {
                     return false;
                 }

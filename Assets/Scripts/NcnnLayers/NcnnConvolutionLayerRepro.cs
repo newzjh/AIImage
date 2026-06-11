@@ -345,6 +345,26 @@ namespace NcnnCompute
                                                 if (!owner._conv.TryGetValue(layer.name, out var conv))
                                                     throw new InvalidOperationException("Convolution not found: " + layer.name);
                                                 var outShape = ResolveCmdOutputShape(srcShape, conv);
+                                                var canUseConv1x1TexturePath = conv.kernelW == 1
+                                                    && conv.kernelH == 1
+                                                    && owner.EnableConv1x1TextureConvolution
+                                                    && conv.packedWeight4 != null
+                                                    && conv.packedBias4 != null;
+                                                var canUseSpecialized3x3TexturePath = conv.kernelW == 3
+                                                    && conv.kernelH == 3
+                                                    && conv.padLeft == conv.padRight
+                                                    && conv.padLeft == conv.padTop
+                                                    && conv.padTop == conv.padBottom
+                                                    && conv.packedWeight4 != null
+                                                    && conv.packedBias4 != null
+                                                    && (conv.inC & 3) == 0
+                                                    && (conv.outC & 3) == 0;
+                                                var canUseGeneralTexturePath = owner.EnableGeneralTextureConvolution
+                                                    && conv.packedWeight4 != null
+                                                    && conv.packedBias4 != null
+                                                    && conv.kernelW > 0
+                                                    && conv.kernelH == conv.kernelW
+                                                    && !(conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
                                                 var canUseTextureConv = CanUsePack4CmdPath(src, srcShape, conv)
                                                                         && !conv.isDepthWise
                                                                         && conv.group == 1
@@ -352,14 +372,9 @@ namespace NcnnCompute
                                                                         && conv.strideH == 1
                                                                         && conv.dilationW == 1
                                                                         && conv.dilationH == 1
-                                                                        && ((conv.kernelW == 1 && conv.kernelH == 1 && conv.packedWeight4 != null && conv.packedBias4 != null)
-                                                                            || (conv.kernelW == 3
-                                                                                && conv.kernelH == 3
-                                                                                && conv.padLeft == conv.padRight
-                                                                                && conv.padLeft == conv.padTop
-                                                                                && conv.padTop == conv.padBottom
-                                                                                && conv.packedWeight4 != null
-                                                                                && conv.packedBias4 != null));
+                                                                        && (canUseConv1x1TexturePath
+                                                                            || canUseSpecialized3x3TexturePath
+                                                                            || canUseGeneralTexturePath);
 
                                                 if (!canUseTextureConv)
                                                 {
@@ -372,17 +387,7 @@ namespace NcnnCompute
                                                 var outW = Mathf.Max(1, outShape.w);
                                                 var outH = Mathf.Max(1, outShape.h);
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                                                var canUseSpecialized3x3TexturePath = conv.kernelW == 3
-                                                    && conv.kernelH == 3
-                                                    && conv.padLeft == conv.padRight
-                                                    && conv.padLeft == conv.padTop
-                                                    && conv.padTop == conv.padBottom
-                                                    && conv.strideW == 1
-                                                    && conv.strideH == 1
-                                                    && (conv.inC & 3) == 0
-                                                    && (conv.outC & 3) == 0;
-
-                                                if (conv.kernelW == 1 && conv.kernelH == 1)
+                                                if (canUseConv1x1TexturePath)
                                                 {
                                                     owner.Ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outArr);
                                                 }
@@ -402,6 +407,10 @@ namespace NcnnCompute
                                                     {
                                                         owner.Ops.Conv3x3Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outArr);
                                                     }
+                                                }
+                                                else if (canUseGeneralTexturePath)
+                                                {
+                                                    owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outArr);
                                                 }
                                                 else
                                                 {
@@ -427,9 +436,8 @@ namespace NcnnCompute
                 && conv != null
                 && srcShape.dims == 3
                 && srcShape.d == 1
-                && srcShape.w == src.width
-                && srcShape.h == src.height
                 && srcShape.c == conv.inC
+                && NcnnRepro.MatchesPack4TextureStorage(src, srcShape)
                 && src.packs == conv.inPacks;
         }
 

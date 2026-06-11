@@ -2351,6 +2351,40 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
         }
 
+        public void ConvPack4General(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            cmd.SetComputeIntParam(_cs, "_InW", srcPack4.width);
+            cmd.SetComputeIntParam(_cs, "_InH", srcPack4.height);
+            cmd.SetComputeIntParam(_cs, "_OutW", dstPack4.width);
+            cmd.SetComputeIntParam(_cs, "_OutH", dstPack4.height);
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
+            cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
+            cmd.SetComputeIntParam(_cs, "_StrideWVar", Mathf.Max(1, strideW));
+            cmd.SetComputeIntParam(_cs, "_StrideHVar", Mathf.Max(1, strideH));
+            cmd.SetComputeIntParam(_cs, "_PadLeftVar", Mathf.Max(0, padLeft));
+            cmd.SetComputeIntParam(_cs, "_PadTopVar", Mathf.Max(0, padTop));
+            cmd.SetComputeIntParam(_cs, "_DilationWVar", Mathf.Max(1, dilationW));
+            cmd.SetComputeIntParam(_cs, "_DilationHVar", Mathf.Max(1, dilationH));
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kConvPack4General, "_ConvW4", w4);
+            cmd.SetComputeBufferParam(_cs, _kConvPack4General, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvInArr", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvOutArr", dstPack4.nameID);
+            Dispatch3D(cmd, _kConvPack4General, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+        }
+
 
 
         public void AddPack4(CommandBuffer cmd, RenderTexture a, RenderTexture b, float coeffA, float coeffB, int packs, RenderTexture output)

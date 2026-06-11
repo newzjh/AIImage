@@ -367,9 +367,8 @@ namespace NcnnCompute
                 && conv != null
                 && srcShape.dims == 3
                 && srcShape.d == 1
-                && srcShape.w == src.width
-                && srcShape.h == src.height
                 && srcShape.c == conv.inC
+                && NcnnRepro.MatchesPack4TextureStorage(src, srcShape)
                 && src.packs == conv.inPacks;
         }
 

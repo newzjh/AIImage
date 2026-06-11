@@ -714,6 +714,8 @@ namespace NcnnCompute
                 && aShape.h == bShape.h
                 && aShape.d == bShape.d
                 && aShape.c == bShape.c
+                && NcnnRepro.MatchesPack4TextureStorage(a, aShape)
+                && NcnnRepro.MatchesPack4TextureStorage(b, bShape)
                 && a.width == b.width
                 && a.height == b.height
                 && a.packs == b.packs;

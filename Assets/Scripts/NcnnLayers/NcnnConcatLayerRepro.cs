@@ -309,10 +309,8 @@ namespace NcnnCompute
                     || shape.w != firstShape.w
                     || shape.h != firstShape.h
                     || shape.d != firstShape.d
-                    || shape.w != tex.width
-                    || shape.h != tex.height
                     || shape.c <= 0
-                    || shape.c > tex.packs * 4)
+                    || !NcnnRepro.MatchesPack4TextureStorage(tex, shape))
                 {
                     return false;
                 }
@@ -433,9 +431,8 @@ namespace NcnnCompute
                 }
 
                 if (shape.dims != 3
-                    || shape.w != parts[i].width
-                    || shape.h != parts[i].height
                     || shape.d != 1
+                    || !NcnnRepro.MatchesPack4TextureStorage(parts[i], shape)
                     || (i < partShapes.Length - 1 && (shape.c & 3) != 0))
                 {
                     canUseExactPack4 = false;
