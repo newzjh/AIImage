@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -126,6 +127,23 @@ namespace NcnnCompute
             public BufferShape logicalShape;
             public bool hasStorageShape;
             public BufferShape storageShape;
+        }
+
+        private sealed class DeferredCmdReleaseComparer : IEqualityComparer<ComputeTexture>
+        {
+            public bool Equals(ComputeTexture x, ComputeTexture y)
+            {
+                if (ReferenceEquals(x, y))
+                    return true;
+                if (x == null || y == null)
+                    return false;
+                return x.nameID == y.nameID;
+            }
+
+            public int GetHashCode(ComputeTexture obj)
+            {
+                return obj != null ? obj.nameID : 0;
+            }
         }
 
         public sealed class BufferRef
@@ -838,6 +856,7 @@ namespace NcnnCompute
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
         private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
         private readonly HashSet<ComputeTexture> _cmdSets = new HashSet<ComputeTexture>();
+        private readonly HashSet<ComputeTexture> _deferredCmdReleases = new HashSet<ComputeTexture>(new DeferredCmdReleaseComparer());
         private readonly float[] _gpuSyncScratch = new float[1];
         private int _runtimeProfileInferenceIndex;
 
@@ -2329,10 +2348,41 @@ namespace NcnnCompute
 
             if (_cmdSets.Contains(t))
             {
+                _cmdSets.Remove(t);
+                if (ShouldDeferCommandBufferTempRtRelease())
+                {
+                    _deferredCmdReleases.Add(t);
+                    return;
+                }
+
                 NcnnGpuResourceTracker.ReleaseTextureHandle(t.nameID, t.trackerLabel ?? "NcnnRepro.ReturnTempArrayCmd");
                 cmd.ReleaseTemporaryRT(t.nameID);
-                _cmdSets.Remove(t);
             }
+        }
+
+        private void FlushDeferredCommandBufferTempRtReleases(CommandBuffer cmd)
+        {
+            if (cmd == null || _deferredCmdReleases.Count == 0)
+                return;
+
+            foreach (var texture in _deferredCmdReleases)
+            {
+                if (texture == null)
+                    continue;
+                NcnnGpuResourceTracker.ReleaseTextureHandle(texture.nameID, texture.trackerLabel ?? "NcnnRepro.FlushDeferredCmdTempArray");
+                cmd.ReleaseTemporaryRT(texture.nameID);
+            }
+
+            _deferredCmdReleases.Clear();
+        }
+
+        private static bool ShouldDeferCommandBufferTempRtRelease()
+        {
+            var env = Environment.GetEnvironmentVariable("AIIMAGE_CLIP_DEFER_CMD_RT_RELEASE");
+            return !string.IsNullOrWhiteSpace(env)
+                && (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase));
         }
 
         public void ClearTempPool()
@@ -2390,6 +2440,16 @@ namespace NcnnCompute
                     NcnnGpuResourceTracker.ReleaseTextureHandle(cmdTex.nameID, cmdTex.trackerLabel ?? "NcnnRepro.ReleaseCmdTempArray");
                 }
                 _cmdSets.Clear();
+            }
+            if (_deferredCmdReleases.Count > 0)
+            {
+                foreach (var cmdTex in _deferredCmdReleases)
+                {
+                    if (cmdTex == null)
+                        continue;
+                    NcnnGpuResourceTracker.ReleaseTextureHandle(cmdTex.nameID, cmdTex.trackerLabel ?? "NcnnRepro.ReleaseDeferredCmdTempArray");
+                }
+                _deferredCmdReleases.Clear();
             }
             ClearTempPool();
         }
@@ -2983,6 +3043,59 @@ namespace NcnnCompute
                         sb.Append(index.view.h.ToString(CultureInfo.InvariantCulture));
                         sb.Append('x');
                         sb.Append(index.view.c.ToString(CultureInfo.InvariantCulture));
+                    }
+                    continue;
+                }
+
+                sb.Append("missing");
+            }
+
+            return sb.ToString();
+        }
+
+        internal static string DescribeCmdLayerOutputPath(
+            NcnnParamModel.Layer layer,
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, BufferShape> shapes)
+        {
+            var topNames = layer?.topNames;
+            if (topNames == null || topNames.Length == 0)
+                return string.Empty;
+
+            var sb = new StringBuilder();
+            for (var i = 0; i < topNames.Length; i++)
+            {
+                if (i > 0)
+                    sb.Append(';');
+
+                var name = topNames[i] ?? string.Empty;
+                sb.Append(name);
+                sb.Append('=');
+
+                if (blobs != null
+                    && blobs.TryGetValue(name, out var tex)
+                    && tex != null
+                    && tex.texture != null)
+                {
+                    sb.Append("tex:");
+                    sb.Append(tex.width.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('x');
+                    sb.Append(tex.height.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('x');
+                    sb.Append(tex.packs.ToString(CultureInfo.InvariantCulture));
+                    sb.Append('p');
+                    if (shapes != null && shapes.TryGetValue(name, out var shape))
+                    {
+                        sb.Append(":d");
+                        sb.Append(shape.dims.ToString(CultureInfo.InvariantCulture));
+                        sb.Append(':');
+                        sb.Append(shape.w.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('x');
+                        sb.Append(shape.h.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('x');
+                        sb.Append(shape.d.ToString(CultureInfo.InvariantCulture));
+                        sb.Append('x');
+                        sb.Append(shape.c.ToString(CultureInfo.InvariantCulture));
                     }
                     continue;
                 }

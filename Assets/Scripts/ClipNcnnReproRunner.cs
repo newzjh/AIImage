@@ -64,6 +64,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private const string OutputBlobName = "out0";
     private const int EmbeddingSize = 512;
     private const string TextEmbeddingCacheSuffix = ".label_embeddings.json";
+    private const string ExtraDebugImageBlobEnvVar = "AIIMAGE_CLIP_EXTRA_DEBUG_IMAGE_BLOBS";
     private static readonly string[] DebugTextBlobNames = { "1", "3", "6", "7", "17", "18", "19", "22", "23", "24", "26", "27", "28", "29", "30", "57", "84", "111", "138", "165", "192", "219", "246", "273", "300", "320", "327", "out0" };
     private static readonly string[] DebugImageBlobNames = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "30", "40", "50", "60", "70", "80", "90", "100", "110", "120", "130", "140", "141", "142", "143", "144", "145", "146", "147", "148", "149", "150", "151", "152", "153", "154", "155", "156", "157", "158", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169", "170", "171", "172", "173", "177", "178", "179", "180", "181", "182", "183", "184", "185", "186", "187", "188", "189", "190", "191", "341", "343", "348", "349", "350", "351", "352", "353", "354", "355", "356", "357", "358", "359", "360", "361", "363", "366", "367", "368", "369", "370", "371", "372", "373", "376", "377", "378", "379", "380", "381", "382", "383", "384", "385", "386", "387", "388", "389", "390", "391", "392", "393", "396", "397", "398", "399", "414", "434", "449", "469", "484", "504", "519", "541", "out0" };
     private static readonly string[] DebugImageCompareLayers = { "convdw_253", "convdw_254", "conv_41", "conv_42", "convdw_255", "convdw_256", "conv_43", "conv_44", "convdw_257", "convdw_258", "conv_45", "conv_46", "convdw_259", "convrelu_0", "convsigmoid_3", "conv_49", "convdw_260", "convdw_261", "conv_50", "conv_51", "convdw_294", "convdw_295", "conv_84", "conv_85", "convdw_296", "convdw_297", "conv_86", "conv_87", "convdw_298", "convdw_299", "conv_88", "conv_89", "convdw_300" };
@@ -74,6 +75,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     public int maxPooledPerShape = 4;
     public bool enableDebugDump = false;
     public bool forceFullRenderTexturePath = false;
+    public bool useCommandBuffer = false;
+    public bool useAsyncComputeCommandBuffer = true;
     public bool enableGeneralTextureConvolution = false;
     public bool enableAttentionMatMulPack4Specializations = false;
     public bool disallowBufferAccess = false;
@@ -165,27 +168,33 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (resized == null)
                 return Finish(new ClipClassificationResult { error = "Resize input failed" });
 
-            inputPack4 = _imageRepro.RentTempArray(targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
-            _ops.PackRgbToPack4(resized, 0, 0, 1f, 1f, inputPack4, true);
-            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
-                DumpPack4TextureLogical(inputPack4, targetSize, targetSize, 3, Path.Combine(_lastDumpDir, "image_blob_in0.txt"));
-
             ReportProgress(0.84f, "Encode image");
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
 
             float[] imageEmbedding;
-            System.Collections.Generic.HashSet<string> pinnedImage = null;
-            if (enableDebugDump)
-                pinnedImage = new System.Collections.Generic.HashSet<string>(DebugImageBlobNames, StringComparer.Ordinal);
-
             var imageInferSw = Stopwatch.StartNew();
-            using (var infer = _imageRepro.Infer(inputPack4, 1, InputBlobName, pinnedImage))
+            if (useCommandBuffer)
             {
+                imageEmbedding = await EncodeImageWithCommandBufferAsync(resized, targetSize, ct);
+            }
+            else
+            {
+                inputPack4 = _imageRepro.RentTempArray(targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
+                _ops.PackRgbToPack4(resized, 0, 0, 1f, 1f, inputPack4, true);
+                if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                    DumpPack4TextureLogical(inputPack4, targetSize, targetSize, 3, Path.Combine(_lastDumpDir, "image_blob_in0.txt"));
+
+                System.Collections.Generic.HashSet<string> pinnedImage = null;
+                var debugImageBlobNames = GetDebugImageBlobNames();
+                if (enableDebugDump)
+                    pinnedImage = new System.Collections.Generic.HashSet<string>(debugImageBlobNames, StringComparer.Ordinal);
+
+                using var infer = _imageRepro.Infer(inputPack4, 1, InputBlobName, pinnedImage);
                 if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                 {
-                    for (var i = 0; i < DebugImageBlobNames.Length; i++)
-                        TryDumpAnyBlob(infer, DebugImageBlobNames[i], Path.Combine(_lastDumpDir, "image_blob_" + DebugImageBlobNames[i] + ".txt"));
+                    for (var i = 0; i < debugImageBlobNames.Length; i++)
+                        TryDumpAnyBlob(infer, debugImageBlobNames[i], Path.Combine(_lastDumpDir, "image_blob_" + debugImageBlobNames[i] + ".txt"));
                 }
                 if (ShouldUseTextureReadbackForImageOutput(infer))
                     _imageRepro?.Ops?.DebugSyncGpu();
@@ -237,6 +246,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
             UnityEngine.Debug.Log("[CLIP] Run | model=" + ResolveModelKey()
                 + " | textSource=" + (_lastTextEmbeddingSource ?? "none")
+                + " | imagePath=" + (useCommandBuffer ? (useAsyncComputeCommandBuffer ? "cmd-async" : "cmd-sync") : "immediate")
                 + " | loadMs=" + loadMs
                 + " | imageInferMs=" + imageInferMs
                 + " | scoreMs=" + scoreMs
@@ -308,11 +318,12 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ApplyOptions(_imageRepro);
         ApplyOptions(_textRepro);
         ApplyOptions(_projectionRepro);
-        var strictImageReference = !forceFullRenderTexturePath;
+        var imageUsesTexturePath = forceFullRenderTexturePath || useCommandBuffer;
+        var strictImageReference = !imageUsesTexturePath;
         var strictTextReference = !forceFullRenderTexturePath && modelLevel == ClipModelLevel.S0;
         var strictProjectionReference = false;
-        var allowGeneralTextureConvolution = enableGeneralTextureConvolution || forceFullRenderTexturePath;
-        var allowAttentionMatMulPack4 = enableAttentionMatMulPack4Specializations || forceFullRenderTexturePath;
+        var allowGeneralTextureConvolution = enableGeneralTextureConvolution || imageUsesTexturePath;
+        var allowAttentionMatMulPack4 = enableAttentionMatMulPack4Specializations || imageUsesTexturePath;
         var captureImageDebugLog = enableDebugDump;
         var enableAnyDebugLogSink = captureImageDebugLog || ShouldForwardReproDebugLogToUnity();
         if (_imageRepro != null)
@@ -1220,6 +1231,83 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
 
         return infer.GetBufferData(OutputBlobName);
+    }
+
+    private async UniTask<float[]> EncodeImageWithCommandBufferAsync(Texture resizedInput, int targetSize, CancellationToken ct)
+    {
+        if (resizedInput == null)
+            return null;
+
+        using var cmd = new CommandBuffer { name = "ClipImageEncoder" };
+        if (useAsyncComputeCommandBuffer)
+            cmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
+
+        var inputCmd = _imageRepro.RentTempArray(cmd, targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
+        var outputCmd = default(ComputeTexture);
+        RenderTexture outputReadbackRt = null;
+        try
+        {
+            _ops.PackRgbToPack4(cmd, resizedInput, 0, 0, 1f, 1f, inputCmd, true);
+            outputCmd = _imageRepro.ForwardPack4(cmd, inputCmd, 1, InputBlobName);
+            if (outputCmd == null)
+                throw new InvalidOperationException("CLIP command-buffer image encoder produced no output texture.");
+
+            outputReadbackRt = _imageRepro.RentTempArray(EmbeddingSize, 1, 1, RenderTextureFormat.ARGBHalf);
+            cmd.CopyTexture(outputCmd.nameID, 0, 0, outputReadbackRt, 0, 0);
+
+            _imageRepro.ReturnTempArray(cmd, outputCmd);
+            outputCmd = null;
+            _imageRepro.ReturnTempArray(cmd, inputCmd);
+            inputCmd = null;
+
+            if (useAsyncComputeCommandBuffer)
+                Graphics.ExecuteCommandBufferAsync(cmd, ComputeQueueType.Default);
+            else
+                Graphics.ExecuteCommandBuffer(cmd);
+
+            _imageRepro?.Ops?.DebugSyncGpu();
+            ct.ThrowIfCancellationRequested();
+
+            var values = await ReadWidthVectorTextureAsync(outputReadbackRt, EmbeddingSize, ct);
+            if (values == null || values.Length != EmbeddingSize)
+                throw new InvalidOperationException("CLIP command-buffer image encoder readback returned unexpected width: " + (values == null ? 0 : values.Length));
+            return values;
+        }
+        finally
+        {
+            if (outputCmd != null)
+                _imageRepro?.ReturnTempArray(cmd, outputCmd);
+            if (inputCmd != null)
+                _imageRepro?.ReturnTempArray(cmd, inputCmd);
+            if (outputReadbackRt != null)
+                _imageRepro?.ReturnTempArray(outputReadbackRt);
+        }
+    }
+
+    private static string[] GetDebugImageBlobNames()
+    {
+        var extra = Environment.GetEnvironmentVariable(ExtraDebugImageBlobEnvVar);
+        if (string.IsNullOrWhiteSpace(extra))
+            return DebugImageBlobNames;
+
+        var merged = new List<string>(DebugImageBlobNames.Length + 8);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < DebugImageBlobNames.Length; i++)
+        {
+            var name = DebugImageBlobNames[i];
+            if (!string.IsNullOrWhiteSpace(name) && seen.Add(name))
+                merged.Add(name);
+        }
+
+        var tokens = extra.Split(new[] { ',', ';', '\r', '\n', '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            var name = tokens[i]?.Trim();
+            if (!string.IsNullOrWhiteSpace(name) && seen.Add(name))
+                merged.Add(name);
+        }
+
+        return merged.ToArray();
     }
 
     private bool ShouldUseTextureReadbackForImageOutput(NcnnRepro.InferResult infer)

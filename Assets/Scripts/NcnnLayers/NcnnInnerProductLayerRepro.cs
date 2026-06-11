@@ -111,6 +111,9 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
+            if (TryExecuteCommandBufferTexturePath(owner, layer, context))
+                return;
+
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
             var shapes = context.shapes;
@@ -127,6 +130,58 @@ namespace NcnnCompute
                 : new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!owner._innerProduct.TryGetValue(layer.name, out var ip))
+                return false;
+            if (ip.w == null || ip.b == null)
+                return false;
+
+            var srcTex = NcnnRepro.GetCmdTensor(context.blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (srcTex == null || srcTex.texture == null)
+                return false;
+            if (srcShape.dims != 1 || srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.height != 1 || srcTex.packs != 1)
+                return false;
+
+            var outRt = owner.RentTempArray(context.commandBuffer, ip.outFeatures, 1, 1, RenderTextureFormat.ARGBHalf);
+            owner.Ops.Gemm2DTextureA(
+                context.commandBuffer,
+                srcTex.texture,
+                ip.w,
+                ip.b,
+                1,
+                ip.outFeatures,
+                ip.inFeatures,
+                transB: true,
+                alpha: 1f,
+                beta: 1f,
+                useC: true,
+                broadcastTypeC: 4,
+                output: outRt);
+
+            context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = ip.outFeatures,
+                height = 1,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1),
+                hasStorageShape = true,
+                storageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), 1, 1, 1)
+            };
+            context.shapes[layer.topNames[0]] = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            return true;
         }
 
         private static bool TryExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)

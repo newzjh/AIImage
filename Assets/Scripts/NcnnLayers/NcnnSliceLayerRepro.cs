@@ -188,8 +188,30 @@ namespace NcnnCompute
                     }
 
                     var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
-                    var outArr = owner.RentTempArray(cmd, spec.shape.w, spec.shape.h, outPacks, RenderTextureFormat.ARGBHalf);
-                    owner.Ops.SlicePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outArr);
+                    var outDepth = srcShape.dims == 4 ? Mathf.Max(1, spec.shape.d) * outPacks : outPacks;
+                    var outFormat = srcShape.dims == 4 ? NcnnRepro.ResolveTensorTextureFormat(spec.shape.dims) : RenderTextureFormat.ARGBHalf;
+                    var outArr = owner.RentTempArray(cmd, spec.shape.w, spec.shape.h, outDepth, outFormat);
+                    if (srcShape.dims == 4)
+                    {
+                        owner.Ops.SlicePack4Cdhw(
+                            cmd,
+                            src.texture,
+                            srcShape.w,
+                            srcShape.h,
+                            srcShape.d,
+                            srcShape.c,
+                            spec.axis,
+                            spec.begin,
+                            spec.shape.w,
+                            spec.shape.h,
+                            spec.shape.d,
+                            spec.shape.c,
+                            outArr);
+                    }
+                    else
+                    {
+                        owner.Ops.SlicePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outArr);
+                    }
                     blobs[layer.topNames[i]] = new NcnnRepro.CmdTensorRef
                     {
                         texture = outArr,
@@ -197,12 +219,24 @@ namespace NcnnCompute
                         height = spec.shape.h,
                         packs = outPacks,
                         refs = 1,
-                        owned = true
+                        owned = true,
+                        hasLogicalShape = true,
+                        logicalShape = spec.shape,
+                        hasStorageShape = true,
+                        storageShape = spec.shape
                     };
                     shapes[layer.topNames[i]] = spec.shape;
                     continue;
                 }
 
+                owner.DebugLog?.Invoke(
+                    "[CmdPlaceholder][Slice]"
+                    + " | layer=" + layer.name
+                    + " | top=" + layer.topNames[i]
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | out=d" + spec.shape.dims + ":" + spec.shape.w + "x" + spec.shape.h + "x" + spec.shape.d + "x" + spec.shape.c
+                    + " | axis=" + spec.axis
+                    + " | begin=" + spec.begin);
                 NcnnRepro.ResolveCmdTextureLayout(spec.shape, out var width, out var height, out var packs);
                 owner.PublishCmdTensorLikeInput(cmd, layer.topNames[i], width, height, packs, blobs, shapes, spec.shape);
             }

@@ -324,6 +324,18 @@ namespace NcnnCompute
                     return;
                 }
 
+                if (TryExecuteRenderTexturePack4ToScalar2DReshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
+                if (TryExecuteRenderTexturePack4ToPack4Reshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
                 if (TryExecuteRenderTextureScalar2DToPack4Reshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
                 {
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -349,39 +361,237 @@ namespace NcnnCompute
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-                        var cmd = context.commandBuffer;
-                        var blobs = context.blobs;
-                        var shapes = context.shapes;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var shapes = context.shapes;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
-                        do
-                        {
-                                                var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-                                                if (TryResolveCmdOutputShape(owner, layer, blobs, shapes, src, out var outShape, out var outW, out var outH, out var outPacks)
-                                                    && outW == src.width
-                                                    && outH == src.height
-                                                    && outPacks == src.packs)
-                                                {
-                                                    blobs[layer.topNames[0]] = src;
-                                                    if (shapes != null)
-                                                        shapes[layer.topNames[0]] = outShape;
-                                                    src.refs++;
-                                                }
-                                                else if (TryResolveCmdOutputShape(owner, layer, blobs, shapes, src, out outShape, out outW, out outH, out outPacks))
-                                                {
-                                                    owner.CopyCmdTensor(cmd, src, layer.topNames[0], blobs, outW, outH, outPacks, shapes, outShape);
-                                                }
-                                                else
-                                                {
-                                                    blobs[layer.topNames[0]] = src;
-                                                    if (shapes != null)
-                                                        shapes[layer.topNames[0]] = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-                                                    src.refs++;
-                                                }
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                                                continue;
-                        } while (false);
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+
+            if (ShouldAllowAttentionPack4ReshapeSpecializations(owner))
+            {
+                if (TryExecuteCommandBufferPack4ToScalar2DReshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
+                if (TryExecuteCommandBufferPack4ToPack4Reshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
+                if (TryExecuteCommandBufferScalar2DToPack4Reshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
+                if (TryExecuteCommandBufferImplicitAttentionReshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+            }
+
+            if (!TryResolveCmdOutputShape(owner, layer, blobs, shapes, src, out var outShape, out var outW, out var outH, out var outPacks))
+            {
+                blobs[layer.topNames[0]] = src;
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                src.refs++;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
+
+            if (!CanAliasTextureLayout(owner, srcShape, outShape) || outW != src.width || outH != src.height || outPacks != src.packs)
+                throw new InvalidOperationException("Reshape command-buffer path only supports alias-compatible layout or explicit pack4 specializations: " + layer.name);
+
+            blobs[layer.topNames[0]] = src;
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            src.refs++;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteCommandBufferScalar2DToPack4Reshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            UnityEngine.Rendering.CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out var outShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
+            var outRt = owner.RentTempArray(cmd, outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.ReshapeScalar2DToPack4(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                outShape.dims,
+                outRt);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outShape.w,
+                height = outShape.h,
+                packs = outPacks,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = outShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferPack4ToPack4Reshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            UnityEngine.Rendering.CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+
+            var bottomShapes = BuildCmdBottomShapes(layer, blobs, shapes);
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (!CanUsePack4ToPack4Reshape(owner, srcShape, outShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
+            var outRt = owner.RentTempArray(cmd, outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.ReshapePack4ToPack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, outShape.dims, outRt);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outShape.w,
+                height = outShape.h,
+                packs = outPacks,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = outShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferImplicitAttentionReshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            UnityEngine.Rendering.CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!TryResolveImplicitAttentionReshapeShape(owner, layer, srcShape, out var outShape))
+                return false;
+            if (srcShape.dims != 3 || outShape.dims != 4)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.c <= 0 || outShape.w <= 0 || outShape.d <= 0 || outShape.c <= 0)
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = Mathf.Max(1, outShape.d) * outPacks;
+            var outRt = owner.RentTempArray(cmd, outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.AttentionReshapePack4(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.c,
+                outShape.w,
+                outShape.d,
+                outShape.c,
+                outRt);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outShape.w,
+                height = outShape.h,
+                packs = outPacks,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = outShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[AttentionReshapePack4][cmd] applied"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | dst=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferPack4ToScalar2DReshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            UnityEngine.Rendering.CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+
+            var bottomShapes = BuildCmdBottomShapes(layer, blobs, shapes);
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (!CanUsePack4ToScalar2DReshape(owner, layer, srcShape, outShape))
+                return false;
+
+            var outRt = owner.RentTempArray(cmd, outShape.w, Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
+            owner.Ops.ReshapePack4ToScalar2D(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
+            var storageShape = new NcnnRepro.BufferShape(3, outShape.w, Mathf.Max(1, outShape.h), 1, 1);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outRt.width,
+                height = outRt.height,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = storageShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            return true;
         }
 
         private static bool TryResolveCmdOutputShape(
@@ -407,20 +617,12 @@ namespace NcnnCompute
             if (!string.IsNullOrWhiteSpace(layer.GetString(6, null)))
             {
                 outShape = NcnnRepro.EvaluateReshapeShapeExpression(layer.GetString(6, null), bottomShapes, layer);
-                if (outShape.dims > 3)
-                    return false;
-                outW = Mathf.Max(1, outShape.w);
-                outH = outShape.dims >= 2 ? Mathf.Max(1, outShape.h) : 1;
-                outPacks = outShape.dims >= 3 ? Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f)) : 1;
+                NcnnRepro.ResolveCmdTextureLayout(outShape, out outW, out outH, out outPacks);
                 return true;
             }
 
             outShape = NcnnRepro.ResolveReshapeShape(bottomShapes[0], layer, bottomShapes);
-            if (outShape.dims > 3)
-                return false;
-            outW = Mathf.Max(1, outShape.w);
-            outH = outShape.dims >= 2 ? Mathf.Max(1, outShape.h) : 1;
-            outPacks = outShape.dims >= 3 ? Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f)) : 1;
+            NcnnRepro.ResolveCmdTextureLayout(outShape, out outW, out outH, out outPacks);
             return true;
         }
 
@@ -662,6 +864,53 @@ namespace NcnnCompute
                 outShape.c,
                 outShape.dims,
                 outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTexturePack4ToScalar2DReshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            System.Collections.Generic.IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (!CanUsePack4ToScalar2DReshape(owner, layer, srcShape, outShape))
+                return false;
+
+            var outRt = owner.RentTempArray(outShape.w, Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
+            owner.Ops.ReshapePack4ToScalar2D(src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
+            var storageShape = new NcnnRepro.BufferShape(3, outShape.w, Mathf.Max(1, outShape.h), 1, 1);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, storageShape);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTexturePack4ToPack4Reshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            System.Collections.Generic.IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (!CanUsePack4ToPack4Reshape(owner, srcShape, outShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.ReshapePack4ToPack4(src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, outShape.dims, outRt);
             NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
             return true;
         }
@@ -1333,6 +1582,52 @@ namespace NcnnCompute
             return consumer != null
                 && consumer.type == NcnnLayerTypes.Gemm
                 && consumer.GetInt(5, 0) != 0;
+        }
+
+        private static bool CanUsePack4ToScalar2DReshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.BufferShape outShape)
+        {
+            if (!ShouldAllowAttentionPack4ReshapeSpecializations(owner))
+                return false;
+            if (srcShape.dims < 3 || srcShape.dims > 4)
+                return false;
+            if (outShape.dims < 1 || outShape.dims > 2)
+                return false;
+            if (outShape.w <= 0 || outShape.h <= 0)
+                return false;
+
+            var consumer = FindSingleConsumer(owner?.Model, layer?.topNames != null && layer.topNames.Length > 0 ? layer.topNames[0] : null);
+            return consumer != null
+                && (consumer.type == NcnnLayerTypes.Permute
+                    || consumer.type == NcnnLayerTypes.Gemm
+                    || consumer.type == NcnnLayerTypes.InnerProduct);
+        }
+
+        private static bool CanUsePack4ToPack4Reshape(
+            NcnnRepro owner,
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.BufferShape outShape)
+        {
+            if (!ShouldAllowAttentionPack4ReshapeSpecializations(owner))
+                return false;
+            if (srcShape.dims < 3 || outShape.dims < 3)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.c <= 0 || outShape.w <= 0 || outShape.h <= 0 || outShape.c <= 0)
+                return false;
+
+            var srcCount = srcShape.w * srcShape.h * srcShape.d * srcShape.c;
+            var outCount = outShape.w * outShape.h * outShape.d * outShape.c;
+            if (srcCount != outCount)
+                return false;
+
+            return srcShape.dims != outShape.dims
+                || srcShape.w != outShape.w
+                || srcShape.h != outShape.h
+                || srcShape.d != outShape.d
+                || srcShape.c != outShape.c;
         }
 
         private static bool ShouldAllowAttentionPack4ReshapeSpecializations(NcnnRepro owner)

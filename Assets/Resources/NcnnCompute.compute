@@ -69,6 +69,8 @@
 #pragma kernel NcnnPermutePack4CDHW
 #pragma kernel NcnnWindowPartitionPack4
 #pragma kernel NcnnWindowUnpartitionPack4
+#pragma kernel NcnnReshapePack4ToScalar2D
+#pragma kernel NcnnReshapePack4ToPack4
 #pragma kernel NcnnReshapeScalar2DToPack4
 #pragma kernel NcnnAttentionReshapePack4
 #pragma kernel NcnnSlicePack4CDHW
@@ -3021,6 +3023,25 @@ int _WindowUnpartitionPack4GroupsC;
 int _WindowUnpartitionPack4TokensA;
 int _WindowUnpartitionPack4TokensB;
 int _WindowUnpartitionPack4TokensC;
+Texture2DArray<float4> _ReshapePack4ToScalar2DInArr;
+RWTexture2DArray<float4> _ReshapePack4ToScalar2DOutArr;
+int _ReshapePack4ToScalar2DInW;
+int _ReshapePack4ToScalar2DInH;
+int _ReshapePack4ToScalar2DInD;
+int _ReshapePack4ToScalar2DInC;
+int _ReshapePack4ToScalar2DInDims;
+Texture2DArray<float4> _ReshapePack4ToPack4InArr;
+RWTexture2DArray<float4> _ReshapePack4ToPack4OutArr;
+int _ReshapePack4ToPack4InW;
+int _ReshapePack4ToPack4InH;
+int _ReshapePack4ToPack4InD;
+int _ReshapePack4ToPack4InC;
+int _ReshapePack4ToPack4InDims;
+int _ReshapePack4ToPack4OutW;
+int _ReshapePack4ToPack4OutH;
+int _ReshapePack4ToPack4OutD;
+int _ReshapePack4ToPack4OutC;
+int _ReshapePack4ToPack4OutDims;
 Texture2DArray<float4> _ReshapeScalar2DInArr;
 RWTexture2DArray<float4> _ReshapeScalar2DOutArr;
 int _ReshapeScalar2DInW;
@@ -5204,6 +5225,159 @@ static float NcnnReadScalar2DLinear(uint linearIndex, int inW, int inH)
         return 0.0;
 
     return _ReshapeScalar2DInArr[int3((int)x, (int)y, 0)].x;
+}
+
+static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int inW, int inH, int inD, int inC)
+{
+    if (inW <= 0 || inH <= 0 || inD <= 0 || inC <= 0)
+        return 0.0;
+
+    uint width = (uint)inW;
+    uint x = linearIndex % width;
+    uint index = linearIndex / width;
+
+    if (inDims <= 1)
+    {
+        if (linearIndex >= width)
+            return 0.0;
+        return NcnnReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)linearIndex, 0, 0);
+    }
+
+    if (inDims == 2)
+    {
+        if (index >= (uint)inH)
+            return 0.0;
+        return _ReshapePack4ToScalar2DInArr[int3((int)x, (int)index, 0)].x;
+    }
+
+    uint height = (uint)inH;
+    uint y = index % height;
+    index /= height;
+
+    if (inDims == 3)
+    {
+        if (index >= (uint)inC)
+            return 0.0;
+        return NcnnReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)x, (int)y, (int)index);
+    }
+
+    uint depth = (uint)max(1, inD);
+    uint z = index % depth;
+    uint c = index / depth;
+    if (c >= (uint)inC)
+        return 0.0;
+    return NcnnReadPack4ChannelCDHW(_ReshapePack4ToScalar2DInArr, (int)x, (int)y, (int)z, (int)c, _ReshapePack4ToScalar2DInC);
+}
+
+static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW, int inH, int inD, int inC)
+{
+    if (inW <= 0 || inH <= 0 || inD <= 0 || inC <= 0)
+        return 0.0;
+
+    uint width = (uint)inW;
+    uint x = linearIndex % width;
+    uint index = linearIndex / width;
+
+    if (inDims <= 1)
+    {
+        if (linearIndex >= width)
+            return 0.0;
+        return NcnnReadPack4Channel(_ReshapePack4ToPack4InArr, (int)linearIndex, 0, 0);
+    }
+
+    if (inDims == 2)
+    {
+        if (index >= (uint)inH)
+            return 0.0;
+        return _ReshapePack4ToPack4InArr[int3((int)x, (int)index, 0)].x;
+    }
+
+    uint height = (uint)inH;
+    uint y = index % height;
+    index /= height;
+
+    if (inDims == 3)
+    {
+        if (index >= (uint)inC)
+            return 0.0;
+        return NcnnReadPack4Channel(_ReshapePack4ToPack4InArr, (int)x, (int)y, (int)index);
+    }
+
+    uint depth = (uint)max(1, inD);
+    uint z = index % depth;
+    uint c = index / depth;
+    if (c >= (uint)inC)
+        return 0.0;
+    return NcnnReadPack4ChannelCDHW(_ReshapePack4ToPack4InArr, (int)x, (int)y, (int)z, (int)c, _ReshapePack4ToPack4InC);
+}
+
+[numthreads(8,8,1)]
+void NcnnReshapePack4ToScalar2D(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ReshapePack4ToScalar2DOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    uint linearIndex = id.y * ow + id.x;
+    float scalar = NcnnReadPack4LinearScalar2DInput(
+        linearIndex,
+        _ReshapePack4ToScalar2DInDims,
+        _ReshapePack4ToScalar2DInW,
+        _ReshapePack4ToScalar2DInH,
+        _ReshapePack4ToScalar2DInD,
+        _ReshapePack4ToScalar2DInC);
+    _ReshapePack4ToScalar2DOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = float4(scalar, 0.0, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void NcnnReshapePack4ToPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ReshapePack4ToPack4OutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int slice = (int)id.z;
+    int outPacks = max(1, (_ReshapePack4ToPack4OutC + 3) / 4);
+    int outZ = 0;
+    int outPack = slice;
+    if (_ReshapePack4ToPack4OutDims >= 4)
+    {
+        outZ = slice / outPacks;
+        outPack = slice - outZ * outPacks;
+        if (outZ < 0 || outZ >= max(1, _ReshapePack4ToPack4OutD))
+        {
+            _ReshapePack4ToPack4OutArr[int3((int)id.x, (int)id.y, slice)] = 0.0;
+            return;
+        }
+    }
+
+    float4 value = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outC = outPack * 4 + lane;
+        if (outC >= _ReshapePack4ToPack4OutC)
+            continue;
+
+        uint linearIndex = _ReshapePack4ToPack4OutDims >= 4
+            ? (((uint)outC * (uint)max(1, _ReshapePack4ToPack4OutD) + (uint)outZ) * (uint)_ReshapePack4ToPack4OutH + id.y) * (uint)_ReshapePack4ToPack4OutW + id.x
+            : ((uint)outC * (uint)_ReshapePack4ToPack4OutH + id.y) * (uint)_ReshapePack4ToPack4OutW + id.x;
+        float scalar = NcnnReadPack4LinearPack4Input(
+            linearIndex,
+            _ReshapePack4ToPack4InDims,
+            _ReshapePack4ToPack4InW,
+            _ReshapePack4ToPack4InH,
+            _ReshapePack4ToPack4InD,
+            _ReshapePack4ToPack4InC);
+        if (lane == 0) value.x = scalar;
+        else if (lane == 1) value.y = scalar;
+        else if (lane == 2) value.z = scalar;
+        else value.w = scalar;
+    }
+
+    _ReshapePack4ToPack4OutArr[int3((int)id.x, (int)id.y, slice)] = value;
 }
 
 [numthreads(8,8,1)]

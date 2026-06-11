@@ -352,6 +352,8 @@ namespace NcnnCompute
                                                     && conv.packedBias4 != null;
                                                 var canUseSpecialized3x3TexturePath = conv.kernelW == 3
                                                     && conv.kernelH == 3
+                                                    && conv.strideW == 1
+                                                    && conv.strideH == 1
                                                     && conv.padLeft == conv.padRight
                                                     && conv.padLeft == conv.padTop
                                                     && conv.padTop == conv.padBottom
@@ -368,16 +370,24 @@ namespace NcnnCompute
                                                 var canUseTextureConv = CanUsePack4CmdPath(src, srcShape, conv)
                                                                         && !conv.isDepthWise
                                                                         && conv.group == 1
-                                                                        && conv.strideW == 1
-                                                                        && conv.strideH == 1
-                                                                        && conv.dilationW == 1
-                                                                        && conv.dilationH == 1
                                                                         && (canUseConv1x1TexturePath
                                                                             || canUseSpecialized3x3TexturePath
                                                                             || canUseGeneralTexturePath);
 
                                                 if (!canUseTextureConv)
                                                 {
+                                                    owner.DebugLog?.Invoke(
+                                                        "[CmdPlaceholder][Convolution]"
+                                                        + " | layer=" + layer.name
+                                                        + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                                                        + " | kernel=" + conv.kernelW + "x" + conv.kernelH
+                                                        + " | stride=" + conv.strideW + "x" + conv.strideH
+                                                        + " | dilation=" + conv.dilationW + "x" + conv.dilationH
+                                                        + " | group=" + conv.group
+                                                        + " | isDepthWise=" + conv.isDepthWise
+                                                        + " | can1x1=" + canUseConv1x1TexturePath
+                                                        + " | can3x3=" + canUseSpecialized3x3TexturePath
+                                                        + " | canGeneral=" + canUseGeneralTexturePath);
                                                     NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
                                                     owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
                                                     owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

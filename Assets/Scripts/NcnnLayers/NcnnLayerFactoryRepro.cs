@@ -122,6 +122,21 @@ namespace NcnnCompute
 
     public partial class NcnnRepro
     {
+        private static bool HasStrideBlob(string[] names)
+        {
+            if (names == null)
+                return false;
+
+            for (var i = 0; i < names.Length; i++)
+            {
+                var name = names[i];
+                if (!string.IsNullOrEmpty(name) && name.StartsWith("stride_", StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
         internal InferResult InferWithMultiInputsByLayerRepros(
             Dictionary<string, RenderTexture> textureInputs,
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
@@ -129,21 +144,6 @@ namespace NcnnCompute
             Dictionary<string, BufferShape> textureInputShapes = null,
             string stopAfterTopName = null)
         {
-            static bool HasStrideBlob(string[] names)
-            {
-                if (names == null)
-                    return false;
-
-                for (var i = 0; i < names.Length; i++)
-                {
-                    var name = names[i];
-                    if (!string.IsNullOrEmpty(name) && name.StartsWith("stride_", StringComparison.Ordinal))
-                        return true;
-                }
-
-                return false;
-            }
-
             static string JoinNames(string[] names)
             {
                 if (names == null || names.Length == 0)
@@ -487,6 +487,12 @@ namespace NcnnCompute
                     {
                         ClearCurrentExecutingLayer();
                     }
+                    if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
+                    {
+                        DebugLog("[LayerOutput] idx=" + li
+                            + " | name=" + (layer?.name ?? string.Empty)
+                            + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
+                    }
                     continue;
                 }
 
@@ -499,6 +505,12 @@ namespace NcnnCompute
                 finally
                 {
                     ClearCurrentExecutingLayer();
+                }
+                if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
+                {
+                    DebugLog("[LayerOutput] idx=" + li
+                        + " | name=" + (layer?.name ?? string.Empty)
+                        + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
                 }
                 layerSw.Stop();
                 RecordLayerRuntime(runtimeProfile, li, layer, "cmd", layerSw.ElapsedTicks);
@@ -520,6 +532,7 @@ namespace NcnnCompute
                 if (tr.owned && tr.texture != null)
                     ReturnTempArray(cmd, tr.texture);
             }
+            FlushDeferredCommandBufferTempRtReleases(cmd);
 
             return keep;
         }

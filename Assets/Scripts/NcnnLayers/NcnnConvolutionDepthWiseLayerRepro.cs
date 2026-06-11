@@ -324,6 +324,18 @@ namespace NcnnCompute
 
                                                 if (!canUseTextureConv)
                                                 {
+                                                    owner.DebugLog?.Invoke(
+                                                        "[CmdPlaceholder][ConvolutionDepthWise]"
+                                                        + " | layer=" + layer.name
+                                                        + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                                                        + " | kernel=" + conv.kernelW + "x" + conv.kernelH
+                                                        + " | stride=" + conv.strideW + "x" + conv.strideH
+                                                        + " | dilation=" + conv.dilationW + "x" + conv.dilationH
+                                                        + " | group=" + conv.group
+                                                        + " | outC=" + conv.outC
+                                                        + " | supportsDw=" + SupportsDepthWiseTexturePath(conv)
+                                                        + " | hasPackedW=" + (conv.packedDepthWiseWeight4 != null)
+                                                        + " | hasPackedB=" + (conv.packedBias4 != null));
                                                     NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
                                                     owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
                                                     owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

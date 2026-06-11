@@ -172,6 +172,9 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
+            if (TryExecuteCommandBufferTexturePath(owner, layer, context))
+                return;
+
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
             var shapes = context.shapes;
@@ -267,8 +270,141 @@ namespace NcnnCompute
                 }
             }
 
+            owner.DebugLog?.Invoke(
+                "[CmdPlaceholder][Reduction]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | reduceAll=" + (reduceAll ? "1" : "0")
+                + " | keepDims=" + (keepDims ? "1" : "0"));
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+
+            var srcTex = NcnnRepro.GetCmdTensor(context.blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (srcTex == null
+                || srcTex.texture == null
+                || srcShape.dims != 3
+                || srcShape.d != 1
+                || !NcnnRepro.MatchesPack4TextureStorage(srcTex, srcShape))
+            {
+                return false;
+            }
+
+            var reduceAll = layer.GetInt(1, 1) != 0;
+            var keepDims = layer.GetInt(4, 0) != 0;
+            var op = layer.GetInt(0, 0);
+            var coeff = layer.GetFloat(2, 1f);
+            var axes = layer.GetInts(-23303, null);
+            if (!TryResolveSpatialReductionAxes(srcShape, reduceAll, axes, out var reduceSpatialOnly, out var reduceSpatialAndChannels))
+                return false;
+            if (op != 3 && op != 0)
+                return false;
+            if (!reduceSpatialOnly && !reduceSpatialAndChannels)
+                return false;
+
+            var cmd = context.commandBuffer;
+            var area = Mathf.Max(1, srcShape.w * srcShape.h);
+            var outTop = layer.topNames[0];
+
+            ComputeTexture pooled = null;
+            if (reduceSpatialOnly || reduceSpatialAndChannels)
+            {
+                pooled = owner.RentTempArray(cmd, 1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PoolingPack4(cmd, srcTex.texture, srcTex.packs, srcShape.w, srcShape.h, 1, 1, 0, 0, 1, pooled);
+                if (op == 0 && Mathf.Abs(coeff - area) > 1e-6f)
+                {
+                    var scaled = owner.RentTempArray(cmd, 1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(cmd, pooled, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff * area, 0f, scaled);
+                    owner.ReturnTempArray(cmd, pooled);
+                    pooled = scaled;
+                }
+                else if (op == 3 && Mathf.Abs(coeff - 1f) > 1e-6f)
+                {
+                    var scaled = owner.RentTempArray(cmd, 1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(cmd, pooled, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff, 0f, scaled);
+                    owner.ReturnTempArray(cmd, pooled);
+                    pooled = scaled;
+                }
+            }
+
+            if (reduceSpatialOnly && keepDims)
+            {
+                context.blobs[outTop] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = pooled,
+                    width = 1,
+                    height = 1,
+                    packs = srcTex.packs,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = new NcnnRepro.BufferShape(3, 1, 1, 1, srcShape.c),
+                    hasStorageShape = true,
+                    storageShape = new NcnnRepro.BufferShape(3, 1, 1, 1, srcShape.c)
+                };
+                context.shapes[outTop] = new NcnnRepro.BufferShape(3, 1, 1, 1, srcShape.c);
+                owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
+
+            if (reduceSpatialOnly && !keepDims)
+            {
+                var outRt = owner.RentTempArray(cmd, srcShape.c, 1, 1, RenderTextureFormat.ARGBHalf);
+                owner.Ops.Pack4ChannelsToWidth(cmd, pooled, srcShape.c, outRt);
+                owner.ReturnTempArray(cmd, pooled);
+                context.blobs[outTop] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outRt,
+                    width = srcShape.c,
+                    height = 1,
+                    packs = 1,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1),
+                    hasStorageShape = true,
+                    storageShape = new NcnnRepro.BufferShape(3, srcShape.c, 1, 1, 1)
+                };
+                context.shapes[outTop] = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
+
+            if (reduceSpatialAndChannels && !keepDims)
+            {
+                var outRt = owner.RentTempArray(cmd, srcShape.c, 1, 1, RenderTextureFormat.ARGBHalf);
+                owner.Ops.Pack4ChannelsToWidth(cmd, pooled, srcShape.c, outRt);
+                owner.ReturnTempArray(cmd, pooled);
+                context.blobs[outTop] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outRt,
+                    width = srcShape.c,
+                    height = 1,
+                    packs = 1,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1),
+                    hasStorageShape = true,
+                    storageShape = new NcnnRepro.BufferShape(3, srcShape.c, 1, 1, 1)
+                };
+                context.shapes[outTop] = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
+
+            if (pooled != null)
+                owner.ReturnTempArray(cmd, pooled);
+            return false;
         }
 
         private static bool TryExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)

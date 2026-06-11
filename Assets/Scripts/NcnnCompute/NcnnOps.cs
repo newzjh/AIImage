@@ -348,6 +348,8 @@ namespace NcnnCompute
         private readonly int _kPermutePack4Cdhw;
         private readonly int _kWindowPartitionPack4;
         private readonly int _kWindowUnpartitionPack4;
+        private readonly int _kReshapePack4ToScalar2D;
+        private readonly int _kReshapePack4ToPack4;
         private readonly int _kReshapeScalar2DToPack4;
         private readonly int _kAttentionReshapePack4;
         private readonly int _kSwishPack4;
@@ -505,6 +507,8 @@ namespace NcnnCompute
             _kPermutePack4Cdhw = _cs.FindKernel("NcnnPermutePack4CDHW");
             _kWindowPartitionPack4 = _cs.FindKernel("NcnnWindowPartitionPack4");
             _kWindowUnpartitionPack4 = _cs.FindKernel("NcnnWindowUnpartitionPack4");
+            _kReshapePack4ToScalar2D = _cs.FindKernel("NcnnReshapePack4ToScalar2D");
+            _kReshapePack4ToPack4 = _cs.FindKernel("NcnnReshapePack4ToPack4");
             _kReshapeScalar2DToPack4 = _cs.FindKernel("NcnnReshapeScalar2DToPack4");
             _kAttentionReshapePack4 = _cs.FindKernel("NcnnAttentionReshapePack4");
             _kSwishPack4 = _cs.FindKernel("NcnnSwishPack4");
@@ -999,6 +1003,26 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kSlicePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
+        public void SlicePack4Cdhw(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int axis, int begin, int outW, int outH, int outD, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWInW", inW);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWInH", inH);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWInD", inD);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWInC", inC);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWBegin", begin);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWOutD", outD);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWOutC", outC);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_SlicePack4CDHWInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_SlicePack4CDHWOutArr", output.nameID);
+            Dispatch3D(cmd, _kSlicePack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
         public void PermutePack4(RenderTexture input, int inW, int inH, int inC, Vector4Int axes, int outW, int outH, int outC, RenderTexture output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -1169,6 +1193,74 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kWindowUnpartitionPack4, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
+        public void ReshapePack4ToScalar2D(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_ReshapePack4ToScalar2DInW", inW);
+            _cs.SetInt("_ReshapePack4ToScalar2DInH", inH);
+            _cs.SetInt("_ReshapePack4ToScalar2DInD", inD);
+            _cs.SetInt("_ReshapePack4ToScalar2DInC", inC);
+            _cs.SetInt("_ReshapePack4ToScalar2DInDims", inDims);
+            _cs.SetTexture(_kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DInArr", input);
+            _cs.SetTexture(_kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DOutArr", output);
+            Dispatch3D(_kReshapePack4ToScalar2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void ReshapePack4ToScalar2D(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInW", inW);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInH", inH);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInD", inD);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInC", inC);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInDims", inDims);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DOutArr", output.nameID);
+            Dispatch3D(cmd, _kReshapePack4ToScalar2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void ReshapePack4ToPack4(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, int outW, int outH, int outD, int outC, int outDims, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_ReshapePack4ToPack4InW", inW);
+            _cs.SetInt("_ReshapePack4ToPack4InH", inH);
+            _cs.SetInt("_ReshapePack4ToPack4InD", inD);
+            _cs.SetInt("_ReshapePack4ToPack4InC", inC);
+            _cs.SetInt("_ReshapePack4ToPack4InDims", inDims);
+            _cs.SetInt("_ReshapePack4ToPack4OutW", outW);
+            _cs.SetInt("_ReshapePack4ToPack4OutH", outH);
+            _cs.SetInt("_ReshapePack4ToPack4OutD", outD);
+            _cs.SetInt("_ReshapePack4ToPack4OutC", outC);
+            _cs.SetInt("_ReshapePack4ToPack4OutDims", outDims);
+            _cs.SetTexture(_kReshapePack4ToPack4, "_ReshapePack4ToPack4InArr", input);
+            _cs.SetTexture(_kReshapePack4ToPack4, "_ReshapePack4ToPack4OutArr", output);
+            Dispatch3D(_kReshapePack4ToPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void ReshapePack4ToPack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, int outW, int outH, int outD, int outC, int outDims, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4InW", inW);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4InH", inH);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4InD", inD);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4InC", inC);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4InDims", inDims);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutD", outD);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutC", outC);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutDims", outDims);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_ReshapePack4ToPack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_ReshapePack4ToPack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kReshapePack4ToPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
         public void ReshapeScalar2DToPack4(RenderTexture input, int inW, int inH, int outW, int outH, int outD, int outC, int outDims, RenderTexture output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -1185,6 +1277,23 @@ namespace NcnnCompute
             Dispatch3D(_kReshapeScalar2DToPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
+        public void ReshapeScalar2DToPack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int outW, int outH, int outD, int outC, int outDims, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DInW", inW);
+            cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DInH", inH);
+            cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutD", outD);
+            cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutC", outC);
+            cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutDims", outDims);
+            cmd.SetComputeTextureParam(_cs, _kReshapeScalar2DToPack4, "_ReshapeScalar2DInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapeScalar2DToPack4, "_ReshapeScalar2DOutArr", output.nameID);
+            Dispatch3D(cmd, _kReshapeScalar2DToPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
         public void AttentionReshapePack4(RenderTexture input, int inW, int inH, int inC, int headDim, int outD, int outC, RenderTexture output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -1198,6 +1307,22 @@ namespace NcnnCompute
             _cs.SetTexture(_kAttentionReshapePack4, "_AttentionReshapeInArr", input);
             _cs.SetTexture(_kAttentionReshapePack4, "_AttentionReshapeOutArr", output);
             Dispatch3D(_kAttentionReshapePack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void AttentionReshapePack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inC, int headDim, int outD, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_AttentionReshapeInW", inW);
+            cmd.SetComputeIntParam(_cs, "_AttentionReshapeInH", inH);
+            cmd.SetComputeIntParam(_cs, "_AttentionReshapeInC", inC);
+            cmd.SetComputeIntParam(_cs, "_AttentionReshapeHeadDim", headDim);
+            cmd.SetComputeIntParam(_cs, "_AttentionReshapeOutD", outD);
+            cmd.SetComputeIntParam(_cs, "_AttentionReshapeOutC", outC);
+            cmd.SetComputeTextureParam(_cs, _kAttentionReshapePack4, "_AttentionReshapeInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAttentionReshapePack4, "_AttentionReshapeOutArr", output.nameID);
+            Dispatch3D(cmd, _kAttentionReshapePack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
         public void Gemm2DTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, RenderTexture output)
@@ -1225,6 +1350,34 @@ namespace NcnnCompute
             _cs.SetBuffer(_kGemm2DTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DTextureA, "_GemmTexOutArr", output);
             Dispatch3D(_kGemm2DTextureA, n, m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void Gemm2DTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            cmd.SetComputeIntParam(_cs, "_MatM", m);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", k);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatUseC", useC ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBroadcastTypeC", broadcastTypeC);
+            cmd.SetComputeFloatParam(_cs, "_MatAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_GemmTexAInArr", a.nameID);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatB", b);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatC", useC ? c : b);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_GemmTexOutArr", output.nameID);
+            Dispatch3D(cmd, _kGemm2DTextureA, n, m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void SftPack4(RenderTexture input, RenderTexture condMul, RenderTexture condAdd, int outPacks, int halfPacks, RenderTexture output)
@@ -1527,6 +1680,20 @@ namespace NcnnCompute
             _cs.SetTexture(_kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWInArr", input);
             _cs.SetTexture(_kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWOutArr", output);
             Dispatch3D(_kSoftmaxPack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(c / 4f))), 8, 8);
+        }
+
+        public void SoftmaxPack4Cdhw(CommandBuffer cmd, ComputeTexture input, int w, int h, int d, int c, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWW", w);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWH", h);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWD", d);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWC", c);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWOutArr", output.nameID);
+            Dispatch3D(cmd, _kSoftmaxPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(c / 4f))), 8, 8);
         }
 
         public void SoftmaxChannelPack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output)
@@ -3656,6 +3823,19 @@ namespace NcnnCompute
             Dispatch3D(_kPack4ChannelsToWidth, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
+        public void Pack4ChannelsToWidth(CommandBuffer cmd, ComputeTexture input, int channels, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+
+            cmd.SetComputeIntParam(_cs, "_Pack4ChannelCount", channels);
+            cmd.SetComputeTextureParam(_cs, _kPack4ChannelsToWidth, "_Pack4ChannelInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPack4ChannelsToWidth, "_Pack4ChannelOutArr", output.nameID);
+            Dispatch3D(cmd, _kPack4ChannelsToWidth, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
         public void InnerProduct(ComputeBuffer input, int inFeatures, ComputeBuffer weights, ComputeBuffer bias, int outFeatures, ComputeBuffer output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -3739,6 +3919,49 @@ namespace NcnnCompute
             _cs.SetTexture(_kMatMulPack4Cdhw, "_MatPack4BInArr", b);
             _cs.SetTexture(_kMatMulPack4Cdhw, "_MatPack4OutArr", output);
             Dispatch3D(_kMatMulPack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outBatchD * Mathf.CeilToInt(outBatchC / 4f))), 8, 8);
+        }
+
+        public void MatMulPack4Cdhw(
+            CommandBuffer cmd,
+            ComputeTexture a,
+            int aRows,
+            int aCols,
+            int aBatchD,
+            int aBatchC,
+            ComputeTexture b,
+            int bRows,
+            int bCols,
+            int bBatchD,
+            int bBatchC,
+            bool transB,
+            int outBatchD,
+            int outBatchC,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (aRows <= 0) throw new ArgumentOutOfRangeException(nameof(aRows));
+            if (aCols <= 0) throw new ArgumentOutOfRangeException(nameof(aCols));
+            if (bRows <= 0) throw new ArgumentOutOfRangeException(nameof(bRows));
+            if (bCols <= 0) throw new ArgumentOutOfRangeException(nameof(bCols));
+
+            var n = transB ? bRows : bCols;
+            cmd.SetComputeIntParam(_cs, "_MatM", aRows);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", aCols);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatPack4ABatchD", aBatchD);
+            cmd.SetComputeIntParam(_cs, "_MatPack4ABatchC", aBatchC);
+            cmd.SetComputeIntParam(_cs, "_MatPack4BBatchD", bBatchD);
+            cmd.SetComputeIntParam(_cs, "_MatPack4BBatchC", bBatchC);
+            cmd.SetComputeIntParam(_cs, "_MatPack4OutBatchD", outBatchD);
+            cmd.SetComputeIntParam(_cs, "_MatPack4OutBatchC", outBatchC);
+            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_MatPack4AInArr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_MatPack4BInArr", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_MatPack4OutArr", output.nameID);
+            Dispatch3D(cmd, _kMatMulPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outBatchD * Mathf.CeilToInt(outBatchC / 4f))), 8, 8);
         }
 
         public void VistaTailPromptDotPack4(RenderTexture featureTex, int width, int height, int depth, int packs, ComputeBuffer prompt, RenderTexture output)

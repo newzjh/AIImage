@@ -206,6 +206,9 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
+            if (TryExecuteCommandBufferTexturePath(owner, layer, context))
+                return;
+
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
             var shapes = context.shapes;
@@ -249,6 +252,78 @@ namespace NcnnCompute
                 : new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!owner._gemm.TryGetValue(layer.name, out var gp))
+                return false;
+            if (gp.transA || !gp.constantB)
+                return false;
+
+            var srcTex = NcnnRepro.GetCmdTensor(context.blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (srcTex == null || srcTex.texture == null)
+                return false;
+            if (srcShape.dims != 2)
+                return false;
+            if (srcTex.width != srcShape.w || srcTex.height != srcShape.h || srcTex.packs != 1)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0)
+                return false;
+
+            var m = srcShape.h;
+            var k = srcShape.w;
+            var bRows = gp.transB ? gp.constantN : gp.constantK;
+            var bCols = gp.transB ? gp.constantK : gp.constantN;
+            var kFromB = gp.transB ? bCols : bRows;
+            var n = gp.transB ? bRows : bCols;
+            if (gp.constantK > 0 && k != gp.constantK)
+                return false;
+            if (k != kFromB || n <= 0)
+                return false;
+
+            var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
+            var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
+            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGBHalf;
+            var outRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
+            owner.Ops.Gemm2DTextureA(
+                context.commandBuffer,
+                srcTex.texture,
+                gp.bData,
+                useC ? gp.cData : null,
+                m,
+                n,
+                k,
+                gp.transB,
+                gp.alpha,
+                gp.beta,
+                useC,
+                gp.broadcastTypeC,
+                outRt);
+
+            context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outShape.w,
+                height = outShape.h,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
+            };
+            context.shapes[layer.topNames[0]] = outShape;
+            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            return true;
         }
 
         private static bool TryExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)

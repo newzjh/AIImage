@@ -30,6 +30,8 @@ public static class NcnnDebugRunner
     private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
     private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
     private const string ClipForceFullRtEnvVar = "AIIMAGE_CLIP_FORCE_FULL_RT";
+    private const string ClipUseCommandBufferEnvVar = "AIIMAGE_CLIP_USE_COMMAND_BUFFER";
+    private const string ClipUseAsyncComputeEnvVar = "AIIMAGE_CLIP_USE_ASYNC_COMPUTE";
     private const string ClipEnableGeneralTexConvEnvVar = "AIIMAGE_CLIP_ENABLE_GENERAL_TEX";
     private const string ClipEnableAttentionMatMulPack4EnvVar = "AIIMAGE_CLIP_ENABLE_ATTENTION_MATMUL_PACK4";
     private const string ClipPack4OnlyGuardEnvVar = "AIIMAGE_CLIP_PACK4_ONLY_GUARD";
@@ -1568,6 +1570,8 @@ public static class NcnnDebugRunner
 
         runner.enableDebugDump = ResolveBoolEnv(ClipEnableDumpEnvVar, defaultEnableDebugDump);
         runner.forceFullRenderTexturePath = ResolveBoolEnv(ClipForceFullRtEnvVar, runner.forceFullRenderTexturePath);
+        runner.useCommandBuffer = ResolveBoolEnv(ClipUseCommandBufferEnvVar, runner.useCommandBuffer);
+        runner.useAsyncComputeCommandBuffer = ResolveBoolEnv(ClipUseAsyncComputeEnvVar, runner.useAsyncComputeCommandBuffer);
         runner.enableGeneralTextureConvolution = ResolveBoolEnv(
             ClipEnableGeneralTexConvEnvVar,
             runner.enableGeneralTextureConvolution || runner.forceFullRenderTexturePath);
