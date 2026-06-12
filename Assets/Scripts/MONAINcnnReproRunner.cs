@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -82,6 +83,12 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private const string DefaultVolumeInputPath = @"E:\Projects\CTData\sliceexampledata2\MRBrainTumor1\RegLib_C01_1.nrrd";
     private const string DefaultInputBlobName = "in0";
     private const string DefaultOutputBlobName = "out0";
+    private const string VentriclesLabelSubsetName = "ventricles";
+    private const int VentriclesRefineAnchorBboxMargin = 8;
+    private const int VentriclesRefineMinSecondaryComponentVoxels = 100;
+    private const string WholeBrainRegistrationSummaryRelativePath = @"Tools\MonaiToNCNN\manual_test\wholebrain_mri_registration\mri_for_wholebrain_ventricles_mni305_affine\registration_summary.json";
+    private const string MonaiPythonExeRelativePath = @"Tools\MonaiToNCNN\.monai_to_ncnn_venv\Scripts\python.exe";
+    private const string ResampleLabelMapScriptRelativePath = @"Tools\MonaiToNCNN\ResampleLabelMapToOriginal.py";
 
     [Serializable]
     private sealed class VolumeInfoRecord
@@ -1118,6 +1125,45 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             this.d = d;
             this.c = c;
         }
+    }
+
+    private sealed class VolumeConnectedComponentInfo
+    {
+        public int componentId;
+        public int voxelCount;
+        public int minX;
+        public int minY;
+        public int minZ;
+        public int maxX;
+        public int maxY;
+        public int maxZ;
+        public double meanX;
+        public double meanY;
+        public double meanZ;
+        public double centerDistance;
+        public bool touchesBoundary;
+        public double score;
+        public Dictionary<ushort, int> labelCounts;
+    }
+
+    private sealed class VentriclesRefineResult
+    {
+        public ushort[] refinedLabelMap;
+        public ushort[] refinedMask;
+        public VolumeConnectedComponentInfo anchor;
+        public List<VolumeConnectedComponentInfo> components;
+        public int[] keptComponentIds;
+        public int margin;
+        public int minSecondaryComponentVoxels;
+        public long elapsedMs;
+    }
+
+    private sealed class LabelResampleToOriginalResult
+    {
+        public string outputLabelMapPath;
+        public string outputMaskPath;
+        public string summaryJsonPath;
+        public long elapsedMs;
     }
 
     private readonly struct PatchInferHandle : IDisposable
@@ -3450,11 +3496,103 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             if (labelMapComparison != null)
                 item["restored_labelmap"] = labelMapComparison;
 
+            var refinedBaselineDir = ResolveRefinedBaselineCaseDir(baselineCaseDir);
+            if (!string.IsNullOrWhiteSpace(refinedBaselineDir))
+            {
+                var currentRefinedMaskPath = ResolveSubsetOutputPath(
+                    outputDir,
+                    reference,
+                    null,
+                    labelName,
+                    "mask_refined_mni305");
+                var currentRefinedLabelMapPath = ResolveSubsetOutputPath(
+                    outputDir,
+                    reference,
+                    null,
+                    labelName,
+                    "labelmap_refined_mni305");
+                var baselineRefinedMaskPath = Path.Combine(refinedBaselineDir, labelName + "_mask_refined_mni305.nii.gz");
+                var baselineRefinedLabelMapPath = Path.Combine(refinedBaselineDir, labelName + "_labelmap_refined_mni305.nii.gz");
+                var refinedMaskComparison = BuildVolumeLabelMapComparison(baselineRefinedMaskPath, currentRefinedMaskPath);
+                if (refinedMaskComparison != null)
+                    item["refined_binary_mask"] = refinedMaskComparison;
+                var refinedLabelMapComparison = BuildVolumeLabelMapComparison(baselineRefinedLabelMapPath, currentRefinedLabelMapPath);
+                if (refinedLabelMapComparison != null)
+                    item["refined_labelmap"] = refinedLabelMapComparison;
+
+                var currentRefinedOriginalMaskPath = Path.Combine(outputDir, "label_subsets", labelName + "_mask_refined_original.nii.gz");
+                var currentRefinedOriginalLabelMapPath = Path.Combine(outputDir, "label_subsets", labelName + "_labelmap_refined_original.nii.gz");
+                var baselineRefinedOriginalMaskPath = Path.Combine(refinedBaselineDir, labelName + "_mask_refined_original.nii.gz");
+                var baselineRefinedOriginalLabelMapPath = Path.Combine(refinedBaselineDir, labelName + "_labelmap_refined_original.nii.gz");
+                var refinedOriginalMaskComparison = BuildVolumeLabelMapComparison(baselineRefinedOriginalMaskPath, currentRefinedOriginalMaskPath);
+                if (refinedOriginalMaskComparison != null)
+                    item["refined_original_binary_mask"] = refinedOriginalMaskComparison;
+                var refinedOriginalLabelMapComparison = BuildVolumeLabelMapComparison(baselineRefinedOriginalLabelMapPath, currentRefinedOriginalLabelMapPath);
+                if (refinedOriginalLabelMapComparison != null)
+                    item["refined_original_labelmap"] = refinedOriginalLabelMapComparison;
+            }
+
+            if (string.Equals(labelName, VentriclesLabelSubsetName, StringComparison.OrdinalIgnoreCase))
+            {
+                item["restored_stage"] = "pre_refine_mni305";
+                item["restored_stage_note"] = "restored_labelmap is the pre-refinement MNI305 subset and may include disconnected voxels.";
+                var manualReviewPath = Path.Combine(outputDir, "label_subsets", labelName + "_labelmap_refined_original.nii.gz");
+                if (File.Exists(manualReviewPath))
+                {
+                    item["manual_review_labelmap"] = manualReviewPath;
+                    item["manual_review_space"] = "original";
+                    item["manual_review_note"] = "Use refined_original_labelmap for manual review against the Python refined_original ventricles baseline.";
+                }
+            }
+
             if (item.Count > 1)
                 result[labelName] = item;
         }
 
         return result.Count > 0 ? result : null;
+    }
+
+    private string ResolveRefinedBaselineCaseDir(string baselineCaseDir)
+    {
+        if (string.IsNullOrWhiteSpace(baselineCaseDir))
+            return null;
+
+        try
+        {
+            var toolsRoot = Path.Combine(ProjectRoot, "Tools", "MonaiToNCNN", "manual_test", "wholebrain_mri_ventricles_refined");
+            if (!Directory.Exists(toolsRoot))
+                return null;
+
+            var summaryFiles = Directory.GetFiles(toolsRoot, "refinement_summary.json", SearchOption.AllDirectories);
+            for (var i = 0; i < summaryFiles.Length; i++)
+            {
+                var path = summaryFiles[i];
+                JObject json = null;
+                try
+                {
+                    json = JObject.Parse(File.ReadAllText(path, Encoding.UTF8));
+                }
+                catch
+                {
+                    continue;
+                }
+
+                var baselineManifestCaseName = json["baseline_manifest"]?.Value<string>();
+                var expectedCaseName = Path.GetFileName(baselineCaseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (!string.IsNullOrWhiteSpace(baselineManifestCaseName)
+                    && !string.IsNullOrWhiteSpace(expectedCaseName)
+                    && baselineManifestCaseName.IndexOf(expectedCaseName, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return Path.GetDirectoryName(path);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            AppendDebugLine("ResolveRefinedBaselineCaseDir failed | " + e.Message);
+        }
+
+        return null;
     }
 
     private static JObject BuildVolumeLabelMapComparison(string baselinePath, string currentPath)
@@ -4150,8 +4288,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             if (property?.Value is not JObject item)
                 continue;
 
+            AppendNamedTextLine(sb, "subset_" + property.Name + "_restored_stage", item["restored_stage"]?.Value<string>());
+            AppendNamedTextLine(sb, "subset_" + property.Name + "_restored_stage_note", item["restored_stage_note"]?.Value<string>());
             AppendNamedComparisonLine(sb, item["restored_binary_mask"] as JObject, "subset_" + property.Name + "_restored_binary_mask");
             AppendNamedComparisonLine(sb, item["restored_labelmap"] as JObject, "subset_" + property.Name + "_restored_labelmap");
+            AppendNamedComparisonLine(sb, item["refined_binary_mask"] as JObject, "subset_" + property.Name + "_refined_binary_mask");
+            AppendNamedComparisonLine(sb, item["refined_labelmap"] as JObject, "subset_" + property.Name + "_refined_labelmap");
+            AppendNamedComparisonLine(sb, item["refined_original_binary_mask"] as JObject, "subset_" + property.Name + "_refined_original_binary_mask");
+            AppendNamedComparisonLine(sb, item["refined_original_labelmap"] as JObject, "subset_" + property.Name + "_refined_original_labelmap");
+            AppendNamedTextLine(sb, "manual_review_subset_" + property.Name + "_labelmap", item["manual_review_labelmap"]?.Value<string>());
+            AppendNamedTextLine(sb, "manual_review_subset_" + property.Name + "_space", item["manual_review_space"]?.Value<string>());
+            AppendNamedTextLine(sb, "manual_review_subset_" + property.Name + "_note", item["manual_review_note"]?.Value<string>());
         }
     }
 
@@ -4173,6 +4320,14 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 + "_equal_ratio=" + comparison["equal_ratio"].Value<double>().ToString("G9", CultureInfo.InvariantCulture)
                 + " | mismatch_count=" + comparison["mismatch_count"].Value<int>().ToString(CultureInfo.InvariantCulture));
         }
+    }
+
+    private static void AppendNamedTextLine(StringBuilder sb, string key, string value)
+    {
+        if (sb == null || string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+            return;
+
+        sb.AppendLine(key + "=" + value);
     }
 
     private static float Sigmoid(float value)
@@ -4988,6 +5143,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             Directory.CreateDirectory(subsetDir);
             var manifestPath = Path.Combine(subsetDir, "manifest.json");
             var manifestItems = new JArray();
+            long ventriclesRefineMs = 0;
             foreach (var subsetToken in subsetTokens)
             {
                 var labelValues = ReadLabelSubsetValues(subsetToken);
@@ -5018,6 +5174,63 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                     ["restored_binary_mask"] = Path.GetFileName(subsetPath),
                     ["restored_labelmap"] = Path.GetFileName(subsetLabelMapPath)
                 };
+
+                if (string.Equals(labelName, VentriclesLabelSubsetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    item["restored_stage"] = "pre_refine_mni305";
+                    item["restored_stage_note"] = "restored_labelmap is the pre-refinement MNI305 subset and may include disconnected voxels.";
+                    var refine = TryRefineVentriclesSubset(subsetLabelMap, reference);
+                    if (refine != null && refine.refinedLabelMap != null && refine.refinedMask != null)
+                    {
+                        var refinedMaskPath = ResolveSubsetOutputPath(
+                            outputDir,
+                            reference,
+                            null,
+                            labelName,
+                            "mask_refined_mni305");
+                        var refinedLabelMapPath = ResolveSubsetOutputPath(
+                            outputDir,
+                            reference,
+                            null,
+                            labelName,
+                            "labelmap_refined_mni305");
+                        WriteLabelMapFile(refinedMaskPath, refine.refinedMask, reference);
+                        WriteLabelMapFile(refinedLabelMapPath, refine.refinedLabelMap, reference);
+                        ventriclesRefineMs += refine.elapsedMs;
+                        item["refined_binary_mask"] = Path.GetFileName(refinedMaskPath);
+                        item["refined_labelmap"] = Path.GetFileName(refinedLabelMapPath);
+                        item["refinement_summary_json"] = labelName + "_refinement_summary.json";
+                        LabelResampleToOriginalResult refinedOriginal = null;
+                        var refinedOriginalLabelMapPath = Path.Combine(subsetDir, labelName + "_labelmap_refined_original.nii.gz");
+                        var refinedOriginalMaskPath = Path.Combine(subsetDir, labelName + "_mask_refined_original.nii.gz");
+                        var refinedOriginalSummaryPath = Path.Combine(subsetDir, labelName + "_refined_original_resample_summary.json");
+                        refinedOriginal = TryResampleLabelMapToOriginal(
+                            refinedLabelMapPath,
+                            refinedOriginalLabelMapPath,
+                            refinedOriginalMaskPath,
+                            refinedOriginalSummaryPath);
+                        if (refinedOriginal != null)
+                        {
+                            item["refined_original_labelmap"] = Path.GetFileName(refinedOriginal.outputLabelMapPath);
+                            item["refined_original_mask"] = Path.GetFileName(refinedOriginal.outputMaskPath);
+                            item["refined_original_summary_json"] = Path.GetFileName(refinedOriginal.summaryJsonPath);
+                            item["manual_review_labelmap"] = Path.GetFileName(refinedOriginal.outputLabelMapPath);
+                            item["manual_review_space"] = "original";
+                            item["manual_review_note"] = "Use refined_original_labelmap for manual review against the Python refined_original ventricles baseline.";
+                            ventriclesRefineMs += refinedOriginal.elapsedMs;
+                        }
+                        WriteText(
+                            Path.Combine(subsetDir, labelName + "_refinement_summary.json"),
+                            BuildVentriclesRefineSummaryJson(
+                                refine,
+                                baselineManifest,
+                                subsetToken,
+                                subsetLabelMapPath,
+                                refinedLabelMapPath,
+                                refinedMaskPath).ToString());
+                    }
+                }
+
                 if (labelValues.Length == 1)
                     item["label_value"] = labelValues[0];
                 else
@@ -5041,6 +5254,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 };
             }
             WriteText(manifestPath, manifest.ToString());
+            if (ventriclesRefineMs > 0)
+                _timingMs["ventricles_refine_ms"] = ventriclesRefineMs;
         }
         catch (Exception e)
         {
@@ -5122,6 +5337,395 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             result[i] = wanted.Contains(value) ? value : (ushort)0;
         }
         return result;
+    }
+
+    private static JObject BuildVentriclesRefineSummaryJson(
+        VentriclesRefineResult refine,
+        JObject baselineManifest,
+        JToken subsetToken,
+        string subsetSourceLabelMapPath,
+        string refinedLabelMapPath,
+        string refinedMaskPath)
+    {
+        if (refine == null)
+            return null;
+
+        var components = new JArray();
+        if (refine.components != null)
+        {
+            for (var i = 0; i < refine.components.Count; i++)
+            {
+                var component = refine.components[i];
+                if (component == null)
+                    continue;
+                components.Add(BuildComponentJson(component));
+            }
+        }
+
+        return new JObject
+        {
+            ["baseline_manifest"] = baselineManifest?["case_name"]?.Value<string>() ?? string.Empty,
+            ["subset_name"] = subsetToken?["label_name"]?.Value<string>() ?? VentriclesLabelSubsetName,
+            ["subset_source_labelmap"] = subsetSourceLabelMapPath ?? string.Empty,
+            ["anchor_bounding_box_margin"] = refine.margin,
+            ["min_secondary_component_voxels"] = refine.minSecondaryComponentVoxels,
+            ["anchor_component"] = BuildComponentJson(refine.anchor),
+            ["kept_component_ids"] = refine.keptComponentIds != null ? new JArray(Array.ConvertAll(refine.keptComponentIds, value => (int)value)) : null,
+            ["kept_component_count"] = refine.keptComponentIds != null ? refine.keptComponentIds.Length : 0,
+            ["component_count"] = refine.components != null ? refine.components.Count : 0,
+            ["analysis_top_components"] = BuildTopComponentsArray(refine.components, 24),
+            ["mni_outputs"] = new JObject
+            {
+                ["labelmap"] = refinedLabelMapPath ?? string.Empty,
+                ["mask"] = refinedMaskPath ?? string.Empty
+            },
+            ["elapsed_ms"] = refine.elapsedMs
+        };
+    }
+
+    private static JObject BuildComponentJson(VolumeConnectedComponentInfo component)
+    {
+        if (component == null)
+            return null;
+
+        return new JObject
+        {
+            ["component_id"] = component.componentId,
+            ["voxel_count"] = component.voxelCount,
+            ["bbox_min"] = new JArray(component.minX, component.minY, component.minZ),
+            ["bbox_max"] = new JArray(component.maxX, component.maxY, component.maxZ),
+            ["mean_coord"] = new JArray(component.meanX, component.meanY, component.meanZ),
+            ["center_distance"] = component.centerDistance,
+            ["touches_boundary"] = component.touchesBoundary,
+            ["score"] = component.score,
+            ["label_counts"] = component.labelCounts != null ? BuildHistogramJson(component.labelCounts) : null
+        };
+    }
+
+    private static JArray BuildTopComponentsArray(List<VolumeConnectedComponentInfo> components, int maxCount)
+    {
+        var result = new JArray();
+        if (components == null || components.Count == 0 || maxCount <= 0)
+            return result;
+
+        var ordered = new List<VolumeConnectedComponentInfo>(components);
+        ordered.Sort((a, b) => b.voxelCount.CompareTo(a.voxelCount));
+        var count = Math.Min(maxCount, ordered.Count);
+        for (var i = 0; i < count; i++)
+            result.Add(BuildComponentJson(ordered[i]));
+        return result;
+    }
+
+    private JObject TryLoadWholeBrainRegistrationSummary()
+    {
+        try
+        {
+            var path = ResolveProjectPath(WholeBrainRegistrationSummaryRelativePath);
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                return null;
+            return JObject.Parse(File.ReadAllText(path, Encoding.UTF8));
+        }
+        catch (Exception e)
+        {
+            AppendDebugLine("TryLoadWholeBrainRegistrationSummary failed | " + e.Message);
+            return null;
+        }
+    }
+
+    private LabelResampleToOriginalResult TryResampleLabelMapToOriginal(
+        string inputLabelMapPath,
+        string outputLabelMapPath,
+        string outputMaskPath,
+        string outputSummaryJsonPath)
+    {
+        if (string.IsNullOrWhiteSpace(inputLabelMapPath)
+            || string.IsNullOrWhiteSpace(outputLabelMapPath)
+            || string.IsNullOrWhiteSpace(outputMaskPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var registrationSummary = TryLoadWholeBrainRegistrationSummary();
+            var transformPath = registrationSummary?["transform_path"]?.Value<string>();
+            var originalImagePath = registrationSummary?["input_path"]?.Value<string>();
+            if (string.IsNullOrWhiteSpace(transformPath) || string.IsNullOrWhiteSpace(originalImagePath))
+                return null;
+
+            var pythonExe = ResolveProjectPath(MonaiPythonExeRelativePath);
+            var scriptPath = ResolveProjectPath(ResampleLabelMapScriptRelativePath);
+            if (!File.Exists(pythonExe) || !File.Exists(scriptPath))
+                return null;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(outputLabelMapPath));
+            var args = new[]
+            {
+                QuoteProcessArg(scriptPath),
+                "--input-labelmap", QuoteProcessArg(inputLabelMapPath),
+                "--registration-transform", QuoteProcessArg(transformPath),
+                "--original-image", QuoteProcessArg(originalImagePath),
+                "--output-labelmap", QuoteProcessArg(outputLabelMapPath),
+                "--output-mask", QuoteProcessArg(outputMaskPath),
+                "--summary-json", QuoteProcessArg(outputSummaryJsonPath)
+            };
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = pythonExe,
+                Arguments = string.Join(" ", args),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = ProjectRoot
+            };
+
+            var sw = Stopwatch.StartNew();
+            using var process = Process.Start(psi);
+            if (process == null)
+                return null;
+
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(120000);
+            sw.Stop();
+
+            if (process.ExitCode != 0)
+            {
+                AppendDebugLine(
+                    "TryResampleLabelMapToOriginal failed"
+                    + " | exit_code=" + process.ExitCode.ToString(CultureInfo.InvariantCulture)
+                    + " | stderr=" + (stderr ?? string.Empty).Trim());
+                return null;
+            }
+
+            if (!string.IsNullOrWhiteSpace(stdout))
+                AppendDebugLine("TryResampleLabelMapToOriginal stdout | " + stdout.Trim());
+
+            return new LabelResampleToOriginalResult
+            {
+                outputLabelMapPath = outputLabelMapPath,
+                outputMaskPath = outputMaskPath,
+                summaryJsonPath = outputSummaryJsonPath,
+                elapsedMs = sw.ElapsedMilliseconds
+            };
+        }
+        catch (Exception e)
+        {
+            AppendDebugLine("TryResampleLabelMapToOriginal exception | " + e.Message);
+            return null;
+        }
+    }
+
+    private static VentriclesRefineResult TryRefineVentriclesSubset(ushort[] subsetLabelMap, MonaiVolumeData reference)
+    {
+        if (subsetLabelMap == null || reference == null)
+            return null;
+
+        var dim0 = reference.dim0;
+        var dim1 = reference.dim1;
+        var dim2 = reference.dim2;
+        if (dim0 <= 0 || dim1 <= 0 || dim2 <= 0)
+            return null;
+        if (subsetLabelMap.Length != checked(dim0 * dim1 * dim2))
+            return null;
+
+        var sw = Stopwatch.StartNew();
+        var visited = new byte[subsetLabelMap.Length];
+        var componentMap = new int[subsetLabelMap.Length];
+        var components = new List<VolumeConnectedComponentInfo>(128);
+        var queue = new int[Math.Min(subsetLabelMap.Length, 1 << 20)];
+        var centerX = dim0 / 2.0;
+        var centerY = dim1 / 2.0;
+        var centerZ = dim2 / 2.0;
+        var componentId = 0;
+
+        for (var seed = 0; seed < subsetLabelMap.Length; seed++)
+        {
+            if (visited[seed] != 0 || subsetLabelMap[seed] == 0)
+                continue;
+
+            componentId++;
+            visited[seed] = 1;
+            var head = 0;
+            var tail = 0;
+            queue[tail++] = seed;
+            var voxelCount = 0;
+            var minX = int.MaxValue;
+            var minY = int.MaxValue;
+            var minZ = int.MaxValue;
+            var maxX = int.MinValue;
+            var maxY = int.MinValue;
+            var maxZ = int.MinValue;
+            double sumX = 0d;
+            double sumY = 0d;
+            double sumZ = 0d;
+            var labelCounts = new Dictionary<ushort, int>();
+
+            while (head < tail)
+            {
+                var index = queue[head++];
+                componentMap[index] = componentId;
+                voxelCount++;
+
+                var x = index / (dim1 * dim2);
+                var yz = index - x * dim1 * dim2;
+                var y = yz / dim2;
+                var z = yz - y * dim2;
+
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (z < minZ) minZ = z;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+                if (z > maxZ) maxZ = z;
+
+                sumX += x;
+                sumY += y;
+                sumZ += z;
+
+                var label = subsetLabelMap[index];
+                if (labelCounts.ContainsKey(label))
+                    labelCounts[label]++;
+                else
+                    labelCounts[label] = 1;
+
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    var nx = x + dx;
+                    if ((uint)nx >= (uint)dim0)
+                        continue;
+                    for (var dy = -1; dy <= 1; dy++)
+                    {
+                        var ny = y + dy;
+                        if ((uint)ny >= (uint)dim1)
+                            continue;
+                        for (var dz = -1; dz <= 1; dz++)
+                        {
+                            if (dx == 0 && dy == 0 && dz == 0)
+                                continue;
+                            var nz = z + dz;
+                            if ((uint)nz >= (uint)dim2)
+                                continue;
+
+                            var neighbor = ((nx * dim1) + ny) * dim2 + nz;
+                            if (visited[neighbor] != 0 || subsetLabelMap[neighbor] == 0)
+                                continue;
+                            visited[neighbor] = 1;
+                            if (tail >= queue.Length)
+                                Array.Resize(ref queue, Math.Min(subsetLabelMap.Length, Math.Max(queue.Length + 1, checked(queue.Length * 2))));
+                            queue[tail++] = neighbor;
+                        }
+                    }
+                }
+            }
+
+            var meanX = voxelCount > 0 ? sumX / voxelCount : 0d;
+            var meanY = voxelCount > 0 ? sumY / voxelCount : 0d;
+            var meanZ = voxelCount > 0 ? sumZ / voxelCount : 0d;
+            var centerDistance = Math.Sqrt(
+                ((meanX - centerX) * (meanX - centerX))
+                + ((meanY - centerY) * (meanY - centerY))
+                + ((meanZ - centerZ) * (meanZ - centerZ)));
+            var touchesBoundary = minX == 0
+                || minY == 0
+                || minZ == 0
+                || maxX == (dim0 - 1)
+                || maxY == (dim1 - 1)
+                || maxZ == (dim2 - 1);
+            var score = voxelCount / (1d + centerDistance);
+
+            components.Add(new VolumeConnectedComponentInfo
+            {
+                componentId = componentId,
+                voxelCount = voxelCount,
+                minX = minX,
+                minY = minY,
+                minZ = minZ,
+                maxX = maxX,
+                maxY = maxY,
+                maxZ = maxZ,
+                meanX = meanX,
+                meanY = meanY,
+                meanZ = meanZ,
+                centerDistance = centerDistance,
+                touchesBoundary = touchesBoundary,
+                score = score,
+                labelCounts = labelCounts
+            });
+        }
+
+        VolumeConnectedComponentInfo anchor = null;
+        for (var i = 0; i < components.Count; i++)
+        {
+            var component = components[i];
+            if (component.touchesBoundary)
+                continue;
+            if (anchor == null || component.score > anchor.score)
+                anchor = component;
+        }
+
+        if (anchor == null)
+            return null;
+
+        var expandedMinX = Math.Max(0, anchor.minX - VentriclesRefineAnchorBboxMargin);
+        var expandedMinY = Math.Max(0, anchor.minY - VentriclesRefineAnchorBboxMargin);
+        var expandedMinZ = Math.Max(0, anchor.minZ - VentriclesRefineAnchorBboxMargin);
+        var expandedMaxX = Math.Min(dim0 - 1, anchor.maxX + VentriclesRefineAnchorBboxMargin);
+        var expandedMaxY = Math.Min(dim1 - 1, anchor.maxY + VentriclesRefineAnchorBboxMargin);
+        var expandedMaxZ = Math.Min(dim2 - 1, anchor.maxZ + VentriclesRefineAnchorBboxMargin);
+
+        var keepComponent = new bool[componentId + 1];
+        keepComponent[anchor.componentId] = true;
+        var keptIds = new List<int> { anchor.componentId };
+        for (var i = 0; i < components.Count; i++)
+        {
+            var component = components[i];
+            if (component.componentId == anchor.componentId)
+                continue;
+            if (component.touchesBoundary)
+                continue;
+            if (component.voxelCount < VentriclesRefineMinSecondaryComponentVoxels)
+                continue;
+
+            var intersects = component.minX <= expandedMaxX
+                && expandedMinX <= component.maxX
+                && component.minY <= expandedMaxY
+                && expandedMinY <= component.maxY
+                && component.minZ <= expandedMaxZ
+                && expandedMinZ <= component.maxZ;
+            if (!intersects)
+                continue;
+
+            keepComponent[component.componentId] = true;
+            keptIds.Add(component.componentId);
+        }
+
+        var refinedLabelMap = new ushort[subsetLabelMap.Length];
+        var refinedMask = new ushort[subsetLabelMap.Length];
+        for (var i = 0; i < subsetLabelMap.Length; i++)
+        {
+            var currentComponentId = componentMap[i];
+            if (currentComponentId <= 0 || currentComponentId >= keepComponent.Length || !keepComponent[currentComponentId])
+                continue;
+            refinedLabelMap[i] = subsetLabelMap[i];
+            refinedMask[i] = 1;
+        }
+
+        sw.Stop();
+        keptIds.Sort();
+        return new VentriclesRefineResult
+        {
+            refinedLabelMap = refinedLabelMap,
+            refinedMask = refinedMask,
+            anchor = anchor,
+            components = components,
+            keptComponentIds = keptIds.ToArray(),
+            margin = VentriclesRefineAnchorBboxMargin,
+            minSecondaryComponentVoxels = VentriclesRefineMinSecondaryComponentVoxels,
+            elapsedMs = sw.ElapsedMilliseconds
+        };
     }
 
     private static ushort[] TryRestoreVistaLabelMapFromManifest(JObject baselineManifest, ushort[] source, int srcDepth, int srcHeight, int srcWidth)
@@ -5395,6 +5999,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
         }
         return sb.ToString();
+    }
+
+    private static string QuoteProcessArg(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "\"\"";
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
     }
 
     private static string[] SplitInputPaths(string text)
