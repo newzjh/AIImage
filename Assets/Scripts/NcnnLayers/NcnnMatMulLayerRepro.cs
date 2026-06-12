@@ -321,12 +321,13 @@ namespace NcnnCompute
             var promptBuf = promptView?.buffer;
             var featureShape = plan.featureShape;
             var usedPromptRt = false;
+            RenderTexture promptRt = null;
             if (promptBuf == null
                 && !string.IsNullOrWhiteSpace(plan.promptMemoryLayerName)
                 && owner._memoryData.TryGetValue(plan.promptMemoryLayerName, out var memoryDataPack))
             {
-                if (TryGetOrCreateVistaPromptPack4Rt(memoryDataPack, featureShape.c, out var eagerPromptRt)
-                    && eagerPromptRt != null)
+                if (NcnnMemoryDataLayerRepro.TryGetOrCreateVistaPromptPack4Rt(memoryDataPack, featureShape.c, out promptRt)
+                    && promptRt != null)
                 {
                     usedPromptRt = true;
                 }
@@ -365,11 +366,7 @@ namespace NcnnCompute
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(plan.outputShape.c / 4f));
             var outSlices = outDepth * outPacks;
             var outRt = owner.RentTempArray(plan.outputShape.w, plan.outputShape.h, outSlices, RenderTextureFormat.ARGBFloat);
-            if (usedPromptRt
-                && !string.IsNullOrWhiteSpace(plan.promptMemoryLayerName)
-                && owner._memoryData.TryGetValue(plan.promptMemoryLayerName, out var promptMemoryPack)
-                && TryGetOrCreateVistaPromptPack4Rt(promptMemoryPack, featureShape.c, out var promptRt)
-                && promptRt != null)
+            if (usedPromptRt && promptRt != null)
             {
                 owner.Ops.VistaTailPromptDotPack4(
                     featureTex.texture,
@@ -410,90 +407,6 @@ namespace NcnnCompute
                 context.remaining,
                 layer.bottomNames,
                 context.pinnedNames);
-            return true;
-        }
-
-        private static bool TryGetOrCreateVistaPromptPack4Rt(NcnnRepro.MemoryDataPack promptMemoryPack, int featureChannels, out RenderTexture promptRt)
-        {
-            promptRt = null;
-            if (promptMemoryPack == null || promptMemoryPack.cpuData == null)
-                return false;
-            if (promptMemoryPack.dims != 1)
-                return false;
-
-            var channels = Mathf.Max(1, featureChannels);
-            if (promptMemoryPack.w < channels || promptMemoryPack.cpuData.Length < channels)
-                return false;
-
-            var packs = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
-            if (promptMemoryPack.pack4Rt != null
-                && promptMemoryPack.pack4RtChannels == channels
-                && promptMemoryPack.pack4RtDepth == packs
-                && promptMemoryPack.pack4Rt.IsCreated())
-            {
-                promptRt = promptMemoryPack.pack4Rt;
-                return true;
-            }
-
-            try
-            {
-                if (promptMemoryPack.pack4Rt != null)
-                {
-                    NcnnGpuResourceTracker.ReleaseTexture(promptMemoryPack.pack4Rt, "VistaPromptPack4Rt.recreate");
-                    promptMemoryPack.pack4Rt.Release();
-                    UnityEngine.Object.DestroyImmediate(promptMemoryPack.pack4Rt);
-                }
-            }
-            catch { }
-
-            var desc = new RenderTextureDescriptor(1, 1, RenderTextureFormat.ARGBFloat, 0)
-            {
-                dimension = TextureDimension.Tex2DArray,
-                volumeDepth = packs,
-                enableRandomWrite = false,
-                msaaSamples = 1,
-            };
-            var rt = new RenderTexture(desc)
-            {
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp,
-                name = "VistaPromptPack4Rt"
-            };
-            rt.Create();
-            NcnnGpuResourceTracker.RegisterTexture(rt, "VistaPromptPack4Rt");
-
-            var upload = new Texture2DArray(1, 1, packs, TextureFormat.RGBAFloat, false, true)
-            {
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp,
-                anisoLevel = 0,
-                name = "VistaPromptPack4Upload"
-            };
-            try
-            {
-                for (var pack = 0; pack < packs; pack++)
-                {
-                    var baseIndex = pack * 4;
-                    var x = baseIndex + 0 < channels ? promptMemoryPack.cpuData[baseIndex + 0] : 0f;
-                    var y = baseIndex + 1 < channels ? promptMemoryPack.cpuData[baseIndex + 1] : 0f;
-                    var z = baseIndex + 2 < channels ? promptMemoryPack.cpuData[baseIndex + 2] : 0f;
-                    var w = baseIndex + 3 < channels ? promptMemoryPack.cpuData[baseIndex + 3] : 0f;
-                    upload.SetPixels(new[] { new Color(x, y, z, w) }, pack, 0);
-                }
-                upload.Apply(false, true);
-
-                for (var pack = 0; pack < packs; pack++)
-                    Graphics.CopyTexture(upload, pack, 0, rt, pack, 0);
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(upload);
-            }
-
-            promptMemoryPack.pack4Rt = rt;
-            promptMemoryPack.pack4RtChannels = channels;
-            promptMemoryPack.pack4RtDepth = packs;
-            promptRt = rt;
             return true;
         }
 

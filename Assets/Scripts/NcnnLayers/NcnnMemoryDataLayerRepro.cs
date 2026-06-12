@@ -31,18 +31,11 @@ namespace NcnnCompute
                                         phaseSw.Stop();
                                         readMs += phaseSw.ElapsedMilliseconds;
 
-                                        phaseSw.Restart();
-                                        var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
-                                        buf.SetData(a);
-                                        phaseSw.Stop();
-                                        uploadMs += phaseSw.ElapsedMilliseconds;
-
                                         var dims = 1;
                                         if (h > 0) dims = 2;
                                         if (c > 0) dims = d > 0 ? 4 : 3;
-                                        owner._memoryData[layer.name] = new NcnnRepro.MemoryDataPack
+                                        var memoryPack = new NcnnRepro.MemoryDataPack
                                         {
-                                            data = buf,
                                             dims = dims,
                                             w = Mathf.Max(1, w),
                                             h = Mathf.Max(1, h),
@@ -50,6 +43,27 @@ namespace NcnnCompute
                                             c = Mathf.Max(1, c),
                                             cpuData = a
                                         };
+                                        if (ShouldUseVistaPromptPack4RtOnly(owner, layer, memoryPack))
+                                        {
+                                            phaseSw.Restart();
+                                            var createdVistaPromptRt = TryGetOrCreateVistaPromptPack4Rt(memoryPack, memoryPack.w, out _);
+                                            phaseSw.Stop();
+                                            uploadMs += phaseSw.ElapsedMilliseconds;
+                                            if (createdVistaPromptRt)
+                                            {
+                                                owner._memoryData[layer.name] = memoryPack;
+                                                return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+                                            }
+                                        }
+
+                                        phaseSw.Restart();
+                                        var buf = new ComputeBuffer(a.Length, sizeof(float), ComputeBufferType.Structured);
+                                        buf.SetData(a);
+                                        phaseSw.Stop();
+                                        uploadMs += phaseSw.ElapsedMilliseconds;
+
+                                        memoryPack.data = buf;
+                                        owner._memoryData[layer.name] = memoryPack;
                                         return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
         }
         [Obsolete(ComputeBufferPathObsoleteMessage)]
@@ -67,8 +81,14 @@ namespace NcnnCompute
 
                         do
                         {
-                                                if (!owner._memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
+                                                if (!owner._memoryData.TryGetValue(layer.name, out var mp))
                                                     throw new InvalidOperationException("MemoryData not found: " + layer.name);
+
+                                                if (TryPublishVistaPromptPack4RtBlob(owner, layer, mp, textureBlobs, textureShapes))
+                                                    continue;
+
+                                                if (mp.data == null && !TryCreateMemoryDataBuffer(mp))
+                                                    throw new InvalidOperationException("MemoryData buffer not found: " + layer.name);
 
                                                 if (owner.DisallowBufferOutputs && mp.dims <= 3)
                                                 {
@@ -140,6 +160,158 @@ namespace NcnnCompute
                 preferTexture: true,
                 blobs,
                 shapes);
+        }
+
+        private static bool ShouldUseVistaPromptPack4RtOnly(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnRepro.MemoryDataPack memoryPack)
+        {
+            return owner != null
+                && owner.EnableVistaTailPack4Specializations
+                && layer != null
+                && string.Equals(layer.name, "squeeze", StringComparison.Ordinal)
+                && memoryPack != null
+                && memoryPack.dims == 1
+                && memoryPack.w > 0
+                && memoryPack.cpuData != null
+                && memoryPack.cpuData.Length >= memoryPack.w;
+        }
+
+        private static bool TryPublishVistaPromptPack4RtBlob(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.MemoryDataPack memoryPack,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (!ShouldUseVistaPromptPack4RtOnly(owner, layer, memoryPack))
+                return false;
+            if (!TryGetOrCreateVistaPromptPack4Rt(memoryPack, memoryPack.w, out var promptRt) || promptRt == null)
+                return false;
+            if (layer.topNames == null || layer.topNames.Length == 0 || string.IsNullOrWhiteSpace(layer.topNames[0]))
+                return false;
+
+            var logicalShape = new NcnnRepro.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, memoryPack.d, memoryPack.c);
+            textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
+            {
+                texture = promptRt,
+                width = promptRt.width,
+                height = promptRt.height,
+                packs = memoryPack.pack4RtDepth,
+                refs = 1,
+                owned = false,
+                hasLogicalShape = true,
+                logicalShape = logicalShape,
+                hasStorageShape = true,
+                storageShape = logicalShape
+            };
+            textureShapes[layer.topNames[0]] = logicalShape;
+            owner.DebugLog?.Invoke(
+                "[MemoryDataPack4Rt] direct publish"
+                + " | layer=" + layer.name
+                + " | top=" + layer.topNames[0]
+                + " | packs=" + memoryPack.pack4RtDepth.ToString(CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        private static bool TryCreateMemoryDataBuffer(NcnnRepro.MemoryDataPack memoryPack)
+        {
+            if (memoryPack == null || memoryPack.data != null || memoryPack.cpuData == null || memoryPack.cpuData.Length == 0)
+                return memoryPack?.data != null;
+
+            try
+            {
+                var buf = new ComputeBuffer(memoryPack.cpuData.Length, sizeof(float), ComputeBufferType.Structured);
+                buf.SetData(memoryPack.cpuData);
+                memoryPack.data = buf;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static bool TryGetOrCreateVistaPromptPack4Rt(NcnnRepro.MemoryDataPack promptMemoryPack, int featureChannels, out RenderTexture promptRt)
+        {
+            promptRt = null;
+            if (promptMemoryPack == null || promptMemoryPack.cpuData == null)
+                return false;
+            if (promptMemoryPack.dims != 1)
+                return false;
+
+            var channels = Mathf.Max(1, featureChannels);
+            if (promptMemoryPack.w < channels || promptMemoryPack.cpuData.Length < channels)
+                return false;
+
+            var packs = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            if (promptMemoryPack.pack4Rt != null
+                && promptMemoryPack.pack4RtChannels == channels
+                && promptMemoryPack.pack4RtDepth == packs
+                && promptMemoryPack.pack4Rt.IsCreated())
+            {
+                promptRt = promptMemoryPack.pack4Rt;
+                return true;
+            }
+
+            try
+            {
+                if (promptMemoryPack.pack4Rt != null)
+                {
+                    NcnnGpuResourceTracker.ReleaseTexture(promptMemoryPack.pack4Rt, "VistaPromptPack4Rt.recreate");
+                    promptMemoryPack.pack4Rt.Release();
+                    UnityEngine.Object.DestroyImmediate(promptMemoryPack.pack4Rt);
+                }
+            }
+            catch { }
+
+            var desc = new RenderTextureDescriptor(1, 1, RenderTextureFormat.ARGBFloat, 0)
+            {
+                dimension = TextureDimension.Tex2DArray,
+                volumeDepth = packs,
+                enableRandomWrite = false,
+                msaaSamples = 1,
+            };
+            var rt = new RenderTexture(desc)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                name = "VistaPromptPack4Rt"
+            };
+            rt.Create();
+            NcnnGpuResourceTracker.RegisterTexture(rt, "VistaPromptPack4Rt");
+
+            var upload = new Texture2DArray(1, 1, packs, TextureFormat.RGBAFloat, false, true)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                anisoLevel = 0,
+                name = "VistaPromptPack4Upload"
+            };
+            try
+            {
+                for (var pack = 0; pack < packs; pack++)
+                {
+                    var baseIndex = pack * 4;
+                    var x = baseIndex + 0 < channels ? promptMemoryPack.cpuData[baseIndex + 0] : 0f;
+                    var y = baseIndex + 1 < channels ? promptMemoryPack.cpuData[baseIndex + 1] : 0f;
+                    var z = baseIndex + 2 < channels ? promptMemoryPack.cpuData[baseIndex + 2] : 0f;
+                    var w = baseIndex + 3 < channels ? promptMemoryPack.cpuData[baseIndex + 3] : 0f;
+                    upload.SetPixels(new[] { new Color(x, y, z, w) }, pack, 0);
+                }
+                upload.Apply(false, true);
+
+                for (var pack = 0; pack < packs; pack++)
+                    Graphics.CopyTexture(upload, pack, 0, rt, pack, 0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(upload);
+            }
+
+            promptMemoryPack.pack4Rt = rt;
+            promptMemoryPack.pack4RtChannels = channels;
+            promptMemoryPack.pack4RtDepth = packs;
+            promptRt = rt;
+            return true;
         }
     }
 }
