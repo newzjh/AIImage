@@ -319,22 +319,31 @@ namespace NcnnCompute
 
             var promptView = NcnnRepro.TryGetBufferView(plan.promptBlobName, context.bufferBlobs, context.bufferViews);
             var promptBuf = promptView?.buffer;
+            var featureShape = plan.featureShape;
+            var usedPromptRt = false;
             if (promptBuf == null
                 && !string.IsNullOrWhiteSpace(plan.promptMemoryLayerName)
-                && owner._memoryData.TryGetValue(plan.promptMemoryLayerName, out var memoryDataPack)
-                && memoryDataPack?.data != null)
+                && owner._memoryData.TryGetValue(plan.promptMemoryLayerName, out var memoryDataPack))
             {
-                promptBuf = memoryDataPack.data;
-                promptView = new NcnnTensorBuffer(
-                    memoryDataPack.data,
-                    memoryDataPack.dims,
-                    memoryDataPack.w,
-                    memoryDataPack.h,
-                    memoryDataPack.d,
-                    memoryDataPack.c,
-                    false);
+                if (TryGetOrCreateVistaPromptPack4Rt(memoryDataPack, featureShape.c, out var eagerPromptRt)
+                    && eagerPromptRt != null)
+                {
+                    usedPromptRt = true;
+                }
+                else if (memoryDataPack?.data != null)
+                {
+                    promptBuf = memoryDataPack.data;
+                    promptView = new NcnnTensorBuffer(
+                        memoryDataPack.data,
+                        memoryDataPack.dims,
+                        memoryDataPack.w,
+                        memoryDataPack.h,
+                        memoryDataPack.d,
+                        memoryDataPack.c,
+                        false);
+                }
             }
-            if (promptBuf == null)
+            if (!usedPromptRt && promptBuf == null)
             {
                 promptBuf = owner.GetOrConvertToBuffer(
                     plan.promptBlobName,
@@ -345,10 +354,9 @@ namespace NcnnCompute
                     context.tempOwned);
                 promptView = NcnnRepro.TryGetBufferView(plan.promptBlobName, context.bufferBlobs, context.bufferViews);
             }
-            if (promptBuf == null || promptView == null)
+            if (!usedPromptRt && (promptBuf == null || promptView == null))
                 return false;
-            var featureShape = plan.featureShape;
-            if (promptView.dims != 1 || promptView.w != featureShape.c)
+            if (!usedPromptRt && (promptView.dims != 1 || promptView.w != featureShape.c))
                 return false;
             if (featureShape.dims != 4 || featureShape.c <= 0 || featureTex.packs != Mathf.CeilToInt(featureShape.c / 4f))
                 return false;
@@ -357,20 +365,40 @@ namespace NcnnCompute
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(plan.outputShape.c / 4f));
             var outSlices = outDepth * outPacks;
             var outRt = owner.RentTempArray(plan.outputShape.w, plan.outputShape.h, outSlices, RenderTextureFormat.ARGBFloat);
-            owner.Ops.VistaTailPromptDotPack4(
-                featureTex.texture,
-                plan.outputShape.w,
-                plan.outputShape.h,
-                outDepth,
-                featureTex.packs,
-                promptBuf,
-                outRt);
+            if (usedPromptRt
+                && !string.IsNullOrWhiteSpace(plan.promptMemoryLayerName)
+                && owner._memoryData.TryGetValue(plan.promptMemoryLayerName, out var promptMemoryPack)
+                && TryGetOrCreateVistaPromptPack4Rt(promptMemoryPack, featureShape.c, out var promptRt)
+                && promptRt != null)
+            {
+                owner.Ops.VistaTailPromptDotPack4(
+                    featureTex.texture,
+                    plan.outputShape.w,
+                    plan.outputShape.h,
+                    outDepth,
+                    featureTex.packs,
+                    promptRt,
+                    outRt);
+            }
+            else
+            {
+                usedPromptRt = false;
+                owner.Ops.VistaTailPromptDotPack4(
+                    featureTex.texture,
+                    plan.outputShape.w,
+                    plan.outputShape.h,
+                    outDepth,
+                    featureTex.packs,
+                    promptBuf,
+                    outRt);
+            }
             NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, plan.outputShape);
             owner.DebugLog?.Invoke(
                 "[VistaTailPack4] specialized path"
                 + " | layer=" + layer.name
                 + " | feature=" + plan.featureTextureBlobName
                 + " | prompt=" + plan.promptBlobName
+                + " | prompt_mode=" + (usedPromptRt ? "rt" : "buffer")
                 + " | output=" + layer.topNames[0]
                 + " | featureShape=d" + featureShape.dims + ":" + featureShape.w + "x" + featureShape.h + "x" + featureShape.d + "x" + featureShape.c
                 + " | outputShape=d" + plan.outputShape.dims + ":" + plan.outputShape.w + "x" + plan.outputShape.h + "x" + plan.outputShape.d + "x" + plan.outputShape.c);
@@ -382,6 +410,90 @@ namespace NcnnCompute
                 context.remaining,
                 layer.bottomNames,
                 context.pinnedNames);
+            return true;
+        }
+
+        private static bool TryGetOrCreateVistaPromptPack4Rt(NcnnRepro.MemoryDataPack promptMemoryPack, int featureChannels, out RenderTexture promptRt)
+        {
+            promptRt = null;
+            if (promptMemoryPack == null || promptMemoryPack.cpuData == null)
+                return false;
+            if (promptMemoryPack.dims != 1)
+                return false;
+
+            var channels = Mathf.Max(1, featureChannels);
+            if (promptMemoryPack.w < channels || promptMemoryPack.cpuData.Length < channels)
+                return false;
+
+            var packs = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            if (promptMemoryPack.pack4Rt != null
+                && promptMemoryPack.pack4RtChannels == channels
+                && promptMemoryPack.pack4RtDepth == packs
+                && promptMemoryPack.pack4Rt.IsCreated())
+            {
+                promptRt = promptMemoryPack.pack4Rt;
+                return true;
+            }
+
+            try
+            {
+                if (promptMemoryPack.pack4Rt != null)
+                {
+                    NcnnGpuResourceTracker.ReleaseTexture(promptMemoryPack.pack4Rt, "VistaPromptPack4Rt.recreate");
+                    promptMemoryPack.pack4Rt.Release();
+                    UnityEngine.Object.DestroyImmediate(promptMemoryPack.pack4Rt);
+                }
+            }
+            catch { }
+
+            var desc = new RenderTextureDescriptor(1, 1, RenderTextureFormat.ARGBFloat, 0)
+            {
+                dimension = TextureDimension.Tex2DArray,
+                volumeDepth = packs,
+                enableRandomWrite = false,
+                msaaSamples = 1,
+            };
+            var rt = new RenderTexture(desc)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                name = "VistaPromptPack4Rt"
+            };
+            rt.Create();
+            NcnnGpuResourceTracker.RegisterTexture(rt, "VistaPromptPack4Rt");
+
+            var upload = new Texture2DArray(1, 1, packs, TextureFormat.RGBAFloat, false, true)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                anisoLevel = 0,
+                name = "VistaPromptPack4Upload"
+            };
+            try
+            {
+                for (var pack = 0; pack < packs; pack++)
+                {
+                    var baseIndex = pack * 4;
+                    var x = baseIndex + 0 < channels ? promptMemoryPack.cpuData[baseIndex + 0] : 0f;
+                    var y = baseIndex + 1 < channels ? promptMemoryPack.cpuData[baseIndex + 1] : 0f;
+                    var z = baseIndex + 2 < channels ? promptMemoryPack.cpuData[baseIndex + 2] : 0f;
+                    var w = baseIndex + 3 < channels ? promptMemoryPack.cpuData[baseIndex + 3] : 0f;
+                    upload.SetPixels(new[] { new Color(x, y, z, w) }, pack, 0);
+                }
+                upload.Apply(false, true);
+
+                for (var pack = 0; pack < packs; pack++)
+                    Graphics.CopyTexture(upload, pack, 0, rt, pack, 0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(upload);
+            }
+
+            promptMemoryPack.pack4Rt = rt;
+            promptMemoryPack.pack4RtChannels = channels;
+            promptMemoryPack.pack4RtDepth = packs;
+            promptRt = rt;
             return true;
         }
 

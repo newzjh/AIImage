@@ -47,7 +47,8 @@ namespace NcnnCompute
                                             w = Mathf.Max(1, w),
                                             h = Mathf.Max(1, h),
                                             d = Mathf.Max(1, d),
-                                            c = Mathf.Max(1, c)
+                                            c = Mathf.Max(1, c),
+                                            cpuData = a
                                         };
                                         return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
         }

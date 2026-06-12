@@ -358,6 +358,7 @@ namespace NcnnCompute
         private readonly int _kMatMul2D;
         private readonly int _kMatMulPack4Cdhw;
         private readonly int _kVistaTailPromptDotPack4;
+        private readonly int _kVistaTailPromptDotPack4Tex;
         private readonly int _kGemm2DTextureA;
         private readonly int _kGemm2D;
         private readonly int _kGemm2D16;
@@ -517,6 +518,7 @@ namespace NcnnCompute
             _kMatMul2D = _cs.FindKernel("NcnnMatMul2D");
             _kMatMulPack4Cdhw = _cs.FindKernel("NcnnMatMulPack4CDHW");
             _kVistaTailPromptDotPack4 = _cs.FindKernel("NcnnVistaTailPromptDotPack4");
+            _kVistaTailPromptDotPack4Tex = _cs.FindKernel("NcnnVistaTailPromptDotPack4Tex");
             _kGemm2DTextureA = _cs.FindKernel("NcnnGemm2DTextureA");
             _kGemm2D = _cs.FindKernel("NcnnGemm2D");
             _kGemm2D16 = _cs.FindKernel("NcnnGemm2D16");
@@ -3981,6 +3983,24 @@ namespace NcnnCompute
             _cs.SetBuffer(_kVistaTailPromptDotPack4, "_VistaTailPrompt", prompt);
             _cs.SetTexture(_kVistaTailPromptDotPack4, "_VistaTailOutArr", output);
             Dispatch3D(_kVistaTailPromptDotPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, depth), 8, 8);
+        }
+
+        public void VistaTailPromptDotPack4(RenderTexture featureTex, int width, int height, int depth, int packs, Texture promptTexture, RenderTexture output)
+        {
+            if (featureTex == null) throw new ArgumentNullException(nameof(featureTex));
+            if (promptTexture == null) throw new ArgumentNullException(nameof(promptTexture));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (width <= 0 || height <= 0 || depth <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+            if (packs <= 0) throw new ArgumentOutOfRangeException(nameof(packs));
+
+            _cs.SetInt("_VistaTailW", width);
+            _cs.SetInt("_VistaTailH", height);
+            _cs.SetInt("_VistaTailD", depth);
+            _cs.SetInt("_VistaTailPacks", packs);
+            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_VistaTailInArr", featureTex);
+            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_VistaTailPromptTex", promptTexture);
+            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_VistaTailOutArr", output);
+            Dispatch3D(_kVistaTailPromptDotPack4Tex, output.width, output.height, ResolveRenderTextureDispatchDepth(output, depth), 8, 8);
         }
 
         public void Gemm2D(ComputeBuffer a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, ComputeBuffer output)

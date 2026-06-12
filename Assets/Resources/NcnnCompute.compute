@@ -80,6 +80,7 @@
 #pragma kernel NcnnMatMul2D
 #pragma kernel NcnnMatMulPack4CDHW
 #pragma kernel NcnnVistaTailPromptDotPack4
+#pragma kernel NcnnVistaTailPromptDotPack4Tex
 #pragma kernel NcnnGemm2DTextureA
 #pragma kernel NcnnGemm2D
 #pragma kernel NcnnGemm2D16
@@ -3197,6 +3198,7 @@ int _GemmTexAInW;
 int _GemmTexAInH;
 Texture2DArray<float4> _VistaTailInArr;
 StructuredBuffer<float> _VistaTailPrompt;
+Texture2DArray<float4> _VistaTailPromptTex;
 RWTexture2DArray<float4> _VistaTailOutArr;
 int _VistaTailW;
 int _VistaTailH;
@@ -5313,6 +5315,33 @@ void NcnnVistaTailPromptDotPack4(uint3 id : SV_DispatchThreadID)
             _VistaTailPrompt[promptBase + 3]);
         sum += dot(feat, prompt4);
         promptBase += 4;
+    }
+
+    _VistaTailOutArr[int3(x, y, z)] = float4(sum, 0.0, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void NcnnVistaTailPromptDotPack4Tex(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, slices;
+    _VistaTailOutArr.GetDimensions(w, h, slices);
+    if (id.x >= w || id.y >= h || id.z >= slices)
+        return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int z = (int)id.z;
+    if (x < 0 || x >= _VistaTailW || y < 0 || y >= _VistaTailH || z < 0 || z >= _VistaTailD)
+        return;
+
+    float sum = 0.0;
+    int featureSliceBase = z * _VistaTailPacks;
+    [loop]
+    for (int pack = 0; pack < _VistaTailPacks; pack++)
+    {
+        float4 feat = _VistaTailInArr[int3(x, y, featureSliceBase + pack)];
+        float4 prompt4 = _VistaTailPromptTex[int3(0, 0, pack)];
+        sum += dot(feat, prompt4);
     }
 
     _VistaTailOutArr[int3(x, y, z)] = float4(sum, 0.0, 0.0, 0.0);

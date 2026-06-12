@@ -292,10 +292,24 @@ namespace NcnnCompute
             public int h;
             public int d;
             public int c;
+            public float[] cpuData;
+            public RenderTexture pack4Rt;
+            public int pack4RtChannels;
+            public int pack4RtDepth;
 
             public void Dispose()
             {
                 try { NcnnGpuResourceTracker.ReleaseBuffer(data, "NcnnRepro.MemoryDataPack.Dispose"); data?.Dispose(); } catch { }
+                try
+                {
+                    if (pack4Rt != null)
+                    {
+                        NcnnGpuResourceTracker.ReleaseTexture(pack4Rt, "NcnnRepro.MemoryDataPack.Dispose");
+                        pack4Rt.Release();
+                        UnityEngine.Object.DestroyImmediate(pack4Rt);
+                    }
+                }
+                catch { }
             }
         }
 
