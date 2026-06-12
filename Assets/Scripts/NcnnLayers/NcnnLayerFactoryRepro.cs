@@ -421,6 +421,17 @@ namespace NcnnCompute
                         + " | name=" + (layer?.name ?? string.Empty)
                         + " | path=" + layerOutputPath);
                 }
+                if (!string.IsNullOrWhiteSpace(TimingSplitSyncAfterTopName)
+                    && layer?.topNames != null
+                    && Array.IndexOf(layer.topNames, TimingSplitSyncAfterTopName) >= 0)
+                {
+                    var splitSyncSw = Stopwatch.StartNew();
+                    Ops.DebugSyncGpu();
+                    splitSyncSw.Stop();
+                    NotifyTimingSplitSyncPoint(
+                        TimingSplitSyncAfterTopName,
+                        splitSyncSw.ElapsedTicks * 1000d / Stopwatch.Frequency);
+                }
                 TryLogFirstNonFiniteLayerOutput(li, layer);
                 if (!string.IsNullOrWhiteSpace(stopAfterTopName)
                     && layer?.topNames != null

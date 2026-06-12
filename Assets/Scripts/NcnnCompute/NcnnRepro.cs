@@ -934,6 +934,8 @@ namespace NcnnCompute
         public bool LayerRuntimeProfileSyncGpu { get; set; }
         public string LayerRuntimeProfilePathKindOverride { get; set; }
         public LayerRuntimeProfile LastRuntimeProfile { get; private set; }
+        public string TimingSplitSyncAfterTopName { get; set; }
+        public Action<string, double> OnTimingSplitSyncPoint { get; set; }
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
         private const int FallbackMaxTextureArraySlices = 2048;
         private const int FallbackMaxTextureSize = 16384;
@@ -955,6 +957,11 @@ namespace NcnnCompute
         {
             _currentExecutingLayerName = null;
             _currentExecutingLayerTypeName = null;
+        }
+
+        internal void NotifyTimingSplitSyncPoint(string topName, double elapsedMs)
+        {
+            try { OnTimingSplitSyncPoint?.Invoke(topName, elapsedMs); } catch { }
         }
 
         internal bool ShouldForceCurrentLayerBufferPath()

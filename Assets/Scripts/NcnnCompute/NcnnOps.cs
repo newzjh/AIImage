@@ -268,6 +268,7 @@ namespace NcnnCompute
         private readonly int _kConv3x3;
         private readonly int _kConv3dBuf;
         private readonly int _kConv3dPack4Cdhw;
+        private readonly int _kConv3dPack4CdhwTile3x3;
         private readonly int _kDeconvolutionBuf;
         private readonly int _kDeconvolution3dPack4Cdhw;
         private readonly int _kDeconvolution3dBuf;
@@ -426,6 +427,8 @@ namespace NcnnCompute
             return Mathf.Max(1, output.depth > 0 ? output.depth : fallbackPacks);
         }
 
+        public bool EnableConv3dTile3x3Pack4FastPath { get; set; }
+
         public NcnnOps()
         {
             _cs = Resources.Load<ComputeShader>("NcnnCompute");
@@ -434,6 +437,7 @@ namespace NcnnCompute
             _kConv3x3 = _cs.FindKernel("NcnnConv3x3");
             _kConv3dBuf = _cs.FindKernel("NcnnConv3dBuf");
             _kConv3dPack4Cdhw = _cs.FindKernel("NcnnConv3dPack4CDHW");
+            _kConv3dPack4CdhwTile3x3 = _cs.FindKernel("NcnnConv3dPack4CDHWTile3x3");
             _kDeconvolutionBuf = _cs.FindKernel("NcnnDeconvolutionBuf");
             _kDeconvolution3dPack4Cdhw = _cs.FindKernel("NcnnDeconvolution3dPack4CDHW");
             _kDeconvolution3dBuf = _cs.FindKernel("NcnnDeconvolution3dBuf");
@@ -828,7 +832,7 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, _kConvDepthWisePack4, "_DwConvB4", b4);
             cmd.SetComputeTextureParam(_cs, _kConvDepthWisePack4, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConvDepthWisePack4, "_ConvOutArr", dstPack4.nameID);
-            Dispatch3D(cmd, _kConvDepthWisePack4, dstPack4.width, dstPack4.height, packs, 8, 8);
+            Dispatch3D(cmd, _kConvDepthWisePack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, packs, 8, 8);
         }
 
         public void LeakyReluPack4(RenderTexture input, float slope, int packs, RenderTexture output)
@@ -1955,7 +1959,7 @@ namespace NcnnCompute
             _cs.SetBuffer(_kConvPack4General, "_ConvB4", b4);
             _cs.SetTexture(_kConvPack4General, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConvPack4General, "_ConvOutArr", dstPack4);
-            Dispatch3D(_kConvPack4General, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+            Dispatch3D(_kConvPack4General, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
         }
 
         public void DeconvolutionPack4General(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
@@ -2024,7 +2028,7 @@ namespace NcnnCompute
             _cs.SetBuffer(_kConvDepthWisePack4, "_DwConvB4", b4);
             _cs.SetTexture(_kConvDepthWisePack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConvDepthWisePack4, "_ConvOutArr", dstPack4);
-            Dispatch3D(_kConvDepthWisePack4, dstPack4.width, dstPack4.height, packs, 8, 8);
+            Dispatch3D(_kConvDepthWisePack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, packs, 8, 8);
         }
 
         public void Conv3x3Pack4Winograd23(RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4)
@@ -2565,7 +2569,7 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, _kConvPack4General, "_ConvB4", b4);
             cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvOutArr", dstPack4.nameID);
-            Dispatch3D(cmd, _kConvPack4General, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+            Dispatch3D(cmd, _kConvPack4General, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
         }
 
 
@@ -4697,6 +4701,17 @@ namespace NcnnCompute
             if (outW <= 0 || outH <= 0 || outD <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
             if (inPacks <= 0 || outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
 
+            var useTile3x3FastPath = EnableConv3dTile3x3Pack4FastPath
+                && kernelW == 3
+                && kernelH == 3
+                && kernelD == 3
+                && strideW == 1
+                && strideH == 1
+                && strideD == 1
+                && dilationW == 1
+                && dilationH == 1
+                && dilationD == 1;
+
             _cs.SetInt("_InW", inW);
             _cs.SetInt("_InH", inH);
             _cs.SetInt("_InD", inD);
@@ -4722,11 +4737,21 @@ namespace NcnnCompute
             _cs.SetInt("_DilationDVar", Mathf.Max(1, dilationD));
             _cs.SetInt("_ActType", activationType);
             _cs.SetFloat("_ActParam", activationParam);
-            _cs.SetBuffer(_kConv3dPack4Cdhw, "_ConvW4", weightsO4I4K3);
-            _cs.SetBuffer(_kConv3dPack4Cdhw, "_ConvB4", biasO4);
-            _cs.SetTexture(_kConv3dPack4Cdhw, "_ConvInArr", input);
-            _cs.SetTexture(_kConv3dPack4Cdhw, "_ConvOutArr", output);
-            Dispatch3D(_kConv3dPack4Cdhw, outW, outH, ResolveRenderTextureDispatchDepth(output, outD * outPacks), 8, 8);
+            var kernel = useTile3x3FastPath ? _kConv3dPack4CdhwTile3x3 : _kConv3dPack4Cdhw;
+            _cs.SetBuffer(kernel, "_ConvW4", weightsO4I4K3);
+            _cs.SetBuffer(kernel, "_ConvB4", biasO4);
+            _cs.SetTexture(kernel, "_ConvInArr", input);
+            _cs.SetTexture(kernel, "_ConvOutArr", output);
+            if (useTile3x3FastPath)
+            {
+                var dispatchX = (outW + 1) / 2;
+                var dispatchY = (outH + 1) / 2;
+                var dispatchZ = Mathf.Max(1, outD * ((outPacks + 1) / 2));
+                Dispatch3D(kernel, dispatchX, dispatchY, dispatchZ, 8, 8);
+                return;
+            }
+
+            Dispatch3D(kernel, (outW + 1) / 2, (outH + 1) / 2, Mathf.Max(1, outD * ((outPacks + 1) / 2)), 8, 8);
         }
 
         public void Deconvolution(

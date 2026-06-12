@@ -107,6 +107,11 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public float[] niftiAffine;
     }
 
+    private sealed class VolumeLoadOptions
+    {
+        public bool includeVoxelData = true;
+    }
+
     private sealed class PreparedInput
     {
         public string caseName;
@@ -196,12 +201,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public bool disallowBufferOutputs = false;
     public bool disallowBufferToTextureMaterialization = false;
     public bool keepRawConvWeightsForTexturePath = true;
+    public RenderTextureFormat tensorTextureFormat = RenderTextureFormat.ARGBHalf;
     public string debugPinnedBlobNamesCsv = string.Empty;
     public bool logAllLayerHeartbeats = false;
     public bool logAllLayerOutputs = false;
     public bool logAllBufferMaterialize = false;
     public bool enableLayerRuntimeProfile = false;
     public bool syncLayerRuntimeProfile = false;
+    public bool enableConv3dTile3x3Pack4FastPath = false;
+    public bool enableTimingSplitDiagnostics = false;
+    public string timingSplitStopAfterBlobName = string.Empty;
+    public string timingSplitSyncAfterTopName = string.Empty;
 
     public event Action<float, string> ProgressChanged;
 
@@ -218,6 +228,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private string _lastPathMode = string.Empty;
     private int _flushedDebugLineCount;
     private bool _loggedPatchInputTextureRoundtrip;
+    private bool _timingSplitPatchDiagnosticCaptured;
+    private bool _timingSplitReadbackDiagnosticCaptured;
+    private readonly Dictionary<string, double> _diagnosticTimingMs = new Dictionary<string, double>(StringComparer.Ordinal);
 
     public string LastDumpDir => _lastDumpDir;
     public string LastSummaryText => _lastSummaryText;
@@ -277,6 +290,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _lastPathMode = string.Empty;
         _flushedDebugLineCount = 0;
         _loggedPatchInputTextureRoundtrip = false;
+        _timingSplitPatchDiagnosticCaptured = false;
+        _timingSplitReadbackDiagnosticCaptured = false;
+        _diagnosticTimingMs.Clear();
 
         MonaiSegmentationResult Finish(MonaiSegmentationResult result)
         {
@@ -514,6 +530,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 {
                     WriteUInt16Array(Path.Combine(_lastDumpDir, "labelmap_dhw_u16.bin"), labelMap16);
                     TryWriteRestoredLabelMap(_lastDumpDir, prepared, labelMap16, outD, outH, outW);
+                    var restoredPath = Path.Combine(_lastDumpDir, "labelmap_restored" + (prepared?.referenceVolume?.sourceFormat == "nrrd" ? ".nrrd" : ".nii.gz"));
+                    if (comparison != null)
+                    {
+                        var restoredComparison = BuildRestoredLabelMapComparison(prepared?.baselineManifest, prepared?.baselineCaseDir, restoredPath);
+                        if (restoredComparison != null)
+                            comparison["restored_labelmap"] = restoredComparison;
+                    }
                 }
                 _timingMs["total_elapsed_ms"] = totalSw.ElapsedMilliseconds;
                 WriteText(Path.Combine(_lastDumpDir, "summary.txt"), summary);
@@ -589,6 +612,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (_repro == null)
             return;
 
+        if (_ops != null)
+            _ops.EnableConv3dTile3x3Pack4FastPath = enableConv3dTile3x3Pack4FastPath;
+
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.EnableGroupNormTexturePath = true;
@@ -605,12 +631,15 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _repro.DisallowBufferOutputs = disallowBufferOutputs;
         _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
         _repro.KeepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
+        _repro.TensorTextureFormat = tensorTextureFormat;
         _repro.DebugLogAllLayerHeartbeats = logAllLayerHeartbeats;
         _repro.DebugLogAllLayerOutputs = logAllLayerOutputs;
         _repro.DebugLogAllBufferMaterialize = logAllBufferMaterialize;
         _repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
         _repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfile;
         _repro.LayerRuntimeProfilePathKindOverride = ResolvePathMode(useTextureInputForMonaiPatches);
+        _repro.TimingSplitSyncAfterTopName = enableTimingSplitDiagnostics ? timingSplitSyncAfterTopName : null;
+        _repro.OnTimingSplitSyncPoint = enableTimingSplitDiagnostics ? HandleTimingSplitSyncPoint : null;
         _repro.EnableAttentionMatMulPack4Specializations = enableAttentionMatMulPack4Specializations;
         _repro.EnableVistaTailPack4Specializations = false;
         _repro.DebugLog = AppendDebugLine;
@@ -923,18 +952,35 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (tensor.Length != expected)
             throw new InvalidOperationException("MONAI baseline input tensor size mismatch: expected " + expected + " got " + tensor.Length);
 
-        MonaiVolumeData referenceVolume = null;
+        var manifestReferenceVolume = TryLoadReferenceVolumeFromManifest(request.baselineManifest, new VolumeLoadOptions { includeVoxelData = false });
+        MonaiVolumeData referenceVolume = manifestReferenceVolume;
         if (request.inputVolumePaths != null && request.inputVolumePaths.Length > 0)
         {
             var referencePath = ResolveProjectPath(request.inputVolumePaths[0]);
             if (!string.IsNullOrWhiteSpace(referencePath) && File.Exists(referencePath))
             {
                 AppendDebugLine("PrepareBaselineInputAsync reference load | path=" + referencePath);
-                referenceVolume = await UniTask.RunOnThreadPool(() => LoadVolume(referencePath), cancellationToken: ct);
+                var requestedReference = await UniTask.RunOnThreadPool(
+                    () => LoadVolume(referencePath, new VolumeLoadOptions { includeVoxelData = false }),
+                    cancellationToken: ct);
+                if (ReferenceVolumeMatchesBaseline(manifestReferenceVolume, requestedReference))
+                {
+                    referenceVolume = requestedReference;
+                }
+                else if (requestedReference != null)
+                {
+                    AppendDebugLine(
+                        "PrepareBaselineInputAsync reference shape mismatch"
+                        + " | requested=" + requestedReference.dim0 + "x" + requestedReference.dim1 + "x" + requestedReference.dim2
+                        + " | baseline=" + (manifestReferenceVolume != null
+                            ? manifestReferenceVolume.dim0 + "x" + manifestReferenceVolume.dim1 + "x" + manifestReferenceVolume.dim2
+                            : "none")
+                        + " | fallback=baseline_manifest");
+                }
             }
         }
 
-        referenceVolume ??= TryLoadReferenceVolumeFromManifest(request.baselineManifest);
+        referenceVolume ??= manifestReferenceVolume;
 
         AppendDebugLine("PrepareBaselineInputAsync complete | case=" + (request.baselineManifest["case_name"]?.Value<string>() ?? request.caseName ?? string.Empty));
         return new PreparedInput
@@ -1206,9 +1252,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         roiD,
                         roiH,
                         roiW,
-                        patchTensor);
+                    patchTensor);
                     inputTensor.buffer.SetData(patchTensor);
 
+                    if (ShouldRunTimingSplitDiagnosticsForPatch(patchIndex))
+                        RunPatchTimingSplitDiagnostics(resolved, inputTensor, roiD, roiH, roiW);
+
+                    var fullDispatchSw = enableTimingSplitDiagnostics && patchIndex == 1 ? Stopwatch.StartNew() : null;
                     using var inferHandle = RunInferenceWithPatchInput(
                         resolved,
                         inputTensor,
@@ -1217,7 +1267,25 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         roiW,
                         pinnedBlobNames,
                         null);
+                    fullDispatchSw?.Stop();
                     var infer = inferHandle.infer;
+
+                    if (enableTimingSplitDiagnostics && patchIndex == 1)
+                    {
+                        var dispatchMs = StopwatchToMilliseconds(fullDispatchSw);
+                        RecordDiagnosticTiming("diag_full_dispatch_ms", dispatchMs);
+                        var syncSw = Stopwatch.StartNew();
+                        _ops?.DebugSyncGpu();
+                        syncSw.Stop();
+                        var syncMs = StopwatchToMilliseconds(syncSw);
+                        RecordDiagnosticTiming("diag_full_sync_after_return_ms", syncMs);
+                        RecordDiagnosticTiming("diag_full_total_before_readback_ms", dispatchMs + syncMs);
+                        AppendDebugLine(
+                            "TimingSplitDiagnostic full_infer"
+                            + " | patch=" + patchIndex.ToString(CultureInfo.InvariantCulture)
+                            + " | dispatch_ms=" + dispatchMs.ToString("0.###", CultureInfo.InvariantCulture)
+                            + " | sync_after_return_ms=" + syncMs.ToString("0.###", CultureInfo.InvariantCulture));
+                    }
 
                     var outputView = GetInferOutputShape(infer, resolved.outputBlobName, "MONAI sliding window output blob missing: ");
                     if (outputView.dims != 4)
@@ -1924,7 +1992,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         var hasExistingTexture = infer.TryGetExistingTexture(blobName, out var texture) && texture != null;
         if (hasExistingTexture)
-            return ReadTextureOutputData(texture, outputView);
+            return ReadTextureOutputData(
+                texture,
+                outputView,
+                recordTimingDiagnostics: enableTimingSplitDiagnostics && !_timingSplitReadbackDiagnosticCaptured);
 
         try
         {
@@ -1942,7 +2013,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         try
         {
-            return ReadTextureOutputData(texture, outputView);
+            return ReadTextureOutputData(
+                texture,
+                outputView,
+                recordTimingDiagnostics: enableTimingSplitDiagnostics && !_timingSplitReadbackDiagnosticCaptured);
         }
         finally
         {
@@ -1951,19 +2025,54 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         }
     }
 
-    private float[] ReadTextureOutputData(RenderTexture texture, InferOutputShape outputView)
+    private float[] ReadTextureOutputData(RenderTexture texture, InferOutputShape outputView, bool recordTimingDiagnostics = false)
     {
         if (texture == null)
             throw new ArgumentNullException(nameof(texture));
 
         var count = checked(Mathf.Max(1, outputView.w) * Mathf.Max(1, outputView.h) * Mathf.Max(1, outputView.d) * Mathf.Max(1, outputView.c));
         using var outputBuffer = new ComputeBuffer(count, sizeof(float), ComputeBufferType.Structured);
+        var packDispatchSw = recordTimingDiagnostics ? Stopwatch.StartNew() : null;
         if (outputView.dims == 4)
             _ops.Pack4ToBufferCDHW(texture, outputView.w, outputView.h, outputView.d, outputView.c, outputBuffer);
         else
             _ops.Pack4ToBufferCHW(texture, outputView.w, outputView.h, outputView.c, outputBuffer);
+        packDispatchSw?.Stop();
+
+        double syncBeforeGetDataMs = 0d;
+        if (recordTimingDiagnostics)
+        {
+            var syncSw = Stopwatch.StartNew();
+            _ops?.DebugSyncGpu();
+            syncSw.Stop();
+            syncBeforeGetDataMs = StopwatchToMilliseconds(syncSw);
+        }
+
         var data = new float[count];
+        var getDataSw = recordTimingDiagnostics ? Stopwatch.StartNew() : null;
         outputBuffer.GetData(data);
+        getDataSw?.Stop();
+
+        if (recordTimingDiagnostics)
+        {
+            var packDispatchMs = StopwatchToMilliseconds(packDispatchSw);
+            var getDataMs = StopwatchToMilliseconds(getDataSw);
+            RecordDiagnosticTiming("diag_output_pack_dispatch_ms", packDispatchMs);
+            RecordDiagnosticTiming("diag_output_sync_before_getdata_ms", syncBeforeGetDataMs);
+            RecordDiagnosticTiming("diag_output_getdata_ms", getDataMs);
+            RecordDiagnosticTiming("diag_output_total_readback_ms", packDispatchMs + syncBeforeGetDataMs + getDataMs);
+            _timingSplitReadbackDiagnosticCaptured = true;
+            AppendDebugLine(
+                "TimingSplitDiagnostic readback"
+                + " | dims=" + outputView.dims.ToString(CultureInfo.InvariantCulture)
+                + " | shape=" + outputView.w.ToString(CultureInfo.InvariantCulture)
+                + "x" + outputView.h.ToString(CultureInfo.InvariantCulture)
+                + "x" + outputView.d.ToString(CultureInfo.InvariantCulture)
+                + "x" + outputView.c.ToString(CultureInfo.InvariantCulture)
+                + " | pack_dispatch_ms=" + packDispatchMs.ToString("0.###", CultureInfo.InvariantCulture)
+                + " | sync_before_getdata_ms=" + syncBeforeGetDataMs.ToString("0.###", CultureInfo.InvariantCulture)
+                + " | getdata_ms=" + getDataMs.ToString("0.###", CultureInfo.InvariantCulture));
+        }
         return data;
     }
 
@@ -2130,6 +2239,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         {
             var timings = new JObject();
             foreach (var kv in _timingMs)
+                timings[kv.Key] = kv.Value;
+            foreach (var kv in _diagnosticTimingMs)
                 timings[kv.Key] = kv.Value;
             timings["total_elapsed_ms"] = _timingMs.ContainsKey("total_elapsed_ms")
                 ? _timingMs["total_elapsed_ms"]
@@ -2600,7 +2711,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return values.ToArray();
     }
 
-    private static MonaiVolumeData TryLoadReferenceVolumeFromManifest(JObject manifest)
+    private static MonaiVolumeData TryLoadReferenceVolumeFromManifest(JObject manifest, VolumeLoadOptions options = null)
     {
         var inputs = manifest?["inputs"] as JArray;
         if (inputs == null || inputs.Count == 0)
@@ -2612,12 +2723,23 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         try
         {
-            return LoadVolume(firstPath);
+            return LoadVolume(firstPath, options);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static bool ReferenceVolumeMatchesBaseline(MonaiVolumeData baseline, MonaiVolumeData candidate)
+    {
+        if (candidate == null)
+            return false;
+        if (baseline == null)
+            return true;
+        return baseline.dim0 == candidate.dim0
+            && baseline.dim1 == candidate.dim1
+            && baseline.dim2 == candidate.dim2;
     }
 
     private static List<MonaiVolumeData> FillInputChannels(List<MonaiVolumeData> volumes, int requiredChannels, MonaiChannelFillMode mode)
@@ -3006,6 +3128,70 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (labelMap != null)
             TryAddLabelMapDiff(result, "labelmap", ResolveBaselineFile(files, "labelmap_u8_bin", baselineCaseDir), labelMap);
         return result;
+    }
+
+    private JObject BuildRestoredLabelMapComparison(JObject baselineManifest, string baselineCaseDir, string restoredLabelMapPath)
+    {
+        if (baselineManifest == null || string.IsNullOrWhiteSpace(restoredLabelMapPath) || !File.Exists(restoredLabelMapPath))
+            return null;
+
+        var files = baselineManifest["files"] as JObject;
+        if (files == null)
+            return null;
+
+        var baselinePath = files["official_restored_labelmap"]?.Value<string>();
+        if (string.IsNullOrWhiteSpace(baselinePath))
+            baselinePath = ResolveBaselineFile(files, "restored_labelmap", baselineCaseDir);
+        if (string.IsNullOrWhiteSpace(baselinePath) || !File.Exists(baselinePath))
+            return null;
+
+        try
+        {
+            var current = LoadVolume(restoredLabelMapPath);
+            var baseline = LoadVolume(baselinePath);
+            if (current == null || baseline == null || current.data == null || baseline.data == null)
+                return null;
+
+            var currentCount = current.data.Length;
+            var baselineCount = baseline.data.Length;
+            var obj = new JObject
+            {
+                ["path"] = baselinePath,
+                ["current_count"] = currentCount,
+                ["baseline_count"] = baselineCount
+            };
+            if (currentCount != baselineCount)
+            {
+                obj["error"] = "count_mismatch";
+                return obj;
+            }
+
+            var mismatch = 0;
+            var maxAbs = 0;
+            for (var i = 0; i < currentCount; i++)
+            {
+                var a = Mathf.RoundToInt(current.data[i]);
+                var b = Mathf.RoundToInt(baseline.data[i]);
+                if (a != b)
+                    mismatch++;
+                var diff = Math.Abs(a - b);
+                if (diff > maxAbs)
+                    maxAbs = diff;
+            }
+
+            obj["mismatch_count"] = mismatch;
+            obj["equal_ratio"] = currentCount > 0 ? 1d - mismatch / (double)currentCount : 1d;
+            obj["max_abs"] = maxAbs;
+            return obj;
+        }
+        catch (Exception e)
+        {
+            return new JObject
+            {
+                ["path"] = baselinePath,
+                ["error"] = e.Message
+            };
+        }
     }
 
     private static void TryAddFloatArrayDiff(JObject dst, string name, string path, float[] current)
@@ -3528,6 +3714,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             AppendComparisonLine(sb, comparison, "probs");
             AppendComparisonLine(sb, comparison, "masks");
             AppendComparisonLine(sb, comparison, "labelmap");
+            AppendComparisonLine(sb, comparison, "restored_labelmap");
         }
 
         return sb.ToString();
@@ -4301,21 +4488,32 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var reference = prepared.referenceVolume;
         try
         {
-            var restored = labelMap;
-            if (reference.dim0 != depth || reference.dim1 != height || reference.dim2 != width)
+            var restored = TryRestoreVistaLabelMapFromManifest(prepared.baselineManifest, labelMap, depth, height, width);
+            if (restored != null)
             {
-                restored = CenterCropOrPadLabelMap(
-                    labelMap,
-                    depth,
-                    height,
-                    width,
-                    reference.dim0,
-                    reference.dim1,
-                    reference.dim2);
                 AppendDebugLine(
-                    "TryWriteRestoredLabelMap restore_shape"
+                    "TryWriteRestoredLabelMap vista_inverse_restore"
                     + " | src=" + depth + "x" + height + "x" + width
                     + " | dst=" + reference.dim0 + "x" + reference.dim1 + "x" + reference.dim2);
+            }
+            else
+            {
+                restored = labelMap;
+                if (reference.dim0 != depth || reference.dim1 != height || reference.dim2 != width)
+                {
+                    restored = CenterCropOrPadLabelMap(
+                        labelMap,
+                        depth,
+                        height,
+                        width,
+                        reference.dim0,
+                        reference.dim1,
+                        reference.dim2);
+                    AppendDebugLine(
+                        "TryWriteRestoredLabelMap restore_shape"
+                        + " | src=" + depth + "x" + height + "x" + width
+                        + " | dst=" + reference.dim0 + "x" + reference.dim1 + "x" + reference.dim2);
+                }
             }
 
             WriteLabelMapForReference(outputDir, "labelmap_restored", restored, reference);
@@ -4325,6 +4523,91 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         {
             AppendDebugLine("TryWriteRestoredLabelMap failed | " + e.Message);
         }
+    }
+
+    private bool ShouldRunTimingSplitDiagnosticsForPatch(int patchIndex)
+    {
+        return enableTimingSplitDiagnostics
+            && !_timingSplitPatchDiagnosticCaptured
+            && patchIndex == 1
+            && !string.IsNullOrWhiteSpace(timingSplitStopAfterBlobName)
+            && _repro != null
+            && _ops != null;
+    }
+
+    private void RunPatchTimingSplitDiagnostics(ResolvedRequest resolved, NcnnTensorBuffer inputTensor, int depth, int height, int width)
+    {
+        if (!ShouldRunTimingSplitDiagnosticsForPatch(1))
+            return;
+
+        var stopAfterBlobName = timingSplitStopAfterBlobName?.Trim();
+        if (string.IsNullOrWhiteSpace(stopAfterBlobName))
+            return;
+
+        _timingSplitPatchDiagnosticCaptured = true;
+        var pinnedBlobNames = BuildPinnedBlobNames(stopAfterBlobName, resolved?.debugPinnedBlobNames);
+        AppendDebugLine(
+            "TimingSplitDiagnostic body_begin"
+            + " | stop_after=" + stopAfterBlobName
+            + " | shape=" + width.ToString(CultureInfo.InvariantCulture)
+            + "x" + height.ToString(CultureInfo.InvariantCulture)
+            + "x" + depth.ToString(CultureInfo.InvariantCulture));
+
+        var dispatchSw = Stopwatch.StartNew();
+        using var inferHandle = RunInferenceWithPatchInput(
+            resolved,
+            inputTensor,
+            depth,
+            height,
+            width,
+            pinnedBlobNames,
+            stopAfterBlobName);
+        dispatchSw.Stop();
+        var outputView = GetInferOutputShape(inferHandle.infer, stopAfterBlobName, "MONAI timing-split stop blob missing: ");
+
+        var syncSw = Stopwatch.StartNew();
+        _ops?.DebugSyncGpu();
+        syncSw.Stop();
+
+        var dispatchMs = StopwatchToMilliseconds(dispatchSw);
+        var syncMs = StopwatchToMilliseconds(syncSw);
+        RecordDiagnosticTiming("diag_body_dispatch_ms", dispatchMs);
+        RecordDiagnosticTiming("diag_body_sync_ms", syncMs);
+        RecordDiagnosticTiming("diag_body_total_ms", dispatchMs + syncMs);
+        AppendDebugLine(
+            "TimingSplitDiagnostic body_end"
+            + " | stop_after=" + stopAfterBlobName
+            + " | output_shape=d" + outputView.dims.ToString(CultureInfo.InvariantCulture)
+            + ":" + outputView.w.ToString(CultureInfo.InvariantCulture)
+            + "x" + outputView.h.ToString(CultureInfo.InvariantCulture)
+            + "x" + outputView.d.ToString(CultureInfo.InvariantCulture)
+            + "x" + outputView.c.ToString(CultureInfo.InvariantCulture)
+            + " | dispatch_ms=" + dispatchMs.ToString("0.###", CultureInfo.InvariantCulture)
+            + " | sync_ms=" + syncMs.ToString("0.###", CultureInfo.InvariantCulture));
+    }
+
+    private void RecordDiagnosticTiming(string key, double milliseconds)
+    {
+        if (string.IsNullOrWhiteSpace(key) || double.IsNaN(milliseconds) || double.IsInfinity(milliseconds))
+            return;
+
+        _diagnosticTimingMs[key] = milliseconds;
+    }
+
+    private void HandleTimingSplitSyncPoint(string topName, double elapsedMs)
+    {
+        RecordDiagnosticTiming("diag_inline_sync_after_top_ms", elapsedMs);
+        AppendDebugLine(
+            "TimingSplitDiagnostic inline_sync"
+            + " | top=" + (topName ?? string.Empty)
+            + " | sync_ms=" + elapsedMs.ToString("0.###", CultureInfo.InvariantCulture));
+    }
+
+    private static double StopwatchToMilliseconds(Stopwatch sw)
+    {
+        if (sw == null)
+            return 0d;
+        return sw.ElapsedTicks * 1000d / Stopwatch.Frequency;
     }
 
     private void TryWriteLabelSubsetMasks(string outputDir, JObject baselineManifest, ushort[] restoredLabelMap, MonaiVolumeData reference)
@@ -4402,6 +4685,136 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var result = new ushort[source.Length];
         for (var i = 0; i < source.Length; i++)
             result[i] = wanted.Contains(source[i]) ? (ushort)1 : (ushort)0;
+        return result;
+    }
+
+    private static ushort[] TryRestoreVistaLabelMapFromManifest(JObject baselineManifest, ushort[] source, int srcDepth, int srcHeight, int srcWidth)
+    {
+        var inverse = baselineManifest?["inverse_restore"] as JObject;
+        if (inverse == null)
+            return null;
+        if (!string.Equals(inverse["kind"]?.Value<string>(), "vista_preprocessing_inverse_v1", StringComparison.Ordinal))
+            return null;
+
+        var processedAffine = ReadFloatArray(inverse["processed_affine"]);
+        var orientation = inverse["orientation_inverse"] as JObject;
+        var crop = inverse["crop_inverse"] as JObject;
+        var spacing = inverse["spacing_inverse"] as JObject;
+        if (processedAffine == null || processedAffine.Length < 16 || orientation == null || crop == null || spacing == null)
+            return null;
+
+        var orientationAffine = ReadFloatArray(orientation["original_affine"]);
+        var orientationSize = ReadIntArray(orientation["orig_size_xyz"]);
+        var cropSize = ReadIntArray(crop["orig_size_xyz"]);
+        var cropped = ReadIntArray(crop["cropped_xyz"]);
+        var spacingAffine = ReadFloatArray(spacing["src_affine"]);
+        var spacingSize = ReadIntArray(spacing["orig_size_xyz"]);
+        if (orientationAffine == null || orientationAffine.Length < 16
+            || spacingAffine == null || spacingAffine.Length < 16
+            || orientationSize == null || orientationSize.Length < 3
+            || cropSize == null || cropSize.Length < 3
+            || cropped == null || cropped.Length < 6
+            || spacingSize == null || spacingSize.Length < 3)
+        {
+            return null;
+        }
+
+        var orientationRestored = ResampleNearestLabelMap(
+            source,
+            srcDepth,
+            srcHeight,
+            srcWidth,
+            processedAffine,
+            orientationAffine,
+            orientationSize[0],
+            orientationSize[1],
+            orientationSize[2]);
+        if (orientationRestored == null)
+            return null;
+
+        var cropRestored = new ushort[checked(cropSize[0] * cropSize[1] * cropSize[2])];
+        var padBeforeX = Mathf.Max(0, cropped[0]);
+        var padAfterX = Mathf.Max(0, cropped[1]);
+        var padBeforeY = Mathf.Max(0, cropped[2]);
+        var padAfterY = Mathf.Max(0, cropped[3]);
+        var padBeforeZ = Mathf.Max(0, cropped[4]);
+        var padAfterZ = Mathf.Max(0, cropped[5]);
+        var copyX = Math.Min(orientationSize[0], cropSize[0] - padBeforeX - padAfterX);
+        var copyY = Math.Min(orientationSize[1], cropSize[1] - padBeforeY - padAfterY);
+        var copyZ = Math.Min(orientationSize[2], cropSize[2] - padBeforeZ - padAfterZ);
+        if (copyX <= 0 || copyY <= 0 || copyZ <= 0)
+            return null;
+
+        for (var x = 0; x < copyX; x++)
+        {
+            var dstX = padBeforeX + x;
+            for (var y = 0; y < copyY; y++)
+            {
+                var dstY = padBeforeY + y;
+                var srcOffset = ((x * orientationSize[1]) + y) * orientationSize[2];
+                var dstOffset = ((dstX * cropSize[1]) + dstY) * cropSize[2] + padBeforeZ;
+                Array.Copy(orientationRestored, srcOffset, cropRestored, dstOffset, copyZ);
+            }
+        }
+
+        var cropAffine = (float[])orientationAffine.Clone();
+        for (var row = 0; row < 3; row++)
+        {
+            cropAffine[row * 4 + 3] -= cropAffine[row * 4 + 0] * padBeforeX;
+            cropAffine[row * 4 + 3] -= cropAffine[row * 4 + 1] * padBeforeY;
+            cropAffine[row * 4 + 3] -= cropAffine[row * 4 + 2] * padBeforeZ;
+        }
+
+        return ResampleNearestLabelMap(
+            cropRestored,
+            cropSize[0],
+            cropSize[1],
+            cropSize[2],
+            cropAffine,
+            spacingAffine,
+            spacingSize[0],
+            spacingSize[1],
+            spacingSize[2]);
+    }
+
+    private static ushort[] ResampleNearestLabelMap(
+        ushort[] source,
+        int srcDim0,
+        int srcDim1,
+        int srcDim2,
+        float[] srcAffine,
+        float[] dstAffine,
+        int dstDim0,
+        int dstDim1,
+        int dstDim2)
+    {
+        if (source == null || srcAffine == null || dstAffine == null)
+            return null;
+        if (srcAffine.Length < 16 || dstAffine.Length < 16)
+            return null;
+        if (srcDim0 <= 0 || srcDim1 <= 0 || srcDim2 <= 0 || dstDim0 <= 0 || dstDim1 <= 0 || dstDim2 <= 0)
+            return null;
+
+        var srcMatrix = BuildMatrix4x4(srcAffine);
+        var dstMatrix = BuildMatrix4x4(dstAffine);
+        var dstToSrc = srcMatrix.inverse * dstMatrix;
+        var result = new ushort[checked(dstDim0 * dstDim1 * dstDim2)];
+        for (var x = 0; x < dstDim0; x++)
+        {
+            for (var y = 0; y < dstDim1; y++)
+            {
+                for (var z = 0; z < dstDim2; z++)
+                {
+                    var src = dstToSrc.MultiplyPoint3x4(new Vector3(x, y, z));
+                    var sx = Mathf.RoundToInt(src.x);
+                    var sy = Mathf.RoundToInt(src.y);
+                    var sz = Mathf.RoundToInt(src.z);
+                    if (sx < 0 || sy < 0 || sz < 0 || sx >= srcDim0 || sy >= srcDim1 || sz >= srcDim2)
+                        continue;
+                    result[((x * dstDim1) + y) * dstDim2 + z] = source[((sx * srcDim1) + sy) * srcDim2 + sz];
+                }
+            }
+        }
         return result;
     }
 
@@ -4542,17 +4955,18 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return parts;
     }
 
-    private static MonaiVolumeData LoadVolume(string path)
+    private static MonaiVolumeData LoadVolume(string path, VolumeLoadOptions options = null)
     {
+        options ??= new VolumeLoadOptions();
         var lower = path.ToLowerInvariant();
         if (lower.EndsWith(".nrrd", StringComparison.Ordinal) || lower.EndsWith(".nhdr", StringComparison.Ordinal))
-            return LoadNrrd(path);
+            return LoadNrrd(path, options);
         if (lower.EndsWith(".nii", StringComparison.Ordinal) || lower.EndsWith(".nii.gz", StringComparison.Ordinal))
-            return LoadNifti(path);
+            return LoadNifti(path, options);
         throw new InvalidOperationException("Unsupported MONAI medical input format: " + path);
     }
 
-    private static MonaiVolumeData LoadNrrd(string path)
+    private static MonaiVolumeData LoadNrrd(string path, VolumeLoadOptions options)
     {
         var content = File.ReadAllBytes(path);
         var separator = FindNrrdHeaderSeparator(content, out var separatorLength);
@@ -4587,21 +5001,20 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             throw new InvalidOperationException("Unsupported NRRD encoding: " + encoding);
 
         var spacing = ParseNrrdSpacing(header);
-        var data = ConvertFirstAxisFastRawToCOrder(rawBytes, sizes[0], sizes[1], sizes[2], elementType, littleEndian, 0);
         return new MonaiVolumeData
         {
             path = path,
             dim0 = sizes[0],
             dim1 = sizes[1],
             dim2 = sizes[2],
-            data = data,
+            data = options.includeVoxelData ? ConvertFirstAxisFastRawToCOrder(rawBytes, sizes[0], sizes[1], sizes[2], elementType, littleEndian, 0) : null,
             spacing = spacing,
             sourceFormat = "nrrd",
             nrrdHeader = new Dictionary<string, string>(header, StringComparer.OrdinalIgnoreCase)
         };
     }
 
-    private static MonaiVolumeData LoadNifti(string path)
+    private static MonaiVolumeData LoadNifti(string path, VolumeLoadOptions options)
     {
         var bytes = File.ReadAllBytes(path);
         if (path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
@@ -4640,14 +5053,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (bytes.Length < voxOffset + volumeStride)
             throw new InvalidOperationException("NIfTI voxel payload is truncated: " + path);
 
-        var data = ConvertFirstAxisFastRawToCOrder(bytes, dim0, dim1, dim2, elementType, littleEndian, voxOffset);
         return new MonaiVolumeData
         {
             path = path,
             dim0 = dim0,
             dim1 = dim1,
             dim2 = dim2,
-            data = data,
+            data = options.includeVoxelData ? ConvertFirstAxisFastRawToCOrder(bytes, dim0, dim1, dim2, elementType, littleEndian, voxOffset) : null,
             spacing = spacing,
             sourceFormat = path.EndsWith(".nii.gz", StringComparison.OrdinalIgnoreCase) ? "nifti-gz" : "nifti",
             niftiAffine = BuildNiftiAffine(bytes, littleEndian)
@@ -4937,6 +5349,26 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return raw;
     }
 
+    private static byte[] ToNiftiPayload(ushort[] values, int dim0, int dim1, int dim2)
+    {
+        var raw = new byte[values.Length * sizeof(ushort)];
+        var dst = 0;
+        for (var z = 0; z < dim2; z++)
+        {
+            for (var y = 0; y < dim1; y++)
+            {
+                for (var x = 0; x < dim0; x++)
+                {
+                    var src = ((x * dim1) + y) * dim2 + z;
+                    var value = values[src];
+                    raw[dst++] = (byte)(value & 0xFF);
+                    raw[dst++] = (byte)(value >> 8);
+                }
+            }
+        }
+        return raw;
+    }
+
     private static void WriteNiftiLabelMap(string path, ushort[] values, MonaiVolumeData reference)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path));
@@ -4977,8 +5409,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             WriteFloat32ToBytes(header, 324, reference.niftiAffine[11]);
         }
 
-        var payload = new byte[values.Length * sizeof(ushort)];
-        Buffer.BlockCopy(values, 0, payload, 0, payload.Length);
+        var payload = ToNiftiPayload(values, reference.dim0, reference.dim1, reference.dim2);
         using var fs = File.Create(path);
         using var gz = new GZipOutputStream(fs);
         gz.Write(header, 0, header.Length);
@@ -5067,6 +5498,31 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         }
 
         return null;
+    }
+
+    private static Matrix4x4 BuildMatrix4x4(float[] values)
+    {
+        if (values == null || values.Length < 16)
+            throw new ArgumentException("Matrix4x4 requires 16 values.", nameof(values));
+
+        var matrix = new Matrix4x4();
+        matrix.m00 = values[0];
+        matrix.m01 = values[1];
+        matrix.m02 = values[2];
+        matrix.m03 = values[3];
+        matrix.m10 = values[4];
+        matrix.m11 = values[5];
+        matrix.m12 = values[6];
+        matrix.m13 = values[7];
+        matrix.m20 = values[8];
+        matrix.m21 = values[9];
+        matrix.m22 = values[10];
+        matrix.m23 = values[11];
+        matrix.m30 = values[12];
+        matrix.m31 = values[13];
+        matrix.m32 = values[14];
+        matrix.m33 = values[15];
+        return matrix;
     }
 
     private static void WriteInt16ToBytes(byte[] bytes, int offset, short value)

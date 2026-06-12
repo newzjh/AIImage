@@ -89,12 +89,18 @@ public static class NcnnDebugRunner
     private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
     private const string MonaiEnableAttentionMatMulPack4EnvVar = "AIIMAGE_MONAI_ENABLE_ATTENTION_MATMUL_PACK4";
     private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
+    private const string MonaiTensorFormatEnvVar = "AIIMAGE_MONAI_TENSOR_FORMAT";
     private const string MonaiNormalizeNonZeroEnvVar = "AIIMAGE_MONAI_NORMALIZE_NONZERO";
     private const string MonaiDebugPinnedBlobsEnvVar = "AIIMAGE_MONAI_DEBUG_PINNED_BLOBS";
     private const string MonaiOutputBlobEnvVar = "AIIMAGE_MONAI_OUTPUT_BLOB";
     private const string MonaiLogAllLayerHeartbeatsEnvVar = "AIIMAGE_MONAI_LOG_ALL_LAYER_HEARTBEATS";
     private const string MonaiLogAllLayerOutputsEnvVar = "AIIMAGE_MONAI_LOG_ALL_LAYER_OUTPUTS";
     private const string MonaiLogAllBufferMaterializeEnvVar = "AIIMAGE_MONAI_LOG_ALL_BUFFER_MATERIALIZE";
+    private const string MonaiEnableLayerRuntimeProfileSyncGpuEnvVar = "AIIMAGE_MONAI_LAYER_RUNTIME_PROFILE_SYNC_GPU";
+    private const string MonaiEnableConv3dTile3x3FastPathEnvVar = "AIIMAGE_MONAI_ENABLE_CONV3D_TILE3X3_FASTPATH";
+    private const string MonaiEnableTimingSplitDiagnosticsEnvVar = "AIIMAGE_MONAI_ENABLE_TIMING_SPLIT_DIAGNOSTICS";
+    private const string MonaiTimingSplitStopAfterBlobEnvVar = "AIIMAGE_MONAI_TIMING_SPLIT_STOP_AFTER_BLOB";
+    private const string MonaiTimingSplitSyncAfterTopEnvVar = "AIIMAGE_MONAI_TIMING_SPLIT_SYNC_AFTER_TOP";
     private const string MonaiPack4SelfTestEnvVar = "AIIMAGE_MONAI_PACK4_SELFTEST";
     private const string MonaiPack4SelfTestFormatEnvVar = "AIIMAGE_MONAI_PACK4_SELFTEST_FORMAT";
     private const string MonaiProbeOnlyEnvVar = "AIIMAGE_MONAI_PROBE_ONLY";
@@ -611,8 +617,10 @@ public static class NcnnDebugRunner
         var baselineManifestPath = !string.IsNullOrWhiteSpace(baselineManifestOverride)
             ? baselineManifestOverride
             : (ResolveOptionalExistingFile(MonaiBaselineManifestEnvVar) ?? DefaultMonaiBaselineManifestPath);
-        var inputPaths = inputPathsOverride != null && inputPathsOverride.Length > 0 ? inputPathsOverride : ResolveMonaiInputPaths();
         var useBaselineTensor = useBaselineTensorOverride ?? ResolveBoolEnv(MonaiUseBaselineTensorEnvVar, true);
+        var inputPaths = inputPathsOverride != null && inputPathsOverride.Length > 0
+            ? inputPathsOverride
+            : ResolveMonaiInputPathsForRun(baselineManifestPath, useBaselineTensor);
         var outputDir = ResolveStringEnv(MonaiOutputDirEnvVar, null);
         var caseName = ResolveStringEnv(MonaiCaseNameEnvVar, null);
         var compareBaseline = ResolveBoolEnv(MonaiCompareBaselineEnvVar, true);
@@ -627,6 +635,7 @@ public static class NcnnDebugRunner
         var patchInputMode = ResolveStringEnv(MonaiPatchInputModeEnvVar, null);
         var enableAttentionMatMulPack4 = ResolveBoolEnv(MonaiEnableAttentionMatMulPack4EnvVar, false);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
+        var tensorTextureFormat = ResolveRenderTextureFormatEnv(MonaiTensorFormatEnvVar, RenderTextureFormat.ARGBHalf);
         var normalizeNonZeroOverride = ResolveOptionalBoolEnv(MonaiNormalizeNonZeroEnvVar);
         var normalizeNonZero = normalizeNonZeroOverride ?? true;
         var debugPinnedBlobsCsv = ResolveStringEnv(MonaiDebugPinnedBlobsEnvVar, string.Empty);
@@ -634,6 +643,11 @@ public static class NcnnDebugRunner
         var logAllLayerHeartbeats = ResolveBoolEnv(MonaiLogAllLayerHeartbeatsEnvVar, false);
         var logAllLayerOutputs = ResolveBoolEnv(MonaiLogAllLayerOutputsEnvVar, false);
         var logAllBufferMaterialize = ResolveBoolEnv(MonaiLogAllBufferMaterializeEnvVar, false);
+        var layerRuntimeProfileSyncGpu = ResolveBoolEnv(MonaiEnableLayerRuntimeProfileSyncGpuEnvVar, false);
+        var enableConv3dTile3x3FastPath = ResolveBoolEnv(MonaiEnableConv3dTile3x3FastPathEnvVar, false);
+        var enableTimingSplitDiagnostics = ResolveBoolEnv(MonaiEnableTimingSplitDiagnosticsEnvVar, false);
+        var timingSplitStopAfterBlob = ResolveStringEnv(MonaiTimingSplitStopAfterBlobEnvVar, string.Empty);
+        var timingSplitSyncAfterTop = ResolveStringEnv(MonaiTimingSplitSyncAfterTopEnvVar, string.Empty);
         var probeOnly = ResolveBoolEnv(MonaiProbeOnlyEnvVar, false);
         var maxPatchCount = ResolvePositiveIntEnvAllowZero(MonaiMaxPatchesEnvVar, probeOnly ? 1 : 0);
         var probePatchOrdinal = ResolvePositiveIntEnvAllowZero(MonaiProbePatchOrdinalEnvVar, 0);
@@ -679,6 +693,7 @@ public static class NcnnDebugRunner
             runner.useTextureInputForMonaiPatches = ResolveMonaiPatchInputMode(forceBufferAll, patchInputMode);
             runner.enableAttentionMatMulPack4Specializations = enableAttentionMatMulPack4;
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
+            runner.tensorTextureFormat = tensorTextureFormat;
             runner.debugPinnedBlobNamesCsv = debugPinnedBlobsCsv;
             runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, false);
             runner.maxPooledPerShape = runner.enableTempPool ? 1 : 0;
@@ -692,7 +707,11 @@ public static class NcnnDebugRunner
             runner.logAllLayerOutputs = logAllLayerOutputs;
             runner.logAllBufferMaterialize = logAllBufferMaterialize;
             runner.enableLayerRuntimeProfile = true;
-            runner.syncLayerRuntimeProfile = false;
+            runner.syncLayerRuntimeProfile = layerRuntimeProfileSyncGpu;
+            runner.enableConv3dTile3x3Pack4FastPath = enableConv3dTile3x3FastPath;
+            runner.enableTimingSplitDiagnostics = enableTimingSplitDiagnostics;
+            runner.timingSplitStopAfterBlobName = timingSplitStopAfterBlob;
+            runner.timingSplitSyncAfterTopName = timingSplitSyncAfterTop;
             if (runner.useTextureInputForMonaiPatches)
                 runner.forceBufferLayerNames = forceBufferNames;
             if (ResolveBoolEnv(MonaiPack4OnlyGuardEnvVar, false))
@@ -702,6 +721,8 @@ public static class NcnnDebugRunner
                 runner.disallowBufferAccess = true;
                 runner.disallowBufferOutputs = true;
                 runner.disallowBufferToTextureMaterialization = true;
+                if (!EnvironmentVariableExists(MonaiKeepRawConvEnvVar))
+                    runner.keepRawConvWeightsForTexturePath = false;
             }
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[MONAI Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
@@ -2254,6 +2275,49 @@ public static class NcnnDebugRunner
         return new[] { DefaultMonaiInputPath };
     }
 
+    private static string[] ResolveMonaiInputPathsForRun(string baselineManifestPath, bool useBaselineTensor)
+    {
+        if (EnvironmentVariableExists(MonaiInputPathsEnvVar))
+            return ResolveMonaiInputPaths();
+
+        if (useBaselineTensor)
+        {
+            var manifestPaths = TryReadMonaiInputPathsFromBaselineManifest(baselineManifestPath);
+            if (manifestPaths != null && manifestPaths.Length > 0)
+                return manifestPaths;
+        }
+
+        return ResolveMonaiInputPaths();
+    }
+
+    private static string[] TryReadMonaiInputPathsFromBaselineManifest(string baselineManifestPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(baselineManifestPath) || !File.Exists(baselineManifestPath))
+                return null;
+
+            var root = JObject.Parse(File.ReadAllText(baselineManifestPath, System.Text.Encoding.UTF8));
+            var inputs = root["inputs"] as JArray;
+            if (inputs == null || inputs.Count == 0)
+                return null;
+
+            var result = new List<string>(inputs.Count);
+            for (var i = 0; i < inputs.Count; i++)
+            {
+                var path = inputs[i]?["path"]?.Value<string>();
+                if (!string.IsNullOrWhiteSpace(path))
+                    result.Add(path);
+            }
+
+            return result.Count > 0 ? result.ToArray() : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static List<string> ResolveStressInputPaths(string fallbackPath)
     {
         try
@@ -2467,6 +2531,18 @@ public static class NcnnDebugRunner
         }
 
         return fallback;
+    }
+
+    private static bool EnvironmentVariableExists(string envName)
+    {
+        try
+        {
+            return Environment.GetEnvironmentVariable(envName) != null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static float ResolveFloatEnvOrDefault(string envName, float fallback)

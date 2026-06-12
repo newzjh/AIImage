@@ -88,10 +88,13 @@ namespace NcnnCompute
             phaseSw.Stop();
             readMs += phaseSw.ElapsedMilliseconds;
 
-            phaseSw.Restart();
-            NcnnRepro.UploadRawConvWeights(pack, w, b);
-            phaseSw.Stop();
-            uploadMs += phaseSw.ElapsedMilliseconds;
+            if (owner.KeepRawConvWeightsForTexturePath || owner.ForceBufferConvolution || owner.ForceBufferConvolutionAll)
+            {
+                phaseSw.Restart();
+                NcnnRepro.UploadRawConvWeights(pack, w, b);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+            }
 
             phaseSw.Restart();
             var w4 = NcnnRepro.PackWeightsToO4I4K3D(

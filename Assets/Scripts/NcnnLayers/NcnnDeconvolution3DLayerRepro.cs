@@ -82,15 +82,18 @@ namespace NcnnCompute
             phaseSw.Stop();
             readMs += phaseSw.ElapsedMilliseconds;
 
-            phaseSw.Restart();
-            pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-            NcnnGpuResourceTracker.RegisterBuffer(pack.rawWeight, w.Length, sizeof(float), "NcnnRepro.Deconv3DRawWeight:" + layer.name);
-            pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-            NcnnGpuResourceTracker.RegisterBuffer(pack.rawBias, b.Length, sizeof(float), "NcnnRepro.Deconv3DRawBias:" + layer.name);
-            pack.rawWeight.SetData(w);
-            pack.rawBias.SetData(b);
-            phaseSw.Stop();
-            uploadMs += phaseSw.ElapsedMilliseconds;
+            if (owner.KeepRawConvWeightsForTexturePath || owner.ForceBufferConvolution || owner.ForceBufferConvolutionAll)
+            {
+                phaseSw.Restart();
+                pack.rawWeight = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(pack.rawWeight, w.Length, sizeof(float), "NcnnRepro.Deconv3DRawWeight:" + layer.name);
+                pack.rawBias = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(pack.rawBias, b.Length, sizeof(float), "NcnnRepro.Deconv3DRawBias:" + layer.name);
+                pack.rawWeight.SetData(w);
+                pack.rawBias.SetData(b);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
+            }
 
             phaseSw.Restart();
             var w4 = NcnnRepro.PackWeightsToO4I4K3D(
