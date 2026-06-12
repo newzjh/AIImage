@@ -334,6 +334,14 @@ float NcnnApplyActivationScalar(float v)
     return v;
 }
 
+void NcnnAccumulateDot4(inout float4 sum, float4 v, float4 w0, float4 w1, float4 w2, float4 w3)
+{
+    sum.x += dot(v, w0);
+    sum.y += dot(v, w1);
+    sum.z += dot(v, w2);
+    sum.w += dot(v, w3);
+}
+
 groupshared float4 _ConvTile[18 * 18];
 groupshared float4 _ConvWeight0[9 * 4];
 groupshared float4 _ConvWeight1[9 * 4];
@@ -2903,18 +2911,11 @@ void NcnnConv3dPack4CDHWZ2(uint3 id : SV_DispatchThreadID)
     if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice1b)] = z1sum31;
 }
 
-groupshared float4 _Conv3dTile3x3[18 * 18 * 3];
-groupshared float4 _Conv3dWeightTile3x3_0[27 * 4];
-groupshared float4 _Conv3dWeightTile3x3_1[27 * 4];
-
 // Specialized 3x3x3 stride-1 pack4 conv for 4D tensors.
-// One 8x8 group covers a 16x16 output region for a single z slice while producing
-// up to two output packs, mirroring the proven 2D 3x3 pack4 blocking strategy.
-[numthreads(8,8,1)]
-void NcnnConv3dPack4CDHWTile3x3(
-    uint3 id : SV_DispatchThreadID,
-    uint3 groupId : SV_GroupID,
-    uint3 groupThreadId : SV_GroupThreadID)
+// Interior 2x2 output blocks skip the general-path bounds checks and use direct
+// fetches; boundary blocks fall back to the stable general path.
+[numthreads(16,4,1)]
+void NcnnConv3dPack4CDHWTile3x3(uint3 id : SV_DispatchThreadID)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
@@ -2924,12 +2925,31 @@ void NcnnConv3dPack4CDHWTile3x3(
     int outPairCount = max(1, (_OutPacks + 1) / 2);
     int oz = (int)id.z / outPairCount;
     int op = ((int)id.z - oz * outPairCount) * 2;
+    if (ox >= (int)ow || oy >= (int)oh || oz < 0 || oz >= _OutD || op < 0 || op >= _OutPacks)
+        return;
+
     int op1 = op + 1;
-    bool active = ox < (int)ow && oy < (int)oh && oz >= 0 && oz < _OutD && op >= 0 && op < _OutPacks;
     bool hasOp1 = op1 < _OutPacks;
     bool hasX1 = (ox + 1) < (int)ow;
     bool hasY1 = (oy + 1) < (int)oh;
-    float4 bias0 = active ? _ConvB4[op] : 0.0;
+    int sxBase = ox - _PadLeftVar;
+    int syBase = oy - _PadTopVar;
+    int szBase = oz - _PadFrontVar;
+    bool interior = hasX1
+        && hasY1
+        && sxBase >= 0
+        && syBase >= 0
+        && szBase >= 0
+        && (sxBase + 3) < _InW
+        && (syBase + 3) < _InH
+        && (szBase + 2) < _InD;
+    if (!interior)
+    {
+        NcnnConv3dPack4CDHWBody(id);
+        return;
+    }
+
+    float4 bias0 = _ConvB4[op];
     float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
     float4 sum00 = bias0;
     float4 sum01 = bias0;
@@ -2940,138 +2960,80 @@ void NcnnConv3dPack4CDHWTile3x3(
     float4 sum30 = bias1;
     float4 sum31 = bias1;
 
-    int groupOx = (int)groupId.x * 16;
-    int groupOy = (int)groupId.y * 16;
-    int groupSx = groupOx - _PadLeftVar;
-    int groupSy = groupOy - _PadTopVar;
-    int groupSz = oz - _PadFrontVar;
-    int lane = (int)groupThreadId.y * 8 + (int)groupThreadId.x;
-    int localOx = (int)groupThreadId.x * 2;
-    int localOy = (int)groupThreadId.y * 2;
-
     [loop]
     for (int ip = 0; ip < _InPacks; ip++)
     {
-        for (int li = lane; li < 18 * 18 * 3; li += 64)
-        {
-            int tx = li % 18;
-            int temp = li / 18;
-            int ty = temp % 18;
-            int tz = temp / 18;
-            int sx = groupSx + tx;
-            int sy = groupSy + ty;
-            int sz = groupSz + tz;
-            float4 v = 0.0;
-            if (sx >= 0 && sy >= 0 && sz >= 0 && sx < _InW && sy < _InH && sz < _InD)
-                v = _ConvInArr[int3(sx, sy, sz * _InPacks + ip)];
-            _Conv3dTile3x3[li] = v;
-        }
-
-        for (int wi = lane; wi < 27 * 4; wi += 64)
-        {
-            _Conv3dWeightTile3x3_0[wi] = active ? _ConvW4[((op * _InPacks + ip) * 27) * 4 + wi] : 0.0;
-            _Conv3dWeightTile3x3_1[wi] = hasOp1 ? _ConvW4[((op1 * _InPacks + ip) * 27) * 4 + wi] : 0.0;
-        }
-
-        GroupMemoryBarrierWithGroupSync();
+        int weightBase0 = ((op * _InPacks + ip) * 27) * 4;
+        int weightBase1 = hasOp1 ? ((op1 * _InPacks + ip) * 27) * 4 : 0;
 
         [unroll]
         for (int kz = 0; kz < 3; kz++)
         {
+            int inSlice = (szBase + kz) * _InPacks + ip;
             [unroll]
             for (int ky = 0; ky < 3; ky++)
             {
+                int sy = syBase + ky;
                 [unroll]
                 for (int kx = 0; kx < 3; kx++)
                 {
-                    int tileBase = ((kz * 18) + (localOy + ky)) * 18 + (localOx + kx);
-                    float4 v00 = _Conv3dTile3x3[tileBase];
-                    float4 v01 = _Conv3dTile3x3[tileBase + 1];
-                    float4 v10 = _Conv3dTile3x3[tileBase + 18];
-                    float4 v11 = _Conv3dTile3x3[tileBase + 19];
+                    int sx = sxBase + kx;
+                    float4 v00 = _ConvInArr[int3(sx, sy, inSlice)];
+                    float4 v01 = _ConvInArr[int3(sx + 1, sy, inSlice)];
+                    float4 v10 = _ConvInArr[int3(sx, sy + 1, inSlice)];
+                    float4 v11 = _ConvInArr[int3(sx + 1, sy + 1, inSlice)];
 
-                    int wbase = ((kz * 9) + (ky * 3) + kx) * 4;
-                    float4 w00 = _Conv3dWeightTile3x3_0[wbase + 0];
-                    float4 w01 = _Conv3dWeightTile3x3_0[wbase + 1];
-                    float4 w02 = _Conv3dWeightTile3x3_0[wbase + 2];
-                    float4 w03 = _Conv3dWeightTile3x3_0[wbase + 3];
+                    int wbase = weightBase0 + (((kz * 9) + (ky * 3) + kx) * 4);
+                    float4 w00 = _ConvW4[wbase + 0];
+                    float4 w01 = _ConvW4[wbase + 1];
+                    float4 w02 = _ConvW4[wbase + 2];
+                    float4 w03 = _ConvW4[wbase + 3];
 
-                    sum00.x += dot(v00, w00);
-                    sum00.y += dot(v00, w01);
-                    sum00.z += dot(v00, w02);
-                    sum00.w += dot(v00, w03);
-                    sum01.x += dot(v01, w00);
-                    sum01.y += dot(v01, w01);
-                    sum01.z += dot(v01, w02);
-                    sum01.w += dot(v01, w03);
-                    sum10.x += dot(v10, w00);
-                    sum10.y += dot(v10, w01);
-                    sum10.z += dot(v10, w02);
-                    sum10.w += dot(v10, w03);
-                    sum11.x += dot(v11, w00);
-                    sum11.y += dot(v11, w01);
-                    sum11.z += dot(v11, w02);
-                    sum11.w += dot(v11, w03);
+                    NcnnAccumulateDot4(sum00, v00, w00, w01, w02, w03);
+                    NcnnAccumulateDot4(sum01, v01, w00, w01, w02, w03);
+                    NcnnAccumulateDot4(sum10, v10, w00, w01, w02, w03);
+                    NcnnAccumulateDot4(sum11, v11, w00, w01, w02, w03);
 
                     if (hasOp1)
                     {
-                        float4 w10 = _Conv3dWeightTile3x3_1[wbase + 0];
-                        float4 w11 = _Conv3dWeightTile3x3_1[wbase + 1];
-                        float4 w12 = _Conv3dWeightTile3x3_1[wbase + 2];
-                        float4 w13 = _Conv3dWeightTile3x3_1[wbase + 3];
+                        int qbase = weightBase1 + (((kz * 9) + (ky * 3) + kx) * 4);
+                        float4 q00 = _ConvW4[qbase + 0];
+                        float4 q01 = _ConvW4[qbase + 1];
+                        float4 q02 = _ConvW4[qbase + 2];
+                        float4 q03 = _ConvW4[qbase + 3];
 
-                        sum20.x += dot(v00, w10);
-                        sum20.y += dot(v00, w11);
-                        sum20.z += dot(v00, w12);
-                        sum20.w += dot(v00, w13);
-                        sum21.x += dot(v01, w10);
-                        sum21.y += dot(v01, w11);
-                        sum21.z += dot(v01, w12);
-                        sum21.w += dot(v01, w13);
-                        sum30.x += dot(v10, w10);
-                        sum30.y += dot(v10, w11);
-                        sum30.z += dot(v10, w12);
-                        sum30.w += dot(v10, w13);
-                        sum31.x += dot(v11, w10);
-                        sum31.y += dot(v11, w11);
-                        sum31.z += dot(v11, w12);
-                        sum31.w += dot(v11, w13);
+                        NcnnAccumulateDot4(sum20, v00, q00, q01, q02, q03);
+                        NcnnAccumulateDot4(sum21, v01, q00, q01, q02, q03);
+                        NcnnAccumulateDot4(sum30, v10, q00, q01, q02, q03);
+                        NcnnAccumulateDot4(sum31, v11, q00, q01, q02, q03);
                     }
                 }
             }
         }
-
-        GroupMemoryBarrierWithGroupSync();
     }
 
     int outSlice0 = oz * _OutPacks + op;
-    if (active)
-    {
-        sum00 = NcnnApplyActivation(sum00);
-        if (hasX1) sum01 = NcnnApplyActivation(sum01);
-        if (hasY1) sum10 = NcnnApplyActivation(sum10);
-        if (hasX1 && hasY1) sum11 = NcnnApplyActivation(sum11);
-        _ConvOutArr[int3(ox, oy, outSlice0)] = sum00;
-        if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice0)] = sum01;
-        if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice0)] = sum10;
-        if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice0)] = sum11;
-    }
+    sum00 = NcnnApplyActivation(sum00);
+    sum01 = NcnnApplyActivation(sum01);
+    sum10 = NcnnApplyActivation(sum10);
+    sum11 = NcnnApplyActivation(sum11);
+    _ConvOutArr[int3(ox, oy, outSlice0)] = sum00;
+    _ConvOutArr[int3(ox + 1, oy, outSlice0)] = sum01;
+    _ConvOutArr[int3(ox, oy + 1, outSlice0)] = sum10;
+    _ConvOutArr[int3(ox + 1, oy + 1, outSlice0)] = sum11;
 
     if (!hasOp1)
         return;
 
     int outSlice1 = oz * _OutPacks + op1;
-    if (active)
-    {
-        sum20 = NcnnApplyActivation(sum20);
-        if (hasX1) sum21 = NcnnApplyActivation(sum21);
-        if (hasY1) sum30 = NcnnApplyActivation(sum30);
-        if (hasX1 && hasY1) sum31 = NcnnApplyActivation(sum31);
-        _ConvOutArr[int3(ox, oy, outSlice1)] = sum20;
-        if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice1)] = sum21;
-        if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice1)] = sum30;
-        if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice1)] = sum31;
-    }
+    sum20 = NcnnApplyActivation(sum20);
+    sum21 = NcnnApplyActivation(sum21);
+    sum30 = NcnnApplyActivation(sum30);
+    sum31 = NcnnApplyActivation(sum31);
+    _ConvOutArr[int3(ox, oy, outSlice1)] = sum20;
+    _ConvOutArr[int3(ox + 1, oy, outSlice1)] = sum21;
+    _ConvOutArr[int3(ox, oy + 1, outSlice1)] = sum30;
+    _ConvOutArr[int3(ox + 1, oy + 1, outSlice1)] = sum31;
 }
 
 [numthreads(8,8,1)]

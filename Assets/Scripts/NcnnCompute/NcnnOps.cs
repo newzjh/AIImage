@@ -4748,7 +4748,7 @@ namespace NcnnCompute
                 var dispatchX = (outW + 1) / 2;
                 var dispatchY = (outH + 1) / 2;
                 var dispatchZ = Mathf.Max(1, outD * ((outPacks + 1) / 2));
-                Dispatch3D(kernel, dispatchX, dispatchY, dispatchZ, 8, 8);
+                Dispatch3D(kernel, dispatchX, dispatchY, dispatchZ, 16, 4);
                 return;
             }
 
