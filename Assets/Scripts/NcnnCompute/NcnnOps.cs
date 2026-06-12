@@ -267,7 +267,7 @@ namespace NcnnCompute
         private readonly ComputeShader _cs;
         private readonly int _kConv3x3;
         private readonly int _kConv3dBuf;
-        private readonly int _kConv3dPack4Cdhw;
+        private readonly int _kConv3dPack4Cdhw16x4;
         private readonly int _kConv3dPack4CdhwTile3x3;
         private readonly int _kDeconvolutionBuf;
         private readonly int _kDeconvolution3dPack4Cdhw;
@@ -436,7 +436,7 @@ namespace NcnnCompute
                 throw new InvalidOperationException("ComputeShader not found: Resources/NcnnCompute.compute");
             _kConv3x3 = _cs.FindKernel("NcnnConv3x3");
             _kConv3dBuf = _cs.FindKernel("NcnnConv3dBuf");
-            _kConv3dPack4Cdhw = _cs.FindKernel("NcnnConv3dPack4CDHW");
+            _kConv3dPack4Cdhw16x4 = _cs.FindKernel("NcnnConv3dPack4CDHW16x4");
             _kConv3dPack4CdhwTile3x3 = _cs.FindKernel("NcnnConv3dPack4CDHWTile3x3");
             _kDeconvolutionBuf = _cs.FindKernel("NcnnDeconvolutionBuf");
             _kDeconvolution3dPack4Cdhw = _cs.FindKernel("NcnnDeconvolution3dPack4CDHW");
@@ -4711,7 +4711,6 @@ namespace NcnnCompute
                 && dilationW == 1
                 && dilationH == 1
                 && dilationD == 1;
-
             _cs.SetInt("_InW", inW);
             _cs.SetInt("_InH", inH);
             _cs.SetInt("_InD", inD);
@@ -4737,7 +4736,9 @@ namespace NcnnCompute
             _cs.SetInt("_DilationDVar", Mathf.Max(1, dilationD));
             _cs.SetInt("_ActType", activationType);
             _cs.SetFloat("_ActParam", activationParam);
-            var kernel = useTile3x3FastPath ? _kConv3dPack4CdhwTile3x3 : _kConv3dPack4Cdhw;
+            var kernel = useTile3x3FastPath
+                ? _kConv3dPack4CdhwTile3x3
+                : _kConv3dPack4Cdhw16x4;
             _cs.SetBuffer(kernel, "_ConvW4", weightsO4I4K3);
             _cs.SetBuffer(kernel, "_ConvB4", biasO4);
             _cs.SetTexture(kernel, "_ConvInArr", input);
@@ -4751,7 +4752,13 @@ namespace NcnnCompute
                 return;
             }
 
-            Dispatch3D(kernel, (outW + 1) / 2, (outH + 1) / 2, Mathf.Max(1, outD * ((outPacks + 1) / 2)), 8, 8);
+            Dispatch3D(
+                kernel,
+                (outW + 1) / 2,
+                (outH + 1) / 2,
+                Mathf.Max(1, outD * ((outPacks + 1) / 2)),
+                16,
+                4);
         }
 
         public void Deconvolution(

@@ -613,7 +613,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             return;
 
         if (_ops != null)
+        {
             _ops.EnableConv3dTile3x3Pack4FastPath = enableConv3dTile3x3Pack4FastPath;
+        }
 
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;

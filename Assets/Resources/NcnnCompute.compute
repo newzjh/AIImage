@@ -2,8 +2,9 @@
 #pragma kernel NcnnLeakyRelu
 #pragma kernel NcnnConv3x3
 #pragma kernel NcnnConv3dBuf
-#pragma kernel NcnnConv3dPack4CDHW
+#pragma kernel NcnnConv3dPack4CDHW16x4
 #pragma kernel NcnnConv3dPack4CDHWTile3x3
+#pragma kernel NcnnConv3dPack4CDHWZ2
 #pragma kernel NcnnConvDepthWise
 #pragma kernel NcnnDeconvolutionBuf
 #pragma kernel NcnnDeconvolution3dPack4CDHW
@@ -2497,8 +2498,7 @@ void NcnnConv3dBuf(uint3 id : SV_DispatchThreadID)
     _ConvOut[outIndex] = NcnnApplyActivationScalar(sum);
 }
 
-[numthreads(8,8,1)]
-void NcnnConv3dPack4CDHW(uint3 id : SV_DispatchThreadID)
+void NcnnConv3dPack4CDHWBody(uint3 id)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
@@ -2628,6 +2628,279 @@ void NcnnConv3dPack4CDHW(uint3 id : SV_DispatchThreadID)
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice1)] = sum21;
     if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice1)] = sum30;
     if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice1)] = sum31;
+}
+
+[numthreads(16,4,1)]
+void NcnnConv3dPack4CDHW16x4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnConv3dPack4CDHWBody(id);
+}
+
+// Specialized 3x3x3 stride-1 pack4 conv that computes two adjacent output-z
+// positions per invocation. This reuses four source z planes and one set of
+// weights across what would otherwise be two separate z threads.
+[numthreads(8,8,1)]
+void NcnnConv3dPack4CDHWZ2(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    int ox = (int)id.x * 2;
+    int oy = (int)id.y * 2;
+    int outPairCount = max(1, (_OutPacks + 1) / 2);
+    int ozBlock = (int)id.z / outPairCount;
+    int oz0 = ozBlock * 2;
+    int op = ((int)id.z - ozBlock * outPairCount) * 2;
+    if (ox >= (int)ow || oy >= (int)oh || oz0 < 0 || oz0 >= _OutD || op < 0 || op >= _OutPacks) return;
+
+    int oz1 = oz0 + 1;
+    int op1 = op + 1;
+    bool hasZ1 = oz1 < _OutD;
+    bool hasOp1 = op1 < _OutPacks;
+    bool hasX1 = (ox + 1) < (int)ow;
+    bool hasY1 = (oy + 1) < (int)oh;
+
+    float4 bias0 = _ConvB4[op];
+    float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
+
+    float4 z0sum00 = bias0;
+    float4 z0sum01 = bias0;
+    float4 z0sum10 = bias0;
+    float4 z0sum11 = bias0;
+    float4 z0sum20 = bias1;
+    float4 z0sum21 = bias1;
+    float4 z0sum30 = bias1;
+    float4 z0sum31 = bias1;
+
+    float4 z1sum00 = bias0;
+    float4 z1sum01 = bias0;
+    float4 z1sum10 = bias0;
+    float4 z1sum11 = bias0;
+    float4 z1sum20 = bias1;
+    float4 z1sum21 = bias1;
+    float4 z1sum30 = bias1;
+    float4 z1sum31 = bias1;
+
+    [loop]
+    for (int ip = 0; ip < _InPacks; ip++)
+    {
+        int weightBase0 = ((op * _InPacks + ip) * 27) * 4;
+        int weightBase1 = ((op1 * _InPacks + ip) * 27) * 4;
+        int srcZBase = oz0 - _PadFrontVar;
+
+        [unroll]
+        for (int ky = 0; ky < 3; ky++)
+        {
+            int sy0 = oy - _PadTopVar + ky;
+            int sy1 = sy0 + 1;
+            bool validY0 = sy0 >= 0 && sy0 < _InH;
+            bool validY1 = hasY1 && sy1 >= 0 && sy1 < _InH;
+            if (!validY0 && !validY1)
+                continue;
+
+            [unroll]
+            for (int kx = 0; kx < 3; kx++)
+            {
+                int sx0 = ox - _PadLeftVar + kx;
+                int sx1 = sx0 + 1;
+                bool validX0 = sx0 >= 0 && sx0 < _InW;
+                bool validX1 = hasX1 && sx1 >= 0 && sx1 < _InW;
+                if (!validX0 && !validX1)
+                    continue;
+
+                int kernelBase = (ky * 3 + kx) * 4;
+                float4 w0_0 = _ConvW4[weightBase0 + kernelBase + 0];
+                float4 w0_1 = _ConvW4[weightBase0 + kernelBase + 1];
+                float4 w0_2 = _ConvW4[weightBase0 + kernelBase + 2];
+                float4 w0_3 = _ConvW4[weightBase0 + kernelBase + 3];
+                float4 w1_0 = _ConvW4[weightBase0 + 9 * 4 + kernelBase + 0];
+                float4 w1_1 = _ConvW4[weightBase0 + 9 * 4 + kernelBase + 1];
+                float4 w1_2 = _ConvW4[weightBase0 + 9 * 4 + kernelBase + 2];
+                float4 w1_3 = _ConvW4[weightBase0 + 9 * 4 + kernelBase + 3];
+                float4 w2_0 = _ConvW4[weightBase0 + 18 * 4 + kernelBase + 0];
+                float4 w2_1 = _ConvW4[weightBase0 + 18 * 4 + kernelBase + 1];
+                float4 w2_2 = _ConvW4[weightBase0 + 18 * 4 + kernelBase + 2];
+                float4 w2_3 = _ConvW4[weightBase0 + 18 * 4 + kernelBase + 3];
+
+                float4 u0_0 = 0.0;
+                float4 u0_1 = 0.0;
+                float4 u0_2 = 0.0;
+                float4 u0_3 = 0.0;
+                float4 u1_0 = 0.0;
+                float4 u1_1 = 0.0;
+                float4 u1_2 = 0.0;
+                float4 u1_3 = 0.0;
+                float4 u2_0 = 0.0;
+                float4 u2_1 = 0.0;
+                float4 u2_2 = 0.0;
+                float4 u2_3 = 0.0;
+                float4 u3_0 = 0.0;
+                float4 u3_1 = 0.0;
+                float4 u3_2 = 0.0;
+                float4 u3_3 = 0.0;
+
+                int sz0 = srcZBase + 0;
+                int sz1 = srcZBase + 1;
+                int sz2 = srcZBase + 2;
+                int sz3 = srcZBase + 3;
+
+                if (sz0 >= 0 && sz0 < _InD)
+                {
+                    int slice = sz0 * _InPacks + ip;
+                    u0_0 = (validX0 && validY0) ? _ConvInArr[int3(sx0, sy0, slice)] : 0.0;
+                    u0_1 = (validX1 && validY0) ? _ConvInArr[int3(sx1, sy0, slice)] : 0.0;
+                    u0_2 = (validX0 && validY1) ? _ConvInArr[int3(sx0, sy1, slice)] : 0.0;
+                    u0_3 = (validX1 && validY1) ? _ConvInArr[int3(sx1, sy1, slice)] : 0.0;
+                }
+                if (sz1 >= 0 && sz1 < _InD)
+                {
+                    int slice = sz1 * _InPacks + ip;
+                    u1_0 = (validX0 && validY0) ? _ConvInArr[int3(sx0, sy0, slice)] : 0.0;
+                    u1_1 = (validX1 && validY0) ? _ConvInArr[int3(sx1, sy0, slice)] : 0.0;
+                    u1_2 = (validX0 && validY1) ? _ConvInArr[int3(sx0, sy1, slice)] : 0.0;
+                    u1_3 = (validX1 && validY1) ? _ConvInArr[int3(sx1, sy1, slice)] : 0.0;
+                }
+                if (sz2 >= 0 && sz2 < _InD)
+                {
+                    int slice = sz2 * _InPacks + ip;
+                    u2_0 = (validX0 && validY0) ? _ConvInArr[int3(sx0, sy0, slice)] : 0.0;
+                    u2_1 = (validX1 && validY0) ? _ConvInArr[int3(sx1, sy0, slice)] : 0.0;
+                    u2_2 = (validX0 && validY1) ? _ConvInArr[int3(sx0, sy1, slice)] : 0.0;
+                    u2_3 = (validX1 && validY1) ? _ConvInArr[int3(sx1, sy1, slice)] : 0.0;
+                }
+                if (hasZ1 && sz3 >= 0 && sz3 < _InD)
+                {
+                    int slice = sz3 * _InPacks + ip;
+                    u3_0 = (validX0 && validY0) ? _ConvInArr[int3(sx0, sy0, slice)] : 0.0;
+                    u3_1 = (validX1 && validY0) ? _ConvInArr[int3(sx1, sy0, slice)] : 0.0;
+                    u3_2 = (validX0 && validY1) ? _ConvInArr[int3(sx0, sy1, slice)] : 0.0;
+                    u3_3 = (validX1 && validY1) ? _ConvInArr[int3(sx1, sy1, slice)] : 0.0;
+                }
+
+                z0sum00 += float4(dot(u0_0, w0_0), dot(u0_0, w0_1), dot(u0_0, w0_2), dot(u0_0, w0_3));
+                z0sum00 += float4(dot(u1_0, w1_0), dot(u1_0, w1_1), dot(u1_0, w1_2), dot(u1_0, w1_3));
+                z0sum00 += float4(dot(u2_0, w2_0), dot(u2_0, w2_1), dot(u2_0, w2_2), dot(u2_0, w2_3));
+                z0sum01 += float4(dot(u0_1, w0_0), dot(u0_1, w0_1), dot(u0_1, w0_2), dot(u0_1, w0_3));
+                z0sum01 += float4(dot(u1_1, w1_0), dot(u1_1, w1_1), dot(u1_1, w1_2), dot(u1_1, w1_3));
+                z0sum01 += float4(dot(u2_1, w2_0), dot(u2_1, w2_1), dot(u2_1, w2_2), dot(u2_1, w2_3));
+                z0sum10 += float4(dot(u0_2, w0_0), dot(u0_2, w0_1), dot(u0_2, w0_2), dot(u0_2, w0_3));
+                z0sum10 += float4(dot(u1_2, w1_0), dot(u1_2, w1_1), dot(u1_2, w1_2), dot(u1_2, w1_3));
+                z0sum10 += float4(dot(u2_2, w2_0), dot(u2_2, w2_1), dot(u2_2, w2_2), dot(u2_2, w2_3));
+                z0sum11 += float4(dot(u0_3, w0_0), dot(u0_3, w0_1), dot(u0_3, w0_2), dot(u0_3, w0_3));
+                z0sum11 += float4(dot(u1_3, w1_0), dot(u1_3, w1_1), dot(u1_3, w1_2), dot(u1_3, w1_3));
+                z0sum11 += float4(dot(u2_3, w2_0), dot(u2_3, w2_1), dot(u2_3, w2_2), dot(u2_3, w2_3));
+
+                if (hasZ1)
+                {
+                    z1sum00 += float4(dot(u1_0, w0_0), dot(u1_0, w0_1), dot(u1_0, w0_2), dot(u1_0, w0_3));
+                    z1sum00 += float4(dot(u2_0, w1_0), dot(u2_0, w1_1), dot(u2_0, w1_2), dot(u2_0, w1_3));
+                    z1sum00 += float4(dot(u3_0, w2_0), dot(u3_0, w2_1), dot(u3_0, w2_2), dot(u3_0, w2_3));
+                    z1sum01 += float4(dot(u1_1, w0_0), dot(u1_1, w0_1), dot(u1_1, w0_2), dot(u1_1, w0_3));
+                    z1sum01 += float4(dot(u2_1, w1_0), dot(u2_1, w1_1), dot(u2_1, w1_2), dot(u2_1, w1_3));
+                    z1sum01 += float4(dot(u3_1, w2_0), dot(u3_1, w2_1), dot(u3_1, w2_2), dot(u3_1, w2_3));
+                    z1sum10 += float4(dot(u1_2, w0_0), dot(u1_2, w0_1), dot(u1_2, w0_2), dot(u1_2, w0_3));
+                    z1sum10 += float4(dot(u2_2, w1_0), dot(u2_2, w1_1), dot(u2_2, w1_2), dot(u2_2, w1_3));
+                    z1sum10 += float4(dot(u3_2, w2_0), dot(u3_2, w2_1), dot(u3_2, w2_2), dot(u3_2, w2_3));
+                    z1sum11 += float4(dot(u1_3, w0_0), dot(u1_3, w0_1), dot(u1_3, w0_2), dot(u1_3, w0_3));
+                    z1sum11 += float4(dot(u2_3, w1_0), dot(u2_3, w1_1), dot(u2_3, w1_2), dot(u2_3, w1_3));
+                    z1sum11 += float4(dot(u3_3, w2_0), dot(u3_3, w2_1), dot(u3_3, w2_2), dot(u3_3, w2_3));
+                }
+
+                if (hasOp1)
+                {
+                    float4 q0_0 = _ConvW4[weightBase1 + kernelBase + 0];
+                    float4 q0_1 = _ConvW4[weightBase1 + kernelBase + 1];
+                    float4 q0_2 = _ConvW4[weightBase1 + kernelBase + 2];
+                    float4 q0_3 = _ConvW4[weightBase1 + kernelBase + 3];
+                    float4 q1_0 = _ConvW4[weightBase1 + 9 * 4 + kernelBase + 0];
+                    float4 q1_1 = _ConvW4[weightBase1 + 9 * 4 + kernelBase + 1];
+                    float4 q1_2 = _ConvW4[weightBase1 + 9 * 4 + kernelBase + 2];
+                    float4 q1_3 = _ConvW4[weightBase1 + 9 * 4 + kernelBase + 3];
+                    float4 q2_0 = _ConvW4[weightBase1 + 18 * 4 + kernelBase + 0];
+                    float4 q2_1 = _ConvW4[weightBase1 + 18 * 4 + kernelBase + 1];
+                    float4 q2_2 = _ConvW4[weightBase1 + 18 * 4 + kernelBase + 2];
+                    float4 q2_3 = _ConvW4[weightBase1 + 18 * 4 + kernelBase + 3];
+
+                    z0sum20 += float4(dot(u0_0, q0_0), dot(u0_0, q0_1), dot(u0_0, q0_2), dot(u0_0, q0_3));
+                    z0sum20 += float4(dot(u1_0, q1_0), dot(u1_0, q1_1), dot(u1_0, q1_2), dot(u1_0, q1_3));
+                    z0sum20 += float4(dot(u2_0, q2_0), dot(u2_0, q2_1), dot(u2_0, q2_2), dot(u2_0, q2_3));
+                    z0sum21 += float4(dot(u0_1, q0_0), dot(u0_1, q0_1), dot(u0_1, q0_2), dot(u0_1, q0_3));
+                    z0sum21 += float4(dot(u1_1, q1_0), dot(u1_1, q1_1), dot(u1_1, q1_2), dot(u1_1, q1_3));
+                    z0sum21 += float4(dot(u2_1, q2_0), dot(u2_1, q2_1), dot(u2_1, q2_2), dot(u2_1, q2_3));
+                    z0sum30 += float4(dot(u0_2, q0_0), dot(u0_2, q0_1), dot(u0_2, q0_2), dot(u0_2, q0_3));
+                    z0sum30 += float4(dot(u1_2, q1_0), dot(u1_2, q1_1), dot(u1_2, q1_2), dot(u1_2, q1_3));
+                    z0sum30 += float4(dot(u2_2, q2_0), dot(u2_2, q2_1), dot(u2_2, q2_2), dot(u2_2, q2_3));
+                    z0sum31 += float4(dot(u0_3, q0_0), dot(u0_3, q0_1), dot(u0_3, q0_2), dot(u0_3, q0_3));
+                    z0sum31 += float4(dot(u1_3, q1_0), dot(u1_3, q1_1), dot(u1_3, q1_2), dot(u1_3, q1_3));
+                    z0sum31 += float4(dot(u2_3, q2_0), dot(u2_3, q2_1), dot(u2_3, q2_2), dot(u2_3, q2_3));
+
+                    if (hasZ1)
+                    {
+                        z1sum20 += float4(dot(u1_0, q0_0), dot(u1_0, q0_1), dot(u1_0, q0_2), dot(u1_0, q0_3));
+                        z1sum20 += float4(dot(u2_0, q1_0), dot(u2_0, q1_1), dot(u2_0, q1_2), dot(u2_0, q1_3));
+                        z1sum20 += float4(dot(u3_0, q2_0), dot(u3_0, q2_1), dot(u3_0, q2_2), dot(u3_0, q2_3));
+                        z1sum21 += float4(dot(u1_1, q0_0), dot(u1_1, q0_1), dot(u1_1, q0_2), dot(u1_1, q0_3));
+                        z1sum21 += float4(dot(u2_1, q1_0), dot(u2_1, q1_1), dot(u2_1, q1_2), dot(u2_1, q1_3));
+                        z1sum21 += float4(dot(u3_1, q2_0), dot(u3_1, q2_1), dot(u3_1, q2_2), dot(u3_1, q2_3));
+                        z1sum30 += float4(dot(u1_2, q0_0), dot(u1_2, q0_1), dot(u1_2, q0_2), dot(u1_2, q0_3));
+                        z1sum30 += float4(dot(u2_2, q1_0), dot(u2_2, q1_1), dot(u2_2, q1_2), dot(u2_2, q1_3));
+                        z1sum30 += float4(dot(u3_2, q2_0), dot(u3_2, q2_1), dot(u3_2, q2_2), dot(u3_2, q2_3));
+                        z1sum31 += float4(dot(u1_3, q0_0), dot(u1_3, q0_1), dot(u1_3, q0_2), dot(u1_3, q0_3));
+                        z1sum31 += float4(dot(u2_3, q1_0), dot(u2_3, q1_1), dot(u2_3, q1_2), dot(u2_3, q1_3));
+                        z1sum31 += float4(dot(u3_3, q2_0), dot(u3_3, q2_1), dot(u3_3, q2_2), dot(u3_3, q2_3));
+                    }
+                }
+            }
+        }
+    }
+
+    int outSlice0 = oz0 * _OutPacks + op;
+    z0sum00 = NcnnApplyActivation(z0sum00);
+    if (hasX1) z0sum01 = NcnnApplyActivation(z0sum01);
+    if (hasY1) z0sum10 = NcnnApplyActivation(z0sum10);
+    if (hasX1 && hasY1) z0sum11 = NcnnApplyActivation(z0sum11);
+    _ConvOutArr[int3(ox, oy, outSlice0)] = z0sum00;
+    if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice0)] = z0sum01;
+    if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice0)] = z0sum10;
+    if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice0)] = z0sum11;
+
+    if (hasOp1)
+    {
+        int outSlice0b = oz0 * _OutPacks + op1;
+        z0sum20 = NcnnApplyActivation(z0sum20);
+        if (hasX1) z0sum21 = NcnnApplyActivation(z0sum21);
+        if (hasY1) z0sum30 = NcnnApplyActivation(z0sum30);
+        if (hasX1 && hasY1) z0sum31 = NcnnApplyActivation(z0sum31);
+        _ConvOutArr[int3(ox, oy, outSlice0b)] = z0sum20;
+        if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice0b)] = z0sum21;
+        if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice0b)] = z0sum30;
+        if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice0b)] = z0sum31;
+    }
+
+    if (!hasZ1)
+        return;
+
+    int outSlice1 = oz1 * _OutPacks + op;
+    z1sum00 = NcnnApplyActivation(z1sum00);
+    if (hasX1) z1sum01 = NcnnApplyActivation(z1sum01);
+    if (hasY1) z1sum10 = NcnnApplyActivation(z1sum10);
+    if (hasX1 && hasY1) z1sum11 = NcnnApplyActivation(z1sum11);
+    _ConvOutArr[int3(ox, oy, outSlice1)] = z1sum00;
+    if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice1)] = z1sum01;
+    if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice1)] = z1sum10;
+    if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice1)] = z1sum11;
+
+    if (!hasOp1)
+        return;
+
+    int outSlice1b = oz1 * _OutPacks + op1;
+    z1sum20 = NcnnApplyActivation(z1sum20);
+    if (hasX1) z1sum21 = NcnnApplyActivation(z1sum21);
+    if (hasY1) z1sum30 = NcnnApplyActivation(z1sum30);
+    if (hasX1 && hasY1) z1sum31 = NcnnApplyActivation(z1sum31);
+    _ConvOutArr[int3(ox, oy, outSlice1b)] = z1sum20;
+    if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice1b)] = z1sum21;
+    if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice1b)] = z1sum30;
+    if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice1b)] = z1sum31;
 }
 
 groupshared float4 _Conv3dTile3x3[18 * 18 * 3];
