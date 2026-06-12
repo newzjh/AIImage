@@ -536,7 +536,32 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         var restoredComparison = BuildRestoredLabelMapComparison(prepared?.baselineManifest, prepared?.baselineCaseDir, restoredPath);
                         if (restoredComparison != null)
                             comparison["restored_labelmap"] = restoredComparison;
+                        var subsetComparisons = BuildRestoredLabelSubsetComparisons(
+                            prepared?.baselineManifest,
+                            prepared?.baselineCaseDir,
+                            _lastDumpDir,
+                            prepared?.referenceVolume);
+                        if (subsetComparisons != null)
+                            comparison["label_subsets"] = subsetComparisons;
                     }
+                }
+                if (comparison != null)
+                {
+                    summary = BuildSummaryText(
+                        resolved,
+                        prepared,
+                        outW,
+                        outH,
+                        outD,
+                        outC,
+                        comparison,
+                        labelMap16,
+                        executionNote,
+                        logits != null && logits.Length > 0,
+                        false,
+                        inferResult.executedPatchCount,
+                        inferResult.totalPatchCount);
+                    _lastSummaryText = summary;
                 }
                 _timingMs["total_elapsed_ms"] = totalSw.ElapsedMilliseconds;
                 WriteText(Path.Combine(_lastDumpDir, "summary.txt"), summary);
@@ -1414,6 +1439,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         OutputHeadInfo outputHead,
         CancellationToken ct)
     {
+        if (Mathf.Abs(resolved.slidingWindowOverlap) <= 1e-8f)
+            return await RunSlidingWindowFeatureOwnershipInferenceAsync(resolved, prepared, outputHead, ct);
+
         if (outputHead == null || outputHead.conv == null)
             throw new ArgumentNullException(nameof(outputHead));
 
@@ -1627,6 +1655,151 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             depth = inferD,
             channels = outputHead.outputChannels,
             executionNote = "sliding_window_feature_head_band:" + outputHead.featureBlobName,
+            pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
+            executedPatchCount = patchCount,
+            totalPatchCount = patchCount
+        };
+    }
+
+    private async UniTask<InferenceRunResult> RunSlidingWindowFeatureOwnershipInferenceAsync(
+        ResolvedRequest resolved,
+        PreparedInput prepared,
+        OutputHeadInfo outputHead,
+        CancellationToken ct)
+    {
+        if (outputHead == null || outputHead.conv == null)
+            throw new ArgumentNullException(nameof(outputHead));
+
+        var roiD = resolved.slidingWindowDepth;
+        var roiH = resolved.slidingWindowHeight;
+        var roiW = resolved.slidingWindowWidth;
+        var inferD = resolved.processedInputDepth;
+        var inferH = resolved.processedInputHeight;
+        var inferW = resolved.processedInputWidth;
+        var inputChannels = resolved.inputChannels;
+        var featureChannels = outputHead.featureChannels;
+
+        if (roiD <= 0 || roiH <= 0 || roiW <= 0)
+            throw new InvalidOperationException("Sliding window roi size is invalid.");
+        if (featureChannels <= 0 || outputHead.outputChannels <= 0)
+            throw new InvalidOperationException("Output head channels are invalid.");
+
+        AppendDebugLine(
+            "RunSlidingWindowFeatureOwnershipInference begin"
+            + " | featureBlob=" + outputHead.featureBlobName
+            + " | featureChannels=" + featureChannels.ToString(CultureInfo.InvariantCulture)
+            + " | outputChannels=" + outputHead.outputChannels.ToString(CultureInfo.InvariantCulture)
+            + " | headLayer=" + (outputHead.layerName ?? string.Empty));
+
+        var startsD = BuildSlidingWindowStarts(inferD, roiD, resolved.slidingWindowOverlap);
+        var startsH = BuildSlidingWindowStarts(inferH, roiH, resolved.slidingWindowOverlap);
+        var startsW = BuildSlidingWindowStarts(inferW, roiW, resolved.slidingWindowOverlap);
+        var pinnedBlobNames = BuildPinnedBlobNames(outputHead.featureBlobName, resolved.debugPinnedBlobNames);
+        var patchCount = startsD.Count * startsH.Count * startsW.Count;
+        var patchIndex = 0;
+        var fullVoxelCount = checked(inferD * inferH * inferW);
+        var labelMap = new ushort[fullVoxelCount];
+
+        ThrowIfSlidingWindowMemoryLimitExceeded("before_feature_ownership_alloc", 0, patchCount);
+
+        using var inputTensor = new NcnnTensorBuffer(roiW, roiH, roiD, inputChannels);
+        var patchTensor = new float[checked(inputChannels * roiD * roiH * roiW)];
+        for (var iz = 0; iz < startsD.Count; iz++)
+        {
+            var startD = startsD[iz];
+            var ownedD = ComputeOwnedInterval(startsD, iz, roiD, inferD);
+            for (var iy = 0; iy < startsH.Count; iy++)
+            {
+                var startH = startsH[iy];
+                var ownedH = ComputeOwnedInterval(startsH, iy, roiH, inferH);
+                for (var ix = 0; ix < startsW.Count; ix++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var startW = startsW[ix];
+                    var ownedW = ComputeOwnedInterval(startsW, ix, roiW, inferW);
+                    patchIndex++;
+
+                    ExtractPatchNcdhw(
+                        prepared.tensorNcdhw,
+                        inputChannels,
+                        inferD,
+                        inferH,
+                        inferW,
+                        startD,
+                        startH,
+                        startW,
+                        roiD,
+                        roiH,
+                        roiW,
+                        patchTensor);
+                    inputTensor.buffer.SetData(patchTensor);
+
+                    using var inferHandle = RunInferenceWithPatchInput(
+                        resolved,
+                        inputTensor,
+                        roiD,
+                        roiH,
+                        roiW,
+                        pinnedBlobNames,
+                        outputHead.featureBlobName);
+                    var infer = inferHandle.infer;
+
+                    var featureView = GetInferOutputShape(infer, outputHead.featureBlobName, "MONAI sliding window feature blob missing: ");
+                    if (featureView.dims != 4)
+                        throw new InvalidOperationException("MONAI sliding window feature dims expected 4 but got " + featureView.dims);
+                    if (featureView.w != roiW || featureView.h != roiH || featureView.d != roiD || featureView.c != featureChannels)
+                    {
+                        throw new InvalidOperationException(
+                            "Sliding window feature shape mismatch: expected "
+                            + roiW + "x" + roiH + "x" + roiD + "x" + featureChannels
+                            + " got "
+                            + featureView.w + "x" + featureView.h + "x" + featureView.d + "x" + featureView.c);
+                    }
+
+                    var featureData = ExtractInferOutputData(infer, outputHead.featureBlobName, featureView);
+                    var patchLabelMap = BuildLabelMapFromAggregatedFeatures(featureData, roiW, roiH, roiD, outputHead, null, ct);
+                    CopyOwnedPatchLabelRegion(
+                        patchLabelMap,
+                        roiD,
+                        roiH,
+                        roiW,
+                        labelMap,
+                        inferD,
+                        inferH,
+                        inferW,
+                        startD,
+                        startH,
+                        startW,
+                        ownedD.start,
+                        ownedD.end,
+                        ownedH.start,
+                        ownedH.end,
+                        ownedW.start,
+                        ownedW.end);
+
+                    if (patchIndex == 1 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                        DumpPinnedBlobOutputs(infer, pinnedBlobNames);
+
+                    await HandleSlidingWindowPatchCompletedAsync(
+                        patchIndex,
+                        patchCount,
+                        0.64f,
+                        "Run MONAI ownership patch ",
+                        ct);
+                    await MaybeRunSlidingWindowMaintenanceAsync(patchIndex, patchCount, "feature_ownership_patch", ct);
+                }
+            }
+        }
+
+        CaptureLatestLayerRuntimeProfile(ResolvePathMode(useTextureInputForMonaiPatches));
+        return new InferenceRunResult
+        {
+            labelMap = labelMap,
+            width = inferW,
+            height = inferH,
+            depth = inferD,
+            channels = outputHead.outputChannels,
+            executionNote = "sliding_window_feature_head_ownership:" + outputHead.featureBlobName,
             pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
             executedPatchCount = patchCount,
             totalPatchCount = patchCount
@@ -2622,6 +2795,75 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         }
     }
 
+    private static (int start, int end) ComputeOwnedInterval(List<int> starts, int axisIndex, int roiSize, int axisSize)
+    {
+        if (starts == null || starts.Count == 0)
+            throw new ArgumentException("Sliding window starts are empty.", nameof(starts));
+
+        var start = starts[axisIndex];
+        var ownedStart = axisIndex <= 0 ? 0 : (starts[axisIndex - 1] + start + roiSize) / 2;
+        var ownedEnd = axisIndex >= starts.Count - 1
+            ? axisSize
+            : (start + starts[axisIndex + 1] + roiSize) / 2;
+        ownedStart = Mathf.Max(ownedStart, start);
+        ownedEnd = Mathf.Min(ownedEnd, start + roiSize, axisSize);
+        if (ownedEnd <= ownedStart)
+        {
+            throw new InvalidOperationException(
+                "Invalid ov0 owned interval: axis_size=" + axisSize.ToString(CultureInfo.InvariantCulture)
+                + " | roi_size=" + roiSize.ToString(CultureInfo.InvariantCulture)
+                + " | axis_index=" + axisIndex.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return (ownedStart, ownedEnd);
+    }
+
+    private static void CopyOwnedPatchLabelRegion(
+        ushort[] patchLabelMap,
+        int patchDepth,
+        int patchHeight,
+        int patchWidth,
+        ushort[] dstLabelMap,
+        int dstDepth,
+        int dstHeight,
+        int dstWidth,
+        int patchStartDepth,
+        int patchStartHeight,
+        int patchStartWidth,
+        int ownedStartDepth,
+        int ownedEndDepth,
+        int ownedStartHeight,
+        int ownedEndHeight,
+        int ownedStartWidth,
+        int ownedEndWidth)
+    {
+        if (patchLabelMap == null || dstLabelMap == null)
+            throw new ArgumentNullException(patchLabelMap == null ? nameof(patchLabelMap) : nameof(dstLabelMap));
+
+        var copyDepth = ownedEndDepth - ownedStartDepth;
+        var copyHeight = ownedEndHeight - ownedStartHeight;
+        var copyWidth = ownedEndWidth - ownedStartWidth;
+        if (copyDepth <= 0 || copyHeight <= 0 || copyWidth <= 0)
+            return;
+
+        var localStartDepth = ownedStartDepth - patchStartDepth;
+        var localStartHeight = ownedStartHeight - patchStartHeight;
+        var localStartWidth = ownedStartWidth - patchStartWidth;
+        for (var z = 0; z < copyDepth; z++)
+        {
+            var srcZ = localStartDepth + z;
+            var dstZ = ownedStartDepth + z;
+            for (var y = 0; y < copyHeight; y++)
+            {
+                var srcY = localStartHeight + y;
+                var dstY = ownedStartHeight + y;
+                var srcOffset = ((srcZ * patchHeight) + srcY) * patchWidth + localStartWidth;
+                var dstOffset = ((dstZ * dstHeight) + dstY) * dstWidth + ownedStartWidth;
+                Array.Copy(patchLabelMap, srcOffset, dstLabelMap, dstOffset, copyWidth);
+            }
+        }
+    }
+
     private static string[] CloneArray(string[] values)
     {
         if (values == null || values.Length == 0)
@@ -3147,9 +3389,87 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (string.IsNullOrWhiteSpace(baselinePath) || !File.Exists(baselinePath))
             return null;
 
+        return BuildVolumeLabelMapComparison(baselinePath, restoredLabelMapPath);
+    }
+
+    private JObject BuildRestoredLabelSubsetComparisons(
+        JObject baselineManifest,
+        string baselineCaseDir,
+        string outputDir,
+        MonaiVolumeData reference)
+    {
+        if (baselineManifest == null
+            || string.IsNullOrWhiteSpace(baselineCaseDir)
+            || string.IsNullOrWhiteSpace(outputDir)
+            || reference == null)
+        {
+            return null;
+        }
+
+        var subsetTokens = EnumerateLabelSubsetTokens(baselineManifest);
+        if (subsetTokens == null || subsetTokens.Count == 0)
+            return null;
+
+        var result = new JObject();
+        for (var i = 0; i < subsetTokens.Count; i++)
+        {
+            var subsetToken = subsetTokens[i];
+            var labelValues = ReadLabelSubsetValues(subsetToken);
+            if (labelValues == null || labelValues.Length == 0)
+                continue;
+
+            var labelName = SanitizeFileName(subsetToken["label_name"]?.Value<string>() ?? "subset");
+            var item = new JObject
+            {
+                ["label_name"] = labelName
+            };
+
+            var baselineMaskPath = ResolveBaselineRelativePath(
+                subsetToken["restored_binary_mask"]?.Value<string>(),
+                baselineCaseDir);
+            var currentMaskPath = ResolveSubsetOutputPath(
+                outputDir,
+                reference,
+                subsetToken["restored_binary_mask"]?.Value<string>(),
+                labelName,
+                "mask_restored");
+            var maskComparison = BuildVolumeLabelMapComparison(baselineMaskPath, currentMaskPath);
+            if (maskComparison != null)
+                item["restored_binary_mask"] = maskComparison;
+
+            var baselineLabelMapPath = ResolveBaselineRelativePath(
+                subsetToken["restored_labelmap"]?.Value<string>(),
+                baselineCaseDir);
+            var currentLabelMapPath = ResolveSubsetOutputPath(
+                outputDir,
+                reference,
+                subsetToken["restored_labelmap"]?.Value<string>(),
+                labelName,
+                "labelmap_restored");
+            var labelMapComparison = BuildVolumeLabelMapComparison(baselineLabelMapPath, currentLabelMapPath);
+            if (labelMapComparison != null)
+                item["restored_labelmap"] = labelMapComparison;
+
+            if (item.Count > 1)
+                result[labelName] = item;
+        }
+
+        return result.Count > 0 ? result : null;
+    }
+
+    private static JObject BuildVolumeLabelMapComparison(string baselinePath, string currentPath)
+    {
+        if (string.IsNullOrWhiteSpace(baselinePath)
+            || string.IsNullOrWhiteSpace(currentPath)
+            || !File.Exists(baselinePath)
+            || !File.Exists(currentPath))
+        {
+            return null;
+        }
+
         try
         {
-            var current = LoadVolume(restoredLabelMapPath);
+            var current = LoadVolume(currentPath);
             var baseline = LoadVolume(baselinePath);
             if (current == null || baseline == null || current.data == null || baseline.data == null)
                 return null;
@@ -3717,6 +4037,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             AppendComparisonLine(sb, comparison, "masks");
             AppendComparisonLine(sb, comparison, "labelmap");
             AppendComparisonLine(sb, comparison, "restored_labelmap");
+            AppendSubsetComparisonLines(sb, comparison["label_subsets"] as JObject);
         }
 
         return sb.ToString();
@@ -3816,6 +4137,41 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 "compare_" + key
                 + "_equal_ratio=" + token["equal_ratio"].Value<double>().ToString("G9", CultureInfo.InvariantCulture)
                 + " | mismatch_count=" + token["mismatch_count"].Value<int>().ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    private static void AppendSubsetComparisonLines(StringBuilder sb, JObject subsetComparisons)
+    {
+        if (sb == null || subsetComparisons == null)
+            return;
+
+        foreach (var property in subsetComparisons.Properties())
+        {
+            if (property?.Value is not JObject item)
+                continue;
+
+            AppendNamedComparisonLine(sb, item["restored_binary_mask"] as JObject, "subset_" + property.Name + "_restored_binary_mask");
+            AppendNamedComparisonLine(sb, item["restored_labelmap"] as JObject, "subset_" + property.Name + "_restored_labelmap");
+        }
+    }
+
+    private static void AppendNamedComparisonLine(StringBuilder sb, JObject comparison, string key)
+    {
+        if (comparison == null || string.IsNullOrWhiteSpace(key))
+            return;
+
+        if (comparison["error"] != null)
+        {
+            sb.AppendLine("compare_" + key + "=" + comparison["error"]);
+            return;
+        }
+
+        if (comparison["equal_ratio"] != null)
+        {
+            sb.AppendLine(
+                "compare_" + key
+                + "_equal_ratio=" + comparison["equal_ratio"].Value<double>().ToString("G9", CultureInfo.InvariantCulture)
+                + " | mismatch_count=" + comparison["mismatch_count"].Value<int>().ToString(CultureInfo.InvariantCulture));
         }
     }
 
@@ -4622,39 +4978,102 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             return;
         }
 
-        var subsetToken = baselineManifest["label_subset"];
-        if (subsetToken == null || subsetToken.Type == JTokenType.Null)
+        var subsetTokens = EnumerateLabelSubsetTokens(baselineManifest);
+        if (subsetTokens == null || subsetTokens.Count == 0)
             return;
-
-        var labelValues = ReadLabelSubsetValues(subsetToken);
-        if (labelValues == null || labelValues.Length == 0)
-            return;
-
-        var labelName = SanitizeFileName(subsetToken["label_name"]?.Value<string>() ?? "subset");
-        var subsetMask = BuildBinarySubsetMask(restoredLabelMap, labelValues);
-        var subsetPath = ResolveSubsetOutputPath(outputDir, reference, subsetToken["restored_binary_mask"]?.Value<string>(), labelName);
-        WriteLabelMapFile(subsetPath, subsetMask, reference);
 
         try
         {
             var subsetDir = Path.Combine(outputDir, "label_subsets");
             Directory.CreateDirectory(subsetDir);
             var manifestPath = Path.Combine(subsetDir, "manifest.json");
-            var manifest = new JObject
+            var manifestItems = new JArray();
+            foreach (var subsetToken in subsetTokens)
             {
-                ["label_name"] = labelName,
-                ["restored_binary_mask"] = Path.GetFileName(subsetPath)
-            };
-            if (labelValues.Length == 1)
-                manifest["label_value"] = labelValues[0];
+                var labelValues = ReadLabelSubsetValues(subsetToken);
+                if (labelValues == null || labelValues.Length == 0)
+                    continue;
+
+                var labelName = SanitizeFileName(subsetToken["label_name"]?.Value<string>() ?? "subset");
+                var subsetMask = BuildBinarySubsetMask(restoredLabelMap, labelValues);
+                var subsetLabelMap = BuildPreservedLabelSubsetLabelMap(restoredLabelMap, labelValues);
+                var subsetPath = ResolveSubsetOutputPath(
+                    outputDir,
+                    reference,
+                    subsetToken["restored_binary_mask"]?.Value<string>(),
+                    labelName,
+                    "mask_restored");
+                var subsetLabelMapPath = ResolveSubsetOutputPath(
+                    outputDir,
+                    reference,
+                    subsetToken["restored_labelmap"]?.Value<string>(),
+                    labelName,
+                    "labelmap_restored");
+                WriteLabelMapFile(subsetPath, subsetMask, reference);
+                WriteLabelMapFile(subsetLabelMapPath, subsetLabelMap, reference);
+
+                var item = new JObject
+                {
+                    ["label_name"] = labelName,
+                    ["restored_binary_mask"] = Path.GetFileName(subsetPath),
+                    ["restored_labelmap"] = Path.GetFileName(subsetLabelMapPath)
+                };
+                if (labelValues.Length == 1)
+                    item["label_value"] = labelValues[0];
+                else
+                    item["label_values"] = new JArray(Array.ConvertAll(labelValues, value => (int)value));
+                manifestItems.Add(item);
+            }
+
+            if (manifestItems.Count == 0)
+                return;
+
+            JToken manifest;
+            if (manifestItems.Count == 1)
+            {
+                manifest = (JObject)manifestItems[0];
+            }
             else
-                manifest["label_values"] = new JArray(Array.ConvertAll(labelValues, value => (int)value));
+            {
+                manifest = new JObject
+                {
+                    ["items"] = manifestItems
+                };
+            }
             WriteText(manifestPath, manifest.ToString());
         }
         catch (Exception e)
         {
             AppendDebugLine("TryWriteLabelSubsetMasks manifest failed | " + e.Message);
         }
+    }
+
+    private static List<JToken> EnumerateLabelSubsetTokens(JObject baselineManifest)
+    {
+        if (baselineManifest == null)
+            return null;
+
+        var result = new List<JToken>();
+        var subsetArray = baselineManifest["label_subsets"] as JArray;
+        if (subsetArray != null)
+        {
+            for (var i = 0; i < subsetArray.Count; i++)
+            {
+                var token = subsetArray[i];
+                if (token != null && token.Type != JTokenType.Null)
+                    result.Add(token);
+            }
+        }
+
+        var singleSubset = baselineManifest["label_subset"];
+        if (singleSubset != null
+            && singleSubset.Type != JTokenType.Null
+            && result.Count == 0)
+        {
+            result.Add(singleSubset);
+        }
+
+        return result;
     }
 
     private static ushort[] ReadLabelSubsetValues(JToken subsetToken)
@@ -4687,6 +5106,21 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var result = new ushort[source.Length];
         for (var i = 0; i < source.Length; i++)
             result[i] = wanted.Contains(source[i]) ? (ushort)1 : (ushort)0;
+        return result;
+    }
+
+    private static ushort[] BuildPreservedLabelSubsetLabelMap(ushort[] source, ushort[] labelValues)
+    {
+        if (source == null || labelValues == null || labelValues.Length == 0)
+            return null;
+
+        var wanted = new HashSet<ushort>(labelValues);
+        var result = new ushort[source.Length];
+        for (var i = 0; i < source.Length; i++)
+        {
+            var value = source[i];
+            result[i] = wanted.Contains(value) ? value : (ushort)0;
+        }
         return result;
     }
 
@@ -4820,7 +5254,24 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return result;
     }
 
-    private static string ResolveSubsetOutputPath(string outputDir, MonaiVolumeData reference, string relativePath, string labelName)
+    private static string ResolveBaselineRelativePath(string relativePath, string caseDir)
+    {
+        var normalized = relativePath?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized) || string.IsNullOrWhiteSpace(caseDir))
+            return null;
+
+        normalized = normalized.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(normalized))
+            return Path.GetFullPath(normalized);
+        return Path.GetFullPath(Path.Combine(caseDir, normalized));
+    }
+
+    private static string ResolveSubsetOutputPath(
+        string outputDir,
+        MonaiVolumeData reference,
+        string relativePath,
+        string labelName,
+        string defaultSuffix)
     {
         var normalized = relativePath?.Trim();
         if (!string.IsNullOrWhiteSpace(normalized))
@@ -4836,7 +5287,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var extension = string.Equals(reference?.sourceFormat, "nrrd", StringComparison.OrdinalIgnoreCase)
             ? ".nrrd"
             : ".nii.gz";
-        return Path.Combine(outputDir, "label_subsets", labelName + "_mask_restored" + extension);
+        return Path.Combine(outputDir, "label_subsets", labelName + "_" + defaultSuffix + extension);
     }
 
     private static ushort[] CenterCropOrPadLabelMap(
