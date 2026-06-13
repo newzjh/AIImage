@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -34,6 +36,7 @@ public sealed class DesignView : BasePageView
         public Texture2D composedTexture;
         public Texture2D remainingMask;
         public int remainingMaskPixels;
+        public string debugDirectory;
     }
 
     public override AppPageId PageId => AppPageId.DesignView;
@@ -50,6 +53,7 @@ public sealed class DesignView : BasePageView
     private int _edgeCloseRadius = DefaultEdgeCloseRadius;
     private int _edgeFeatherRadius = DefaultEdgeFeatherRadius;
     private float _edgePreserve = DefaultEdgePreserve;
+    public bool _exportCompositeDebug = false;
 
     protected override AppPageId? ResolveSwipeTarget(SwipeDirection direction)
     {
@@ -294,7 +298,27 @@ public sealed class DesignView : BasePageView
         host.Add(CreateBlendSliderRow("羽化", 0, 8, _edgeFeatherRadius, "px", v => _edgeFeatherRadius = Mathf.RoundToInt(v)));
         host.Add(CreateBlendSliderRow("边缘保真", 0f, 1f, _edgePreserve, "", v => _edgePreserve = Mathf.Clamp01(v), "0.00"));
 
+        host.Add(CreateToggleRow("Debug Composite Export", _exportCompositeDebug, v => _exportCompositeDebug = v));
         return host;
+    }
+
+    private static VisualElement CreateToggleRow(string labelText, bool defaultValue, Action<bool> onChanged)
+    {
+        var row = new VisualElement();
+        row.style.marginTop = 10;
+        row.style.flexDirection = FlexDirection.Row;
+        row.style.alignItems = Align.Center;
+
+        var label = new Label(labelText);
+        label.style.flexGrow = 1;
+        label.style.color = Color.white;
+        row.Add(label);
+
+        var toggle = new Toggle { value = defaultValue };
+        toggle.RegisterValueChangedCallback(evt => onChanged?.Invoke(evt.newValue));
+        row.Add(toggle);
+
+        return row;
     }
 
     private static VisualElement CreateBlendSliderRow(string labelText, float min, float max, float defaultValue, string suffix, Action<float> onChanged, string valueFormat = "0")
@@ -983,9 +1007,11 @@ public sealed class DesignView : BasePageView
         ApplyCompositeResult applyResult = null;
         try
         {
-            var baseTexture = GetCurrentHistoryTexture() ?? originalHistory;
+            var backgroundReference = GetCurrentHistoryTexture() ?? originalHistory;
+            var baseTexture = _maskedBackgroundPreview != null ? (Texture)_maskedBackgroundPreview : backgroundReference;
             applyResult = await BuildAppliedCompositeAsync(
                 baseTexture,
+                backgroundReference,
                 _maskedBackgroundHoleMask,
                 _layerData,
                 _edgeCloseRadius,
@@ -1005,6 +1031,8 @@ public sealed class DesignView : BasePageView
             var current = GetCurrentHistoryTexture();
             CompareView?.SetSources(current ?? originalHistory, originalHistory ?? current, GetCurrentHistoryLabel());
             CompareView?.FitToView();
+            if (_exportCompositeDebug && !string.IsNullOrWhiteSpace(applyResult.debugDirectory))
+                OpenFolderInShell(applyResult.debugDirectory);
 
             if (_tipsLabel != null)
             {
@@ -1031,14 +1059,15 @@ public sealed class DesignView : BasePageView
     }
 
     private async UniTask<ApplyCompositeResult> BuildAppliedCompositeAsync(
-        Texture2D baseTexture,
+        Texture baseTexture,
+        Texture backgroundReference,
         Texture holeMask,
         List<LayerBoxData> layers,
         int edgeCloseRadius,
         int edgeFeatherRadius,
         float edgePreserve)
     {
-        if (baseTexture == null || holeMask == null || layers == null || layers.Count == 0)
+        if (baseTexture == null || backgroundReference == null || holeMask == null || layers == null || layers.Count == 0)
             return null;
 
         var cs = Host?.ImageProcessingCS;
@@ -1057,18 +1086,35 @@ public sealed class DesignView : BasePageView
         if (applyRemainingKernel < 0)
             return null;
 
+        int buildBlendMaskKernel = -1;
+        if (_exportCompositeDebug)
+        {
+            try { buildBlendMaskKernel = cs.FindKernel("DesignViewBuildBlendMask"); }
+            catch { buildBlendMaskKernel = -1; }
+        }
+
         var width = baseTexture.width;
         var height = baseTexture.height;
         RenderTexture compositeRt = null;
         RenderTexture remainingMaskRt = null;
         RenderTexture tempRtA = null;
         RenderTexture tempRtB = null;
+        RenderTexture debugBlendMaskRt = null;
+        string debugDirectory = null;
         try
         {
             compositeRt = CreateWorkingRenderTexture(width, height, "DesignViewComposite");
             remainingMaskRt = CreateWorkingRenderTexture(width, height, "DesignViewRemainingMask");
             Graphics.Blit(baseTexture, compositeRt);
             Graphics.Blit(holeMask, remainingMaskRt);
+
+            if (_exportCompositeDebug)
+            {
+                debugDirectory = CreateCompositeDebugDirectory();
+                await DumpTextureAsync(baseTexture, debugDirectory, "00_base_background.png");
+                await DumpTextureAsync(backgroundReference, debugDirectory, "01_background_reference.png");
+                await DumpTextureAsync(holeMask, debugDirectory, "02_hole_mask.png");
+            }
 
             var gx = Mathf.Max(1, Mathf.CeilToInt(width / 8f));
             var gy = Mathf.Max(1, Mathf.CeilToInt(height / 8f));
@@ -1095,6 +1141,7 @@ public sealed class DesignView : BasePageView
                 tempRtB = CreateWorkingRenderTexture(width, height, "DesignViewCompositeTmpB");
 
                 cs.SetTexture(kernel, "_Source", compositeRt);
+                cs.SetTexture(kernel, "_BackgroundRef", backgroundReference);
                 cs.SetTexture(kernel, "_Overlay", layer.contentRenderTexture);
                 cs.SetTexture(kernel, "_FaceMaskIn", remainingMaskRt);
                 cs.SetTexture(kernel, "_Result", tempRtA);
@@ -1107,10 +1154,49 @@ public sealed class DesignView : BasePageView
                 cs.SetFloat("_DesignViewPreserve", Mathf.Clamp01(edgePreserve));
                 cs.Dispatch(kernel, gx, gy, 1);
 
+                if (_exportCompositeDebug)
+                {
+                    if (buildBlendMaskKernel >= 0)
+                    {
+                        cs.SetTexture(buildBlendMaskKernel, "_Overlay", layer.contentRenderTexture);
+                        cs.SetInts("_CropRect", targetRect.x, targetRect.y, targetRect.width, targetRect.height);
+                        cs.SetInts("_DesignViewCanvasSize", width, height);
+                        cs.SetInt("_DesignViewCloseRadius", Mathf.Clamp(edgeCloseRadius, 0, 8));
+                        cs.SetInt("_DesignViewFeatherRadius", Mathf.Clamp(edgeFeatherRadius, 0, 24));
+                        cs.SetFloat("_DesignViewPreserve", Mathf.Clamp01(edgePreserve));
+
+                        debugBlendMaskRt = CreateWorkingRenderTexture(width, height, "DesignViewBlendMaskDebug");
+                        cs.SetTexture(buildBlendMaskKernel, "_Result", debugBlendMaskRt);
+
+                        cs.SetInt("_DesignViewDebugMaskMode", 0);
+                        cs.Dispatch(buildBlendMaskKernel, gx, gy, 1);
+                        await DumpTextureAsync(debugBlendMaskRt, debugDirectory, $"layer_{layerIndex:00}_mask_raw.png");
+
+                        cs.SetInt("_DesignViewDebugMaskMode", 1);
+                        cs.Dispatch(buildBlendMaskKernel, gx, gy, 1);
+                        await DumpTextureAsync(debugBlendMaskRt, debugDirectory, $"layer_{layerIndex:00}_mask_closed.png");
+
+                        cs.SetInt("_DesignViewDebugMaskMode", 2);
+                        cs.Dispatch(buildBlendMaskKernel, gx, gy, 1);
+                        await DumpTextureAsync(debugBlendMaskRt, debugDirectory, $"layer_{layerIndex:00}_mask_blurred.png");
+
+                        cs.SetInt("_DesignViewDebugMaskMode", 3);
+                        cs.Dispatch(buildBlendMaskKernel, gx, gy, 1);
+                    }
+
+                    await DumpTextureAsync(layer.contentRenderTexture, debugDirectory, $"layer_{layerIndex:00}_foreground.png");
+                    await DumpTextureAsync(remainingMaskRt, debugDirectory, $"layer_{layerIndex:00}_mask_before.png");
+                    if (debugBlendMaskRt != null)
+                        await DumpTextureAsync(debugBlendMaskRt, debugDirectory, $"layer_{layerIndex:00}_blend_mask.png");
+                    await DumpTextureAsync(tempRtA, debugDirectory, $"layer_{layerIndex:00}_composited.png");
+                    await DumpTextureAsync(tempRtB, debugDirectory, $"layer_{layerIndex:00}_mask_after.png");
+                }
+
                 Swap(ref compositeRt, ref tempRtA);
                 Swap(ref remainingMaskRt, ref tempRtB);
                 DestroyRenderTexture(ref tempRtA);
                 DestroyRenderTexture(ref tempRtB);
+                DestroyRenderTexture(ref debugBlendMaskRt);
             }
 
             tempRtA = CreateWorkingRenderTexture(width, height, "DesignViewCompositeFinal");
@@ -1118,6 +1204,12 @@ public sealed class DesignView : BasePageView
             cs.SetTexture(applyRemainingKernel, "_FaceMaskIn", remainingMaskRt);
             cs.SetTexture(applyRemainingKernel, "_Result", tempRtA);
             cs.Dispatch(applyRemainingKernel, gx, gy, 1);
+
+            if (_exportCompositeDebug)
+            {
+                await DumpTextureAsync(tempRtA, debugDirectory, "90_after_remaining_mask_apply.png");
+                await DumpTextureAsync(remainingMaskRt, debugDirectory, "91_remaining_mask_rt.png");
+            }
             Swap(ref compositeRt, ref tempRtA);
             DestroyRenderTexture(ref tempRtA);
 
@@ -1136,7 +1228,8 @@ public sealed class DesignView : BasePageView
             {
                 composedTexture = composedTexture,
                 remainingMask = remainingMaskTex,
-                remainingMaskPixels = remainingMaskPixels
+                remainingMaskPixels = remainingMaskPixels,
+                debugDirectory = debugDirectory
             };
         }
         finally
@@ -1145,6 +1238,7 @@ public sealed class DesignView : BasePageView
             DestroyRenderTexture(ref remainingMaskRt);
             DestroyRenderTexture(ref tempRtA);
             DestroyRenderTexture(ref tempRtB);
+            DestroyRenderTexture(ref debugBlendMaskRt);
         }
     }
 
@@ -1169,6 +1263,50 @@ public sealed class DesignView : BasePageView
         var t = a;
         a = b;
         b = t;
+    }
+
+    private static string CreateCompositeDebugDirectory()
+    {
+        var root = Path.Combine(Application.dataPath, "..", "Logs", "DesignViewCompositeDebug");
+        Directory.CreateDirectory(root);
+        var dir = Path.Combine(root, DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private async UniTask DumpTextureAsync(Texture texture, string directory, string fileName)
+    {
+        if (texture == null || string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+            return;
+
+        Texture2D output = null;
+        var shouldDestroy = false;
+        try
+        {
+            if (texture is Texture2D tex2D)
+            {
+                output = tex2D;
+            }
+            else if (texture is RenderTexture rt)
+            {
+                output = await ReadbackTextureAsync(rt, rt.width, rt.height);
+                shouldDestroy = output != null;
+            }
+
+            if (output == null)
+                return;
+
+            Directory.CreateDirectory(directory);
+            File.WriteAllBytes(Path.Combine(directory, fileName), output.EncodeToPNG());
+        }
+        catch
+        {
+        }
+        finally
+        {
+            if (shouldDestroy && output != null)
+                Destroy(output);
+        }
     }
 
     private async UniTask<int> CountMaskPixelsAsync(RenderTexture maskTexture)

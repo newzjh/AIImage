@@ -18,9 +18,11 @@
 #pragma kernel BuildHoleMaskFromMask
 #pragma kernel BuildLayerCutoutFromMask
 #pragma kernel DesignViewCompositeLayer
+#pragma kernel DesignViewBuildBlendMask
 #pragma kernel DesignViewApplyRemainingMask
 
 Texture2D<float4> _Source;
+Texture2D<float4> _BackgroundRef;
 Texture2D<float4> _Overlay;
 Texture2D<float> _FaceMaskIn;
 RWTexture2D<float4> _Result;
@@ -98,6 +100,60 @@ float4 SampleBilinearOverlayAlphaAware(float2 uv)
     return Unpremultiply(lerp(cx0, cx1, f.y));
 }
 
+float4 OverlayTexelZero(int2 p, uint ow, uint oh)
+{
+    if ((uint)p.x >= ow || (uint)p.y >= oh)
+        return 0.0;
+    return _Overlay[p];
+}
+
+float OverlayAlphaAtPixel(int2 p, uint ow, uint oh)
+{
+    if ((uint)p.x >= ow || (uint)p.y >= oh)
+        return 0.0;
+    return saturate(_Overlay[p].a);
+}
+
+float SampleBilinearOverlayAlphaZero(float2 uv, uint ow, uint oh)
+{
+    if (ow == 0 || oh == 0)
+        return 0.0;
+
+    float2 size = float2(ow, oh);
+    float2 src = uv * size - 0.5;
+    int2 p0 = int2(floor(src));
+    float2 f = frac(src);
+
+    float a00 = OverlayAlphaAtPixel(p0, ow, oh);
+    float a10 = OverlayAlphaAtPixel(p0 + int2(1, 0), ow, oh);
+    float a01 = OverlayAlphaAtPixel(p0 + int2(0, 1), ow, oh);
+    float a11 = OverlayAlphaAtPixel(p0 + int2(1, 1), ow, oh);
+
+    float ax0 = lerp(a00, a10, f.x);
+    float ax1 = lerp(a01, a11, f.x);
+    return saturate(lerp(ax0, ax1, f.y));
+}
+
+float4 SampleBilinearOverlayAlphaAwareZero(float2 uv, uint ow, uint oh)
+{
+    if (ow == 0 || oh == 0)
+        return 0.0;
+
+    float2 size = float2(ow, oh);
+    float2 src = uv * size - 0.5;
+    int2 p0 = int2(floor(src));
+    float2 f = frac(src);
+
+    float4 c00 = Premultiply(OverlayTexelZero(p0, ow, oh));
+    float4 c10 = Premultiply(OverlayTexelZero(p0 + int2(1, 0), ow, oh));
+    float4 c01 = Premultiply(OverlayTexelZero(p0 + int2(0, 1), ow, oh));
+    float4 c11 = Premultiply(OverlayTexelZero(p0 + int2(1, 1), ow, oh));
+
+    float4 cx0 = lerp(c00, c10, f.x);
+    float4 cx1 = lerp(c01, c11, f.x);
+    return Unpremultiply(lerp(cx0, cx1, f.y));
+}
+
 float _SigmaSpatial;
 float _SigmaRange;
 int _Radius;
@@ -117,6 +173,7 @@ int2 _DesignViewLayerSize;
 int2 _DesignViewCanvasSize;
 int _DesignViewCloseRadius;
 int _DesignViewFeatherRadius;
+int _DesignViewDebugMaskMode;
 float _DesignViewPreserve;
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
@@ -656,6 +713,113 @@ float OverlayMaskBlur(int2 p, int radius)
     return weightSum > 1e-6 ? sum / weightSum : OverlayAlphaAt(p);
 }
 
+float OverlayMaskMaxUv(float2 uv, int radius, uint ow, uint oh, float2 overlayTexelSize)
+{
+    if (radius <= 0)
+        return SampleBilinearOverlayAlphaZero(uv, ow, oh);
+
+    float best = 0.0;
+    for (int dy = -radius; dy <= radius; dy++)
+    {
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            float2 sampleUv = uv + float2(dx, dy) * overlayTexelSize;
+            best = max(best, SampleBilinearOverlayAlphaZero(sampleUv, ow, oh));
+        }
+    }
+    return best;
+}
+
+float OverlayMaskMinOfMaxUv(float2 uv, int radius, uint ow, uint oh, float2 overlayTexelSize)
+{
+    if (radius <= 0)
+        return SampleBilinearOverlayAlphaZero(uv, ow, oh);
+
+    float best = 1.0;
+    bool hasValue = false;
+    for (int dy = -radius; dy <= radius; dy++)
+    {
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            float2 sampleUv = uv + float2(dx, dy) * overlayTexelSize;
+            float value = OverlayMaskMaxUv(sampleUv, radius, ow, oh, overlayTexelSize);
+            best = hasValue ? min(best, value) : value;
+            hasValue = true;
+        }
+    }
+    return hasValue ? best : 0.0;
+}
+
+float OverlayMaskBlurUv(float2 uv, int radius, uint ow, uint oh, float2 overlayTexelSize)
+{
+    if (radius <= 0)
+        return SampleBilinearOverlayAlphaZero(uv, ow, oh);
+
+    float sum = 0.0;
+    float weightSum = 0.0;
+    float sigma = max(0.75, radius * 0.65);
+    float inv2Sigma2 = 0.5 / (sigma * sigma);
+    for (int dy = -radius; dy <= radius; dy++)
+    {
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            float dist2 = (float)(dx * dx + dy * dy);
+            float ww = exp(-dist2 * inv2Sigma2);
+            float2 sampleUv = uv + float2(dx, dy) * overlayTexelSize;
+            sum += SampleBilinearOverlayAlphaZero(sampleUv, ow, oh) * ww;
+            weightSum += ww;
+        }
+    }
+    return weightSum > 1e-6 ? sum / weightSum : SampleBilinearOverlayAlphaZero(uv, ow, oh);
+}
+
+float2 OverlayAlphaGradient(float2 uv, uint ow, uint oh, float2 overlayTexelSize)
+{
+    float ax1 = SampleBilinearOverlayAlphaZero(uv + float2(overlayTexelSize.x, 0.0), ow, oh);
+    float ax0 = SampleBilinearOverlayAlphaZero(uv - float2(overlayTexelSize.x, 0.0), ow, oh);
+    float ay1 = SampleBilinearOverlayAlphaZero(uv + float2(0.0, overlayTexelSize.y), ow, oh);
+    float ay0 = SampleBilinearOverlayAlphaZero(uv - float2(0.0, overlayTexelSize.y), ow, oh);
+    return 0.5 * float2(ax1 - ax0, ay1 - ay0);
+}
+
+float3 SampleOverlayInteriorColor(float2 uv, uint ow, uint oh, float2 overlayTexelSize, float inwardPixels)
+{
+    float2 grad = OverlayAlphaGradient(uv, ow, oh, overlayTexelSize);
+    float gradLen = length(grad);
+    if (gradLen <= 1e-5)
+        return SampleBilinearOverlayAlphaAwareZero(uv, ow, oh).rgb;
+
+    float2 inwardDir = grad / gradLen;
+    float d1 = max(0.75, inwardPixels * 0.45);
+    float d2 = max(1.25, inwardPixels * 0.8);
+    float d3 = max(1.75, inwardPixels);
+    float4 c1 = SampleBilinearOverlayAlphaAwareZero(uv + inwardDir * overlayTexelSize * d1, ow, oh);
+    float4 c2 = SampleBilinearOverlayAlphaAwareZero(uv + inwardDir * overlayTexelSize * d2, ow, oh);
+    float4 c3 = SampleBilinearOverlayAlphaAwareZero(uv + inwardDir * overlayTexelSize * d3, ow, oh);
+    return c1.rgb * 0.5 + c2.rgb * 0.35 + c3.rgb * 0.15;
+}
+
+float ComputeDesignViewBlendAlpha(
+    float2 uv,
+    uint ow,
+    uint oh,
+    out float rawAlpha,
+    out float closedAlpha,
+    out float blurredAlpha)
+{
+    float2 overlayTexelSize = 1.0 / max(float2(1.0, 1.0), float2(ow, oh));
+    rawAlpha = SampleBilinearOverlayAlphaZero(uv, ow, oh);
+    closedAlpha = OverlayMaskMinOfMaxUv(uv, max(0, _DesignViewCloseRadius), ow, oh, overlayTexelSize);
+    blurredAlpha = OverlayMaskBlurUv(uv, max(0, _DesignViewFeatherRadius), ow, oh, overlayTexelSize);
+
+    float preserve = saturate(_DesignViewPreserve);
+    float structureAlpha = max(rawAlpha, closedAlpha);
+    float featheredAlpha = (_DesignViewFeatherRadius > 0) ? blurredAlpha : structureAlpha;
+    float coreWeight = smoothstep(0.72, 0.98, featheredAlpha);
+    float preserveWeight = preserve * coreWeight;
+    return saturate(lerp(featheredAlpha, structureAlpha, preserveWeight));
+}
+
 float2 DesignViewUvFromCrop(int x, int displayY)
 {
     int rx = _CropRect.x;
@@ -678,6 +842,7 @@ void DesignViewCompositeLayer(uint3 id : SV_DispatchThreadID)
     int displayY = _DesignViewCanvasSize.y - 1 - y;
 
     float4 src = _Source[p];
+    float4 backgroundRef = _BackgroundRef[p];
     float keepMask = _FaceMaskIn[p];
 
     int rx = _CropRect.x;
@@ -695,27 +860,81 @@ void DesignViewCompositeLayer(uint3 id : SV_DispatchThreadID)
 
     float2 uv = DesignViewUvFromCrop(x, displayY);
     uv.y = 1.0 - uv.y;
-    float4 over = SampleBilinearOverlayAlphaAware(uv);
-
     uint ow, oh;
     _Overlay.GetDimensions(ow, oh);
-    float2 overlayPos = uv * float2(ow, oh) - 0.5;
-    int2 overlayPixel = int2(round(overlayPos));
-    overlayPixel = clamp(overlayPixel, int2(0, 0), int2(int(ow) - 1, int(oh) - 1));
+    float4 over = SampleBilinearOverlayAlphaAwareZero(uv, ow, oh);
+    float2 overlayTexelSize = 1.0 / max(float2(1.0, 1.0), float2(ow, oh));
 
-    float rawAlpha = OverlayAlphaAt(overlayPixel);
-    float closedAlpha = OverlayMaskMinOfMax(overlayPixel, max(0, _DesignViewCloseRadius));
-    float blurredAlpha = OverlayMaskBlur(overlayPixel, max(0, _DesignViewFeatherRadius));
-    float preserve = saturate(_DesignViewPreserve);
-    float coreAlpha = lerp(closedAlpha, rawAlpha, preserve);
-    float edgeAlpha = lerp(blurredAlpha, closedAlpha, preserve * 0.35);
-    float blendedAlpha = saturate(max(edgeAlpha, coreAlpha * (0.12 + 0.28 * preserve)));
+    float rawAlpha;
+    float closedAlpha;
+    float blurredAlpha;
+    float blendedAlpha = ComputeDesignViewBlendAlpha(uv, ow, oh, rawAlpha, closedAlpha, blurredAlpha);
+    float sampledAlpha = saturate(over.a);
+    float coreAlpha = min(sampledAlpha, blendedAlpha);
+    float extraAlpha = saturate(blendedAlpha - coreAlpha);
 
-    float3 rgb = lerp(src.rgb, over.rgb, blendedAlpha);
+    float inwardPixels = max(1.5, 1.0 + _DesignViewFeatherRadius * 0.65);
+    float3 interiorRgb = SampleOverlayInteriorColor(uv, ow, oh, overlayTexelSize, inwardPixels);
+
+    // Use the sampled cutout color for the true covered region, then fill only
+    // the extra feather-expanded band with an inward color bleed so soft edges
+    // do not lerp against transparent black.
+    float3 overlayPremulRgb = over.rgb * coreAlpha + interiorRgb * extraAlpha;
+
+    // Keep the masked-background look in the pure feather band while still
+    // allowing the original background to stabilize pixels covered by the
+    // actual sampled cutout area.
+    float coreFraction = blendedAlpha > 1e-5 ? saturate(coreAlpha / blendedAlpha) : 0.0;
+    float baseReferenceBlend = saturate(keepMask) * coreFraction;
+    float3 baseRgb = lerp(src.rgb, backgroundRef.rgb, baseReferenceBlend);
+    float3 rgb = baseRgb * (1.0 - blendedAlpha) + overlayPremulRgb;
     _Result[p] = float4(rgb, 1.0);
 
     float newKeep = (blendedAlpha > 0.001) ? 0.0 : keepMask;
     _DesignViewRemainingMaskOut[p] = float4(newKeep.xxx, 1.0);
+}
+
+[numthreads(8,8,1)]
+void DesignViewBuildBlendMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int displayY = _DesignViewCanvasSize.y - 1 - y;
+
+    int rx = _CropRect.x;
+    int ry = _CropRect.y;
+    int rw = _CropRect.z;
+    int rh = _CropRect.w;
+
+    bool inside = (x >= rx) && (displayY >= ry) && (x < rx + rw) && (displayY < ry + rh);
+    if (!inside)
+    {
+        _Result[int2(x, y)] = float4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    float2 uv = DesignViewUvFromCrop(x, displayY);
+    uv.y = 1.0 - uv.y;
+
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+
+    float rawAlpha;
+    float closedAlpha;
+    float blurredAlpha;
+    float blendedAlpha = ComputeDesignViewBlendAlpha(uv, ow, oh, rawAlpha, closedAlpha, blurredAlpha);
+    float value = blendedAlpha;
+    if (_DesignViewDebugMaskMode == 0)
+        value = rawAlpha;
+    else if (_DesignViewDebugMaskMode == 1)
+        value = closedAlpha;
+    else if (_DesignViewDebugMaskMode == 2)
+        value = blurredAlpha;
+    _Result[int2(x, y)] = float4(value.xxx, 1.0);
 }
 
 [numthreads(8,8,1)]
