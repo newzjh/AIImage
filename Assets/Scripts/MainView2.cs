@@ -97,7 +97,7 @@ public sealed class MainView2 : BasePageView
         {
             var lastPath = Host?.GetLastImagePath();
             if (!string.IsNullOrWhiteSpace(lastPath) && File.Exists(lastPath))
-                LoadImageFromPath(lastPath);
+                LoadImageFromPath(lastPath, true);
         }
         else
         {
@@ -229,7 +229,7 @@ public sealed class MainView2 : BasePageView
         SetAdjustPanelCollapsed(IsPortraitLayout, false);
     }
 
-    public bool LoadImageFromPath(string filePath)
+    public bool LoadImageFromPath(string filePath, bool bypassOriginalNameGuard = false)
     {
         if (string.IsNullOrWhiteSpace(filePath))
             return false;
@@ -237,7 +237,7 @@ public sealed class MainView2 : BasePageView
             return false;
 
         var fileName = Path.GetFileName(filePath);
-        if (IsOriginalDefinedName(fileName) || IsOriginalDefinedPath(filePath))
+        if (!bypassOriginalNameGuard && (IsOriginalDefinedName(fileName) || IsOriginalDefinedPath(filePath)))
         {
             ShowToast("该文件名被识别为原图标记，请先另存为新文件再编辑", 2800);
             return false;
@@ -1253,7 +1253,10 @@ public sealed class MainView2 : BasePageView
         {
             await File.WriteAllBytesAsync(path, bytes);
             Host?.InvalidateTextureCacheForPath(path);
-            ShowToast("已保存到原路径", 1800);
+            if (Host != null && Host.ReloadMainImageFromDisk(path))
+                ShowToast("已保存，并按原路径重新载入", 1800);
+            else
+                ShowToast("已保存到原路径", 1800);
         }
         catch
         {

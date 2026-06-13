@@ -107,16 +107,26 @@ public sealed class AIImagePageHost : MonoBehaviour
 
     public bool OpenLibraryImageInMain(string filePath)
     {
+        var ok = ReloadMainImageFromDisk(filePath, false);
+        if (!ok)
+            return false;
+        RequestPageSwitch(_libraryView, AppPageId.MainView2, SwipeDirection.Right);
+        return true;
+    }
+
+    public bool ReloadMainImageFromDisk(string filePath, bool bypassOriginalNameGuard = true)
+    {
         if (string.IsNullOrWhiteSpace(filePath))
             return false;
         if (_mainView2 == null)
             return false;
-        var ok = _mainView2.LoadImageFromPath(filePath);
+
+        var ok = _mainView2.LoadImageFromPath(filePath, bypassOriginalNameGuard);
         if (!ok)
             return false;
-        PlayerPrefs.SetString(PrefKeyLastImagePath, filePath);
-        PlayerPrefs.Save();
-        RequestPageSwitch(_libraryView, AppPageId.MainView2, SwipeDirection.Right);
+
+        RememberLastImagePath(filePath);
+        SyncDesignFromMain();
         return true;
     }
 
@@ -185,6 +195,15 @@ public sealed class AIImagePageHost : MonoBehaviour
     public string GetLastImagePath()
     {
         return PlayerPrefs.GetString(PrefKeyLastImagePath, string.Empty);
+    }
+
+    public void RememberLastImagePath(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
+
+        PlayerPrefs.SetString(PrefKeyLastImagePath, filePath);
+        PlayerPrefs.Save();
     }
 
     private void BuildRoot()
@@ -274,9 +293,19 @@ public sealed class AIImagePageHost : MonoBehaviour
     private void PrepareIncomingPage(BasePageView page)
     {
         if (ReferenceEquals(page, _designView) && _mainView2 != null)
-        {
-            _designView.SyncFromMainView(_mainView2.CurrentSourcePathForSync, _mainView2.CurrentEditedTextureForSync, _mainView2.CurrentOriginalTextureForSync, _mainView2.CurrentDisplayLabelForSync);
-        }
+            SyncDesignFromMain();
+    }
+
+    private void SyncDesignFromMain()
+    {
+        if (_designView == null || _mainView2 == null)
+            return;
+
+        _designView.SyncFromMainView(
+            _mainView2.CurrentSourcePathForSync,
+            _mainView2.CurrentEditedTextureForSync,
+            _mainView2.CurrentOriginalTextureForSync,
+            _mainView2.CurrentDisplayLabelForSync);
     }
 
     private BasePageView ResolvePage(AppPageId id)

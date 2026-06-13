@@ -2903,7 +2903,26 @@ public class MainView : MonoBehaviour
         {
             await File.WriteAllBytesAsync(path, bytes);
             InvalidateTextureCacheForPath(path);
-            ShowToast("已保存到原路径", 2000);
+            var reloaded = false;
+            var host = GetComponent<AIImagePageHost>();
+            if (host != null)
+                reloaded = host.ReloadMainImageFromDisk(path);
+
+            if (reloaded)
+            {
+                var fresh = host.MainPage != null ? host.MainPage.CurrentOriginalTextureForSync : null;
+                if (fresh != null)
+                {
+                    ResetHistoryWithOriginal(fresh, Path.GetFileName(path), path);
+                    _imageViewer?.SetSources(fresh, fresh, Path.GetFileName(path));
+                    _imageViewer?.FitToView();
+                }
+                ShowToast("已保存，并按原路径重新载入", 2000);
+            }
+            else
+            {
+                ShowToast("已保存到原路径", 2000);
+            }
         }
         catch
         {

@@ -154,8 +154,12 @@ public sealed class DesignView : BasePageView
     public void SyncFromMainView(string path, Texture2D currentTexture, Texture2D originalTexture, string label)
     {
         if (currentTexture == null && originalTexture == null)
+        {
+            ClearDerivedDesignState();
             return;
+        }
 
+        ClearDerivedDesignState();
         SetHistoryFromSharedTextures(originalTexture, currentTexture, label, path);
         CompareView?.SetSources(currentTexture ?? originalTexture, originalTexture ?? currentTexture, label);
         CompareView?.FitToView();
@@ -285,6 +289,15 @@ public sealed class DesignView : BasePageView
     private void OnApplyDesign()
     {
         ShowToast("应用接口已预留：后续会在这里重新计算背景 mask 并调用 SD inpainting 生成整图。", 3600);
+    }
+
+    private void ClearDerivedDesignState()
+    {
+        _layerData.Clear();
+        _canvasOverlay?.Clear();
+        _layerElements.Clear();
+        if (_tipsLabel != null)
+            _tipsLabel.text = "点击“识别图层”后，会基于 YOLO Seg 结果生成可拖动、可缩放的图层框。应用按钮先保留接口，后续接入 SD inpainting。";
     }
 
     private void RebuildLayerBoxes()
