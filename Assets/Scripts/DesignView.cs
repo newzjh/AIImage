@@ -17,6 +17,13 @@ public sealed class DesignView : BasePageView
         public Texture2D contentTexture;
     }
 
+    private sealed class ApplyCompositeResult
+    {
+        public Texture2D composedTexture;
+        public Texture2D remainingMask;
+        public int remainingMaskPixels;
+    }
+
     public override AppPageId PageId => AppPageId.DesignView;
 
     private readonly List<LayerBoxData> _layerData = new List<LayerBoxData>();
@@ -27,6 +34,7 @@ public sealed class DesignView : BasePageView
     private Button _applyButton;
     private Button _detectButton;
     private Texture2D _maskedBackgroundPreview;
+    private Texture2D _maskedBackgroundHoleMask;
 
     protected override AppPageId? ResolveSwipeTarget(SwipeDirection direction)
     {
@@ -46,10 +54,10 @@ public sealed class DesignView : BasePageView
         }
 
         var current = GetCurrentHistoryTexture();
-        var original = GetOriginalHistoryTexture();
-        if (current != null || original != null)
+        var originalHistory = GetOriginalHistoryTexture();
+        if (current != null || originalHistory != null)
         {
-            CompareView?.SetSources(current ?? original, original ?? current, GetCurrentHistoryLabel());
+            CompareView?.SetSources(current ?? originalHistory, originalHistory ?? current, GetCurrentHistoryLabel());
             CompareView?.SetPreview(_maskedBackgroundPreview);
             CompareView?.FitToView();
             RebuildLayerBoxes();
@@ -241,6 +249,7 @@ public sealed class DesignView : BasePageView
         YoloSegResult result = default;
         List<LayerBoxData> detectedLayers = null;
         Texture2D maskedBackgroundPreview = null;
+        Texture2D maskedBackgroundHoleMask = null;
         try
         {
             var oldTargetPersonOnly = Host.YoloSegRunner.targetPersonOnly;
@@ -264,16 +273,17 @@ public sealed class DesignView : BasePageView
                 return;
             }
 
-            detectedLayers = BuildLayerDataFromDetection(src, result, out maskedBackgroundPreview);
+            detectedLayers = BuildLayerDataFromDetection(src, result, out maskedBackgroundPreview, out maskedBackgroundHoleMask);
             if (detectedLayers.Count == 0)
             {
                 ShowToast("未检测到可用的人物或对象图层", 2600);
                 return;
             }
 
-            ReplaceDetectedLayerState(detectedLayers, maskedBackgroundPreview);
+            ReplaceDetectedLayerState(detectedLayers, maskedBackgroundPreview, maskedBackgroundHoleMask);
             detectedLayers = null;
             maskedBackgroundPreview = null;
+            maskedBackgroundHoleMask = null;
 
             if (_tipsLabel != null)
                 _tipsLabel.text = $"已生成 {_layerData.Count} 个图层。图层里是切出的人物或对象，背景对应区域已变黑，移动或缩放图层时内容会一起跟随。";
@@ -282,6 +292,7 @@ public sealed class DesignView : BasePageView
         {
             DestroyLayerTextures(detectedLayers);
             DestroyTexture(ref maskedBackgroundPreview);
+            DestroyTexture(ref maskedBackgroundHoleMask);
             DestroyTexture(ref result.texture);
             DestroyTexture(ref result.mask);
             DestroyTexture(ref result.overlay);
@@ -291,7 +302,7 @@ public sealed class DesignView : BasePageView
 
     private void OnApplyDesign()
     {
-        ShowToast("应用接口已预留，后续会在这里基于当前图层和黑底背景 mask 接入 inpainting 生成整图。", 3600);
+        ApplyDesignAsync().Forget();
     }
 
     private void ClearDerivedDesignState()
@@ -596,7 +607,7 @@ public sealed class DesignView : BasePageView
         return new Rect(box.resolvedStyle.left, box.resolvedStyle.top, box.resolvedStyle.width, box.resolvedStyle.height);
     }
 
-    private void ReplaceDetectedLayerState(List<LayerBoxData> layers, Texture2D maskedBackgroundPreview)
+    private void ReplaceDetectedLayerState(List<LayerBoxData> layers, Texture2D maskedBackgroundPreview, Texture2D maskedBackgroundHoleMask)
     {
         ClearDetectedLayerState();
 
@@ -604,6 +615,7 @@ public sealed class DesignView : BasePageView
             _layerData.AddRange(layers);
 
         _maskedBackgroundPreview = maskedBackgroundPreview;
+        _maskedBackgroundHoleMask = maskedBackgroundHoleMask;
         CompareView?.SetPreview(_maskedBackgroundPreview);
         RebuildLayerBoxes();
     }
@@ -615,6 +627,7 @@ public sealed class DesignView : BasePageView
 
         CompareView?.SetPreview(null);
         DestroyTexture(ref _maskedBackgroundPreview);
+        DestroyTexture(ref _maskedBackgroundHoleMask);
 
         _canvasOverlay?.Clear();
         _layerElements.Clear();
@@ -645,9 +658,14 @@ public sealed class DesignView : BasePageView
         texture = null;
     }
 
-    private static List<LayerBoxData> BuildLayerDataFromDetection(Texture2D source, YoloSegResult result, out Texture2D maskedBackgroundPreview)
+    private static List<LayerBoxData> BuildLayerDataFromDetection(
+        Texture2D source,
+        YoloSegResult result,
+        out Texture2D maskedBackgroundPreview,
+        out Texture2D maskedBackgroundHoleMask)
     {
         maskedBackgroundPreview = BuildMaskedBackgroundTexture(source, result.mask);
+        maskedBackgroundHoleMask = BuildHoleMaskTexture(result.mask);
         var layers = new List<LayerBoxData>();
         if (source == null || result.mask == null || result.detections == null || result.detections.Length == 0)
             return layers;
@@ -696,6 +714,22 @@ public sealed class DesignView : BasePageView
         }
 
         return CreateTextureFromPixels(pixels, source.width, source.height, "DesignViewMaskedBackground");
+    }
+
+    private static Texture2D BuildHoleMaskTexture(Texture2D mask)
+    {
+        if (!TryGetPixels(mask, out var maskPixels))
+            return null;
+
+        var pixels = new Color32[maskPixels.Length];
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            pixels[i] = IsMaskedPixel(maskPixels[i])
+                ? new Color32(255, 255, 255, 255)
+                : new Color32(0, 0, 0, 255);
+        }
+
+        return CreateTextureFromPixels(pixels, mask.width, mask.height, "DesignViewHoleMask");
     }
 
     private static Texture2D BuildLayerCutoutTexture(Texture2D source, Texture2D mask, RectInt pixelRect, int layerIndex)
@@ -789,5 +823,204 @@ public sealed class DesignView : BasePageView
         var textureY = height - displayRect.y - displayRect.height;
         textureY = Mathf.Clamp(textureY, 0, Mathf.Max(0, height - displayRect.height));
         return new RectInt(displayRect.x, textureY, displayRect.width, displayRect.height);
+    }
+
+    private async UniTaskVoid ApplyDesignAsync()
+    {
+        if (_layerData.Count == 0)
+        {
+            ShowToast("当前没有可应用的图层", 2200);
+            return;
+        }
+
+        var originalHistory = GetOriginalHistoryTexture();
+        if (originalHistory == null)
+        {
+            ShowToast("找不到原始背景图", 2400);
+            return;
+        }
+
+        ShowBusy("应用生成");
+        if (_maskedBackgroundPreview == null || _maskedBackgroundHoleMask == null)
+        {
+            ShowToast("缺少背景或遮罩数据，请先重新识别图层", 2600);
+            return;
+        }
+
+        ApplyCompositeResult applyResult = null;
+        try
+        {
+            applyResult = BuildAppliedComposite(_maskedBackgroundPreview, _maskedBackgroundHoleMask, _layerData);
+            if (applyResult?.composedTexture == null)
+            {
+                ShowToast("图层合成失败", 2600);
+                return;
+            }
+
+            AddHistory(applyResult.composedTexture, "设计合成");
+            applyResult.composedTexture = null;
+
+            ClearDetectedLayerState();
+
+            var current = GetCurrentHistoryTexture();
+            CompareView?.SetSources(current ?? originalHistory, originalHistory ?? current, GetCurrentHistoryLabel());
+            CompareView?.FitToView();
+
+            if (_tipsLabel != null)
+            {
+                _tipsLabel.text = applyResult.remainingMaskPixels > 0
+                    ? $"已生成新的设计结果，剩余 {applyResult.remainingMaskPixels} 个待补区域像素，SD inpainting 接口已预留但暂未调用。"
+                    : "已生成新的设计结果，当前图层已全部合成回背景。";
+            }
+
+            ShowToast(
+                applyResult.remainingMaskPixels > 0
+                    ? "已合成到背景，仍有黑色缺口，后续可从预留的 SD inpainting 接口补洞。"
+                    : "已合成到背景，并已清除所有图层。",
+                3200);
+        }
+        finally
+        {
+            if (applyResult?.composedTexture != null)
+                DestroyTexture(ref applyResult.composedTexture);
+            if (applyResult?.remainingMask != null)
+                DestroyTexture(ref applyResult.remainingMask);
+            HideBusy();
+            await UniTask.Yield();
+        }
+    }
+
+    private static ApplyCompositeResult BuildAppliedComposite(Texture2D maskedBackground, Texture2D holeMask, List<LayerBoxData> layers)
+    {
+        if (maskedBackground == null || holeMask == null || layers == null || layers.Count == 0)
+            return null;
+        if (!TryGetPixels(maskedBackground, out var backgroundPixels) || !TryGetPixels(holeMask, out var holeMaskPixels))
+            return null;
+        if (backgroundPixels.Length != holeMaskPixels.Length)
+            return null;
+
+        var width = maskedBackground.width;
+        var height = maskedBackground.height;
+        var compositePixels = new Color32[backgroundPixels.Length];
+        Array.Copy(backgroundPixels, compositePixels, backgroundPixels.Length);
+
+        var remainingHole = new bool[width * height];
+        for (var i = 0; i < remainingHole.Length; i++)
+            remainingHole[i] = IsMaskedPixel(holeMaskPixels[i]);
+
+        for (var layerIndex = 0; layerIndex < layers.Count; layerIndex++)
+        {
+            var layer = layers[layerIndex];
+            if (layer?.contentTexture == null)
+                continue;
+            if (!TryGetPixels(layer.contentTexture, out var layerPixels))
+                continue;
+
+            var targetRect = ToDisplayPixelRect(
+                new Rect(
+                    layer.normalizedRect.x * width,
+                    layer.normalizedRect.y * height,
+                    layer.normalizedRect.width * width,
+                    layer.normalizedRect.height * height),
+                width,
+                height);
+
+            CompositeLayerOntoBackground(layerPixels, layer.contentTexture.width, layer.contentTexture.height, targetRect, compositePixels, remainingHole, width, height);
+        }
+
+        var remainingMaskPixels = 0;
+        var remainingMaskTex = BuildRemainingHoleMaskTexture(remainingHole, width, height, out remainingMaskPixels);
+        var composedTexture = CreateTextureFromPixels(compositePixels, width, height, "DesignViewAppliedComposite");
+        return new ApplyCompositeResult
+        {
+            composedTexture = composedTexture,
+            remainingMask = remainingMaskTex,
+            remainingMaskPixels = remainingMaskPixels
+        };
+    }
+
+    private static void CompositeLayerOntoBackground(
+        Color32[] layerPixels,
+        int layerWidth,
+        int layerHeight,
+        RectInt targetDisplayRect,
+        Color32[] backgroundPixels,
+        bool[] remainingHole,
+        int backgroundWidth,
+        int backgroundHeight)
+    {
+        if (layerPixels == null || backgroundPixels == null || remainingHole == null)
+            return;
+        if (layerWidth <= 0 || layerHeight <= 0 || targetDisplayRect.width <= 0 || targetDisplayRect.height <= 0)
+            return;
+
+        for (var dy = 0; dy < targetDisplayRect.height; dy++)
+        {
+            var dstDisplayY = targetDisplayRect.y + dy;
+            if ((uint)dstDisplayY >= (uint)backgroundHeight)
+                continue;
+
+            var v = targetDisplayRect.height <= 1 ? 0f : dy / (float)(targetDisplayRect.height - 1);
+            var srcY = layerHeight - 1 - Mathf.Clamp(Mathf.RoundToInt(v * (layerHeight - 1)), 0, layerHeight - 1);
+            var dstTextureY = backgroundHeight - 1 - dstDisplayY;
+            var dstRow = dstTextureY * backgroundWidth;
+            var srcRow = srcY * layerWidth;
+
+            for (var dx = 0; dx < targetDisplayRect.width; dx++)
+            {
+                var dstX = targetDisplayRect.x + dx;
+                if ((uint)dstX >= (uint)backgroundWidth)
+                    continue;
+
+                var u = targetDisplayRect.width <= 1 ? 0f : dx / (float)(targetDisplayRect.width - 1);
+                var srcX = Mathf.Clamp(Mathf.RoundToInt(u * (layerWidth - 1)), 0, layerWidth - 1);
+                var src = layerPixels[srcRow + srcX];
+                if (src.a <= 0)
+                    continue;
+
+                var dstIndex = dstRow + dstX;
+                backgroundPixels[dstIndex] = AlphaBlend(backgroundPixels[dstIndex], src);
+                remainingHole[dstIndex] = false;
+            }
+        }
+    }
+
+    private static Color32 AlphaBlend(Color32 dst, Color32 src)
+    {
+        var srcA = src.a / 255f;
+        if (srcA <= 0f)
+            return dst;
+        if (srcA >= 1f)
+            return new Color32(src.r, src.g, src.b, 255);
+
+        var invA = 1f - srcA;
+        return new Color32(
+            (byte)Mathf.Clamp(Mathf.RoundToInt(src.r * srcA + dst.r * invA), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(src.g * srcA + dst.g * invA), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(src.b * srcA + dst.b * invA), 0, 255),
+            255);
+    }
+
+    private static Texture2D BuildRemainingHoleMaskTexture(bool[] remainingHole, int width, int height, out int remainingMaskPixels)
+    {
+        remainingMaskPixels = 0;
+        if (remainingHole == null || remainingHole.Length != width * height)
+            return null;
+
+        var pixels = new Color32[remainingHole.Length];
+        for (var i = 0; i < remainingHole.Length; i++)
+        {
+            if (remainingHole[i])
+            {
+                pixels[i] = new Color32(255, 255, 255, 255);
+                remainingMaskPixels++;
+            }
+            else
+            {
+                pixels[i] = new Color32(0, 0, 0, 255);
+            }
+        }
+
+        return CreateTextureFromPixels(pixels, width, height, "DesignViewRemainingHoleMask");
     }
 }
