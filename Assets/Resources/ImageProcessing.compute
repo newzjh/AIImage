@@ -11,17 +11,28 @@
 #pragma kernel Sharpen
 #pragma kernel Blur
 #pragma kernel PasteRectWithMask
+#pragma kernel BuildMaskFromBinary
+#pragma kernel BuildTransparentFromBinary
+#pragma kernel BuildOverlayFromBinary
+#pragma kernel BuildMaskedBackgroundFromMask
+#pragma kernel BuildHoleMaskFromMask
+#pragma kernel BuildLayerCutoutFromMask
 #pragma kernel DesignViewCompositeLayer
+#pragma kernel DesignViewApplyRemainingMask
 
 Texture2D<float4> _Source;
 Texture2D<float4> _Overlay;
 Texture2D<float> _FaceMaskIn;
 RWTexture2D<float4> _Result;
 RWTexture2D<float4> _DesignViewRemainingMaskOut;
+StructuredBuffer<uint> _BinaryMaskBuffer;
 
 float4 _SrcSize;
 float4 _DstSize;
 int4 _CropRect;
+int2 _BinaryMaskSize;
+float4 _OverlayTint;
+float _OverlayOpacity;
 
 float4 SampleBilinearOverlay(float2 uv)
 {
@@ -47,6 +58,44 @@ float4 SampleBilinearOverlay(float2 uv)
     float4 cx0 = lerp(c00, c10, f.x);
     float4 cx1 = lerp(c01, c11, f.x);
     return lerp(cx0, cx1, f.y);
+}
+
+float4 Premultiply(float4 c)
+{
+    return float4(c.rgb * c.a, c.a);
+}
+
+float4 Unpremultiply(float4 c)
+{
+    if (c.a <= 1e-6)
+        return 0.0;
+    return float4(c.rgb / c.a, c.a);
+}
+
+float4 SampleBilinearOverlayAlphaAware(float2 uv)
+{
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    if (ow == 0 || oh == 0) return 0;
+
+    float2 size = float2(ow, oh);
+    float2 src = uv * size - 0.5;
+    int2 p0 = int2(floor(src));
+    float2 f = frac(src);
+
+    int2 p00 = clamp(p0, int2(0,0), int2(size) - 1);
+    int2 p10 = clamp(p0 + int2(1,0), int2(0,0), int2(size) - 1);
+    int2 p01 = clamp(p0 + int2(0,1), int2(0,0), int2(size) - 1);
+    int2 p11 = clamp(p0 + int2(1,1), int2(0,0), int2(size) - 1);
+
+    float4 c00 = Premultiply(_Overlay[p00]);
+    float4 c10 = Premultiply(_Overlay[p10]);
+    float4 c01 = Premultiply(_Overlay[p01]);
+    float4 c11 = Premultiply(_Overlay[p11]);
+
+    float4 cx0 = lerp(c00, c10, f.x);
+    float4 cx1 = lerp(c01, c11, f.x);
+    return Unpremultiply(lerp(cx0, cx1, f.y));
 }
 
 float _SigmaSpatial;
@@ -134,6 +183,111 @@ float3 ApplyCool(float3 c, float amount)
     t.g -= amount * 0.02;
     t.b += amount * 0.10;
     return t;
+}
+
+uint BinaryMaskAt(int2 p)
+{
+    if ((uint)p.x >= (uint)_BinaryMaskSize.x || (uint)p.y >= (uint)_BinaryMaskSize.y)
+        return 0u;
+    uint index = (uint)(p.y * _BinaryMaskSize.x + p.x);
+    return _BinaryMaskBuffer[index];
+}
+
+[numthreads(8,8,1)]
+void BuildMaskFromBinary(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    uint v = BinaryMaskAt(int2(id.xy)) != 0u ? 255u : 0u;
+    _Result[int2(id.xy)] = float4(v / 255.0, v / 255.0, v / 255.0, 1.0);
+}
+
+[numthreads(8,8,1)]
+void BuildTransparentFromBinary(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float4 src = _Source[p];
+    if (BinaryMaskAt(p) != 0u)
+        src.a = 0.0;
+    _Result[p] = src;
+}
+
+[numthreads(8,8,1)]
+void BuildOverlayFromBinary(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float4 src = _Source[p];
+    if (BinaryMaskAt(p) != 0u)
+    {
+        float3 tint = _OverlayTint.rgb;
+        src.rgb = lerp(src.rgb, tint, saturate(_OverlayOpacity));
+    }
+    src.a = 1.0;
+    _Result[p] = src;
+}
+
+[numthreads(8,8,1)]
+void BuildMaskedBackgroundFromMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float4 src = _Source[p];
+    if (_Overlay[p].r >= 0.5 || _Overlay[p].g >= 0.5 || _Overlay[p].b >= 0.5)
+        src.rgb = 0.0;
+    src.a = 1.0;
+    _Result[p] = src;
+}
+
+[numthreads(8,8,1)]
+void BuildHoleMaskFromMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float masked = (_Source[p].r >= 0.5 || _Source[p].g >= 0.5 || _Source[p].b >= 0.5) ? 1.0 : 0.0;
+    _Result[p] = float4(masked.xxx, 1.0);
+}
+
+[numthreads(8,8,1)]
+void BuildLayerCutoutFromMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int2 p = int2(x, y);
+
+    int rx = _CropRect.x;
+    int ry = _CropRect.y;
+    int rw = _CropRect.z;
+    int rh = _CropRect.w;
+
+    int srcY = ry + y;
+    int2 srcP = int2(rx + x, srcY);
+    float4 src = _Source[srcP];
+    float masked = (_Overlay[srcP].r >= 0.5 || _Overlay[srcP].g >= 0.5 || _Overlay[srcP].b >= 0.5) ? 1.0 : 0.0;
+    if (masked < 0.5)
+        src = 0.0;
+    else
+        src.a = 1.0;
+    _Result[p] = src;
 }
 
 [numthreads(8,8,1)]
@@ -541,7 +695,7 @@ void DesignViewCompositeLayer(uint3 id : SV_DispatchThreadID)
 
     float2 uv = DesignViewUvFromCrop(x, displayY);
     uv.y = 1.0 - uv.y;
-    float4 over = SampleBilinearOverlay(uv);
+    float4 over = SampleBilinearOverlayAlphaAware(uv);
 
     uint ow, oh;
     _Overlay.GetDimensions(ow, oh);
@@ -552,13 +706,30 @@ void DesignViewCompositeLayer(uint3 id : SV_DispatchThreadID)
     float rawAlpha = OverlayAlphaAt(overlayPixel);
     float closedAlpha = OverlayMaskMinOfMax(overlayPixel, max(0, _DesignViewCloseRadius));
     float blurredAlpha = OverlayMaskBlur(overlayPixel, max(0, _DesignViewFeatherRadius));
-    float blendedAlpha = lerp(blurredAlpha, rawAlpha, saturate(_DesignViewPreserve));
-    blendedAlpha = max(blendedAlpha, rawAlpha * 0.35);
-    blendedAlpha = saturate(max(blendedAlpha, closedAlpha * 0.5));
+    float preserve = saturate(_DesignViewPreserve);
+    float coreAlpha = lerp(closedAlpha, rawAlpha, preserve);
+    float edgeAlpha = lerp(blurredAlpha, closedAlpha, preserve * 0.35);
+    float blendedAlpha = saturate(max(edgeAlpha, coreAlpha * (0.12 + 0.28 * preserve)));
 
     float3 rgb = lerp(src.rgb, over.rgb, blendedAlpha);
     _Result[p] = float4(rgb, 1.0);
 
-    float newKeep = (rawAlpha > 0.001) ? 0.0 : keepMask;
+    float newKeep = (blendedAlpha > 0.001) ? 0.0 : keepMask;
     _DesignViewRemainingMaskOut[p] = float4(newKeep.xxx, 1.0);
+}
+
+[numthreads(8,8,1)]
+void DesignViewApplyRemainingMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    float4 src = _Source[p];
+    float keepMask = _FaceMaskIn[p];
+    if (keepMask > 0.001)
+        src.rgb = 0.0;
+    src.a = 1.0;
+    _Result[p] = src;
 }

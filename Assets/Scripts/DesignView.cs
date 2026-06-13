@@ -19,7 +19,14 @@ public sealed class DesignView : BasePageView
         public Rect normalizedRect;
         public Color color;
         public RenderTexture contentRenderTexture;
-        public Texture2D previewTexture;
+        public Texture previewTexture;
+    }
+
+    private sealed class DetectionBuildArtifacts
+    {
+        public RenderTexture maskedBackgroundPreview;
+        public RenderTexture maskedBackgroundHoleMask;
+        public List<LayerBoxData> layers = new List<LayerBoxData>();
     }
 
     private sealed class ApplyCompositeResult
@@ -38,8 +45,8 @@ public sealed class DesignView : BasePageView
     private Label _tipsLabel;
     private Button _applyButton;
     private Button _detectButton;
-    private Texture2D _maskedBackgroundPreview;
-    private Texture2D _maskedBackgroundHoleMask;
+    private RenderTexture _maskedBackgroundPreview;
+    private RenderTexture _maskedBackgroundHoleMask;
     private int _edgeCloseRadius = DefaultEdgeCloseRadius;
     private int _edgeFeatherRadius = DefaultEdgeFeatherRadius;
     private float _edgePreserve = DefaultEdgePreserve;
@@ -211,9 +218,10 @@ public sealed class DesignView : BasePageView
 
         if (_maskedBackgroundPreview != null)
         {
+            Texture compareOriginal = original != null ? original : (current != null ? current : _maskedBackgroundPreview);
             CompareView.SetSources(
                 _maskedBackgroundPreview,
-                original ?? current ?? _maskedBackgroundPreview,
+                compareOriginal,
                 GetCurrentHistoryLabel());
             return;
         }
@@ -342,9 +350,7 @@ public sealed class DesignView : BasePageView
 
         ShowProgress("识别图层");
         YoloSegResult result = default;
-        List<LayerBoxData> detectedLayers = null;
-        Texture2D maskedBackgroundPreview = null;
-        Texture2D maskedBackgroundHoleMask = null;
+        DetectionBuildArtifacts artifacts = null;
         try
         {
             var oldTargetPersonOnly = Host.YoloSegRunner.targetPersonOnly;
@@ -368,26 +374,30 @@ public sealed class DesignView : BasePageView
                 return;
             }
 
-            detectedLayers = BuildLayerDataFromDetection(src, result, out maskedBackgroundPreview, out maskedBackgroundHoleMask);
-            if (detectedLayers.Count == 0)
+            SetProgress(0.9f, "Build design layers");
+            artifacts = await BuildDetectionArtifactsAsync(src, result);
+            if (artifacts == null || artifacts.layers == null || artifacts.layers.Count == 0)
             {
                 ShowToast("未检测到可用的人物或对象图层", 2600);
                 return;
             }
 
-            ReplaceDetectedLayerState(detectedLayers, maskedBackgroundPreview, maskedBackgroundHoleMask);
-            detectedLayers = null;
-            maskedBackgroundPreview = null;
-            maskedBackgroundHoleMask = null;
+            ReplaceDetectedLayerState(artifacts.layers, artifacts.maskedBackgroundPreview, artifacts.maskedBackgroundHoleMask);
+            artifacts.layers = null;
+            artifacts.maskedBackgroundPreview = null;
+            artifacts.maskedBackgroundHoleMask = null;
 
             if (_tipsLabel != null)
                 _tipsLabel.text = $"已生成 {_layerData.Count} 个图层。图层里是切出的人物或对象，背景对应区域已变黑，移动或缩放图层时内容会一起跟随。";
         }
         finally
         {
-            DestroyLayerTextures(detectedLayers);
-            DestroyTexture(ref maskedBackgroundPreview);
-            DestroyTexture(ref maskedBackgroundHoleMask);
+            if (artifacts != null)
+            {
+                DestroyLayerTextures(artifacts.layers);
+                DestroyRenderTexture(ref artifacts.maskedBackgroundPreview);
+                DestroyRenderTexture(ref artifacts.maskedBackgroundHoleMask);
+            }
             DestroyTexture(ref result.texture);
             DestroyTexture(ref result.mask);
             DestroyTexture(ref result.overlay);
@@ -466,7 +476,7 @@ public sealed class DesignView : BasePageView
         {
             var contentImage = new Image();
             contentImage.image = data.previewTexture;
-            contentImage.scaleMode = ScaleMode.ScaleToFit;
+            contentImage.scaleMode = ScaleMode.StretchToFill;
             contentImage.style.position = Position.Absolute;
             contentImage.style.left = 0;
             contentImage.style.top = 0;
@@ -702,7 +712,7 @@ public sealed class DesignView : BasePageView
         return new Rect(box.resolvedStyle.left, box.resolvedStyle.top, box.resolvedStyle.width, box.resolvedStyle.height);
     }
 
-    private void ReplaceDetectedLayerState(List<LayerBoxData> layers, Texture2D maskedBackgroundPreview, Texture2D maskedBackgroundHoleMask)
+    private void ReplaceDetectedLayerState(List<LayerBoxData> layers, RenderTexture maskedBackgroundPreview, RenderTexture maskedBackgroundHoleMask)
     {
         ClearDetectedLayerState();
 
@@ -721,8 +731,8 @@ public sealed class DesignView : BasePageView
         _layerData.Clear();
 
         CompareView?.SetPreview(null);
-        DestroyTexture(ref _maskedBackgroundPreview);
-        DestroyTexture(ref _maskedBackgroundHoleMask);
+        DestroyRenderTexture(ref _maskedBackgroundPreview);
+        DestroyRenderTexture(ref _maskedBackgroundHoleMask);
 
         _canvasOverlay?.Clear();
         _layerElements.Clear();
@@ -744,6 +754,15 @@ public sealed class DesignView : BasePageView
         }
     }
 
+    private static void DestroyTexture(ref Texture texture)
+    {
+        if (texture == null)
+            return;
+
+        UnityEngine.Object.Destroy(texture);
+        texture = null;
+    }
+
     private static void DestroyTexture(ref Texture2D texture)
     {
         if (texture == null)
@@ -763,127 +782,75 @@ public sealed class DesignView : BasePageView
         texture = null;
     }
 
-    private static List<LayerBoxData> BuildLayerDataFromDetection(
-        Texture2D source,
-        YoloSegResult result,
-        out Texture2D maskedBackgroundPreview,
-        out Texture2D maskedBackgroundHoleMask)
+    private async UniTask<DetectionBuildArtifacts> BuildDetectionArtifactsAsync(Texture2D source, YoloSegResult result)
     {
-        maskedBackgroundPreview = BuildMaskedBackgroundTexture(source, result.mask);
-        maskedBackgroundHoleMask = BuildHoleMaskTexture(result.mask);
-        var layers = new List<LayerBoxData>();
         if (source == null || result.mask == null || result.detections == null || result.detections.Length == 0)
-            return layers;
+            return null;
 
-        for (var i = 0; i < result.detections.Length; i++)
+        var cs = Host?.ImageProcessingCS;
+        if (cs == null)
+            return null;
+
+        var artifacts = new DetectionBuildArtifacts();
+        RenderTexture maskedBackgroundRt = null;
+        RenderTexture holeMaskRt = null;
+        var tempRts = new List<RenderTexture>();
+        try
         {
-            var detection = result.detections[i];
-            var displayRect = ToDisplayPixelRect(detection.rect, source.width, source.height);
-            if (displayRect.width < 8 || displayRect.height < 8)
-                continue;
+            maskedBackgroundRt = await BuildMaskedBackgroundRenderTextureAsync(source, result.mask, cs);
+            holeMaskRt = await BuildHoleMaskRenderTextureAsync(result.mask, cs);
+            if (maskedBackgroundRt == null || holeMaskRt == null)
+                return null;
 
-            var normalized = new Rect(
-                displayRect.x / Mathf.Max(1f, source.width),
-                displayRect.y / Mathf.Max(1f, source.height),
-                displayRect.width / Mathf.Max(1f, source.width),
-                displayRect.height / Mathf.Max(1f, source.height));
-            if (normalized.width < MinNormalizedLayerSize || normalized.height < MinNormalizedLayerSize)
-                continue;
+            artifacts.maskedBackgroundPreview = maskedBackgroundRt;
+            artifacts.maskedBackgroundHoleMask = holeMaskRt;
+            maskedBackgroundRt = null;
+            holeMaskRt = null;
 
-            var textureRect = ToTexturePixelRect(displayRect, source.width, source.height);
-            var contentTexture = BuildLayerCutoutTexture(source, result.mask, textureRect, i + 1);
-            var contentRt = CreateRenderTextureFromTexture(contentTexture);
-
-            layers.Add(new LayerBoxData
+            for (var i = 0; i < result.detections.Length; i++)
             {
-                title = $"Layer {i + 1}  {(detection.probability * 100f):0}%",
-                normalizedRect = normalized,
-                color = Color.HSVToRGB((i * 0.17f) % 1f, 0.68f, 1f),
-                previewTexture = contentTexture,
-                contentRenderTexture = contentRt
-            });
+                var detection = result.detections[i];
+                var displayRect = ToDisplayPixelRect(detection.rect, source.width, source.height);
+                if (displayRect.width < 8 || displayRect.height < 8)
+                    continue;
+
+                var normalized = new Rect(
+                    displayRect.x / Mathf.Max(1f, source.width),
+                    displayRect.y / Mathf.Max(1f, source.height),
+                    displayRect.width / Mathf.Max(1f, source.width),
+                    displayRect.height / Mathf.Max(1f, source.height));
+                if (normalized.width < MinNormalizedLayerSize || normalized.height < MinNormalizedLayerSize)
+                    continue;
+
+                var textureRect = ToTexturePixelRect(displayRect, source.width, source.height);
+                var cutoutRt = BuildLayerCutoutRenderTexture(source, result.mask, textureRect, cs);
+                if (cutoutRt == null)
+                    continue;
+
+                tempRts.Add(cutoutRt);
+                artifacts.layers.Add(new LayerBoxData
+                {
+                    title = $"Layer {i + 1}  {(detection.probability * 100f):0}%",
+                    normalizedRect = normalized,
+                    color = Color.HSVToRGB((i * 0.17f) % 1f, 0.68f, 1f),
+                    previewTexture = cutoutRt,
+                    contentRenderTexture = cutoutRt
+                });
+                tempRts.Remove(cutoutRt);
+            }
+
+            return artifacts;
         }
-
-        return layers;
-    }
-
-    private static Texture2D BuildMaskedBackgroundTexture(Texture2D source, Texture2D mask)
-    {
-        if (!TryGetPixels(source, out var sourcePixels) || !TryGetPixels(mask, out var maskPixels) || sourcePixels.Length != maskPixels.Length)
-            return null;
-
-        var pixels = new Color32[sourcePixels.Length];
-        for (var i = 0; i < pixels.Length; i++)
+        finally
         {
-            pixels[i] = IsMaskedPixel(maskPixels[i])
-                ? new Color32(0, 0, 0, 255)
-                : new Color32(sourcePixels[i].r, sourcePixels[i].g, sourcePixels[i].b, 255);
-        }
-
-        return CreateTextureFromPixels(pixels, source.width, source.height, "DesignViewMaskedBackground");
-    }
-
-    private static Texture2D BuildHoleMaskTexture(Texture2D mask)
-    {
-        if (!TryGetPixels(mask, out var maskPixels))
-            return null;
-
-        var pixels = new Color32[maskPixels.Length];
-        for (var i = 0; i < pixels.Length; i++)
-        {
-            pixels[i] = IsMaskedPixel(maskPixels[i])
-                ? new Color32(255, 255, 255, 255)
-                : new Color32(0, 0, 0, 255);
-        }
-
-        return CreateTextureFromPixels(pixels, mask.width, mask.height, "DesignViewHoleMask");
-    }
-
-    private static Texture2D BuildLayerCutoutTexture(Texture2D source, Texture2D mask, RectInt pixelRect, int layerIndex)
-    {
-        if (pixelRect.width <= 0 || pixelRect.height <= 0)
-            return null;
-        if (!TryGetPixels(source, out var sourcePixels) || !TryGetPixels(mask, out var maskPixels) || sourcePixels.Length != maskPixels.Length)
-            return null;
-
-        var pixels = new Color32[pixelRect.width * pixelRect.height];
-        var visiblePixels = 0;
-        for (var y = 0; y < pixelRect.height; y++)
-        {
-            var srcRow = (pixelRect.y + y) * source.width;
-            var dstRow = y * pixelRect.width;
-            for (var x = 0; x < pixelRect.width; x++)
+            DestroyRenderTexture(ref maskedBackgroundRt);
+            DestroyRenderTexture(ref holeMaskRt);
+            for (var i = 0; i < tempRts.Count; i++)
             {
-                var srcIndex = srcRow + pixelRect.x + x;
-                if (IsMaskedPixel(maskPixels[srcIndex]))
-                {
-                    var p = sourcePixels[srcIndex];
-                    p.a = 255;
-                    pixels[dstRow + x] = p;
-                    visiblePixels++;
-                }
-                else
-                {
-                    pixels[dstRow + x] = new Color32(0, 0, 0, 0);
-                }
+                var rt = tempRts[i];
+                DestroyRenderTexture(ref rt);
             }
         }
-
-        if (visiblePixels == 0)
-            return null;
-
-        return CreateTextureFromPixels(pixels, pixelRect.width, pixelRect.height, $"DesignViewLayerCutout{layerIndex}");
-    }
-
-    private static Texture2D CreateTextureFromPixels(Color32[] pixels, int width, int height, string name)
-    {
-        var texture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
-        texture.SetPixels32(pixels);
-        texture.Apply(false, false);
-        texture.wrapMode = TextureWrapMode.Clamp;
-        texture.filterMode = FilterMode.Bilinear;
-        texture.name = name;
-        return texture;
     }
 
     private static RenderTexture CreateRenderTextureFromTexture(Texture texture)
@@ -902,23 +869,66 @@ public sealed class DesignView : BasePageView
         return rt;
     }
 
-    private static bool TryGetPixels(Texture2D texture, out Color32[] pixels)
+    private async UniTask<RenderTexture> BuildMaskedBackgroundRenderTextureAsync(Texture source, Texture mask, ComputeShader cs)
     {
-        pixels = null;
-        if (texture == null)
-            return false;
+        if (source == null || mask == null || cs == null)
+            return null;
 
-        try
-        {
-            pixels = texture.GetPixels32();
-        }
-        catch
-        {
-            pixels = null;
-            return false;
-        }
+        int kernel;
+        try { kernel = cs.FindKernel("BuildMaskedBackgroundFromMask"); }
+        catch { return null; }
 
-        return pixels != null && pixels.Length > 0;
+        var rt = CreateWorkingRenderTexture(source.width, source.height, "DesignViewMaskedBackgroundRt");
+        if (rt == null)
+            return null;
+
+        cs.SetTexture(kernel, "_Source", source);
+        cs.SetTexture(kernel, "_Overlay", mask);
+        cs.SetTexture(kernel, "_Result", rt);
+        cs.Dispatch(kernel, Mathf.Max(1, Mathf.CeilToInt(source.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(source.height / 8f)), 1);
+        await UniTask.Yield();
+        return rt;
+    }
+
+    private async UniTask<RenderTexture> BuildHoleMaskRenderTextureAsync(Texture mask, ComputeShader cs)
+    {
+        if (mask == null || cs == null)
+            return null;
+
+        int kernel;
+        try { kernel = cs.FindKernel("BuildHoleMaskFromMask"); }
+        catch { return null; }
+
+        var rt = CreateWorkingRenderTexture(mask.width, mask.height, "DesignViewHoleMaskRt");
+        if (rt == null)
+            return null;
+
+        cs.SetTexture(kernel, "_Source", mask);
+        cs.SetTexture(kernel, "_Result", rt);
+        cs.Dispatch(kernel, Mathf.Max(1, Mathf.CeilToInt(mask.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(mask.height / 8f)), 1);
+        await UniTask.Yield();
+        return rt;
+    }
+
+    private RenderTexture BuildLayerCutoutRenderTexture(Texture source, Texture mask, RectInt pixelRect, ComputeShader cs)
+    {
+        if (source == null || mask == null || cs == null || pixelRect.width <= 0 || pixelRect.height <= 0)
+            return null;
+
+        int kernel;
+        try { kernel = cs.FindKernel("BuildLayerCutoutFromMask"); }
+        catch { return null; }
+
+        var rt = CreateWorkingRenderTexture(pixelRect.width, pixelRect.height, "DesignViewLayerCutoutRt");
+        if (rt == null)
+            return null;
+
+        cs.SetTexture(kernel, "_Source", source);
+        cs.SetTexture(kernel, "_Overlay", mask);
+        cs.SetTexture(kernel, "_Result", rt);
+        cs.SetInts("_CropRect", pixelRect.x, pixelRect.y, pixelRect.width, pixelRect.height);
+        cs.Dispatch(kernel, Mathf.Max(1, Mathf.CeilToInt(pixelRect.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(pixelRect.height / 8f)), 1);
+        return rt;
     }
 
     private static bool IsMaskedPixel(Color32 pixel)
@@ -973,8 +983,9 @@ public sealed class DesignView : BasePageView
         ApplyCompositeResult applyResult = null;
         try
         {
+            var baseTexture = GetCurrentHistoryTexture() ?? originalHistory;
             applyResult = await BuildAppliedCompositeAsync(
-                _maskedBackgroundPreview,
+                baseTexture,
                 _maskedBackgroundHoleMask,
                 _layerData,
                 _edgeCloseRadius,
@@ -1020,14 +1031,14 @@ public sealed class DesignView : BasePageView
     }
 
     private async UniTask<ApplyCompositeResult> BuildAppliedCompositeAsync(
-        Texture2D maskedBackground,
-        Texture2D holeMask,
+        Texture2D baseTexture,
+        Texture holeMask,
         List<LayerBoxData> layers,
         int edgeCloseRadius,
         int edgeFeatherRadius,
         float edgePreserve)
     {
-        if (maskedBackground == null || holeMask == null || layers == null || layers.Count == 0)
+        if (baseTexture == null || holeMask == null || layers == null || layers.Count == 0)
             return null;
 
         var cs = Host?.ImageProcessingCS;
@@ -1040,8 +1051,14 @@ public sealed class DesignView : BasePageView
         if (kernel < 0)
             return null;
 
-        var width = maskedBackground.width;
-        var height = maskedBackground.height;
+        int applyRemainingKernel;
+        try { applyRemainingKernel = cs.FindKernel("DesignViewApplyRemainingMask"); }
+        catch { return null; }
+        if (applyRemainingKernel < 0)
+            return null;
+
+        var width = baseTexture.width;
+        var height = baseTexture.height;
         RenderTexture compositeRt = null;
         RenderTexture remainingMaskRt = null;
         RenderTexture tempRtA = null;
@@ -1050,7 +1067,7 @@ public sealed class DesignView : BasePageView
         {
             compositeRt = CreateWorkingRenderTexture(width, height, "DesignViewComposite");
             remainingMaskRt = CreateWorkingRenderTexture(width, height, "DesignViewRemainingMask");
-            Graphics.Blit(maskedBackground, compositeRt);
+            Graphics.Blit(baseTexture, compositeRt);
             Graphics.Blit(holeMask, remainingMaskRt);
 
             var gx = Mathf.Max(1, Mathf.CeilToInt(width / 8f));
@@ -1096,12 +1113,20 @@ public sealed class DesignView : BasePageView
                 DestroyRenderTexture(ref tempRtB);
             }
 
+            tempRtA = CreateWorkingRenderTexture(width, height, "DesignViewCompositeFinal");
+            cs.SetTexture(applyRemainingKernel, "_Source", compositeRt);
+            cs.SetTexture(applyRemainingKernel, "_FaceMaskIn", remainingMaskRt);
+            cs.SetTexture(applyRemainingKernel, "_Result", tempRtA);
+            cs.Dispatch(applyRemainingKernel, gx, gy, 1);
+            Swap(ref compositeRt, ref tempRtA);
+            DestroyRenderTexture(ref tempRtA);
+
             var composedTexture = await ReadbackTextureAsync(compositeRt, width, height);
             var remainingMaskTex = await ReadbackTextureAsync(remainingMaskRt, width, height);
             if (composedTexture == null)
                 return null;
 
-            var remainingMaskPixels = CountMaskPixels(remainingMaskTex);
+            var remainingMaskPixels = await CountMaskPixelsAsync(remainingMaskRt);
             if (composedTexture != null)
                 composedTexture.name = "DesignViewAppliedComposite";
             if (remainingMaskTex != null)
@@ -1121,29 +1146,6 @@ public sealed class DesignView : BasePageView
             DestroyRenderTexture(ref tempRtA);
             DestroyRenderTexture(ref tempRtB);
         }
-    }
-
-    private static Texture2D BuildRemainingHoleMaskTexture(bool[] remainingHole, int width, int height, out int remainingMaskPixels)
-    {
-        remainingMaskPixels = 0;
-        if (remainingHole == null || remainingHole.Length != width * height)
-            return null;
-
-        var pixels = new Color32[remainingHole.Length];
-        for (var i = 0; i < remainingHole.Length; i++)
-        {
-            if (remainingHole[i])
-            {
-                pixels[i] = new Color32(255, 255, 255, 255);
-                remainingMaskPixels++;
-            }
-            else
-            {
-                pixels[i] = new Color32(0, 0, 0, 255);
-            }
-        }
-
-        return CreateTextureFromPixels(pixels, width, height, "DesignViewRemainingHoleMask");
     }
 
     private static RenderTexture CreateWorkingRenderTexture(int width, int height, string name)
@@ -1169,15 +1171,22 @@ public sealed class DesignView : BasePageView
         b = t;
     }
 
-    private static int CountMaskPixels(Texture2D maskTexture)
+    private async UniTask<int> CountMaskPixelsAsync(RenderTexture maskTexture)
     {
-        if (!TryGetPixels(maskTexture, out var pixels))
+        if (maskTexture == null)
             return 0;
 
+        var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
+        AsyncGPUReadback.Request(maskTexture, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
+        var request = await tcs.Task;
+        if (request.hasError)
+            return 0;
+
+        var data = request.GetData<Color32>();
         var count = 0;
-        for (var i = 0; i < pixels.Length; i++)
+        for (var i = 0; i < data.Length; i++)
         {
-            if (IsMaskedPixel(pixels[i]))
+            if (IsMaskedPixel(data[i]))
                 count++;
         }
 

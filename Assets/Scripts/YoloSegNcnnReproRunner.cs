@@ -33,6 +33,17 @@ public struct YoloSegResult
 
 public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 {
+    private sealed class OutputTextureData
+    {
+        public bool[] flippedMask;
+        public Texture2D maskTexture;
+        public Texture2D transparentTexture;
+        public Texture2D overlayTexture;
+        public float coverage;
+    }
+
+    private ComputeShader _imageProcessingCs;
+
     public enum YoloSegModelVariant
     {
         YoloV8nSeg,
@@ -424,22 +435,19 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             ReportProgress(0.82f, "Build outputs");
             await YieldIfNeeded();
             ct.ThrowIfCancellationRequested();
+            var outputTextureData = await BuildOutputTexturesAsync(
+                readableSrc,
+                unionMask,
+                overlayColor,
+                Mathf.Clamp01(overlayOpacity),
+                ct);
+            ct.ThrowIfCancellationRequested();
 
-            for (int y = 0; y < readableSrc.height/2; y++)
-            {
-                for (int x = 0; x < readableSrc.width; x++)
-                {
-                    bool b = unionMask[y * readableSrc.width + x];
-                    unionMask[y * readableSrc.width + x] = unionMask[(readableSrc.height - 1 - y) * readableSrc.width + x];
-                    unionMask[(readableSrc.height - 1 - y) * readableSrc.width + x] = b;
-
-                }
-            }
-
-            var outputMask = BuildMaskTexture(unionMask, readableSrc.width, readableSrc.height);
-            var transparent = BuildTransparentTexture(readableSrc, unionMask);
-            var overlay = BuildOverlayTexture(readableSrc, unionMask, overlayColor, Mathf.Clamp01(overlayOpacity));
-            var coverage = ComputeMaskCoverage(unionMask);
+            unionMask = outputTextureData?.flippedMask ?? unionMask;
+            var outputMask = outputTextureData?.maskTexture;
+            var transparent = outputTextureData?.transparentTexture;
+            var overlay = outputTextureData?.overlayTexture;
+            var coverage = outputTextureData?.coverage ?? ComputeMaskCoverage(unionMask);
             _lastSummaryText = BuildSummary(
                 readableSrc.width,
                 readableSrc.height,
@@ -501,6 +509,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     {
         _ops ??= new NcnnOps();
         _repro ??= new NcnnRepro(_ops);
+        _imageProcessingCs ??= Resources.Load<ComputeShader>("ImageProcessing");
     }
 
     private void ApplyReproOptions()
@@ -909,101 +918,191 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         return Mathf.Lerp(v0, v1, ty);
     }
 
-    private static Texture2D BuildMaskTexture(bool[] mask, int width, int height)
+    private async UniTask<OutputTextureData> BuildOutputTexturesAsync(Texture2D source, bool[] mask, Color32 tint, float opacity, CancellationToken ct)
     {
-        var pixels = new Color32[width * height];
-        for (var i = 0; i < pixels.Length; i++)
-        {
-            var v = mask != null && i < mask.Length && mask[i] ? (byte)255 : (byte)0;
-            pixels[i] = new Color32(v, v, v, 255);
-        }
+        if (source == null || mask == null || mask.Length != source.width * source.height)
+            return null;
 
-        var texture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
-        texture.SetPixels32(pixels);
-        texture.Apply(false, false);
-        texture.wrapMode = TextureWrapMode.Clamp;
-        texture.filterMode = FilterMode.Bilinear;
-        return texture;
-    }
+        EnsureRuntimeObjects();
+        if (_imageProcessingCs == null)
+            return null;
 
-    private static Texture2D BuildTransparentTexture(Texture2D source, bool[] mask)
-    {
-        var srcPixels = source.GetPixels32();
-        var pixels = new Color32[srcPixels.Length];
-        for (var i = 0; i < srcPixels.Length; i++)
-        {
-            var p = srcPixels[i];
-            if (mask != null && i < mask.Length && mask[i])
-                p.a = 0;
-            pixels[i] = p;
-        }
-
-        var texture = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, false);
-        texture.SetPixels32(pixels);
-        texture.Apply(false, false);
-        texture.wrapMode = TextureWrapMode.Clamp;
-        texture.filterMode = FilterMode.Bilinear;
-        return texture;
-    }
-
-    private static Texture2D BuildOverlayTexture(Texture2D source, bool[] mask, Color32 tint, float opacity)
-    {
-        var srcPixels = source.GetPixels32();
-        var pixels = new Color32[srcPixels.Length];
-        for (var i = 0; i < srcPixels.Length; i++)
-        {
-            var p = srcPixels[i];
-            if (mask != null && i < mask.Length && mask[i])
-            {
-                p = new Color32(
-                    (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(p.r, tint.r, opacity)), 0, 255),
-                    (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(p.g, tint.g, opacity)), 0, 255),
-                    (byte)Mathf.Clamp(Mathf.RoundToInt(Mathf.Lerp(p.b, tint.b, opacity)), 0, 255),
-                    255);
-            }
-            pixels[i] = p;
-        }
-
-        var texture = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, false);
-        texture.SetPixels32(pixels);
-        texture.Apply(false, false);
-        texture.wrapMode = TextureWrapMode.Clamp;
-        texture.filterMode = FilterMode.Bilinear;
-        return texture;
-    }
-
-    private static Color32[] GetVerticallyFlippedPixels(Texture2D source)
-    {
-        if (source == null)
-            return Array.Empty<Color32>();
-
-        Color32[] pixels;
+        int maskKernel;
+        int transparentKernel;
+        int overlayKernel;
         try
         {
-            pixels = source.GetPixels32();
+            maskKernel = _imageProcessingCs.FindKernel("BuildMaskFromBinary");
+            transparentKernel = _imageProcessingCs.FindKernel("BuildTransparentFromBinary");
+            overlayKernel = _imageProcessingCs.FindKernel("BuildOverlayFromBinary");
         }
         catch
         {
-            return Array.Empty<Color32>();
+            return null;
         }
 
-        return FlipRows(pixels, source.width, source.height);
+        var width = source.width;
+        var height = source.height;
+        var flippedMask = FlipMaskRows(mask, width, height);
+        var maskData = ToUintMask(flippedMask);
+        var coverage = ComputeMaskCoverage(flippedMask);
+        if (maskData == null)
+            return null;
+
+        ComputeBuffer binaryMaskBuffer = null;
+        RenderTexture sourceRt = null;
+        RenderTexture maskRt = null;
+        RenderTexture transparentRt = null;
+        RenderTexture overlayRt = null;
+        try
+        {
+            binaryMaskBuffer = NewTrackedBuffer(maskData.Length, sizeof(uint), ComputeBufferType.Structured, "YoloSeg.BinaryMask");
+            if (binaryMaskBuffer == null)
+                return null;
+            binaryMaskBuffer.SetData(maskData);
+
+            sourceRt = CreateWorkingRenderTexture(width, height, "YoloSeg.SourceRt");
+            maskRt = CreateWorkingRenderTexture(width, height, "YoloSeg.MaskRt");
+            transparentRt = CreateWorkingRenderTexture(width, height, "YoloSeg.TransparentRt");
+            overlayRt = CreateWorkingRenderTexture(width, height, "YoloSeg.OverlayRt");
+            if (sourceRt == null || maskRt == null || transparentRt == null || overlayRt == null)
+                return null;
+
+            Graphics.Blit(source, sourceRt);
+
+            var gx = Mathf.Max(1, Mathf.CeilToInt(width / 8f));
+            var gy = Mathf.Max(1, Mathf.CeilToInt(height / 8f));
+
+            _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
+            _imageProcessingCs.SetBuffer(maskKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
+            _imageProcessingCs.SetTexture(maskKernel, "_Result", maskRt);
+            _imageProcessingCs.Dispatch(maskKernel, gx, gy, 1);
+
+            _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
+            _imageProcessingCs.SetBuffer(transparentKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
+            _imageProcessingCs.SetTexture(transparentKernel, "_Source", sourceRt);
+            _imageProcessingCs.SetTexture(transparentKernel, "_Result", transparentRt);
+            _imageProcessingCs.Dispatch(transparentKernel, gx, gy, 1);
+
+            _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
+            _imageProcessingCs.SetBuffer(overlayKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
+            _imageProcessingCs.SetTexture(overlayKernel, "_Source", sourceRt);
+            _imageProcessingCs.SetTexture(overlayKernel, "_Result", overlayRt);
+            _imageProcessingCs.SetVector("_OverlayTint", new Vector4(
+                tint.r / 255f,
+                tint.g / 255f,
+                tint.b / 255f,
+                tint.a / 255f));
+            _imageProcessingCs.SetFloat("_OverlayOpacity", Mathf.Clamp01(opacity));
+            _imageProcessingCs.Dispatch(overlayKernel, gx, gy, 1);
+
+            await UniTask.Yield();
+            ct.ThrowIfCancellationRequested();
+
+            var maskTexture = await ReadbackTextureAsync(maskRt, width, height, ct);
+            var transparentTexture = await ReadbackTextureAsync(transparentRt, width, height, ct);
+            var overlayTexture = await ReadbackTextureAsync(overlayRt, width, height, ct);
+            if (maskTexture == null || transparentTexture == null || overlayTexture == null)
+            {
+                if (maskTexture != null) Destroy(maskTexture);
+                if (transparentTexture != null) Destroy(transparentTexture);
+                if (overlayTexture != null) Destroy(overlayTexture);
+                return null;
+            }
+
+            return new OutputTextureData
+            {
+                flippedMask = flippedMask,
+                maskTexture = maskTexture,
+                transparentTexture = transparentTexture,
+                overlayTexture = overlayTexture,
+                coverage = coverage
+            };
+        }
+        finally
+        {
+            DisposeBuffer(binaryMaskBuffer, "YoloSeg.BinaryMask");
+            ReleaseWorkingRenderTexture(ref sourceRt);
+            ReleaseWorkingRenderTexture(ref maskRt);
+            ReleaseWorkingRenderTexture(ref transparentRt);
+            ReleaseWorkingRenderTexture(ref overlayRt);
+        }
     }
 
-    private static Color32[] FlipRows(Color32[] pixels, int width, int height)
+    private static bool[] FlipMaskRows(bool[] mask, int width, int height)
     {
-        if (pixels == null || pixels.Length != width * height || width <= 0 || height <= 0)
-            return pixels ?? Array.Empty<Color32>();
+        if (mask == null || mask.Length != width * height || width <= 0 || height <= 0)
+            return mask ?? Array.Empty<bool>();
 
-        var flipped = new Color32[pixels.Length];
+        var flipped = new bool[mask.Length];
         for (var y = 0; y < height; y++)
         {
             var srcRow = (height - 1 - y) * width;
             var dstRow = y * width;
-            Array.Copy(pixels, srcRow, flipped, dstRow, width);
+            Array.Copy(mask, srcRow, flipped, dstRow, width);
         }
 
         return flipped;
+    }
+
+    private static uint[] ToUintMask(bool[] mask)
+    {
+        if (mask == null || mask.Length == 0)
+            return null;
+
+        var data = new uint[mask.Length];
+        for (var i = 0; i < mask.Length; i++)
+            data[i] = mask[i] ? 1u : 0u;
+        return data;
+    }
+
+    private static RenderTexture CreateWorkingRenderTexture(int width, int height, string label)
+    {
+        if (width <= 0 || height <= 0)
+            return null;
+
+        var rt = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
+        {
+            enableRandomWrite = true,
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+            name = label
+        };
+        rt.Create();
+        NcnnGpuResourceTracker.RegisterTexture(rt, label ?? "YoloSeg.WorkingRt");
+        return rt;
+    }
+
+    private static void ReleaseWorkingRenderTexture(ref RenderTexture rt)
+    {
+        if (rt == null)
+            return;
+
+        NcnnGpuResourceTracker.ReleaseTexture(rt, rt.name ?? "YoloSeg.WorkingRt");
+        rt.Release();
+        UnityEngine.Object.Destroy(rt);
+        rt = null;
+    }
+
+    private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int width, int height, CancellationToken ct)
+    {
+        if (rt == null)
+            return null;
+
+        var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
+        AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
+        var request = await tcs.Task;
+        ct.ThrowIfCancellationRequested();
+        if (request.hasError)
+            return null;
+
+        var data = request.GetData<byte>();
+        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+        tex.LoadRawTextureData(data);
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
     }
 
     private static float ComputeMaskCoverage(bool[] mask)
