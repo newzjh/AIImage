@@ -119,6 +119,12 @@ public abstract class BasePageView : MonoBehaviour
         HideBusy();
         HideProgress();
         HideChoice();
+        _busyAnim?.Pause();
+        _busyAnim = null;
+        _progressTick?.Pause();
+        _progressTick = null;
+        _toastHide?.Pause();
+        _toastHide = null;
         if (_toastOverlay != null)
             _toastOverlay.style.display = DisplayStyle.None;
         OnBeforeDetach();
@@ -1186,6 +1192,8 @@ public abstract class BasePageView : MonoBehaviour
 
     private void BuildProgressOverlay(VisualElement root)
     {
+        _progressTick?.Pause();
+        _progressTick = null;
         _progressOverlay = new VisualElement();
         _progressOverlay.style.position = Position.Absolute;
         _progressOverlay.style.left = 0;
