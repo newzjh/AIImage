@@ -167,10 +167,12 @@ namespace NcnnCompute
 
             if (owner.UseNcnnStyleGroupNorm && CanUsePack4CmdPath(src, srcShape, gp))
             {
+                var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
                 var statsA = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
                 var statsB = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
-                var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.GroupNormPack4Tex(cmd, src.texture, srcShape.w, srcShape.h, 1, srcShape.c, src.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outArr);
+                var outDepth = srcShape.dims == 4 ? logicalDepth * src.packs : src.packs;
+                var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, RenderTextureFormat.ARGBHalf);
+                owner.Ops.GroupNormPack4Tex(cmd, src.texture, srcShape.w, srcShape.h, logicalDepth, srcShape.c, src.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outArr);
                 owner.ReturnTempArray(cmd, statsA);
                 owner.ReturnTempArray(cmd, statsB);
                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
@@ -180,13 +182,33 @@ namespace NcnnCompute
                     height = src.height,
                     packs = src.packs,
                     refs = 1,
-                    owned = true
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = srcShape,
+                    hasStorageShape = true,
+                    storageShape = srcShape
                 };
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
             }
             else
             {
+                owner.DebugLog?.Invoke(
+                    "[CmdPlaceholder][InstanceNorm]"
+                    + " | layer=" + layer.name
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | packs=" + src.packs
+                    + " | affine=" + (gp.affine ? "1" : "0")
+                    + " | channels=" + gp.channels.ToString()
+                    + " | group=" + gp.group.ToString());
+                if (owner.DisallowBufferAccess || owner.DisallowBufferOutputs || owner.DisallowBufferToTextureMaterialization)
+                {
+                    throw new InvalidOperationException(
+                        "pack4-only guard: command-buffer InstanceNorm placeholder disallowed"
+                        + " | layer=" + layer.name
+                        + " | dims=" + srcShape.dims
+                        + " | shape=" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c);
+                }
                 NcnnRepro.ResolveCmdTextureLayout(srcShape, out var width, out var height, out var packs);
                 owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, srcShape);
             }
@@ -202,10 +224,10 @@ namespace NcnnCompute
                 && gp.affine
                 && gp.gamma != null
                 && gp.beta != null
-                && srcShape.dims == 3
-                && srcShape.d == 1
+                && (srcShape.dims == 3 || srcShape.dims == 4)
                 && srcShape.w == src.width
                 && srcShape.h == src.height
+                && (srcShape.dims != 4 || Mathf.Max(1, src.texture.depth) == Mathf.Max(1, srcShape.d) * src.packs)
                 && srcShape.c == gp.channels
                 && gp.channels > 0
                 && gp.group > 0

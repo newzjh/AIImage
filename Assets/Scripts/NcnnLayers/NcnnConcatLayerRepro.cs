@@ -404,7 +404,8 @@ namespace NcnnCompute
             var outH = firstShape.h;
             var outD = firstShape.d;
             var outC = firstShape.c;
-            var canUseExactPack4 = firstShape.dims == 3 && tensorAxis == 2;
+            var concatChannelAxis = firstShape.dims == 4 ? 3 : 2;
+            var canUseExactPack4 = (firstShape.dims == 3 || firstShape.dims == 4) && tensorAxis == concatChannelAxis;
 
             for (var i = 0; i < partShapes.Length; i++)
             {
@@ -430,8 +431,11 @@ namespace NcnnCompute
                     else outC += shape.c;
                 }
 
-                if (shape.dims != 3
-                    || shape.d != 1
+                var supportsPack4Storage =
+                    shape.dims == 3
+                        ? shape.d == 1
+                        : shape.dims == 4;
+                if (!supportsPack4Storage
                     || !NcnnRepro.MatchesPack4TextureStorage(parts[i], shape)
                     || (i < partShapes.Length - 1 && (shape.c & 3) != 0))
                 {
@@ -453,28 +457,94 @@ namespace NcnnCompute
             if (canUseExactPack4)
             {
                 var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
-                var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
-                var packOffset = 0;
-                for (var i = 0; i < parts.Length; i++)
+                if (outShape.dims == 3)
                 {
-                    owner.Ops.CopyPack4(cmd, parts[i].texture, 0, outArr, packOffset, parts[i].packs);
-                    packOffset += parts[i].packs;
-                }
+                    var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
+                    var packOffset = 0;
+                    for (var i = 0; i < parts.Length; i++)
+                    {
+                        owner.Ops.CopyPack4(cmd, parts[i].texture, 0, outArr, packOffset, parts[i].packs);
+                        packOffset += parts[i].packs;
+                    }
 
-                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                    {
+                        texture = outArr,
+                        width = outShape.w,
+                        height = outShape.h,
+                        packs = outPacks,
+                        refs = 1,
+                        owned = true,
+                        hasLogicalShape = true,
+                        logicalShape = outShape,
+                        hasStorageShape = true,
+                        storageShape = outShape
+                    };
+                }
+                else
                 {
-                    texture = outArr,
-                    width = outShape.w,
-                    height = outShape.h,
-                    packs = outPacks,
-                    refs = 1,
-                    owned = true
-                };
+                    var current = parts[0];
+                    var currentShape = partShapes[0];
+                    var currentOwned = false;
+                    for (var i = 1; i < parts.Length; i++)
+                    {
+                        var next = parts[i];
+                        var nextShape = partShapes[i];
+                        var combinedChannels = currentShape.c + nextShape.c;
+                        var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outShape.d * Mathf.Max(1, Mathf.CeilToInt(combinedChannels / 4f)), RenderTextureFormat.ARGBHalf);
+                        owner.Ops.ConcatPack4Cdhw(
+                            cmd,
+                            current.texture,
+                            next.texture,
+                            outShape.w,
+                            outShape.h,
+                            outShape.d,
+                            currentShape.c,
+                            nextShape.c,
+                            combinedChannels,
+                            outArr);
+
+                        if (currentOwned && current.texture != null)
+                            owner.ReturnTempArray(cmd, current.texture);
+
+                        current = new NcnnRepro.CmdTensorRef
+                        {
+                            texture = outArr,
+                            width = outShape.w,
+                            height = outShape.h,
+                            packs = Mathf.Max(1, Mathf.CeilToInt(combinedChannels / 4f)),
+                            refs = 1,
+                            owned = true
+                        };
+                        currentShape = new NcnnRepro.BufferShape(4, outShape.w, outShape.h, outShape.d, combinedChannels);
+                        currentOwned = true;
+                    }
+
+                    current.hasLogicalShape = true;
+                    current.logicalShape = outShape;
+                    current.hasStorageShape = true;
+                    current.storageShape = outShape;
+                    blobs[layer.topNames[0]] = current;
+                }
                 if (shapes != null)
                     shapes[layer.topNames[0]] = outShape;
             }
             else
             {
+                owner.DebugLog?.Invoke(
+                    "[CmdPlaceholder][Concat]"
+                    + " | layer=" + layer.name
+                    + " | axis=" + positiveAxis.ToString()
+                    + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                    + " | parts=" + partShapes.Length.ToString());
+                if (owner.DisallowBufferAccess || owner.DisallowBufferOutputs || owner.DisallowBufferToTextureMaterialization)
+                {
+                    throw new InvalidOperationException(
+                        "pack4-only guard: command-buffer Concat placeholder disallowed"
+                        + " | layer=" + layer.name
+                        + " | axis=" + positiveAxis
+                        + " | outShape=" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+                }
                 owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             }
 

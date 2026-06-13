@@ -75,6 +75,7 @@
 #pragma kernel NcnnReshapePack4ToPack4
 #pragma kernel NcnnReshapeScalar2DToPack4
 #pragma kernel NcnnAttentionReshapePack4
+#pragma kernel NcnnAttentionContextFlattenPack4
 #pragma kernel NcnnSlicePack4CDHW
 #pragma kernel NcnnSwishPack4
 #pragma kernel NcnnSigmoidPack4
@@ -83,10 +84,12 @@
 #pragma kernel NcnnMatMulPack4CDHW
 #pragma kernel NcnnVistaTailPromptDotPack4
 #pragma kernel NcnnVistaTailPromptDotPack4Tex
+#pragma kernel NcnnArgmaxUpdatePack4CDHW
 #pragma kernel NcnnGemm2DTextureA
 #pragma kernel NcnnGemm2D
 #pragma kernel NcnnGemm2D16
 #pragma kernel NcnnLayerNorm2D
+#pragma kernel NcnnLayerNormPack4WidthTex
 #pragma kernel NcnnSoftmax2D
 #pragma kernel NcnnSoftmaxPack4CDHW
 #pragma kernel NcnnEmbed
@@ -225,6 +228,7 @@ int _OutC;
 int _OutW;
 int _OutH;
 int _OutD;
+int _OutPackOffset;
 int _Stride;
 int _Pad;
 int _KernelWVar;
@@ -255,6 +259,13 @@ float _InterpScaleFactorY;
 float _InterpScaleFactorZ;
 int _InterpResizeType;
 int _FlipY;
+Texture2DArray<float4> _ArgmaxPack4InArr;
+RWTexture2DArray<float4> _ArgmaxBestValueArr;
+RWTexture2DArray<float4> _ArgmaxBestLabelArr;
+int _ArgmaxInD;
+int _ArgmaxInC;
+int _ArgmaxChannelOffset;
+int _ArgmaxInitialize;
 
 [numthreads(32,32,1)]
 void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
@@ -2517,12 +2528,14 @@ void NcnnConv3dPack4CDHWBody(uint3 id)
     int op = ((int)id.z - oz * outPairCount) * 2;
     if (ox >= (int)ow || oy >= (int)oh || oz < 0 || oz >= _OutD || op < 0 || op >= _OutPacks) return;
 
+    int globalOp = _OutPackOffset + op;
     int op1 = op + 1;
     bool hasOp1 = op1 < _OutPacks;
+    int globalOp1 = _OutPackOffset + op1;
     bool hasX1 = (ox + 1) < (int)ow;
     bool hasY1 = (oy + 1) < (int)oh;
-    float4 bias0 = _ConvB4[op];
-    float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
+    float4 bias0 = _ConvB4[globalOp];
+    float4 bias1 = hasOp1 ? _ConvB4[globalOp1] : 0.0;
     float4 sum00 = bias0;
     float4 sum01 = bias0;
     float4 sum10 = bias0;
@@ -2563,7 +2576,7 @@ void NcnnConv3dPack4CDHWBody(uint3 id)
                     float4 v10 = (validX0 && validY1) ? _ConvInArr[int3(sx0, sy1, inSlice)] : 0.0;
                     float4 v11 = (validX1 && validY1) ? _ConvInArr[int3(sx1, sy1, inSlice)] : 0.0;
                     int kernelIndex = (kz * kernelPlane) + (ky * _KernelWVar) + kx;
-                    int weightBase0 = ((((op * _InPacks) + ip) * kernelVolume) + kernelIndex) * 4;
+                    int weightBase0 = ((((globalOp * _InPacks) + ip) * kernelVolume) + kernelIndex) * 4;
                     float4 w00 = _ConvW4[weightBase0 + 0];
                     float4 w01 = _ConvW4[weightBase0 + 1];
                     float4 w02 = _ConvW4[weightBase0 + 2];
@@ -2587,7 +2600,7 @@ void NcnnConv3dPack4CDHWBody(uint3 id)
 
                     if (hasOp1)
                     {
-                        int weightBase1 = ((((op1 * _InPacks) + ip) * kernelVolume) + kernelIndex) * 4;
+                        int weightBase1 = ((((globalOp1 * _InPacks) + ip) * kernelVolume) + kernelIndex) * 4;
                         float4 w10 = _ConvW4[weightBase1 + 0];
                         float4 w11 = _ConvW4[weightBase1 + 1];
                         float4 w12 = _ConvW4[weightBase1 + 2];
@@ -2662,13 +2675,15 @@ void NcnnConv3dPack4CDHWZ2(uint3 id : SV_DispatchThreadID)
 
     int oz1 = oz0 + 1;
     int op1 = op + 1;
+    int globalOp = _OutPackOffset + op;
+    int globalOp1 = _OutPackOffset + op1;
     bool hasZ1 = oz1 < _OutD;
     bool hasOp1 = op1 < _OutPacks;
     bool hasX1 = (ox + 1) < (int)ow;
     bool hasY1 = (oy + 1) < (int)oh;
 
-    float4 bias0 = _ConvB4[op];
-    float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
+    float4 bias0 = _ConvB4[globalOp];
+    float4 bias1 = hasOp1 ? _ConvB4[globalOp1] : 0.0;
 
     float4 z0sum00 = bias0;
     float4 z0sum01 = bias0;
@@ -2691,8 +2706,8 @@ void NcnnConv3dPack4CDHWZ2(uint3 id : SV_DispatchThreadID)
     [loop]
     for (int ip = 0; ip < _InPacks; ip++)
     {
-        int weightBase0 = ((op * _InPacks + ip) * 27) * 4;
-        int weightBase1 = ((op1 * _InPacks + ip) * 27) * 4;
+        int weightBase0 = ((globalOp * _InPacks + ip) * 27) * 4;
+        int weightBase1 = ((globalOp1 * _InPacks + ip) * 27) * 4;
         int srcZBase = oz0 - _PadFrontVar;
 
         [unroll]
@@ -2930,6 +2945,8 @@ void NcnnConv3dPack4CDHWTile3x3(uint3 id : SV_DispatchThreadID)
 
     int op1 = op + 1;
     bool hasOp1 = op1 < _OutPacks;
+    int globalOp = _OutPackOffset + op;
+    int globalOp1 = _OutPackOffset + op1;
     bool hasX1 = (ox + 1) < (int)ow;
     bool hasY1 = (oy + 1) < (int)oh;
     int sxBase = ox - _PadLeftVar;
@@ -2949,8 +2966,8 @@ void NcnnConv3dPack4CDHWTile3x3(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float4 bias0 = _ConvB4[op];
-    float4 bias1 = hasOp1 ? _ConvB4[op1] : 0.0;
+    float4 bias0 = _ConvB4[globalOp];
+    float4 bias1 = hasOp1 ? _ConvB4[globalOp1] : 0.0;
     float4 sum00 = bias0;
     float4 sum01 = bias0;
     float4 sum10 = bias0;
@@ -2963,8 +2980,8 @@ void NcnnConv3dPack4CDHWTile3x3(uint3 id : SV_DispatchThreadID)
     [loop]
     for (int ip = 0; ip < _InPacks; ip++)
     {
-        int weightBase0 = ((op * _InPacks + ip) * 27) * 4;
-        int weightBase1 = hasOp1 ? ((op1 * _InPacks + ip) * 27) * 4 : 0;
+        int weightBase0 = ((globalOp * _InPacks + ip) * 27) * 4;
+        int weightBase1 = hasOp1 ? ((globalOp1 * _InPacks + ip) * 27) * 4 : 0;
 
         [unroll]
         for (int kz = 0; kz < 3; kz++)
@@ -3053,6 +3070,48 @@ void NcnnPack4ChannelsToWidth(uint3 id : SV_DispatchThreadID)
 
     float scalar = NcnnReadPack4Channel(_Pack4ChannelInArr, 0, 0, outX);
     _Pack4ChannelOutArr[int3(outX, 0, 0)] = float4(scalar, 0.0, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void NcnnArgmaxUpdatePack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, outputDepth;
+    _ArgmaxBestValueArr.GetDimensions(w, h, outputDepth);
+    if ((int)id.x >= (int)w || (int)id.y >= (int)h || (int)id.z >= _ArgmaxInD || (int)id.z >= (int)outputDepth)
+        return;
+
+    int packCount = max(1, (_ArgmaxInC + 3) / 4);
+    int z = (int)id.z;
+    float bestValue = _ArgmaxInitialize != 0
+        ? -3.402823466e+38
+        : _ArgmaxBestValueArr[int3((int)id.x, (int)id.y, z)].x;
+    float bestLabel = _ArgmaxInitialize != 0
+        ? (float)_ArgmaxChannelOffset
+        : _ArgmaxBestLabelArr[int3((int)id.x, (int)id.y, z)].x;
+
+    [loop]
+    for (int pack = 0; pack < packCount; pack++)
+    {
+        int slice = z * packCount + pack;
+        float4 logits = _ArgmaxPack4InArr[int3((int)id.x, (int)id.y, slice)];
+        [unroll]
+        for (int lane = 0; lane < 4; lane++)
+        {
+            int localChannel = pack * 4 + lane;
+            if (localChannel < 0 || localChannel >= _ArgmaxInC)
+                continue;
+
+            float value = NcnnReadLane(logits, lane);
+            if (value > bestValue)
+            {
+                bestValue = value;
+                bestLabel = (float)(_ArgmaxChannelOffset + localChannel);
+            }
+        }
+    }
+
+    _ArgmaxBestValueArr[int3((int)id.x, (int)id.y, z)] = float4(bestValue, 0.0, 0.0, 0.0);
+    _ArgmaxBestLabelArr[int3((int)id.x, (int)id.y, z)] = float4(bestLabel, 0.0, 0.0, 0.0);
 }
 
 [numthreads(8,8,1)]
@@ -3761,6 +3820,14 @@ int _AttentionReshapeInC;
 int _AttentionReshapeHeadDim;
 int _AttentionReshapeOutD;
 int _AttentionReshapeOutC;
+Texture2DArray<float4> _AttentionContextFlattenInArr;
+RWTexture2DArray<float4> _AttentionContextFlattenOutArr;
+int _AttentionContextFlattenInW;
+int _AttentionContextFlattenInH;
+int _AttentionContextFlattenInD;
+int _AttentionContextFlattenInC;
+int _AttentionContextFlattenOutC;
+int _AttentionContextFlattenOutDims;
 
 
 Texture2DArray<float4> _ActInArr;
@@ -3808,6 +3875,12 @@ int _LnRows;
 int _LnCols;
 int _LnAffine;
 float _LnEps;
+Texture2DArray<float4> _LnTexInArr;
+RWTexture2DArray<float4> _LnTexOutArr;
+int _LnW;
+int _LnH;
+int _LnD;
+int _LnC;
 
 StructuredBuffer<float> _SoftIn;
 RWStructuredBuffer<float> _SoftOut;
@@ -5058,6 +5131,57 @@ void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupT
     }
 }
 
+[numthreads(8,8,1)]
+void NcnnLayerNormPack4WidthTex(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _LnTexOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int slice = (int)id.z;
+    int packs = max(1, (_LnC + 3) / 4);
+    int z = slice / packs;
+    int pack = slice - z * packs;
+    if (z < 0 || z >= max(1, _LnD))
+    {
+        _LnTexOutArr[int3(x, y, slice)] = 0.0;
+        return;
+    }
+
+    float4 sum = 0.0;
+    float4 sqsum = 0.0;
+    for (int ix = 0; ix < _LnW; ix++)
+    {
+        float4 v = _LnTexInArr[int3(ix, y, slice)];
+        sum += v;
+        sqsum += v * v;
+    }
+
+    float widthCount = max(1, _LnW);
+    float4 mean = sum / widthCount;
+    float4 var = sqsum / widthCount - mean * mean;
+    float4 invstd = rsqrt(max(var + _LnEps, 1e-20));
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int channel = pack * 4 + lane;
+        if (channel >= _LnC)
+            continue;
+        float scalar = NcnnReadLane(_LnTexInArr[int3(x, y, slice)], lane);
+        float normalized = (scalar - NcnnReadLane(mean, lane)) * NcnnReadLane(invstd, lane);
+        if (_LnAffine != 0)
+            normalized = normalized * _LnGamma[x] + _LnBeta[x];
+        NcnnWriteLane(o, lane, normalized);
+    }
+
+    _LnTexOutArr[int3(x, y, slice)] = o;
+}
+
 [numthreads(256,1,1)]
 void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
@@ -6200,6 +6324,77 @@ void NcnnAttentionReshapePack4(uint3 id : SV_DispatchThreadID)
     }
 
     _AttentionReshapeOutArr[int3(outX, outY, slice)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnAttentionContextFlattenPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _AttentionContextFlattenOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int slice = (int)id.z;
+    int logicalOutChannels = _AttentionContextFlattenOutDims == 3
+        ? max(1, _AttentionContextFlattenOutC)
+        : 1;
+    int outPacks = max(1, (logicalOutChannels + 3) / 4);
+    if (slice < 0 || slice >= outPacks)
+    {
+        _AttentionContextFlattenOutArr[int3(outX, outY, slice)] = 0.0;
+        return;
+    }
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outChannel = slice * 4 + lane;
+        if (outChannel >= logicalOutChannels)
+            continue;
+
+        int srcWindow;
+        int srcToken;
+        if (_AttentionContextFlattenOutDims == 3 && _AttentionContextFlattenOutC > 1)
+        {
+            srcWindow = outChannel;
+            srcToken = outY;
+        }
+        else
+        {
+            if (outChannel != 0 || _AttentionContextFlattenInH <= 0)
+                continue;
+            srcWindow = outY / _AttentionContextFlattenInH;
+            srcToken = outY - srcWindow * _AttentionContextFlattenInH;
+        }
+
+        if (srcWindow < 0 || srcWindow >= _AttentionContextFlattenInD)
+            continue;
+        if (srcToken < 0 || srcToken >= _AttentionContextFlattenInH)
+            continue;
+        if (_AttentionContextFlattenInC <= 0 || _AttentionContextFlattenInW <= 0)
+            continue;
+
+        int srcHead = outX % _AttentionContextFlattenInC;
+        int srcDim = outX / _AttentionContextFlattenInC;
+        if (srcHead < 0 || srcHead >= _AttentionContextFlattenInC)
+            continue;
+        if (srcDim < 0 || srcDim >= _AttentionContextFlattenInW)
+            continue;
+
+        float scalar = NcnnReadPack4ChannelCDHW(
+            _AttentionContextFlattenInArr,
+            srcDim,
+            srcToken,
+            srcWindow,
+            srcHead,
+            _AttentionContextFlattenInC);
+        NcnnWriteLane(o, lane, scalar);
+    }
+
+    _AttentionContextFlattenOutArr[int3(outX, outY, slice)] = o;
 }
 
 [numthreads(8,8,1)]

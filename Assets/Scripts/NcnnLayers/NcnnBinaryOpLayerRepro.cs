@@ -662,9 +662,22 @@ namespace NcnnCompute
                                                 var aShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 if (withScalar != 0)
                                                 {
-                                                    var outArr = owner.RentTempArray(cmd, a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
+                                                    var outDepth = aShape.dims == 4 ? Mathf.Max(1, aShape.d) * a.packs : a.packs;
+                                                    var outArr = owner.RentTempArray(cmd, a.width, a.height, outDepth, RenderTextureFormat.ARGBHalf);
                                                     owner.Ops.BinaryOpScalarPack4(cmd, a.texture, scalarB, a.packs, opType, outArr);
-                                                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = a.width, height = a.height, packs = a.packs, refs = 1, owned = true };
+                                                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                                                    {
+                                                        texture = outArr,
+                                                        width = a.width,
+                                                        height = a.height,
+                                                        packs = a.packs,
+                                                        refs = 1,
+                                                        owned = true,
+                                                        hasLogicalShape = true,
+                                                        logicalShape = aShape,
+                                                        hasStorageShape = true,
+                                                        storageShape = aShape
+                                                    };
                                                     if (shapes != null)
                                                         shapes[layer.topNames[0]] = aShape;
                                                 }
@@ -674,23 +687,63 @@ namespace NcnnCompute
                                                     var bShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
                                                     if (CanUseExactCmdBinaryPath(a, aShape, b, bShape))
                                                     {
-                                                        var outArr = owner.RentTempArray(cmd, a.width, a.height, a.packs, RenderTextureFormat.ARGBHalf);
+                                                        var outDepth = aShape.dims == 4 ? Mathf.Max(1, aShape.d) * a.packs : a.packs;
+                                                        var outArr = owner.RentTempArray(cmd, a.width, a.height, outDepth, RenderTextureFormat.ARGBHalf);
                                                         owner.Ops.BinaryOpPack4(cmd, a.texture, b.texture, a.packs, opType, outArr);
-                                                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = a.width, height = a.height, packs = a.packs, refs = 1, owned = true };
+                                                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                                                        {
+                                                            texture = outArr,
+                                                            width = a.width,
+                                                            height = a.height,
+                                                            packs = a.packs,
+                                                            refs = 1,
+                                                            owned = true,
+                                                            hasLogicalShape = true,
+                                                            logicalShape = aShape,
+                                                            hasStorageShape = true,
+                                                            storageShape = aShape
+                                                        };
                                                         if (shapes != null)
                                                             shapes[layer.topNames[0]] = aShape;
                                                     }
                                                     else if (TryResolveCmdSpatialBroadcast(a, aShape, b, bShape, out var broadcastMode, out var outShape, out var outWidth, out var outHeight, out var outPacks))
                                                     {
-                                                        var outArr = owner.RentTempArray(cmd, outWidth, outHeight, outPacks, RenderTextureFormat.ARGBHalf);
+                                                        var outDepth = outShape.dims == 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
+                                                        var outArr = owner.RentTempArray(cmd, outWidth, outHeight, outDepth, RenderTextureFormat.ARGBHalf);
                                                         owner.Ops.BinaryOpPack4Broadcast(cmd, a.texture, b.texture, outPacks, opType, broadcastMode, outArr);
-                                                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outWidth, height = outHeight, packs = outPacks, refs = 1, owned = true };
+                                                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                                                        {
+                                                            texture = outArr,
+                                                            width = outWidth,
+                                                            height = outHeight,
+                                                            packs = outPacks,
+                                                            refs = 1,
+                                                            owned = true,
+                                                            hasLogicalShape = true,
+                                                            logicalShape = outShape,
+                                                            hasStorageShape = true,
+                                                            storageShape = outShape
+                                                        };
                                                         if (shapes != null)
                                                             shapes[layer.topNames[0]] = outShape;
                                                     }
                                                     else
                                                     {
                                                         var fallbackShape = ResolveCmdOutputShape(aShape, bShape);
+                                                        owner.DebugLog?.Invoke(
+                                                            "[CmdPlaceholder][BinaryOp]"
+                                                            + " | layer=" + layer.name
+                                                            + " | opType=" + opType.ToString(CultureInfo.InvariantCulture)
+                                                            + " | a=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                                                            + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
+                                                            + " | out=d" + fallbackShape.dims + ":" + fallbackShape.w + "x" + fallbackShape.h + "x" + fallbackShape.d + "x" + fallbackShape.c);
+                                                        if (owner.DisallowBufferAccess || owner.DisallowBufferOutputs || owner.DisallowBufferToTextureMaterialization)
+                                                        {
+                                                            throw new InvalidOperationException(
+                                                                "pack4-only guard: command-buffer BinaryOp placeholder disallowed"
+                                                                + " | layer=" + layer.name
+                                                                + " | opType=" + opType.ToString(CultureInfo.InvariantCulture));
+                                                        }
                                                         NcnnRepro.ResolveCmdTextureLayout(fallbackShape, out var width, out var height, out var packs);
                                                         owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, fallbackShape);
                                                         owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

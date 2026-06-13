@@ -273,19 +273,79 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var shapes = context.shapes;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!owner._deconv.TryGetValue(layer.name, out var deconv))
+                throw new InvalidOperationException("Deconvolution3D not found: " + layer.name);
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             if (srcShape.dims != 4)
-                throw new InvalidOperationException("Deconvolution3D command-buffer placeholder expects dims=4 input: " + layer.name);
+                throw new InvalidOperationException("Deconvolution3D command-buffer path expects dims=4 input: " + layer.name);
+            if (deconv.group != 1)
+                throw new NotSupportedException("Deconvolution3D command-buffer path currently supports group=1 only: " + layer.name);
+            if (deconv.packedWeight4 == null || deconv.packedBias4 == null)
+                throw new InvalidOperationException("Deconvolution3D packed weights unavailable: " + layer.name);
+            if (src.packs != deconv.inPacks)
+                throw new InvalidOperationException("Deconvolution3D command-buffer input pack mismatch: " + layer.name);
 
-            var outShape = new NcnnRepro.BufferShape(
-                4,
-                NcnnRepro.ComputeDeconvOut(srcShape.w, layer.GetInt(1, 0), layer.GetInt(2, 1), layer.GetInt(3, 1), layer.GetInt(4, 0), layer.GetInt(15, layer.GetInt(4, 0)), layer.GetInt(18, 0)),
-                NcnnRepro.ComputeDeconvOut(srcShape.h, layer.GetInt(11, layer.GetInt(1, 0)), layer.GetInt(12, layer.GetInt(2, 1)), layer.GetInt(13, layer.GetInt(3, 1)), layer.GetInt(14, layer.GetInt(4, 0)), layer.GetInt(16, layer.GetInt(14, layer.GetInt(4, 0))), layer.GetInt(19, layer.GetInt(18, 0))),
-                NcnnRepro.ComputeDeconvOut(srcShape.d, layer.GetInt(21, layer.GetInt(1, 0)), layer.GetInt(22, layer.GetInt(2, 1)), layer.GetInt(23, layer.GetInt(3, 1)), layer.GetInt(24, layer.GetInt(4, 0)), layer.GetInt(17, layer.GetInt(24, layer.GetInt(4, 0))), layer.GetInt(20, layer.GetInt(18, 0))),
-                Mathf.Max(1, layer.GetInt(0, 0)));
+            var outW = NcnnRepro.ComputeDeconvOut(srcShape.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight);
+            var outH = NcnnRepro.ComputeDeconvOut(srcShape.h, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom);
+            var outD = NcnnRepro.ComputeDeconvOut(srcShape.d, deconv.kernelD, deconv.dilationD, deconv.strideD, deconv.padFront, deconv.padBehind, deconv.outputPadBehind);
+            var outShape = new NcnnRepro.BufferShape(4, outW, outH, outD, deconv.outC);
+            var outRt = owner.RentTempArray(cmd, outW, outH, outD * deconv.outPacks, NcnnRepro.ResolveTensorTextureFormat(4));
+            owner.Ops.Deconvolution3dPack4CDHW(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                deconv.inPacks,
+                deconv.packedWeight4,
+                deconv.packedBias4,
+                outW,
+                outH,
+                outD,
+                deconv.outPacks,
+                deconv.kernelW,
+                deconv.kernelH,
+                deconv.kernelD,
+                deconv.strideW,
+                deconv.strideH,
+                deconv.strideD,
+                deconv.padLeft,
+                deconv.padRight,
+                deconv.padTop,
+                deconv.padBottom,
+                deconv.padFront,
+                deconv.padBehind,
+                deconv.dilationW,
+                deconv.dilationH,
+                deconv.dilationD,
+                deconv.activationType,
+                deconv.activationSlope,
+                outRt);
 
-            owner.PublishCmdPlaceholder(context.commandBuffer, layer.topNames[0], outShape, context.blobs, context.shapes);
-            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outW,
+                height = outH,
+                packs = deconv.outPacks,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = outShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

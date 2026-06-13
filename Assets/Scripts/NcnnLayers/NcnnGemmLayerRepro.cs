@@ -250,6 +250,14 @@ namespace NcnnCompute
             var outShape = m == 1 && aShape.dims == 1
                 ? new NcnnRepro.BufferShape(1, Mathf.Max(1, n), 1, 1, 1)
                 : new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
+            owner.DebugLog?.Invoke(
+                "[CmdPlaceholder][Gemm]"
+                + " | layer=" + layer.name
+                + " | src=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                + " | constantB=" + (gp.constantB ? "1" : "0")
+                + " | transA=" + (gp.transA ? "1" : "0")
+                + " | transB=" + (gp.transB ? "1" : "0")
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
             owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
@@ -322,6 +330,12 @@ namespace NcnnCompute
                 storageShape = new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
             };
             context.shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdTexture][Gemm]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | outFormat=" + outRt.format);
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
             return true;
         }

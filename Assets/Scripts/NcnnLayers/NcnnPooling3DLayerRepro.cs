@@ -333,10 +333,20 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
-            if (srcShape.dims != 4)
-                throw new InvalidOperationException("Pooling3D command-buffer placeholder expects dims=4 input: " + layer.name);
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var shapes = context.shapes;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
 
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            if (srcShape.dims != 4)
+                throw new InvalidOperationException("Pooling3D command-buffer path expects dims=4 input: " + layer.name);
+            if (!NcnnRepro.MatchesPack4TextureStorage(src, srcShape))
+                throw new InvalidOperationException("Pooling3D command-buffer path requires exact pack4 storage: " + layer.name);
+
+            var poolType = layer.GetInt(0, 0);
             var kernelW = Mathf.Max(1, layer.GetInt(1, 0));
             var kernelH = Mathf.Max(1, layer.GetInt(11, kernelW));
             var kernelD = Mathf.Max(1, layer.GetInt(21, kernelW));
@@ -351,6 +361,7 @@ namespace NcnnCompute
             var padBehind = layer.GetInt(16, padFront);
             var globalPooling = layer.GetInt(4, 0) != 0;
             var padMode = layer.GetInt(5, 0);
+            var includePad = layer.GetInt(6, 0) != 0;
             var adaptivePooling = layer.GetInt(7, 0) != 0;
             var adaptiveOutW = layer.GetInt(8, 0);
             var adaptiveOutH = layer.GetInt(18, adaptiveOutW);
@@ -379,17 +390,54 @@ namespace NcnnCompute
                 out var outW,
                 out var outH,
                 out var outD,
-                out _,
-                out _,
-                out _);
+                out var resolvedPadLeft,
+                out var resolvedPadTop,
+                out var resolvedPadFront);
 
-            owner.PublishCmdPlaceholder(
-                context.commandBuffer,
-                layer.topNames[0],
-                new NcnnRepro.BufferShape(4, outW, outH, outD, srcShape.c),
-                context.blobs,
-                context.shapes);
-            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            var outShape = new NcnnRepro.BufferShape(4, outW, outH, outD, srcShape.c);
+            var outRt = owner.RentTempArray(cmd, outW, outH, outD * src.packs, NcnnRepro.ResolveTensorTextureFormat(4));
+            owner.Ops.PoolingPack4Cdhw(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                kernelW,
+                kernelH,
+                kernelD,
+                strideW,
+                strideH,
+                strideD,
+                resolvedPadLeft,
+                resolvedPadTop,
+                resolvedPadFront,
+                poolType,
+                includePad,
+                adaptivePooling,
+                globalPooling,
+                outW,
+                outH,
+                outD,
+                srcShape.c,
+                outRt);
+
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outW,
+                height = outH,
+                packs = src.packs,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = outShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 
         private static void ResolveOutputShape(

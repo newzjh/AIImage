@@ -92,9 +92,36 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferViews = context.bufferViews;
+
+            if (!owner._layerNorm.TryGetValue(layer.name, out var lp))
+                throw new InvalidOperationException("LayerNorm not found: " + layer.name);
+            if (!TryGetPack4WidthTexture(owner, layer, lp, textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
+                throw new InvalidOperationException("LayerNorm render-texture path requires supported pack4 width-norm input: " + layer.name);
+
+            var outFormat = ResolveLayerNormOutputFormat(owner, layer, srcShape);
+            var outRt = owner.RentTempArray(
+                srcTex.width,
+                srcTex.height,
+                srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs,
+                outFormat);
+            owner.Ops.LayerNormPack4WidthTex(
+                srcTex.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.dims == 4 ? srcShape.d : 1,
+                srcShape.c,
+                srcTex.packs,
+                lp.eps,
+                lp.affine,
+                lp.gamma,
+                lp.beta,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         private static void ResolveLayerNormRowsCols(NcnnTensorBuffer srcView, int affineSize, string layerName, out int rows, out int cols)
@@ -228,8 +255,126 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], srcShape, blobs, shapes);
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            if (!owner._layerNorm.TryGetValue(layer.name, out var lp))
+                throw new InvalidOperationException("LayerNorm not found: " + layer.name);
+
+            if (CanUsePack4WidthCmdPath(src, srcShape, lp))
+            {
+                var outFormat = ResolveLayerNormOutputFormat(owner, layer, srcShape);
+                var outArr = owner.RentTempArray(cmd, src.width, src.height, srcShape.dims == 4 ? srcShape.d * src.packs : src.packs, outFormat);
+                owner.Ops.LayerNormPack4WidthTex(
+                    cmd,
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    srcShape.dims == 4 ? srcShape.d : 1,
+                    srcShape.c,
+                    src.packs,
+                    lp.eps,
+                    lp.affine,
+                    lp.gamma,
+                    lp.beta,
+                    outArr);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outArr,
+                    width = src.width,
+                    height = src.height,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = srcShape,
+                    hasStorageShape = true,
+                    storageShape = srcShape
+                };
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                owner.DebugLog?.Invoke(
+                    "[CmdTexture][LayerNorm]"
+                    + " | layer=" + layer.name
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | packs=" + src.packs
+                    + " | outFormat=" + outArr.format);
+            }
+            else
+            {
+                owner.DebugLog?.Invoke(
+                    "[CmdPlaceholder][LayerNorm]"
+                    + " | layer=" + layer.name
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | packs=" + src.packs
+                    + " | affine=" + (lp != null && lp.affine ? "1" : "0")
+                    + " | affineSize=" + (lp != null ? lp.affineSize.ToString(CultureInfo.InvariantCulture) : "null"));
+                owner.PublishCmdPlaceholder(cmd, layer.topNames[0], srcShape, blobs, shapes);
+            }
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static RenderTextureFormat ResolveLayerNormOutputFormat(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnRepro.BufferShape srcShape)
+        {
+            if (ShouldPromoteAttentionPrepTexture(owner, layer))
+                return RenderTextureFormat.ARGBFloat;
+            return NcnnRepro.ResolveTensorTextureFormat(srcShape.dims);
+        }
+
+        private static bool TryGetPack4WidthTexture(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.LayerNormPack lp,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.TensorRef srcTex,
+            out NcnnRepro.BufferShape srcShape)
+        {
+            srcTex = null;
+            srcShape = default;
+            if (lp == null)
+                return false;
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out srcTex, out srcShape))
+                return false;
+            return CanUsePack4WidthPath(srcTex, srcShape, lp);
+        }
+
+        private static bool CanUsePack4WidthPath(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
+        {
+            var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
+            var expectedVolumeDepth = logicalDepth * Mathf.Max(1, srcTex?.packs ?? 0);
+            return srcTex != null
+                && srcTex.texture != null
+                && lp != null
+                && lp.affine
+                && lp.gamma != null
+                && lp.beta != null
+                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && srcShape.w > 0
+                && srcShape.w == lp.affineSize
+                && srcShape.w == srcTex.width
+                && srcShape.h == srcTex.height
+                && (srcShape.dims != 4 || Mathf.Max(1, srcTex.texture.volumeDepth) == expectedVolumeDepth)
+                && srcShape.c > 0
+                && srcTex.packs == Mathf.CeilToInt(srcShape.c / 4f);
+        }
+
+        private static bool CanUsePack4WidthCmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
+        {
+            return src != null
+                && src.texture != null
+                && lp != null
+                && lp.affine
+                && lp.gamma != null
+                && lp.beta != null
+                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && srcShape.w > 0
+                && srcShape.w == lp.affineSize
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && (srcShape.dims != 4 || Mathf.Max(1, src.texture.depth) == Mathf.Max(1, srcShape.d) * src.packs)
+                && srcShape.c > 0
+                && src.packs == Mathf.CeilToInt(srcShape.c / 4f);
         }
     }
 }

@@ -276,36 +276,79 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var shapes = context.shapes;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!owner._conv.TryGetValue(layer.name, out var conv))
+                throw new InvalidOperationException("Convolution3D not found: " + layer.name);
+
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             if (srcShape.dims != 4)
-                throw new InvalidOperationException("Convolution3D command-buffer placeholder expects dims=4 input: " + layer.name);
+                throw new InvalidOperationException("Convolution3D command-buffer path expects dims=4 input: " + layer.name);
+            if (conv.group != 1)
+                throw new NotSupportedException("Convolution3D command-buffer path currently supports group=1 only: " + layer.name);
+            if (conv.packedWeight4 == null || conv.packedBias4 == null)
+                throw new InvalidOperationException("Convolution3D packed weights unavailable: " + layer.name);
+            if (src.packs != conv.inPacks)
+                throw new InvalidOperationException("Convolution3D command-buffer input pack mismatch: " + layer.name);
 
-            var outC = Mathf.Max(1, layer.GetInt(0, 0));
-            var kernelW = Mathf.Max(1, layer.GetInt(1, 0));
-            var kernelH = Mathf.Max(1, layer.GetInt(11, kernelW));
-            var kernelD = Mathf.Max(1, layer.GetInt(21, kernelW));
-            var dilationW = Mathf.Max(1, layer.GetInt(2, 1));
-            var dilationH = Mathf.Max(1, layer.GetInt(12, dilationW));
-            var dilationD = Mathf.Max(1, layer.GetInt(22, dilationW));
-            var strideW = Mathf.Max(1, layer.GetInt(3, 1));
-            var strideH = Mathf.Max(1, layer.GetInt(13, strideW));
-            var strideD = Mathf.Max(1, layer.GetInt(23, strideW));
-            var padLeft = Mathf.Max(0, layer.GetInt(4, 0));
-            var padRight = Mathf.Max(0, layer.GetInt(15, padLeft));
-            var padTop = Mathf.Max(0, layer.GetInt(14, padLeft));
-            var padBottom = Mathf.Max(0, layer.GetInt(16, padTop));
-            var padFront = Mathf.Max(0, layer.GetInt(24, padLeft));
-            var padBehind = Mathf.Max(0, layer.GetInt(17, padFront));
+            var outW = NcnnRepro.ComputeConvOut(srcShape.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
+            var outH = NcnnRepro.ComputeConvOut(srcShape.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
+            var outD = NcnnRepro.ComputeConvOut(srcShape.d, conv.kernelD, conv.dilationD, conv.strideD, conv.padFront, conv.padBehind);
+            var outShape = new NcnnRepro.BufferShape(4, outW, outH, outD, conv.outC);
+            var outRt = owner.RentTempArray(cmd, outW, outH, outD * conv.outPacks, NcnnRepro.ResolveTensorTextureFormat(4));
+            owner.Ops.Conv3dPack4CDHW(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                conv.inPacks,
+                conv.packedWeight4,
+                conv.packedBias4,
+                outW,
+                outH,
+                outD,
+                conv.outPacks,
+                conv.kernelW,
+                conv.kernelH,
+                conv.kernelD,
+                conv.strideW,
+                conv.strideH,
+                conv.strideD,
+                conv.padLeft,
+                conv.padRight,
+                conv.padTop,
+                conv.padBottom,
+                conv.padFront,
+                conv.padBehind,
+                conv.dilationW,
+                conv.dilationH,
+                conv.dilationD,
+                conv.activationType,
+                conv.activationSlope,
+                outRt);
 
-            var outShape = new NcnnRepro.BufferShape(
-                4,
-                Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.w, kernelW, dilationW, strideW, padLeft, padRight)),
-                Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.h, kernelH, dilationH, strideH, padTop, padBottom)),
-                Mathf.Max(1, NcnnRepro.ComputeConvOut(srcShape.d, kernelD, dilationD, strideD, padFront, padBehind)),
-                outC);
-
-            owner.PublishCmdPlaceholder(context.commandBuffer, layer.topNames[0], outShape, context.blobs, context.shapes);
-            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outW,
+                height = outH,
+                packs = conv.outPacks,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = outShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }
 }

@@ -10,8 +10,10 @@ using Cysharp.Threading.Tasks;
 using ICSharpCode.SharpZipLib.GZip;
 using NcnnCompute;
 using Newtonsoft.Json.Linq;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Profiling;
+using UnityEngine.Rendering;
 
 public enum MonaiInputSourceKind
 {
@@ -203,6 +205,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public bool forceBufferOutputsForDims4 = false;
     public ISet<string> forceBufferLayerNames = null;
     public bool useTextureInputForMonaiPatches = false;
+    public bool useCommandBufferForMonaiPatches = false;
     public bool enableAttentionMatMulPack4Specializations = false;
     public bool disallowBufferAccess = false;
     public bool disallowBufferOutputs = false;
@@ -232,6 +235,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private readonly Dictionary<string, long> _timingMs = new Dictionary<string, long>(StringComparer.Ordinal);
     private NcnnRepro.LayerRuntimeProfile _lastLayerRuntimeProfile;
     private string _lastLayerRuntimeProfileText;
+    private NcnnRepro.TempResourceStatsSnapshot _lastInferenceTempResourceStats;
     private string _lastPathMode = string.Empty;
     private int _flushedDebugLineCount;
     private bool _loggedPatchInputTextureRoundtrip;
@@ -294,6 +298,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _timingMs.Clear();
         _lastLayerRuntimeProfile = null;
         _lastLayerRuntimeProfileText = null;
+        _lastInferenceTempResourceStats = null;
         _lastPathMode = string.Empty;
         _flushedDebugLineCount = 0;
         _loggedPatchInputTextureRoundtrip = false;
@@ -352,13 +357,14 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 : RunSinglePassInference(resolved, prepared);
             inferSw.Stop();
             _timingMs["inference_ms"] = inferSw.ElapsedMilliseconds;
+            _lastInferenceTempResourceStats = _repro?.GetInferenceTempResourceStats();
             var logits = inferResult.logits;
             var outW = inferResult.width;
             var outH = inferResult.height;
             var outD = inferResult.depth;
             var outC = inferResult.channels;
             var executionNote = inferResult.executionNote;
-            var pathMode = string.IsNullOrWhiteSpace(inferResult.pathMode) ? ResolvePathMode(useTextureInputForMonaiPatches) : inferResult.pathMode;
+            var pathMode = string.IsNullOrWhiteSpace(inferResult.pathMode) ? ResolveCurrentPathMode() : inferResult.pathMode;
             _lastPathMode = pathMode;
 
             if ((logits == null || logits.Length == 0)
@@ -664,6 +670,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _repro.DisallowBufferAccess = disallowBufferAccess;
         _repro.DisallowBufferOutputs = disallowBufferOutputs;
         _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
+        _repro.DisallowInferenceTempComputeBuffers = disallowBufferAccess || disallowBufferOutputs || disallowBufferToTextureMaterialization;
         _repro.KeepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
         _repro.TensorTextureFormat = tensorTextureFormat;
         _repro.DebugLogAllLayerHeartbeats = logAllLayerHeartbeats;
@@ -671,7 +678,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _repro.DebugLogAllBufferMaterialize = logAllBufferMaterialize;
         _repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
         _repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfile;
-        _repro.LayerRuntimeProfilePathKindOverride = ResolvePathMode(useTextureInputForMonaiPatches);
+        _repro.LayerRuntimeProfilePathKindOverride = ResolveCurrentPathMode();
         _repro.TimingSplitSyncAfterTopName = enableTimingSplitDiagnostics ? timingSplitSyncAfterTopName : null;
         _repro.OnTimingSplitSyncPoint = enableTimingSplitDiagnostics ? HandleTimingSplitSyncPoint : null;
         _repro.EnableAttentionMatMulPack4Specializations = enableAttentionMatMulPack4Specializations;
@@ -1107,6 +1114,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public int featureChannels;
         public int outputChannels;
         public NcnnRepro.ConvPack conv;
+        public bool hasRawWeights;
     }
 
     private readonly struct InferOutputShape
@@ -1169,22 +1177,46 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private readonly struct PatchInferHandle : IDisposable
     {
         public readonly NcnnRepro.InferResult infer;
+        public readonly RenderTexture outputTexture;
+        public readonly InferOutputShape? outputShape;
         private readonly NcnnRepro _repro;
         private readonly RenderTexture _ownedInputTexture;
+        private readonly CommandBuffer _ownedCommandBuffer;
+        private readonly RenderTexture _ownedOutputTexture;
 
         public PatchInferHandle(NcnnRepro.InferResult infer, NcnnRepro repro, RenderTexture ownedInputTexture)
         {
             this.infer = infer;
+            outputTexture = null;
+            outputShape = null;
             _repro = repro;
             _ownedInputTexture = ownedInputTexture;
+            _ownedCommandBuffer = null;
+            _ownedOutputTexture = null;
+        }
+
+        public PatchInferHandle(CommandBuffer ownedCommandBuffer, NcnnRepro repro, RenderTexture ownedInputTexture, RenderTexture ownedOutputTexture, InferOutputShape ownedOutputShape)
+        {
+            infer = null;
+            outputTexture = ownedOutputTexture;
+            outputShape = ownedOutputShape;
+            _repro = repro;
+            _ownedInputTexture = ownedInputTexture;
+            _ownedCommandBuffer = ownedCommandBuffer;
+            _ownedOutputTexture = ownedOutputTexture;
         }
 
         public void Dispose()
         {
             try { infer?.Dispose(); } catch { }
+            try { _ownedCommandBuffer?.Dispose(); } catch { }
             if (_ownedInputTexture != null)
             {
                 try { _repro?.ReturnTempArray(_ownedInputTexture); } catch { }
+            }
+            if (_ownedOutputTexture != null)
+            {
+                try { _repro?.ReturnTempArray(_ownedOutputTexture); } catch { }
             }
         }
     }
@@ -1192,6 +1224,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private static string ResolvePathMode(bool useTextureInputForPatches)
     {
         return useTextureInputForPatches ? "pack4_rt" : "compute_buffer";
+    }
+
+    private string ResolveCurrentPathMode()
+    {
+        if (useCommandBufferForMonaiPatches)
+            return "command_buffer_rt";
+        return ResolvePathMode(useTextureInputForMonaiPatches);
     }
 
     private void CaptureLatestLayerRuntimeProfile(string pathMode)
@@ -1227,15 +1266,14 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             pinnedBlobNames,
             resolved.probeOnly ? probeBlobName : null);
         var infer = inferHandle.infer;
-
-        var outputView = GetInferOutputShape(infer, probeBlobName, "MONAI output blob missing: ");
+        var outputView = GetPatchOutputShape(inferHandle, probeBlobName, "MONAI output blob missing: ");
 
         if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
-            DumpPinnedBlobOutputs(infer, pinnedBlobNames);
+            DumpPinnedBlobOutputs(inferHandle, pinnedBlobNames, probeBlobName);
 
         if (resolved.probeOnly)
         {
-            CaptureLatestLayerRuntimeProfile(ResolvePathMode(useTextureInputForMonaiPatches));
+            CaptureLatestLayerRuntimeProfile(ResolveCurrentPathMode());
             return new InferenceRunResult
             {
                 width = outputView.w,
@@ -1243,7 +1281,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 depth = outputView.d,
                 channels = probeHead != null ? probeHead.outputChannels : outputView.c,
                 executionNote = "probe_blob:" + probeBlobName,
-                pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
+                pathMode = ResolveCurrentPathMode(),
                 probeOnly = true,
                 executedPatchCount = 1,
                 totalPatchCount = 1
@@ -1253,15 +1291,17 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (outputView.dims != 4)
             throw new InvalidOperationException("MONAI output dims expected 4 but got " + outputView.dims);
 
-        CaptureLatestLayerRuntimeProfile(ResolvePathMode(useTextureInputForMonaiPatches));
+        CaptureLatestLayerRuntimeProfile(ResolveCurrentPathMode());
         return new InferenceRunResult
         {
-            logits = ExtractInferOutputData(infer, resolved.outputBlobName, outputView),
+            logits = inferHandle.outputTexture != null
+                ? ReadTextureOutputData(inferHandle.outputTexture, outputView)
+                : ExtractPatchOutputData(inferHandle, resolved.outputBlobName, outputView),
             width = outputView.w,
             height = outputView.h,
             depth = outputView.d,
             channels = outputView.c,
-            pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
+            pathMode = ResolveCurrentPathMode(),
             executedPatchCount = 1,
             totalPatchCount = 1
         };
@@ -1360,7 +1400,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                             + " | sync_after_return_ms=" + syncMs.ToString("0.###", CultureInfo.InvariantCulture));
                     }
 
-                    var outputView = GetInferOutputShape(infer, resolved.outputBlobName, "MONAI sliding window output blob missing: ");
+                    var outputView = GetPatchOutputShape(inferHandle, resolved.outputBlobName, "MONAI sliding window output blob missing: ");
                     if (outputView.dims != 4)
                         throw new InvalidOperationException("MONAI sliding window output dims expected 4 but got " + outputView.dims);
                     if (outputView.w != roiW || outputView.h != roiH || outputView.d != roiD)
@@ -1371,7 +1411,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                             + " got " + outputView.w + "x" + outputView.h + "x" + outputView.d);
                     }
 
-                    var patchLogits = ExtractInferOutputData(infer, resolved.outputBlobName, outputView);
+                    var patchLogits = ExtractPatchOutputData(inferHandle, resolved.outputBlobName, outputView);
                     if (patchLogits == null || patchLogits.Length == 0)
                         throw new InvalidOperationException("MONAI sliding window logits are empty.");
 
@@ -1402,7 +1442,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         startW);
 
                     if (patchIndex == 1 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
-                        DumpPinnedBlobOutputs(infer, pinnedBlobNames);
+                        DumpPinnedBlobOutputs(inferHandle, pinnedBlobNames, resolved.outputBlobName);
 
                     await HandleSlidingWindowPatchCompletedAsync(
                         patchIndex,
@@ -1419,7 +1459,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             throw new InvalidOperationException("Sliding window inference did not produce any patches.");
 
         NormalizeAccumulatedLogits(accum, weight, outC, inferD, inferH, inferW);
-        CaptureLatestLayerRuntimeProfile(ResolvePathMode(useTextureInputForMonaiPatches));
+        CaptureLatestLayerRuntimeProfile(ResolveCurrentPathMode());
         return new InferenceRunResult
         {
             logits = accum,
@@ -1427,7 +1467,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             height = inferH,
             depth = inferD,
             channels = outC,
-            pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
+            pathMode = ResolveCurrentPathMode(),
             executedPatchCount = patchCount,
             totalPatchCount = patchCount
         };
@@ -1459,9 +1499,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 && conv.padLeft == 0 && conv.padRight == 0
                 && conv.padTop == 0 && conv.padBottom == 0
                 && conv.padFront == 0 && conv.padBehind == 0
-                && conv.group == 1
-                && conv.rawWeight != null
-                && conv.rawBias != null;
+                && conv.group == 1;
             if (!isLinear1x1x1)
                 return false;
 
@@ -1471,7 +1509,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 featureBlobName = layer.bottomNames[0],
                 featureChannels = conv.inC,
                 outputChannels = conv.outC,
-                conv = conv
+                conv = conv,
+                hasRawWeights = conv.rawWeight != null && conv.rawBias != null
             };
             return true;
         }
@@ -1578,9 +1617,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         roiW,
                         pinnedBlobNames,
                         outputHead.featureBlobName);
-                    var infer = inferHandle.infer;
-
-                    var featureView = GetInferOutputShape(infer, outputHead.featureBlobName, "MONAI sliding window feature blob missing: ");
+                    var featureView = GetPatchOutputShape(inferHandle, outputHead.featureBlobName, "MONAI sliding window feature blob missing: ");
                     if (featureView.dims != 4)
                     {
                         throw new InvalidOperationException(
@@ -1595,7 +1632,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                             + featureView.w + "x" + featureView.h + "x" + featureView.d + "x" + featureView.c);
                     }
 
-                    var featureData = ExtractInferOutputData(infer, outputHead.featureBlobName, featureView);
+                    var featureData = ExtractPatchOutputData(inferHandle, outputHead.featureBlobName, featureView);
                     Array.Copy(featureData, featurePatch, featurePatch.Length);
                     var localStartDepth = startD - bandBaseDepth;
                     if (localStartDepth < 0)
@@ -1633,7 +1670,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         startW);
 
                     if (patchIndex == 1 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
-                        DumpPinnedBlobOutputs(infer, pinnedBlobNames);
+                        DumpPinnedBlobOutputs(inferHandle, pinnedBlobNames, outputHead.featureBlobName);
 
                     await HandleSlidingWindowPatchCompletedAsync(
                         patchIndex,
@@ -1692,7 +1729,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         ReportProgress(0.70f, "Classify aggregated MONAI features");
 
-        CaptureLatestLayerRuntimeProfile(ResolvePathMode(useTextureInputForMonaiPatches));
+        CaptureLatestLayerRuntimeProfile(ResolveCurrentPathMode());
         return new InferenceRunResult
         {
             labelMap = labelMap,
@@ -1701,7 +1738,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             depth = inferD,
             channels = outputHead.outputChannels,
             executionNote = "sliding_window_feature_head_band:" + outputHead.featureBlobName,
-            pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
+            pathMode = ResolveCurrentPathMode(),
             executedPatchCount = patchCount,
             totalPatchCount = patchCount
         };
@@ -1788,9 +1825,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         roiW,
                         pinnedBlobNames,
                         outputHead.featureBlobName);
-                    var infer = inferHandle.infer;
-
-                    var featureView = GetInferOutputShape(infer, outputHead.featureBlobName, "MONAI sliding window feature blob missing: ");
+                    var featureView = GetPatchOutputShape(inferHandle, outputHead.featureBlobName, "MONAI sliding window feature blob missing: ");
                     if (featureView.dims != 4)
                         throw new InvalidOperationException("MONAI sliding window feature dims expected 4 but got " + featureView.dims);
                     if (featureView.w != roiW || featureView.h != roiH || featureView.d != roiD || featureView.c != featureChannels)
@@ -1802,8 +1837,26 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                             + featureView.w + "x" + featureView.h + "x" + featureView.d + "x" + featureView.c);
                     }
 
-                    var featureData = ExtractInferOutputData(infer, outputHead.featureBlobName, featureView);
-                    var patchLabelMap = BuildLabelMapFromAggregatedFeatures(featureData, roiW, roiH, roiD, outputHead, null, ct);
+                    ushort[] patchLabelMap;
+                    var canUseTextureHead =
+                        outputHead.conv.packedWeight4 != null
+                        && outputHead.conv.packedBias4 != null;
+                    if (canUseTextureHead && inferHandle.outputTexture != null)
+                    {
+                        patchLabelMap = BuildLabelMapFromFeatureTexture(inferHandle.outputTexture, featureView, outputHead, ct);
+                    }
+                    else if (canUseTextureHead
+                        && inferHandle.infer != null
+                        && inferHandle.infer.TryGetExistingTexture(outputHead.featureBlobName, out var featureTexture)
+                        && featureTexture != null)
+                    {
+                        patchLabelMap = BuildLabelMapFromFeatureTexture(featureTexture, featureView, outputHead, ct);
+                    }
+                    else
+                    {
+                        var featureData = ExtractPatchOutputData(inferHandle, outputHead.featureBlobName, featureView);
+                        patchLabelMap = BuildLabelMapFromAggregatedFeatures(featureData, roiW, roiH, roiD, outputHead, null, ct);
+                    }
                     CopyOwnedPatchLabelRegion(
                         patchLabelMap,
                         roiD,
@@ -1824,7 +1877,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         ownedW.end);
 
                     if (patchIndex == 1 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
-                        DumpPinnedBlobOutputs(infer, pinnedBlobNames);
+                        DumpPinnedBlobOutputs(inferHandle, pinnedBlobNames, outputHead.featureBlobName);
 
                     await HandleSlidingWindowPatchCompletedAsync(
                         patchIndex,
@@ -1837,7 +1890,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             }
         }
 
-        CaptureLatestLayerRuntimeProfile(ResolvePathMode(useTextureInputForMonaiPatches));
+        CaptureLatestLayerRuntimeProfile(ResolveCurrentPathMode());
         return new InferenceRunResult
         {
             labelMap = labelMap,
@@ -1846,7 +1899,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             depth = inferD,
             channels = outputHead.outputChannels,
             executionNote = "sliding_window_feature_head_ownership:" + outputHead.featureBlobName,
-            pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
+            pathMode = ResolveCurrentPathMode(),
             executedPatchCount = patchCount,
             totalPatchCount = patchCount
         };
@@ -1931,12 +1984,10 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                         roiW,
                         pinnedBlobNames,
                         probeBlobName);
-                    var infer = inferHandle.infer;
-
-                    outputView = GetInferOutputShape(infer, probeBlobName, "MONAI sliding window probe blob missing: ");
+                    outputView = GetPatchOutputShape(inferHandle, probeBlobName, "MONAI sliding window probe blob missing: ");
 
                     if (executedPatchCount == 1 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
-                        DumpPinnedBlobOutputs(infer, pinnedBlobNames);
+                        DumpPinnedBlobOutputs(inferHandle, pinnedBlobNames, probeBlobName);
 
                     await HandleSlidingWindowPatchCompletedAsync(
                         executedPatchCount,
@@ -1952,7 +2003,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (!outputView.HasValue)
             throw new InvalidOperationException("Sliding window probe did not execute any patches.");
 
-        CaptureLatestLayerRuntimeProfile(ResolvePathMode(useTextureInputForMonaiPatches));
+        CaptureLatestLayerRuntimeProfile(ResolveCurrentPathMode());
         return new InferenceRunResult
         {
             width = outputView.Value.w,
@@ -1965,7 +2016,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 + " | patch_start_dhw=" + executedStartD.ToString(CultureInfo.InvariantCulture)
                 + "," + executedStartH.ToString(CultureInfo.InvariantCulture)
                 + "," + executedStartW.ToString(CultureInfo.InvariantCulture),
-            pathMode = ResolvePathMode(useTextureInputForMonaiPatches),
+            pathMode = ResolveCurrentPathMode(),
             probeOnly = true,
             executedPatchCount = executedPatchCount,
             totalPatchCount = totalPatchCount
@@ -2006,6 +2057,34 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         {
             _ops.FillPack4FromBufferCDHW(inputTensor.buffer, width, height, depth, resolved.inputChannels, inputPack4);
             TryLogPatchInputTextureRoundtrip(resolved, inputTensor, width, height, depth, inputPack4);
+            if (useCommandBufferForMonaiPatches)
+            {
+                var cmd = new CommandBuffer { name = "MonaiPatchCommandBuffer" };
+                var cmdInput = _repro.RentTempArray(cmd, width, height, sliceCount, NcnnRepro.ResolveTensorTextureFormat(4));
+                CopyTextureArrayAllSlices(cmd, inputPack4, cmdInput.nameID, sliceCount);
+                var targetBlobName = string.IsNullOrWhiteSpace(stopAfterTopName) ? resolved.outputBlobName : stopAfterTopName;
+                var cmdOutput = _repro.ForwardPack4(
+                    cmd,
+                    cmdInput,
+                    new NcnnRepro.BufferShape(4, width, height, depth, resolved.inputChannels),
+                    out var cmdOutputShape,
+                    resolved.inputBlobName,
+                    pinnedBlobNames,
+                    targetBlobName);
+                var outputCopy = _repro.RentTempArray(cmdOutput.width, cmdOutput.height, cmdOutput.depth, cmdOutput.format);
+                CopyTextureArrayAllSlices(cmd, cmdOutput.nameID, outputCopy, cmdOutput.depth);
+                _repro.ReturnTempArray(cmd, cmdOutput);
+                _repro.ReturnTempArray(cmd, cmdInput);
+                Graphics.ExecuteCommandBuffer(cmd);
+                _ops.DebugSyncGpu();
+                return new PatchInferHandle(
+                    cmd,
+                    _repro,
+                    inputPack4,
+                    outputCopy,
+                    new InferOutputShape(cmdOutputShape.dims, cmdOutputShape.w, cmdOutputShape.h, cmdOutputShape.d, cmdOutputShape.c));
+            }
+
             var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
                 { resolved.inputBlobName, inputPack4 }
@@ -2027,6 +2106,30 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             _repro.ReturnTempArray(inputPack4);
             throw;
         }
+    }
+
+    private static void CopyTextureArrayAllSlices(CommandBuffer cmd, RenderTexture src, int dstNameId, int sliceCount)
+    {
+        if (cmd == null)
+            throw new ArgumentNullException(nameof(cmd));
+        if (src == null)
+            throw new ArgumentNullException(nameof(src));
+
+        var resolvedSliceCount = Mathf.Max(1, sliceCount);
+        for (var slice = 0; slice < resolvedSliceCount; slice++)
+            cmd.CopyTexture(src, slice, 0, dstNameId, slice, 0);
+    }
+
+    private static void CopyTextureArrayAllSlices(CommandBuffer cmd, int srcNameId, RenderTexture dst, int sliceCount)
+    {
+        if (cmd == null)
+            throw new ArgumentNullException(nameof(cmd));
+        if (dst == null)
+            throw new ArgumentNullException(nameof(dst));
+
+        var resolvedSliceCount = Mathf.Max(1, sliceCount);
+        for (var slice = 0; slice < resolvedSliceCount; slice++)
+            cmd.CopyTexture(srcNameId, slice, 0, dst, slice, 0);
     }
 
     private void TryLogPatchInputTextureRoundtrip(
@@ -2203,6 +2306,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         throw new InvalidOperationException((missingPrefix ?? "Infer output missing: ") + blobName);
     }
 
+    private InferOutputShape GetPatchOutputShape(PatchInferHandle inferHandle, string blobName, string missingPrefix)
+    {
+        if (inferHandle.outputShape.HasValue)
+            return inferHandle.outputShape.Value;
+        return GetInferOutputShape(inferHandle.infer, blobName, missingPrefix);
+    }
+
     private float[] ExtractInferOutputData(NcnnRepro.InferResult infer, string blobName, InferOutputShape outputView)
     {
         if (infer == null)
@@ -2244,6 +2354,19 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             if (!hasExistingTexture)
                 _repro?.ReturnTempArray(texture);
         }
+    }
+
+    private float[] ExtractPatchOutputData(PatchInferHandle inferHandle, string blobName, InferOutputShape outputView)
+    {
+        if (inferHandle.outputTexture != null)
+        {
+            return ReadTextureOutputData(
+                inferHandle.outputTexture,
+                outputView,
+                recordTimingDiagnostics: enableTimingSplitDiagnostics && !_timingSplitReadbackDiagnosticCaptured);
+        }
+
+        return ExtractInferOutputData(inferHandle.infer, blobName, outputView);
     }
 
     private float[] ReadTextureOutputData(RenderTexture texture, InferOutputShape outputView, bool recordTimingDiagnostics = false)
@@ -2295,6 +2418,187 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 + " | getdata_ms=" + getDataMs.ToString("0.###", CultureInfo.InvariantCulture));
         }
         return data;
+    }
+
+    private ushort[] BuildLabelMapFromFeatureTexture(
+        RenderTexture featureTexture,
+        InferOutputShape featureView,
+        OutputHeadInfo outputHead,
+        CancellationToken ct)
+    {
+        if (featureTexture == null)
+            throw new ArgumentNullException(nameof(featureTexture));
+        if (outputHead?.conv == null)
+            throw new ArgumentNullException(nameof(outputHead));
+        if (_repro == null || _ops == null)
+            throw new InvalidOperationException("MONAI repro runtime is not initialized.");
+        if (featureView.dims != 4)
+            throw new InvalidOperationException("Feature texture argmax expects dims=4.");
+        if (featureView.c != outputHead.featureChannels)
+            throw new InvalidOperationException("Feature texture channel mismatch for output head.");
+
+        var width = featureView.w;
+        var height = featureView.h;
+        var depth = featureView.d;
+        var outputChannels = outputHead.outputChannels;
+        var plane = checked(width * height);
+        var voxelCount = checked(depth * plane);
+        var outputPackCount = Mathf.Max(1, Mathf.CeilToInt(outputChannels / 4f));
+        var chunkPackCount = Mathf.Max(1, Mathf.Min(outputPackCount, Math.Max(1, 2048 / Math.Max(1, depth))));
+
+        var bestValueRt = _repro.RentTempArray(width, height, depth, RenderTextureFormat.ARGBHalf);
+        var bestLabelRt = _repro.RentTempArray(width, height, depth, RenderTextureFormat.ARGBHalf);
+        var labels = new ushort[voxelCount];
+        RenderTexture logitsRt = null;
+        try
+        {
+            var featurePackCount = Mathf.Max(1, Mathf.CeilToInt(outputHead.featureChannels / 4f));
+            for (var packOffset = 0; packOffset < outputPackCount; packOffset += chunkPackCount)
+            {
+                ct.ThrowIfCancellationRequested();
+                var activePackCount = Math.Min(chunkPackCount, outputPackCount - packOffset);
+                var activeChannels = Math.Min(outputChannels - packOffset * 4, activePackCount * 4);
+                logitsRt = _repro.RentTempArray(width, height, checked(depth * activePackCount), NcnnRepro.ResolveTensorTextureFormat(4));
+                _ops.Conv3dPack4CDHW(
+                    featureTexture,
+                    width,
+                    height,
+                    depth,
+                    featurePackCount,
+                    outputHead.conv.packedWeight4,
+                    outputHead.conv.packedBias4,
+                    width,
+                    height,
+                    depth,
+                    activePackCount,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    1,
+                    1,
+                    outputHead.conv.activationType,
+                    outputHead.conv.activationSlope,
+                    logitsRt,
+                    packOffset);
+                _ops.ArgmaxUpdatePack4CDHW(
+                    logitsRt,
+                    depth,
+                    activeChannels,
+                    packOffset * 4,
+                    bestValueRt,
+                    bestLabelRt,
+                    initialize: packOffset == 0);
+                _repro.ReturnTempArray(logitsRt);
+                logitsRt = null;
+            }
+
+            ReadScalarLabelTextureToDhw(bestLabelRt, width, height, depth, labels);
+            return labels;
+        }
+        finally
+        {
+            if (logitsRt != null)
+                _repro.ReturnTempArray(logitsRt);
+            _repro.ReturnTempArray(bestValueRt);
+            _repro.ReturnTempArray(bestLabelRt);
+        }
+    }
+
+    private static void ReadScalarLabelTextureToDhw(RenderTexture texture, int width, int height, int depth, ushort[] output)
+    {
+        if (texture == null)
+            throw new ArgumentNullException(nameof(texture));
+        if (output == null)
+            throw new ArgumentNullException(nameof(output));
+        if (output.Length < checked(width * height * depth))
+            throw new ArgumentException("Label output array is too small.", nameof(output));
+
+        var prevActive = RenderTexture.active;
+        Texture2D readbackTex = null;
+        try
+        {
+            var useFloatReadback = texture.format == RenderTextureFormat.ARGBFloat
+                || texture.format == RenderTextureFormat.RFloat
+                || texture.format == RenderTextureFormat.RGFloat;
+            readbackTex = new Texture2D(
+                width,
+                height,
+                useFloatReadback ? TextureFormat.RFloat : TextureFormat.RHalf,
+                false,
+                true);
+            var plane = checked(width * height);
+            for (var slice = 0; slice < depth; slice++)
+            {
+                Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, slice);
+                readbackTex.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                readbackTex.Apply(false, false);
+                var dstOffset = slice * plane;
+                if (useFloatReadback)
+                {
+                    var raw = readbackTex.GetRawTextureData<float>();
+                    for (var i = 0; i < plane; i++)
+                    {
+                        var value = Mathf.RoundToInt(raw[i]);
+                        if (value < 0)
+                            value = 0;
+                        else if (value > ushort.MaxValue)
+                            value = ushort.MaxValue;
+                        output[dstOffset + i] = (ushort)value;
+                    }
+                }
+                else
+                {
+                    var raw = readbackTex.GetRawTextureData<ushort>();
+                    for (var i = 0; i < plane; i++)
+                    {
+                        var value = Mathf.RoundToInt(ReadHalfRaw(raw, i));
+                        if (value < 0)
+                            value = 0;
+                        else if (value > ushort.MaxValue)
+                            value = ushort.MaxValue;
+                        output[dstOffset + i] = (ushort)value;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            RenderTexture.active = prevActive;
+            if (readbackTex != null)
+                UnityEngine.Object.DestroyImmediate(readbackTex);
+        }
+    }
+
+    private static float ReadHalfRaw(NativeArray<ushort> raw, int index)
+    {
+        if (!raw.IsCreated || index < 0 || index >= raw.Length)
+            return 0f;
+
+        var sign = (raw[index] >> 15) & 0x1;
+        var exponent = (raw[index] >> 10) & 0x1F;
+        var mantissa = raw[index] & 0x03FF;
+        if (exponent == 0)
+        {
+            if (mantissa == 0)
+                return sign == 0 ? 0f : -0f;
+            var value = mantissa / 1024f;
+            value *= Mathf.Pow(2f, -14f);
+            return sign == 0 ? value : -value;
+        }
+        if (exponent == 31)
+            return mantissa == 0 ? (sign == 0 ? float.PositiveInfinity : float.NegativeInfinity) : float.NaN;
+        var normal = (1f + mantissa / 1024f) * Mathf.Pow(2f, exponent - 15f);
+        return sign == 0 ? normal : -normal;
     }
 
     private async UniTask HandleSlidingWindowPatchCompletedAsync(
@@ -2434,6 +2738,20 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             ["managed_heap_mb"] = managedMb,
             ["graphics_driver_mb"] = gfxMb,
             ["unity_rendertexture_object_count"] = rtCount,
+            ["inference_temp_resources"] = _lastInferenceTempResourceStats == null
+                ? null
+                : new JObject
+                {
+                    ["temp_buffer_rent_count"] = _lastInferenceTempResourceStats.tempBufferRentCount,
+                    ["temp_buffer_rent_mb"] = _lastInferenceTempResourceStats.tempBufferRentBytes / (1024d * 1024d),
+                    ["temp_buffer_live_count"] = _lastInferenceTempResourceStats.tempBufferLiveCount,
+                    ["temp_buffer_live_mb"] = _lastInferenceTempResourceStats.tempBufferLiveBytes / (1024d * 1024d),
+                    ["temp_buffer_peak_live_count"] = _lastInferenceTempResourceStats.tempBufferPeakLiveCount,
+                    ["temp_buffer_peak_live_mb"] = _lastInferenceTempResourceStats.tempBufferPeakLiveBytes / (1024d * 1024d),
+                    ["temp_rt_rent_count"] = _lastInferenceTempResourceStats.tempRtRentCount,
+                    ["temp_rt_live_count"] = _lastInferenceTempResourceStats.tempRtLiveCount,
+                    ["temp_rt_peak_live_count"] = _lastInferenceTempResourceStats.tempRtPeakLiveCount
+                },
             ["gpu_tracker"] = new JObject
             {
                 ["current_total_mb"] = gpu.currentTotalMb,
@@ -4138,6 +4456,15 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             sb.AppendLine("execution_note=" + executionNote);
         if (_lastLayerRuntimeProfile != null)
             sb.AppendLine("layer_profile_total_ms=" + _lastLayerRuntimeProfile.totalMs.ToString("0.###", CultureInfo.InvariantCulture));
+        if (_lastInferenceTempResourceStats != null)
+        {
+            sb.AppendLine("inference_temp_buffer_rent_count=" + _lastInferenceTempResourceStats.tempBufferRentCount.ToString(CultureInfo.InvariantCulture));
+            sb.AppendLine("inference_temp_buffer_rent_mb=" + (_lastInferenceTempResourceStats.tempBufferRentBytes / (1024d * 1024d)).ToString("0.###", CultureInfo.InvariantCulture));
+            sb.AppendLine("inference_temp_buffer_peak_live_count=" + _lastInferenceTempResourceStats.tempBufferPeakLiveCount.ToString(CultureInfo.InvariantCulture));
+            sb.AppendLine("inference_temp_buffer_peak_live_mb=" + (_lastInferenceTempResourceStats.tempBufferPeakLiveBytes / (1024d * 1024d)).ToString("0.###", CultureInfo.InvariantCulture));
+            sb.AppendLine("inference_temp_rt_rent_count=" + _lastInferenceTempResourceStats.tempRtRentCount.ToString(CultureInfo.InvariantCulture));
+            sb.AppendLine("inference_temp_rt_peak_live_count=" + _lastInferenceTempResourceStats.tempRtPeakLiveCount.ToString(CultureInfo.InvariantCulture));
+        }
         if (request.postprocessKind == MonaiPostprocessKind.BratsTumorSubregions)
             sb.AppendLine("note=BraTS bundle predicts tumor subregions (TC/WT/ET), not skull or ventricles");
         else if (request.postprocessKind == MonaiPostprocessKind.MulticlassArgmax)
@@ -4974,6 +5301,59 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         WriteText(Path.Combine(dumpDir, "manifest.json"), manifest.ToString());
     }
 
+    private void DumpPinnedBlobOutputs(PatchInferHandle inferHandle, string[] pinnedBlobNames, string primaryBlobName)
+    {
+        if (inferHandle.infer != null)
+        {
+            DumpPinnedBlobOutputs(inferHandle.infer, pinnedBlobNames);
+            return;
+        }
+
+        if (inferHandle.outputTexture == null
+            || !inferHandle.outputShape.HasValue
+            || pinnedBlobNames == null
+            || pinnedBlobNames.Length == 0
+            || string.IsNullOrWhiteSpace(_lastDumpDir))
+        {
+            return;
+        }
+
+        var resolvedBlobName = string.IsNullOrWhiteSpace(primaryBlobName)
+            ? pinnedBlobNames[0]
+            : primaryBlobName.Trim();
+        if (string.IsNullOrWhiteSpace(resolvedBlobName))
+            return;
+
+        var dumpDir = Path.Combine(_lastDumpDir, "intermediate_blobs");
+        Directory.CreateDirectory(dumpDir);
+
+        var view = inferHandle.outputShape.Value;
+        var data = ReadTextureOutputData(inferHandle.outputTexture, view);
+        var safeName = SanitizeFileName(resolvedBlobName);
+        var fileName = safeName + "_d" + view.dims.ToString(CultureInfo.InvariantCulture)
+            + "_" + view.w.ToString(CultureInfo.InvariantCulture)
+            + "x" + view.h.ToString(CultureInfo.InvariantCulture)
+            + "x" + view.d.ToString(CultureInfo.InvariantCulture)
+            + "x" + view.c.ToString(CultureInfo.InvariantCulture)
+            + "_f32.bin";
+        WriteFloatArray(Path.Combine(dumpDir, fileName), data);
+
+        var manifest = new JObject
+        {
+            [resolvedBlobName] = new JObject
+            {
+                ["dims"] = view.dims,
+                ["w"] = view.w,
+                ["h"] = view.h,
+                ["d"] = view.d,
+                ["c"] = view.c,
+                ["element_count"] = data.Length,
+                ["file"] = fileName
+            }
+        };
+        WriteText(Path.Combine(dumpDir, "manifest.json"), manifest.ToString());
+    }
+
     private string CreateDefaultDumpDir(string caseName)
     {
         var root = Path.Combine(ProjectRoot, "Logs", "MONAINcnnRepro");
@@ -5076,7 +5456,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             pinnedBlobNames,
             stopAfterBlobName);
         dispatchSw.Stop();
-        var outputView = GetInferOutputShape(inferHandle.infer, stopAfterBlobName, "MONAI timing-split stop blob missing: ");
+        var outputView = GetPatchOutputShape(inferHandle, stopAfterBlobName, "MONAI timing-split stop blob missing: ");
 
         var syncSw = Stopwatch.StartNew();
         _ops?.DebugSyncGpu();

@@ -873,6 +873,16 @@ namespace NcnnCompute
         private readonly HashSet<ComputeTexture> _deferredCmdReleases = new HashSet<ComputeTexture>(new DeferredCmdReleaseComparer());
         private readonly float[] _gpuSyncScratch = new float[1];
         private int _runtimeProfileInferenceIndex;
+        private int _tempBufferRentCount;
+        private long _tempBufferRentBytes;
+        private int _tempBufferLiveCount;
+        private long _tempBufferLiveBytes;
+        private int _tempBufferPeakLiveCount;
+        private long _tempBufferPeakLiveBytes;
+        private int _tempRtRentCount;
+        private int _tempRtLiveCount;
+        private int _tempRtPeakLiveCount;
+        private bool _trackInferenceTempResources;
 
         private readonly NcnnOps _ops;
         private bool _useTempPool = false;
@@ -920,6 +930,7 @@ namespace NcnnCompute
         public bool DebugLogAllLayerOutputs { get; set; }
         public bool DebugLogAllLayerHeartbeats { get; set; }
         public bool DebugLogAllBufferMaterialize { get; set; }
+        public bool DisallowInferenceTempComputeBuffers { get; set; }
         public bool DebugBreakOnFirstNonFiniteLayerOutput { get; set; }
         public float CodeFormerSftMulScale { get; set; } = 1f;
         public float CodeFormerSftAddScale { get; set; } = 1f;
@@ -964,6 +975,46 @@ namespace NcnnCompute
             try { OnTimingSplitSyncPoint?.Invoke(topName, elapsedMs); } catch { }
         }
 
+        public void ResetInferenceTempResourceStats()
+        {
+            _tempBufferRentCount = 0;
+            _tempBufferRentBytes = 0L;
+            _tempBufferLiveCount = 0;
+            _tempBufferLiveBytes = 0L;
+            _tempBufferPeakLiveCount = 0;
+            _tempBufferPeakLiveBytes = 0L;
+            _tempRtRentCount = 0;
+            _tempRtLiveCount = 0;
+            _tempRtPeakLiveCount = 0;
+        }
+
+        public void BeginInferenceTempResourceTracking()
+        {
+            ResetInferenceTempResourceStats();
+            _trackInferenceTempResources = true;
+        }
+
+        public void EndInferenceTempResourceTracking()
+        {
+            _trackInferenceTempResources = false;
+        }
+
+        public TempResourceStatsSnapshot GetInferenceTempResourceStats()
+        {
+            return new TempResourceStatsSnapshot
+            {
+                tempBufferRentCount = _tempBufferRentCount,
+                tempBufferRentBytes = _tempBufferRentBytes,
+                tempBufferLiveCount = _tempBufferLiveCount,
+                tempBufferLiveBytes = _tempBufferLiveBytes,
+                tempBufferPeakLiveCount = _tempBufferPeakLiveCount,
+                tempBufferPeakLiveBytes = _tempBufferPeakLiveBytes,
+                tempRtRentCount = _tempRtRentCount,
+                tempRtLiveCount = _tempRtLiveCount,
+                tempRtPeakLiveCount = _tempRtPeakLiveCount
+            };
+        }
+
         internal bool ShouldForceCurrentLayerBufferPath()
         {
             if (MatchesForceBufferToken(ForceBufferLayerNames, _currentExecutingLayerName))
@@ -990,6 +1041,76 @@ namespace NcnnCompute
             if (!string.IsNullOrWhiteSpace(_currentExecutingLayerTypeName) || !string.IsNullOrWhiteSpace(_currentExecutingLayerName))
                 return (_currentExecutingLayerTypeName ?? "Unknown") + ":" + (_currentExecutingLayerName ?? "Unknown");
             return "outside-layer";
+        }
+
+        private static long EstimateTempBufferBytes(int count, int stride)
+        {
+            return Math.Max(0L, (long)Mathf.Max(1, count) * Math.Max(1, stride));
+        }
+
+        private void TrackTempBufferRent(int count, int stride)
+        {
+            if (!_trackInferenceTempResources)
+                return;
+
+            var bytes = EstimateTempBufferBytes(count, stride);
+            _tempBufferRentCount++;
+            _tempBufferRentBytes += bytes;
+            _tempBufferLiveCount++;
+            _tempBufferLiveBytes += bytes;
+            if (_tempBufferLiveCount > _tempBufferPeakLiveCount)
+                _tempBufferPeakLiveCount = _tempBufferLiveCount;
+            if (_tempBufferLiveBytes > _tempBufferPeakLiveBytes)
+                _tempBufferPeakLiveBytes = _tempBufferLiveBytes;
+        }
+
+        private void TrackTempBufferReturn(ComputeBuffer buffer)
+        {
+            if (!_trackInferenceTempResources || buffer == null)
+                return;
+
+            try
+            {
+                _tempBufferLiveCount = Math.Max(0, _tempBufferLiveCount - 1);
+                _tempBufferLiveBytes = Math.Max(0L, _tempBufferLiveBytes - EstimateTempBufferBytes(buffer.count, buffer.stride));
+            }
+            catch
+            {
+            }
+        }
+
+        private void TrackTempRtRent()
+        {
+            if (!_trackInferenceTempResources)
+                return;
+
+            _tempRtRentCount++;
+            _tempRtLiveCount++;
+            if (_tempRtLiveCount > _tempRtPeakLiveCount)
+                _tempRtPeakLiveCount = _tempRtLiveCount;
+        }
+
+        private void TrackTempRtReturn()
+        {
+            if (!_trackInferenceTempResources)
+                return;
+
+            _tempRtLiveCount = Math.Max(0, _tempRtLiveCount - 1);
+        }
+
+        private void ValidateTempBufferAllowed(int count, int stride)
+        {
+            if (!_trackInferenceTempResources || !DisallowInferenceTempComputeBuffers)
+                return;
+
+            var detail =
+                "count=" + Mathf.Max(1, count).ToString(CultureInfo.InvariantCulture)
+                + " stride=" + Math.Max(1, stride).ToString(CultureInfo.InvariantCulture)
+                + " bytes=" + EstimateTempBufferBytes(count, stride).ToString(CultureInfo.InvariantCulture);
+            throw CreateDisallowedBufferPathException(
+                "pack4-only guard: temporary compute buffer allocation disallowed during inference",
+                null,
+                detail);
         }
 
         private static int GetMaxTextureArraySlices()
@@ -2154,6 +2275,141 @@ namespace NcnnCompute
             return keep;
         }
 
+        public ComputeTexture ForwardPack4(
+            CommandBuffer cmd,
+            ComputeTexture inputPack4,
+            BufferShape inputLogicalShape,
+            out BufferShape outputLogicalShape,
+            string inputBlobName = "data",
+            ICollection<string> pinnedNames = null,
+            string stopAfterTopName = null)
+        {
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (inputPack4 == null)
+                throw new ArgumentNullException(nameof(inputPack4));
+            if (Model == null || _blobUseCount == null)
+                throw new InvalidOperationException("model not loaded");
+
+            outputLogicalShape = inputLogicalShape;
+
+            var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+            var shapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal)
+            {
+                [inputBlobName] = inputLogicalShape
+            };
+            var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
+            {
+                [inputBlobName] = new CmdTensorRef
+                {
+                    texture = inputPack4,
+                    width = inputPack4.width,
+                    height = inputPack4.height,
+                    packs = Mathf.Max(1, Mathf.CeilToInt(inputLogicalShape.c / 4f)),
+                    refs = 1,
+                    owned = false,
+                    hasLogicalShape = true,
+                    logicalShape = inputLogicalShape,
+                    hasStorageShape = true,
+                    storageShape = inputLogicalShape
+                }
+            };
+
+            var context = new NcnnLayerCommandBufferContext
+            {
+                commandBuffer = cmd,
+                blobs = blobs,
+                shapes = shapes,
+                remaining = remaining,
+                pinnedNames = pinnedNames
+            };
+
+            BeginInferenceTempResourceTracking();
+            try
+            {
+                var runtimeProfile = BeginLayerRuntimeProfile("cmd");
+                for (var li = 0; li < Model.layers.Count; li++)
+                {
+                    var layer = Model.layers[li];
+                    var layerRepro = LayerRepros[li];
+                    if (layerRepro == null)
+                        throw new InvalidOperationException("layer repro missing: " + layer?.name);
+                    if (runtimeProfile == null)
+                    {
+                        SetCurrentExecutingLayer(layer);
+                        try
+                        {
+                            layerRepro.ExecuteCommandBuffer(this, layer, context);
+                        }
+                        finally
+                        {
+                            ClearCurrentExecutingLayer();
+                        }
+                        if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
+                        {
+                            DebugLog("[LayerOutput] idx=" + li
+                                + " | name=" + (layer?.name ?? string.Empty)
+                                + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
+                        }
+                        continue;
+                    }
+
+                    var layerSw = Stopwatch.StartNew();
+                    SetCurrentExecutingLayer(layer);
+                    try
+                    {
+                        layerRepro.ExecuteCommandBuffer(this, layer, context);
+                    }
+                    finally
+                    {
+                        ClearCurrentExecutingLayer();
+                    }
+                    if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
+                    {
+                        DebugLog("[LayerOutput] idx=" + li
+                            + " | name=" + (layer?.name ?? string.Empty)
+                            + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
+                    }
+                    layerSw.Stop();
+                    RecordLayerRuntime(runtimeProfile, li, layer, "cmd", layerSw.ElapsedTicks);
+
+                    if (!string.IsNullOrWhiteSpace(stopAfterTopName)
+                        && layer?.topNames != null
+                        && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0
+                        && TryGetCmdShape(shapes, blobs, stopAfterTopName, out _))
+                    {
+                        break;
+                    }
+                }
+
+                FinishLayerRuntimeProfile(runtimeProfile);
+                var outBlobName = string.IsNullOrWhiteSpace(stopAfterTopName)
+                    ? ResolveDefaultOutputBlobName()
+                    : stopAfterTopName;
+                var outRef = GetCmdTensor(blobs, outBlobName);
+                outputLogicalShape = GetCmdShape(shapes, blobs, outBlobName);
+                var keep = outRef.texture;
+                outRef.texture = null;
+                outRef.owned = false;
+
+                var visited = new HashSet<CmdTensorRef>();
+                foreach (var kv in blobs)
+                {
+                    var tr = kv.Value;
+                    if (tr == null || !visited.Add(tr))
+                        continue;
+                    if (tr.owned && tr.texture != null)
+                        ReturnTempArray(cmd, tr.texture);
+                }
+
+                return keep;
+            }
+            finally
+            {
+                EndInferenceTempResourceTracking();
+            }
+        }
+
         internal static CmdTensorRef GetCmdTensor(Dictionary<string, CmdTensorRef> blobs, string name)
         {
             if (!blobs.TryGetValue(name, out var tr) || tr == null)
@@ -2247,11 +2503,14 @@ namespace NcnnCompute
             [CallerMemberName] string callerMember = null,
             [CallerLineNumber] int callerLine = 0)
         {
+            ValidateTempBufferAllowed(count, stride);
+            TrackTempBufferRent(count, stride);
             return _bufferPool.Rent(count, stride, type, GetTempBufferLabel(callerMember, callerLine));
         }
 
         internal void ReturnTempBuffer(ComputeBuffer buffer)
         {
+            TrackTempBufferReturn(buffer);
             _bufferPool.Return(buffer, "NcnnRepro.ReturnTempBuffer");
         }
 
@@ -2303,6 +2562,7 @@ namespace NcnnCompute
             };
             var allocated = RenderTexture.GetTemporary(desc);
             NcnnGpuResourceTracker.RegisterTexture(allocated, allocLabel + "|new");
+            TrackTempRtRent();
             return allocated;
 
        
@@ -2313,6 +2573,7 @@ namespace NcnnCompute
             if (rt == null)
                 return;
 
+            TrackTempRtReturn();
             NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray");
             RenderTexture.ReleaseTemporary(rt);
         }
@@ -2359,6 +2620,7 @@ namespace NcnnCompute
                 trackerLabel = allocLabel
             };
             _cmdSets.Add(t);
+            TrackTempRtRent();
             return t;
         }
 
@@ -2376,6 +2638,7 @@ namespace NcnnCompute
                     return;
                 }
 
+                TrackTempRtReturn();
                 NcnnGpuResourceTracker.ReleaseTextureHandle(t.nameID, t.trackerLabel ?? "NcnnRepro.ReturnTempArrayCmd");
                 cmd.ReleaseTemporaryRT(t.nameID);
             }
@@ -2390,6 +2653,7 @@ namespace NcnnCompute
             {
                 if (texture == null)
                     continue;
+                TrackTempRtReturn();
                 NcnnGpuResourceTracker.ReleaseTextureHandle(texture.nameID, texture.trackerLabel ?? "NcnnRepro.FlushDeferredCmdTempArray");
                 cmd.ReleaseTemporaryRT(texture.nameID);
             }
@@ -3235,6 +3499,19 @@ namespace NcnnCompute
             public double totalMs;
             public readonly List<LayerRuntimeRecord> layers = new List<LayerRuntimeRecord>();
             public readonly Dictionary<string, LayerRuntimeTypeProfile> layerTypes = new Dictionary<string, LayerRuntimeTypeProfile>(StringComparer.Ordinal);
+        }
+
+        public sealed class TempResourceStatsSnapshot
+        {
+            public int tempBufferRentCount;
+            public long tempBufferRentBytes;
+            public int tempBufferLiveCount;
+            public long tempBufferLiveBytes;
+            public int tempBufferPeakLiveCount;
+            public long tempBufferPeakLiveBytes;
+            public int tempRtRentCount;
+            public int tempRtLiveCount;
+            public int tempRtPeakLiveCount;
         }
 
         public sealed class LayerTypeLoadProfile

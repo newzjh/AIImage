@@ -86,6 +86,7 @@ public static class NcnnDebugRunner
     private const string MonaiForceBufferOutputsDims4EnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_OUTPUTS_DIMS4";
     private const string MonaiForceBufferNamesEnvVar = "AIIMAGE_MONAI_FORCE_BUFFER_NAMES";
     private const string MonaiPatchInputModeEnvVar = "AIIMAGE_MONAI_PATCH_INPUT_MODE";
+    private const string MonaiUseCommandBufferEnvVar = "AIIMAGE_MONAI_USE_COMMAND_BUFFER";
     private const string MonaiPack4OnlyGuardEnvVar = "AIIMAGE_MONAI_PACK4_ONLY_GUARD";
     private const string MonaiEnableAttentionMatMulPack4EnvVar = "AIIMAGE_MONAI_ENABLE_ATTENTION_MATMUL_PACK4";
     private const string MonaiKeepRawConvEnvVar = "AIIMAGE_MONAI_KEEP_RAW_CONV";
@@ -633,6 +634,8 @@ public static class NcnnDebugRunner
         var forceBufferOutputsDims4 = ResolveBoolEnv(MonaiForceBufferOutputsDims4EnvVar, false);
         var forceBufferNames = ResolveTokenSetEnv(MonaiForceBufferNamesEnvVar);
         var patchInputMode = ResolveStringEnv(MonaiPatchInputModeEnvVar, null);
+        var useCommandBuffer = ResolveBoolEnv(MonaiUseCommandBufferEnvVar, false)
+            || IsMonaiCommandBufferPatchInputMode(patchInputMode);
         var enableAttentionMatMulPack4 = ResolveBoolEnv(MonaiEnableAttentionMatMulPack4EnvVar, false);
         var keepRawConv = ResolveBoolEnv(MonaiKeepRawConvEnvVar, true);
         var tensorTextureFormat = ResolveRenderTextureFormatEnv(MonaiTensorFormatEnvVar, RenderTextureFormat.ARGBHalf);
@@ -691,6 +694,9 @@ public static class NcnnDebugRunner
             runner.forceBufferAllLayers = forceBufferAll;
             runner.forceBufferOutputsForDims4 = forceBufferOutputsDims4;
             runner.useTextureInputForMonaiPatches = ResolveMonaiPatchInputMode(forceBufferAll, patchInputMode);
+            runner.useCommandBufferForMonaiPatches = useCommandBuffer;
+            if (runner.useCommandBufferForMonaiPatches)
+                runner.useTextureInputForMonaiPatches = true;
             runner.enableAttentionMatMulPack4Specializations = enableAttentionMatMulPack4;
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
             runner.tensorTextureFormat = tensorTextureFormat;
@@ -2446,6 +2452,8 @@ public static class NcnnDebugRunner
             if (string.Equals(mode, "compute_buffer", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(mode, "buffer", StringComparison.OrdinalIgnoreCase))
                 return false;
+            if (IsMonaiCommandBufferPatchInputMode(mode))
+                return true;
             if (string.Equals(mode, "pack4_rt", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(mode, "rendertexture", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(mode, "texture", StringComparison.OrdinalIgnoreCase))
@@ -2453,6 +2461,19 @@ public static class NcnnDebugRunner
         }
 
         return !forceBufferAll;
+    }
+
+    private static bool IsMonaiCommandBufferPatchInputMode(string rawMode)
+    {
+        if (string.IsNullOrWhiteSpace(rawMode))
+            return false;
+
+        var mode = rawMode.Trim();
+        return string.Equals(mode, "command_buffer_rt", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "command_buffer", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "cmd_rt", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "cmd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mode, "async_command_buffer", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int ResolvePositiveIntEnvAllowZero(string envName, int fallback)
