@@ -11,11 +11,13 @@
 #pragma kernel Sharpen
 #pragma kernel Blur
 #pragma kernel PasteRectWithMask
+#pragma kernel DesignViewCompositeLayer
 
 Texture2D<float4> _Source;
 Texture2D<float4> _Overlay;
 Texture2D<float> _FaceMaskIn;
 RWTexture2D<float4> _Result;
+RWTexture2D<float4> _DesignViewRemainingMaskOut;
 
 float4 _SrcSize;
 float4 _DstSize;
@@ -62,6 +64,11 @@ float _Warm;       // [0..1]
 float _Cool;       // [0..1]
 float _Sharpen;    // [0..1]
 float _Blur;       // [0..1]
+int2 _DesignViewLayerSize;
+int2 _DesignViewCanvasSize;
+int _DesignViewCloseRadius;
+int _DesignViewFeatherRadius;
+float _DesignViewPreserve;
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -418,4 +425,140 @@ void Blur(uint3 id : SV_DispatchThreadID)
     float3 blurred = sum / max(1e-6, wsum);
     center.rgb = Clamp01(lerp(center.rgb, blurred, amount));
     _Result[p] = center;
+}
+
+float OverlayAlphaAt(int2 p)
+{
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    if ((uint)p.x >= ow || (uint)p.y >= oh)
+        return 0.0;
+    return saturate(_Overlay[p].a);
+}
+
+float OverlayMaskMax(int2 p, int radius)
+{
+    if (radius <= 0)
+        return OverlayAlphaAt(p);
+
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    float best = 0.0;
+    for (int dy = -radius; dy <= radius; dy++)
+    {
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            int2 q = clamp(p + int2(dx, dy), int2(0, 0), int2(int(ow) - 1, int(oh) - 1));
+            best = max(best, OverlayAlphaAt(q));
+        }
+    }
+    return best;
+}
+
+float OverlayMaskMinOfMax(int2 p, int radius)
+{
+    if (radius <= 0)
+        return OverlayAlphaAt(p);
+
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    float best = 1.0;
+    bool hasValue = false;
+    for (int dy = -radius; dy <= radius; dy++)
+    {
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            int2 q = clamp(p + int2(dx, dy), int2(0, 0), int2(int(ow) - 1, int(oh) - 1));
+            float value = OverlayMaskMax(q, radius);
+            best = hasValue ? min(best, value) : value;
+            hasValue = true;
+        }
+    }
+    return hasValue ? best : 0.0;
+}
+
+float OverlayMaskBlur(int2 p, int radius)
+{
+    if (radius <= 0)
+        return OverlayAlphaAt(p);
+
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    float sum = 0.0;
+    float weightSum = 0.0;
+    float sigma = max(0.75, radius * 0.65);
+    float inv2Sigma2 = 0.5 / (sigma * sigma);
+    for (int dy = -radius; dy <= radius; dy++)
+    {
+        for (int dx = -radius; dx <= radius; dx++)
+        {
+            int2 q = clamp(p + int2(dx, dy), int2(0, 0), int2(int(ow) - 1, int(oh) - 1));
+            float dist2 = (float)(dx * dx + dy * dy);
+            float ww = exp(-dist2 * inv2Sigma2);
+            sum += OverlayAlphaAt(q) * ww;
+            weightSum += ww;
+        }
+    }
+    return weightSum > 1e-6 ? sum / weightSum : OverlayAlphaAt(p);
+}
+
+float2 DesignViewUvFromCrop(int x, int displayY)
+{
+    int rx = _CropRect.x;
+    int ry = _CropRect.y;
+    int rw = _CropRect.z;
+    int rh = _CropRect.w;
+    return (float2((x - rx), (displayY - ry)) + 0.5) / float2(max(1, rw), max(1, rh));
+}
+
+[numthreads(8,8,1)]
+void DesignViewCompositeLayer(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int2 p = int2(x, y);
+    int displayY = _DesignViewCanvasSize.y - 1 - y;
+
+    float4 src = _Source[p];
+    float keepMask = _FaceMaskIn[p];
+
+    int rx = _CropRect.x;
+    int ry = _CropRect.y;
+    int rw = _CropRect.z;
+    int rh = _CropRect.w;
+
+    bool inside = (x >= rx) && (displayY >= ry) && (x < rx + rw) && (displayY < ry + rh);
+    if (!inside)
+    {
+        _Result[p] = src;
+        _DesignViewRemainingMaskOut[p] = float4(keepMask.xxx, 1.0);
+        return;
+    }
+
+    float2 uv = DesignViewUvFromCrop(x, displayY);
+    uv.y = 1.0 - uv.y;
+    float4 over = SampleBilinearOverlay(uv);
+
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    float2 overlayPos = uv * float2(ow, oh) - 0.5;
+    int2 overlayPixel = int2(round(overlayPos));
+    overlayPixel = clamp(overlayPixel, int2(0, 0), int2(int(ow) - 1, int(oh) - 1));
+
+    float rawAlpha = OverlayAlphaAt(overlayPixel);
+    float closedAlpha = OverlayMaskMinOfMax(overlayPixel, max(0, _DesignViewCloseRadius));
+    float blurredAlpha = OverlayMaskBlur(overlayPixel, max(0, _DesignViewFeatherRadius));
+    float blendedAlpha = lerp(blurredAlpha, rawAlpha, saturate(_DesignViewPreserve));
+    blendedAlpha = max(blendedAlpha, rawAlpha * 0.35);
+    blendedAlpha = saturate(max(blendedAlpha, closedAlpha * 0.5));
+
+    float3 rgb = lerp(src.rgb, over.rgb, blendedAlpha);
+    _Result[p] = float4(rgb, 1.0);
+
+    float newKeep = (rawAlpha > 0.001) ? 0.0 : keepMask;
+    _DesignViewRemainingMaskOut[p] = float4(newKeep.xxx, 1.0);
 }
