@@ -1917,10 +1917,15 @@ namespace NcnnCompute
                 return false;
 
             var consumer = FindSingleConsumer(owner?.Model, layer?.topNames != null && layer.topNames.Length > 0 ? layer.topNames[0] : null);
-            return consumer != null
+            if (consumer != null
                 && (consumer.type == NcnnLayerTypes.Permute
                     || consumer.type == NcnnLayerTypes.Gemm
-                    || consumer.type == NcnnLayerTypes.InnerProduct);
+                    || consumer.type == NcnnLayerTypes.InnerProduct))
+            {
+                return true;
+            }
+
+            return CanUseCodeFormerStylePack4ToScalar2DReshape(owner, layer, srcShape, outShape);
         }
 
         private static bool CanUsePack4ToPack4Reshape(
@@ -1945,6 +1950,33 @@ namespace NcnnCompute
                 || srcShape.h != outShape.h
                 || srcShape.d != outShape.d
                 || srcShape.c != outShape.c;
+        }
+
+        private static bool CanUseCodeFormerStylePack4ToScalar2DReshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.BufferShape outShape)
+        {
+            if (!ShouldAllowAttentionPack4ReshapeSpecializations(owner))
+                return false;
+            if (owner?.Model?.layers == null || layer?.topNames == null || layer.topNames.Length == 0)
+                return false;
+            if (srcShape.dims != 3 && srcShape.dims != 4)
+                return false;
+            if (outShape.dims != 2 || outShape.w <= 0 || outShape.h <= 0)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.c <= 0)
+                return false;
+
+            var expectedRows = srcShape.w * srcShape.h * Mathf.Max(1, srcShape.d);
+            if (outShape.w != srcShape.c || outShape.h != expectedRows)
+                return false;
+
+            var consumer = FindSingleConsumer(owner.Model, layer.topNames[0]);
+            return consumer != null
+                && (consumer.type == NcnnLayerTypes.Split
+                    || consumer.type == NcnnLayerTypes.Reduction);
         }
 
         private static bool ShouldAllowAttentionPack4ReshapeSpecializations(NcnnRepro owner)

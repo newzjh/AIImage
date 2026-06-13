@@ -341,6 +341,9 @@ namespace NcnnCompute
         private readonly int _kBinaryOpPack4;
         private readonly int _kBinaryOpPack4Broadcast;
         private readonly int _kBinaryOpPack4BufferScalar;
+        private readonly int _kBinaryOpPack4ChannelVectorTex;
+        private readonly int _kBinaryOpScalarSingleBroadcast;
+        private readonly int _kCodeFormerMinEncodingFromSoftOneHot;
         private readonly int _kShuffleChannelPack4;
         private readonly int _kCropPack4;
         private readonly int _kSlicePack4;
@@ -369,6 +372,7 @@ namespace NcnnCompute
         private readonly int _kLayerNormPack4WidthTex;
         private readonly int _kSoftmax2D;
         private readonly int _kSoftmaxPack4Cdhw;
+        private readonly int _kReductionScalar2D;
         private readonly int _kEmbed;
         private readonly int _kPermute;
         private readonly int _kSlice;
@@ -507,6 +511,9 @@ namespace NcnnCompute
             _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
             _kBinaryOpPack4Broadcast = _cs.FindKernel("NcnnBinaryOpPack4Broadcast");
             _kBinaryOpPack4BufferScalar = _cs.FindKernel("NcnnBinaryOpPack4BufferScalar");
+            _kBinaryOpPack4ChannelVectorTex = _cs.FindKernel("NcnnBinaryOpPack4ChannelVectorTex");
+            _kBinaryOpScalarSingleBroadcast = _cs.FindKernel("NcnnBinaryOpScalarSingleBroadcast");
+            _kCodeFormerMinEncodingFromSoftOneHot = _cs.FindKernel("NcnnCodeFormerMinEncodingFromSoftOneHot");
             _kShuffleChannelPack4 = _cs.FindKernel("NcnnShuffleChannelPack4");
             _kCropPack4 = _cs.FindKernel("NcnnCropPack4");
             _kSlicePack4 = _cs.FindKernel("NcnnSlicePack4");
@@ -535,6 +542,7 @@ namespace NcnnCompute
             _kLayerNormPack4WidthTex = _cs.FindKernel("NcnnLayerNormPack4WidthTex");
             _kSoftmax2D = _cs.FindKernel("NcnnSoftmax2D");
             _kSoftmaxPack4Cdhw = _cs.FindKernel("NcnnSoftmaxPack4CDHW");
+            _kReductionScalar2D = _cs.FindKernel("NcnnReductionScalar2D");
             _kEmbed = _cs.FindKernel("NcnnEmbed");
             _kPermute = _cs.FindKernel("NcnnPermute");
             _kSlice = _cs.FindKernel("NcnnSlice");
@@ -1871,6 +1879,20 @@ namespace NcnnCompute
             Dispatch3D(_kBinaryOpPack4BufferScalar, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
+        public void BinaryOpPack4ChannelVectorTex(RenderTexture texture, RenderTexture vector, int packs, int opType, bool vectorIsA, RenderTexture output)
+        {
+            if (texture == null) throw new ArgumentNullException(nameof(texture));
+            if (vector == null) throw new ArgumentNullException(nameof(vector));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryPack4ChannelVectorMode", vectorIsA ? 1 : 2);
+            _cs.SetInt("_BinaryPack4ChannelVectorPacks", packs);
+            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_BinaryA", texture);
+            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_BinaryB", vector);
+            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_BinaryOutArr", output);
+            Dispatch3D(_kBinaryOpPack4ChannelVectorTex, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
+        }
+
         public void BinaryOpPack4(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int packs, int opType, ComputeTexture output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -1920,6 +1942,21 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kBinaryOpPack4BufferScalar, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
+        public void BinaryOpPack4ChannelVectorTex(CommandBuffer cmd, ComputeTexture texture, ComputeTexture vector, int packs, int opType, bool vectorIsA, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (texture == null) throw new ArgumentNullException(nameof(texture));
+            if (vector == null) throw new ArgumentNullException(nameof(vector));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryPack4ChannelVectorMode", vectorIsA ? 1 : 2);
+            cmd.SetComputeIntParam(_cs, "_BinaryPack4ChannelVectorPacks", packs);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_BinaryA", texture.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_BinaryB", vector.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_BinaryOutArr", output.nameID);
+            Dispatch3D(cmd, _kBinaryOpPack4ChannelVectorTex, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
+        }
+
         public void BinaryOpScalarPack4(RenderTexture a, float b, int packs, int opType, RenderTexture output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -1944,6 +1981,66 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryB", a.nameID);
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryOutArr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
+        }
+
+        public void BinaryOpScalarSingleBroadcast(RenderTexture a, RenderTexture b, int width, int height, int opType, int broadcastMode, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 0);
+            _cs.SetFloat("_BinaryScalar", 0f);
+            _cs.SetInt("_BinaryScalarSingleBroadcastMode", broadcastMode);
+            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_BinaryA", a);
+            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_BinaryB", b);
+            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_BinaryOutArr", output);
+            Dispatch3D(_kBinaryOpScalarSingleBroadcast, width, height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void BinaryOpScalarSingleBroadcast(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int width, int height, int opType, int broadcastMode, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
+            cmd.SetComputeIntParam(_cs, "_BinaryScalarSingleBroadcastMode", broadcastMode);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_BinaryA", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_BinaryB", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_BinaryOutArr", output.nameID);
+            Dispatch3D(cmd, _kBinaryOpScalarSingleBroadcast, width, height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void CodeFormerMinEncodingFromSoftOneHot(RenderTexture softOneHot, int codebookSize, int tokenCount, RenderTexture minEncoding)
+        {
+            if (softOneHot == null) throw new ArgumentNullException(nameof(softOneHot));
+            if (minEncoding == null) throw new ArgumentNullException(nameof(minEncoding));
+            if (codebookSize <= 0) throw new ArgumentOutOfRangeException(nameof(codebookSize));
+            if (tokenCount <= 0) throw new ArgumentOutOfRangeException(nameof(tokenCount));
+
+            _cs.SetInt("_CodeFormerCodebookSize", codebookSize);
+            _cs.SetInt("_CodeFormerTokenCount", tokenCount);
+            _cs.SetTexture(_kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHotArr", softOneHot);
+            _cs.SetTexture(_kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerMinEncodingArr", minEncoding);
+            Dispatch3D(_kCodeFormerMinEncodingFromSoftOneHot, codebookSize, tokenCount, ResolveRenderTextureDispatchDepth(minEncoding, 1), 8, 8);
+        }
+
+        public void CodeFormerMinEncodingFromSoftOneHot(CommandBuffer cmd, ComputeTexture softOneHot, int codebookSize, int tokenCount, ComputeTexture minEncoding)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (softOneHot == null) throw new ArgumentNullException(nameof(softOneHot));
+            if (minEncoding == null) throw new ArgumentNullException(nameof(minEncoding));
+            if (codebookSize <= 0) throw new ArgumentOutOfRangeException(nameof(codebookSize));
+            if (tokenCount <= 0) throw new ArgumentOutOfRangeException(nameof(tokenCount));
+
+            cmd.SetComputeIntParam(_cs, "_CodeFormerCodebookSize", codebookSize);
+            cmd.SetComputeIntParam(_cs, "_CodeFormerTokenCount", tokenCount);
+            cmd.SetComputeTextureParam(_cs, _kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHotArr", softOneHot.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerMinEncodingArr", minEncoding.nameID);
+            Dispatch3D(cmd, _kCodeFormerMinEncodingFromSoftOneHot, codebookSize, tokenCount, ResolveComputeTextureDispatchDepth(minEncoding, 1), 8, 8);
         }
 
         public void SwishPack4(RenderTexture input, int packs, RenderTexture output)
@@ -4267,6 +4364,35 @@ namespace NcnnCompute
             _cs.SetBuffer(_kSoftmax2D, "_SoftIn", input);
             _cs.SetBuffer(_kSoftmax2D, "_SoftOut", output);
             _cs.Dispatch(_kSoftmax2D, Mathf.Max(1, rows), 1, 1);
+        }
+
+        public void ReductionScalar2D(RenderTexture input, int inW, int inH, int axis, int opType, float coeff, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_ReduceScalar2DInW", inW);
+            _cs.SetInt("_ReduceScalar2DInH", inH);
+            _cs.SetInt("_ReduceScalar2DAxis", axis);
+            _cs.SetInt("_ReduceScalar2DOpType", opType);
+            _cs.SetFloat("_ReduceScalar2DCoeff", coeff);
+            _cs.SetTexture(_kReductionScalar2D, "_ReduceScalar2DInArr", input);
+            _cs.SetTexture(_kReductionScalar2D, "_ReduceScalar2DOutArr", output);
+            Dispatch3D(_kReductionScalar2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void ReductionScalar2D(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int axis, int opType, float coeff, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DInW", inW);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DInH", inH);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DOpType", opType);
+            cmd.SetComputeFloatParam(_cs, "_ReduceScalar2DCoeff", coeff);
+            cmd.SetComputeTextureParam(_cs, _kReductionScalar2D, "_ReduceScalar2DInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReductionScalar2D, "_ReduceScalar2DOutArr", output.nameID);
+            Dispatch3D(cmd, _kReductionScalar2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void Embed(ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, ComputeBuffer output)

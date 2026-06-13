@@ -64,6 +64,9 @@
 #pragma kernel NcnnBinaryOpPack4
 #pragma kernel NcnnBinaryOpPack4Broadcast
 #pragma kernel NcnnBinaryOpPack4BufferScalar
+#pragma kernel NcnnBinaryOpPack4ChannelVectorTex
+#pragma kernel NcnnBinaryOpScalarSingleBroadcast
+#pragma kernel NcnnCodeFormerMinEncodingFromSoftOneHot
 #pragma kernel NcnnShuffleChannelPack4
 #pragma kernel NcnnCropPack4
 #pragma kernel NcnnSlicePack4
@@ -92,6 +95,7 @@
 #pragma kernel NcnnLayerNormPack4WidthTex
 #pragma kernel NcnnSoftmax2D
 #pragma kernel NcnnSoftmaxPack4CDHW
+#pragma kernel NcnnReductionScalar2D
 #pragma kernel NcnnEmbed
 #pragma kernel NcnnPermute
 #pragma kernel NcnnSlice
@@ -190,6 +194,13 @@ int _BinaryBroadcastMode;
 int _BinaryBroadcastSize;
 int _BinaryPack4BroadcastMode;
 int _BinaryPack4BufferScalarMode;
+int _BinaryPack4ChannelVectorMode;
+int _BinaryPack4ChannelVectorPacks;
+int _BinaryScalarSingleBroadcastMode;
+Texture2DArray<float4> _CodeFormerSoftOneHotArr;
+RWTexture2DArray<float4> _CodeFormerMinEncodingArr;
+int _CodeFormerCodebookSize;
+int _CodeFormerTokenCount;
 int _PointwiseType;
 float _PointwiseA;
 float _PointwiseB;
@@ -3692,6 +3703,13 @@ RWTexture2DArray<float4> _UnaryOutArr;
 Texture2DArray<float4> _BinaryA;
 Texture2DArray<float4> _BinaryB;
 RWTexture2DArray<float4> _BinaryOutArr;
+Texture2DArray<float4> _ReduceScalar2DInArr;
+RWTexture2DArray<float4> _ReduceScalar2DOutArr;
+int _ReduceScalar2DInW;
+int _ReduceScalar2DInH;
+int _ReduceScalar2DAxis;
+int _ReduceScalar2DOpType;
+float _ReduceScalar2DCoeff;
 Texture2DArray<float4> _ShuffleInArr;
 RWTexture2DArray<float4> _ShuffleOutArr;
 int _ShuffleGroup;
@@ -4644,6 +4662,143 @@ void NcnnBinaryOpPack4BufferScalar(uint3 id : SV_DispatchThreadID)
     else if (t == 8) o = b / a;
     else if (t == 9) o = pow(abs(b), a);
     _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnBinaryOpPack4ChannelVectorTex(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _BinaryOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int slice = (int)id.z;
+    if (slice < 0 || slice >= (int)d) return;
+
+    uint vw, vh, vd;
+    _BinaryB.GetDimensions(vw, vh, vd);
+    int vectorPacks = max(_BinaryPack4ChannelVectorPacks, 1);
+    int pack = slice % vectorPacks;
+    bool isColumnVector = vw == 1 && vh > 1;
+
+    float4 vec = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int c = pack * 4 + lane;
+        float scalar = 0.0;
+        if (isColumnVector)
+        {
+            if (c >= 0 && c < (int)vh)
+                scalar = _BinaryB[int3(0, c, 0)].x;
+        }
+        else
+        {
+            if (c >= 0 && c < (int)vw)
+                scalar = _BinaryB[int3(c, 0, 0)].x;
+        }
+
+        if (lane == 0) vec.x = scalar;
+        else if (lane == 1) vec.y = scalar;
+        else if (lane == 2) vec.z = scalar;
+        else vec.w = scalar;
+    }
+
+    float4 tex = _BinaryA[int3((int)id.x, (int)id.y, slice)];
+    float4 a = _BinaryPack4ChannelVectorMode == 1 ? vec : tex;
+    float4 b = _BinaryPack4ChannelVectorMode == 1 ? tex : vec;
+
+    float4 o = a;
+    int t = _BinaryOpType;
+    if (t == 0) o = a + b;
+    else if (t == 1) o = a - b;
+    else if (t == 2) o = a * b;
+    else if (t == 3) o = a / b;
+    else if (t == 4) o = max(a, b);
+    else if (t == 5) o = min(a, b);
+    else if (t == 6) o = pow(abs(a), b);
+    else if (t == 7) o = b - a;
+    else if (t == 8) o = b / a;
+    else if (t == 9) o = pow(abs(b), a);
+    _BinaryOutArr[int3((int)id.x, (int)id.y, slice)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnBinaryOpScalarSingleBroadcast(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _BinaryOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int3 aCoord = int3(x, y, 0);
+    int3 bCoord = int3(x, y, 0);
+    int mode = _BinaryScalarSingleBroadcastMode;
+    if (mode == 1)
+    {
+        aCoord = int3(x, 0, 0);
+    }
+    else if (mode == 2)
+    {
+        aCoord = int3(0, y, 0);
+    }
+    else if (mode == 3)
+    {
+        bCoord = int3(x, 0, 0);
+    }
+    else if (mode == 4)
+    {
+        bCoord = int3(0, y, 0);
+    }
+
+    float a = _BinaryA[aCoord].x;
+    float b = _BinaryB[bCoord].x;
+    float o = a;
+    int t = _BinaryOpType;
+    if (t == 0) o = a + b;
+    else if (t == 1) o = a - b;
+    else if (t == 2) o = a * b;
+    else if (t == 3) o = a / b;
+    else if (t == 4) o = max(a, b);
+    else if (t == 5) o = min(a, b);
+    else if (t == 6) o = pow(abs(a), b);
+    else if (t == 7) o = b - a;
+    else if (t == 8) o = b / a;
+    else if (t == 9) o = pow(abs(b), a);
+    _BinaryOutArr[int3(x, y, (int)id.z)] = float4(o, 0.0, 0.0, 0.0);
+}
+
+[numthreads(8,8,1)]
+void NcnnCodeFormerMinEncodingFromSoftOneHot(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _CodeFormerMinEncodingArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    if (outX < 0 || outY < 0 || outX >= _CodeFormerCodebookSize || outY >= _CodeFormerTokenCount)
+    {
+        _CodeFormerMinEncodingArr[int3(outX, outY, (int)id.z)] = 0.0;
+        return;
+    }
+
+    float bestValue = _CodeFormerSoftOneHotArr[int3(0, outY, 0)].x;
+    int bestIndex = 0;
+    [loop]
+    for (int i = 1; i < _CodeFormerCodebookSize; i++)
+    {
+        float value = _CodeFormerSoftOneHotArr[int3(i, outY, 0)].x;
+        if (value > bestValue)
+        {
+            bestValue = value;
+            bestIndex = i;
+        }
+    }
+
+    float oneHot = outX == bestIndex ? 1.0 : 0.0;
+    _CodeFormerMinEncodingArr[int3(outX, outY, (int)id.z)] = float4(oneHot, 0.0, 0.0, 0.0);
 }
 
 float NcnnReadLane(float4 v, int lane)
@@ -7112,6 +7267,293 @@ void NcnnReductionRowsBuf(uint3 id : SV_DispatchThreadID)
     }
 
     _ReductionRowsOut[row] = acc * _ReductionRowsCoeff;
+}
+
+[numthreads(8,8,1)]
+void NcnnReductionScalar2D(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _ReduceScalar2DOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int axis = _ReduceScalar2DAxis;
+    int inW = max(1, _ReduceScalar2DInW);
+    int inH = max(1, _ReduceScalar2DInH);
+    float coeff = _ReduceScalar2DCoeff;
+    int opType = _ReduceScalar2DOpType;
+
+    float result = 0.0;
+
+    if (axis == 2)
+    {
+        if (outX != 0 || outY != 0)
+        {
+            _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = 0.0;
+            return;
+        }
+
+        int total = max(1, inW * inH);
+        float acc = _ReduceScalar2DInArr[int3(0, 0, 0)].x;
+
+        if (opType == 4)
+        {
+            for (int i = 1; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                acc = max(acc, _ReduceScalar2DInArr[int3(x, y, 0)].x);
+            }
+            result = acc * coeff;
+        }
+        else if (opType == 5)
+        {
+            for (int i = 1; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                acc = min(acc, _ReduceScalar2DInArr[int3(x, y, 0)].x);
+            }
+            result = acc * coeff;
+        }
+        else if (opType == 0 || opType == 3)
+        {
+            float sum = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sum += _ReduceScalar2DInArr[int3(x, y, 0)].x;
+            }
+            if (opType == 3)
+                sum /= total;
+            result = sum * coeff;
+        }
+        else if (opType == 2)
+        {
+            float sumSq = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                float v = _ReduceScalar2DInArr[int3(x, y, 0)].x;
+                sumSq += v * v;
+            }
+            result = sumSq * coeff;
+        }
+        else if (opType == 1 || opType == 7)
+        {
+            float sumAbs = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sumAbs += abs(_ReduceScalar2DInArr[int3(x, y, 0)].x);
+            }
+            result = sumAbs * coeff;
+        }
+        else if (opType == 6 || opType == 10)
+        {
+            float sumLog = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sumLog += log(max(_ReduceScalar2DInArr[int3(x, y, 0)].x, 1e-12));
+            }
+            result = exp(sumLog) * coeff;
+        }
+        else if (opType == 9)
+        {
+            float sumVal = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sumVal += _ReduceScalar2DInArr[int3(x, y, 0)].x;
+            }
+            result = log(max(sumVal, 1e-12)) * coeff;
+        }
+        else if (opType == 8)
+        {
+            float sumSq = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                float v = _ReduceScalar2DInArr[int3(x, y, 0)].x;
+                sumSq += v * v;
+            }
+            result = sqrt(max(sumSq, 0.0)) * coeff;
+        }
+        else
+        {
+            result = acc * coeff;
+        }
+
+        _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = float4(result, 0.0, 0.0, 0.0);
+        return;
+    }
+
+    if (axis == 1)
+    {
+        int row = oh == 1 ? outX : outY;
+        if (row < 0 || row >= inH)
+        {
+            _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = 0.0;
+            return;
+        }
+
+        float acc = _ReduceScalar2DInArr[int3(0, row, 0)].x;
+        if (opType == 4)
+        {
+            for (int x = 1; x < inW; x++)
+                acc = max(acc, _ReduceScalar2DInArr[int3(x, row, 0)].x);
+            result = acc * coeff;
+        }
+        else if (opType == 5)
+        {
+            for (int x = 1; x < inW; x++)
+                acc = min(acc, _ReduceScalar2DInArr[int3(x, row, 0)].x);
+            result = acc * coeff;
+        }
+        else if (opType == 0 || opType == 3)
+        {
+            float sum = 0.0;
+            for (int x = 0; x < inW; x++)
+                sum += _ReduceScalar2DInArr[int3(x, row, 0)].x;
+            if (opType == 3)
+                sum /= inW;
+            result = sum * coeff;
+        }
+        else if (opType == 2)
+        {
+            float sumSq = 0.0;
+            for (int x = 0; x < inW; x++)
+            {
+                float v = _ReduceScalar2DInArr[int3(x, row, 0)].x;
+                sumSq += v * v;
+            }
+            result = sumSq * coeff;
+        }
+        else if (opType == 1 || opType == 7)
+        {
+            float sumAbs = 0.0;
+            for (int x = 0; x < inW; x++)
+                sumAbs += abs(_ReduceScalar2DInArr[int3(x, row, 0)].x);
+            result = sumAbs * coeff;
+        }
+        else if (opType == 6 || opType == 10)
+        {
+            float sumLog = 0.0;
+            for (int x = 0; x < inW; x++)
+                sumLog += log(max(_ReduceScalar2DInArr[int3(x, row, 0)].x, 1e-12));
+            result = exp(sumLog) * coeff;
+        }
+        else if (opType == 9)
+        {
+            float sumVal = 0.0;
+            for (int x = 0; x < inW; x++)
+                sumVal += _ReduceScalar2DInArr[int3(x, row, 0)].x;
+            result = log(max(sumVal, 1e-12)) * coeff;
+        }
+        else if (opType == 8)
+        {
+            float sumSq = 0.0;
+            for (int x = 0; x < inW; x++)
+            {
+                float v = _ReduceScalar2DInArr[int3(x, row, 0)].x;
+                sumSq += v * v;
+            }
+            result = sqrt(max(sumSq, 0.0)) * coeff;
+        }
+        else
+        {
+            result = acc * coeff;
+        }
+
+        _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = float4(result, 0.0, 0.0, 0.0);
+        return;
+    }
+
+    int col = ow == 1 ? outY : outX;
+    if (col < 0 || col >= inW)
+    {
+        _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = 0.0;
+        return;
+    }
+
+    float acc = _ReduceScalar2DInArr[int3(col, 0, 0)].x;
+    if (opType == 4)
+    {
+        for (int y = 1; y < inH; y++)
+            acc = max(acc, _ReduceScalar2DInArr[int3(col, y, 0)].x);
+        result = acc * coeff;
+    }
+    else if (opType == 5)
+    {
+        for (int y = 1; y < inH; y++)
+            acc = min(acc, _ReduceScalar2DInArr[int3(col, y, 0)].x);
+        result = acc * coeff;
+    }
+    else if (opType == 0 || opType == 3)
+    {
+        float sum = 0.0;
+        for (int y = 0; y < inH; y++)
+            sum += _ReduceScalar2DInArr[int3(col, y, 0)].x;
+        if (opType == 3)
+            sum /= inH;
+        result = sum * coeff;
+    }
+    else if (opType == 2)
+    {
+        float sumSq = 0.0;
+        for (int y = 0; y < inH; y++)
+        {
+            float v = _ReduceScalar2DInArr[int3(col, y, 0)].x;
+            sumSq += v * v;
+        }
+        result = sumSq * coeff;
+    }
+    else if (opType == 1 || opType == 7)
+    {
+        float sumAbs = 0.0;
+        for (int y = 0; y < inH; y++)
+            sumAbs += abs(_ReduceScalar2DInArr[int3(col, y, 0)].x);
+        result = sumAbs * coeff;
+    }
+    else if (opType == 6 || opType == 10)
+    {
+        float sumLog = 0.0;
+        for (int y = 0; y < inH; y++)
+            sumLog += log(max(_ReduceScalar2DInArr[int3(col, y, 0)].x, 1e-12));
+        result = exp(sumLog) * coeff;
+    }
+    else if (opType == 9)
+    {
+        float sumVal = 0.0;
+        for (int y = 0; y < inH; y++)
+            sumVal += _ReduceScalar2DInArr[int3(col, y, 0)].x;
+        result = log(max(sumVal, 1e-12)) * coeff;
+    }
+    else if (opType == 8)
+    {
+        float sumSq = 0.0;
+        for (int y = 0; y < inH; y++)
+        {
+            float v = _ReduceScalar2DInArr[int3(col, y, 0)].x;
+            sumSq += v * v;
+        }
+        result = sqrt(max(sumSq, 0.0)) * coeff;
+    }
+    else
+    {
+        result = acc * coeff;
+    }
+
+    _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = float4(result, 0.0, 0.0, 0.0);
 }
 
 [numthreads(256,1,1)]

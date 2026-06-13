@@ -12,7 +12,8 @@ namespace NcnnCompute
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             var orderType = layer.GetInt(0, 0);
-            if (owner.TryGetPack4Texture(
+            if (TryGetPermuteTextureInput(
+                    owner,
                     layer.bottomNames[0],
                     context.textureBlobs,
                     context.textureShapes,
@@ -75,7 +76,7 @@ namespace NcnnCompute
             var bufferViews = context.bufferViews;
             var orderType = layer.GetInt(0, 0);
 
-            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
+            if (!TryGetPermuteTextureInput(owner, layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
                 || !CanUsePack4Permute(srcTex, srcShape, orderType, out var axes, out var outShape))
             {
                 throw new InvalidOperationException("Permute render-texture path requires supported pack4 input: " + layer.name);
@@ -210,6 +211,38 @@ namespace NcnnCompute
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryGetPermuteTextureInput(
+            NcnnRepro owner,
+            string inputName,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            System.Collections.Generic.Dictionary<string, ComputeBuffer> bufferBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out NcnnRepro.TensorRef srcTex,
+            out NcnnRepro.BufferShape srcShape)
+        {
+            srcTex = null;
+            srcShape = default;
+
+            if (owner != null
+                && owner.TryGetPack4Texture(inputName, textureBlobs, textureShapes, bufferBlobs, bufferViews, out srcTex, out srcShape))
+            {
+                return true;
+            }
+
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, inputName, out srcTex, out srcShape))
+                return false;
+
+            return srcTex != null
+                && srcTex.texture != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h > 0
+                && srcTex.width == srcShape.w
+                && srcTex.height == srcShape.h
+                && srcTex.packs == 1;
         }
 
         private static bool CanUsePack4Permute(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, int orderType, out Vector4Int axes, out NcnnRepro.BufferShape outShape)

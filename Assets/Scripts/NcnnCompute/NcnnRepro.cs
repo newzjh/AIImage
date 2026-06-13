@@ -970,6 +970,71 @@ namespace NcnnCompute
             _currentExecutingLayerTypeName = null;
         }
 
+        public sealed class CmdInferResult : IDisposable
+        {
+            private readonly Dictionary<string, CmdTensorRef> _blobs;
+            private readonly Dictionary<string, BufferShape> _shapes;
+            private readonly NcnnRepro _owner;
+            private readonly RenderTexture _readbackTexture;
+
+            internal CmdInferResult(
+                Dictionary<string, CmdTensorRef> blobs,
+                Dictionary<string, BufferShape> shapes,
+                NcnnRepro owner,
+                RenderTexture readbackTexture)
+            {
+                _blobs = blobs;
+                _shapes = shapes;
+                _owner = owner;
+                _readbackTexture = readbackTexture;
+            }
+
+            public RenderTexture GetReadbackTexture()
+            {
+                return _readbackTexture;
+            }
+
+            public bool TryGetLogicalShape(string name, out int dims, out int w, out int h, out int d, out int c)
+            {
+                if (_shapes != null && _shapes.TryGetValue(name, out var shape))
+                {
+                    dims = shape.dims;
+                    w = shape.w;
+                    h = shape.h;
+                    d = shape.d;
+                    c = shape.c;
+                    return true;
+                }
+
+                dims = 0;
+                w = 0;
+                h = 0;
+                d = 0;
+                c = 0;
+                return false;
+            }
+
+            public void Dispose()
+            {
+                if (_readbackTexture != null)
+                    _owner?.ReturnTempArray(_readbackTexture);
+
+                if (_blobs == null)
+                    return;
+
+                var visited = new HashSet<CmdTensorRef>();
+                foreach (var kv in _blobs)
+                {
+                    var tr = kv.Value;
+                    if (tr == null || !visited.Add(tr))
+                        continue;
+
+                    tr.texture = null;
+                    tr.owned = false;
+                }
+            }
+        }
+
         internal void NotifyTimingSplitSyncPoint(string topName, double elapsedMs)
         {
             try { OnTimingSplitSyncPoint?.Invoke(topName, elapsedMs); } catch { }
@@ -2277,6 +2342,37 @@ namespace NcnnCompute
 
         public ComputeTexture ForwardPack4(
             CommandBuffer cmd,
+            Dictionary<string, ComputeTexture> textureInputs,
+            Dictionary<string, BufferShape> textureInputShapes,
+            out BufferShape outputLogicalShape,
+            ICollection<string> pinnedNames = null,
+            string outputBlobName = null,
+            string stopAfterTopName = null)
+        {
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (textureInputs == null || textureInputs.Count == 0)
+                throw new ArgumentNullException(nameof(textureInputs));
+            if (Model == null || _blobUseCount == null)
+                throw new InvalidOperationException("model not loaded");
+            if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
+            {
+                return ForwardPack4ByLayerRepros(
+                    cmd,
+                    textureInputs,
+                    textureInputShapes,
+                    out outputLogicalShape,
+                    pinnedNames,
+                    outputBlobName,
+                    stopAfterTopName);
+            }
+
+            outputLogicalShape = default;
+            return null;
+        }
+
+        public ComputeTexture ForwardPack4(
+            CommandBuffer cmd,
             ComputeTexture inputPack4,
             BufferShape inputLogicalShape,
             out BufferShape outputLogicalShape,
@@ -2290,124 +2386,22 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(inputPack4));
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
-
-            outputLogicalShape = inputLogicalShape;
-
-            var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
-            var shapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal)
+            var textureInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
+            {
+                [inputBlobName] = inputPack4
+            };
+            var textureInputShapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal)
             {
                 [inputBlobName] = inputLogicalShape
             };
-            var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
-            {
-                [inputBlobName] = new CmdTensorRef
-                {
-                    texture = inputPack4,
-                    width = inputPack4.width,
-                    height = inputPack4.height,
-                    packs = Mathf.Max(1, Mathf.CeilToInt(inputLogicalShape.c / 4f)),
-                    refs = 1,
-                    owned = false,
-                    hasLogicalShape = true,
-                    logicalShape = inputLogicalShape,
-                    hasStorageShape = true,
-                    storageShape = inputLogicalShape
-                }
-            };
-
-            var context = new NcnnLayerCommandBufferContext
-            {
-                commandBuffer = cmd,
-                blobs = blobs,
-                shapes = shapes,
-                remaining = remaining,
-                pinnedNames = pinnedNames
-            };
-
-            BeginInferenceTempResourceTracking();
-            try
-            {
-                var runtimeProfile = BeginLayerRuntimeProfile("cmd");
-                for (var li = 0; li < Model.layers.Count; li++)
-                {
-                    var layer = Model.layers[li];
-                    var layerRepro = LayerRepros[li];
-                    if (layerRepro == null)
-                        throw new InvalidOperationException("layer repro missing: " + layer?.name);
-                    if (runtimeProfile == null)
-                    {
-                        SetCurrentExecutingLayer(layer);
-                        try
-                        {
-                            layerRepro.ExecuteCommandBuffer(this, layer, context);
-                        }
-                        finally
-                        {
-                            ClearCurrentExecutingLayer();
-                        }
-                        if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
-                        {
-                            DebugLog("[LayerOutput] idx=" + li
-                                + " | name=" + (layer?.name ?? string.Empty)
-                                + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
-                        }
-                        continue;
-                    }
-
-                    var layerSw = Stopwatch.StartNew();
-                    SetCurrentExecutingLayer(layer);
-                    try
-                    {
-                        layerRepro.ExecuteCommandBuffer(this, layer, context);
-                    }
-                    finally
-                    {
-                        ClearCurrentExecutingLayer();
-                    }
-                    if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
-                    {
-                        DebugLog("[LayerOutput] idx=" + li
-                            + " | name=" + (layer?.name ?? string.Empty)
-                            + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
-                    }
-                    layerSw.Stop();
-                    RecordLayerRuntime(runtimeProfile, li, layer, "cmd", layerSw.ElapsedTicks);
-
-                    if (!string.IsNullOrWhiteSpace(stopAfterTopName)
-                        && layer?.topNames != null
-                        && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0
-                        && TryGetCmdShape(shapes, blobs, stopAfterTopName, out _))
-                    {
-                        break;
-                    }
-                }
-
-                FinishLayerRuntimeProfile(runtimeProfile);
-                var outBlobName = string.IsNullOrWhiteSpace(stopAfterTopName)
-                    ? ResolveDefaultOutputBlobName()
-                    : stopAfterTopName;
-                var outRef = GetCmdTensor(blobs, outBlobName);
-                outputLogicalShape = GetCmdShape(shapes, blobs, outBlobName);
-                var keep = outRef.texture;
-                outRef.texture = null;
-                outRef.owned = false;
-
-                var visited = new HashSet<CmdTensorRef>();
-                foreach (var kv in blobs)
-                {
-                    var tr = kv.Value;
-                    if (tr == null || !visited.Add(tr))
-                        continue;
-                    if (tr.owned && tr.texture != null)
-                        ReturnTempArray(cmd, tr.texture);
-                }
-
-                return keep;
-            }
-            finally
-            {
-                EndInferenceTempResourceTracking();
-            }
+            return ForwardPack4(
+                cmd,
+                textureInputs,
+                textureInputShapes,
+                out outputLogicalShape,
+                pinnedNames,
+                null,
+                stopAfterTopName);
         }
 
         internal static CmdTensorRef GetCmdTensor(Dictionary<string, CmdTensorRef> blobs, string name)
@@ -3105,6 +3099,55 @@ namespace NcnnCompute
                     storageShape = logicalShape
                 };
                 textureShapes[kv.Key] = logicalShape;
+            }
+        }
+
+        internal void RegisterCmdTextureInputs(
+            Dictionary<string, ComputeTexture> textureInputs,
+            Dictionary<string, BufferShape> textureInputShapes,
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, BufferShape> shapes)
+        {
+            if (textureInputs == null)
+                return;
+
+            foreach (var kv in textureInputs)
+            {
+                if (kv.Value == null)
+                    throw new ArgumentNullException("textureInputs[\"" + kv.Key + "\"]");
+
+                var texture = kv.Value;
+                var depth = Mathf.Max(1, texture.depth);
+                var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
+                var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
+                    ? suppliedShape
+                    : new BufferShape(3, texture.width, texture.height, 1, ResolveInputLogicalChannels(kv.Key, depth * 4));
+                var packs = logicalShape.dims == 4
+                    ? Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f))
+                    : depth;
+                var sliceCount = logicalShape.dims == 4
+                    ? Mathf.Max(1, depth / Mathf.Max(1, packs))
+                    : depth;
+
+                var physicalCount = texture.width * texture.height * sliceCount * packs * 4;
+                var logicalCount = Mathf.Max(1, logicalShape.w) * Mathf.Max(1, logicalShape.h) * Mathf.Max(1, logicalShape.d) * Mathf.Max(1, logicalShape.c);
+                if (logicalCount > physicalCount)
+                    throw new InvalidOperationException("command-buffer texture input logical shape exceeds physical storage: " + kv.Key);
+
+                blobs[kv.Key] = new CmdTensorRef
+                {
+                    texture = texture,
+                    width = texture.width,
+                    height = texture.height,
+                    packs = packs,
+                    refs = useCount,
+                    owned = false,
+                    hasLogicalShape = true,
+                    logicalShape = logicalShape,
+                    hasStorageShape = true,
+                    storageShape = logicalShape
+                };
+                shapes[kv.Key] = logicalShape;
             }
         }
 

@@ -334,8 +334,20 @@ namespace NcnnCompute
             srcShape = default;
             if (lp == null)
                 return false;
-            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out srcTex, out srcShape))
+
+            var inputName = layer.bottomNames[0];
+            try
+            {
+                srcTex = owner.GetOrMaterializeTexture(inputName, textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                srcShape = NcnnRepro.GetTextureShape(textureShapes, srcTex, inputName);
+            }
+            catch
+            {
+                srcTex = null;
+                srcShape = default;
                 return false;
+            }
+
             return CanUsePack4WidthPath(srcTex, srcShape, lp);
         }
 
@@ -349,7 +361,7 @@ namespace NcnnCompute
                 && lp.affine
                 && lp.gamma != null
                 && lp.beta != null
-                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && (srcShape.dims == 2 || srcShape.dims == 3 || srcShape.dims == 4)
                 && srcShape.w > 0
                 && srcShape.w == lp.affineSize
                 && srcShape.w == srcTex.width
@@ -367,7 +379,7 @@ namespace NcnnCompute
                 && lp.affine
                 && lp.gamma != null
                 && lp.beta != null
-                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && (srcShape.dims == 2 || srcShape.dims == 3 || srcShape.dims == 4)
                 && srcShape.w > 0
                 && srcShape.w == lp.affineSize
                 && srcShape.w == src.width

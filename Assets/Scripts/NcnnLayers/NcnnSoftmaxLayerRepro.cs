@@ -14,6 +14,19 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (NcnnRepro.TryGetExistingTexture(
+                    context.textureBlobs,
+                    context.textureShapes,
+                    layer.bottomNames[0],
+                    out var softScalarTex,
+                    out var softScalarShape)
+                && TryResolvePack4SoftmaxWidthAxis(layer, softScalarShape, out _)
+                && CanUseScalar2DSoftmax(softScalarTex, softScalarShape))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
             if (owner.TryGetPack4Texture(
                     layer.bottomNames[0],
                     context.textureBlobs,
@@ -105,6 +118,20 @@ namespace NcnnCompute
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
             var bufferViews = context.bufferViews;
+            var scalarTextureFormat = NcnnRepro.ResolveTensorTextureFormat(2);
+
+            if (NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var scalarSrcTex, out var scalarSrcShape)
+                && CanUseScalar2DSoftmax(scalarSrcTex, scalarSrcShape))
+            {
+                if (!TryResolvePack4SoftmaxWidthAxis(layer, scalarSrcShape, out var scalarAxis) || scalarAxis != 0)
+                    throw new InvalidOperationException("Softmax render-texture scalar2d path currently supports softmax over tensor width axis only: " + layer.name);
+
+                var outScalarRt = owner.RentTempArray(scalarSrcTex.width, scalarSrcTex.height, scalarSrcTex.packs, scalarTextureFormat);
+                owner.Ops.SoftmaxPack4Cdhw(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, 1, 1, outScalarRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outScalarRt, scalarSrcShape);
+                owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
+                return;
+            }
 
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
                 || !CanUsePack4Softmax(srcTex, srcShape))
@@ -141,6 +168,43 @@ namespace NcnnCompute
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            if (CanUseScalar2DSoftmax(src, srcShape))
+            {
+                if (!TryResolvePack4SoftmaxWidthAxis(layer, srcShape, out var scalarAxis) || scalarAxis != 0)
+                {
+                    owner.DebugLog?.Invoke(
+                        "[CmdPlaceholder][Softmax]"
+                        + " | layer=" + layer.name
+                        + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                        + " | packs=" + src.packs
+                        + " | axis=" + layer.GetInt(0, 0));
+                    NcnnRepro.ResolveCmdTextureLayout(srcShape, out var width, out var height, out var packs);
+                    owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, srcShape);
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
+                var outRt = owner.RentTempArray(cmd, src.width, src.height, src.packs, NcnnRepro.ResolveTensorTextureFormat(2));
+                owner.Ops.SoftmaxPack4Cdhw(cmd, src.texture, srcShape.w, srcShape.h, 1, 1, outRt);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outRt,
+                    width = src.width,
+                    height = src.height,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = srcShape,
+                    hasStorageShape = true,
+                    storageShape = srcShape
+                };
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
+
             if (!CanUsePack4Softmax(src, srcShape) || !TryResolvePack4SoftmaxWidthAxis(layer, srcShape, out var tensorAxis))
             {
                 owner.DebugLog?.Invoke(
@@ -200,6 +264,30 @@ namespace NcnnCompute
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool CanUseScalar2DSoftmax(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h > 0
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && src.packs == 1;
+        }
+
+        private static bool CanUseScalar2DSoftmax(NcnnRepro.TensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            return src != null
+                && src.texture != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h > 0
+                && srcShape.w == src.width
+                && srcShape.h == src.height
+                && src.packs == 1;
         }
 
         private static bool CanUsePack4Softmax(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)

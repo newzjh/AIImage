@@ -290,6 +290,8 @@ namespace NcnnCompute
 
             var srcTex = NcnnRepro.GetCmdTensor(context.blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (TryExecuteCommandBufferScalar2DTexturePath(owner, layer, srcTex, srcShape, context))
+                return true;
             if (srcTex == null
                 || srcTex.texture == null
                 || srcShape.dims != 3
@@ -413,6 +415,8 @@ namespace NcnnCompute
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
+            if (TryExecuteRenderTextureScalar2DPath(owner, layer, context))
+                return true;
             if (!owner.TryGetPack4Texture(
                     layer.bottomNames[0],
                     context.textureBlobs,
@@ -510,6 +514,205 @@ namespace NcnnCompute
             }
 
             return false;
+        }
+
+        private static bool TryExecuteRenderTextureScalar2DPath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerBufferContext context)
+        {
+            if (!NcnnRepro.TryGetExistingTexture(
+                    context.textureBlobs,
+                    context.textureShapes,
+                    layer.bottomNames[0],
+                    out var srcTex,
+                    out var srcShape))
+            {
+                return false;
+            }
+
+            if (!CanUseScalar2DTexturePath(srcTex, srcShape))
+                return false;
+
+            var reduceAll = layer.GetInt(1, 1) != 0;
+            var keepDims = layer.GetInt(4, 0) != 0;
+            var op = layer.GetInt(0, 0);
+            var coeff = layer.GetFloat(2, 1f);
+            var axes = layer.GetInts(-23303, null);
+            if (!TryResolveScalar2DReduction(srcShape, reduceAll, keepDims, axes, out var reduceAlongWidth, out var outShape))
+                return false;
+            if (!CanUseScalarTextureReductionOp(op))
+                return false;
+
+            var outRt = owner.RentTempArray(Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
+            ExecuteScalar2DReduction(owner.Ops, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+            var storageShape = new NcnnRepro.BufferShape(3, outRt.width, outRt.height, 1, 1);
+            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, storageShape);
+            owner.Consume(
+                context.textureBlobs,
+                context.bufferBlobs,
+                context.bufferRefs,
+                context.bufferViews,
+                context.remaining,
+                layer.bottomNames,
+                context.pinnedNames);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferScalar2DTexturePath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef srcTex,
+            NcnnRepro.BufferShape srcShape,
+            NcnnLayerCommandBufferContext context)
+        {
+            if (!CanUseScalar2DTexturePath(srcTex, srcShape))
+                return false;
+
+            var reduceAll = layer.GetInt(1, 1) != 0;
+            var keepDims = layer.GetInt(4, 0) != 0;
+            var op = layer.GetInt(0, 0);
+            var coeff = layer.GetFloat(2, 1f);
+            var axes = layer.GetInts(-23303, null);
+            if (!TryResolveScalar2DReduction(srcShape, reduceAll, keepDims, axes, out var reduceAlongWidth, out var outShape))
+                return false;
+            if (!CanUseScalarTextureReductionOp(op))
+                return false;
+
+            var outRt = owner.RentTempArray(context.commandBuffer, Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
+            ExecuteScalar2DReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+            var storageShape = new NcnnRepro.BufferShape(3, outRt.width, outRt.height, 1, 1);
+            context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outRt.width,
+                height = outRt.height,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = storageShape
+            };
+            context.shapes[layer.topNames[0]] = outShape;
+            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            return true;
+        }
+
+        private static bool CanUseScalarTextureReductionOp(int op)
+        {
+            return op == 0
+                || op == 1
+                || op == 2
+                || op == 3
+                || op == 4
+                || op == 5
+                || op == 6
+                || op == 7
+                || op == 8
+                || op == 9
+                || op == 10;
+        }
+
+        private static bool CanUseScalar2DTexturePath(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape)
+        {
+            return srcTex != null
+                && srcTex.texture != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h > 0
+                && srcTex.width == srcShape.w
+                && srcTex.height == srcShape.h
+                && srcTex.packs == 1;
+        }
+
+        private static bool CanUseScalar2DTexturePath(NcnnRepro.CmdTensorRef srcTex, NcnnRepro.BufferShape srcShape)
+        {
+            return srcTex != null
+                && srcTex.texture != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h > 0
+                && srcTex.width == srcShape.w
+                && srcTex.height == srcShape.h
+                && srcTex.packs == 1;
+        }
+
+        private static bool TryResolveScalar2DReduction(
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAll,
+            bool keepDims,
+            int[] axes,
+            out bool reduceAlongWidth,
+            out NcnnRepro.BufferShape outShape)
+        {
+            reduceAlongWidth = false;
+            outShape = default;
+            if (srcShape.dims != 2 || srcShape.w <= 0 || srcShape.h <= 0)
+                return false;
+
+            if (reduceAll)
+            {
+                outShape = keepDims
+                    ? new NcnnRepro.BufferShape(2, 1, 1, 1, 1)
+                    : new NcnnRepro.BufferShape(1, 1, 1, 1, 1);
+                reduceAlongWidth = true;
+                return true;
+            }
+
+            if (axes == null || axes.Length != 1)
+                return false;
+
+            var axis = axes[0];
+            if (axis < 0)
+                axis += srcShape.dims;
+            if (axis == 1)
+            {
+                reduceAlongWidth = true;
+                outShape = keepDims
+                    ? new NcnnRepro.BufferShape(2, 1, srcShape.h, 1, 1)
+                    : new NcnnRepro.BufferShape(1, srcShape.h, 1, 1, 1);
+                return true;
+            }
+
+            if (axis == 0)
+            {
+                reduceAlongWidth = false;
+                outShape = keepDims
+                    ? new NcnnRepro.BufferShape(2, srcShape.w, 1, 1, 1)
+                    : new NcnnRepro.BufferShape(1, srcShape.w, 1, 1, 1);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void ExecuteScalar2DReduction(
+            NcnnOps ops,
+            RenderTexture input,
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAlongWidth,
+            int op,
+            float coeff,
+            RenderTexture output)
+        {
+            var axis = reduceAlongWidth ? 1 : 0;
+            ops.ReductionScalar2D(input, srcShape.w, srcShape.h, axis, op, coeff, output);
+        }
+
+        private static void ExecuteScalar2DReduction(
+            NcnnOps ops,
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAlongWidth,
+            int op,
+            float coeff,
+            ComputeTexture output)
+        {
+            var axis = reduceAlongWidth ? 1 : 0;
+            ops.ReductionScalar2D(cmd, input, srcShape.w, srcShape.h, axis, op, coeff, output);
         }
 
         private static bool TryResolveSpatialReductionAxes(

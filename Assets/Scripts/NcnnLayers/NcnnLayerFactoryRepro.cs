@@ -563,5 +563,121 @@ namespace NcnnCompute
                 EndInferenceTempResourceTracking();
             }
         }
+
+        internal ComputeTexture ForwardPack4ByLayerRepros(
+            CommandBuffer cmd,
+            Dictionary<string, ComputeTexture> textureInputs,
+            Dictionary<string, BufferShape> textureInputShapes,
+            out BufferShape outputLogicalShape,
+            ICollection<string> pinnedNames = null,
+            string outputBlobName = null,
+            string stopAfterTopName = null)
+        {
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (textureInputs == null || textureInputs.Count == 0)
+                throw new ArgumentNullException(nameof(textureInputs));
+
+            BeginInferenceTempResourceTracking();
+            try
+            {
+                var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+                var shapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal);
+                var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal);
+                RegisterCmdTextureInputs(textureInputs, textureInputShapes, blobs, shapes);
+
+                var context = new NcnnLayerCommandBufferContext
+                {
+                    commandBuffer = cmd,
+                    blobs = blobs,
+                    shapes = shapes,
+                    remaining = remaining,
+                    pinnedNames = pinnedNames
+                };
+
+                var runtimeProfile = BeginLayerRuntimeProfile("cmd");
+                for (var li = 0; li < Model.layers.Count; li++)
+                {
+                    var layer = Model.layers[li];
+                    var layerRepro = LayerRepros[li];
+                    if (layerRepro == null)
+                        throw new InvalidOperationException("layer repro missing: " + layer?.name);
+                    if (runtimeProfile == null)
+                    {
+                        SetCurrentExecutingLayer(layer);
+                        try
+                        {
+                            layerRepro.ExecuteCommandBuffer(this, layer, context);
+                        }
+                        finally
+                        {
+                            ClearCurrentExecutingLayer();
+                        }
+                        if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
+                        {
+                            DebugLog("[LayerOutput] idx=" + li
+                                + " | name=" + (layer?.name ?? string.Empty)
+                                + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
+                        }
+                    }
+                    else
+                    {
+                        var layerSw = Stopwatch.StartNew();
+                        SetCurrentExecutingLayer(layer);
+                        try
+                        {
+                            layerRepro.ExecuteCommandBuffer(this, layer, context);
+                        }
+                        finally
+                        {
+                            ClearCurrentExecutingLayer();
+                        }
+                        if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
+                        {
+                            DebugLog("[LayerOutput] idx=" + li
+                                + " | name=" + (layer?.name ?? string.Empty)
+                                + " | path=" + DescribeCmdLayerOutputPath(layer, blobs, shapes));
+                        }
+                        layerSw.Stop();
+                        RecordLayerRuntime(runtimeProfile, li, layer, "cmd", layerSw.ElapsedTicks);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(stopAfterTopName)
+                        && layer?.topNames != null
+                        && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0
+                        && TryGetCmdShape(shapes, blobs, stopAfterTopName, out _))
+                    {
+                        break;
+                    }
+                }
+
+                FinishLayerRuntimeProfile(runtimeProfile);
+                var outBlobName = !string.IsNullOrWhiteSpace(stopAfterTopName)
+                    ? stopAfterTopName
+                    : (!string.IsNullOrWhiteSpace(outputBlobName) ? outputBlobName : ResolveDefaultOutputBlobName());
+                var outRef = GetCmdTensor(blobs, outBlobName);
+                outputLogicalShape = GetCmdShape(shapes, blobs, outBlobName);
+                var keep = outRef.texture;
+                outRef.texture = null;
+                outRef.owned = false;
+
+                var visited = new HashSet<CmdTensorRef>();
+                foreach (var kv in blobs)
+                {
+                    var tr = kv.Value;
+                    if (tr == null || !visited.Add(tr))
+                        continue;
+                    if (tr.owned && tr.texture != null)
+                        ReturnTempArray(cmd, tr.texture);
+                }
+                FlushDeferredCommandBufferTempRtReleases(cmd);
+
+                return keep;
+            }
+            finally
+            {
+                EndInferenceTempResourceTracking();
+            }
+        }
     }
 }

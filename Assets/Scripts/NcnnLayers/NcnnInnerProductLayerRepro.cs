@@ -147,16 +147,38 @@ namespace NcnnCompute
             var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
             if (srcTex == null || srcTex.texture == null)
                 return false;
-            if (srcShape.dims != 1 || srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.height != 1 || srcTex.packs != 1)
+            if (srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.packs != 1)
                 return false;
 
-            var outRt = owner.RentTempArray(context.commandBuffer, ip.outFeatures, 1, 1, RenderTextureFormat.ARGBHalf);
+            var rows = 0;
+            var outLogicalShape = default(NcnnRepro.BufferShape);
+            var outStorageShape = default(NcnnRepro.BufferShape);
+            if (srcShape.dims == 1)
+            {
+                if (srcTex.height != 1)
+                    return false;
+                rows = 1;
+                outLogicalShape = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+                outStorageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+            }
+            else if (srcShape.dims == 2)
+            {
+                if (srcTex.height != srcShape.h || srcShape.h <= 0)
+                    return false;
+                rows = srcShape.h;
+                outLogicalShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), rows, 1, 1);
+                outStorageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), rows, 1, 1);
+            }
+            else
+                return false;
+
+            var outRt = owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, RenderTextureFormat.ARGBHalf);
             owner.Ops.Gemm2DTextureA(
                 context.commandBuffer,
                 srcTex.texture,
                 ip.w,
                 ip.b,
-                1,
+                rows,
                 ip.outFeatures,
                 ip.inFeatures,
                 transB: true,
@@ -169,17 +191,17 @@ namespace NcnnCompute
             context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outRt,
-                width = ip.outFeatures,
-                height = 1,
+                width = outStorageShape.w,
+                height = outStorageShape.h,
                 packs = 1,
                 refs = 1,
                 owned = true,
                 hasLogicalShape = true,
-                logicalShape = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1),
+                logicalShape = outLogicalShape,
                 hasStorageShape = true,
-                storageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), 1, 1, 1)
+                storageShape = outStorageShape
             };
-            context.shapes[layer.topNames[0]] = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+            context.shapes[layer.topNames[0]] = outLogicalShape;
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
             return true;
         }
@@ -198,15 +220,37 @@ namespace NcnnCompute
                 return false;
             if (srcTex == null || srcTex.texture == null)
                 return false;
-            if (srcShape.dims != 1 || srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.height != 1 || srcTex.packs != 1)
+            if (srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.packs != 1)
                 return false;
 
-            var outRt = owner.RentTempArray(ip.outFeatures, 1, 1, RenderTextureFormat.ARGBHalf);
+            var rows = 0;
+            var logicalShape = default(NcnnRepro.BufferShape);
+            var storageShape = default(NcnnRepro.BufferShape);
+            if (srcShape.dims == 1)
+            {
+                if (srcTex.height != 1)
+                    return false;
+                rows = 1;
+                logicalShape = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+                storageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+            }
+            else if (srcShape.dims == 2)
+            {
+                if (srcTex.height != srcShape.h || srcShape.h <= 0)
+                    return false;
+                rows = srcShape.h;
+                logicalShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), rows, 1, 1);
+                storageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), rows, 1, 1);
+            }
+            else
+                return false;
+
+            var outRt = owner.RentTempArray(storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf);
             owner.Ops.Gemm2DTextureA(
                 srcTex.texture,
                 ip.w,
                 ip.b,
-                1,
+                rows,
                 ip.outFeatures,
                 ip.inFeatures,
                 transB: true,
@@ -216,8 +260,6 @@ namespace NcnnCompute
                 broadcastTypeC: 4,
                 output: outRt);
 
-            var logicalShape = new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
-            var storageShape = new NcnnRepro.BufferShape(3, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
             NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, logicalShape, storageShape);
             owner.Consume(
                 context.textureBlobs,

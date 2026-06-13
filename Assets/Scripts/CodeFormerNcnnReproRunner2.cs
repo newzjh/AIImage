@@ -24,6 +24,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     private const string EncoderForceBufferNamesEnvVar = "AIIMAGE_CODEFORMER_ENCODER_FORCE_BUFFER_NAMES";
     private const string GeneratorForceBufferTypesEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_FORCE_BUFFER_TYPES";
     private const string GeneratorForceBufferNamesEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_FORCE_BUFFER_NAMES";
+    private const string GeneratorUseCommandBufferEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_USE_COMMAND_BUFFER";
+    private const string GeneratorUseAsyncCommandBufferEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_USE_ASYNC_COMMAND_BUFFER";
 
     private readonly struct Affine2D
     {
@@ -124,6 +126,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     private bool _generatorLoaded;
     private bool _loaded;
     private string _lastDumpDir;
+    private bool _useGeneratorCommandBufferThisRun;
+    private bool _useGeneratorAsyncCommandBufferThisRun;
     public string LastDumpDir => _lastDumpDir;
 
     private void Awake()
@@ -162,6 +166,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         {
             EnsureRuntimeObjects();
             ApplyReproOptions();
+            _useGeneratorCommandBufferThisRun = (ParseEnvBool(GeneratorUseCommandBufferEnvVar) ?? false)
+                && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
+            _useGeneratorAsyncCommandBufferThisRun = _useGeneratorCommandBufferThisRun
+                && (ParseEnvBool(GeneratorUseAsyncCommandBufferEnvVar) ?? true);
             if (enableDebugDump)
             {
                 NcnnGpuResourceTracker.Enabled = true;
@@ -326,7 +334,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         RenderTexture encFeat256 = null;
         RenderTexture lqFeat = null;
         RenderTexture minEncodingTex = null;
-        NcnnTensorBuffer minEncodingTensor = null;
         var stage = "init";
         string dumpDir = null;
 
@@ -405,19 +412,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 stage = "extract encoder blob lq_feat";
                 lqFeat = encoderResult.ExtractTexture("lq_feat");
 
-                stage = "read encoder blob soft_one_hot";
-                var softOneHotTex = encoderResult.ExtractTexture("soft_one_hot");
-                var softOneHot = ReadSingleChannelPack4TextureData(softOneHotTex, 1024, 256);
                 stage = "convert soft_one_hot to min encoding";
-                minEncodingTensor = ConvertSoftOneHotToMinEncodingTensor(softOneHot);
-                stage = "upload min encoding texture";
-                minEncodingTex = ConvertSingleChannelTensorToPack4Texture(minEncodingTensor, 1024, 256);
+                var softOneHotTex = encoderResult.ExtractTexture("soft_one_hot");
+                minEncodingTex = ConvertSoftOneHotTextureToMinEncodingTexture(softOneHotTex, 1024, 256);
                 NcnnGpuResourceTracker.UpdateTextureLabel(minEncodingTex, "CodeFormer.minEncoding");
-                if (softOneHotTex != null)
-                {
-                    _encoderRepro.ReturnTempArray(softOneHotTex);
-                    softOneHotTex = null;
-                }
 
                 if (enableDebugDump)
                 {
@@ -450,9 +448,16 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "42_enc_2520.png", "2520", 512, 256, ct);
                     await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "43_enc_2531.png", "2531", 512, 256, ct);
                     await DumpBufferBlobAsNormalizedImageAsync(encoderResult, dumpDir, "44_enc_2533.png", "2533", 1024, 256, ct);
-                    await DumpFloatArrayAsNormalizedImageAsync(dumpDir, "45_soft_one_hot.png", softOneHot, 1024, 256, ct);
-                    AppendMatrixStatsLine(dumpDir, "soft_one_hot", softOneHot, 1024, 256, true);
-                    AppendBinaryPatternStatsLine(dumpDir, "min_encoding", minEncodingTensor, 1024, 256);
+                    var softOneHotDump = ReadSingleChannelPack4TextureData(softOneHotTex, 1024, 256);
+                    await DumpFloatArrayAsNormalizedImageAsync(dumpDir, "45_soft_one_hot.png", softOneHotDump, 1024, 256, ct);
+                    AppendMatrixStatsLine(dumpDir, "soft_one_hot", softOneHotDump, 1024, 256, true);
+                    await AppendPack4TextureStatsAsync(dumpDir, "min_encoding", minEncodingTex, 2, 1024, 256, 1, 1);
+                }
+
+                if (softOneHotTex != null)
+                {
+                    _encoderRepro.ReturnTempArray(softOneHotTex);
+                    softOneHotTex = null;
                 }
             }
 
@@ -465,7 +470,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 await DumpPack4TextureAsync(dumpDir, "03_enc_feat_128.png", encFeat128, ct);
                 await DumpPack4TextureAsync(dumpDir, "04_enc_feat_256.png", encFeat256, ct);
                 await DumpPack4TextureAsync(dumpDir, "05_lq_feat.png", lqFeat, ct);
-                await DumpBinaryTensorAsImageAsync(dumpDir, "06_min_encoding.png", minEncodingTensor, 1024, 256, ct);
+                await DumpPack4TextureAsync(dumpDir, "06_min_encoding.png", minEncodingTex, ct);
                 await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_32_input", encFeat32, 3, 256, 256, 1, 128);
                 await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_64_input", encFeat64, 3, 128, 128, 1, 128);
                 await AppendPack4TextureStatsAsync(dumpDir, "enc_feat_128_input", encFeat128, 3, 64, 64, 1, 256);
@@ -566,90 +571,107 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 _generatorRepro.DebugLog = null;
             }
 
-            using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, null, generatorPinned, textureInputShapes))
+            if (_useGeneratorCommandBufferThisRun)
             {
-                RenderTexture outputTex = null;
-                RenderTexture clipTex = null;
-                if (enableDebugDump)
-                {
-                    stage = "dump generator stages";
-                    try { await DumpBinaryTensorAsImageAsync(dumpDir, "07_input_min_encoding.png", minEncodingTensor, 1024, 256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 07_input_min_encoding | " + e.Message); }
-                    try { await DumpPack4TextureAsync(dumpDir, "08_style_feat_lq.png", lqFeat, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 08_style_feat_lq | " + e.Message); }
-                    try { await DumpPack4TextureAsync(dumpDir, "09_input_enc_feat_256.png", encFeat256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 09_input_enc_feat_256 | " + e.Message); }
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "548");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "549");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "554");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "556");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "564");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "579");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "683");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "698");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "09b_blob_1383.png", "1383", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1383");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1383_splitncnn_1");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "09c_blob_1425.png", "1425", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1425");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1425_splitncnn_0");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "09d_blob_1454.png", "1454", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1454");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1417");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1420");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1421");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1422");
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1453");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "10_blob_1028.png", "1028", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1028");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "11_blob_1033.png", "1033", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1033");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "12_blob_1064.png", "1064", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1064");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "13_blob_1246.png", "1246", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1246");
-                    await DumpInferBlobAsync(generatorResult, dumpDir, "14_blob_1459.png", "1459", ct);
-                    await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1459");
-                }
-
-                stage = "extract generator blob out";
-                outputTex = generatorResult.ExtractTexture("out");
-                NcnnGpuResourceTracker.UpdateTextureLabel(outputTex, "CodeFormer.generatorOut");
-                if (outputTex == null)
-                {
-                    return new CodeFormer512RunResult { error = "CodeFormer(repro2) generator output blob 'out' is null", dumpDir = dumpDir };
-                }
-
-                if (enableDebugDump)
-                {
-                    stage = "dump generator output pack4";
-                    await DumpPack4TextureAsync(dumpDir, "15_out_pack4.png", outputTex, ct);
-                    await AppendPack4TextureStatsAsync(dumpDir, "out_pack4", outputTex);
-                }
-
-                stage = "clip generator output";
-                clipTex = _generatorRepro.RentTempArray(outputTex.width, outputTex.height, 1, RenderTextureFormat.ARGBHalf);
-                NcnnGpuResourceTracker.UpdateTextureLabel(clipTex, "CodeFormer.clipTex");
-                _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex);
-
-                stage = "convert output to RGB";
-                restored = ConvertClippedPack4ToTexture2D(clipTex, outputTex.width, outputTex.height, dumpDir);
+                restored = await RunGeneratorWithCommandBufferAsync(
+                    textureInputs,
+                    textureInputShapes,
+                    generatorPinned,
+                    dumpDir,
+                    minEncodingTex,
+                    lqFeat,
+                    encFeat256,
+                    ct);
                 if (restored == null)
-                    return new CodeFormer512RunResult { error = "CodeFormer(repro2) output conversion failed", dumpDir = dumpDir };
+                    return new CodeFormer512RunResult { error = "CodeFormer(repro2) command-buffer generator output conversion failed", dumpDir = dumpDir };
+            }
+            else
+            {
+                using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, null, generatorPinned, textureInputShapes))
+                {
+                    RenderTexture outputTex = null;
+                    RenderTexture clipTex = null;
+                    if (enableDebugDump)
+                    {
+                        stage = "dump generator stages";
+                        try { await DumpPack4TextureAsync(dumpDir, "07_input_min_encoding.png", minEncodingTex, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 07_input_min_encoding | " + e.Message); }
+                        try { await DumpPack4TextureAsync(dumpDir, "08_style_feat_lq.png", lqFeat, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 08_style_feat_lq | " + e.Message); }
+                        try { await DumpPack4TextureAsync(dumpDir, "09_input_enc_feat_256.png", encFeat256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 09_input_enc_feat_256 | " + e.Message); }
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "548");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "549");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "554");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "556");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "564");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "579");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "683");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "698");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "09b_blob_1383.png", "1383", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1383");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1383_splitncnn_1");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "09c_blob_1425.png", "1425", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1425");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1425_splitncnn_0");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "09d_blob_1454.png", "1454", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1454");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1417");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1420");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1421");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1422");
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1453");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "10_blob_1028.png", "1028", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1028");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "11_blob_1033.png", "1033", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1033");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "12_blob_1064.png", "1064", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1064");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "13_blob_1246.png", "1246", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1246");
+                        await DumpInferBlobAsync(generatorResult, dumpDir, "14_blob_1459.png", "1459", ct);
+                        await DumpInferBlobStatsAsync(generatorResult, dumpDir, "1459");
+                    }
 
-                if (enableDebugDump)
-                {
-                    stage = "dump generator output rgb";
-                    await DumpRgbTextureAsync(dumpDir, "16_out_rgb.png", restored, ct);
-                    TryOpenFolderInShell(dumpDir);
-                }
+                    stage = "extract generator blob out";
+                    outputTex = generatorResult.ExtractTexture("out");
+                    NcnnGpuResourceTracker.UpdateTextureLabel(outputTex, "CodeFormer.generatorOut");
+                    if (outputTex == null)
+                    {
+                        return new CodeFormer512RunResult { error = "CodeFormer(repro2) generator output blob 'out' is null", dumpDir = dumpDir };
+                    }
 
-                if (clipTex != null)
-                {
-                    _generatorRepro.ReturnTempArray(clipTex);
-                    clipTex = null;
-                }
-                if (outputTex != null)
-                {
-                    _generatorRepro.ReturnTempArray(outputTex);
-                    outputTex = null;
+                    if (enableDebugDump)
+                    {
+                        stage = "dump generator output pack4";
+                        await DumpPack4TextureAsync(dumpDir, "15_out_pack4.png", outputTex, ct);
+                        await AppendPack4TextureStatsAsync(dumpDir, "out_pack4", outputTex);
+                    }
+
+                    stage = "clip generator output";
+                    clipTex = _generatorRepro.RentTempArray(outputTex.width, outputTex.height, 1, RenderTextureFormat.ARGBHalf);
+                    NcnnGpuResourceTracker.UpdateTextureLabel(clipTex, "CodeFormer.clipTex");
+                    _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex);
+
+                    stage = "convert output to RGB";
+                    restored = ConvertClippedPack4ToTexture2D(clipTex, outputTex.width, outputTex.height, dumpDir);
+                    if (restored == null)
+                        return new CodeFormer512RunResult { error = "CodeFormer(repro2) output conversion failed", dumpDir = dumpDir };
+
+                    if (enableDebugDump)
+                    {
+                        stage = "dump generator output rgb";
+                        await DumpRgbTextureAsync(dumpDir, "16_out_rgb.png", restored, ct);
+                        TryOpenFolderInShell(dumpDir);
+                    }
+
+                    if (clipTex != null)
+                    {
+                        _generatorRepro.ReturnTempArray(clipTex);
+                        clipTex = null;
+                    }
+                    if (outputTex != null)
+                    {
+                        _generatorRepro.ReturnTempArray(outputTex);
+                        outputTex = null;
+                    }
                 }
             }
 
@@ -686,7 +708,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             if (encFeat256 != null) _encoderRepro.ReturnTempArray(encFeat256);
             if (lqFeat != null) _encoderRepro.ReturnTempArray(lqFeat);
             if (minEncodingTex != null) _generatorRepro.ReturnTempArray(minEncodingTex);
-            minEncodingTensor?.Dispose();
             _encoderRepro.DebugCompareTextureLayers = null;
             _encoderRepro.DebugLog = null;
             _generatorRepro.DebugCompareTextureLayers = null;
@@ -704,53 +725,30 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         if (clipTex == null || width <= 0 || height <= 0 || _ops == null)
             return null;
 
-        var pixelCount = width * height;
-        var total = pixelCount * 4;
-        using var buffer = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
-        _ops.Pack4ToBufferCHW(clipTex, width, height, 4, buffer);
-
-        var data = new float[total];
-        buffer.GetData(data);
-        if (enableDebugDump && !string.IsNullOrWhiteSpace(dumpDir))
+        var rgbRt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, true);
+        try
         {
+            _ops.Pack4ToRgb01(clipTex, rgbRt, true);
+            var prev = RenderTexture.active;
             try
             {
-                var previewCount = Mathf.Min(32, data.Length);
-                var preview = new string[previewCount];
-                for (var i = 0; i < previewCount; i++)
-                    preview[i] = data[i].ToString("G9", CultureInfo.InvariantCulture);
-                File.WriteAllText(Path.Combine(dumpDir, "16_out_chw_preview.txt"), string.Join(",", preview));
+                RenderTexture.active = rgbRt;
+                var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+                tex.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                tex.Apply(false, false);
+                tex.wrapMode = TextureWrapMode.Clamp;
+                tex.filterMode = FilterMode.Bilinear;
+                return tex;
             }
-            catch
+            finally
             {
+                RenderTexture.active = prev;
             }
         }
-        var plane = pixelCount;
-        var pixels = new Color32[pixelCount];
-        for (var y = 0; y < height; y++)
+        finally
         {
-            var srcRow = (height - 1 - y) * width;
-            var dstRow = y * width;
-            for (var x = 0; x < width; x++)
-            {
-                var srcIndex = srcRow + x;
-                var r = Mathf.Clamp01(data[srcIndex] * 0.5f + 0.5f);
-                var g = Mathf.Clamp01(data[plane + srcIndex] * 0.5f + 0.5f);
-                var b = Mathf.Clamp01(data[plane * 2 + srcIndex] * 0.5f + 0.5f);
-                pixels[dstRow + x] = new Color32(
-                    (byte)Mathf.Clamp(Mathf.RoundToInt(r * 255f), 0, 255),
-                    (byte)Mathf.Clamp(Mathf.RoundToInt(g * 255f), 0, 255),
-                    (byte)Mathf.Clamp(Mathf.RoundToInt(b * 255f), 0, 255),
-                    255);
-            }
+            ReleaseTemporaryRt(rgbRt);
         }
-
-        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
-        tex.SetPixels32(pixels);
-        tex.Apply(false, false);
-        tex.wrapMode = TextureWrapMode.Clamp;
-        tex.filterMode = FilterMode.Bilinear;
-        return tex;
     }
 
     private float[] ReadSingleChannelPack4TextureData(RenderTexture pack4Tex, int width, int height)
@@ -766,14 +764,126 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         return data;
     }
 
-    private RenderTexture ConvertSingleChannelTensorToPack4Texture(NcnnTensorBuffer tensor, int width, int height)
+    private RenderTexture ConvertSoftOneHotTextureToMinEncodingTexture(RenderTexture softOneHotTex, int codebookSize, int tokenCount)
     {
-        if (tensor == null || tensor.buffer == null || width <= 0 || height <= 0 || _generatorRepro == null || _ops == null)
+        if (softOneHotTex == null || codebookSize <= 0 || tokenCount <= 0 || _generatorRepro == null || _ops == null)
             return null;
 
-        var rt = _generatorRepro.RentTempArray(width, height, 1, RenderTextureFormat.ARGBHalf);
-        _ops.FillPack4FromBufferCHW(tensor.buffer, width, height, 1, rt);
+        var rt = _generatorRepro.RentTempArray(codebookSize, tokenCount, 1, RenderTextureFormat.ARGBHalf);
+        _ops.CodeFormerMinEncodingFromSoftOneHot(softOneHotTex, codebookSize, tokenCount, rt);
         return rt;
+    }
+
+    private async UniTask<Texture2D> RunGeneratorWithCommandBufferAsync(
+        Dictionary<string, RenderTexture> textureInputs,
+        Dictionary<string, NcnnRepro.BufferShape> textureInputShapes,
+        ICollection<string> pinnedNames,
+        string dumpDir,
+        RenderTexture minEncodingTex,
+        RenderTexture lqFeat,
+        RenderTexture encFeat256,
+        CancellationToken ct)
+    {
+        if (_generatorRepro == null || textureInputs == null || textureInputs.Count == 0)
+            return null;
+
+        using var cmd = new CommandBuffer { name = "CodeFormerGenerator" };
+        if (_useGeneratorAsyncCommandBufferThisRun)
+            cmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
+
+        var cmdInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal);
+        RenderTexture outputReadbackRt = null;
+        ComputeTexture outputCmd = null;
+        try
+        {
+            foreach (var kv in textureInputs)
+            {
+                if (kv.Value == null)
+                    continue;
+
+                var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
+                    ? suppliedShape
+                    : new NcnnRepro.BufferShape(3, kv.Value.width, kv.Value.height, 1, Mathf.Max(1, (kv.Value.volumeDepth > 0 ? kv.Value.volumeDepth : 1) * 4));
+                var packs = logicalShape.dims == 4
+                    ? Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f))
+                    : Mathf.Max(1, kv.Value.volumeDepth > 0 ? kv.Value.volumeDepth : 1);
+                var depth = logicalShape.dims == 4
+                    ? Mathf.Max(1, logicalShape.d * packs)
+                    : packs;
+
+                var cmdInput = _generatorRepro.RentTempArray(cmd, kv.Value.width, kv.Value.height, depth, RenderTextureFormat.ARGBHalf);
+                CopyTextureArrayAllSlices(cmd, kv.Value, cmdInput.nameID, depth);
+                cmdInputs[kv.Key] = cmdInput;
+            }
+
+            outputCmd = _generatorRepro.ForwardPack4(
+                cmd,
+                cmdInputs,
+                textureInputShapes,
+                out var outputShape,
+                pinnedNames,
+                "out",
+                null);
+            if (outputCmd == null)
+                return null;
+
+            outputReadbackRt = _generatorRepro.RentTempArray(
+                outputCmd.width,
+                outputCmd.height,
+                Mathf.Max(1, outputCmd.depth),
+                RenderTextureFormat.ARGBHalf);
+            CopyTextureArrayAllSlices(cmd, outputCmd.nameID, outputReadbackRt, Mathf.Max(1, outputCmd.depth));
+
+            _generatorRepro.ReturnTempArray(cmd, outputCmd);
+            outputCmd = null;
+            foreach (var input in cmdInputs.Values)
+                _generatorRepro.ReturnTempArray(cmd, input);
+            cmdInputs.Clear();
+
+            if (_useGeneratorAsyncCommandBufferThisRun)
+                Graphics.ExecuteCommandBufferAsync(cmd, ComputeQueueType.Default);
+            else
+                Graphics.ExecuteCommandBuffer(cmd);
+
+            _generatorRepro.Ops.DebugSyncGpu();
+            ct.ThrowIfCancellationRequested();
+
+            if (enableDebugDump)
+            {
+                try { await DumpPack4TextureAsync(dumpDir, "07_input_min_encoding.png", minEncodingTex, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 07_input_min_encoding | " + e.Message); }
+                try { await DumpPack4TextureAsync(dumpDir, "08_style_feat_lq.png", lqFeat, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 08_style_feat_lq | " + e.Message); }
+                try { await DumpPack4TextureAsync(dumpDir, "09_input_enc_feat_256.png", encFeat256, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 09_input_enc_feat_256 | " + e.Message); }
+                try { await DumpPack4TextureAsync(dumpDir, "15_out_pack4.png", outputReadbackRt, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 15_out_pack4 | " + e.Message); }
+                try { await AppendPack4TextureStatsAsync(dumpDir, "out_pack4_cmd", outputReadbackRt); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip out_pack4_cmd stats | " + e.Message); }
+            }
+
+            var clipped = _generatorRepro.RentTempArray(outputReadbackRt.width, outputReadbackRt.height, 1, RenderTextureFormat.ARGBHalf);
+            try
+            {
+                _ops.ClipPack4(outputReadbackRt, -1f, 1f, 1, clipped);
+                var restored = ConvertClippedPack4ToTexture2D(clipped, outputReadbackRt.width, outputReadbackRt.height, dumpDir);
+                if (enableDebugDump && restored != null)
+                {
+                    try { await DumpRgbTextureAsync(dumpDir, "16_out_rgb.png", restored, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 16_out_rgb | " + e.Message); }
+                    TryOpenFolderInShell(dumpDir);
+                }
+
+                return restored;
+            }
+            finally
+            {
+                _generatorRepro.ReturnTempArray(clipped);
+            }
+        }
+        finally
+        {
+            if (outputCmd != null)
+                _generatorRepro.ReturnTempArray(cmd, outputCmd);
+            foreach (var input in cmdInputs.Values)
+                _generatorRepro.ReturnTempArray(cmd, input);
+            if (outputReadbackRt != null)
+                _generatorRepro.ReturnTempArray(outputReadbackRt);
+        }
     }
 
     private async UniTask DumpInferBlobAsync(NcnnRepro.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
@@ -1454,36 +1564,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     }
 #endif
 
-    private NcnnTensorBuffer ConvertSoftOneHotToMinEncodingTensor(float[] softOneHot)
-    {
-        const int codebookSize = 1024;
-        const int tokenCount = 256;
-        if (softOneHot == null || softOneHot.Length < codebookSize * tokenCount)
-            throw new InvalidOperationException("soft_one_hot buffer size mismatch");
-
-        var minEncodings = new float[codebookSize * tokenCount];
-        for (var token = 0; token < tokenCount; token++)
-        {
-            var rowStart = token * codebookSize;
-            var maxIndex = 0;
-            var maxValue = softOneHot[rowStart];
-            for (var i = 1; i < codebookSize; i++)
-            {
-                var value = softOneHot[rowStart + i];
-                if (value > maxValue)
-                {
-                    maxValue = value;
-                    maxIndex = i;
-                }
-            }
-            minEncodings[rowStart + maxIndex] = 1f;
-        }
-
-        var tensor = new NcnnTensorBuffer(codebookSize, tokenCount);
-        tensor.buffer.SetData(minEncodings);
-        return tensor;
-    }
-
     private void ApplyReproOptions()
     {
         if (_encoderRepro == null || _generatorRepro == null)
@@ -1501,6 +1581,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _generatorRepro.EnableGeneralTextureConvolution = true;
         _encoderRepro.EnableGroupNormTexturePath = true;
         _generatorRepro.EnableGroupNormTexturePath = true;
+        _encoderRepro.EnableAttentionMatMulPack4Specializations = true;
+        _generatorRepro.EnableAttentionMatMulPack4Specializations = true;
+        _encoderRepro.EnableVistaTailPack4Specializations = false;
+        _generatorRepro.EnableVistaTailPack4Specializations = false;
         _encoderRepro.UseNcnnStyleGroupNorm = true;
         _generatorRepro.UseNcnnStyleGroupNorm = true;
         _encoderRepro.CodeFormerSftMulScale = 1f;
@@ -1518,9 +1602,11 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _encoderRepro.DisallowBufferAccess = encoderPack4Only;
         _encoderRepro.DisallowBufferOutputs = encoderPack4Only;
         _encoderRepro.DisallowBufferToTextureMaterialization = encoderPack4Only;
+        _encoderRepro.DisallowInferenceTempComputeBuffers = encoderPack4Only;
         _generatorRepro.DisallowBufferAccess = generatorPack4Only;
         _generatorRepro.DisallowBufferOutputs = generatorPack4Only;
         _generatorRepro.DisallowBufferToTextureMaterialization = generatorPack4Only;
+        _generatorRepro.DisallowInferenceTempComputeBuffers = generatorPack4Only;
         _encoderRepro.ForceBufferLayerTypes = ParseEnvTokenSet(EncoderForceBufferTypesEnvVar);
         _encoderRepro.ForceBufferLayerNames = ParseEnvTokenSet(EncoderForceBufferNamesEnvVar);
         _generatorRepro.ForceBufferLayerTypes = ParseEnvTokenSet(GeneratorForceBufferTypesEnvVar);
@@ -1553,6 +1639,37 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
 
         return null;
+    }
+
+    private static bool IsComputeCmdSupported(GraphicsDeviceType t)
+    {
+        return t == GraphicsDeviceType.Vulkan
+               || t == GraphicsDeviceType.Direct3D11
+               || t == GraphicsDeviceType.Direct3D12
+               || t == GraphicsDeviceType.Metal
+               || t == GraphicsDeviceType.WebGPU;
+    }
+
+    private static void CopyTextureArrayAllSlices(CommandBuffer cmd, RenderTexture src, int dstNameId, int sliceCount)
+    {
+        if (cmd == null)
+            throw new ArgumentNullException(nameof(cmd));
+        if (src == null)
+            throw new ArgumentNullException(nameof(src));
+
+        for (var slice = 0; slice < Mathf.Max(1, sliceCount); slice++)
+            cmd.CopyTexture(src, slice, 0, dstNameId, slice, 0);
+    }
+
+    private static void CopyTextureArrayAllSlices(CommandBuffer cmd, int srcNameId, RenderTexture dst, int sliceCount)
+    {
+        if (cmd == null)
+            throw new ArgumentNullException(nameof(cmd));
+        if (dst == null)
+            throw new ArgumentNullException(nameof(dst));
+
+        for (var slice = 0; slice < Mathf.Max(1, sliceCount); slice++)
+            cmd.CopyTexture(srcNameId, slice, 0, dst, slice, 0);
     }
 
     private static ISet<string> ParseEnvTokenSet(string envName)
