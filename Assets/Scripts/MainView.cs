@@ -122,7 +122,8 @@ public class MainView : MonoBehaviour
 
     private static readonly HashSet<string> ImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".tiff", ".tif", ".exr"
+        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".tiff", ".tif", ".exr",
+        ".raw", ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".srw", ".pef"
     };
 
     private static readonly string[] OriginalNameMarkersZh =
@@ -3092,15 +3093,8 @@ public class MainView : MonoBehaviour
         if (string.IsNullOrWhiteSpace(filePath))
             return null;
 
-        byte[] data;
-        try
-        {
-            data = File.ReadAllBytes(filePath);
-        }
-        catch
-        {
+        if (!RawPhotoParser.TryLoadDisplayBytes(filePath, out var data))
             return null;
-        }
 
         var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
         if (!tex.LoadImage(data, false))
@@ -3984,15 +3978,8 @@ public class MainView : MonoBehaviour
             _textureCache.Remove(filePath);
         }
 
-        byte[] data;
-        try
-        {
-            data = File.ReadAllBytes(filePath);
-        }
-        catch
-        {
+        if (!RawPhotoParser.TryLoadDisplayBytes(filePath, out var data))
             return null;
-        }
 
         var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
         if (!tex.LoadImage(data, false))

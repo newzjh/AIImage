@@ -938,15 +938,8 @@ public abstract class BasePageView : MonoBehaviour
         if (string.IsNullOrWhiteSpace(filePath))
             return null;
 
-        byte[] data;
-        try
-        {
-            data = File.ReadAllBytes(filePath);
-        }
-        catch
-        {
+        if (!RawPhotoParser.TryLoadDisplayBytes(filePath, out var data))
             return null;
-        }
 
         var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
         if (!tex.LoadImage(data, false))

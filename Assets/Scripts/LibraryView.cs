@@ -16,6 +16,15 @@ public sealed class LibraryView : BasePageView
     private const string PendingClipText = "\u5F85\u63A5\u5165";
     private const string EmptyText = "\u65E0";
     private const int ThumbnailMaxEdge = 640;
+    private const int HiddenOriginalImportLimit = 512;
+    private static readonly string[] HiddenOriginalDirectoryKeywords =
+    {
+        "原图",
+        "原片",
+        "底片",
+        "raw",
+        "original"
+    };
     private static readonly ExplorerStringComparer ExplorerComparer = new ExplorerStringComparer();
 
     private enum LibraryImageType
@@ -76,6 +85,7 @@ public sealed class LibraryView : BasePageView
 
     private sealed class OriginalMetadataSnapshot
     {
+        public string directoryPath;
         public string fileName;
         public LibraryImageType type;
         public float score;
@@ -87,7 +97,8 @@ public sealed class LibraryView : BasePageView
 
     private static readonly HashSet<string> ImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".tiff", ".tif", ".exr", ".raw", ".cr2", ".cr3", ".nef", ".arw", ".dng"
+        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".tiff", ".tif", ".exr",
+        ".raw", ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".srw", ".pef"
     };
 
     private const float LandscapeCardWidth = 294f;
@@ -124,6 +135,8 @@ public sealed class LibraryView : BasePageView
     private readonly Dictionary<string, VisualElement> _cardByPath = new Dictionary<string, VisualElement>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Label> _typeBadgeByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, OriginalMetadataSnapshot> _originalMetadataByPath = new Dictionary<string, OriginalMetadataSnapshot>(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _hiddenOriginalDirectoryPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _hiddenOriginalImportedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _clipClassificationSemaphore = new SemaphoreSlim(1, 1);
     private bool _didInitialPathSync;
     private string _currentDriveRoot;
@@ -575,6 +588,7 @@ public sealed class LibraryView : BasePageView
             return;
 
         _loadedDirectoryIds.Add(parentId);
+        RegisterHiddenOriginalDirectories(directoryPath);
         var children = EnumerateDirectoriesSafe(directoryPath, 150)
             .Select(path => BuildDirectoryItem(path, DirectoryNameFromPath(path), GetDepthForPath(path)))
             .ToList();
@@ -639,6 +653,8 @@ public sealed class LibraryView : BasePageView
 
             try
             {
+                RegisterHiddenOriginalDirectories(directoryPath);
+
                 var files = await UniTask.RunOnThreadPool(
                     () => ScanDirectoryEntries(directoryPath),
                     cancellationToken: cancellationToken);
@@ -651,6 +667,8 @@ public sealed class LibraryView : BasePageView
                 _thumbnailEntries.AddRange(files);
                 foreach (var entry in files)
                     _entryByPath[entry.fullPath] = entry;
+
+                await ImportHiddenOriginalDirectoriesAsync(directoryPath, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -961,14 +979,7 @@ public sealed class LibraryView : BasePageView
                 if (cancellationToken.IsCancellationRequested || generation != _thumbnailLoadGeneration)
                     return;
 
-                if (!string.IsNullOrWhiteSpace(payload.locationText))
-                    entry.locationText = payload.locationText;
-                if (!string.IsNullOrWhiteSpace(payload.cameraText))
-                    entry.cameraText = payload.cameraText;
-                if (!string.IsNullOrWhiteSpace(payload.apertureText))
-                    entry.apertureText = payload.apertureText;
-                if (payload.captureTime.HasValue)
-                    entry.captureTime = payload.captureTime.Value;
+                ApplyPayloadMetadata(entry, payload);
 
                 ApplyTypeFromMetadata(entry);
 
@@ -1269,6 +1280,9 @@ public sealed class LibraryView : BasePageView
         _thumbnailEntries.Clear();
         _visibleEntries.Clear();
         _entryByPath.Clear();
+        _originalMetadataByPath.Clear();
+        _hiddenOriginalDirectoryPaths.Clear();
+        _hiddenOriginalImportedDirectories.Clear();
     }
 
     private static List<ThumbnailEntry> ScanDirectoryEntries(string directoryPath)
@@ -1303,6 +1317,19 @@ public sealed class LibraryView : BasePageView
 
     private static ThumbnailPayload LoadThumbnailPayload(string filePath, int maxEdge)
     {
+        if (RawPhotoParser.IsRawExtension(filePath) &&
+            RawPhotoParser.TryParse(filePath, out var rawPhoto))
+        {
+            return new ThumbnailPayload
+            {
+                thumbnailBytes = rawPhoto.previewBytes,
+                captureTime = rawPhoto.captureTime,
+                locationText = rawPhoto.locationText,
+                cameraText = rawPhoto.cameraText,
+                apertureText = rawPhoto.apertureText
+            };
+        }
+
         if (TryBuildThumbnailPayloadWithSystemDrawing(filePath, maxEdge, out var payload))
             return payload;
 
@@ -1310,6 +1337,21 @@ public sealed class LibraryView : BasePageView
         {
             thumbnailBytes = LoadImageBytes(filePath)
         };
+    }
+
+    private static void ApplyPayloadMetadata(ThumbnailEntry entry, ThumbnailPayload payload)
+    {
+        if (entry == null || payload == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(payload.locationText))
+            entry.locationText = payload.locationText;
+        if (!string.IsNullOrWhiteSpace(payload.cameraText))
+            entry.cameraText = payload.cameraText;
+        if (!string.IsNullOrWhiteSpace(payload.apertureText))
+            entry.apertureText = payload.apertureText;
+        if (payload.captureTime.HasValue)
+            entry.captureTime = payload.captureTime.Value;
     }
 
     private static bool TryBuildThumbnailPayloadWithSystemDrawing(string filePath, int maxEdge, out ThumbnailPayload payload)
@@ -1572,8 +1614,7 @@ public sealed class LibraryView : BasePageView
 
     private static LibraryImageType GuessType(string fileName)
     {
-        var lower = (fileName ?? string.Empty).ToLowerInvariant();
-        if (lower.EndsWith(".raw") || lower.EndsWith(".cr2") || lower.EndsWith(".cr3") || lower.EndsWith(".nef") || lower.EndsWith(".arw") || lower.EndsWith(".dng"))
+        if (RawPhotoParser.IsRawExtension(fileName))
             return LibraryImageType.RawOriginal;
         return LibraryImageType.Unknown;
     }
@@ -1581,7 +1622,7 @@ public sealed class LibraryView : BasePageView
     private static bool IsImageFile(string filePath)
     {
         var ext = Path.GetExtension(filePath);
-        return !string.IsNullOrWhiteSpace(ext) && ImageExtensions.Contains(ext);
+        return !string.IsNullOrWhiteSpace(ext) && (ImageExtensions.Contains(ext) || RawPhotoParser.IsRawExtension(filePath));
     }
 
     private int GetDepthForPath(string path)
@@ -1606,6 +1647,20 @@ public sealed class LibraryView : BasePageView
         return string.IsNullOrWhiteSpace(name) ? directoryPath : name;
     }
 
+    private static bool IsHiddenOriginalDirectoryName(string directoryName)
+    {
+        if (string.IsNullOrWhiteSpace(directoryName))
+            return false;
+
+        for (var i = 0; i < HiddenOriginalDirectoryKeywords.Length; i++)
+        {
+            if (directoryName.IndexOf(HiddenOriginalDirectoryKeywords[i], StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+
+        return false;
+    }
+
     private static bool HasSubDirectoriesSafe(string path)
     {
         return EnumerateDirectoriesSafe(path, 1).Any();
@@ -1619,6 +1674,7 @@ public sealed class LibraryView : BasePageView
         try
         {
             return Directory.EnumerateDirectories(path)
+                .Where(child => !IsHiddenOriginalDirectoryName(DirectoryNameFromPath(child)))
                 .OrderBy(DirectoryNameFromPath, ExplorerComparer)
                 .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .Take(Mathf.Max(1, maxCount))
@@ -1646,6 +1702,138 @@ public sealed class LibraryView : BasePageView
         return $"{display:0.##} {units[unitIndex]}";
     }
 
+    private void RegisterHiddenOriginalDirectories(string parentDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(parentDirectory) || !Directory.Exists(parentDirectory))
+            return;
+
+        try
+        {
+            foreach (var child in Directory.EnumerateDirectories(parentDirectory))
+            {
+                var name = DirectoryNameFromPath(child);
+                if (IsHiddenOriginalDirectoryName(name))
+                    _hiddenOriginalDirectoryPaths.Add(child);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async UniTask ImportHiddenOriginalDirectoriesAsync(string parentDirectory, CancellationToken cancellationToken)
+    {
+        if (Host?.ClipRunner == null || string.IsNullOrWhiteSpace(parentDirectory))
+            return;
+
+        var targets = _hiddenOriginalDirectoryPaths
+            .Where(path => !string.IsNullOrWhiteSpace(path) &&
+                           IsSameDirectoryOrChildOf(path, parentDirectory) &&
+                           !_hiddenOriginalImportedDirectories.Contains(path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        for (var i = 0; i < targets.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var hiddenDirectory = targets[i];
+            await ImportHiddenOriginalDirectoryAsync(hiddenDirectory, cancellationToken);
+            _hiddenOriginalImportedDirectories.Add(hiddenDirectory);
+        }
+    }
+
+    private async UniTask ImportHiddenOriginalDirectoryAsync(string directoryPath, CancellationToken cancellationToken)
+    {
+        List<ThumbnailEntry> originals;
+        try
+        {
+            originals = await UniTask.RunOnThreadPool(
+                () => ScanDirectoryEntries(directoryPath),
+                cancellationToken: cancellationToken);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (originals == null || originals.Count == 0)
+            return;
+
+        var imported = 0;
+        for (var i = 0; i < originals.Count && imported < HiddenOriginalImportLimit; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var entry = originals[i];
+            if (entry == null || string.IsNullOrWhiteSpace(entry.fullPath) || _entryByPath.ContainsKey(entry.fullPath))
+                continue;
+
+            ThumbnailPayload payload = null;
+            try
+            {
+                payload = await UniTask.RunOnThreadPool(
+                    () => LoadThumbnailPayload(entry.fullPath, ThumbnailMaxEdge),
+                    cancellationToken: cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            ApplyPayloadMetadata(entry, payload);
+            ApplyTypeFromMetadata(entry);
+            if (IsHiddenOriginalSourcePath(entry.fullPath))
+            {
+                entry.type = LibraryImageType.Original;
+                entry.metadataOriginalScore = Mathf.Max(entry.metadataOriginalScore, 1f);
+            }
+
+            if (payload?.thumbnailBytes == null || payload.thumbnailBytes.Length == 0)
+                continue;
+
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            if (!texture.LoadImage(payload.thumbnailBytes, true))
+            {
+                UnityEngine.Object.Destroy(texture);
+                continue;
+            }
+
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.filterMode = FilterMode.Bilinear;
+            texture.name = entry.fileName;
+            entry.thumbnail = texture;
+
+            try
+            {
+                var result = await ClipClassificationCache.GetOrClassifyForFileAsync(
+                    Host.ClipRunner,
+                    texture,
+                    entry.fullPath,
+                    cancellationToken);
+
+                if (!string.IsNullOrWhiteSpace(result.error))
+                    continue;
+
+                var best = string.IsNullOrWhiteSpace(result.bestLabel) ? EmptyText : result.bestLabel;
+                var top = FormatClipTopScores(result.scores, 2);
+                entry.clipBaseText = string.IsNullOrWhiteSpace(top) ? best : (best + "  " + top);
+                entry.clipText = entry.clipBaseText;
+                entry.faceText = best;
+                entry.clipClassificationReady = true;
+                ApplyTypeFromClipMapping(entry);
+                RememberOriginalMetadata(entry);
+                _entryByPath[entry.fullPath] = entry;
+                try { UnityEngine.Object.Destroy(texture); } catch { }
+                entry.thumbnail = null;
+                imported++;
+            }
+            catch
+            {
+                try { UnityEngine.Object.Destroy(texture); } catch { }
+                entry.thumbnail = null;
+            }
+        }
+    }
+
     private static string NormalizeDisplay(string text)
     {
         return string.IsNullOrWhiteSpace(text) ? EmptyText : text;
@@ -1660,6 +1848,16 @@ public sealed class LibraryView : BasePageView
     {
         if (entry == null)
             return;
+
+        if (IsHiddenOriginalSourcePath(entry.fullPath))
+        {
+            entry.type = LibraryImageType.Original;
+            entry.metadataOriginalScore = 1f;
+            ClearMappedOriginal(entry);
+            RememberOriginalMetadata(entry);
+            RefreshEditedMappingsForKnownOriginal(entry);
+            return;
+        }
 
         if (IsRawOriginalFile(entry.fullPath))
         {
@@ -1712,6 +1910,7 @@ public sealed class LibraryView : BasePageView
             return;
 
         var originalCandidates = new List<ClipClassificationCache.CachedClipImageRecord>();
+        var selectedDirectory = _selectedDirectoryPath;
         for (var i = 0; i < allRecords.Count; i++)
         {
             var candidate = allRecords[i];
@@ -1722,11 +1921,22 @@ public sealed class LibraryView : BasePageView
 
             if (_entryByPath.TryGetValue(candidate.filePath, out var candidateEntry))
             {
+                if (!IsMappingCandidateAllowed(candidate.filePath, selectedDirectory))
+                    continue;
                 if (candidateEntry.type == LibraryImageType.RawOriginal || candidateEntry.metadataOriginalScore >= 0.62f)
+                    originalCandidates.Add(candidate);
+            }
+            else if (_originalMetadataByPath.TryGetValue(candidate.filePath, out var snapshot))
+            {
+                if (!IsMappingCandidateAllowed(candidate.filePath, selectedDirectory))
+                    continue;
+                if (snapshot.type == LibraryImageType.RawOriginal || snapshot.score >= 0.62f)
                     originalCandidates.Add(candidate);
             }
             else if (IsRawOriginalFile(candidate.filePath))
             {
+                if (!IsMappingCandidateAllowed(candidate.filePath, selectedDirectory))
+                    continue;
                 originalCandidates.Add(candidate);
             }
         }
@@ -1806,6 +2016,7 @@ public sealed class LibraryView : BasePageView
         {
             _originalMetadataByPath[entry.fullPath] = new OriginalMetadataSnapshot
             {
+                directoryPath = Path.GetDirectoryName(entry.fullPath),
                 fileName = entry.fileName,
                 type = entry.type,
                 score = entry.metadataOriginalScore,
@@ -1875,10 +2086,57 @@ public sealed class LibraryView : BasePageView
                !string.Equals(text, EmptyText, StringComparison.Ordinal);
     }
 
+    private bool IsMappingCandidateAllowed(string candidatePath, string selectedDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(candidatePath))
+            return false;
+        if (string.IsNullOrWhiteSpace(selectedDirectory))
+            return true;
+
+        var candidateDirectory = Path.GetDirectoryName(candidatePath);
+        if (string.IsNullOrWhiteSpace(candidateDirectory))
+            return false;
+
+        if (string.Equals(candidateDirectory, selectedDirectory, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return _hiddenOriginalDirectoryPaths.Contains(candidateDirectory) &&
+               IsSameDirectoryOrChildOf(candidateDirectory, selectedDirectory);
+    }
+
     private static bool IsRawOriginalFile(string filePath)
     {
-        var ext = (Path.GetExtension(filePath) ?? string.Empty).ToLowerInvariant();
-        return ext == ".raw" || ext == ".cr2" || ext == ".cr3" || ext == ".nef" || ext == ".arw" || ext == ".dng";
+        return RawPhotoParser.IsRawExtension(filePath);
+    }
+
+    private bool IsHiddenOriginalSourcePath(string filePath)
+    {
+        var directory = string.IsNullOrWhiteSpace(filePath) ? null : Path.GetDirectoryName(filePath);
+        return !string.IsNullOrWhiteSpace(directory) && _hiddenOriginalDirectoryPaths.Contains(directory);
+    }
+
+    private static bool IsSameDirectoryOrChildOf(string path, string rootDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(rootDirectory))
+            return false;
+
+        try
+        {
+            var normalizedPath = Path.GetFullPath(path)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var normalizedRoot = Path.GetFullPath(rootDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            if (string.Equals(normalizedPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var prefix = normalizedRoot + Path.DirectorySeparatorChar;
+            return normalizedPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void ClearMappedOriginal(ThumbnailEntry entry)

@@ -49,7 +49,7 @@ public class CodeOnlyFileDialog : MonoBehaviour
         { "All Files", new[] { "*" } },
         { "Text Files", new[] { "txt" } },
         { "JSON Files", new[] { "json" } },
-        { "Image Files", new[] { "png", "jpg", "jpeg", "bmp", "tga", "tif", "tiff", "exr", "gif" } }
+        { "Image Files", new[] { "png", "jpg", "jpeg", "bmp", "tga", "tif", "tiff", "exr", "gif", "raw", "cr2", "cr3", "nef", "arw", "dng", "raf", "rw2", "orf", "srw", "pef" } }
     };
 
     // 回调（供外部调用）
