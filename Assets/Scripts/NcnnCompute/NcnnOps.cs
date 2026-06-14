@@ -308,6 +308,7 @@ namespace NcnnCompute
         private readonly int _kConcatPack4Cdhw;
         private readonly int _kBuildSdInpaintInput9Pack4;
         private readonly int _kInterpPack4;
+        private readonly int _kInterpPack4Nearest;
         private readonly int _kInterpPack4Cdhw;
         private readonly int _kInterp2xPack4;
         private readonly int _kInterp2xNearestPack4;
@@ -324,6 +325,7 @@ namespace NcnnCompute
         private readonly int _kAddBiasPack4;
         private readonly int _kBatchNormPack4;
         private readonly int _kLeakyReluPack4;
+        private readonly int _kPReluPack4;
         private readonly int _kAddNoiseBroadcastPack4;
         private readonly int _kClipPack4;
         private readonly int _kSftPack4;
@@ -478,6 +480,7 @@ namespace NcnnCompute
             _kConcatPack4Cdhw = _cs.FindKernel("NcnnConcatPack4CDHW");
             _kBuildSdInpaintInput9Pack4 = _cs.FindKernel("NcnnBuildSdInpaintInput9Pack4");
             _kInterpPack4 = _cs.FindKernel("NcnnInterpPack4");
+            _kInterpPack4Nearest = _cs.FindKernel("NcnnInterpPack4Nearest");
             _kInterpPack4Cdhw = _cs.FindKernel("NcnnInterpPack4CDHW");
             _kInterp2xPack4 = _cs.FindKernel("NcnnInterp2xPack4");
             _kInterp2xNearestPack4 = _cs.FindKernel("NcnnInterp2xNearestPack4");
@@ -494,6 +497,7 @@ namespace NcnnCompute
             _kAddBiasPack4 = _cs.FindKernel("NcnnAddBiasPack4");
             _kBatchNormPack4 = _cs.FindKernel("NcnnBatchNormPack4");
             _kLeakyReluPack4 = _cs.FindKernel("NcnnLeakyReluPack4");
+            _kPReluPack4 = _cs.FindKernel("NcnnPReluPack4");
             _kAddNoiseBroadcastPack4 = _cs.FindKernel("NcnnAddNoiseBroadcastPack4");
             _kClipPack4 = _cs.FindKernel("NcnnClipPack4");
             _kSftPack4 = _cs.FindKernel("NcnnSftPack4");
@@ -868,6 +872,33 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kLeakyReluPack4, "_LreluInArr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kLeakyReluPack4, "_LreluOutArr", output.nameID);
             Dispatch3D(cmd, _kLeakyReluPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
+        }
+
+        public void PReluPack4(RenderTexture input, ComputeBuffer slope, int slopeCount, int packs, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (slope == null) throw new ArgumentNullException(nameof(slope));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_LreluSlope", 0f);
+            _cs.SetInt("_PReluSlopePack4Count", Mathf.Max(1, slopeCount));
+            _cs.SetBuffer(_kPReluPack4, "_PReluSlopePack4Buf", slope);
+            _cs.SetTexture(_kPReluPack4, "_LreluInArr", input);
+            _cs.SetTexture(_kPReluPack4, "_LreluOutArr", output);
+            Dispatch3D(_kPReluPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
+        }
+
+        public void PReluPack4(CommandBuffer cmd, ComputeTexture input, ComputeBuffer slope, int slopeCount, int packs, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (slope == null) throw new ArgumentNullException(nameof(slope));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeFloatParam(_cs, "_LreluSlope", 0f);
+            cmd.SetComputeIntParam(_cs, "_PReluSlopePack4Count", Mathf.Max(1, slopeCount));
+            cmd.SetComputeBufferParam(_cs, _kPReluPack4, "_PReluSlopePack4Buf", slope);
+            cmd.SetComputeTextureParam(_cs, _kPReluPack4, "_LreluInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPReluPack4, "_LreluOutArr", output.nameID);
+            Dispatch3D(cmd, _kPReluPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
         public void AddNoiseBroadcastPack4(RenderTexture inOut, ComputeBuffer noise, float weight, int packs)
@@ -2621,6 +2652,17 @@ namespace NcnnCompute
             Dispatch3D(_kInterpPack4, output.width, output.height, packs, 8, 8);
         }
 
+        public void InterpPack4Nearest(RenderTexture input, int packs, float scaleX, float scaleY, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_InterpScaleFactorX", scaleX);
+            _cs.SetFloat("_InterpScaleFactorY", scaleY);
+            _cs.SetTexture(_kInterpPack4Nearest, "_InterpInArr", input);
+            _cs.SetTexture(_kInterpPack4Nearest, "_InterpOutArr", output);
+            Dispatch3D(_kInterpPack4Nearest, output.width, output.height, packs, 8, 8);
+        }
+
         public void InterpPack4CDHW(
             RenderTexture input,
             int inW,
@@ -2670,6 +2712,18 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_InterpInArr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_InterpOutArr", output.nameID);
             Dispatch3D(cmd, _kInterpPack4, output.width, output.height, packs, 8, 8);
+        }
+
+        public void InterpPack4Nearest(CommandBuffer cmd, ComputeTexture input, int packs, float scaleX, float scaleY, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorX", scaleX);
+            cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorY", scaleY);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_InterpInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_InterpOutArr", output.nameID);
+            Dispatch3D(cmd, _kInterpPack4Nearest, output.width, output.height, packs, 8, 8);
         }
          
         public void Interp2xPack4(CommandBuffer cmd,  ComputeTexture input, int packs, ComputeTexture output)

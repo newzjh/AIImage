@@ -22,29 +22,11 @@ namespace NcnnCompute
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
-            var bufferRefs = context.bufferRefs;
             var bufferViews = context.bufferViews;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-            var tempOwned = context.tempOwned;
-
-            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-            if (srcBuf == null || srcView == null || srcView.dims != 3)
-                throw new InvalidOperationException("PixelShuffle expects dims=3 source: " + layer.name);
 
             var upscaleFactor = layer.GetInt(0, 1);
-            var mode = layer.GetInt(1, 0);
             if (upscaleFactor <= 0)
                 throw new InvalidOperationException("PixelShuffle upscale_factor must be positive: " + layer.name);
-
-            var divisor = upscaleFactor * upscaleFactor;
-            if (srcView.c % divisor != 0)
-                throw new InvalidOperationException("PixelShuffle channel count is not divisible by upscale_factor^2: " + layer.name);
-
-            var outW = srcView.w * upscaleFactor;
-            var outH = srcView.h * upscaleFactor;
-            var outC = srcView.c / divisor;
 
             if (owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
                 && CanUsePack4PixelShuffle(srcTex, srcShape, upscaleFactor))
@@ -109,29 +91,27 @@ namespace NcnnCompute
             var bufferBlobs = context.bufferBlobs;
             var bufferViews = context.bufferViews;
 
-            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, context.tempOwned);
-            var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-            if (srcBuf == null || srcView == null || srcView.dims != 3)
-                throw new InvalidOperationException("PixelShuffle expects dims=3 source: " + layer.name);
-
             var upscaleFactor = layer.GetInt(0, 1);
             var mode = layer.GetInt(1, 0);
             if (upscaleFactor <= 0)
                 throw new InvalidOperationException("PixelShuffle upscale_factor must be positive: " + layer.name);
 
-            var divisor = upscaleFactor * upscaleFactor;
-            if (srcView.c % divisor != 0)
-                throw new InvalidOperationException("PixelShuffle channel count is not divisible by upscale_factor^2: " + layer.name);
-
-            var outW = srcView.w * upscaleFactor;
-            var outH = srcView.h * upscaleFactor;
-            var outC = srcView.c / divisor;
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
                 || !CanUsePack4PixelShuffle(srcTex, srcShape, upscaleFactor))
             {
                 throw new InvalidOperationException("PixelShuffle render-texture path requires supported pack4 input: " + layer.name);
             }
 
+            if (srcShape.dims != 3)
+                throw new InvalidOperationException("PixelShuffle expects dims=3 source: " + layer.name);
+
+            var divisor = upscaleFactor * upscaleFactor;
+            if (srcShape.c % divisor != 0)
+                throw new InvalidOperationException("PixelShuffle channel count is not divisible by upscale_factor^2: " + layer.name);
+
+            var outW = srcShape.w * upscaleFactor;
+            var outH = srcShape.h * upscaleFactor;
+            var outC = srcShape.c / divisor;
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(outC / 4f));
             var outRt = owner.RentTempArray(outW, outH, outPacks, RenderTextureFormat.ARGBHalf);
             owner.Ops.PixelShufflePack4(srcTex.texture, outC, upscaleFactor, mode, outRt);

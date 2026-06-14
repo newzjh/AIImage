@@ -208,6 +208,20 @@ namespace NcnnCompute
                     owner.Ops.InterpDown2Pack4(srcTex.texture, srcTex.packs, outRt);
                 executed = true;
             }
+            else if (resizeTypePack == 1)
+            {
+                var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
+                var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
+                owner.Ops.InterpPack4Nearest(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt);
+                executed = true;
+            }
+            else if (resizeTypePack == 3)
+            {
+                var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
+                var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
+                owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt);
+                executed = true;
+            }
             else if (resizeTypePack != 1 && resizeTypePack != 3)
             {
                 var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
@@ -289,13 +303,69 @@ namespace NcnnCompute
                 return;
             }
 
-            if (resizeType != 1 && resizeType != 3)
+            if (resizeType == 1)
+            {
+                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                var scaleX = outW / (float)Mathf.Max(1, src.width);
+                var scaleY = outH / (float)Mathf.Max(1, src.height);
+                owner.Ops.InterpPack4Nearest(cmd, src.texture, src.packs, scaleX, scaleY, outArr);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outArr,
+                    width = outW,
+                    height = outH,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = outShape,
+                    hasStorageShape = true,
+                    storageShape = outShape
+                };
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+            }
+            else if (resizeType == 3)
             {
                 var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
                 var scaleX = outW / (float)Mathf.Max(1, src.width);
                 var scaleY = outH / (float)Mathf.Max(1, src.height);
                 owner.Ops.InterpPack4(cmd, src.texture, src.packs, scaleX, scaleY, outArr);
-                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = src.packs, refs = 1, owned = true };
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outArr,
+                    width = outW,
+                    height = outH,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = outShape,
+                    hasStorageShape = true,
+                    storageShape = outShape
+                };
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+            }
+            else if (resizeType != 1 && resizeType != 3)
+            {
+                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                var scaleX = outW / (float)Mathf.Max(1, src.width);
+                var scaleY = outH / (float)Mathf.Max(1, src.height);
+                owner.Ops.InterpPack4(cmd, src.texture, src.packs, scaleX, scaleY, outArr);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outArr,
+                    width = outW,
+                    height = outH,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = outShape,
+                    hasStorageShape = true,
+                    storageShape = outShape
+                };
                 if (shapes != null)
                     shapes[layer.topNames[0]] = outShape;
             }
@@ -403,7 +473,7 @@ namespace NcnnCompute
                 return true;
             if (Mathf.Abs(sx - 0.5f) < 1e-3f && Mathf.Abs(sy - 0.5f) < 1e-3f)
                 return true;
-            return resizeType != 1 && resizeType != 3;
+            return resizeType == 0 || resizeType == 1 || resizeType == 2 || resizeType == 3 || resizeType == 4;
         }
 
         private static bool IsCmdInterpNoop(NcnnRepro.BufferShape srcShape, NcnnRepro.BufferShape outShape)

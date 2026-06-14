@@ -2028,9 +2028,15 @@ namespace NcnnCompute
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
             if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
-                return ForwardPack4ByLayerRepros(cmd, inputPack4, inputPacks, inputBlobName, pinnedNames);
+            {
+                var fallbackChannels = string.Equals(inputBlobName, "data", StringComparison.OrdinalIgnoreCase) ? 3 : inputPacks * 4;
+                var inputLogicalShape = new BufferShape(3, inputPack4.width, inputPack4.height, 1, ResolveInputLogicalChannels(inputBlobName, fallbackChannels));
+                return ForwardPack4(cmd, inputPack4, inputLogicalShape, out _, inputBlobName, pinnedNames);
+            }
 
             var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+            var legacyFallbackChannels = string.Equals(inputBlobName, "data", StringComparison.OrdinalIgnoreCase) ? 3 : inputPacks * 4;
+            var legacyInputLogicalShape = new BufferShape(3, inputPack4.width, inputPack4.height, 1, ResolveInputLogicalChannels(inputBlobName, legacyFallbackChannels));
             var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
             {
                 [inputBlobName] = new CmdTensorRef
@@ -2040,7 +2046,11 @@ namespace NcnnCompute
                     height = inputPack4.height,
                     packs = inputPacks,
                     refs = 1,
-                    owned = false
+                    owned = false,
+                    hasLogicalShape = true,
+                    logicalShape = legacyInputLogicalShape,
+                    hasStorageShape = true,
+                    storageShape = legacyInputLogicalShape
                 }
             };
 
@@ -3074,9 +3084,10 @@ namespace NcnnCompute
                 var rt = kv.Value;
                 var packs = rt.volumeDepth > 0 ? rt.volumeDepth : 1;
                 var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
-            var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
-                ? suppliedShape
-                : new BufferShape(3, rt.width, rt.height, 1, ResolveInputLogicalChannels(kv.Key, packs * 4));
+                var fallbackChannels = string.Equals(kv.Key, "data", StringComparison.OrdinalIgnoreCase) ? 3 : packs * 4;
+                var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
+                    ? suppliedShape
+                    : new BufferShape(3, rt.width, rt.height, 1, ResolveInputLogicalChannels(kv.Key, fallbackChannels));
                 packs = GetTexturePackCount(logicalShape, rt);
 
                 var sliceCount = GetTextureSliceCount(logicalShape, rt);
@@ -3119,9 +3130,10 @@ namespace NcnnCompute
                 var texture = kv.Value;
                 var depth = Mathf.Max(1, texture.depth);
                 var useCount = _blobUseCount.TryGetValue(kv.Key, out var c) ? c : 1;
+                var fallbackChannels = string.Equals(kv.Key, "data", StringComparison.OrdinalIgnoreCase) ? 3 : depth * 4;
                 var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
                     ? suppliedShape
-                    : new BufferShape(3, texture.width, texture.height, 1, ResolveInputLogicalChannels(kv.Key, depth * 4));
+                    : new BufferShape(3, texture.width, texture.height, 1, ResolveInputLogicalChannels(kv.Key, fallbackChannels));
                 var packs = logicalShape.dims == 4
                     ? Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f))
                     : depth;

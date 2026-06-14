@@ -361,7 +361,8 @@ namespace NcnnCompute
                                 + " | name=" + (layer?.name ?? string.Empty)
                                 + " | type=" + (layer?.typeName ?? string.Empty)
                                 + " | bottoms=" + DescribeBlobStates(layer?.bottomNames, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs)
-                                + " | tops=" + JoinNames(layer?.topNames),
+                                + " | tops=" + JoinNames(layer?.topNames)
+                                + " | inner=" + e.Message,
                                 e);
                         }
                         finally
@@ -400,7 +401,8 @@ namespace NcnnCompute
                             + " | name=" + (layer?.name ?? string.Empty)
                             + " | type=" + (layer?.typeName ?? string.Empty)
                             + " | bottoms=" + DescribeBlobStates(layer?.bottomNames, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs)
-                            + " | tops=" + JoinNames(layer?.topNames),
+                            + " | tops=" + JoinNames(layer?.topNames)
+                            + " | inner=" + e.Message,
                             e);
                     }
                     finally

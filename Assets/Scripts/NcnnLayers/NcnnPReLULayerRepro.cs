@@ -45,8 +45,7 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.PReluPack pp)
                 throw new InvalidOperationException("PReLU pack not found: " + layer.name);
 
-            if (pp.numSlope == 1
-                && owner.TryGetPack4Texture(
+            if (owner.TryGetPack4Texture(
                     layer.bottomNames[0],
                     context.textureBlobs,
                     context.textureShapes,
@@ -103,8 +102,6 @@ namespace NcnnCompute
         {
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.PReluPack pp)
                 throw new InvalidOperationException("PReLU pack not found: " + layer.name);
-            if (pp.numSlope != 1)
-                throw new InvalidOperationException("PReLU render-texture path requires numSlope == 1: " + layer.name);
 
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
@@ -115,7 +112,10 @@ namespace NcnnCompute
                 throw new InvalidOperationException("PReLU render-texture path requires pack4 texture input: " + layer.name);
 
             var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.LeakyReluPack4(srcTex.texture, pp.slopeCpu[0], srcTex.packs, outRt);
+            if (pp.numSlope == 1)
+                owner.Ops.LeakyReluPack4(srcTex.texture, pp.slopeCpu[0], srcTex.packs, outRt);
+            else
+                owner.Ops.PReluPack4(srcTex.texture, pp.slope, pp.numSlope, srcTex.packs, outRt);
             NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
@@ -133,15 +133,11 @@ namespace NcnnCompute
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
 
-            if (pp.numSlope != 1)
-            {
-                owner.PublishCmdPlaceholder(cmd, layer.topNames[0], srcShape, blobs, shapes);
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                return;
-            }
-
             var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.LeakyReluPack4(cmd, src.texture, pp.slopeCpu[0], src.packs, outArr);
+            if (pp.numSlope == 1)
+                owner.Ops.LeakyReluPack4(cmd, src.texture, pp.slopeCpu[0], src.packs, outArr);
+            else
+                owner.Ops.PReluPack4(cmd, src.texture, pp.slope, pp.numSlope, src.packs, outArr);
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outArr,
@@ -149,7 +145,11 @@ namespace NcnnCompute
                 height = src.height,
                 packs = src.packs,
                 refs = 1,
-                owned = true
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = srcShape,
+                hasStorageShape = true,
+                storageShape = srcShape
             };
             if (shapes != null)
                 shapes[layer.topNames[0]] = srcShape;

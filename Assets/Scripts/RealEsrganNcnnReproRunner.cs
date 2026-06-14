@@ -25,6 +25,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public bool enableGpuLayerProfiling = false;
     public bool enableLayerRuntimeProfile = false;
     public bool syncLayerRuntimeProfile = false;
+    public bool disallowBufferAccess = false;
+    public bool disallowBufferOutputs = false;
+    public bool disallowBufferToTextureMaterialization = false;
 
     public event Action<float, string> ProgressChanged;
 
@@ -606,7 +609,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
             return r;
         }
-        var runFactor = 4;
+        var runFactor = InferModelFactor(modelName);
         var limit = Mathf.Max(256, maxInputLongSide);
         var maxSide = Mathf.Max(originalW, originalH);
         var runInW = originalW;
@@ -757,10 +760,10 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     var swRent = Stopwatch.StartNew();
                     RenderTexture inArr = null;
                     ComputeTexture inArr2 = null;
-                    if (_useCmdThisRun)
-                        inArr2 = _repro.RentTempArray(rowCmd, cw, ch, 1, RenderTextureFormat.ARGBHalf);
-                    else
-                        inArr = _repro.RentTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
+                        if (_useCmdThisRun)
+                            inArr2 = _repro.RentTempArray(rowCmd, cw, ch, 1, RenderTextureFormat.ARGBHalf);
+                        else
+                            inArr = _repro.RentTempArray(cw, ch, 1, RenderTextureFormat.ARGBHalf);
                     rentMs += swRent.ElapsedMilliseconds;
                     ComputeTexture outArr2 = null;
                     RenderTexture outArr = null;
@@ -1240,7 +1243,50 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         _repro.EnableConv1x1TextureConvolution = true;
         _repro.EnableDepthWiseTextureConvolution = true;
         _repro.EnableGeneralTextureConvolution = true;
+        _repro.DisallowBufferAccess = disallowBufferAccess;
+        _repro.DisallowBufferOutputs = disallowBufferOutputs;
+        _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
+        _repro.DisallowInferenceTempComputeBuffers = disallowBufferAccess || disallowBufferOutputs || disallowBufferToTextureMaterialization;
         _repro.gpuLayerProfileEnabled = _gpuLayerProfileEnabled;
+        _repro.DebugLog = line =>
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            if (line.StartsWith("[CmdPlaceholder]", StringComparison.Ordinal)
+                || line.StartsWith("[LayerHeartbeat]", StringComparison.Ordinal)
+                || line.StartsWith("[LayerOutput]", StringComparison.Ordinal)
+                || line.StartsWith("[BufferMaterialize]", StringComparison.Ordinal))
+            {
+                UnityEngine.Debug.Log(line);
+            }
+        };
+    }
+
+    private static int InferModelFactor(string model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+            return 4;
+
+        var s = model.Trim();
+        for (var i = 0; i < s.Length - 1; i++)
+        {
+            if ((s[i] == 'x' || s[i] == 'X') && char.IsDigit(s[i + 1]))
+                return Mathf.Clamp(s[i + 1] - '0', 2, 4);
+            if (char.IsDigit(s[i]) && (s[i + 1] == 'x' || s[i + 1] == 'X'))
+                return Mathf.Clamp(s[i] - '0', 2, 4);
+        }
+
+        return 4;
+    }
+
+    private static int InferInputLogicalChannels(string blobName)
+    {
+        if (string.IsNullOrWhiteSpace(blobName))
+            return 3;
+        if (string.Equals(blobName.Trim(), "data", StringComparison.OrdinalIgnoreCase))
+            return 3;
+        return 4;
     }
 
     

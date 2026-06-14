@@ -1505,9 +1505,20 @@ namespace NcnnCompute
                                                             "[CmdPlaceholder][BinaryOp]"
                                                             + " | layer=" + layer.name
                                                             + " | opType=" + opType.ToString(CultureInfo.InvariantCulture)
+                                                            + " | resizeGuard=" + owner.DisallowBufferAccess.ToString()
                                                             + " | a=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                                                            + " | aTex=" + a.width + "x" + a.height + "x" + a.packs
                                                             + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
+                                                            + " | bTex=" + b.width + "x" + b.height + "x" + b.packs
                                                             + " | out=d" + fallbackShape.dims + ":" + fallbackShape.w + "x" + fallbackShape.h + "x" + fallbackShape.d + "x" + fallbackShape.c);
+                                                        owner.DebugLog?.Invoke(
+                                                            "[CmdPlaceholder][BinaryOpShape]"
+                                                            + " | layer=" + layer.name
+                                                            + " | aStorage=" + NcnnRepro.GetCmdStorageShape(a, aShape)
+                                                            + " | bStorage=" + NcnnRepro.GetCmdStorageShape(b, bShape)
+                                                            + " | aLogical=" + aShape
+                                                            + " | bLogical=" + bShape
+                                                            + " | outLogical=" + fallbackShape);
                                                         if (owner.DisallowBufferAccess || owner.DisallowBufferOutputs || owner.DisallowBufferToTextureMaterialization)
                                                         {
                                                             throw new InvalidOperationException(
