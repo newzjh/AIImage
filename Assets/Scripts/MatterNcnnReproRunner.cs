@@ -100,7 +100,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         {
             EnsureRuntimeObjects();
             ApplyReproOptions();
-            await EnsureLoaded();
+            EnsureLoaded();
             if (_repro?.Model == null)
                 return Finish(new MattingResult { error = "Matting model unavailable" });
 
@@ -265,9 +265,10 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         _repro.ForceBufferConvolution = forceBufferConvolution;
         _repro.UseTextureMaxPoolingInd = useTextureMaxPoolingInd;
         _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        _repro.EnableGeneralTextureConvolution = true;
     }
 
-    private async UniTask EnsureLoaded()
+    private void EnsureLoaded()
     {
         if (_loaded && _repro?.Model != null)
             return;
@@ -279,8 +280,8 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         if (!File.Exists(binPath))
             throw new FileNotFoundException("Matting bin not found", binPath);
 
-        var paramText = await File.ReadAllTextAsync(paramPath);
-        var binBytes = await File.ReadAllBytesAsync(binPath);
+        var paramText = File.ReadAllText(paramPath);
+        var binBytes = File.ReadAllBytes(binPath);
         using var ms = new MemoryStream(binBytes, false);
         using var br = new NcnnBinReader(ms);
         _repro.LoadModel(paramText, br);
