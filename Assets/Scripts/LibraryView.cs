@@ -5,13 +5,20 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UIElements;
+#if UNITY_ANDROID
+using UnityEngine.Android;
+#endif
 
 public sealed class LibraryView : BasePageView
 {
+    private const float ClipEditedMatchThreshold = 0.90f;
+    private const float ClipNearDuplicateOriginalThreshold = 0.985f;
+    private const float ClipNearDuplicateEditedGap = 0.02f;
     private const string PendingText = "\u5F85\u63D0\u53D6";
     private const string PendingClipText = "\u5F85\u63A5\u5165";
     private const string EmptyText = "\u65E0";
@@ -25,6 +32,73 @@ public sealed class LibraryView : BasePageView
         "raw",
         "original"
     };
+    private const string PythonExifExtractorScript = @"import base64, io, json, sys
+from PIL import Image, ExifTags
+
+path = sys.argv[1]
+out_path = sys.argv[2]
+max_edge = max(64, int(sys.argv[3]))
+
+TAGS = ExifTags.TAGS
+GPS_TAGS = ExifTags.GPSTAGS
+
+def rational_to_float(v):
+    try:
+        return float(v)
+    except Exception:
+        try:
+            return float(v[0]) / float(v[1]) if v[1] else None
+        except Exception:
+            return None
+
+def dms_to_deg(values, ref):
+    if not values or len(values) < 3:
+        return None
+    parts = [rational_to_float(v) for v in values[:3]]
+    if any(v is None for v in parts):
+        return None
+    deg = parts[0] + parts[1] / 60.0 + parts[2] / 3600.0
+    if ref in ('S', 'W'):
+        deg = -deg
+    return deg
+
+img = Image.open(path)
+img.load()
+exif_raw = img.getexif()
+exif = {}
+for key, value in exif_raw.items():
+    exif[TAGS.get(key, key)] = value
+
+gps_info = exif.get('GPSInfo') or {}
+gps = {}
+if isinstance(gps_info, dict):
+    for key, value in gps_info.items():
+        gps[GPS_TAGS.get(key, key)] = value
+
+capture = exif.get('DateTimeOriginal') or exif.get('DateTime')
+make = str(exif.get('Make') or '').strip()
+model = str(exif.get('Model') or '').strip()
+camera = (make + ' ' + model).strip() or None
+aperture = rational_to_float(exif.get('FNumber'))
+aperture_text = None if aperture is None else f'f/{aperture:.2f}'.rstrip('0').rstrip('.')
+lat = dms_to_deg(gps.get('GPSLatitude'), gps.get('GPSLatitudeRef'))
+lon = dms_to_deg(gps.get('GPSLongitude'), gps.get('GPSLongitudeRef'))
+location = None if lat is None or lon is None else f'GPS {lat:.4f}, {lon:.4f}'
+
+thumb = img.copy()
+thumb.thumbnail((max_edge, max_edge))
+buf = io.BytesIO()
+thumb.save(buf, format='PNG')
+
+payload = {
+    'thumbnailBase64': base64.b64encode(buf.getvalue()).decode('ascii'),
+    'captureTime': str(capture or ''),
+    'locationText': location or '',
+    'cameraText': camera or '',
+    'apertureText': aperture_text or '',
+}
+with open(out_path, 'w', encoding='utf-8') as f:
+    json.dump(payload, f, ensure_ascii=False)";
     private static readonly ExplorerStringComparer ExplorerComparer = new ExplorerStringComparer();
 
     private enum LibraryImageType
@@ -89,6 +163,22 @@ public sealed class LibraryView : BasePageView
         public string apertureText;
     }
 
+    [Serializable]
+    private sealed class PythonImagePayload
+    {
+        public string thumbnailBase64;
+        public string captureTime;
+        public string locationText;
+        public string cameraText;
+        public string apertureText;
+    }
+
+    private sealed class DirectoryScanResult
+    {
+        public List<ThumbnailEntry> entries = new List<ThumbnailEntry>();
+        public StorageAccessSnapshot accessSnapshot;
+    }
+
     private sealed class OriginalMetadataSnapshot
     {
         public string directoryPath;
@@ -130,6 +220,8 @@ public sealed class LibraryView : BasePageView
     private Toggle _sortLocationToggle;
     private Label _selectionTipsTitle;
     private Label _selectionTipsDetail;
+    private VisualElement _selectionTipsMeta;
+    private Button _mappedOriginalLinkButton;
 
     private readonly List<ThumbnailEntry> _thumbnailEntries = new List<ThumbnailEntry>();
     private readonly List<ThumbnailEntry> _visibleEntries = new List<ThumbnailEntry>();
@@ -145,6 +237,7 @@ public sealed class LibraryView : BasePageView
     private readonly HashSet<string> _hiddenOriginalImportedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly List<StorageRootOption> _storageRoots = new List<StorageRootOption>();
     private readonly SemaphoreSlim _clipClassificationSemaphore = new SemaphoreSlim(1, 1);
+    private readonly Dictionary<string, StorageAccessSnapshot> _storageAccessByPath = new Dictionary<string, StorageAccessSnapshot>(StringComparer.OrdinalIgnoreCase);
     private bool _didInitialPathSync;
     private string _currentDriveRoot;
     private string _selectedDirectoryPath;
@@ -157,6 +250,15 @@ public sealed class LibraryView : BasePageView
     private CancellationTokenSource _clipClassificationCts;
     private int _thumbnailLoadGeneration;
     private int _directoryScanGeneration;
+    private bool _storagePermissionRequestInFlight;
+
+    private sealed class StorageAccessSnapshot
+    {
+        public bool filesAccessible;
+        public bool directoriesAccessible;
+        public bool sawUnauthorized;
+        public bool sawIoError;
+    }
 
     protected override AppPageId? ResolveSwipeTarget(SwipeDirection direction)
     {
@@ -192,7 +294,7 @@ public sealed class LibraryView : BasePageView
     {
         SyncInitialSelectionFromCurrentImagePath();
         PopulateDrives();
-        RestoreSelectionState();
+        RestoreSelectionState().Forget();
         if (!string.IsNullOrWhiteSpace(_materializedDirectoryPath) &&
             string.Equals(_materializedDirectoryPath, _selectedDirectoryPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -362,6 +464,36 @@ public sealed class LibraryView : BasePageView
         _selectionTipsDetail.style.marginTop = 4;
         selectionTips.Add(_selectionTipsDetail);
 
+        _selectionTipsMeta = new VisualElement();
+        _selectionTipsMeta.style.marginTop = 8;
+        _selectionTipsMeta.style.flexDirection = FlexDirection.Row;
+        _selectionTipsMeta.style.alignItems = Align.Center;
+        _selectionTipsMeta.style.flexWrap = Wrap.Wrap;
+        selectionTips.Add(_selectionTipsMeta);
+
+        var mappedOriginalLabel = new Label("\u6620\u5C04\u539F\u56FE:");
+        mappedOriginalLabel.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
+        mappedOriginalLabel.style.marginRight = 8;
+        _selectionTipsMeta.Add(mappedOriginalLabel);
+
+        _mappedOriginalLinkButton = new Button(OnMappedOriginalLinkClicked);
+        _mappedOriginalLinkButton.text = EmptyText;
+        _mappedOriginalLinkButton.style.backgroundColor = Color.clear;
+        _mappedOriginalLinkButton.style.borderBottomWidth = 0;
+        _mappedOriginalLinkButton.style.borderLeftWidth = 0;
+        _mappedOriginalLinkButton.style.borderRightWidth = 0;
+        _mappedOriginalLinkButton.style.borderTopWidth = 0;
+        _mappedOriginalLinkButton.style.paddingLeft = 0;
+        _mappedOriginalLinkButton.style.paddingRight = 0;
+        _mappedOriginalLinkButton.style.paddingTop = 0;
+        _mappedOriginalLinkButton.style.paddingBottom = 0;
+        _mappedOriginalLinkButton.style.marginLeft = 0;
+        _mappedOriginalLinkButton.style.marginRight = 0;
+        _mappedOriginalLinkButton.style.unityTextAlign = TextAnchor.MiddleLeft;
+        _mappedOriginalLinkButton.style.color = new Color(0.42f, 0.77f, 1f, 1f);
+        _mappedOriginalLinkButton.style.display = DisplayStyle.None;
+        _selectionTipsMeta.Add(_mappedOriginalLinkButton);
+
         _thumbnailScroll = new ScrollView(ScrollViewMode.Vertical);
         _thumbnailScroll.style.flexGrow = 1;
         _thumbnailScroll.style.minHeight = 0;
@@ -518,7 +650,7 @@ public sealed class LibraryView : BasePageView
             return;
 
         _drivePopup.SetValueWithoutNotify(preferred.displayName);
-        SetDrive(preferred.rootPath, string.IsNullOrWhiteSpace(_selectedDirectoryPath));
+        SwitchStorageRootAsync(preferred.rootPath, string.IsNullOrWhiteSpace(_selectedDirectoryPath)).Forget();
     }
 
     private void OnStorageRootChanged(string displayName)
@@ -530,7 +662,7 @@ public sealed class LibraryView : BasePageView
         if (option == null || string.IsNullOrWhiteSpace(option.rootPath))
             return;
 
-        SetDrive(option.rootPath, true);
+        SwitchStorageRootAsync(option.rootPath, true).Forget();
     }
 
     private static string GetStorageRootLabel()
@@ -714,6 +846,18 @@ public sealed class LibraryView : BasePageView
         }
     }
 
+    private async UniTaskVoid SwitchStorageRootAsync(string driveRoot, bool autoSelectRoot)
+    {
+        if (string.IsNullOrWhiteSpace(driveRoot))
+            return;
+
+        var accessOk = await EnsureStorageAccessAsync(driveRoot, true);
+        if (!accessOk)
+            return;
+
+        SetDrive(driveRoot, autoSelectRoot);
+    }
+
     private void SetDrive(string driveRoot, bool autoSelectRoot)
     {
         if (string.IsNullOrWhiteSpace(driveRoot) || _directoryTree == null)
@@ -801,15 +945,242 @@ public sealed class LibraryView : BasePageView
         }
     }
 
+    private async UniTask<bool> EnsureStorageAccessAsync(string path, bool showBusy)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+#if UNITY_ANDROID
+        if (!await EnsureAndroidReadPermissionAsync())
+        {
+            ShowToast("无法访问存储，请授予图片或文件读取权限", 2800);
+            return false;
+        }
+#endif
+
+        if (showBusy)
+            ShowBusy("正在检查存储访问...");
+
+        try
+        {
+            var snapshot = await UniTask.RunOnThreadPool(() => ProbeStorageAccess(path));
+            if (snapshot != null)
+                _storageAccessByPath[path] = snapshot;
+
+            if (snapshot == null)
+                return false;
+
+            if (!snapshot.directoriesAccessible && !snapshot.filesAccessible)
+            {
+                ShowToast("当前存储位置无法访问", 2600);
+                return false;
+            }
+
+            if (snapshot.directoriesAccessible && !snapshot.filesAccessible)
+            {
+                ShowToast("目录可见，但当前系统未返回文件列表", 2800);
+            }
+
+            return true;
+        }
+        catch
+        {
+            ShowToast("检查存储访问失败", 2400);
+            return false;
+        }
+        finally
+        {
+            if (showBusy)
+                HideBusy();
+        }
+    }
+
+#if UNITY_ANDROID
+    private async UniTask<bool> EnsureAndroidReadPermissionAsync()
+    {
+        if (Permission.HasUserAuthorizedPermission(Permission.ExternalStorageRead))
+            return true;
+
+        var readMediaImages = "android.permission.READ_MEDIA_IMAGES";
+        if (Permission.HasUserAuthorizedPermission(readMediaImages))
+            return true;
+
+        if (_storagePermissionRequestInFlight)
+        {
+            await UniTask.WaitWhile(() => _storagePermissionRequestInFlight);
+            return Permission.HasUserAuthorizedPermission(Permission.ExternalStorageRead) ||
+                   Permission.HasUserAuthorizedPermission(readMediaImages);
+        }
+
+        _storagePermissionRequestInFlight = true;
+        try
+        {
+            var callbacks = new PermissionCallbacks();
+            var granted = false;
+            var finished = false;
+
+            callbacks.PermissionGranted += _ =>
+            {
+                granted = true;
+                finished = true;
+            };
+            callbacks.PermissionDenied += _ => finished = true;
+            callbacks.PermissionDeniedAndDontAskAgain += _ => finished = true;
+
+            try
+            {
+                Permission.RequestUserPermission(readMediaImages, callbacks);
+            }
+            catch
+            {
+                Permission.RequestUserPermission(Permission.ExternalStorageRead, callbacks);
+            }
+
+            await UniTask.WaitUntil(() => finished);
+            if (granted)
+                return true;
+
+            if (!Permission.HasUserAuthorizedPermission(readMediaImages))
+            {
+                finished = false;
+                granted = false;
+                callbacks = new PermissionCallbacks();
+                callbacks.PermissionGranted += _ =>
+                {
+                    granted = true;
+                    finished = true;
+                };
+                callbacks.PermissionDenied += _ => finished = true;
+                callbacks.PermissionDeniedAndDontAskAgain += _ => finished = true;
+                Permission.RequestUserPermission(Permission.ExternalStorageRead, callbacks);
+                await UniTask.WaitUntil(() => finished);
+            }
+
+            return granted || Permission.HasUserAuthorizedPermission(Permission.ExternalStorageRead) ||
+                   Permission.HasUserAuthorizedPermission(readMediaImages);
+        }
+        finally
+        {
+            _storagePermissionRequestInFlight = false;
+        }
+    }
+#endif
+
+    private StorageAccessSnapshot GetStorageAccessSnapshot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        if (_storageAccessByPath.TryGetValue(path, out var snapshot))
+            return snapshot;
+
+        return null;
+    }
+
+    private void MaybeShowStorageAccessToast(string directoryPath)
+    {
+        var snapshot = GetStorageAccessSnapshot(directoryPath);
+        if (snapshot == null)
+            return;
+
+        if (snapshot.directoriesAccessible && !snapshot.filesAccessible)
+        {
+            ShowToast("该目录可展开，但当前系统未返回文件列表", 2800);
+            return;
+        }
+
+        if (snapshot.sawUnauthorized)
+        {
+            ShowToast("当前目录没有读取权限", 2600);
+            return;
+        }
+
+        if (snapshot.sawIoError)
+            ShowToast("读取目录内容失败", 2400);
+    }
+
+    private static StorageAccessSnapshot ProbeStorageAccess(string path)
+    {
+        var snapshot = new StorageAccessSnapshot();
+        if (string.IsNullOrWhiteSpace(path))
+            return snapshot;
+
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                snapshot.directoriesAccessible = true;
+                try
+                {
+                    Directory.EnumerateDirectories(path).Take(1).ToArray();
+                    snapshot.directoriesAccessible = true;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    snapshot.sawUnauthorized = true;
+                    snapshot.directoriesAccessible = false;
+                }
+                catch (IOException)
+                {
+                    snapshot.sawIoError = true;
+                    snapshot.directoriesAccessible = false;
+                }
+
+                try
+                {
+                    Directory.EnumerateFiles(path).Take(1).ToArray();
+                    snapshot.filesAccessible = true;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    snapshot.sawUnauthorized = true;
+                    snapshot.filesAccessible = false;
+                }
+                catch (IOException)
+                {
+                    snapshot.sawIoError = true;
+                    snapshot.filesAccessible = false;
+                }
+            }
+            else if (File.Exists(path))
+            {
+                snapshot.filesAccessible = true;
+                snapshot.directoriesAccessible = true;
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            snapshot.sawUnauthorized = true;
+        }
+        catch (IOException)
+        {
+            snapshot.sawIoError = true;
+        }
+
+        return snapshot;
+    }
+
     private void OnDirectorySelectionChanged(IEnumerable<object> selectedItems)
     {
         var first = selectedItems.FirstOrDefault();
         if (first is not DirectoryEntryData entry || entry.isPlaceholder || string.IsNullOrWhiteSpace(entry.path))
             return;
 
-        _selectedDirectoryPath = entry.path;
-        _directorySummary.text = entry.path;
-        RefreshThumbnailGrid(entry.path, !string.Equals(_materializedDirectoryPath, entry.path, StringComparison.OrdinalIgnoreCase));
+        SelectDirectoryAsync(entry.path).Forget();
+    }
+
+    private async UniTaskVoid SelectDirectoryAsync(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            return;
+
+        var accessOk = await EnsureStorageAccessAsync(directoryPath, false);
+        if (!accessOk)
+            return;
+
+        _selectedDirectoryPath = directoryPath;
+        _directorySummary.text = directoryPath;
+        RefreshThumbnailGrid(directoryPath, !string.Equals(_materializedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase));
     }
 
     private void RefreshThumbnailGrid(string directoryPath, bool forceRescan)
@@ -844,9 +1215,12 @@ public sealed class LibraryView : BasePageView
             {
                 RegisterHiddenOriginalDirectories(directoryPath);
 
-                var files = await UniTask.RunOnThreadPool(
+                var scanResult = await UniTask.RunOnThreadPool(
                     () => ScanDirectoryEntries(directoryPath),
                     cancellationToken: cancellationToken);
+                var files = scanResult?.entries ?? new List<ThumbnailEntry>();
+                if (scanResult?.accessSnapshot != null)
+                    _storageAccessByPath[directoryPath] = scanResult.accessSnapshot;
 
                 if (cancellationToken.IsCancellationRequested ||
                     generation != _directoryScanGeneration ||
@@ -858,6 +1232,9 @@ public sealed class LibraryView : BasePageView
                     _entryByPath[entry.fullPath] = entry;
 
                 await ImportHiddenOriginalDirectoriesAsync(directoryPath, cancellationToken);
+
+                if (files.Count == 0)
+                    MaybeShowStorageAccessToast(directoryPath);
             }
             catch (OperationCanceledException)
             {
@@ -1034,7 +1411,8 @@ public sealed class LibraryView : BasePageView
         var cancellationToken = _thumbnailLoadCts.Token;
         foreach (var entry in _visibleEntries)
         {
-            if (entry.thumbnail == null || entry.clipClassificationLoading || entry.clipClassificationReady)
+            var needsEmbeddingUpgrade = NeedsClipEmbeddingUpgrade(entry);
+            if (entry.thumbnail == null || entry.clipClassificationLoading || (entry.clipClassificationReady && !needsEmbeddingUpgrade))
                 continue;
 
             StartClipClassificationForEntry(entry, cancellationToken).Forget();
@@ -1098,8 +1476,34 @@ public sealed class LibraryView : BasePageView
             $"\u76F8\u673A: {NormalizeDisplay(cameraText)}\n" +
             $"\u5149\u5708: {NormalizeDisplay(apertureText)}\n" +
             $"\u4EBA\u8138: {NormalizeDisplay(entry.faceText)}\n" +
-            $"\u6620\u5C04\u539F\u56FE: {NormalizeDisplay(mappedOriginalText)}\n" +
             $"CLIP: {NormalizeDisplay(entry.clipText)}";
+
+        if (_mappedOriginalLinkButton != null)
+        {
+            var canOpenMappedOriginal = entry.type == LibraryImageType.Edited &&
+                                        !string.IsNullOrWhiteSpace(entry.mappedOriginalPath) &&
+                                        File.Exists(entry.mappedOriginalPath);
+            _mappedOriginalLinkButton.text = NormalizeDisplay(mappedOriginalText);
+            _mappedOriginalLinkButton.style.display = DisplayStyle.Flex;
+            _mappedOriginalLinkButton.SetEnabled(canOpenMappedOriginal);
+            _mappedOriginalLinkButton.style.color = canOpenMappedOriginal
+                ? new Color(0.42f, 0.77f, 1f, 1f)
+                : new Color(0.82f, 0.86f, 0.92f, 1f);
+        }
+    }
+
+    private void OnMappedOriginalLinkClicked()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedThumbnailPath) ||
+            !_entryByPath.TryGetValue(_selectedThumbnailPath, out var entry) ||
+            entry == null ||
+            string.IsNullOrWhiteSpace(entry.mappedOriginalPath))
+        {
+            ShowToast("\u6CA1\u6709\u53EF\u5B9A\u4F4D\u7684\u539F\u56FE", 2200);
+            return;
+        }
+
+        RevealFileInShell(entry.mappedOriginalPath);
     }
 
     private void StartThumbnailRefresh()
@@ -1223,12 +1627,12 @@ public sealed class LibraryView : BasePageView
         if (ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out var cached))
         {
             ApplyClipClassification(entry, cached);
-            needsEmbeddingUpgrade = ClipClassificationCache.NeedsEmbeddingUpgradeForFile(Host.ClipRunner, entry.fullPath);
+            needsEmbeddingUpgrade = NeedsClipEmbeddingUpgrade(entry);
             if (!needsEmbeddingUpgrade)
                 return;
         }
 
-        if (entry.clipClassificationLoading || entry.clipClassificationReady)
+        if (entry.clipClassificationLoading || (entry.clipClassificationReady && !needsEmbeddingUpgrade))
             return;
 
         entry.clipClassificationLoading = true;
@@ -1291,7 +1695,7 @@ public sealed class LibraryView : BasePageView
         entry.clipBaseText = string.IsNullOrWhiteSpace(top) ? best : (best + "  " + top);
         entry.clipText = entry.clipBaseText;
         entry.faceText = best;
-        entry.clipClassificationReady = true;
+        entry.clipClassificationReady = HasClipEmbedding(result);
         ApplyTypeFromClipMapping(entry);
 
         if (_sortFaceToggle?.value == true)
@@ -1302,6 +1706,19 @@ public sealed class LibraryView : BasePageView
 
         if (string.Equals(_selectedThumbnailPath, entry.fullPath, StringComparison.OrdinalIgnoreCase))
             UpdateSelectionTips(entry);
+    }
+
+    private bool NeedsClipEmbeddingUpgrade(ThumbnailEntry entry)
+    {
+        return entry != null &&
+               Host?.ClipRunner != null &&
+               !string.IsNullOrWhiteSpace(entry.fullPath) &&
+               ClipClassificationCache.NeedsEmbeddingUpgradeForFile(Host.ClipRunner, entry.fullPath);
+    }
+
+    private static bool HasClipEmbedding(ClipClassificationResult result)
+    {
+        return result.imageEmbedding != null && result.imageEmbedding.Length > 0;
     }
 
     private void UpdateThumbnailVisuals(ThumbnailEntry entry)
@@ -1332,7 +1749,7 @@ public sealed class LibraryView : BasePageView
             UpdateSelectionTips(entry);
     }
 
-    private void RestoreSelectionState()
+    private async UniTaskVoid RestoreSelectionState()
     {
         if (string.IsNullOrWhiteSpace(_selectedDirectoryPath) || !Directory.Exists(_selectedDirectoryPath))
             return;
@@ -1345,6 +1762,8 @@ public sealed class LibraryView : BasePageView
                 var option = _storageRoots.FirstOrDefault(item => string.Equals(item.rootPath, root, StringComparison.OrdinalIgnoreCase));
                 if (option != null)
                     _drivePopup.SetValueWithoutNotify(option.displayName);
+                if (!await EnsureStorageAccessAsync(root, false))
+                    return;
                 SetDrive(root, false);
             }
 
@@ -1481,11 +1900,16 @@ public sealed class LibraryView : BasePageView
         _hiddenOriginalImportedDirectories.Clear();
     }
 
-    private static List<ThumbnailEntry> ScanDirectoryEntries(string directoryPath)
+    private static DirectoryScanResult ScanDirectoryEntries(string directoryPath)
     {
+        var result = new DirectoryScanResult
+        {
+            accessSnapshot = new StorageAccessSnapshot()
+        };
+
         try
         {
-            return Directory.EnumerateFiles(directoryPath)
+            result.entries = Directory.EnumerateFiles(directoryPath)
                 .Where(IsImageFile)
                 .Select(path =>
                 {
@@ -1504,15 +1928,32 @@ public sealed class LibraryView : BasePageView
                 })
                 .OrderBy(entry => entry.fileName, ExplorerComparer)
                 .ToList();
+            result.accessSnapshot.filesAccessible = true;
+            result.accessSnapshot.directoriesAccessible = true;
+            return result;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            result.accessSnapshot.sawUnauthorized = true;
+            return result;
+        }
+        catch (IOException)
+        {
+            result.accessSnapshot.sawIoError = true;
+            return result;
         }
         catch
         {
-            return new List<ThumbnailEntry>();
+            result.accessSnapshot.sawIoError = true;
+            return result;
         }
     }
 
     private static ThumbnailPayload LoadThumbnailPayload(string filePath, int maxEdge)
     {
+        if (TryLoadThumbnailPayloadWithPythonExif(filePath, maxEdge, out var pythonPayload))
+            return pythonPayload;
+
         if (RawPhotoParser.IsRawExtension(filePath) &&
             RawPhotoParser.TryParse(filePath, out var rawPhoto))
         {
@@ -1533,6 +1974,68 @@ public sealed class LibraryView : BasePageView
         {
             thumbnailBytes = LoadImageBytes(filePath)
         };
+    }
+
+    private static bool TryLoadThumbnailPayloadWithPythonExif(string filePath, int maxEdge, out ThumbnailPayload payload)
+    {
+        payload = null;
+        if (string.IsNullOrWhiteSpace(filePath) ||
+            !File.Exists(filePath) ||
+            RawPhotoParser.IsRawExtension(filePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var tempDir = Path.Combine(Application.temporaryCachePath, "libraryview_pyexif");
+            Directory.CreateDirectory(tempDir);
+
+            var scriptPath = Path.Combine(tempDir, "extract_image_payload.py");
+            if (!File.Exists(scriptPath))
+                File.WriteAllText(scriptPath, PythonExifExtractorScript);
+
+            var outputPath = Path.Combine(tempDir, Guid.NewGuid().ToString("N") + ".json");
+            var quotedArgs =
+                "\"" + scriptPath + "\" \"" + filePath + "\" \"" + outputPath + "\" " + Mathf.Max(64, maxEdge).ToString(CultureInfo.InvariantCulture);
+            using var process = Process.Start(new ProcessStartInfo("python", quotedArgs)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+            if (process == null)
+                return false;
+
+            process.WaitForExit(12000);
+            if (!process.HasExited || process.ExitCode != 0 || !File.Exists(outputPath))
+                return false;
+
+            var json = File.ReadAllText(outputPath);
+            if (string.IsNullOrWhiteSpace(json))
+                return false;
+
+            var dto = JsonUtility.FromJson<PythonImagePayload>(json);
+            if (dto == null)
+                return false;
+
+            payload = new ThumbnailPayload
+            {
+                thumbnailBytes = string.IsNullOrWhiteSpace(dto.thumbnailBase64) ? null : Convert.FromBase64String(dto.thumbnailBase64),
+                captureTime = ParsePythonCaptureTime(dto.captureTime),
+                locationText = string.IsNullOrWhiteSpace(dto.locationText) ? null : dto.locationText,
+                cameraText = string.IsNullOrWhiteSpace(dto.cameraText) ? null : dto.cameraText,
+                apertureText = string.IsNullOrWhiteSpace(dto.apertureText) ? null : dto.apertureText
+            };
+
+            try { File.Delete(outputPath); } catch { }
+            return payload.thumbnailBytes != null && payload.thumbnailBytes.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void ApplyPayloadMetadata(ThumbnailEntry entry, ThumbnailPayload payload)
@@ -1612,6 +2115,24 @@ public sealed class LibraryView : BasePageView
             TryDispose(image);
             stream?.Dispose();
         }
+    }
+
+    private static DateTime? ParsePythonCaptureTime(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        if (DateTime.TryParseExact(
+                text.Trim(),
+                new[] { "yyyy:MM:dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-ddTHH:mm:ss" },
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var value))
+        {
+            return value;
+        }
+
+        return null;
     }
 
     private static Type ResolveSystemDrawingType(string fullName)
@@ -1943,9 +2464,12 @@ public sealed class LibraryView : BasePageView
         List<ThumbnailEntry> originals;
         try
         {
-            originals = await UniTask.RunOnThreadPool(
+            var scanResult = await UniTask.RunOnThreadPool(
                 () => ScanDirectoryEntries(directoryPath),
                 cancellationToken: cancellationToken);
+            originals = scanResult?.entries ?? new List<ThumbnailEntry>();
+            if (scanResult?.accessSnapshot != null)
+                _storageAccessByPath[directoryPath] = scanResult.accessSnapshot;
         }
         catch
         {
@@ -2099,6 +2623,16 @@ public sealed class LibraryView : BasePageView
             return;
         }
 
+        if (HasStrongOriginalMetadata(entry))
+        {
+            entry.type = LibraryImageType.Original;
+            entry.metadataOriginalScore = Mathf.Max(entry.metadataOriginalScore, 0.62f);
+            ClearMappedOriginal(entry);
+            RememberOriginalMetadata(entry);
+            RefreshEditedMappingsForKnownOriginal(entry);
+            return;
+        }
+
         if (!ClipClassificationCache.TryGetImageRecordForFile(Host.ClipRunner, entry.fullPath, out var sourceRecord))
             return;
 
@@ -2139,7 +2673,17 @@ public sealed class LibraryView : BasePageView
         }
 
         var best = ClipImageSimilarity.FindBestMatch(sourceRecord, originalCandidates);
-        if (best == null || best.target == null || best.cosineSimilarity < 0.935f)
+        if (best != null && best.target != null && ShouldTreatAsOriginalFromSimilarity(entry, best))
+        {
+            entry.type = LibraryImageType.Original;
+            entry.metadataOriginalScore = Mathf.Max(entry.metadataOriginalScore, 0.62f);
+            ClearMappedOriginal(entry);
+            RememberOriginalMetadata(entry);
+            RefreshEditedMappingsForKnownOriginal(entry);
+            return;
+        }
+
+        if (best == null || best.target == null || best.cosineSimilarity < ClipEditedMatchThreshold)
         {
             if (entry.type != LibraryImageType.RawOriginal && entry.metadataOriginalScore < 0.62f)
             {
@@ -2167,6 +2711,55 @@ public sealed class LibraryView : BasePageView
             ApplyMappedOriginalSnapshot(entry, best.target.filePath);
             entry.clipText = BuildMappedClipText(entry.clipBaseText, best.cosineSimilarity, entry.mappedOriginalName);
         }
+    }
+
+    private bool ShouldTreatAsOriginalFromSimilarity(ThumbnailEntry entry, ClipImageSimilarity.SimilarImageMatch best)
+    {
+        if (entry == null || best?.target == null)
+            return false;
+
+        if (best.cosineSimilarity < ClipNearDuplicateOriginalThreshold)
+            return false;
+
+        if (entry.metadataOriginalScore >= 0.62f)
+            return true;
+
+        var targetPath = best.target.filePath;
+        if (string.IsNullOrWhiteSpace(targetPath))
+            return false;
+
+        var sourceName = entry.fileName ?? string.Empty;
+        var targetName = Path.GetFileName(targetPath) ?? string.Empty;
+        if (!string.Equals(sourceName, targetName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (IsHiddenOriginalSourcePath(entry.fullPath))
+            return true;
+
+        var sourceLength = entry.fileSize;
+        long targetLength = 0;
+        if (_entryByPath.TryGetValue(targetPath, out var targetEntry) && targetEntry != null)
+            targetLength = targetEntry.fileSize;
+        else
+        {
+            try
+            {
+                var info = new FileInfo(targetPath);
+                targetLength = info.Exists ? info.Length : 0;
+            }
+            catch
+            {
+            }
+        }
+
+        if (sourceLength > 0 && targetLength > 0)
+        {
+            var ratio = Mathf.Abs(sourceLength - targetLength) / (float)Mathf.Max(sourceLength, targetLength);
+            if (ratio <= ClipNearDuplicateEditedGap)
+                return true;
+        }
+
+        return false;
     }
 
     private static string BuildMappedClipText(string currentClipText, float similarity, string originalName)
@@ -2202,6 +2795,24 @@ public sealed class LibraryView : BasePageView
             score -= 0.25f;
 
         return Mathf.Clamp01(score);
+    }
+
+    private static bool HasStrongOriginalMetadata(ThumbnailEntry entry)
+    {
+        if (entry == null)
+            return false;
+
+        var strongSignals = 0;
+        if (entry.captureTime.HasValue)
+            strongSignals++;
+        if (HasUsableMetadata(entry.cameraText))
+            strongSignals++;
+        if (HasUsableMetadata(entry.apertureText))
+            strongSignals++;
+        if (HasUsableMetadata(entry.locationText))
+            strongSignals++;
+
+        return strongSignals >= 2;
     }
 
     private void RememberOriginalMetadata(ThumbnailEntry entry)
@@ -2299,6 +2910,43 @@ public sealed class LibraryView : BasePageView
 
         return _hiddenOriginalDirectoryPaths.Contains(candidateDirectory) &&
                IsSameDirectoryOrChildOf(candidateDirectory, selectedDirectory);
+    }
+
+    private void RevealFileInShell(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        if (!File.Exists(path))
+        {
+            ShowToast("\u539F\u56FE\u6587\u4EF6\u4E0D\u5B58\u5728", 2200);
+            return;
+        }
+
+        try
+        {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            Process.Start(new ProcessStartInfo("explorer.exe", "/select," + "\"" + path + "\"") { UseShellExecute = true });
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+            Process.Start(new ProcessStartInfo("open", "-R \"" + path + "\"") { UseShellExecute = false });
+#elif UNITY_EDITOR
+            UnityEditor.EditorUtility.RevealInFinder(path);
+#elif UNITY_STANDALONE_LINUX
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Process.Start(new ProcessStartInfo("xdg-open", "\"" + directory + "\"") { UseShellExecute = false });
+#elif UNITY_ANDROID || UNITY_IOS
+            var url = "file://" + path.Replace('\\', '/');
+            Application.OpenURL(url);
+#else
+            var url = "file://" + path.Replace('\\', '/');
+            Application.OpenURL(url);
+#endif
+        }
+        catch
+        {
+            ShowToast("\u65E0\u6CD5\u6253\u5F00\u539F\u56FE\u4F4D\u7F6E", 2200);
+        }
     }
 
     private static bool IsRawOriginalFile(string filePath)
