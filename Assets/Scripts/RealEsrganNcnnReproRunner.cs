@@ -33,6 +33,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private NcnnRepro _repro;
     private bool _loaded;
+    private string _loadedModelName;
     private bool _useCmdThisRun;
     private string _lastLayerRuntimeProfileText;
     private readonly Dictionary<string, GpuLayerProfileStat> _gpuLayerProfileStats = new Dictionary<string, GpuLayerProfileStat>(StringComparer.Ordinal);
@@ -1119,6 +1120,14 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private async UniTask EnsureLoaded()
     {
+        var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
+        if (_loaded && !string.Equals(_loadedModelName, model, StringComparison.Ordinal))
+        {
+            try { _repro?.Release(); } catch { }
+            _loaded = false;
+            _loadedModelName = null;
+        }
+
         if (_loaded)
             return;
 
@@ -1132,7 +1141,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
         EnsureRuntimeObjects();
 
-        var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
         var paramPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".param");
         var binPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".bin");
 
@@ -1214,6 +1222,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         await YieldIfNeeded();
 
         _loaded = true;
+        _loadedModelName = model;
         try
         {
             UnityEngine.Debug.Log("[RealESRGAN(repro)] loading model done");

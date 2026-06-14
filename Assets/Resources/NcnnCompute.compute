@@ -31,6 +31,7 @@
 #pragma kernel NcnnConcatPack4CDHW
 #pragma kernel NcnnBuildSdInpaintInput9Pack4
 #pragma kernel NcnnInterpPack4
+#pragma kernel NcnnInterpPack4Nearest
 #pragma kernel NcnnInterpPack4CDHW
 #pragma kernel NcnnInterp2xPack4
 #pragma kernel NcnnInterp2xNearestPack4
@@ -47,6 +48,7 @@
 #pragma kernel NcnnAddBiasPack4
 #pragma kernel NcnnBatchNormPack4
 #pragma kernel NcnnLeakyReluPack4
+#pragma kernel NcnnPReluPack4
 #pragma kernel NcnnAddNoiseBroadcastPack4
 #pragma kernel NcnnClipPack4
 #pragma kernel NcnnSftPack4
@@ -1468,6 +1470,32 @@ void NcnnInterp2xPack4(uint3 id : SV_DispatchThreadID)
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = v;
 }
 
+[numthreads(8,8,1)]
+void NcnnInterpPack4Nearest(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _InterpOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)od) return;
+
+    uint iw, ih, idd;
+    _InterpInArr.GetDimensions(iw, ih, idd);
+    if (iw == 0 || ih == 0)
+    {
+        _InterpOutArr[int3((int)id.x, (int)id.y, p)] = 0.0;
+        return;
+    }
+
+    float sxScale = max(_InterpScaleFactorX, 1e-6);
+    float syScale = max(_InterpScaleFactorY, 1e-6);
+    int sx = min((int)(((float)id.x + 0.5) / sxScale), (int)iw - 1);
+    int sy = min((int)(((float)id.y + 0.5) / syScale), (int)ih - 1);
+    sx = max(0, sx);
+    sy = max(0, sy);
+    _InterpOutArr[int3((int)id.x, (int)id.y, p)] = _InterpInArr[int3(sx, sy, p)];
+}
+
 RWTexture2DArray<float4> _InterpNnOutArr;
 Texture2DArray<float4> _InterpNnInArr;
 
@@ -2314,6 +2342,8 @@ void NcnnBatchNormPack4(uint3 id : SV_DispatchThreadID)
 Texture2DArray<float4> _LreluInArr;
 RWTexture2DArray<float4> _LreluOutArr;
 float _LreluSlope;
+StructuredBuffer<float> _PReluSlopePack4Buf;
+int _PReluSlopePack4Count;
 
 [numthreads(8,8,1)]
 void NcnnLeakyReluPack4(uint3 id : SV_DispatchThreadID)
@@ -2325,6 +2355,27 @@ void NcnnLeakyReluPack4(uint3 id : SV_DispatchThreadID)
     if (p < 0 || p >= (int)d) return;
     float4 v = _LreluInArr[int3((int)id.x, (int)id.y, p)];
     float4 o = max(v, 0.0) + min(v, 0.0) * _LreluSlope;
+    _LreluOutArr[int3((int)id.x, (int)id.y, p)] = o;
+}
+
+[numthreads(8,8,1)]
+void NcnnPReluPack4(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _LreluOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h) return;
+    int p = (int)id.z;
+    if (p < 0 || p >= (int)d) return;
+
+    float4 v = _LreluInArr[int3((int)id.x, (int)id.y, p)];
+    int baseChannel = p * 4;
+    float4 slope = float4(
+        _PReluSlopePack4Count > 0 ? _PReluSlopePack4Buf[clamp(baseChannel + 0, 0, _PReluSlopePack4Count - 1)] : _LreluSlope,
+        _PReluSlopePack4Count > 0 ? _PReluSlopePack4Buf[clamp(baseChannel + 1, 0, _PReluSlopePack4Count - 1)] : _LreluSlope,
+        _PReluSlopePack4Count > 0 ? _PReluSlopePack4Buf[clamp(baseChannel + 2, 0, _PReluSlopePack4Count - 1)] : _LreluSlope,
+        _PReluSlopePack4Count > 0 ? _PReluSlopePack4Buf[clamp(baseChannel + 3, 0, _PReluSlopePack4Count - 1)] : _LreluSlope
+    );
+    float4 o = max(v, 0.0) + min(v, 0.0) * slope;
     _LreluOutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
@@ -3624,11 +3675,11 @@ void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
     src1 = clamp(src1, int2(0, 0), srcLimit);
 
     float4 v00 = _NcnnInArr[int3(src0.x, src0.y, 0)];
-    //float4 v10 = _NcnnInArr[int3(src1.x, src0.y, 0)];
-    //float4 v01 = _NcnnInArr[int3(src0.x, src1.y, 0)];
-    //float4 v11 = _NcnnInArr[int3(src1.x, src1.y, 0)];
+    float4 v10 = _NcnnInArr[int3(src1.x, src0.y, 0)];
+    float4 v01 = _NcnnInArr[int3(src0.x, src1.y, 0)];
+    float4 v11 = _NcnnInArr[int3(src1.x, src1.y, 0)];
 
-    float4 v = v00;//lerp(lerp(v00, v10, t.x), lerp(v01, v11, t.x), t.y);
+    float4 v = lerp(lerp(v00, v10, t.x), lerp(v01, v11, t.x), t.y);
     v.w = 1.0;
     _NcnnOut[Dst] = v;
 }
@@ -8037,3 +8088,4 @@ void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
     if (id.x >= w || id.y >= h) return;
     _NcnnOut[int2(id.x, id.y)] = _NcnnIn[int2(id.x, id.y)];
 }
+
