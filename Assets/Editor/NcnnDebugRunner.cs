@@ -23,7 +23,11 @@ public static class NcnnDebugRunner
     private const string StressCountEnvVar = "AIIMAGE_STRESS_COUNT";
     private const string StressInputDirEnvVar = "AIIMAGE_STRESS_INPUT_DIR";
     private const string RealEsrganInputDirEnvVar = "AIIMAGE_ESRGAN_INPUT_DIR";
+    private const string RealEsrganModelEnvVar = "AIIMAGE_ESRGAN_MODEL";
+    private const string RealEsrganModelsEnvVar = "AIIMAGE_ESRGAN_MODELS";
     private const string RealEsrganUseCommandBufferEnvVar = "AIIMAGE_ESRGAN_USE_COMMAND_BUFFER";
+    private const string RealEsrganPack4OnlyGuardEnvVar = "AIIMAGE_ESRGAN_PACK4_ONLY_GUARD";
+    private const string RealEsrganValidationReuseRunnerEnvVar = "AIIMAGE_ESRGAN_REUSE_RUNNER";
     private const string RealEsrganCompareThresholdEnvVar = "AIIMAGE_ESRGAN_COMPARE_THRESHOLD";
     private const string RealEsrganMaxElapsedMsEnvVar = "AIIMAGE_ESRGAN_MAX_ELAPSED_MS";
     private const string ClipInputDirEnvVar = "AIIMAGE_CLIP_INPUT_DIR";
@@ -2069,118 +2073,130 @@ public static class NcnnDebugRunner
             throw new InvalidOperationException("Repro suite stress had failures: " + string.Join(" | ", failures));
     }
 
+    private sealed class RealEsrganValidationRunOptions
+    {
+        public string modelName;
+        public bool useCommandBuffer;
+        public bool pack4OnlyGuard;
+        public bool reusePersistentRunner;
+    }
+
     private static async UniTask RunRealEsrganValidationInternal()
     {
-        var inputDir = ResolveRealEsrganInputDirectory();
-        if (string.IsNullOrWhiteSpace(inputDir) || !Directory.Exists(inputDir))
-            throw new InvalidOperationException("RealESRGAN input dir not found: " + (inputDir ?? ""));
-
-        var inputPaths = new[]
-        {
-            Path.Combine(inputDir, "02.png"),
-            Path.Combine(inputDir, "03.jpg")
-        };
-
-        for (var i = 0; i < inputPaths.Length; i++)
-        {
-            if (!File.Exists(inputPaths[i]))
-                throw new InvalidOperationException("RealESRGAN validation input missing: " + inputPaths[i]);
-        }
-
+        var inputPaths = ResolveRealEsrganValidationInputPaths();
+        var models = ResolveRealEsrganValidationModels();
         var maxElapsedMs = ResolvePositiveIntEnv(RealEsrganMaxElapsedMsEnvVar, 20000);
         var compareThreshold = ResolveFloatEnvOrDefault(RealEsrganCompareThresholdEnvVar, 0f);
         var forcedUseCommandBuffer = ResolveOptionalBoolEnv(RealEsrganUseCommandBufferEnvVar);
         var runImmediate = !forcedUseCommandBuffer.HasValue || !forcedUseCommandBuffer.Value;
         var runCommandBuffer = !forcedUseCommandBuffer.HasValue || forcedUseCommandBuffer.Value;
+        var pack4OnlyGuard = ResolveBoolEnv(RealEsrganPack4OnlyGuardEnvVar, false);
+        var reuseRunner = ResolveBoolEnv(RealEsrganValidationReuseRunnerEnvVar, false);
+        var pathKind = pack4OnlyGuard ? "pack4_rt" : "default";
         var dumpDir = CreateGenericDumpDir("AIImage_RealEsrganValidation");
         var summaryPath = Path.Combine(dumpDir, "summary.tsv");
         var failures = new List<string>();
 
         using var sw = new StreamWriter(summaryPath, false);
-        sw.WriteLine("image\tmode\tstatus\telapsed_ms\twidth\theight\tmean_abs_rgb\tmax_abs_rgb\terror\toutput");
+        sw.WriteLine("model\timage\tmode\tpath_kind\tstatus\telapsed_ms\twidth\theight\tmean_abs_rgb\tmax_abs_rgb\terror\toutput");
 
-        for (var i = 0; i < inputPaths.Length; i++)
+        if (reuseRunner)
         {
-            var inputPath = inputPaths[i];
-            Texture2D input = null;
-            Texture2D immediateTex = null;
-            Texture2D cmdTex = null;
-            try
+            await RunRealEsrganValidationPersistentSequenceAsync(
+                inputPaths,
+                models,
+                runImmediate,
+                runCommandBuffer,
+                pack4OnlyGuard,
+                maxElapsedMs,
+                compareThreshold,
+                dumpDir,
+                sw,
+                failures);
+        }
+        else
+        {
+            for (var modelIndex = 0; modelIndex < models.Count; modelIndex++)
             {
-                Debug.Log("[RealESRGAN-VALIDATION] input=" + inputPath);
-                input = LoadTexture(inputPath);
-                if (input == null)
-                    throw new InvalidOperationException("Failed to load input: " + inputPath);
-
-                if (runImmediate)
+                var model = models[modelIndex];
+                for (var inputIndex = 0; inputIndex < inputPaths.Count; inputIndex++)
                 {
-                    Debug.Log("[RealESRGAN-VALIDATION] mode=immediate start | input=" + Path.GetFileName(inputPath));
-                    var immediate = await RunRealEsrganSingleModeAsync(input, false);
-                    immediateTex = immediate.texture;
-                    Debug.Log("[RealESRGAN-VALIDATION] mode=immediate done | input=" + Path.GetFileName(inputPath) + " | elapsed_ms=" + immediate.elapsedMs.ToString(CultureInfo.InvariantCulture) + " | error=" + (immediate.error ?? ""));
-                    var outputName = Path.GetFileNameWithoutExtension(inputPath) + "_immediate.png";
-                    TryWriteTexturePng(immediate.texture, dumpDir, outputName);
-                    sw.WriteLine(
-                        EscapeTsv(Path.GetFileName(inputPath)) + "\t"
-                        + "immediate\t"
-                        + (string.IsNullOrWhiteSpace(immediate.error) ? "ok" : "error") + "\t"
-                        + immediate.elapsedMs.ToString(CultureInfo.InvariantCulture) + "\t"
-                        + (immediate.texture != null ? immediate.texture.width.ToString(CultureInfo.InvariantCulture) : "0") + "\t"
-                        + (immediate.texture != null ? immediate.texture.height.ToString(CultureInfo.InvariantCulture) : "0") + "\t"
-                        + "0\t0\t"
-                        + EscapeTsv(immediate.error ?? "") + "\t"
-                        + EscapeTsv(Path.Combine(dumpDir, outputName)));
-                    sw.Flush();
+                    var inputPath = inputPaths[inputIndex];
+                    Texture2D input = null;
+                    Texture2D immediateTex = null;
+                    Texture2D cmdTex = null;
+                    try
+                    {
+                        Debug.Log("[RealESRGAN-VALIDATION] model=" + model + " | input=" + inputPath + " | path_kind=" + pathKind);
+                        input = LoadTexture(inputPath);
+                        if (input == null)
+                            throw new InvalidOperationException("Failed to load input: " + inputPath);
 
-                    if (!string.IsNullOrWhiteSpace(immediate.error))
-                        failures.Add(Path.GetFileName(inputPath) + " immediate: " + immediate.error);
-                    else if (immediate.elapsedMs > maxElapsedMs)
-                        failures.Add(Path.GetFileName(inputPath) + " immediate exceeded " + maxElapsedMs + " ms: " + immediate.elapsedMs);
+                        if (runImmediate)
+                        {
+                            var immediate = await RunRealEsrganSingleModeAsync(input, new RealEsrganValidationRunOptions
+                            {
+                                modelName = model,
+                                useCommandBuffer = false,
+                                pack4OnlyGuard = pack4OnlyGuard,
+                                reusePersistentRunner = false
+                            });
+                            immediateTex = immediate.texture;
+                            AppendRealEsrganValidationRow(
+                                sw,
+                                dumpDir,
+                                model,
+                                inputPath,
+                                immediate,
+                                "immediate",
+                                pathKind,
+                                "0",
+                                "0");
+                            sw.Flush();
+                            AppendRealEsrganValidationFailure(failures, model, Path.GetFileName(inputPath), "immediate", immediate, maxElapsedMs);
+                        }
+
+                        if (runCommandBuffer)
+                        {
+                            var commandBuffer = await RunRealEsrganSingleModeAsync(input, new RealEsrganValidationRunOptions
+                            {
+                                modelName = model,
+                                useCommandBuffer = true,
+                                pack4OnlyGuard = pack4OnlyGuard,
+                                reusePersistentRunner = false
+                            });
+                            cmdTex = commandBuffer.texture;
+                            var meanAbs = 0f;
+                            var maxAbs = 0;
+                            if (immediateTex != null && cmdTex != null)
+                                ComputeTextureDiff(immediateTex, cmdTex, out meanAbs, out maxAbs);
+
+                            AppendRealEsrganValidationRow(
+                                sw,
+                                dumpDir,
+                                model,
+                                inputPath,
+                                commandBuffer,
+                                "command_buffer",
+                                pathKind,
+                                meanAbs.ToString("0.######", CultureInfo.InvariantCulture),
+                                maxAbs.ToString(CultureInfo.InvariantCulture));
+                            sw.Flush();
+                            AppendRealEsrganValidationFailure(failures, model, Path.GetFileName(inputPath), "command_buffer", commandBuffer, maxElapsedMs);
+                            if (immediateTex != null && cmdTex != null && meanAbs > compareThreshold)
+                                failures.Add(model + " " + Path.GetFileName(inputPath) + " command_buffer diff mean_abs_rgb=" + meanAbs.ToString("0.######", CultureInfo.InvariantCulture));
+                        }
+                    }
+                    finally
+                    {
+                        if (immediateTex != null)
+                            UnityEngine.Object.DestroyImmediate(immediateTex);
+                        if (cmdTex != null)
+                            UnityEngine.Object.DestroyImmediate(cmdTex);
+                        if (input != null)
+                            UnityEngine.Object.DestroyImmediate(input);
+                    }
                 }
-
-                if (runCommandBuffer)
-                {
-                    Debug.Log("[RealESRGAN-VALIDATION] mode=command_buffer start | input=" + Path.GetFileName(inputPath));
-                    var commandBuffer = await RunRealEsrganSingleModeAsync(input, true);
-                    cmdTex = commandBuffer.texture;
-                    Debug.Log("[RealESRGAN-VALIDATION] mode=command_buffer done | input=" + Path.GetFileName(inputPath) + " | elapsed_ms=" + commandBuffer.elapsedMs.ToString(CultureInfo.InvariantCulture) + " | error=" + (commandBuffer.error ?? ""));
-                    var meanAbs = 0f;
-                    var maxAbs = 0;
-                    if (immediateTex != null && cmdTex != null)
-                        ComputeTextureDiff(immediateTex, cmdTex, out meanAbs, out maxAbs);
-
-                    var outputName = Path.GetFileNameWithoutExtension(inputPath) + "_cmd.png";
-                    TryWriteTexturePng(commandBuffer.texture, dumpDir, outputName);
-                    sw.WriteLine(
-                        EscapeTsv(Path.GetFileName(inputPath)) + "\t"
-                        + "command_buffer\t"
-                        + (string.IsNullOrWhiteSpace(commandBuffer.error) ? "ok" : "error") + "\t"
-                        + commandBuffer.elapsedMs.ToString(CultureInfo.InvariantCulture) + "\t"
-                        + (commandBuffer.texture != null ? commandBuffer.texture.width.ToString(CultureInfo.InvariantCulture) : "0") + "\t"
-                        + (commandBuffer.texture != null ? commandBuffer.texture.height.ToString(CultureInfo.InvariantCulture) : "0") + "\t"
-                        + meanAbs.ToString("0.######", CultureInfo.InvariantCulture) + "\t"
-                        + maxAbs.ToString(CultureInfo.InvariantCulture) + "\t"
-                        + EscapeTsv(commandBuffer.error ?? "") + "\t"
-                        + EscapeTsv(Path.Combine(dumpDir, outputName)));
-                    sw.Flush();
-
-                    if (!string.IsNullOrWhiteSpace(commandBuffer.error))
-                        failures.Add(Path.GetFileName(inputPath) + " command_buffer: " + commandBuffer.error);
-                    else if (commandBuffer.elapsedMs > maxElapsedMs)
-                        failures.Add(Path.GetFileName(inputPath) + " command_buffer exceeded " + maxElapsedMs + " ms: " + commandBuffer.elapsedMs);
-
-                    if (immediateTex != null && cmdTex != null && meanAbs > compareThreshold)
-                        failures.Add(Path.GetFileName(inputPath) + " command_buffer diff mean_abs_rgb=" + meanAbs.ToString("0.######", CultureInfo.InvariantCulture));
-                }
-            }
-            finally
-            {
-                if (immediateTex != null)
-                    UnityEngine.Object.DestroyImmediate(immediateTex);
-                if (cmdTex != null)
-                    UnityEngine.Object.DestroyImmediate(cmdTex);
-                if (input != null)
-                    UnityEngine.Object.DestroyImmediate(input);
             }
         }
 
@@ -2189,28 +2205,225 @@ public static class NcnnDebugRunner
             throw new InvalidOperationException("RealESRGAN validation failed: " + string.Join(" | ", failures));
     }
 
-    private static async UniTask<RealEsrganResult> RunRealEsrganSingleModeAsync(Texture2D input, bool useCommandBuffer)
+    private static async UniTask RunRealEsrganValidationPersistentSequenceAsync(
+        IReadOnlyList<string> inputPaths,
+        IReadOnlyList<string> models,
+        bool runImmediate,
+        bool runCommandBuffer,
+        bool pack4OnlyGuard,
+        int maxElapsedMs,
+        float compareThreshold,
+        string dumpDir,
+        StreamWriter sw,
+        List<string> failures)
     {
-        var go = new GameObject(useCommandBuffer ? "RealEsrganValidationCmd" : "RealEsrganValidationImmediate");
+        var pathKind = pack4OnlyGuard ? "pack4_rt" : "default";
+        var go = new GameObject("RealEsrganValidationPersistentSequence");
         try
         {
             var runner = go.AddComponent<RealEsrganNcnnReproRunner>();
-            runner.enableGpuLayerProfiling = false;
-            runner.enableTempPool = true;
-            runner.maxPooledPerShape = 4;
-            runner.useCommandBuffer = useCommandBuffer;
-            runner.enableLayerRuntimeProfile = Application.isBatchMode && !useCommandBuffer;
-            runner.syncLayerRuntimeProfile = false;
-            var result = await runner.ProcessAsync(input, CancellationToken.None);
+            ConfigureRealEsrganRunner(runner, new RealEsrganValidationRunOptions
+            {
+                modelName = models.Count > 0 ? models[0] : "realesrgan-x4plus",
+                useCommandBuffer = false,
+                pack4OnlyGuard = pack4OnlyGuard,
+                reusePersistentRunner = true
+            });
+
+            for (var modelIndex = 0; modelIndex < models.Count; modelIndex++)
+            {
+                var model = models[modelIndex];
+                runner.modelName = model;
+
+                for (var inputIndex = 0; inputIndex < inputPaths.Count; inputIndex++)
+                {
+                    var inputPath = inputPaths[inputIndex];
+                    Texture2D input = null;
+                    Texture2D immediateTex = null;
+                    Texture2D cmdTex = null;
+                    try
+                    {
+                        Debug.Log("[RealESRGAN-VALIDATION] persistent_sequence model=" + model + " | input=" + inputPath + " | path_kind=" + pathKind);
+                        input = LoadTexture(inputPath);
+                        if (input == null)
+                            throw new InvalidOperationException("Failed to load input: " + inputPath);
+
+                        if (runImmediate)
+                        {
+                            runner.modelName = model;
+                            runner.useCommandBuffer = false;
+                            var immediate = await RunRealEsrganSingleModeAsync(input, runner, new RealEsrganValidationRunOptions
+                            {
+                                modelName = model,
+                                useCommandBuffer = false,
+                                pack4OnlyGuard = pack4OnlyGuard,
+                                reusePersistentRunner = true
+                            });
+                            immediateTex = immediate.texture;
+                            AppendRealEsrganValidationRow(
+                                sw,
+                                dumpDir,
+                                model,
+                                inputPath,
+                                immediate,
+                                "immediate",
+                                pathKind,
+                                "0",
+                                "0");
+                            sw.Flush();
+                            AppendRealEsrganValidationFailure(failures, model, Path.GetFileName(inputPath), "immediate", immediate, maxElapsedMs);
+                        }
+
+                        if (runCommandBuffer)
+                        {
+                            runner.modelName = model;
+                            runner.useCommandBuffer = true;
+                            var commandBuffer = await RunRealEsrganSingleModeAsync(input, runner, new RealEsrganValidationRunOptions
+                            {
+                                modelName = model,
+                                useCommandBuffer = true,
+                                pack4OnlyGuard = pack4OnlyGuard,
+                                reusePersistentRunner = true
+                            });
+                            cmdTex = commandBuffer.texture;
+                            var meanAbs = 0f;
+                            var maxAbs = 0;
+                            if (immediateTex != null && cmdTex != null)
+                                ComputeTextureDiff(immediateTex, cmdTex, out meanAbs, out maxAbs);
+
+                            AppendRealEsrganValidationRow(
+                                sw,
+                                dumpDir,
+                                model,
+                                inputPath,
+                                commandBuffer,
+                                "command_buffer",
+                                pathKind,
+                                meanAbs.ToString("0.######", CultureInfo.InvariantCulture),
+                                maxAbs.ToString(CultureInfo.InvariantCulture));
+                            sw.Flush();
+                            AppendRealEsrganValidationFailure(failures, model, Path.GetFileName(inputPath), "command_buffer", commandBuffer, maxElapsedMs);
+                            if (immediateTex != null && cmdTex != null && meanAbs > compareThreshold)
+                                failures.Add(model + " " + Path.GetFileName(inputPath) + " command_buffer diff mean_abs_rgb=" + meanAbs.ToString("0.######", CultureInfo.InvariantCulture));
+                        }
+                    }
+                    finally
+                    {
+                        if (immediateTex != null)
+                            UnityEngine.Object.DestroyImmediate(immediateTex);
+                        if (cmdTex != null)
+                            UnityEngine.Object.DestroyImmediate(cmdTex);
+                        if (input != null)
+                            UnityEngine.Object.DestroyImmediate(input);
+                    }
+                }
+            }
+
             TryInvokeReleaseMethod(runner);
             await YieldIfNeeded();
-            return result;
         }
         finally
         {
             UnityEngine.Object.DestroyImmediate(go);
             await ReleaseGpuPressureAsync();
         }
+    }
+
+    private static async UniTask<RealEsrganResult> RunRealEsrganSingleModeAsync(Texture2D input, RealEsrganValidationRunOptions options)
+    {
+        var go = new GameObject(options != null && options.useCommandBuffer ? "RealEsrganValidationCmd" : "RealEsrganValidationImmediate");
+        try
+        {
+            var runner = go.AddComponent<RealEsrganNcnnReproRunner>();
+            return await RunRealEsrganSingleModeAsync(input, runner, options);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
+            await ReleaseGpuPressureAsync();
+        }
+    }
+
+    private static async UniTask<RealEsrganResult> RunRealEsrganSingleModeAsync(Texture2D input, RealEsrganNcnnReproRunner runner, RealEsrganValidationRunOptions options)
+    {
+        ConfigureRealEsrganRunner(runner, options);
+        var result = await runner.ProcessAsync(input, CancellationToken.None);
+        if (options == null || !options.reusePersistentRunner)
+        {
+            TryInvokeReleaseMethod(runner);
+            await YieldIfNeeded();
+        }
+        return result;
+    }
+
+    private static void ConfigureRealEsrganRunner(RealEsrganNcnnReproRunner runner, RealEsrganValidationRunOptions options)
+    {
+        if (runner == null)
+            return;
+
+        runner.enableGpuLayerProfiling = false;
+        runner.enableTempPool = true;
+        runner.maxPooledPerShape = 4;
+        runner.enableLayerRuntimeProfile = Application.isBatchMode && (options == null || !options.useCommandBuffer);
+        runner.syncLayerRuntimeProfile = false;
+
+        var modelName = options?.modelName;
+        if (!string.IsNullOrWhiteSpace(modelName))
+            runner.modelName = modelName.Trim();
+
+        runner.useCommandBuffer = options != null && options.useCommandBuffer;
+
+        var pack4OnlyGuard = options != null && options.pack4OnlyGuard;
+        runner.disallowBufferAccess = pack4OnlyGuard;
+        runner.disallowBufferOutputs = pack4OnlyGuard;
+        runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
+    }
+
+    private static void AppendRealEsrganValidationFailure(List<string> failures, string model, string imageName, string mode, RealEsrganResult result, int maxElapsedMs)
+    {
+        if (failures == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(result.error))
+            failures.Add(model + " " + imageName + " " + mode + ": " + result.error);
+        else if (result.elapsedMs > maxElapsedMs)
+            failures.Add(model + " " + imageName + " " + mode + " exceeded " + maxElapsedMs + " ms: " + result.elapsedMs);
+    }
+
+    private static void AppendRealEsrganValidationRow(
+        StreamWriter sw,
+        string dumpDir,
+        string model,
+        string inputPath,
+        RealEsrganResult result,
+        string mode,
+        string pathKind,
+        string meanAbsText,
+        string maxAbsText)
+    {
+        var outputName = BuildRealEsrganValidationOutputName(model, inputPath, mode);
+        TryWriteTexturePng(result.texture, dumpDir, outputName);
+        sw.WriteLine(
+            EscapeTsv(model) + "\t"
+            + EscapeTsv(Path.GetFileName(inputPath)) + "\t"
+            + mode + "\t"
+            + pathKind + "\t"
+            + (string.IsNullOrWhiteSpace(result.error) ? "ok" : "error") + "\t"
+            + result.elapsedMs.ToString(CultureInfo.InvariantCulture) + "\t"
+            + (result.texture != null ? result.texture.width.ToString(CultureInfo.InvariantCulture) : "0") + "\t"
+            + (result.texture != null ? result.texture.height.ToString(CultureInfo.InvariantCulture) : "0") + "\t"
+            + meanAbsText + "\t"
+            + maxAbsText + "\t"
+            + EscapeTsv(result.error ?? string.Empty) + "\t"
+            + EscapeTsv(Path.Combine(dumpDir, outputName)));
+    }
+
+    private static string BuildRealEsrganValidationOutputName(string model, string inputPath, string mode)
+    {
+        var modelSafe = SanitizeFileNameToken(model);
+        var inputSafe = SanitizeFileNameToken(Path.GetFileNameWithoutExtension(inputPath));
+        var modeSuffix = string.Equals(mode, "command_buffer", StringComparison.Ordinal) ? "cmd" : "immediate";
+        return modelSafe + "_" + inputSafe + "_" + modeSuffix + ".png";
     }
 
     private static async UniTask RunRealEsrganStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
@@ -2509,6 +2722,79 @@ public static class NcnnDebugRunner
         }
 
         return DefaultRealEsrganInputDir;
+    }
+
+    private static List<string> ResolveRealEsrganValidationInputPaths()
+    {
+        var inputDir = ResolveRealEsrganInputDirectory();
+        if (string.IsNullOrWhiteSpace(inputDir) || !Directory.Exists(inputDir))
+            throw new InvalidOperationException("RealESRGAN input dir not found: " + (inputDir ?? ""));
+
+        var preferred = new List<string>
+        {
+            Path.Combine(inputDir, "02.png"),
+            Path.Combine(inputDir, "03.jpg")
+        };
+        var resolved = new List<string>(preferred.Count);
+        for (var i = 0; i < preferred.Count; i++)
+        {
+            if (File.Exists(preferred[i]))
+                resolved.Add(preferred[i]);
+        }
+
+        if (resolved.Count == preferred.Count)
+            return resolved;
+
+        var fallback = EnumerateImageFilesRecursive(inputDir);
+        if (fallback.Count == 0)
+            throw new InvalidOperationException("RealESRGAN validation input missing under: " + inputDir);
+
+        return fallback.Take(Mathf.Min(2, fallback.Count)).ToList();
+    }
+
+    private static List<string> ResolveRealEsrganValidationModels()
+    {
+        var models = new List<string>();
+
+        try
+        {
+            var multi = Environment.GetEnvironmentVariable(RealEsrganModelsEnvVar);
+            if (!string.IsNullOrWhiteSpace(multi))
+            {
+                var parts = multi.Split(new[] { ',', ';', '|', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    var value = parts[i]?.Trim();
+                    if (!string.IsNullOrWhiteSpace(value) && !models.Contains(value))
+                        models.Add(value);
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        if (models.Count == 0)
+        {
+            try
+            {
+                var single = Environment.GetEnvironmentVariable(RealEsrganModelEnvVar);
+                if (!string.IsNullOrWhiteSpace(single))
+                {
+                    var value = single.Trim();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        models.Add(value);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        if (models.Count == 0)
+            models.Add("realesrgan-x4plus");
+
+        return models;
     }
 
     private static string[] ResolveMonaiInputPaths()
@@ -2946,6 +3232,22 @@ public static class NcnnDebugRunner
         if (string.IsNullOrEmpty(value))
             return string.Empty;
         return value.Replace("\t", "    ").Replace("\r", " ").Replace("\n", " | ");
+    }
+
+    private static string SanitizeFileNameToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "unnamed";
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var chars = value.Trim().ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (Array.IndexOf(invalid, chars[i]) >= 0 || char.IsWhiteSpace(chars[i]))
+                chars[i] = '_';
+        }
+
+        return new string(chars);
     }
 
     private static bool IsImagePath(string path)
