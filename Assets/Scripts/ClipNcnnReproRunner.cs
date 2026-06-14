@@ -117,6 +117,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private List<string> _imageCompareLines;
 
     public string LastDumpDir => _lastDumpDir;
+    public string ClassificationCacheSignature => BuildClassificationCacheSignature();
 
     private void Awake()
     {
@@ -1230,6 +1231,25 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         catch
         {
         }
+    }
+
+    private string BuildClassificationCacheSignature()
+    {
+        var sb = new StringBuilder();
+        sb.Append("model=").Append(ResolveModelKey());
+        sb.Append("|size=").Append(ResolveInputSize().ToString(CultureInfo.InvariantCulture));
+        if (labelDefinitions != null)
+        {
+            for (var i = 0; i < labelDefinitions.Length; i++)
+            {
+                var def = labelDefinitions[i];
+                sb.Append("|");
+                sb.Append(def?.label?.Trim() ?? string.Empty);
+                sb.Append("=>");
+                sb.Append(def?.prompt?.Trim() ?? string.Empty);
+            }
+        }
+        return sb.ToString();
     }
 
     private async UniTask<float[]> ReadImageEmbeddingAsync(NcnnRepro.InferResult infer, CancellationToken ct)

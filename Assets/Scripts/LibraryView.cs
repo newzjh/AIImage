@@ -42,6 +42,8 @@ public sealed class LibraryView : BasePageView
         public Texture2D thumbnail;
         public bool thumbnailLoading;
         public bool thumbnailFailed;
+        public bool clipClassificationLoading;
+        public bool clipClassificationReady;
         public LibraryImageType type;
         public string locationText = PendingText;
         public string faceText = PendingClipText;
@@ -99,6 +101,7 @@ public sealed class LibraryView : BasePageView
     private readonly Dictionary<string, Label> _statusByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Label> _timeLabelByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VisualElement> _cardByPath = new Dictionary<string, VisualElement>(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _clipClassificationSemaphore = new SemaphoreSlim(1, 1);
     private bool _didInitialPathSync;
     private string _currentDriveRoot;
     private string _selectedDirectoryPath;
@@ -108,6 +111,7 @@ public sealed class LibraryView : BasePageView
     private string _lastClickPath;
     private CancellationTokenSource _thumbnailLoadCts;
     private CancellationTokenSource _directoryScanCts;
+    private CancellationTokenSource _clipClassificationCts;
     private int _thumbnailLoadGeneration;
     private int _directoryScanGeneration;
 
@@ -159,6 +163,7 @@ public sealed class LibraryView : BasePageView
     {
         CancelDirectoryScan();
         CancelThumbnailRefresh();
+        CancelClipClassification();
     }
 
     protected override void OnLayoutChanged(bool isPortrait, Rect layoutRect)
@@ -175,7 +180,9 @@ public sealed class LibraryView : BasePageView
     {
         CancelDirectoryScan();
         CancelThumbnailRefresh();
+        CancelClipClassification();
         ClearThumbnailEntries(true);
+        _clipClassificationSemaphore.Dispose();
         base.OnDestroy();
     }
 
@@ -688,6 +695,7 @@ public sealed class LibraryView : BasePageView
             _thumbnailGrid.Add(BuildThumbnailCard(entry));
 
         StartThumbnailRefresh();
+        StartPendingClipClassification();
         RestoreSelectedThumbnailTips();
         ScrollToSelectedThumbnailSoon();
     }
@@ -795,6 +803,21 @@ public sealed class LibraryView : BasePageView
         return card;
     }
 
+    private void StartPendingClipClassification()
+    {
+        if (Host?.ClipRunner == null || _thumbnailLoadCts == null)
+            return;
+
+        var cancellationToken = _thumbnailLoadCts.Token;
+        foreach (var entry in _visibleEntries)
+        {
+            if (entry.thumbnail == null || entry.clipClassificationLoading || entry.clipClassificationReady)
+                continue;
+
+            StartClipClassificationForEntry(entry, cancellationToken).Forget();
+        }
+    }
+
     private static void ApplySelectedCardBorder(VisualElement card, bool selected)
     {
         var width = selected ? 2 : 0;
@@ -853,6 +876,7 @@ public sealed class LibraryView : BasePageView
     private void StartThumbnailRefresh()
     {
         CancelThumbnailRefresh();
+        CancelClipClassification();
         if (_visibleEntries.Count == 0)
             return;
 
@@ -879,6 +903,16 @@ public sealed class LibraryView : BasePageView
         try { _directoryScanCts.Cancel(); } catch { }
         try { _directoryScanCts.Dispose(); } catch { }
         _directoryScanCts = null;
+    }
+
+    private void CancelClipClassification()
+    {
+        if (_clipClassificationCts == null)
+            return;
+
+        try { _clipClassificationCts.Cancel(); } catch { }
+        try { _clipClassificationCts.Dispose(); } catch { }
+        _clipClassificationCts = null;
     }
 
     private async UniTaskVoid RefreshVisibleThumbnailsAsync(int generation, CancellationToken cancellationToken)
@@ -935,6 +969,7 @@ public sealed class LibraryView : BasePageView
                 texture.name = entry.fileName;
                 entry.thumbnail = texture;
                 UpdateThumbnailVisuals(entry);
+                StartClipClassificationForEntry(entry, cancellationToken).Forget();
             }
             catch (OperationCanceledException)
             {
@@ -953,6 +988,89 @@ public sealed class LibraryView : BasePageView
 
             await UniTask.DelayFrame(1, cancellationToken: cancellationToken);
         }
+    }
+
+    private async UniTaskVoid StartClipClassificationForEntry(ThumbnailEntry entry, CancellationToken thumbnailCancellationToken)
+    {
+        if (entry == null || entry.thumbnail == null || Host?.ClipRunner == null)
+            return;
+
+        if (ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out var cached))
+        {
+            ApplyClipClassification(entry, cached);
+            return;
+        }
+
+        if (entry.clipClassificationLoading || entry.clipClassificationReady)
+            return;
+
+        entry.clipClassificationLoading = true;
+
+        if (_clipClassificationCts == null)
+            _clipClassificationCts = new CancellationTokenSource();
+        using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(thumbnailCancellationToken, _clipClassificationCts.Token))
+        {
+            var ct = linkedCts.Token;
+            var acquired = false;
+
+            try
+            {
+                await _clipClassificationSemaphore.WaitAsync(ct);
+                acquired = true;
+                try
+                {
+                    if (ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out cached))
+                    {
+                        ApplyClipClassification(entry, cached);
+                        return;
+                    }
+
+                    var result = await ClipClassificationCache.GetOrClassifyForFileAsync(
+                        Host.ClipRunner,
+                        entry.thumbnail,
+                        entry.fullPath,
+                        ct);
+                    ApplyClipClassification(entry, result);
+                }
+                finally
+                {
+                    if (acquired)
+                        _clipClassificationSemaphore.Release();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning("[LibraryView] CLIP classification failed for " + (entry.fullPath ?? string.Empty) + " | " + e.Message);
+            }
+            finally
+            {
+                entry.clipClassificationLoading = false;
+            }
+        }
+    }
+
+    private void ApplyClipClassification(ThumbnailEntry entry, ClipClassificationResult result)
+    {
+        if (entry == null || !string.IsNullOrWhiteSpace(result.error))
+            return;
+
+        var best = string.IsNullOrWhiteSpace(result.bestLabel) ? EmptyText : result.bestLabel;
+        var top = FormatClipTopScores(result.scores, 2);
+        entry.clipText = string.IsNullOrWhiteSpace(top) ? best : (best + "  " + top);
+        entry.faceText = best;
+        entry.clipClassificationReady = true;
+
+        if (_sortFaceToggle?.value == true)
+        {
+            ApplyFilters();
+            return;
+        }
+
+        if (string.Equals(_selectedThumbnailPath, entry.fullPath, StringComparison.OrdinalIgnoreCase))
+            UpdateSelectionTips(entry);
     }
 
     private void UpdateThumbnailVisuals(ThumbnailEntry entry)
@@ -1475,6 +1593,25 @@ public sealed class LibraryView : BasePageView
     private static string FormatThumbnailTime(ThumbnailEntry entry)
     {
         return entry.DisplayTime.ToString("yyyy-MM-dd HH:mm");
+    }
+
+    private static string FormatClipTopScores(ClipLabelScore[] scores, int count)
+    {
+        if (scores == null || scores.Length == 0 || count <= 0)
+            return string.Empty;
+
+        var take = Mathf.Min(count, scores.Length);
+        var parts = new List<string>(take);
+        for (var i = 0; i < take; i++)
+        {
+            var score = scores[i];
+            if (string.IsNullOrWhiteSpace(score.label))
+                continue;
+
+            parts.Add(score.label + ":" + (score.probability * 100f).ToString("0", CultureInfo.InvariantCulture) + "%");
+        }
+
+        return string.Join("  ", parts);
     }
 
     private static int StableId(string text)

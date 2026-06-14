@@ -1861,11 +1861,34 @@ public class MainView : MonoBehaviour
                 return;
             }
 
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            _clipNcnnReproRunner.ProgressChanged -= OnProgress;
-            _clipNcnnReproRunner.ProgressChanged += OnProgress;
-            var r = await _clipNcnnReproRunner.ProcessAsync(src, _lifetimeCts.Token);
-            _clipNcnnReproRunner.ProgressChanged -= OnProgress;
+            var basePath = _historyEntries.Count > 0 ? _historyEntries[_historyEntries.Count - 1].sourcePath : null;
+            var preferFileIdentity = string.IsNullOrWhiteSpace(basePath) ? false : ReferenceEquals(src, GetOriginalHistoryTexture());
+            ClipClassificationResult r;
+            if (ClipClassificationCache.TryGet(_clipNcnnReproRunner, src, basePath, preferFileIdentity, out var cached))
+            {
+                SetProgress(1f, "CLIP cache ready");
+                r = cached;
+            }
+            else
+            {
+                void OnProgress(float p, string t) => SetProgress(p, t);
+                _clipNcnnReproRunner.ProgressChanged -= OnProgress;
+                _clipNcnnReproRunner.ProgressChanged += OnProgress;
+                try
+                {
+                    r = await ClipClassificationCache.GetOrClassifyAsync(
+                        _clipNcnnReproRunner,
+                        src,
+                        basePath,
+                        preferFileIdentity,
+                        _lifetimeCts.Token);
+                }
+                finally
+                {
+                    _clipNcnnReproRunner.ProgressChanged -= OnProgress;
+                }
+            }
+
             if (!string.IsNullOrWhiteSpace(r.error))
             {
                 var msg = r.error;
