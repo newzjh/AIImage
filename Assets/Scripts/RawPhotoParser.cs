@@ -108,7 +108,32 @@ public static class RawPhotoParser
         try
         {
             imageBytes = File.ReadAllBytes(filePath);
-            return imageBytes != null && imageBytes.Length > 0;
+            if (imageBytes == null || imageBytes.Length == 0)
+                return false;
+
+            rawPhoto = TryReadStandardPhotoMetadata(imageBytes);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool TryReadMetadata(string filePath, out RawPhotoData result)
+    {
+        result = null;
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return false;
+
+        if (IsRawExtension(filePath))
+            return TryParse(filePath, out result);
+
+        try
+        {
+            var bytes = File.ReadAllBytes(filePath);
+            result = TryReadStandardPhotoMetadata(bytes);
+            return HasMetadata(result);
         }
         catch
         {
@@ -139,6 +164,32 @@ public static class RawPhotoParser
             target.apertureText = FormatAperture(source.aperture);
         if (string.IsNullOrWhiteSpace(target.locationText))
             target.locationText = BuildGpsText(source.gpsLatitudeRef, source.gpsLatitude, source.gpsLongitudeRef, source.gpsLongitude);
+    }
+
+    private static RawPhotoData TryReadStandardPhotoMetadata(byte[] imageBytes)
+    {
+        if (imageBytes == null || imageBytes.Length < 4)
+            return null;
+
+        ExifMetadata metadata = null;
+        if (!TryParseJpegExif(imageBytes, out metadata) &&
+            !TryParseFirstTiffExif(imageBytes, out metadata))
+        {
+            return null;
+        }
+
+        var result = new RawPhotoData();
+        ApplyMetadata(result, metadata);
+        return HasMetadata(result) ? result : null;
+    }
+
+    private static bool HasMetadata(RawPhotoData data)
+    {
+        return data != null &&
+               (data.captureTime.HasValue ||
+                !string.IsNullOrWhiteSpace(data.locationText) ||
+                !string.IsNullOrWhiteSpace(data.cameraText) ||
+                !string.IsNullOrWhiteSpace(data.apertureText));
     }
 
     private static bool TryExtractPreviewImage(byte[] bytes, out byte[] previewBytes)

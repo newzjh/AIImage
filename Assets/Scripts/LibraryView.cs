@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Threading;
@@ -18,7 +17,8 @@ public sealed class LibraryView : BasePageView
 {
     private const float ClipEditedMatchThreshold = 0.90f;
     private const float ClipNearDuplicateOriginalThreshold = 0.985f;
-    private const float ClipNearDuplicateEditedGap = 0.02f;
+    private const float ClipNearDuplicateOriginalMinSizeRatio = 0.45f;
+    private const float ClipNearDuplicateRepresentativeEpsilon = 0.0005f;
     private const string PendingText = "\u5F85\u63D0\u53D6";
     private const string PendingClipText = "\u5F85\u63A5\u5165";
     private const string EmptyText = "\u65E0";
@@ -32,73 +32,6 @@ public sealed class LibraryView : BasePageView
         "raw",
         "original"
     };
-    private const string PythonExifExtractorScript = @"import base64, io, json, sys
-from PIL import Image, ExifTags
-
-path = sys.argv[1]
-out_path = sys.argv[2]
-max_edge = max(64, int(sys.argv[3]))
-
-TAGS = ExifTags.TAGS
-GPS_TAGS = ExifTags.GPSTAGS
-
-def rational_to_float(v):
-    try:
-        return float(v)
-    except Exception:
-        try:
-            return float(v[0]) / float(v[1]) if v[1] else None
-        except Exception:
-            return None
-
-def dms_to_deg(values, ref):
-    if not values or len(values) < 3:
-        return None
-    parts = [rational_to_float(v) for v in values[:3]]
-    if any(v is None for v in parts):
-        return None
-    deg = parts[0] + parts[1] / 60.0 + parts[2] / 3600.0
-    if ref in ('S', 'W'):
-        deg = -deg
-    return deg
-
-img = Image.open(path)
-img.load()
-exif_raw = img.getexif()
-exif = {}
-for key, value in exif_raw.items():
-    exif[TAGS.get(key, key)] = value
-
-gps_info = exif.get('GPSInfo') or {}
-gps = {}
-if isinstance(gps_info, dict):
-    for key, value in gps_info.items():
-        gps[GPS_TAGS.get(key, key)] = value
-
-capture = exif.get('DateTimeOriginal') or exif.get('DateTime')
-make = str(exif.get('Make') or '').strip()
-model = str(exif.get('Model') or '').strip()
-camera = (make + ' ' + model).strip() or None
-aperture = rational_to_float(exif.get('FNumber'))
-aperture_text = None if aperture is None else f'f/{aperture:.2f}'.rstrip('0').rstrip('.')
-lat = dms_to_deg(gps.get('GPSLatitude'), gps.get('GPSLatitudeRef'))
-lon = dms_to_deg(gps.get('GPSLongitude'), gps.get('GPSLongitudeRef'))
-location = None if lat is None or lon is None else f'GPS {lat:.4f}, {lon:.4f}'
-
-thumb = img.copy()
-thumb.thumbnail((max_edge, max_edge))
-buf = io.BytesIO()
-thumb.save(buf, format='PNG')
-
-payload = {
-    'thumbnailBase64': base64.b64encode(buf.getvalue()).decode('ascii'),
-    'captureTime': str(capture or ''),
-    'locationText': location or '',
-    'cameraText': camera or '',
-    'apertureText': aperture_text or '',
-}
-with open(out_path, 'w', encoding='utf-8') as f:
-    json.dump(payload, f, ensure_ascii=False)";
     private static readonly ExplorerStringComparer ExplorerComparer = new ExplorerStringComparer();
 
     private enum LibraryImageType
@@ -158,16 +91,6 @@ with open(out_path, 'w', encoding='utf-8') as f:
     {
         public byte[] thumbnailBytes;
         public DateTime? captureTime;
-        public string locationText;
-        public string cameraText;
-        public string apertureText;
-    }
-
-    [Serializable]
-    private sealed class PythonImagePayload
-    {
-        public string thumbnailBase64;
-        public string captureTime;
         public string locationText;
         public string cameraText;
         public string apertureText;
@@ -1951,91 +1874,23 @@ with open(out_path, 'w', encoding='utf-8') as f:
 
     private static ThumbnailPayload LoadThumbnailPayload(string filePath, int maxEdge)
     {
-        if (TryLoadThumbnailPayloadWithPythonExif(filePath, maxEdge, out var pythonPayload))
-            return pythonPayload;
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return new ThumbnailPayload();
 
-        if (RawPhotoParser.IsRawExtension(filePath) &&
-            RawPhotoParser.TryParse(filePath, out var rawPhoto))
+        if (RawPhotoParser.IsRawExtension(filePath))
         {
-            return new ThumbnailPayload
-            {
-                thumbnailBytes = rawPhoto.previewBytes,
-                captureTime = rawPhoto.captureTime,
-                locationText = rawPhoto.locationText,
-                cameraText = rawPhoto.cameraText,
-                apertureText = rawPhoto.apertureText
-            };
+            if (RawPhotoParser.TryParse(filePath, out var rawPhoto))
+                return CreateThumbnailPayload(rawPhoto?.previewBytes, rawPhoto);
+            return new ThumbnailPayload();
         }
 
-        if (TryBuildThumbnailPayloadWithSystemDrawing(filePath, maxEdge, out var payload))
-            return payload;
+        if (RawPhotoParser.TryLoadDisplayBytes(filePath, out var imageBytes, out var photoData))
+            return CreateThumbnailPayload(imageBytes, photoData);
 
-        return new ThumbnailPayload
-        {
-            thumbnailBytes = LoadImageBytes(filePath)
-        };
-    }
+        if (RawPhotoParser.TryReadMetadata(filePath, out var metadataOnly))
+            return CreateThumbnailPayload(null, metadataOnly);
 
-    private static bool TryLoadThumbnailPayloadWithPythonExif(string filePath, int maxEdge, out ThumbnailPayload payload)
-    {
-        payload = null;
-        if (string.IsNullOrWhiteSpace(filePath) ||
-            !File.Exists(filePath) ||
-            RawPhotoParser.IsRawExtension(filePath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var tempDir = Path.Combine(Application.temporaryCachePath, "libraryview_pyexif");
-            Directory.CreateDirectory(tempDir);
-
-            var scriptPath = Path.Combine(tempDir, "extract_image_payload.py");
-            if (!File.Exists(scriptPath))
-                File.WriteAllText(scriptPath, PythonExifExtractorScript);
-
-            var outputPath = Path.Combine(tempDir, Guid.NewGuid().ToString("N") + ".json");
-            var quotedArgs =
-                "\"" + scriptPath + "\" \"" + filePath + "\" \"" + outputPath + "\" " + Mathf.Max(64, maxEdge).ToString(CultureInfo.InvariantCulture);
-            using var process = Process.Start(new ProcessStartInfo("python", quotedArgs)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            });
-            if (process == null)
-                return false;
-
-            process.WaitForExit(12000);
-            if (!process.HasExited || process.ExitCode != 0 || !File.Exists(outputPath))
-                return false;
-
-            var json = File.ReadAllText(outputPath);
-            if (string.IsNullOrWhiteSpace(json))
-                return false;
-
-            var dto = JsonUtility.FromJson<PythonImagePayload>(json);
-            if (dto == null)
-                return false;
-
-            payload = new ThumbnailPayload
-            {
-                thumbnailBytes = string.IsNullOrWhiteSpace(dto.thumbnailBase64) ? null : Convert.FromBase64String(dto.thumbnailBase64),
-                captureTime = ParsePythonCaptureTime(dto.captureTime),
-                locationText = string.IsNullOrWhiteSpace(dto.locationText) ? null : dto.locationText,
-                cameraText = string.IsNullOrWhiteSpace(dto.cameraText) ? null : dto.cameraText,
-                apertureText = string.IsNullOrWhiteSpace(dto.apertureText) ? null : dto.apertureText
-            };
-
-            try { File.Delete(outputPath); } catch { }
-            return payload.thumbnailBytes != null && payload.thumbnailBytes.Length > 0;
-        }
-        catch
-        {
-            return false;
-        }
+        return new ThumbnailPayload { thumbnailBytes = LoadImageBytes(filePath) };
     }
 
     private static void ApplyPayloadMetadata(ThumbnailEntry entry, ThumbnailPayload payload)
@@ -2053,217 +1908,16 @@ with open(out_path, 'w', encoding='utf-8') as f:
             entry.captureTime = payload.captureTime.Value;
     }
 
-    private static bool TryBuildThumbnailPayloadWithSystemDrawing(string filePath, int maxEdge, out ThumbnailPayload payload)
+    private static ThumbnailPayload CreateThumbnailPayload(byte[] thumbnailBytes, RawPhotoParser.RawPhotoData photoData)
     {
-        payload = new ThumbnailPayload();
-        var imageType = ResolveSystemDrawingType("System.Drawing.Image");
-        var bitmapType = ResolveSystemDrawingType("System.Drawing.Bitmap");
-        var sizeType = ResolveSystemDrawingType("System.Drawing.Size");
-        var imageFormatType = ResolveSystemDrawingType("System.Drawing.Imaging.ImageFormat");
-        if (imageType == null || bitmapType == null || sizeType == null || imageFormatType == null)
-            return false;
-
-        var fromStream = imageType.GetMethod("FromStream", new[] { typeof(Stream) });
-        if (fromStream == null)
-            return false;
-
-        Stream stream = null;
-        object image = null;
-        object bitmap = null;
-        try
+        return new ThumbnailPayload
         {
-            stream = File.OpenRead(filePath);
-            image = fromStream.Invoke(null, new object[] { stream });
-            if (image == null)
-                return false;
-
-            payload.captureTime = ReadExifDate(image, imageType, 0x9003) ?? ReadExifDate(image, imageType, 0x0132);
-            payload.locationText = ReadGpsLocation(image, imageType);
-            payload.cameraText = ReadCameraModel(image, imageType);
-            payload.apertureText = ReadAperture(image, imageType);
-
-            var width = Convert.ToInt32(imageType.GetProperty("Width")?.GetValue(image));
-            var height = Convert.ToInt32(imageType.GetProperty("Height")?.GetValue(image));
-            if (width <= 0 || height <= 0)
-                return false;
-
-            var scale = Mathf.Min(1f, maxEdge / (float)Mathf.Max(width, height));
-            var thumbWidth = Mathf.Max(1, Mathf.RoundToInt(width * scale));
-            var thumbHeight = Mathf.Max(1, Mathf.RoundToInt(height * scale));
-            var size = Activator.CreateInstance(sizeType, thumbWidth, thumbHeight);
-            bitmap = Activator.CreateInstance(bitmapType, image, size);
-            if (bitmap == null)
-                return false;
-
-            var pngFormat = imageFormatType.GetProperty("Png", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
-            var saveMethod = bitmapType.GetMethod("Save", new[] { typeof(Stream), imageFormatType });
-            if (pngFormat == null || saveMethod == null)
-                return false;
-
-            using var ms = new MemoryStream();
-            saveMethod.Invoke(bitmap, new[] { ms, pngFormat });
-            payload.thumbnailBytes = ms.ToArray();
-            return payload.thumbnailBytes != null && payload.thumbnailBytes.Length > 0;
-        }
-        catch
-        {
-            return false;
-        }
-        finally
-        {
-            TryDispose(bitmap);
-            TryDispose(image);
-            stream?.Dispose();
-        }
-    }
-
-    private static DateTime? ParsePythonCaptureTime(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        if (DateTime.TryParseExact(
-                text.Trim(),
-                new[] { "yyyy:MM:dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-ddTHH:mm:ss" },
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.None,
-                out var value))
-        {
-            return value;
-        }
-
-        return null;
-    }
-
-    private static Type ResolveSystemDrawingType(string fullName)
-    {
-        return Type.GetType(fullName + ", System.Drawing") ??
-               Type.GetType(fullName + ", System.Drawing.Common");
-    }
-
-    private static void TryDispose(object obj)
-    {
-        if (obj == null)
-            return;
-
-        try
-        {
-            obj.GetType().GetMethod("Dispose", Type.EmptyTypes)?.Invoke(obj, null);
-        }
-        catch
-        {
-        }
-    }
-
-    private static object TryGetPropertyItem(object image, Type imageType, int id)
-    {
-        try
-        {
-            return imageType.GetMethod("GetPropertyItem", new[] { typeof(int) })?.Invoke(image, new object[] { id });
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static byte[] GetPropertyItemBytes(object propertyItem)
-    {
-        return propertyItem?.GetType().GetProperty("Value")?.GetValue(propertyItem) as byte[];
-    }
-
-    private static string ReadCameraModel(object image, Type imageType)
-    {
-        var model = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x0110));
-        if (!string.IsNullOrWhiteSpace(model))
-            return model;
-
-        var make = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x010F));
-        return string.IsNullOrWhiteSpace(make) ? PendingText : make;
-    }
-
-    private static string ReadAperture(object image, Type imageType)
-    {
-        var value = ReadRational(TryGetPropertyItem(image, imageType, 0x829D));
-        if (value.HasValue && value.Value > 0.01)
-            return $"f/{value.Value:0.0#}";
-        return PendingText;
-    }
-
-    private static string ReadGpsLocation(object image, Type imageType)
-    {
-        var latValues = ReadRationalArray(TryGetPropertyItem(image, imageType, 0x0002));
-        var lonValues = ReadRationalArray(TryGetPropertyItem(image, imageType, 0x0004));
-        if (latValues == null || lonValues == null || latValues.Length < 3 || lonValues.Length < 3)
-            return PendingText;
-
-        var lat = latValues[0] + latValues[1] / 60d + latValues[2] / 3600d;
-        var lon = lonValues[0] + lonValues[1] / 60d + lonValues[2] / 3600d;
-        var latRef = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x0001));
-        var lonRef = ReadExifAscii(TryGetPropertyItem(image, imageType, 0x0003));
-        if (string.Equals(latRef, "S", StringComparison.OrdinalIgnoreCase))
-            lat = -lat;
-        if (string.Equals(lonRef, "W", StringComparison.OrdinalIgnoreCase))
-            lon = -lon;
-
-        return $"GPS {lat:0.0000}, {lon:0.0000}";
-    }
-
-    private static DateTime? ReadExifDate(object image, Type imageType, int propertyId)
-    {
-        var text = ReadExifAscii(TryGetPropertyItem(image, imageType, propertyId));
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        if (DateTime.TryParseExact(
-                text.Trim(),
-                new[] { "yyyy:MM:dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss" },
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.None,
-                out var value))
-            return value;
-
-        return null;
-    }
-
-    private static string ReadExifAscii(object propertyItem)
-    {
-        var bytes = GetPropertyItemBytes(propertyItem);
-        if (bytes == null || bytes.Length == 0)
-            return null;
-
-        var text = System.Text.Encoding.ASCII.GetString(bytes);
-        return text.Trim('\0', ' ', '\t', '\r', '\n');
-    }
-
-    private static double? ReadRational(object propertyItem)
-    {
-        var bytes = GetPropertyItemBytes(propertyItem);
-        if (bytes == null || bytes.Length < 8)
-            return null;
-
-        var numerator = BitConverter.ToUInt32(bytes, 0);
-        var denominator = BitConverter.ToUInt32(bytes, 4);
-        if (denominator == 0)
-            return null;
-        return numerator / (double)denominator;
-    }
-
-    private static double[] ReadRationalArray(object propertyItem)
-    {
-        var bytes = GetPropertyItemBytes(propertyItem);
-        if (bytes == null || bytes.Length < 8 || bytes.Length % 8 != 0)
-            return null;
-
-        var result = new double[bytes.Length / 8];
-        for (var i = 0; i < result.Length; i++)
-        {
-            var numerator = BitConverter.ToUInt32(bytes, i * 8);
-            var denominator = BitConverter.ToUInt32(bytes, i * 8 + 4);
-            result[i] = denominator == 0 ? 0d : numerator / (double)denominator;
-        }
-
-        return result;
+            thumbnailBytes = thumbnailBytes,
+            captureTime = photoData?.captureTime,
+            locationText = photoData?.locationText,
+            cameraText = photoData?.cameraText,
+            apertureText = photoData?.apertureText
+        };
     }
 
     private static byte[] LoadImageBytes(string filePath)
@@ -2673,7 +2327,7 @@ with open(out_path, 'w', encoding='utf-8') as f:
         }
 
         var best = ClipImageSimilarity.FindBestMatch(sourceRecord, originalCandidates);
-        if (best != null && best.target != null && ShouldTreatAsOriginalFromSimilarity(entry, best))
+        if (best != null && best.target != null && ShouldTreatAsOriginalFromSimilarity(entry, sourceRecord, best, allRecords))
         {
             entry.type = LibraryImageType.Original;
             entry.metadataOriginalScore = Mathf.Max(entry.metadataOriginalScore, 0.62f);
@@ -2713,53 +2367,26 @@ with open(out_path, 'w', encoding='utf-8') as f:
         }
     }
 
-    private bool ShouldTreatAsOriginalFromSimilarity(ThumbnailEntry entry, ClipImageSimilarity.SimilarImageMatch best)
+    private bool ShouldTreatAsOriginalFromSimilarity(
+        ThumbnailEntry entry,
+        ClipClassificationCache.CachedClipImageRecord sourceRecord,
+        ClipImageSimilarity.SimilarImageMatch best,
+        IReadOnlyList<ClipClassificationCache.CachedClipImageRecord> allRecords)
     {
-        if (entry == null || best?.target == null)
+        if (entry == null || sourceRecord == null || best?.target == null)
             return false;
 
         if (best.cosineSimilarity < ClipNearDuplicateOriginalThreshold)
             return false;
 
-        if (entry.metadataOriginalScore >= 0.62f)
+        if (entry.metadataOriginalScore >= 0.62f || HasStrongOriginalMetadata(entry) || IsHiddenOriginalSourcePath(entry.fullPath))
             return true;
 
-        var targetPath = best.target.filePath;
-        if (string.IsNullOrWhiteSpace(targetPath))
-            return false;
-
-        var sourceName = entry.fileName ?? string.Empty;
-        var targetName = Path.GetFileName(targetPath) ?? string.Empty;
-        if (!string.Equals(sourceName, targetName, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        if (IsHiddenOriginalSourcePath(entry.fullPath))
+        if (HasSharedReliableMetadata(entry, best.target.filePath))
             return true;
 
-        var sourceLength = entry.fileSize;
-        long targetLength = 0;
-        if (_entryByPath.TryGetValue(targetPath, out var targetEntry) && targetEntry != null)
-            targetLength = targetEntry.fileSize;
-        else
-        {
-            try
-            {
-                var info = new FileInfo(targetPath);
-                targetLength = info.Exists ? info.Length : 0;
-            }
-            catch
-            {
-            }
-        }
-
-        if (sourceLength > 0 && targetLength > 0)
-        {
-            var ratio = Mathf.Abs(sourceLength - targetLength) / (float)Mathf.Max(sourceLength, targetLength);
-            if (ratio <= ClipNearDuplicateEditedGap)
-                return true;
-        }
-
-        return false;
+        return HasReasonableNearDuplicateSize(entry, best.target.filePath) &&
+               IsBestVisibleNearDuplicate(entry, sourceRecord, best.target, best.cosineSimilarity, allRecords);
     }
 
     private static string BuildMappedClipText(string currentClipText, float similarity, string originalName)
@@ -2790,10 +2417,6 @@ with open(out_path, 'w', encoding='utf-8') as f:
         if (HasUsableMetadata(entry.locationText))
             score += 0.26f;
 
-        var lowerName = (entry.fileName ?? string.Empty).ToLowerInvariant();
-        if (lowerName.Contains("screenshot") || lowerName.Contains("edit") || lowerName.Contains("retouch") || lowerName.Contains("result"))
-            score -= 0.25f;
-
         return Mathf.Clamp01(score);
     }
 
@@ -2813,6 +2436,163 @@ with open(out_path, 'w', encoding='utf-8') as f:
             strongSignals++;
 
         return strongSignals >= 2;
+    }
+
+    private bool HasSharedReliableMetadata(ThumbnailEntry entry, string originalPath)
+    {
+        if (entry == null || !TryGetOriginalSnapshot(originalPath, out var snapshot) || snapshot == null)
+            return false;
+
+        var sharedSignals = 0;
+        if (entry.captureTime.HasValue &&
+            snapshot.captureTime.HasValue &&
+            Math.Abs((entry.captureTime.Value - snapshot.captureTime.Value).TotalSeconds) <= 2d)
+        {
+            sharedSignals++;
+        }
+
+        if (HasUsableMetadata(entry.cameraText) &&
+            HasUsableMetadata(snapshot.cameraText) &&
+            string.Equals(entry.cameraText.Trim(), snapshot.cameraText.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            sharedSignals++;
+        }
+
+        if (HasUsableMetadata(entry.apertureText) &&
+            HasUsableMetadata(snapshot.apertureText) &&
+            string.Equals(entry.apertureText.Trim(), snapshot.apertureText.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            sharedSignals++;
+        }
+
+        if (HasUsableMetadata(entry.locationText) &&
+            HasUsableMetadata(snapshot.locationText) &&
+            string.Equals(entry.locationText.Trim(), snapshot.locationText.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            sharedSignals++;
+        }
+
+        return sharedSignals > 0;
+    }
+
+    private bool HasReasonableNearDuplicateSize(ThumbnailEntry entry, string originalPath)
+    {
+        if (entry == null || entry.fileSize <= 0 || !TryGetFileSize(originalPath, out var targetLength) || targetLength <= 0)
+            return true;
+
+        var minSize = Math.Min(entry.fileSize, targetLength);
+        var maxSize = Math.Max(entry.fileSize, targetLength);
+        if (maxSize <= 0)
+            return true;
+
+        return minSize / (float)maxSize >= ClipNearDuplicateOriginalMinSizeRatio;
+    }
+
+    private bool IsBestVisibleNearDuplicate(
+        ThumbnailEntry entry,
+        ClipClassificationCache.CachedClipImageRecord sourceRecord,
+        ClipClassificationCache.CachedClipImageRecord targetRecord,
+        float currentSimilarity,
+        IReadOnlyList<ClipClassificationCache.CachedClipImageRecord> allRecords)
+    {
+        if (entry == null || sourceRecord == null || targetRecord?.imageEmbedding == null || allRecords == null)
+            return false;
+
+        for (var i = 0; i < _thumbnailEntries.Count; i++)
+        {
+            var candidate = _thumbnailEntries[i];
+            if (candidate == null ||
+                string.Equals(candidate.fullPath, entry.fullPath, StringComparison.OrdinalIgnoreCase) ||
+                IsHiddenOriginalSourcePath(candidate.fullPath))
+            {
+                continue;
+            }
+
+            var candidateRecord = FindImageRecordByPath(allRecords, candidate.fullPath);
+            if (candidateRecord?.imageEmbedding == null)
+                continue;
+
+            var similarity = ClipImageSimilarity.CosineSimilarity(candidateRecord.imageEmbedding, targetRecord.imageEmbedding);
+            if (similarity > currentSimilarity + ClipNearDuplicateRepresentativeEpsilon)
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool TryGetOriginalSnapshot(string originalPath, out OriginalMetadataSnapshot snapshot)
+    {
+        snapshot = null;
+        if (string.IsNullOrWhiteSpace(originalPath))
+            return false;
+
+        if (_originalMetadataByPath.TryGetValue(originalPath, out snapshot) && snapshot != null)
+            return true;
+
+        if (_entryByPath.TryGetValue(originalPath, out var entry) && entry != null)
+        {
+            snapshot = new OriginalMetadataSnapshot
+            {
+                directoryPath = Path.GetDirectoryName(entry.fullPath),
+                fileName = entry.fileName,
+                type = entry.type,
+                score = entry.metadataOriginalScore,
+                captureTime = entry.captureTime ?? entry.modifiedTime,
+                locationText = entry.locationText,
+                cameraText = entry.cameraText,
+                apertureText = entry.apertureText
+            };
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryGetFileSize(string filePath, out long fileSize)
+    {
+        fileSize = 0;
+        if (string.IsNullOrWhiteSpace(filePath))
+            return false;
+
+        if (_entryByPath.TryGetValue(filePath, out var entry) && entry != null && entry.fileSize > 0)
+        {
+            fileSize = entry.fileSize;
+            return true;
+        }
+
+        try
+        {
+            var info = new FileInfo(filePath);
+            if (!info.Exists || info.Length <= 0)
+                return false;
+
+            fileSize = info.Length;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static ClipClassificationCache.CachedClipImageRecord FindImageRecordByPath(
+        IReadOnlyList<ClipClassificationCache.CachedClipImageRecord> records,
+        string filePath)
+    {
+        if (records == null || string.IsNullOrWhiteSpace(filePath))
+            return null;
+
+        for (var i = 0; i < records.Count; i++)
+        {
+            var record = records[i];
+            if (record != null &&
+                string.Equals(record.filePath, filePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return record;
+            }
+        }
+
+        return null;
     }
 
     private void RememberOriginalMetadata(ThumbnailEntry entry)
@@ -2926,7 +2706,8 @@ with open(out_path, 'w', encoding='utf-8') as f:
         try
         {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-            Process.Start(new ProcessStartInfo("explorer.exe", "/select," + "\"" + path + "\"") { UseShellExecute = true });
+            var normalizedPath = Path.GetFullPath(path).Replace('/', '\\');
+            Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + normalizedPath + "\"") { UseShellExecute = true });
 #elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
             Process.Start(new ProcessStartInfo("open", "-R \"" + path + "\"") { UseShellExecute = false });
 #elif UNITY_EDITOR
