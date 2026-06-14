@@ -842,29 +842,16 @@ public sealed class MainView2 : BasePageView
             var currentPath = CurrentImagePath;
             var preferFileIdentity = GetCurrentHistoryTexture() == GetOriginalHistoryTexture() && !string.IsNullOrWhiteSpace(currentPath);
             ClipClassificationResult result;
-            if (ClipClassificationCache.TryGet(Host.ClipRunner, src, currentPath, preferFileIdentity, out var cached))
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            Host.ClipRunner.ProgressChanged -= OnProgress;
+            Host.ClipRunner.ProgressChanged += OnProgress;
+            try
             {
-                SetProgress(1f, "CLIP cache ready");
-                result = cached;
+                result = await Host.ClipRunner.ProcessAsync(src, _lifetimeCts.Token);
             }
-            else
+            finally
             {
-                void OnProgress(float p, string t) => SetProgress(p, t);
                 Host.ClipRunner.ProgressChanged -= OnProgress;
-                Host.ClipRunner.ProgressChanged += OnProgress;
-                try
-                {
-                    result = await ClipClassificationCache.GetOrClassifyAsync(
-                        Host.ClipRunner,
-                        src,
-                        currentPath,
-                        preferFileIdentity,
-                        _lifetimeCts.Token);
-                }
-                finally
-                {
-                    Host.ClipRunner.ProgressChanged -= OnProgress;
-                }
             }
 
             if (!string.IsNullOrWhiteSpace(result.error))
@@ -872,6 +859,8 @@ public sealed class MainView2 : BasePageView
                 ShowToast(result.error, 3200);
                 return;
             }
+
+            ClipClassificationCache.Store(Host.ClipRunner, result, src, currentPath, preferFileIdentity);
             ShowToast("CLIP: " + result.bestLabel + "  " + FormatClipTopScores(result.scores, 3), 3600);
         }
         finally

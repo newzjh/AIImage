@@ -1864,29 +1864,16 @@ public class MainView : MonoBehaviour
             var basePath = _historyEntries.Count > 0 ? _historyEntries[_historyEntries.Count - 1].sourcePath : null;
             var preferFileIdentity = string.IsNullOrWhiteSpace(basePath) ? false : ReferenceEquals(src, GetOriginalHistoryTexture());
             ClipClassificationResult r;
-            if (ClipClassificationCache.TryGet(_clipNcnnReproRunner, src, basePath, preferFileIdentity, out var cached))
+            void OnProgress(float p, string t) => SetProgress(p, t);
+            _clipNcnnReproRunner.ProgressChanged -= OnProgress;
+            _clipNcnnReproRunner.ProgressChanged += OnProgress;
+            try
             {
-                SetProgress(1f, "CLIP cache ready");
-                r = cached;
+                r = await _clipNcnnReproRunner.ProcessAsync(src, _lifetimeCts.Token);
             }
-            else
+            finally
             {
-                void OnProgress(float p, string t) => SetProgress(p, t);
                 _clipNcnnReproRunner.ProgressChanged -= OnProgress;
-                _clipNcnnReproRunner.ProgressChanged += OnProgress;
-                try
-                {
-                    r = await ClipClassificationCache.GetOrClassifyAsync(
-                        _clipNcnnReproRunner,
-                        src,
-                        basePath,
-                        preferFileIdentity,
-                        _lifetimeCts.Token);
-                }
-                finally
-                {
-                    _clipNcnnReproRunner.ProgressChanged -= OnProgress;
-                }
             }
 
             if (!string.IsNullOrWhiteSpace(r.error))
@@ -1896,6 +1883,8 @@ public class MainView : MonoBehaviour
                 ShowToast(msg, 4500);
                 return;
             }
+
+            ClipClassificationCache.Store(_clipNcnnReproRunner, r, src, basePath, preferFileIdentity);
 
             var top3 = FormatClipTopScores(r.scores, 3);
             UnityEngine.Debug.Log("[MainView] CLIP result | best=" + (r.bestLabel ?? "")

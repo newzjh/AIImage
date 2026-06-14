@@ -11,6 +11,17 @@ using UnityEngine;
 // Stores CLIP classification results in one JSON file to avoid PlayerPrefs churn.
 public static class ClipClassificationCache
 {
+    public sealed class CachedClipImageRecord
+    {
+        public string key;
+        public string identityPath;
+        public string filePath;
+        public string bestLabel;
+        public float bestProbability;
+        public float[] imageEmbedding;
+        public long updatedUtcTicks;
+    }
+
     [Serializable]
     private sealed class CacheFile
     {
@@ -24,9 +35,11 @@ public static class ClipClassificationCache
         public string key;
         public string signature;
         public string identityPath;
+        public string filePath;
         public string bestLabel;
         public float bestProbability;
         public ClipLabelScore[] scores;
+        public float[] imageEmbedding;
         public long updatedUtcTicks;
     }
 
@@ -77,6 +90,68 @@ public static class ClipClassificationCache
             return false;
 
         return TryGetInternal(key, runner.ClassificationCacheSignature, out result);
+    }
+
+    public static void Store(
+        ClipNcnnReproRunner runner,
+        ClipClassificationResult result,
+        Texture2D texture,
+        string filePath,
+        bool preferFileIdentity)
+    {
+        if (runner == null)
+            return;
+
+        string key = null;
+        string identityPath = null;
+
+        if (preferFileIdentity)
+            key = BuildFileKey(filePath, out identityPath);
+
+        if (string.IsNullOrWhiteSpace(key))
+            key = BuildTextureKey(texture);
+
+        if (string.IsNullOrWhiteSpace(key))
+            return;
+
+        StoreSuccessfulResult(key, identityPath, filePath, runner.ClassificationCacheSignature, result);
+    }
+
+    public static List<CachedClipImageRecord> GetAllImageRecords(ClipNcnnReproRunner runner)
+    {
+        var list = new List<CachedClipImageRecord>();
+        if (runner == null)
+            return list;
+
+        EnsureLoaded();
+        var signature = runner.ClassificationCacheSignature;
+        lock (Sync)
+        {
+            foreach (var entry in Entries.Values)
+            {
+                if (entry == null ||
+                    string.IsNullOrWhiteSpace(entry.signature) ||
+                    !string.Equals(entry.signature, signature, StringComparison.Ordinal) ||
+                    entry.imageEmbedding == null ||
+                    entry.imageEmbedding.Length == 0)
+                {
+                    continue;
+                }
+
+                list.Add(new CachedClipImageRecord
+                {
+                    key = entry.key,
+                    identityPath = entry.identityPath,
+                    filePath = entry.filePath,
+                    bestLabel = entry.bestLabel,
+                    bestProbability = entry.bestProbability,
+                    updatedUtcTicks = entry.updatedUtcTicks,
+                    imageEmbedding = CloneEmbedding(entry.imageEmbedding)
+                });
+            }
+        }
+
+        return list;
     }
 
     public static UniTask<ClipClassificationResult> GetOrClassifyAsync(
@@ -147,7 +222,7 @@ public static class ClipClassificationCache
             return cached;
 
         var result = await runner.ProcessAsync(texture, cancellationToken);
-        StoreSuccessfulResult(key, identityPath, signature, result);
+        StoreSuccessfulResult(key, identityPath, identityPath, signature, result);
         return result;
     }
 
@@ -172,6 +247,7 @@ public static class ClipClassificationCache
                 bestLabel = entry.bestLabel,
                 bestProbability = entry.bestProbability,
                 scores = CloneScores(entry.scores),
+                imageEmbedding = CloneEmbedding(entry.imageEmbedding),
                 error = null,
                 elapsedMs = 0
             };
@@ -179,7 +255,7 @@ public static class ClipClassificationCache
         }
     }
 
-    private static void StoreSuccessfulResult(string key, string identityPath, string signature, ClipClassificationResult result)
+    private static void StoreSuccessfulResult(string key, string identityPath, string filePath, string signature, ClipClassificationResult result)
     {
         if (!IsSuccessful(result) || string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(signature))
             return;
@@ -211,9 +287,11 @@ public static class ClipClassificationCache
                 key = key,
                 signature = signature,
                 identityPath = identityPath,
+                filePath = NormalizePath(filePath),
                 bestLabel = result.bestLabel,
                 bestProbability = result.bestProbability,
                 scores = CloneScores(result.scores),
+                imageEmbedding = CloneEmbedding(result.imageEmbedding),
                 updatedUtcTicks = DateTime.UtcNow.Ticks
             };
 
@@ -377,6 +455,16 @@ public static class ClipClassificationCache
 
         var clone = new ClipLabelScore[scores.Length];
         Array.Copy(scores, clone, scores.Length);
+        return clone;
+    }
+
+    private static float[] CloneEmbedding(float[] embedding)
+    {
+        if (embedding == null || embedding.Length == 0)
+            return Array.Empty<float>();
+
+        var clone = new float[embedding.Length];
+        Array.Copy(embedding, clone, embedding.Length);
         return clone;
     }
 

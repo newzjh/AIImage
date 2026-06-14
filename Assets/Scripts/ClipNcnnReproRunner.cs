@@ -23,6 +23,7 @@ public struct ClipClassificationResult
     public string bestLabel;
     public float bestProbability;
     public ClipLabelScore[] scores;
+    public float[] imageEmbedding;
     public string error;
     public long elapsedMs;
 }
@@ -277,7 +278,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             {
                 bestLabel = scores.Length > 0 ? scores[0].label : null,
                 bestProbability = scores.Length > 0 ? scores[0].probability : 0f,
-                scores = scores
+                scores = scores,
+                imageEmbedding = (float[])imageEmbedding.Clone()
             });
         }
         catch (OperationCanceledException)
