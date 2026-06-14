@@ -42,6 +42,12 @@ public sealed class LibraryView : BasePageView
         public bool isPlaceholder;
     }
 
+    private sealed class StorageRootOption
+    {
+        public string rootPath;
+        public string displayName;
+    }
+
     private sealed class ThumbnailEntry
     {
         public string fullPath;
@@ -137,6 +143,7 @@ public sealed class LibraryView : BasePageView
     private readonly Dictionary<string, OriginalMetadataSnapshot> _originalMetadataByPath = new Dictionary<string, OriginalMetadataSnapshot>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _hiddenOriginalDirectoryPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _hiddenOriginalImportedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly List<StorageRootOption> _storageRoots = new List<StorageRootOption>();
     private readonly SemaphoreSlim _clipClassificationSemaphore = new SemaphoreSlim(1, 1);
     private bool _didInitialPathSync;
     private string _currentDriveRoot;
@@ -288,7 +295,7 @@ public sealed class LibraryView : BasePageView
         driveRow.style.alignItems = Align.Center;
         pane.Add(driveRow);
 
-        var driveLabel = new Label("\u76D8\u7B26");
+        var driveLabel = new Label(GetStorageRootLabel());
         driveLabel.style.color = Color.white;
         driveLabel.style.minWidth = 42;
         driveRow.Add(driveLabel);
@@ -475,11 +482,113 @@ public sealed class LibraryView : BasePageView
 
     private void PopulateDrives()
     {
-        List<string> drives;
+        var roots = BuildStorageRoots();
+        _storageRoots.Clear();
+        _storageRoots.AddRange(roots);
+
+        if (_storageRoots.Count == 0)
+        {
+            var fallback = NormalizeRootPath(Path.GetPathRoot(Application.persistentDataPath));
+            if (!string.IsNullOrWhiteSpace(fallback))
+            {
+                _storageRoots.Add(new StorageRootOption
+                {
+                    rootPath = fallback,
+                    displayName = fallback
+                });
+            }
+        }
+
+        var choices = _storageRoots.Select(root => root.displayName).ToList();
+        if (choices.Count == 0)
+            choices.Add(string.Empty);
+
+        _drivePopup.choices = choices;
+
+        StorageRootOption preferred = _storageRoots.FirstOrDefault();
+        var preferredRootPath = ResolvePreferredStorageRootPath();
+        if (!string.IsNullOrWhiteSpace(preferredRootPath))
+        {
+            var match = _storageRoots.FirstOrDefault(root => string.Equals(root.rootPath, preferredRootPath, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+                preferred = match;
+        }
+
+        if (preferred == null)
+            return;
+
+        _drivePopup.SetValueWithoutNotify(preferred.displayName);
+        SetDrive(preferred.rootPath, string.IsNullOrWhiteSpace(_selectedDirectoryPath));
+    }
+
+    private static string GetStorageRootLabel()
+    {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        return "\u76D8\u7B26";
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+        return "\u5B58\u50A8";
+#elif UNITY_STANDALONE_LINUX || UNITY_EDITOR_LINUX
+        return "\u5B58\u50A8";
+#elif UNITY_ANDROID
+        return "\u5B58\u50A8";
+#elif UNITY_IOS
+        return "\u4F4D\u7F6E";
+#else
+        return "\u5B58\u50A8";
+#endif
+    }
+
+    private string ResolvePreferredStorageRootPath()
+    {
+        if (!string.IsNullOrWhiteSpace(_selectedDirectoryPath))
+        {
+            var selectedRoot = GetBestStorageRootForPath(_selectedDirectoryPath);
+            if (!string.IsNullOrWhiteSpace(selectedRoot))
+                return selectedRoot;
+        }
+
+        var lastPath = Host?.GetLastImagePath();
+        if (!string.IsNullOrWhiteSpace(lastPath))
+            return GetBestStorageRootForPath(lastPath);
+
+        return _storageRoots.Count > 0 ? _storageRoots[0].rootPath : null;
+    }
+
+    private string GetBestStorageRootForPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || _storageRoots.Count == 0)
+            return null;
+
+        try
+        {
+            var normalizedPath = Path.GetFullPath(path);
+            StorageRootOption best = null;
+            for (var i = 0; i < _storageRoots.Count; i++)
+            {
+                var candidate = _storageRoots[i];
+                if (candidate == null || string.IsNullOrWhiteSpace(candidate.rootPath))
+                    continue;
+                if (!IsSameDirectoryOrChildOf(normalizedPath, candidate.rootPath))
+                    continue;
+                if (best == null || candidate.rootPath.Length > best.rootPath.Length)
+                    best = candidate;
+            }
+
+            return best?.rootPath;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private List<StorageRootOption> BuildStorageRoots()
+    {
+        var roots = new List<StorageRootOption>();
         try
         {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-            drives = Environment.GetLogicalDrives()
+            var drives = Environment.GetLogicalDrives()
                 .Select(Path.GetPathRoot)
                 .Where(d => !string.IsNullOrWhiteSpace(d))
                 .Select(d => d.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar)
@@ -487,42 +596,110 @@ public sealed class LibraryView : BasePageView
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            for (var i = 0; i < drives.Count; i++)
+            {
+                roots.Add(new StorageRootOption
+                {
+                    rootPath = drives[i],
+                    displayName = drives[i]
+                });
+            }
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+            AddStorageRoot(roots, "/", "\u672C\u5730");
+            TryAddMountedRoots(roots, "/Volumes", "\u5916\u63A5");
+#elif UNITY_STANDALONE_LINUX || UNITY_EDITOR_LINUX
+            AddStorageRoot(roots, "/", "\u672C\u5730");
+            TryAddMountedRoots(roots, "/mnt", "\u6302\u8F7D");
+            TryAddMountedRoots(roots, "/media", "\u5916\u63A5");
+#elif UNITY_ANDROID
+            AddStorageRoot(roots, "/storage/emulated/0", "\u672C\u5730");
+            TryAddMountedRoots(roots, "/storage", "\u5916\u63A5");
+#elif UNITY_IOS
+            var documents = Application.persistentDataPath;
+            var root = documents;
+            try
+            {
+                var parent = Directory.GetParent(documents);
+                if (parent != null && !string.IsNullOrWhiteSpace(parent.FullName))
+                    root = parent.FullName;
+            }
+            catch
+            {
+            }
+
+            AddStorageRoot(roots, root, "\u672C\u5730");
 #else
-            drives = DriveInfo.GetDrives().Where(d => d.IsReady).Select(d => d.RootDirectory.FullName).ToList();
+            AddStorageRoot(roots, Path.GetPathRoot(Application.persistentDataPath), "\u672C\u5730");
 #endif
         }
         catch
         {
-            drives = new List<string>();
         }
 
-        if (drives.Count == 0)
-            drives.Add(Path.GetPathRoot(Application.persistentDataPath));
+        return roots
+            .Where(root => root != null && !string.IsNullOrWhiteSpace(root.rootPath))
+            .GroupBy(root => root.rootPath, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(root => root.displayName, ExplorerComparer)
+            .ToList();
+    }
 
-        _drivePopup.choices = drives;
+    private static void AddStorageRoot(List<StorageRootOption> roots, string path, string displayName)
+    {
+        var normalized = NormalizeRootPath(path);
+        if (string.IsNullOrWhiteSpace(normalized) || !Directory.Exists(normalized))
+            return;
 
-        var preferred = drives[0];
-        if (!string.IsNullOrWhiteSpace(_selectedDirectoryPath))
+        roots.Add(new StorageRootOption
         {
-            var selectedRoot = Path.GetPathRoot(_selectedDirectoryPath);
-            var selectedMatch = drives.FirstOrDefault(d => string.Equals(d, selectedRoot, StringComparison.OrdinalIgnoreCase));
-            if (!string.IsNullOrWhiteSpace(selectedMatch))
-                preferred = selectedMatch;
-        }
-        else
+            rootPath = normalized,
+            displayName = displayName
+        });
+    }
+
+    private static void TryAddMountedRoots(List<StorageRootOption> roots, string parentDirectory, string labelPrefix)
+    {
+        if (roots == null || string.IsNullOrWhiteSpace(parentDirectory) || !Directory.Exists(parentDirectory))
+            return;
+
+        try
         {
-            var lastPath = Host?.GetLastImagePath();
-            if (!string.IsNullOrWhiteSpace(lastPath))
+            foreach (var child in Directory.EnumerateDirectories(parentDirectory))
             {
-                var root = Path.GetPathRoot(lastPath);
-                var match = drives.FirstOrDefault(d => string.Equals(d, root, StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrWhiteSpace(match))
-                    preferred = match;
+                var normalized = NormalizeRootPath(child);
+                if (string.IsNullOrWhiteSpace(normalized))
+                    continue;
+
+                var name = DirectoryNameFromPath(normalized);
+                roots.Add(new StorageRootOption
+                {
+                    rootPath = normalized,
+                    displayName = string.IsNullOrWhiteSpace(name) ? labelPrefix : (labelPrefix + " · " + name)
+                });
             }
         }
+        catch
+        {
+        }
+    }
 
-        _drivePopup.SetValueWithoutNotify(preferred);
-        SetDrive(preferred, string.IsNullOrWhiteSpace(_selectedDirectoryPath));
+    private static string NormalizeRootPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        try
+        {
+            var full = Path.GetFullPath(path);
+            if (string.IsNullOrWhiteSpace(full))
+                return null;
+
+            return full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void SetDrive(string driveRoot, bool autoSelectRoot)

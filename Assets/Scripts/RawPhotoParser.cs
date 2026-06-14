@@ -4,6 +4,8 @@ using System.IO;
 
 public static class RawPhotoParser
 {
+    private const string FujiRafHeader = "FUJIFILMCCD-RAW";
+
     public sealed class RawPhotoData
     {
         public byte[] previewBytes;
@@ -60,7 +62,7 @@ public static class RawPhotoParser
         if (bytes == null || bytes.Length < 4)
             return false;
 
-        if (TryExtractLargestEmbeddedJpeg(bytes, out var previewBytes))
+        if (TryExtractPreviewImage(bytes, out var previewBytes))
         {
             result.previewBytes = previewBytes;
             if (TryParseJpegExif(previewBytes, out var jpegExif))
@@ -139,6 +141,35 @@ public static class RawPhotoParser
             target.locationText = BuildGpsText(source.gpsLatitudeRef, source.gpsLatitude, source.gpsLongitudeRef, source.gpsLongitude);
     }
 
+    private static bool TryExtractPreviewImage(byte[] bytes, out byte[] previewBytes)
+    {
+        previewBytes = null;
+        if (bytes == null || bytes.Length < 4)
+            return false;
+
+        if (TryExtractFujiRafPreview(bytes, out previewBytes))
+            return true;
+
+        return TryExtractLargestEmbeddedJpeg(bytes, out previewBytes);
+    }
+
+    private static bool TryExtractFujiRafPreview(byte[] bytes, out byte[] jpegBytes)
+    {
+        jpegBytes = null;
+        if (bytes == null || bytes.Length < 112)
+            return false;
+
+        if (!StartsWithAscii(bytes, FujiRafHeader))
+            return false;
+
+        var jpegOffset = (int)ReadUInt32BigEndian(bytes, 84);
+        var jpegLength = (int)ReadUInt32BigEndian(bytes, 88);
+        if (!TrySliceJpeg(bytes, jpegOffset, jpegLength, out jpegBytes))
+            return false;
+
+        return true;
+    }
+
     private static bool TryExtractLargestEmbeddedJpeg(byte[] bytes, out byte[] jpegBytes)
     {
         jpegBytes = null;
@@ -171,6 +202,30 @@ public static class RawPhotoParser
 
         jpegBytes = new byte[bestLength];
         Buffer.BlockCopy(bytes, bestStart, jpegBytes, 0, bestLength);
+        return true;
+    }
+
+    private static bool TrySliceJpeg(byte[] bytes, int offset, int length, out byte[] jpegBytes)
+    {
+        jpegBytes = null;
+        if (bytes == null || offset < 0 || length <= 0 || offset + length > bytes.Length)
+            return false;
+        if (length < 4 || bytes[offset] != 0xFF || bytes[offset + 1] != 0xD8)
+            return false;
+
+        var end = offset + length;
+        if (bytes[end - 2] != 0xFF || bytes[end - 1] != 0xD9)
+        {
+            var fallbackEnd = FindJpegEnd(bytes, offset + 2);
+            if (fallbackEnd <= offset)
+                return false;
+
+            end = fallbackEnd;
+            length = end - offset;
+        }
+
+        jpegBytes = new byte[length];
+        Buffer.BlockCopy(bytes, offset, jpegBytes, 0, length);
         return true;
     }
 
@@ -494,6 +549,14 @@ public static class RawPhotoParser
         return (ushort)((bytes[offset] << 8) | bytes[offset + 1]);
     }
 
+    private static uint ReadUInt32BigEndian(byte[] bytes, int offset)
+    {
+        return (uint)((bytes[offset] << 24) |
+                      (bytes[offset + 1] << 16) |
+                      (bytes[offset + 2] << 8) |
+                      bytes[offset + 3]);
+    }
+
     private static ushort ReadUInt16(byte[] bytes, int offset, bool littleEndian)
     {
         return littleEndian
@@ -580,5 +643,19 @@ public static class RawPhotoParser
     private static string NormalizeText(string text)
     {
         return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+    }
+
+    private static bool StartsWithAscii(byte[] bytes, string text)
+    {
+        if (bytes == null || string.IsNullOrEmpty(text) || bytes.Length < text.Length)
+            return false;
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (bytes[i] != (byte)text[i])
+                return false;
+        }
+
+        return true;
     }
 }
