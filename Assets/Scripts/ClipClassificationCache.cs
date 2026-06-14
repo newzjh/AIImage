@@ -154,6 +154,43 @@ public static class ClipClassificationCache
         return list;
     }
 
+    public static bool TryGetImageRecordForFile(ClipNcnnReproRunner runner, string filePath, out CachedClipImageRecord record)
+    {
+        record = null;
+        if (runner == null)
+            return false;
+
+        var key = BuildFileKey(filePath, out _);
+        if (string.IsNullOrWhiteSpace(key))
+            return false;
+
+        EnsureLoaded();
+        var signature = runner.ClassificationCacheSignature;
+        lock (Sync)
+        {
+            if (!Entries.TryGetValue(key, out var entry) ||
+                entry == null ||
+                !string.Equals(entry.signature, signature, StringComparison.Ordinal) ||
+                entry.imageEmbedding == null ||
+                entry.imageEmbedding.Length == 0)
+            {
+                return false;
+            }
+
+            record = new CachedClipImageRecord
+            {
+                key = entry.key,
+                identityPath = entry.identityPath,
+                filePath = entry.filePath,
+                bestLabel = entry.bestLabel,
+                bestProbability = entry.bestProbability,
+                updatedUtcTicks = entry.updatedUtcTicks,
+                imageEmbedding = CloneEmbedding(entry.imageEmbedding)
+            };
+            return true;
+        }
+    }
+
     public static UniTask<ClipClassificationResult> GetOrClassifyAsync(
         ClipNcnnReproRunner runner,
         Texture2D texture,

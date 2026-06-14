@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -12,14 +12,15 @@ using UnityEngine.UIElements;
 
 public sealed class LibraryView : BasePageView
 {
-    private const string PendingText = "待提取";
-    private const string PendingClipText = "待接入";
-    private const string EmptyText = "无";
+    private const string PendingText = "\u5F85\u63D0\u53D6";
+    private const string PendingClipText = "\u5F85\u63A5\u5165";
+    private const string EmptyText = "\u65E0";
     private const int ThumbnailMaxEdge = 640;
     private static readonly ExplorerStringComparer ExplorerComparer = new ExplorerStringComparer();
 
     private enum LibraryImageType
     {
+        RawOriginal,
         Original,
         Edited,
         Unknown
@@ -47,9 +48,18 @@ public sealed class LibraryView : BasePageView
         public LibraryImageType type;
         public string locationText = PendingText;
         public string faceText = PendingClipText;
+        public string clipBaseText = PendingClipText;
         public string clipText = PendingClipText;
         public string cameraText = PendingText;
         public string apertureText = PendingText;
+        public string mappedOriginalPath;
+        public string mappedOriginalName;
+        public string mappedOriginalLocationText;
+        public string mappedOriginalCameraText;
+        public string mappedOriginalApertureText;
+        public DateTime? mappedOriginalCaptureTime;
+        public float metadataOriginalScore;
+        public float mappedOriginalSimilarity;
         public bool favorite;
 
         public DateTime DisplayTime => captureTime ?? modifiedTime;
@@ -58,6 +68,17 @@ public sealed class LibraryView : BasePageView
     private sealed class ThumbnailPayload
     {
         public byte[] thumbnailBytes;
+        public DateTime? captureTime;
+        public string locationText;
+        public string cameraText;
+        public string apertureText;
+    }
+
+    private sealed class OriginalMetadataSnapshot
+    {
+        public string fileName;
+        public LibraryImageType type;
+        public float score;
         public DateTime? captureTime;
         public string locationText;
         public string cameraText;
@@ -101,6 +122,8 @@ public sealed class LibraryView : BasePageView
     private readonly Dictionary<string, Label> _statusByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Label> _timeLabelByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VisualElement> _cardByPath = new Dictionary<string, VisualElement>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Label> _typeBadgeByPath = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, OriginalMetadataSnapshot> _originalMetadataByPath = new Dictionary<string, OriginalMetadataSnapshot>(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _clipClassificationSemaphore = new SemaphoreSlim(1, 1);
     private bool _didInitialPathSync;
     private string _currentDriveRoot;
@@ -221,20 +244,20 @@ public sealed class LibraryView : BasePageView
         bar.style.alignItems = Align.Center;
         bar.style.flexWrap = Wrap.Wrap;
 
-        var title = new Label("图库");
+        var title = new Label("\u56FE\u5E93");
         title.style.fontSize = 18;
         title.style.color = Color.white;
         title.style.unityFontStyleAndWeight = FontStyle.Bold;
         title.style.marginRight = 14;
         bar.Add(title);
 
-        bar.Add(CreateFilterToggle("名称", true, out _sortTimeToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("人脸", false, out _sortFaceToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("地点", false, out _sortLocationToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("原图", true, out _showOriginalToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("修图", true, out _showEditedToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("未知", true, out _showUnknownToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("收藏", false, out _favoritesOnlyToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u540D\u79F0", true, out _sortTimeToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u4EBA\u8138", false, out _sortFaceToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u5730\u70B9", false, out _sortLocationToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u672A\u77E5", true, out _showUnknownToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
         return bar;
     }
 
@@ -252,7 +275,7 @@ public sealed class LibraryView : BasePageView
         driveRow.style.alignItems = Align.Center;
         pane.Add(driveRow);
 
-        var driveLabel = new Label("盘符");
+        var driveLabel = new Label("\u76D8\u7B26");
         driveLabel.style.color = Color.white;
         driveLabel.style.minWidth = 42;
         driveRow.Add(driveLabel);
@@ -262,7 +285,7 @@ public sealed class LibraryView : BasePageView
         _drivePopup.RegisterValueChangedCallback(evt => SetDrive(evt.newValue, true));
         driveRow.Add(_drivePopup);
 
-        _directorySummary = new Label("请选择目录");
+        _directorySummary = new Label("\u8BF7\u9009\u62E9\u76EE\u5F55");
         _directorySummary.style.marginTop = 10;
         _directorySummary.style.marginBottom = 8;
         _directorySummary.style.color = new Color(0.78f, 0.84f, 0.92f, 1f);
@@ -308,12 +331,12 @@ public sealed class LibraryView : BasePageView
         selectionTips.style.marginBottom = 10;
         pane.Add(selectionTips);
 
-        _selectionTipsTitle = new Label("缩略图信息");
+        _selectionTipsTitle = new Label("\u7F29\u7565\u56FE\u4FE1\u606F");
         _selectionTipsTitle.style.color = Color.white;
         _selectionTipsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
         selectionTips.Add(_selectionTipsTitle);
 
-        _selectionTipsDetail = new Label("单击缩略图查看信息，双击直接进入主编辑页。");
+        _selectionTipsDetail = new Label("\u5355\u51FB\u7F29\u7565\u56FE\u67E5\u770B\u4FE1\u606F\uFF0C\u53CC\u51FB\u76F4\u63A5\u8FDB\u5165\u4E3B\u7F16\u8F91\u9875\u3002");
         _selectionTipsDetail.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
         _selectionTipsDetail.style.whiteSpace = WhiteSpace.Normal;
         _selectionTipsDetail.style.marginTop = 4;
@@ -601,10 +624,10 @@ public sealed class LibraryView : BasePageView
         {
             ClearThumbnailEntries(true);
             _materializedDirectoryPath = directoryPath;
-            ShowGridStatus(string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath) ? "该目录不存在。" : "正在扫描目录...");
+            ShowGridStatus(string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath) ? "\u8BE5\u76EE\u5F55\u4E0D\u5B58\u5728\u3002" : "\u6B63\u5728\u626B\u63CF\u76EE\u5F55...");
             if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
             {
-                _selectionTipsDetail.text = "该目录不存在。";
+                _selectionTipsDetail.text = "\u8BE5\u76EE\u5F55\u4E0D\u5B58\u5728\u3002";
                 return;
             }
 
@@ -635,7 +658,7 @@ public sealed class LibraryView : BasePageView
             }
             catch
             {
-                ShowGridStatus("目录扫描失败。");
+                ShowGridStatus("\u76EE\u5F55\u626B\u63CF\u5931\u8D25\u3002");
                 return;
             }
             finally
@@ -661,12 +684,13 @@ public sealed class LibraryView : BasePageView
         _statusByPath.Clear();
         _timeLabelByPath.Clear();
         _cardByPath.Clear();
+        _typeBadgeByPath.Clear();
         _visibleEntries.Clear();
         _thumbnailGrid.Clear();
 
         IEnumerable<ThumbnailEntry> filtered = _thumbnailEntries;
         filtered = filtered.Where(entry =>
-            ((_showOriginalToggle?.value ?? true) || entry.type != LibraryImageType.Original) &&
+            ((_showOriginalToggle?.value ?? true) || (entry.type != LibraryImageType.Original && entry.type != LibraryImageType.RawOriginal)) &&
             ((_showEditedToggle?.value ?? true) || entry.type != LibraryImageType.Edited) &&
             ((_showUnknownToggle?.value ?? true) || entry.type != LibraryImageType.Unknown));
 
@@ -677,7 +701,7 @@ public sealed class LibraryView : BasePageView
             filtered = filtered.OrderByDescending(entry => entry.faceText, ExplorerComparer)
                 .ThenBy(entry => entry.fileName, ExplorerComparer);
         else if (_sortLocationToggle?.value == true)
-            filtered = filtered.OrderBy(entry => entry.locationText, ExplorerComparer)
+            filtered = filtered.OrderBy(entry => ResolveDisplayLocation(entry), ExplorerComparer)
                 .ThenBy(entry => entry.fileName, ExplorerComparer);
         else
             filtered = filtered.OrderBy(entry => entry.fileName, ExplorerComparer)
@@ -686,7 +710,7 @@ public sealed class LibraryView : BasePageView
         _visibleEntries.AddRange(filtered);
         if (_visibleEntries.Count == 0)
         {
-            ShowGridStatus(_directoryScanCts != null ? "正在扫描目录..." : "当前筛选下没有图片。");
+            ShowGridStatus(_directoryScanCts != null ? "\u6B63\u5728\u626B\u63CF\u76EE\u5F55..." : "\u5F53\u524D\u7B5B\u9009\u4E0B\u6CA1\u6709\u56FE\u7247\u3002");
             RestoreSelectedThumbnailTips();
             return;
         }
@@ -757,21 +781,13 @@ public sealed class LibraryView : BasePageView
         badgeRow.style.flexDirection = FlexDirection.Row;
         card.Add(badgeRow);
 
-        badgeRow.Add(CreateBadge(entry.type switch
-        {
-            LibraryImageType.Original => "RAW",
-            LibraryImageType.Edited => "EDIT",
-            _ => "?"
-        }, entry.type switch
-        {
-            LibraryImageType.Original => new Color(1f, 1f, 1f, 0.92f),
-            LibraryImageType.Edited => new Color(0.18f, 0.72f, 1f, 0.92f),
-            _ => new Color(0.58f, 0.58f, 0.64f, 0.92f)
-        }));
+        var typeBadge = CreateBadge(GetTypeBadgeText(entry.type), GetTypeBadgeBackground(entry.type));
+        badgeRow.Add(typeBadge);
+        _typeBadgeByPath[entry.fullPath] = typeBadge;
 
         if (entry.favorite)
         {
-            var favorite = CreateBadge("★", new Color(0.96f, 0.28f, 0.31f, 0.96f));
+            var favorite = CreateBadge("\u2605", new Color(0.96f, 0.28f, 0.31f, 0.96f));
             favorite.style.marginLeft = 6;
             badgeRow.Add(favorite);
         }
@@ -863,13 +879,19 @@ public sealed class LibraryView : BasePageView
             return;
 
         _selectionTipsTitle.text = entry.fileName;
+        var locationText = ResolveDisplayLocation(entry);
+        var cameraText = ResolveDisplayCamera(entry);
+        var apertureText = ResolveDisplayAperture(entry);
+        var captureTime = ResolveDisplayCaptureTime(entry);
+        var mappedOriginalText = ResolveMappedOriginalSummary(entry);
         _selectionTipsDetail.text =
-            $"拍摄时间: {entry.DisplayTime:yyyy-MM-dd HH:mm:ss}\n" +
-            $"文件大小: {FormatBytes(entry.fileSize)}\n" +
-            $"地点: {NormalizeDisplay(entry.locationText)}\n" +
-            $"相机: {NormalizeDisplay(entry.cameraText)}\n" +
-            $"光圈: {NormalizeDisplay(entry.apertureText)}\n" +
-            $"人脸: {NormalizeDisplay(entry.faceText)}\n" +
+            $"\u62CD\u6444\u65F6\u95F4: {captureTime:yyyy-MM-dd HH:mm:ss}\n" +
+            $"\u6587\u4EF6\u5927\u5C0F: {FormatBytes(entry.fileSize)}\n" +
+            $"\u5730\u70B9: {NormalizeDisplay(locationText)}\n" +
+            $"\u76F8\u673A: {NormalizeDisplay(cameraText)}\n" +
+            $"\u5149\u5708: {NormalizeDisplay(apertureText)}\n" +
+            $"\u4EBA\u8138: {NormalizeDisplay(entry.faceText)}\n" +
+            $"\u6620\u5C04\u539F\u56FE: {NormalizeDisplay(mappedOriginalText)}\n" +
             $"CLIP: {NormalizeDisplay(entry.clipText)}";
     }
 
@@ -947,6 +969,8 @@ public sealed class LibraryView : BasePageView
                     entry.apertureText = payload.apertureText;
                 if (payload.captureTime.HasValue)
                     entry.captureTime = payload.captureTime.Value;
+
+                ApplyTypeFromMetadata(entry);
 
                 if (payload.thumbnailBytes == null || payload.thumbnailBytes.Length == 0)
                 {
@@ -1059,9 +1083,11 @@ public sealed class LibraryView : BasePageView
 
         var best = string.IsNullOrWhiteSpace(result.bestLabel) ? EmptyText : result.bestLabel;
         var top = FormatClipTopScores(result.scores, 2);
-        entry.clipText = string.IsNullOrWhiteSpace(top) ? best : (best + "  " + top);
+        entry.clipBaseText = string.IsNullOrWhiteSpace(top) ? best : (best + "  " + top);
+        entry.clipText = entry.clipBaseText;
         entry.faceText = best;
         entry.clipClassificationReady = true;
+        ApplyTypeFromClipMapping(entry);
 
         if (_sortFaceToggle?.value == true)
         {
@@ -1086,13 +1112,16 @@ public sealed class LibraryView : BasePageView
             }
             else
             {
-                status.text = entry.thumbnailFailed ? "无法预览" : (entry.thumbnailLoading ? "加载中..." : "等待加载");
+                status.text = entry.thumbnailFailed ? "\u65E0\u6CD5\u9884\u89C8" : (entry.thumbnailLoading ? "\u52A0\u8F7D\u4E2D..." : "\u7B49\u5F85\u52A0\u8F7D");
                 status.style.display = DisplayStyle.Flex;
             }
         }
 
         if (_timeLabelByPath.TryGetValue(entry.fullPath, out var timeLabel))
             timeLabel.text = FormatThumbnailTime(entry);
+
+        if (_typeBadgeByPath.TryGetValue(entry.fullPath, out var typeBadge))
+            UpdateBadgeVisual(typeBadge, entry.type);
 
         if (string.Equals(_selectedThumbnailPath, entry.fullPath, StringComparison.OrdinalIgnoreCase))
             UpdateSelectionTips(entry);
@@ -1214,6 +1243,7 @@ public sealed class LibraryView : BasePageView
         _imageByPath.Clear();
         _statusByPath.Clear();
         _timeLabelByPath.Clear();
+        _typeBadgeByPath.Clear();
 
         var label = new Label(text);
         label.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
@@ -1507,13 +1537,44 @@ public sealed class LibraryView : BasePageView
         return badge;
     }
 
+    private static void UpdateBadgeVisual(Label badge, LibraryImageType type)
+    {
+        if (badge == null)
+            return;
+
+        var background = GetTypeBadgeBackground(type);
+        badge.text = GetTypeBadgeText(type);
+        badge.style.backgroundColor = new StyleColor(background);
+        badge.style.color = background.grayscale > 0.7f ? Color.black : Color.white;
+    }
+
+    private static string GetTypeBadgeText(LibraryImageType type)
+    {
+        return type switch
+        {
+            LibraryImageType.RawOriginal => "RAW",
+            LibraryImageType.Original => "\u539F\u56FE",
+            LibraryImageType.Edited => "\u4FEE\u8FC7\u56FE",
+            _ => "?"
+        };
+    }
+
+    private static Color GetTypeBadgeBackground(LibraryImageType type)
+    {
+        return type switch
+        {
+            LibraryImageType.RawOriginal => new Color(1f, 0.86f, 0.38f, 0.96f),
+            LibraryImageType.Original => new Color(1f, 1f, 1f, 0.92f),
+            LibraryImageType.Edited => new Color(0.18f, 0.72f, 1f, 0.92f),
+            _ => new Color(0.58f, 0.58f, 0.64f, 0.92f)
+        };
+    }
+
     private static LibraryImageType GuessType(string fileName)
     {
         var lower = (fileName ?? string.Empty).ToLowerInvariant();
-        if (lower.Contains("raw") || lower.EndsWith(".cr2") || lower.EndsWith(".cr3") || lower.EndsWith(".nef") || lower.EndsWith(".arw") || lower.EndsWith(".dng"))
-            return LibraryImageType.Original;
-        if (lower.Contains("edit") || lower.Contains("retouch") || lower.Contains("result") || lower.Contains("output") || lower.Contains("fix"))
-            return LibraryImageType.Edited;
+        if (lower.EndsWith(".raw") || lower.EndsWith(".cr2") || lower.EndsWith(".cr3") || lower.EndsWith(".nef") || lower.EndsWith(".arw") || lower.EndsWith(".dng"))
+            return LibraryImageType.RawOriginal;
         return LibraryImageType.Unknown;
     }
 
@@ -1593,6 +1654,292 @@ public sealed class LibraryView : BasePageView
     private static string FormatThumbnailTime(ThumbnailEntry entry)
     {
         return entry.DisplayTime.ToString("yyyy-MM-dd HH:mm");
+    }
+
+    private void ApplyTypeFromMetadata(ThumbnailEntry entry)
+    {
+        if (entry == null)
+            return;
+
+        if (IsRawOriginalFile(entry.fullPath))
+        {
+            entry.type = LibraryImageType.RawOriginal;
+            entry.metadataOriginalScore = 1f;
+            ClearMappedOriginal(entry);
+            RememberOriginalMetadata(entry);
+            RefreshEditedMappingsForKnownOriginal(entry);
+            return;
+        }
+
+        entry.metadataOriginalScore = ScoreOriginalMetadata(entry);
+        if (entry.metadataOriginalScore >= 0.62f)
+        {
+            entry.type = LibraryImageType.Original;
+            ClearMappedOriginal(entry);
+        }
+        else if (entry.type != LibraryImageType.Edited)
+        {
+            entry.type = LibraryImageType.Unknown;
+            ClearMappedOriginal(entry);
+        }
+
+        RememberOriginalMetadata(entry);
+        RefreshEditedMappingsForKnownOriginal(entry);
+    }
+
+    private void ApplyTypeFromClipMapping(ThumbnailEntry entry)
+    {
+        if (entry == null || Host?.ClipRunner == null)
+            return;
+
+        if (entry.type == LibraryImageType.RawOriginal)
+            return;
+
+        if (entry.metadataOriginalScore >= 0.62f)
+        {
+            entry.type = LibraryImageType.Original;
+            ClearMappedOriginal(entry);
+            RememberOriginalMetadata(entry);
+            RefreshEditedMappingsForKnownOriginal(entry);
+            return;
+        }
+
+        if (!ClipClassificationCache.TryGetImageRecordForFile(Host.ClipRunner, entry.fullPath, out var sourceRecord))
+            return;
+
+        var allRecords = ClipClassificationCache.GetAllImageRecords(Host.ClipRunner);
+        if (allRecords == null || allRecords.Count == 0)
+            return;
+
+        var originalCandidates = new List<ClipClassificationCache.CachedClipImageRecord>();
+        for (var i = 0; i < allRecords.Count; i++)
+        {
+            var candidate = allRecords[i];
+            if (candidate == null || string.IsNullOrWhiteSpace(candidate.filePath))
+                continue;
+            if (string.Equals(candidate.filePath, entry.fullPath, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (_entryByPath.TryGetValue(candidate.filePath, out var candidateEntry))
+            {
+                if (candidateEntry.type == LibraryImageType.RawOriginal || candidateEntry.metadataOriginalScore >= 0.62f)
+                    originalCandidates.Add(candidate);
+            }
+            else if (IsRawOriginalFile(candidate.filePath))
+            {
+                originalCandidates.Add(candidate);
+            }
+        }
+
+        var best = ClipImageSimilarity.FindBestMatch(sourceRecord, originalCandidates);
+        if (best == null || best.target == null || best.cosineSimilarity < 0.935f)
+        {
+            if (entry.type != LibraryImageType.RawOriginal && entry.metadataOriginalScore < 0.62f)
+            {
+                entry.type = LibraryImageType.Unknown;
+                ClearMappedOriginal(entry);
+            }
+            return;
+        }
+
+        entry.type = LibraryImageType.Edited;
+        entry.mappedOriginalSimilarity = best.cosineSimilarity;
+        entry.mappedOriginalPath = best.target.filePath;
+
+        if (_entryByPath.TryGetValue(best.target.filePath, out var originalEntry))
+        {
+            entry.mappedOriginalName = originalEntry.fileName;
+            entry.mappedOriginalLocationText = ResolveDisplayLocation(originalEntry);
+            entry.mappedOriginalCameraText = ResolveDisplayCamera(originalEntry);
+            entry.mappedOriginalApertureText = ResolveDisplayAperture(originalEntry);
+            entry.mappedOriginalCaptureTime = originalEntry.captureTime ?? originalEntry.modifiedTime;
+            entry.clipText = BuildMappedClipText(entry.clipBaseText, best.cosineSimilarity, originalEntry.fileName);
+        }
+        else
+        {
+            ApplyMappedOriginalSnapshot(entry, best.target.filePath);
+            entry.clipText = BuildMappedClipText(entry.clipBaseText, best.cosineSimilarity, entry.mappedOriginalName);
+        }
+    }
+
+    private static string BuildMappedClipText(string currentClipText, float similarity, string originalName)
+    {
+        var suffix = "\u6620\u5C04\u539F\u56FE";
+        if (!string.IsNullOrWhiteSpace(originalName))
+            suffix += ": " + originalName;
+        suffix += " @" + (similarity * 100f).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+
+        if (string.IsNullOrWhiteSpace(currentClipText) || string.Equals(currentClipText, PendingClipText, StringComparison.Ordinal))
+            return suffix;
+
+        return currentClipText + " | " + suffix;
+    }
+
+    private static float ScoreOriginalMetadata(ThumbnailEntry entry)
+    {
+        if (entry == null)
+            return 0f;
+
+        var score = 0f;
+        if (entry.captureTime.HasValue)
+            score += 0.28f;
+        if (HasUsableMetadata(entry.cameraText))
+            score += 0.28f;
+        if (HasUsableMetadata(entry.apertureText))
+            score += 0.18f;
+        if (HasUsableMetadata(entry.locationText))
+            score += 0.26f;
+
+        var lowerName = (entry.fileName ?? string.Empty).ToLowerInvariant();
+        if (lowerName.Contains("screenshot") || lowerName.Contains("edit") || lowerName.Contains("retouch") || lowerName.Contains("result"))
+            score -= 0.25f;
+
+        return Mathf.Clamp01(score);
+    }
+
+    private void RememberOriginalMetadata(ThumbnailEntry entry)
+    {
+        if (entry == null || string.IsNullOrWhiteSpace(entry.fullPath))
+            return;
+
+        if (entry.type == LibraryImageType.RawOriginal || entry.type == LibraryImageType.Original)
+        {
+            _originalMetadataByPath[entry.fullPath] = new OriginalMetadataSnapshot
+            {
+                fileName = entry.fileName,
+                type = entry.type,
+                score = entry.metadataOriginalScore,
+                captureTime = entry.captureTime ?? entry.modifiedTime,
+                locationText = entry.locationText,
+                cameraText = entry.cameraText,
+                apertureText = entry.apertureText
+            };
+        }
+        else
+        {
+            _originalMetadataByPath.Remove(entry.fullPath);
+        }
+    }
+
+    private void RefreshEditedMappingsForKnownOriginal(ThumbnailEntry originalEntry)
+    {
+        if (originalEntry == null || string.IsNullOrWhiteSpace(originalEntry.fullPath))
+            return;
+        if (originalEntry.type != LibraryImageType.RawOriginal && originalEntry.type != LibraryImageType.Original)
+            return;
+
+        for (var i = 0; i < _thumbnailEntries.Count; i++)
+        {
+            var candidate = _thumbnailEntries[i];
+            if (candidate == null ||
+                ReferenceEquals(candidate, originalEntry) ||
+                string.Equals(candidate.fullPath, originalEntry.fullPath, StringComparison.OrdinalIgnoreCase) ||
+                candidate.thumbnail == null ||
+                !candidate.clipClassificationReady ||
+                candidate.type == LibraryImageType.RawOriginal ||
+                candidate.type == LibraryImageType.Original)
+            {
+                continue;
+            }
+
+            ApplyTypeFromClipMapping(candidate);
+            UpdateThumbnailVisuals(candidate);
+        }
+    }
+
+    private void ApplyMappedOriginalSnapshot(ThumbnailEntry entry, string originalPath)
+    {
+        entry.mappedOriginalPath = originalPath;
+        entry.mappedOriginalName = Path.GetFileName(originalPath);
+
+        if (string.IsNullOrWhiteSpace(originalPath))
+            return;
+
+        if (_originalMetadataByPath.TryGetValue(originalPath, out var snapshot) && snapshot != null)
+        {
+            if (!string.IsNullOrWhiteSpace(snapshot.fileName))
+                entry.mappedOriginalName = snapshot.fileName;
+            entry.mappedOriginalLocationText = snapshot.locationText;
+            entry.mappedOriginalCameraText = snapshot.cameraText;
+            entry.mappedOriginalApertureText = snapshot.apertureText;
+            entry.mappedOriginalCaptureTime = snapshot.captureTime;
+        }
+    }
+
+    private static bool HasUsableMetadata(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        return !string.Equals(text, PendingText, StringComparison.Ordinal) &&
+               !string.Equals(text, EmptyText, StringComparison.Ordinal);
+    }
+
+    private static bool IsRawOriginalFile(string filePath)
+    {
+        var ext = (Path.GetExtension(filePath) ?? string.Empty).ToLowerInvariant();
+        return ext == ".raw" || ext == ".cr2" || ext == ".cr3" || ext == ".nef" || ext == ".arw" || ext == ".dng";
+    }
+
+    private static void ClearMappedOriginal(ThumbnailEntry entry)
+    {
+        if (entry == null)
+            return;
+
+        entry.clipText = string.IsNullOrWhiteSpace(entry.clipBaseText) ? entry.clipText : entry.clipBaseText;
+        entry.mappedOriginalPath = null;
+        entry.mappedOriginalName = null;
+        entry.mappedOriginalLocationText = null;
+        entry.mappedOriginalCameraText = null;
+        entry.mappedOriginalApertureText = null;
+        entry.mappedOriginalCaptureTime = null;
+        entry.mappedOriginalSimilarity = 0f;
+    }
+
+    private static string ResolveDisplayLocation(ThumbnailEntry entry)
+    {
+        if (entry == null)
+            return null;
+
+        if (entry.type == LibraryImageType.Edited && HasUsableMetadata(entry.mappedOriginalLocationText))
+            return entry.mappedOriginalLocationText;
+        return entry.locationText;
+    }
+
+    private static string ResolveDisplayCamera(ThumbnailEntry entry)
+    {
+        if (entry == null)
+            return null;
+
+        if (entry.type == LibraryImageType.Edited && HasUsableMetadata(entry.mappedOriginalCameraText))
+            return entry.mappedOriginalCameraText;
+        return entry.cameraText;
+    }
+
+    private static string ResolveDisplayAperture(ThumbnailEntry entry)
+    {
+        if (entry == null)
+            return null;
+
+        if (entry.type == LibraryImageType.Edited && HasUsableMetadata(entry.mappedOriginalApertureText))
+            return entry.mappedOriginalApertureText;
+        return entry.apertureText;
+    }
+
+    private static DateTime ResolveDisplayCaptureTime(ThumbnailEntry entry)
+    {
+        if (entry != null && entry.type == LibraryImageType.Edited && entry.mappedOriginalCaptureTime.HasValue)
+            return entry.mappedOriginalCaptureTime.Value;
+        return entry != null ? entry.DisplayTime : DateTime.MinValue;
+    }
+
+    private static string ResolveMappedOriginalSummary(ThumbnailEntry entry)
+    {
+        if (entry == null || entry.type != LibraryImageType.Edited || string.IsNullOrWhiteSpace(entry.mappedOriginalName))
+            return null;
+
+        var percent = (entry.mappedOriginalSimilarity * 100f).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+        return entry.mappedOriginalName + " (" + percent + ")";
     }
 
     private static string FormatClipTopScores(ClipLabelScore[] scores, int count)
