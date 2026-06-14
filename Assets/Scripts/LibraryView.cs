@@ -302,7 +302,7 @@ public sealed class LibraryView : BasePageView
 
         _drivePopup = new PopupField<string>(new List<string> { string.Empty }, 0);
         _drivePopup.style.flexGrow = 1;
-        _drivePopup.RegisterValueChangedCallback(evt => SetDrive(evt.newValue, true));
+        _drivePopup.RegisterValueChangedCallback(evt => OnStorageRootChanged(evt.newValue));
         driveRow.Add(_drivePopup);
 
         _directorySummary = new Label("\u8BF7\u9009\u62E9\u76EE\u5F55");
@@ -519,6 +519,18 @@ public sealed class LibraryView : BasePageView
 
         _drivePopup.SetValueWithoutNotify(preferred.displayName);
         SetDrive(preferred.rootPath, string.IsNullOrWhiteSpace(_selectedDirectoryPath));
+    }
+
+    private void OnStorageRootChanged(string displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName))
+            return;
+
+        var option = _storageRoots.FirstOrDefault(root => string.Equals(root.displayName, displayName, StringComparison.Ordinal));
+        if (option == null || string.IsNullOrWhiteSpace(option.rootPath))
+            return;
+
+        SetDrive(option.rootPath, true);
     }
 
     private static string GetStorageRootLabel()
@@ -1207,10 +1219,13 @@ public sealed class LibraryView : BasePageView
         if (entry == null || entry.thumbnail == null || Host?.ClipRunner == null)
             return;
 
+        var needsEmbeddingUpgrade = false;
         if (ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out var cached))
         {
             ApplyClipClassification(entry, cached);
-            return;
+            needsEmbeddingUpgrade = ClipClassificationCache.NeedsEmbeddingUpgradeForFile(Host.ClipRunner, entry.fullPath);
+            if (!needsEmbeddingUpgrade)
+                return;
         }
 
         if (entry.clipClassificationLoading || entry.clipClassificationReady)
@@ -1231,7 +1246,8 @@ public sealed class LibraryView : BasePageView
                 acquired = true;
                 try
                 {
-                    if (ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out cached))
+                    if (!needsEmbeddingUpgrade &&
+                        ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out cached))
                     {
                         ApplyClipClassification(entry, cached);
                         return;
@@ -1241,7 +1257,8 @@ public sealed class LibraryView : BasePageView
                         Host.ClipRunner,
                         entry.thumbnail,
                         entry.fullPath,
-                        ct);
+                        ct,
+                        needsEmbeddingUpgrade);
                     ApplyClipClassification(entry, result);
                 }
                 finally
@@ -1322,10 +1339,12 @@ public sealed class LibraryView : BasePageView
 
         try
         {
-            var root = Path.GetPathRoot(_selectedDirectoryPath);
+            var root = GetBestStorageRootForPath(_selectedDirectoryPath);
             if (!string.IsNullOrWhiteSpace(root) && !string.Equals(_currentDriveRoot, root, StringComparison.OrdinalIgnoreCase))
             {
-                _drivePopup.SetValueWithoutNotify(root);
+                var option = _storageRoots.FirstOrDefault(item => string.Equals(item.rootPath, root, StringComparison.OrdinalIgnoreCase));
+                if (option != null)
+                    _drivePopup.SetValueWithoutNotify(option.displayName);
                 SetDrive(root, false);
             }
 
@@ -1985,7 +2004,8 @@ public sealed class LibraryView : BasePageView
                     Host.ClipRunner,
                     texture,
                     entry.fullPath,
-                    cancellationToken);
+                    cancellationToken,
+                    true);
 
                 if (!string.IsNullOrWhiteSpace(result.error))
                     continue;

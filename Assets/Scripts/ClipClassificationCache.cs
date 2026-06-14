@@ -79,6 +79,26 @@ public static class ClipClassificationCache
         return TryGetInternal(key, runner.ClassificationCacheSignature, out result);
     }
 
+    public static bool NeedsEmbeddingUpgradeForFile(ClipNcnnReproRunner runner, string filePath)
+    {
+        if (runner == null)
+            return false;
+
+        var key = BuildFileKey(filePath, out _);
+        if (string.IsNullOrWhiteSpace(key))
+            return false;
+
+        EnsureLoaded();
+        var signature = runner.ClassificationCacheSignature;
+        lock (Sync)
+        {
+            return Entries.TryGetValue(key, out var entry) &&
+                   entry != null &&
+                   string.Equals(entry.signature, signature, StringComparison.Ordinal) &&
+                   (entry.imageEmbedding == null || entry.imageEmbedding.Length == 0);
+        }
+    }
+
     public static bool TryGetForTexture(ClipNcnnReproRunner runner, Texture2D texture, out ClipClassificationResult result)
     {
         result = default;
@@ -210,6 +230,16 @@ public static class ClipClassificationCache
         string filePath,
         CancellationToken cancellationToken)
     {
+        return GetOrClassifyForFileAsync(runner, texture, filePath, cancellationToken, false);
+    }
+
+    public static UniTask<ClipClassificationResult> GetOrClassifyForFileAsync(
+        ClipNcnnReproRunner runner,
+        Texture2D texture,
+        string filePath,
+        CancellationToken cancellationToken,
+        bool requireEmbedding)
+    {
         if (runner == null || texture == null)
             return UniTask.FromResult(default(ClipClassificationResult));
 
@@ -223,7 +253,8 @@ public static class ClipClassificationCache
             key,
             normalizedPath,
             runner.ClassificationCacheSignature,
-            cancellationToken);
+            cancellationToken,
+            requireEmbedding);
     }
 
     public static UniTask<ClipClassificationResult> GetOrClassifyForTextureAsync(
@@ -253,10 +284,14 @@ public static class ClipClassificationCache
         string key,
         string identityPath,
         string signature,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireEmbedding = false)
     {
-        if (TryGetInternal(key, signature, out var cached))
+        if (TryGetInternal(key, signature, out var cached) &&
+            (!requireEmbedding || (cached.imageEmbedding != null && cached.imageEmbedding.Length > 0)))
+        {
             return cached;
+        }
 
         var result = await runner.ProcessAsync(texture, cancellationToken);
         StoreSuccessfulResult(key, identityPath, identityPath, signature, result);
