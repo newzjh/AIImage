@@ -296,7 +296,7 @@ public sealed class DesignView : BasePageView
         host.Add(desc);
 
         host.Add(CreateBlendSliderRow("闭运算", 0, 4, _edgeCloseRadius, "px", v => _edgeCloseRadius = Mathf.RoundToInt(v)));
-        host.Add(CreateBlendSliderRow("羽化", 0, 40, _edgeFeatherRadius, "px", v => _edgeFeatherRadius = Mathf.RoundToInt(v)));
+        host.Add(CreateBlendSliderRow("羽化", 0, 80, _edgeFeatherRadius, "px", v => _edgeFeatherRadius = Mathf.RoundToInt(v)));
         host.Add(CreateBlendSliderRow("边缘保真", 0f, 1f, _edgePreserve, "", v => _edgePreserve = Mathf.Clamp01(v), "0.00"));
 
         host.Add(CreateToggleRow("Debug Composite Export", _exportCompositeDebug, v => _exportCompositeDebug = v));
@@ -819,18 +819,18 @@ public sealed class DesignView : BasePageView
         var artifacts = new DetectionBuildArtifacts();
         RenderTexture maskedBackgroundRt = null;
         RenderTexture holeMaskRt = null;
+        RenderTexture placedMaskRt = null;
+        RenderTexture nextPlacedMaskRt = null;
         var tempRts = new List<RenderTexture>();
         try
         {
-            maskedBackgroundRt = await BuildMaskedBackgroundRenderTextureAsync(source, result.mask, cs);
-            holeMaskRt = await BuildHoleMaskRenderTextureAsync(result.mask, cs);
-            if (maskedBackgroundRt == null || holeMaskRt == null)
+            placedMaskRt = CreateWorkingRenderTexture(source.width, source.height, "DesignViewPlacedLayerMaskSeed");
+            if (placedMaskRt == null)
                 return null;
-
-            artifacts.maskedBackgroundPreview = maskedBackgroundRt;
-            artifacts.maskedBackgroundHoleMask = holeMaskRt;
-            maskedBackgroundRt = null;
-            holeMaskRt = null;
+            var prevActive = RenderTexture.active;
+            RenderTexture.active = placedMaskRt;
+            GL.Clear(false, true, Color.black);
+            RenderTexture.active = prevActive;
 
             for (var i = 0; i < result.detections.Length; i++)
             {
@@ -863,7 +863,28 @@ public sealed class DesignView : BasePageView
                     sourceTextureRect = textureRect
                 });
                 tempRts.Remove(cutoutRt);
+
+                nextPlacedMaskRt = BuildPlacedLayerMaskRenderTexture(placedMaskRt, cutoutRt, displayRect, source.width, source.height, cs);
+                if (nextPlacedMaskRt != null)
+                {
+                    DestroyRenderTexture(ref placedMaskRt);
+                    placedMaskRt = nextPlacedMaskRt;
+                    nextPlacedMaskRt = null;
+                }
             }
+
+            if (artifacts.layers.Count == 0 || placedMaskRt == null)
+                return null;
+
+            maskedBackgroundRt = await BuildMaskedBackgroundRenderTextureAsync(source, placedMaskRt, cs);
+            holeMaskRt = await BuildHoleMaskRenderTextureAsync(placedMaskRt, cs);
+            if (maskedBackgroundRt == null || holeMaskRt == null)
+                return null;
+
+            artifacts.maskedBackgroundPreview = maskedBackgroundRt;
+            artifacts.maskedBackgroundHoleMask = holeMaskRt;
+            maskedBackgroundRt = null;
+            holeMaskRt = null;
 
             Debug.Log("[DesignView] BuildDetectionArtifactsAsync done | layers=" + artifacts.layers.Count.ToString(CultureInfo.InvariantCulture));
             return artifacts;
@@ -872,6 +893,8 @@ public sealed class DesignView : BasePageView
         {
             DestroyRenderTexture(ref maskedBackgroundRt);
             DestroyRenderTexture(ref holeMaskRt);
+            DestroyRenderTexture(ref placedMaskRt);
+            DestroyRenderTexture(ref nextPlacedMaskRt);
             for (var i = 0; i < tempRts.Count; i++)
             {
                 var rt = tempRts[i];
@@ -956,6 +979,28 @@ public sealed class DesignView : BasePageView
         cs.SetTexture(kernel, "_Result", rt);
         cs.SetInts("_CropRect", pixelRect.x, pixelRect.y, pixelRect.width, pixelRect.height);
         cs.Dispatch(kernel, Mathf.Max(1, Mathf.CeilToInt(pixelRect.width / 8f)), Mathf.Max(1, Mathf.CeilToInt(pixelRect.height / 8f)), 1);
+        return rt;
+    }
+
+    private RenderTexture BuildPlacedLayerMaskRenderTexture(RenderTexture existingMask, RenderTexture layerTexture, RectInt displayRect, int canvasWidth, int canvasHeight, ComputeShader cs)
+    {
+        if (existingMask == null || layerTexture == null || cs == null || displayRect.width <= 0 || displayRect.height <= 0 || canvasWidth <= 0 || canvasHeight <= 0)
+            return null;
+
+        int kernel;
+        try { kernel = cs.FindKernel("DesignViewAccumulateLayerMask"); }
+        catch { return null; }
+
+        var rt = CreateWorkingRenderTexture(canvasWidth, canvasHeight, "DesignViewPlacedLayerMaskRt");
+        if (rt == null)
+            return null;
+
+        cs.SetTexture(kernel, "_Source", existingMask);
+        cs.SetTexture(kernel, "_Overlay", layerTexture);
+        cs.SetTexture(kernel, "_Result", rt);
+        cs.SetInts("_CropRect", displayRect.x, displayRect.y, displayRect.width, displayRect.height);
+        cs.SetInts("_DesignViewCanvasSize", canvasWidth, canvasHeight);
+        cs.Dispatch(kernel, Mathf.Max(1, Mathf.CeilToInt(canvasWidth / 8f)), Mathf.Max(1, Mathf.CeilToInt(canvasHeight / 8f)), 1);
         return rt;
     }
 

@@ -17,6 +17,7 @@
 #pragma kernel BuildMaskedBackgroundFromMask
 #pragma kernel BuildHoleMaskFromMask
 #pragma kernel BuildLayerCutoutFromMask
+#pragma kernel DesignViewAccumulateLayerMask
 #pragma kernel DesignViewCompositeLayer
 #pragma kernel DesignViewBuildBlendMask
 #pragma kernel DesignViewBuildClosedMask
@@ -220,6 +221,15 @@ float DesignViewBlendMaskAtPixel(int2 p, uint w, uint h)
     if ((uint)p.x >= w || (uint)p.y >= h)
         return 0.0;
     return saturate(_DesignViewBlendMask[p].r);
+}
+
+float2 DesignViewUvFromCrop(int x, int displayY)
+{
+    int rx = _CropRect.x;
+    int ry = _CropRect.y;
+    int rw = _CropRect.z;
+    int rh = _CropRect.w;
+    return (float2((x - rx), (displayY - ry)) + 0.5) / float2(max(1, rw), max(1, rh));
 }
 
 float SampleBilinearDesignViewClosedMaskZero(float2 uv, uint w, uint h)
@@ -453,6 +463,40 @@ void BuildLayerCutoutFromMask(uint3 id : SV_DispatchThreadID)
     float masked = OverlayRgbMaskMaxAtPixel(srcP, ow, oh, 1);
     src.a = masked;
     _Result[p] = src;
+}
+
+[numthreads(8,8,1)]
+void DesignViewAccumulateLayerMask(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    int2 p = int2(x, y);
+    float accum = saturate(_Source[p].r);
+    int displayY = _DesignViewCanvasSize.y - 1 - y;
+
+    int rx = _CropRect.x;
+    int ry = _CropRect.y;
+    int rw = _CropRect.z;
+    int rh = _CropRect.w;
+
+    bool inside = (x >= rx) && (displayY >= ry) && (x < rx + rw) && (displayY < ry + rh);
+    if (!inside)
+    {
+        _Result[p] = float4(accum.xxx, 1.0);
+        return;
+    }
+
+    uint ow, oh;
+    _Overlay.GetDimensions(ow, oh);
+    float2 uv = DesignViewUvFromCrop(x, displayY);
+    uv.y = 1.0 - uv.y;
+    float placed = OverlayBinaryAlphaAtUv(uv, ow, oh);
+    float value = max(accum, placed);
+    _Result[p] = float4(value.xxx, 1.0);
 }
 
 [numthreads(8,8,1)]
@@ -960,14 +1004,7 @@ float ComputeDesignViewBlendAlpha(
     return saturate(lerp(featheredAlpha, structureAlpha, preserveWeight));
 }
 
-float2 DesignViewUvFromCrop(int x, int displayY)
-{
-    int rx = _CropRect.x;
-    int ry = _CropRect.y;
-    int rw = _CropRect.z;
-    int rh = _CropRect.w;
-    return (float2((x - rx), (displayY - ry)) + 0.5) / float2(max(1, rw), max(1, rh));
-}
+
 
 [numthreads(8,8,1)]
 void DesignViewBuildClosedMask(uint3 id : SV_DispatchThreadID)
@@ -1088,7 +1125,7 @@ void DesignViewCompositeLayer(uint3 id : SV_DispatchThreadID)
     //rgb = float3(blendedAlpha, blendedAlpha, blendedAlpha);
     _Result[p] = float4(rgb, 1.0);
 
-    float maskClear = max(rawAlpha, closedAlpha);
+    float maskClear = max(sampledAlpha, blendedAlpha);
     float newKeep = (maskClear > 0.001) ? 0.0 : keepMask;
     _DesignViewRemainingMaskOut[p] = float4(newKeep.xxx, 1.0);
 }
