@@ -1197,7 +1197,7 @@ public sealed class DesignView : BasePageView
 
                 Graphics.Blit(closedMaskRt, erodePingRt);
 
-                var featherRadius = Mathf.Clamp(edgeFeatherRadius, 0, 24);
+                var featherRadius = edgeFeatherRadius;
                 if (featherRadius > 0)
                 {
                     for (var ring = 1; ring <= featherRadius; ring++)
@@ -1236,7 +1236,7 @@ public sealed class DesignView : BasePageView
                 cs.SetInts("_DesignViewLayerSize", layer.contentRenderTexture.width, layer.contentRenderTexture.height);
                 cs.SetInts("_DesignViewCanvasSize", width, height);
                 cs.SetInt("_DesignViewCloseRadius", Mathf.Clamp(edgeCloseRadius, 0, 8));
-                cs.SetInt("_DesignViewFeatherRadius", Mathf.Clamp(edgeFeatherRadius, 0, 24));
+                cs.SetInt("_DesignViewFeatherRadius", edgeFeatherRadius);
                 cs.SetFloat("_DesignViewPreserve", Mathf.Clamp01(edgePreserve));
                 cs.Dispatch(kernel, gx, gy, 1);
 
@@ -1250,7 +1250,7 @@ public sealed class DesignView : BasePageView
                         cs.SetInts("_CropRect", targetRect.x, targetRect.y, targetRect.width, targetRect.height);
                         cs.SetInts("_DesignViewCanvasSize", width, height);
                         cs.SetInt("_DesignViewCloseRadius", Mathf.Clamp(edgeCloseRadius, 0, 8));
-                        cs.SetInt("_DesignViewFeatherRadius", Mathf.Clamp(edgeFeatherRadius, 0, 24));
+                        cs.SetInt("_DesignViewFeatherRadius", edgeFeatherRadius);
                         cs.SetFloat("_DesignViewPreserve", Mathf.Clamp01(edgePreserve));
 
                         debugBlendMaskRt = CreateWorkingRenderTexture(width, height, "DesignViewBlendMaskDebug");
