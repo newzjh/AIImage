@@ -2886,6 +2886,76 @@ public class MainView : MonoBehaviour
         if (tex == null)
             return;
 
+        if (!StandardImageIO.TrySaveTextureWithMetadata(tex, path, path, 95, out var saveError))
+        {
+            if (!string.IsNullOrWhiteSpace(saveError))
+                ShowToast(saveError, 2200);
+            return;
+        }
+
+        try
+        {
+            InvalidateTextureCacheForPath(path);
+            var saveReloadedOk = false;
+            var saveHostOk = GetComponent<AIImagePageHost>();
+            if (saveHostOk != null)
+                saveReloadedOk = saveHostOk.ReloadMainImageFromDisk(path);
+
+            if (saveReloadedOk)
+            {
+                var fresh = saveHostOk.MainPage != null ? saveHostOk.MainPage.CurrentOriginalTextureForSync : null;
+                if (fresh != null)
+                {
+                    ResetHistoryWithOriginal(fresh, Path.GetFileName(path), path);
+                    _imageViewer?.SetSources(fresh, fresh, Path.GetFileName(path));
+                    _imageViewer?.FitToView();
+                }
+                ShowToast("Saved and reloaded", 2000);
+            }
+            else
+            {
+                ShowToast("Saved", 2000);
+            }
+        }
+        catch
+        {
+        }
+
+        return;
+
+#if false
+        try
+        {
+            InvalidateTextureCacheForPath(path);
+            var saveReloaded = false;
+            var saveHost = GetComponent<AIImagePageHost>();
+            if (saveHost != null)
+                saveReloaded = saveHost.ReloadMainImageFromDisk(path);
+
+            if (saveReloaded)
+            {
+                var fresh = saveHost.MainPage != null ? saveHost.MainPage.CurrentOriginalTextureForSync : null;
+                if (fresh != null)
+                {
+                    ResetHistoryWithOriginal(fresh, Path.GetFileName(path), path);
+                    _imageViewer?.SetSources(fresh, fresh, Path.GetFileName(path));
+                    _imageViewer?.FitToView();
+                }
+                ShowToast("宸蹭繚瀛橈紝骞舵寜鍘熻矾寰勯噸鏂拌浇鍏?, 2000);
+            }
+            else
+            {
+                ShowToast("宸蹭繚瀛樺埌鍘熻矾寰?, 2000);
+            }
+        }
+        catch
+        {
+        }
+
+        return;
+#endif
+
+#if false
         byte[] bytes = null;
         var ext = (Path.GetExtension(path) ?? "").ToLowerInvariant();
         try
@@ -2940,6 +3010,7 @@ public class MainView : MonoBehaviour
         catch
         {
         }
+#endif
     }
 
     private void OnPickMaleFace() => PickReferenceImageAsync("选择男人脸图片", _maleFaceButton, tex => _maleFaceTexture = tex, () => _maleFaceTexture, "点击设置男人脸").Forget();

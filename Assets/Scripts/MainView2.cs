@@ -1241,6 +1241,27 @@ public sealed class MainView2 : BasePageView
         if (tex == null)
             return;
 
+        if (!StandardImageIO.TrySaveTextureWithMetadata(tex, path, path, 95, out var saveError))
+        {
+            ShowToast(string.IsNullOrWhiteSpace(saveError) ? "Save failed" : saveError, 2400);
+            return;
+        }
+
+        try
+        {
+            Host?.InvalidateTextureCacheForPath(path);
+            if (Host != null && Host.ReloadMainImageFromDisk(path))
+                ShowToast("Saved and reloaded", 1800);
+            else
+                ShowToast("Saved", 1800);
+        }
+        catch
+        {
+            ShowToast("Save failed", 2200);
+        }
+
+        return;
+
         byte[] bytes = null;
         var ext = (Path.GetExtension(path) ?? string.Empty).ToLowerInvariant();
         try

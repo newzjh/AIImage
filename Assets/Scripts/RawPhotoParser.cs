@@ -105,19 +105,7 @@ public static class RawPhotoParser
             return true;
         }
 
-        try
-        {
-            imageBytes = File.ReadAllBytes(filePath);
-            if (imageBytes == null || imageBytes.Length == 0)
-                return false;
-
-            rawPhoto = TryReadStandardPhotoMetadata(imageBytes);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
+        return StandardImageIO.TryLoadDisplayBytes(filePath, out imageBytes, out rawPhoto);
     }
 
     public static bool TryReadMetadata(string filePath, out RawPhotoData result)
@@ -129,16 +117,27 @@ public static class RawPhotoParser
         if (IsRawExtension(filePath))
             return TryParse(filePath, out result);
 
-        try
-        {
-            var bytes = File.ReadAllBytes(filePath);
-            result = TryReadStandardPhotoMetadata(bytes);
-            return HasMetadata(result);
-        }
-        catch
-        {
+        return StandardImageIO.TryReadMetadata(filePath, out result);
+    }
+
+    internal static bool TryReadJpegOrTiffMetadataFromBytes(byte[] imageBytes, out RawPhotoData result)
+    {
+        result = TryReadStandardPhotoMetadata(imageBytes);
+        return HasMetadata(result);
+    }
+
+    internal static bool TryReadTiffMetadataFromBytes(byte[] exifTiffBytes, out RawPhotoData result)
+    {
+        result = null;
+        if (exifTiffBytes == null || exifTiffBytes.Length < 8)
             return false;
-        }
+
+        if (!TryParseTiffExif(exifTiffBytes, 0, out var metadata))
+            return false;
+
+        result = new RawPhotoData();
+        ApplyMetadata(result, metadata);
+        return HasMetadata(result);
     }
 
     private static void ApplyMetadata(RawPhotoData target, ExifMetadata source)
