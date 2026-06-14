@@ -321,6 +321,7 @@ namespace NcnnCompute
         private readonly int _kPackRgbToPack4Gfpgan;
         private readonly int _kFillPack4FromBufferChw;
         private readonly int _kFillPack4FromBufferCdhw;
+        private readonly int _kFillScalarTexture;
         private readonly int _kScalePack4;
         private readonly int _kAddBiasPack4;
         private readonly int _kBatchNormPack4;
@@ -493,6 +494,7 @@ namespace NcnnCompute
             _kPackRgbToPack4Gfpgan = _cs.FindKernel("NcnnPackRgbToPack4Gfpgan");
             _kFillPack4FromBufferChw = _cs.FindKernel("NcnnFillPack4FromBufferCHW");
             _kFillPack4FromBufferCdhw = _cs.FindKernel("NcnnFillPack4FromBufferCDHW");
+            _kFillScalarTexture = _cs.FindKernel("NcnnFillScalarTexture");
             _kScalePack4 = _cs.FindKernel("NcnnScalePack4");
             _kAddBiasPack4 = _cs.FindKernel("NcnnAddBiasPack4");
             _kBatchNormPack4 = _cs.FindKernel("NcnnBatchNormPack4");
@@ -766,6 +768,45 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, _kFillPack4FromBufferCdhw, "_FillIn", input);
             cmd.SetComputeTextureParam(_cs, _kFillPack4FromBufferCdhw, "_FillOutArr", outputPack4.nameID);
             Dispatch3D(cmd, _kFillPack4FromBufferCdhw, w, h, outputPack4.depth, 8, 8);
+        }
+
+        public void FillScalarTexture(float[] values, RenderTexture output)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ResolveScalarValues4(values, out var values4, out var count);
+            _cs.SetVector("_FillScalarValues4", values4);
+            _cs.SetInt("_FillScalarValueCount", count);
+            _cs.SetTexture(_kFillScalarTexture, "_FillScalarOutArr", output);
+            Dispatch3D(_kFillScalarTexture, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void FillScalarTexture(CommandBuffer cmd, float[] values, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ResolveScalarValues4(values, out var values4, out var count);
+            cmd.SetComputeVectorParam(_cs, "_FillScalarValues4", values4);
+            cmd.SetComputeIntParam(_cs, "_FillScalarValueCount", count);
+            cmd.SetComputeTextureParam(_cs, _kFillScalarTexture, "_FillScalarOutArr", output.nameID);
+            Dispatch3D(cmd, _kFillScalarTexture, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        private static void ResolveScalarValues4(float[] values, out Vector4 values4, out int count)
+        {
+            count = values == null ? 0 : values.Length;
+            if (count < 1)
+                count = 1;
+            if (count > 4)
+                throw new NotSupportedException("Scalar texture fill supports at most 4 values.");
+
+            values4 = Vector4.zero;
+            if (values == null || values.Length == 0)
+                return;
+
+            values4.x = values[0];
+            if (values.Length > 1) values4.y = values[1];
+            if (values.Length > 2) values4.z = values[2];
+            if (values.Length > 3) values4.w = values[3];
         }
 
         public void ScalePack4(RenderTexture input, float k, int packs, RenderTexture output)

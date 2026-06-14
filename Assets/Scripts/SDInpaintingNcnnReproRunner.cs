@@ -24,13 +24,15 @@ public struct SDInpaintingNcnnReproResult
 
 public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 {
-    private const string TextEncoderInputBlobName = "in0";
-    private const string TextEncoderOutputBlobName = "out0";
+    private const string TextEncoderTokenBlobName = "token";
+    private const string TextEncoderMultiplierBlobName = "multiplier";
+    private const string TextEncoderCondBlobName = "cond";
+    private const string TextEncoderOutputBlobName = "cal_12";
     private const string VaeEncoderInputBlobName = "in0";
     private const string VaeEncoderMeanBlobName = "out0";
     private const string VaeEncoderStdBlobName = "out1";
-    private const string VaeDecoderInputBlobName = "in0";
-    private const string VaeDecoderOutputBlobName = "out0";
+    private const string VaeDecoderInputBlobName = "input.1";
+    private const string VaeDecoderOutputBlobName = "815";
     private const string UnetInputBlobName = "in0";
     private const string UnetTimestepBlobName = "in1";
     private const string UnetTextBlobName = "in2";
@@ -38,6 +40,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private const int ModelImageSize = 512;
     private const int LatentSize = 64;
     private const int TokenCount = 77;
+    private const int PromptChunkTokenCount = 75;
     private const int TextEmbeddingWidth = 768;
     private const int LatentChannels = 4;
     private const int UnetInputChannels = 9;
@@ -60,6 +63,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private const string ResourceSnapshotEnvVar = "AIIMAGE_SD_RESOURCE_SNAPSHOT";
     private const string EditorLowVramEnvVar = "AIIMAGE_SD_EDITOR_LOW_VRAM";
     private const string AllowEditorFloatTensorEnvVar = "AIIMAGE_SD_ALLOW_EDITOR_FLOAT_TENSOR";
+    private const string StableDiffusionModelRootEnvVar = "AIIMAGE_SD_MODEL_ROOT";
     private const string InpaintModelRootEnvVar = "AIIMAGE_SD_INPAINT_MODEL_ROOT";
     private static readonly string[] DebugUnetBlobNames = { "156", "out0" };
     private static readonly string[] OfficialUnetCacheBlobNames =
@@ -100,8 +104,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         public readonly string vaeBinPath;
         public readonly string vaeEncoderParamPath;
         public readonly string vaeEncoderBinPath;
-        public readonly string tokenizerVocabJsonPath;
-        public readonly string tokenizerMergesPath;
+        public readonly string tokenizerVocabPath;
 
         public ResolvedPaths(
             string textParamPath,
@@ -112,8 +115,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             string vaeBinPath,
             string vaeEncoderParamPath,
             string vaeEncoderBinPath,
-            string tokenizerVocabJsonPath,
-            string tokenizerMergesPath)
+            string tokenizerVocabPath)
         {
             this.textParamPath = textParamPath;
             this.textBinPath = textBinPath;
@@ -123,12 +125,13 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             this.vaeBinPath = vaeBinPath;
             this.vaeEncoderParamPath = vaeEncoderParamPath;
             this.vaeEncoderBinPath = vaeEncoderBinPath;
-            this.tokenizerVocabJsonPath = tokenizerVocabJsonPath;
-            this.tokenizerMergesPath = tokenizerMergesPath;
+            this.tokenizerVocabPath = tokenizerVocabPath;
         }
     }
 
-    public string inpaintingModelRootRelativePath = "Tools/sd15inpainting2ncnnExporter/output";
+    public string stableDiffusionRootRelativePath = "StableDiffusion";
+    public string inpaintingModelRootRelativePath = "sdinpainting";
+    public bool useReferenceAssetFallback = true;
     public bool enableTempPool = false;
     public int maxPooledPerShape = 0;
     public bool keepRawConvWeightsForTexturePath = false;
@@ -139,6 +142,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public bool useOfficialUnetCache = false;
     public bool enableMhaParallelSoftmax = true;
     public bool enableMhaQkvFusion = true;
+    public bool enableAttentionMatMulPack4Specializations = true;
     public bool enableDebugDump = false;
     public bool enableLayerRuntimeProfile = false;
     public bool syncLayerRuntimeProfileGpu = false;
@@ -170,7 +174,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private NcnnRepro _unetRepro;
     private NcnnRepro _vaeRepro;
     private NcnnRepro _vaeEncoderRepro;
-    private ClipBpeTokenizer _tokenizer;
+    private StableDiffusionSimpleTokenizer _tokenizer;
     private ResolvedPaths? _resolvedPaths;
     private string _loadedModelKey;
     private string _lastDumpDir;
@@ -926,6 +930,20 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         repro.ForceBufferLayerNames = ResolveDebugNameSet("AIIMAGE_SD_FORCE_BUFFER_LAYER_NAMES");
     }
 
+    private bool ResolveSpatialAttentionPack4()
+    {
+        return ResolveBoolEnv("AIIMAGE_SD_ATTENTION_PACK4", enableAttentionMatMulPack4Specializations);
+    }
+
+    private void ApplySpatialModelOptions(NcnnRepro repro)
+    {
+        if (repro == null)
+            return;
+
+        repro.EnableAttentionMatMulPack4Specializations = ResolveSpatialAttentionPack4();
+        repro.EnableVistaTailPack4Specializations = false;
+    }
+
     private static bool ResolveBoolEnv(string name, bool defaultValue)
     {
         try
@@ -984,9 +1002,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             paths.vaeBinPath + "|" +
             paths.vaeEncoderParamPath + "|" +
             paths.vaeEncoderBinPath + "|" +
+            paths.tokenizerVocabPath + "|" +
             tensorTextureFormat + "|" +
             encoderTensorTextureFormat + "|" +
             decoderTensorTextureFormat + "|" +
+            BoolText(ResolveSpatialAttentionPack4()) + "|" +
             BoolText(keepRawConvWeightsForTexturePath);
 
         if (string.Equals(_loadedModelKey, modelKey, StringComparison.Ordinal) && _tokenizer != null)
@@ -994,7 +1014,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         Release();
         EnsureRuntimeObjects();
-        _tokenizer = new ClipBpeTokenizer(paths.tokenizerVocabJsonPath, paths.tokenizerMergesPath);
+        _tokenizer = new StableDiffusionSimpleTokenizer(paths.tokenizerVocabPath);
         _loadedModelKey = modelKey;
     }
 
@@ -1019,6 +1039,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         _vaeEncoderRepro ??= new NcnnRepro(_ops);
         ApplyCommonOptions(_vaeEncoderRepro);
+        ApplySpatialModelOptions(_vaeEncoderRepro);
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
         await LoadModelAsync(_vaeEncoderRepro, paths.vaeEncoderParamPath, paths.vaeEncoderBinPath, "vae encoder", ct);
     }
@@ -1035,6 +1056,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         _unetRepro ??= new NcnnRepro(_ops);
         ApplyCommonOptions(_unetRepro);
+        ApplySpatialModelOptions(_unetRepro);
         AttachDebugLog(_unetRepro, "unet");
         await LoadModelAsync(_unetRepro, paths.unetParamPath, paths.unetBinPath, "unet", ct);
     }
@@ -1048,6 +1070,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         _vaeRepro ??= new NcnnRepro(_ops);
         ApplyCommonOptions(_vaeRepro);
+        ApplySpatialModelOptions(_vaeRepro);
         _vaeRepro.TensorTextureFormat = decoderTensorTextureFormat;
         await LoadModelAsync(_vaeRepro, paths.vaeParamPath, paths.vaeBinPath, "vae decoder", ct);
     }
@@ -1214,9 +1237,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             paths.vaeBinPath + "|" +
             paths.vaeEncoderParamPath + "|" +
             paths.vaeEncoderBinPath + "|" +
+            paths.tokenizerVocabPath + "|" +
             tensorTextureFormat + "|" +
             encoderTensorTextureFormat + "|" +
             decoderTensorTextureFormat + "|" +
+            BoolText(ResolveSpatialAttentionPack4()) + "|" +
             BoolText(keepRawConvWeightsForTexturePath);
         if (string.Equals(_loadedModelKey, modelKey, StringComparison.Ordinal) && _tokenizer != null)
             return;
@@ -1227,10 +1252,13 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         ApplyCommonOptions(_unetRepro);
         ApplyCommonOptions(_vaeRepro);
         ApplyCommonOptions(_vaeEncoderRepro);
+        ApplySpatialModelOptions(_unetRepro);
+        ApplySpatialModelOptions(_vaeRepro);
+        ApplySpatialModelOptions(_vaeEncoderRepro);
         _vaeRepro.TensorTextureFormat = decoderTensorTextureFormat;
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
 
-        _tokenizer = new ClipBpeTokenizer(paths.tokenizerVocabJsonPath, paths.tokenizerMergesPath);
+        _tokenizer = new StableDiffusionSimpleTokenizer(paths.tokenizerVocabPath);
 
         await LoadModelAsync(_textRepro, paths.textParamPath, paths.textBinPath, "text encoder", ct);
         await LoadModelAsync(_unetRepro, paths.unetParamPath, paths.unetBinPath, "unet", ct);
@@ -1262,17 +1290,15 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             pnnxParamText = await TryReadPnnxSidecarParamAsync(paramPath, ct);
         }
 
+        using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, false);
+        using var br = new NcnnBinReader(fs);
         if (Application.isBatchMode)
         {
             ct.ThrowIfCancellationRequested();
-            using var ms = new MemoryStream(File.ReadAllBytes(binPath), false);
-            using var br = new NcnnBinReader(ms);
             repro.LoadModel(paramText, br, progress => LogLoadProgress(label, progress));
         }
         else
         {
-            using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, false);
-            using var br = new NcnnBinReader(fs);
             await repro.LoadModelAsync(paramText, br, progress => LogLoadProgress(label, progress), ct);
         }
 
@@ -1339,29 +1365,105 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (string.IsNullOrWhiteSpace(projectRoot))
             throw new DirectoryNotFoundException("Failed to resolve project root from Application.dataPath.");
 
-        var rootOverride = Environment.GetEnvironmentVariable(InpaintModelRootEnvVar);
-        var root = !string.IsNullOrWhiteSpace(rootOverride)
-            ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(rootOverride.Trim()))
-            : Path.GetFullPath(Path.Combine(projectRoot, inpaintingModelRootRelativePath));
-        var ncnnRoot = Path.Combine(root, "ncnn");
-        var tokenizerRoot = Path.Combine(root, "diffusers", "tokenizer");
+        var sdRootOverride = Environment.GetEnvironmentVariable(StableDiffusionModelRootEnvVar);
+        var sdRoot = !string.IsNullOrWhiteSpace(sdRootOverride)
+            ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(sdRootOverride.Trim()))
+            : Path.GetFullPath(Path.Combine(Application.streamingAssetsPath, stableDiffusionRootRelativePath));
 
-        if (!Directory.Exists(ncnnRoot))
-            throw new DirectoryNotFoundException("NCNN inpainting model directory not found: " + ncnnRoot);
-        if (!Directory.Exists(tokenizerRoot))
-            throw new DirectoryNotFoundException("Diffusers tokenizer directory not found: " + tokenizerRoot);
+        var inpaintRootOverride = Environment.GetEnvironmentVariable(InpaintModelRootEnvVar);
+        var inpaintRoot = !string.IsNullOrWhiteSpace(inpaintRootOverride)
+            ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(inpaintRootOverride.Trim()))
+            : Path.GetFullPath(Path.Combine(Application.streamingAssetsPath, inpaintingModelRootRelativePath));
+
+        var sdRoots = new List<string> { sdRoot };
+        if (useReferenceAssetFallback)
+        {
+            sdRoots.Add(Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets"));
+            sdRoots.Add(Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "x86", "exe", "assets"));
+            sdRoots.Add(Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "x86", "linux", "assets"));
+        }
+
+        var inpaintRoots = new List<string>
+        {
+            inpaintRoot,
+            Path.Combine(inpaintRoot, "ncnn")
+        };
+
+        string FindExact(IReadOnlyList<string> roots, string fileName)
+        {
+            if (roots == null || string.IsNullOrWhiteSpace(fileName))
+                return null;
+
+            for (var i = 0; i < roots.Count; i++)
+            {
+                var root = roots[i];
+                if (string.IsNullOrWhiteSpace(root))
+                    continue;
+                var path = Path.Combine(root, fileName);
+                if (File.Exists(path))
+                    return path;
+            }
+
+            return null;
+        }
+
+        string FindFirst(IReadOnlyList<string> roots, params string[] fileNames)
+        {
+            if (fileNames == null)
+                return null;
+
+            for (var i = 0; i < fileNames.Length; i++)
+            {
+                var found = FindExact(roots, fileNames[i]);
+                if (!string.IsNullOrWhiteSpace(found))
+                    return found;
+            }
+
+            return null;
+        }
+
+        var textParamPath = FindExact(sdRoots, "FrozenCLIPEmbedder-fp16.param");
+        var textBinPath = FindExact(sdRoots, "FrozenCLIPEmbedder-fp16.bin");
+        var unetParamPath = FindExact(inpaintRoots, "unet.param");
+        var unetBinPath = FindExact(inpaintRoots, "unet.bin");
+        var vaeParamPath = FindFirst(sdRoots,
+            "AutoencoderKL-512-512-fp16-opt.param",
+            "AutoencoderKL-512-fp16-opt.param",
+            "AutoencoderKL-base-fp16.param");
+        var vaeBinPath = FindExact(sdRoots, "AutoencoderKL-fp16.bin");
+        var vaeEncoderParamPath = FindExact(sdRoots, "AutoencoderKL-encoder-512-512-fp16.param");
+        var vaeEncoderBinPath = FindExact(sdRoots, "AutoencoderKL-encoder-512-512-fp16.bin");
+        var vocabPath = FindExact(sdRoots, "vocab.txt");
+
+        if (string.IsNullOrWhiteSpace(textParamPath))
+            throw new FileNotFoundException("FrozenCLIPEmbedder-fp16.param not found under StableDiffusion roots.", sdRoot);
+        if (string.IsNullOrWhiteSpace(textBinPath))
+            throw new FileNotFoundException("FrozenCLIPEmbedder-fp16.bin not found under StableDiffusion roots.", sdRoot);
+        if (string.IsNullOrWhiteSpace(unetParamPath))
+            throw new FileNotFoundException("SD inpainting unet.param not found under inpainting roots.", inpaintRoot);
+        if (string.IsNullOrWhiteSpace(unetBinPath))
+            throw new FileNotFoundException("SD inpainting unet.bin not found under inpainting roots.", inpaintRoot);
+        if (string.IsNullOrWhiteSpace(vaeParamPath))
+            throw new FileNotFoundException("AutoencoderKL decoder param not found under StableDiffusion roots.", sdRoot);
+        if (string.IsNullOrWhiteSpace(vaeBinPath))
+            throw new FileNotFoundException("AutoencoderKL-fp16.bin not found under StableDiffusion roots.", sdRoot);
+        if (string.IsNullOrWhiteSpace(vaeEncoderParamPath))
+            throw new FileNotFoundException("AutoencoderKL-encoder-512-512-fp16.param not found under StableDiffusion roots.", sdRoot);
+        if (string.IsNullOrWhiteSpace(vaeEncoderBinPath))
+            throw new FileNotFoundException("AutoencoderKL-encoder-512-512-fp16.bin not found under StableDiffusion roots.", sdRoot);
+        if (string.IsNullOrWhiteSpace(vocabPath))
+            throw new FileNotFoundException("vocab.txt not found under StableDiffusion roots.", sdRoot);
 
         _resolvedPaths = new ResolvedPaths(
-            Path.Combine(ncnnRoot, "text_encoder.param"),
-            Path.Combine(ncnnRoot, "text_encoder.bin"),
-            Path.Combine(ncnnRoot, "unet.param"),
-            Path.Combine(ncnnRoot, "unet.bin"),
-            Path.Combine(ncnnRoot, "vae.param"),
-            Path.Combine(ncnnRoot, "vae.bin"),
-            Path.Combine(ncnnRoot, "vae_encoder.param"),
-            Path.Combine(ncnnRoot, "vae_encoder.bin"),
-            Path.Combine(tokenizerRoot, "vocab.json"),
-            Path.Combine(tokenizerRoot, "merges.txt"));
+            textParamPath,
+            textBinPath,
+            unetParamPath,
+            unetBinPath,
+            vaeParamPath,
+            vaeBinPath,
+            vaeEncoderParamPath,
+            vaeEncoderBinPath,
+            vocabPath);
         return _resolvedPaths.Value;
     }
 
@@ -1372,21 +1474,34 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             throw new InvalidOperationException("Tokenizer is not loaded.");
 
         ComputeBuffer tokenBuffer = null;
+        ComputeBuffer multiplierBuffer = null;
+        ComputeBuffer condBuffer = null;
+        bool? previousTextTempBufferGuard = null;
         try
         {
-            var tokens = _tokenizer.Tokenize(prompt);
+            var tokens = new int[TokenCount];
+            var multipliers = new float[TokenCount];
+            _tokenizer.TokenizePrompt77(prompt, tokens, multipliers);
             LogStageTrace("text encode tokens ready"
                 + (string.IsNullOrWhiteSpace(label) ? string.Empty : " | " + label)
                 + " | tokenCount=" + tokens.Length.ToString(CultureInfo.InvariantCulture));
             tokenBuffer = NewTrackedBuffer(tokens.Length, sizeof(int), ComputeBufferType.Structured, "SDInpaint.TextTokens." + (label ?? "prompt"));
             tokenBuffer.SetData(tokens);
+            multiplierBuffer = NewFloatBuffer(multipliers, "SDInpaint.TextMultipliers." + (label ?? "prompt"));
+            condBuffer = NewFloatBuffer(new float[TextEmbeddingWidth], "SDInpaint.TextCondSeed." + (label ?? "prompt"));
             var tokenView = new NcnnTensorBuffer(tokenBuffer, 1, tokens.Length, 1, 1, 1, false);
+            var multiplierView = new NcnnTensorBuffer(multiplierBuffer, 1, multipliers.Length, 1, 1, 1, false);
+            var condView = new NcnnTensorBuffer(condBuffer, 2, TextEmbeddingWidth, 1, 1, 1, false);
             LogStageTrace("text infer begin" + (string.IsNullOrWhiteSpace(label) ? string.Empty : " | " + label));
+            previousTextTempBufferGuard = _textRepro.DisallowInferenceTempComputeBuffers;
+            _textRepro.DisallowInferenceTempComputeBuffers = false;
             using var infer = _textRepro.InferWithMultiInputs(
                 null,
                 new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal)
                 {
-                    { TextEncoderInputBlobName, tokenView }
+                    { TextEncoderTokenBlobName, tokenView },
+                    { TextEncoderMultiplierBlobName, multiplierView },
+                    { TextEncoderCondBlobName, condView }
                 },
                 new HashSet<string>(StringComparer.Ordinal) { TextEncoderOutputBlobName });
 
@@ -1400,7 +1515,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
         finally
         {
+            if (previousTextTempBufferGuard.HasValue && _textRepro != null)
+                _textRepro.DisallowInferenceTempComputeBuffers = previousTextTempBufferGuard.Value;
             DisposeBuffer(tokenBuffer, "SDInpaint.TextTokens." + (label ?? "prompt"));
+            DisposeBuffer(multiplierBuffer, "SDInpaint.TextMultipliers." + (label ?? "prompt"));
+            DisposeBuffer(condBuffer, "SDInpaint.TextCondSeed." + (label ?? "prompt"));
         }
     }
 
@@ -3620,6 +3739,212 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public void ReleaseRuntimeResources()
     {
         Release();
+    }
+
+    private sealed class StableDiffusionSimpleTokenizer
+    {
+        private readonly Dictionary<string, int> _tokenToId = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        public StableDiffusionSimpleTokenizer(string vocabPath)
+        {
+            if (string.IsNullOrWhiteSpace(vocabPath) || !File.Exists(vocabPath))
+                throw new FileNotFoundException("Stable Diffusion vocab not found.", vocabPath);
+
+            using var sr = new StreamReader(vocabPath);
+            var index = 0;
+            while (!sr.EndOfStream)
+            {
+                var line = sr.ReadLine() ?? string.Empty;
+                if (!_tokenToId.ContainsKey(line))
+                    _tokenToId.Add(line, index);
+                index++;
+            }
+
+            if (_tokenToId.Count <= EndTokenId)
+                throw new InvalidOperationException("Stable Diffusion vocab.txt is incomplete: " + vocabPath);
+        }
+
+        public void TokenizePrompt77(string prompt, int[] tokens77, float[] multipliers77)
+        {
+            if (tokens77 == null || tokens77.Length != TokenCount)
+                throw new ArgumentException("tokens77 must have length " + TokenCount.ToString(CultureInfo.InvariantCulture), nameof(tokens77));
+            if (multipliers77 == null || multipliers77.Length != TokenCount)
+                throw new ArgumentException("multipliers77 must have length " + TokenCount.ToString(CultureInfo.InvariantCulture), nameof(multipliers77));
+
+            for (var i = 0; i < TokenCount; i++)
+            {
+                tokens77[i] = EndTokenId;
+                multipliers77[i] = 1f;
+            }
+            tokens77[0] = StartTokenId;
+
+            var parsed = ParsePromptAttention(prompt ?? string.Empty);
+            var remadeTokens = new List<int>(128);
+            var remadeMultipliers = new List<float>(128);
+            var lastComma = -1;
+            for (var partIndex = 0; partIndex < parsed.Count; partIndex++)
+            {
+                var tokens = Split(parsed[partIndex].text);
+                var weight = parsed[partIndex].weight;
+                for (var i = 0; i < tokens.Count; i++)
+                {
+                    if (!_tokenToId.TryGetValue(tokens[i], out var tokenId))
+                        tokenId = 0;
+
+                    if (tokenId == 267)
+                    {
+                        lastComma = remadeTokens.Count;
+                    }
+                    else if ((Mathf.Max(remadeTokens.Count, 1) % PromptChunkTokenCount == 0)
+                             && lastComma != -1
+                             && remadeTokens.Count - lastComma <= 20)
+                    {
+                        lastComma += 1;
+                        var relocTokens = remadeTokens.GetRange(lastComma, remadeTokens.Count - lastComma);
+                        var relocMultipliers = remadeMultipliers.GetRange(lastComma, remadeMultipliers.Count - lastComma);
+                        remadeTokens.RemoveRange(lastComma, remadeTokens.Count - lastComma);
+                        remadeMultipliers.RemoveRange(lastComma, remadeMultipliers.Count - lastComma);
+
+                        var rem = Mathf.CeilToInt(remadeTokens.Count / (float)PromptChunkTokenCount) * PromptChunkTokenCount - remadeTokens.Count;
+                        for (var r = 0; r < rem; r++)
+                        {
+                            remadeTokens.Add(EndTokenId);
+                            remadeMultipliers.Add(1f);
+                        }
+
+                        remadeTokens.AddRange(relocTokens);
+                        remadeMultipliers.AddRange(relocMultipliers);
+                    }
+
+                    remadeTokens.Add(tokenId);
+                    remadeMultipliers.Add(weight);
+                }
+            }
+
+            var count = Mathf.Min(PromptChunkTokenCount, remadeTokens.Count);
+            for (var i = 0; i < count; i++)
+            {
+                tokens77[i + 1] = remadeTokens[i];
+                multipliers77[i + 1] = remadeMultipliers[i];
+            }
+        }
+
+        private static List<(string text, float weight)> ParsePromptAttention(string text)
+        {
+            var result = new List<(string text, float weight)>(16);
+            var round = new Stack<int>();
+            var square = new Stack<int>();
+            const float roundMultiplier = 1.1f;
+            const float squareMultiplier = 1f / 1.1f;
+
+            var segments = new List<string>(16);
+            for (var i = 0; i < text.Length; i++)
+            {
+                var s = text[i].ToString();
+                if (s == "(" || s == "[" || s == ")" || s == "]")
+                {
+                    segments.Add(s);
+                }
+                else
+                {
+                    if (segments.Count < 1)
+                        segments.Add(string.Empty);
+                    var last = segments[segments.Count - 1];
+                    if (last == "(" || last == "[" || last == ")" || last == "]")
+                        segments.Add(string.Empty);
+                    segments[segments.Count - 1] += s;
+                }
+            }
+
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var segment = segments[i];
+                if (segment == "(")
+                {
+                    round.Push(result.Count);
+                }
+                else if (segment == "[")
+                {
+                    square.Push(result.Count);
+                }
+                else if (segment == ")" && round.Count > 0)
+                {
+                    var start = round.Pop();
+                    for (var p = start; p < result.Count; p++)
+                        result[p] = (result[p].text, result[p].weight * roundMultiplier);
+                }
+                else if (segment == "]" && square.Count > 0)
+                {
+                    var start = square.Pop();
+                    for (var p = start; p < result.Count; p++)
+                        result[p] = (result[p].text, result[p].weight * squareMultiplier);
+                }
+                else
+                {
+                    result.Add((segment, 1f));
+                }
+            }
+
+            while (round.Count > 0)
+            {
+                var start = round.Pop();
+                for (var p = start; p < result.Count; p++)
+                    result[p] = (result[p].text, result[p].weight * roundMultiplier);
+            }
+
+            while (square.Count > 0)
+            {
+                var start = square.Pop();
+                for (var p = start; p < result.Count; p++)
+                    result[p] = (result[p].text, result[p].weight * squareMultiplier);
+            }
+
+            for (var i = 0; i + 1 < result.Count;)
+            {
+                if (Math.Abs(result[i].weight - result[i + 1].weight) < 1e-6f)
+                {
+                    result[i] = (result[i].text + result[i + 1].text, result[i].weight);
+                    result.RemoveAt(i + 1);
+                }
+                else
+                {
+                    i++;
+                }
+            }
+
+            return result;
+        }
+
+        private static List<string> Split(string text)
+        {
+            var result = new List<string>(16);
+            var src = (text ?? string.Empty) + " ";
+            for (var i = 0; i < src.Length; i++)
+            {
+                var spacePos = src.IndexOf(' ', i);
+                var commaPos = src.IndexOf(',', i);
+                var pos = -1;
+                if (spacePos >= 0 && commaPos >= 0)
+                    pos = Mathf.Min(spacePos, commaPos);
+                else if (spacePos >= 0)
+                    pos = spacePos;
+                else if (commaPos >= 0)
+                    pos = commaPos;
+
+                if (pos >= 0 && pos < src.Length)
+                {
+                    var token = src.Substring(i, pos - i);
+                    var delimiter = src[pos].ToString();
+                    if (token.Length > 0)
+                        result.Add(token + "</w>");
+                    if (delimiter != " ")
+                        result.Add(delimiter + "</w>");
+                    i = pos;
+                }
+            }
+
+            return result;
+        }
     }
 
     private sealed class ClipBpeTokenizer

@@ -44,6 +44,7 @@
 #pragma kernel NcnnPackRgbToPack4Gfpgan
 #pragma kernel NcnnFillPack4FromBufferCHW
 #pragma kernel NcnnFillPack4FromBufferCDHW
+#pragma kernel NcnnFillScalarTexture
 #pragma kernel NcnnScalePack4
 #pragma kernel NcnnAddBiasPack4
 #pragma kernel NcnnBatchNormPack4
@@ -2223,6 +2224,9 @@ void NcnnMhaProjectQkv2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
 
 StructuredBuffer<float> _FillIn;
 RWTexture2DArray<float4> _FillOutArr;
+RWTexture2DArray<float4> _FillScalarOutArr;
+float4 _FillScalarValues4;
+int _FillScalarValueCount;
 int _FillW;
 int _FillH;
 int _FillD;
@@ -2285,6 +2289,27 @@ void NcnnFillPack4FromBufferCDHW(uint3 id : SV_DispatchThreadID)
     float x2 = c2 < _FillC ? _FillIn[idx2] : 0.0;
     float x3 = c3 < _FillC ? _FillIn[idx3] : 0.0;
     _FillOutArr[int3((int)id.x, (int)id.y, slice)] = float4(x0, x1, x2, x3);
+}
+
+[numthreads(8,8,1)]
+void NcnnFillScalarTexture(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h, d;
+    _FillScalarOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    uint linearIndex = id.x + id.y * w + id.z * w * h;
+    float value = 0.0;
+    if (linearIndex < (uint)_FillScalarValueCount)
+    {
+        if (linearIndex == 0) value = _FillScalarValues4.x;
+        else if (linearIndex == 1) value = _FillScalarValues4.y;
+        else if (linearIndex == 2) value = _FillScalarValues4.z;
+        else if (linearIndex == 3) value = _FillScalarValues4.w;
+    }
+
+    _FillScalarOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = float4(value, 0.0, 0.0, 0.0);
 }
 
 Texture2DArray<float4> _ScaleInArr;
@@ -4800,6 +4825,14 @@ void NcnnBinaryOpScalarSingleBroadcast(uint3 id : SV_DispatchThreadID)
     else if (mode == 4)
     {
         bCoord = int3(0, y, 0);
+    }
+    else if (mode == 5)
+    {
+        aCoord = int3(0, 0, 0);
+    }
+    else if (mode == 6)
+    {
+        bCoord = int3(0, 0, 0);
     }
 
     float a = _BinaryA[aCoord].x;

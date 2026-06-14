@@ -191,7 +191,11 @@ namespace NcnnCompute
                     throw new InvalidOperationException("BinaryOp render-texture scalar path requires existing texture input: " + layer.name);
                 }
 
-                var outRtScalar = owner.RentTempArray(aTexScalar.width, aTexScalar.height, aTexScalar.packs, scalarTextureFormat);
+                var outRtScalar = owner.RentTempArray(
+                    aTexScalar.width,
+                    aTexScalar.height,
+                    Mathf.Max(1, aTexScalar.texture.volumeDepth),
+                    NcnnRepro.ResolveTensorTextureFormat(aTexShapeScalar.dims));
                 owner.Ops.BinaryOpScalarPack4(aTexScalar.texture, scalarB, aTexScalar.packs, opType, outRtScalar);
                 NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRtScalar, aTexShapeScalar);
                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -838,11 +842,20 @@ namespace NcnnCompute
 
         private static bool CanUseScalarLikeTexturePath(NcnnRepro.TensorRef texture, NcnnRepro.BufferShape shape)
         {
-            return texture != null
-                && texture.texture != null
-                && texture.packs == 1
+            if (texture == null || texture.texture == null)
+                return false;
+            if (texture.packs == 1
                 && ((shape.dims == 1 && shape.w > 0 && texture.width == shape.w && texture.height == 1)
-                    || (shape.dims == 2 && shape.w > 0 && shape.h > 0 && texture.width == shape.w && texture.height == shape.h));
+                    || (shape.dims == 2 && shape.w > 0 && shape.h > 0 && texture.width == shape.w && texture.height == shape.h)))
+            {
+                return true;
+            }
+
+            return (shape.dims == 3 || shape.dims == 4)
+                && shape.w > 0
+                && shape.h > 0
+                && shape.c > 0
+                && NcnnRepro.MatchesPack4TextureStorage(texture, shape);
         }
 
         private static bool CanUseChannelVectorTexturePath(NcnnRepro.TensorRef texture, NcnnRepro.BufferShape logicalShape, NcnnRepro.BufferShape storageShape)
@@ -874,11 +887,20 @@ namespace NcnnCompute
 
         private static bool CanUseScalarLikeTexturePath(NcnnRepro.CmdTensorRef texture, NcnnRepro.BufferShape shape)
         {
-            return texture != null
-                && texture.texture != null
-                && texture.packs == 1
+            if (texture == null || texture.texture == null)
+                return false;
+            if (texture.packs == 1
                 && ((shape.dims == 1 && shape.w > 0 && texture.width == shape.w && texture.height == 1)
-                    || (shape.dims == 2 && shape.w > 0 && shape.h > 0 && texture.width == shape.w && texture.height == shape.h));
+                    || (shape.dims == 2 && shape.w > 0 && shape.h > 0 && texture.width == shape.w && texture.height == shape.h)))
+            {
+                return true;
+            }
+
+            return (shape.dims == 3 || shape.dims == 4)
+                && shape.w > 0
+                && shape.h > 0
+                && shape.c > 0
+                && NcnnRepro.MatchesPack4TextureStorage(texture, shape);
         }
 
         private static bool CanUseChannelVectorTexturePath(NcnnRepro.CmdTensorRef texture, NcnnRepro.BufferShape logicalShape, NcnnRepro.BufferShape storageShape)
@@ -984,6 +1006,15 @@ namespace NcnnCompute
 
             static int GetRows(NcnnRepro.BufferShape shape) => shape.dims == 1 ? 1 : shape.h;
             static int GetCols(NcnnRepro.BufferShape shape) => shape.w;
+            static int ElementCount(NcnnRepro.BufferShape shape) => Mathf.Max(1, shape.w) * Mathf.Max(1, shape.h) * Mathf.Max(1, shape.d) * Mathf.Max(1, shape.c);
+            static bool IsScalarSingle(NcnnRepro.BufferShape shape) => shape.dims >= 1 && shape.dims <= 2 && ElementCount(shape) == 1;
+            static bool CanUseScalarSingleOutput(NcnnRepro.BufferShape shape) => shape.dims == 1 || shape.dims == 2;
+            static NcnnRepro.BufferShape ScalarSingleStorage(NcnnRepro.BufferShape shape)
+            {
+                var width = Mathf.Max(1, shape.w);
+                var height = shape.dims == 1 ? 1 : Mathf.Max(1, shape.h);
+                return new NcnnRepro.BufferShape(3, width, height, 1, 1);
+            }
             static bool IsRowVector(NcnnRepro.BufferShape shape) => shape.dims == 2 && shape.h == 1 && shape.w > 0;
             static bool IsColumnVector(NcnnRepro.BufferShape shape) => shape.dims == 2 && shape.w == 1 && shape.h > 0;
 
@@ -991,6 +1022,22 @@ namespace NcnnCompute
             var aCols = GetCols(aShape);
             var bRows = GetRows(bShape);
             var bCols = GetCols(bShape);
+
+            if (IsScalarSingle(aShape) && !IsScalarSingle(bShape) && CanUseScalarSingleOutput(bShape))
+            {
+                broadcastMode = 5;
+                outShape = bShape;
+                storageShape = ScalarSingleStorage(bShape);
+                return true;
+            }
+
+            if (IsScalarSingle(bShape) && !IsScalarSingle(aShape) && CanUseScalarSingleOutput(aShape))
+            {
+                broadcastMode = 6;
+                outShape = aShape;
+                storageShape = ScalarSingleStorage(aShape);
+                return true;
+            }
 
             if (aShape.dims == 2 && bShape.dims == 1 && aRows == bCols && aCols > 1)
             {
@@ -1245,7 +1292,8 @@ namespace NcnnCompute
                                                 {
                                                     if (!CanUseScalarLikeTexturePath(a, aShape))
                                                         break;
-                                                    var outArr = owner.RentTempArray(cmd, a.width, a.height, a.packs, scalarTextureFormat);
+                                                    var outDepth = Mathf.Max(1, a.texture.depth);
+                                                    var outArr = owner.RentTempArray(cmd, a.width, a.height, outDepth, NcnnRepro.ResolveTensorTextureFormat(aShape.dims));
                                                     owner.Ops.BinaryOpScalarPack4(cmd, a.texture, scalarB, a.packs, opType, outArr);
                                                     blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                                                     {
@@ -1258,7 +1306,7 @@ namespace NcnnCompute
                                                         hasLogicalShape = true,
                                                         logicalShape = aShape,
                                                         hasStorageShape = true,
-                                                        storageShape = aShape
+                                                        storageShape = NcnnRepro.GetCmdStorageShape(a, aShape)
                                                     };
                                                     if (shapes != null)
                                                         shapes[layer.topNames[0]] = aShape;

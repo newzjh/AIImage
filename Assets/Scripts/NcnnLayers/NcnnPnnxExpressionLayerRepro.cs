@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
@@ -28,18 +29,17 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Dynamic pnnx.Expression is not supported in runtime param path: " + layer.name);
 
             var values = ResolveConstantValues(layer);
-            var outTensor = owner.RentTempTensorBuffer(1, Mathf.Max(1, values.Length));
-            outTensor.buffer.SetData(values);
-            owner.PublishTensorBufferOutput(
-                layer.topNames[0],
-                outTensor,
-                preferTexture: false,
+            var logicalShape = ResolveOutputShape(values);
+            var storageShape = ResolveStorageShape(values);
+            var outTexture = owner.RentTempArray(storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf);
+            owner.Ops.FillScalarTexture(values, outTexture);
+            NcnnRepro.SetTextureBlob(
                 context.textureBlobs,
                 context.textureShapes,
-                context.bufferBlobs,
-                context.bufferRefs,
-                context.bufferViews,
-                context.tempOwned);
+                layer.topNames[0],
+                outTexture,
+                logicalShape,
+                storageShape);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -55,12 +55,35 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Dynamic pnnx.Expression is not supported in command-buffer path: " + layer.name);
 
             var values = ResolveConstantValues(layer);
-            owner.PublishCmdPlaceholder(
-                context.commandBuffer,
-                layer.topNames[0],
-                new NcnnRepro.BufferShape(1, Mathf.Max(1, values.Length), 1, 1, 1),
-                context.blobs,
-                context.shapes);
+            var logicalShape = ResolveOutputShape(values);
+            var storageShape = ResolveStorageShape(values);
+            var outTexture = owner.RentTempArray(context.commandBuffer, storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf);
+            owner.Ops.FillScalarTexture(context.commandBuffer, values, outTexture);
+            context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outTexture,
+                width = outTexture.width,
+                height = outTexture.height,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = logicalShape,
+                hasStorageShape = true,
+                storageShape = storageShape
+            };
+            if (context.shapes != null)
+                context.shapes[layer.topNames[0]] = logicalShape;
+        }
+
+        private static NcnnRepro.BufferShape ResolveOutputShape(float[] values)
+        {
+            return new NcnnRepro.BufferShape(1, Mathf.Max(1, values?.Length ?? 0), 1, 1, 1);
+        }
+
+        private static NcnnRepro.BufferShape ResolveStorageShape(float[] values)
+        {
+            return new NcnnRepro.BufferShape(3, Mathf.Max(1, values?.Length ?? 0), 1, 1, 1);
         }
 
         private static float[] ResolveConstantValues(NcnnParamModel.Layer layer)
