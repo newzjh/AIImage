@@ -998,6 +998,9 @@ public abstract class BasePageView : MonoBehaviour
 
     protected async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int width, int height)
     {
+        if (Application.isBatchMode)
+            return ReadbackTextureSync(rt, width, height);
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
         var request = await tcs.Task;
@@ -1011,6 +1014,28 @@ public abstract class BasePageView : MonoBehaviour
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.filterMode = FilterMode.Bilinear;
         return tex;
+    }
+
+    protected static Texture2D ReadbackTextureSync(RenderTexture rt, int width, int height)
+    {
+        if (rt == null || width <= 0 || height <= 0)
+            return null;
+
+        var previous = RenderTexture.active;
+        try
+        {
+            RenderTexture.active = rt;
+            var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+            tex.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+            tex.Apply(false, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            tex.filterMode = FilterMode.Bilinear;
+            return tex;
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+        }
     }
 
     private void BuildRoot()

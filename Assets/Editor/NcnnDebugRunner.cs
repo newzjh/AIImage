@@ -115,6 +115,7 @@ public static class NcnnDebugRunner
     private const string MonaiAbortPrivateMemoryMbEnvVar = "AIIMAGE_MONAI_ABORT_PRIVATE_MEMORY_MB";
     private const string BatchTimeoutMinutesEnvVar = "AIIMAGE_BATCH_TIMEOUT_MINUTES";
     private const string BatchMethodEnvVar = "AIIMAGE_BATCH_METHOD";
+    private const string DesignViewDebugInputEnvVar = "AIIMAGE_DESIGNVIEW_DEBUG_INPUT";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
@@ -205,6 +206,9 @@ public static class NcnnDebugRunner
             case nameof(RunMonaiDebugBatch):
                 RunMonaiDebugBatch();
                 return;
+            case nameof(RunDesignViewCompositeDebugBatch):
+                RunDesignViewCompositeDebugBatch();
+                return;
             default:
                 throw new InvalidOperationException("Unknown batch method: " + methodName);
         }
@@ -268,6 +272,12 @@ public static class NcnnDebugRunner
     public static void RunMonaiDebugMenu()
     {
         RunMonaiDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run DesignView Composite Debug")]
+    public static void RunDesignViewCompositeDebugMenu()
+    {
+        RunDesignViewCompositeDebug().Forget();
     }
 
     [MenuItem("Tools/AIImage/Run CodeFormer Stress (60x)")]
@@ -453,6 +463,11 @@ public static class NcnnDebugRunner
         await RunMonaiDebugInternal();
     }
 
+    public static async UniTaskVoid RunDesignViewCompositeDebug()
+    {
+        await RunDesignViewCompositeDebugInternal();
+    }
+
     public static async UniTaskVoid RunVista3dDebug()
     {
         await RunMonaiDebugInternal(DefaultVistaBaselineManifestPath, new[] { DefaultVistaInputPath }, true);
@@ -486,6 +501,8 @@ public static class NcnnDebugRunner
     public static void RunStableDiffusionDebugBatch() => RunBatchBlocking(nameof(RunStableDiffusionDebugBatch), RunStableDiffusionDebugInternal, TimeSpan.FromHours(4));
 
     public static void RunRealEsrganValidationBatch() => RunBatchBlocking(nameof(RunRealEsrganValidationBatch), RunRealEsrganValidationInternal, TimeSpan.FromMinutes(20));
+
+    public static void RunDesignViewCompositeDebugBatch() => RunBatchBlocking(nameof(RunDesignViewCompositeDebugBatch), RunDesignViewCompositeDebugInternal, TimeSpan.FromMinutes(20));
 
     private static async UniTask RunMattingDebugInternal()
     {
@@ -789,6 +806,241 @@ public static class NcnnDebugRunner
             {
             }
             NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private static async UniTask RunDesignViewCompositeDebugInternal()
+    {
+        var inputPath = Environment.GetEnvironmentVariable(DesignViewDebugInputEnvVar);
+        if (string.IsNullOrWhiteSpace(inputPath))
+            inputPath = @"D:\photos\2012-10国庆\10-14天水麦积山\DSCF1827.JPG";
+        inputPath = inputPath.Trim().Trim('"');
+
+        var source = LoadTexture(inputPath);
+        if (source == null)
+            throw new InvalidOperationException("Failed to load DesignView debug input: " + inputPath);
+
+        var outputDir = CreateGenericDumpDir("AIImage_DesignViewComposite");
+        TryWriteTexturePng(source, outputDir, "00_input.png");
+
+        var hostGo = new GameObject("DesignViewCompositeDebugRunner");
+        try
+        {
+            Debug.Log("[DesignViewCompositeDebug] begin | input=" + inputPath + " | output_dir=" + outputDir);
+            var yolo = hostGo.AddComponent<YoloSegNcnnReproRunner>();
+            yolo.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
+            yolo.enableDebugDump = true;
+            yolo.targetPersonOnly = false;
+            yolo.enableMaskClose = true;
+            yolo.enableMaskDilate = true;
+            yolo.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, true);
+            yolo.useArgbFloatTensor = ResolveBoolEnv(YoloUseArgbFloatEnvVar, true);
+            yolo.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, yolo.forceBufferConvolution);
+            yolo.enableGeneralTextureConvolution = ResolveBoolEnv(YoloEnableGeneralTexConvEnvVar, yolo.enableGeneralTextureConvolution);
+            yolo.enableDepthWiseTextureConvolution = ResolveBoolEnv(YoloEnableDepthwiseTexConvEnvVar, yolo.enableDepthWiseTextureConvolution);
+            yolo.enableConv1x1TextureConvolution = ResolveBoolEnv(YoloEnableConv1x1TexConvEnvVar, yolo.enableConv1x1TextureConvolution);
+            yolo.flipYInput = ResolveBoolEnv(YoloFlipYEnvVar, yolo.flipYInput);
+
+            var result = await yolo.ProcessAsync(source, CancellationToken.None);
+            Debug.Log(
+                "[DesignViewCompositeDebug] yolo_result"
+                + " | error=" + (result.error ?? string.Empty)
+                + " | detections=" + (result.detections != null ? result.detections.Length.ToString(CultureInfo.InvariantCulture) : "0")
+                + " | coverage=" + result.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture)
+                + " | yolo_dump=" + (yolo.LastDumpDir ?? string.Empty));
+
+            if (!string.IsNullOrWhiteSpace(result.error))
+                throw new InvalidOperationException("DesignView composite debug YOLO failed: " + result.error);
+            if (result.mask == null)
+                throw new InvalidOperationException("DesignView composite debug YOLO returned null mask.");
+
+            TryWriteTexturePng(result.mask, outputDir, "01_person_mask.png");
+            TryWriteTexturePng(result.texture, outputDir, "02_transparent_cutout.png");
+            TryWriteTexturePng(result.overlay, outputDir, "03_overlay.png");
+            Debug.Log("[DesignViewCompositeDebug] wrote_yolo_outputs | output_dir=" + outputDir);
+
+            var designViewType = typeof(DesignView);
+            var hostType = typeof(AIImagePageHost);
+
+            var createWorkingRt = designViewType.GetMethod("CreateWorkingRenderTexture", BindingFlags.Static | BindingFlags.NonPublic);
+            var buildMaskedBackground = designViewType.GetMethod("BuildMaskedBackgroundRenderTextureAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var buildHoleMask = designViewType.GetMethod("BuildHoleMaskRenderTextureAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var buildLayerCutout = designViewType.GetMethod("BuildLayerCutoutRenderTexture", BindingFlags.Instance | BindingFlags.NonPublic);
+            var toDisplayRect = designViewType.GetMethod("ToDisplayPixelRect", BindingFlags.Static | BindingFlags.NonPublic);
+            var toTextureRect = designViewType.GetMethod("ToTexturePixelRect", BindingFlags.Static | BindingFlags.NonPublic);
+            var buildAppliedComposite = designViewType.GetMethod("BuildAppliedCompositeAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var dumpTextureAsync = designViewType.GetMethod("DumpTextureAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var readbackTextureAsync = typeof(BasePageView).GetMethod("ReadbackTextureAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var computeTextureDiff = typeof(NcnnDebugRunner).GetMethod("ComputeTextureDiff", BindingFlags.Static | BindingFlags.NonPublic);
+            var imageProcessingProp = hostType.GetProperty("ImageProcessingCS", BindingFlags.Instance | BindingFlags.Public);
+            var imageProcessingField = hostType.GetField("_imageProcessingCS", BindingFlags.Instance | BindingFlags.NonPublic);
+            var ensureHostSetup = hostType.GetMethod("EnsureHostSetup", BindingFlags.Instance | BindingFlags.NonPublic);
+            var hostProp = typeof(BasePageView).GetProperty("Host", BindingFlags.Instance | BindingFlags.NonPublic);
+
+            if (createWorkingRt == null || buildMaskedBackground == null || buildHoleMask == null || buildLayerCutout == null
+                || toDisplayRect == null || toTextureRect == null || buildAppliedComposite == null
+                || dumpTextureAsync == null || readbackTextureAsync == null || imageProcessingProp == null || hostProp == null)
+            {
+                throw new MissingMethodException("DesignView composite debug reflection setup failed.");
+            }
+
+            var host = hostGo.AddComponent<AIImagePageHost>();
+            var design = hostGo.AddComponent<DesignView>();
+            hostProp.SetValue(design, host);
+            design._exportCompositeDebug = true;
+            Debug.Log("[DesignViewCompositeDebug] host_and_design_ready");
+
+            ensureHostSetup?.Invoke(host, null);
+
+            var cs = imageProcessingProp.GetValue(host) as ComputeShader;
+            if (cs == null)
+            {
+                cs = Resources.Load<ComputeShader>("ImageProcessing");
+                if (cs != null && imageProcessingField != null)
+                    imageProcessingField.SetValue(host, cs);
+            }
+            if (cs == null)
+                throw new InvalidOperationException("Failed to resolve ImageProcessing compute shader for DesignView composite debug.");
+            Debug.Log("[DesignViewCompositeDebug] compute_ready | name=" + cs.name);
+
+            var maskedBackgroundTask = (UniTask<RenderTexture>)buildMaskedBackground.Invoke(design, new object[] { source, result.mask, cs });
+            var maskedBackground = await maskedBackgroundTask;
+            var holeMaskTask = (UniTask<RenderTexture>)buildHoleMask.Invoke(design, new object[] { result.mask, cs });
+            var holeMask = await holeMaskTask;
+            if (maskedBackground == null || holeMask == null)
+                throw new InvalidOperationException("Failed to build masked background or hole mask for DesignView composite debug.");
+            Debug.Log("[DesignViewCompositeDebug] built_background_and_holemask");
+
+            var width = source.width;
+            var height = source.height;
+
+            var layerBoxDataType = designViewType.GetNestedType("LayerBoxData", BindingFlags.NonPublic);
+            if (layerBoxDataType == null)
+                throw new MissingMemberException("LayerBoxData type not found.");
+            var listType = typeof(List<>).MakeGenericType(layerBoxDataType);
+            var layers = Activator.CreateInstance(listType);
+            var listAdd = listType.GetMethod("Add");
+            var normalizedRectField = layerBoxDataType.GetField("normalizedRect", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var titleField = layerBoxDataType.GetField("title", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var colorField = layerBoxDataType.GetField("color", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var previewTextureField = layerBoxDataType.GetField("previewTexture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var contentRenderTextureField = layerBoxDataType.GetField("contentRenderTexture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (listAdd == null || normalizedRectField == null || titleField == null || colorField == null || previewTextureField == null || contentRenderTextureField == null)
+                throw new MissingFieldException("LayerBoxData fields not found.");
+
+            var detectionCount = 0;
+            var layerColorIndex = 0;
+            foreach (var detection in result.detections ?? Array.Empty<YoloSegDetection>())
+            {
+                var displayRect = (RectInt)toDisplayRect.Invoke(null, new object[] { detection.rect, width, height });
+                if (displayRect.width < 8 || displayRect.height < 8)
+                    continue;
+
+                var normalized = new Rect(
+                    displayRect.x / Mathf.Max(1f, width),
+                    displayRect.y / Mathf.Max(1f, height),
+                    displayRect.width / Mathf.Max(1f, width),
+                    displayRect.height / Mathf.Max(1f, height));
+                if (normalized.width < 0.03f || normalized.height < 0.03f)
+                    continue;
+
+                var textureRect = (RectInt)toTextureRect.Invoke(null, new object[] { displayRect, width, height });
+                var cutoutRt = buildLayerCutout.Invoke(design, new object[] { source, result.mask, textureRect, cs }) as RenderTexture;
+                if (cutoutRt == null)
+                    continue;
+
+                var layer = Activator.CreateInstance(layerBoxDataType);
+                titleField.SetValue(layer, $"Layer {detectionCount + 1} {(detection.probability * 100f):0}%");
+                normalizedRectField.SetValue(layer, normalized);
+                colorField.SetValue(layer, Color.HSVToRGB((layerColorIndex * 0.17f) % 1f, 0.68f, 1f));
+                previewTextureField.SetValue(layer, cutoutRt);
+                contentRenderTextureField.SetValue(layer, cutoutRt);
+                listAdd.Invoke(layers, new[] { layer });
+
+                detectionCount++;
+                layerColorIndex++;
+            }
+
+            if (detectionCount == 0)
+                throw new InvalidOperationException("DesignView composite debug produced zero usable layers.");
+            Debug.Log("[DesignViewCompositeDebug] built_layers | count=" + detectionCount.ToString(CultureInfo.InvariantCulture));
+
+            var applyTaskObj = buildAppliedComposite.Invoke(
+                design,
+                new object[]
+                {
+                    source,
+                    source,
+                    holeMask,
+                    layers,
+                    8,
+                    8,
+                    0.35f
+                });
+
+            Debug.Log("[DesignViewCompositeDebug] apply_begin");
+            //var applyTask = (UniTask<object>)ConvertUniTaskToObject(applyTaskObj);
+            object applyResult = new UniTask<object>();
+            //var applyResult = await applyTask;
+            //if (applyResult == null)
+            //    throw new InvalidOperationException("DesignView composite debug apply result is null.");
+            Debug.Log("[DesignViewCompositeDebug] apply_done");
+
+            var composedTextureField = applyResult.GetType().GetField("composedTexture", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var remainingMaskField = applyResult.GetType().GetField("remainingMask", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var debugDirectoryField = applyResult.GetType().GetField("debugDirectory", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (composedTextureField == null || remainingMaskField == null || debugDirectoryField == null)
+                throw new MissingFieldException("ApplyCompositeResult fields not found.");
+
+            var composed = composedTextureField.GetValue(applyResult) as Texture2D;
+            var remainingMask = remainingMaskField.GetValue(applyResult) as Texture2D;
+            var compositeDebugDir = debugDirectoryField.GetValue(applyResult) as string;
+            if (composed == null)
+                throw new InvalidOperationException("DesignView composite debug composed texture is null.");
+
+            TryWriteTexturePng(composed, outputDir, "10_composited.png");
+            if (remainingMask != null)
+                TryWriteTexturePng(remainingMask, outputDir, "11_remaining_mask.png");
+
+            var diffTex = BuildAbsDiffTexture(source, composed);
+            if (diffTex != null)
+            {
+                TryWriteTexturePng(diffTex, outputDir, "12_absdiff_vs_input.png");
+                UnityEngine.Object.DestroyImmediate(diffTex);
+            }
+
+            ComputeTextureDiff(source, composed, out var meanAbsRgb, out var maxAbsRgb);
+            File.WriteAllText(
+                Path.Combine(outputDir, "summary.txt"),
+                "input=" + inputPath + Environment.NewLine
+                + "detections=" + detectionCount.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
+                + "mean_abs_rgb_vs_input=" + meanAbsRgb.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
+                + "max_abs_rgb_vs_input=" + maxAbsRgb.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
+                + "designview_debug_dir=" + (compositeDebugDir ?? string.Empty) + Environment.NewLine
+                + "yolo_dump_dir=" + (yolo.LastDumpDir ?? string.Empty) + Environment.NewLine);
+
+            Debug.Log(
+                "[DesignViewCompositeDebug] done"
+                + " | output_dir=" + outputDir
+                + " | designview_debug_dir=" + (compositeDebugDir ?? string.Empty)
+                + " | mean_abs_rgb_vs_input=" + meanAbsRgb.ToString("0.000000", CultureInfo.InvariantCulture)
+                + " | max_abs_rgb_vs_input=" + maxAbsRgb.ToString(CultureInfo.InvariantCulture));
+
+            if (composed != null)
+                UnityEngine.Object.DestroyImmediate(composed);
+            if (remainingMask != null)
+                UnityEngine.Object.DestroyImmediate(remainingMask);
+            if (result.texture != null)
+                UnityEngine.Object.DestroyImmediate(result.texture);
+            if (result.mask != null)
+                UnityEngine.Object.DestroyImmediate(result.mask);
+            if (result.overlay != null)
+                UnityEngine.Object.DestroyImmediate(result.overlay);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(hostGo);
+            UnityEngine.Object.DestroyImmediate(source);
         }
     }
 
@@ -2865,6 +3117,31 @@ public static class NcnnDebugRunner
 
         meanAbsRgb = pa.Length > 0 ? (float)(sumAbs / (pa.Length * 3d)) : 0f;
         maxAbsRgb = maxAbs;
+    }
+
+    private static Texture2D BuildAbsDiffTexture(Texture2D a, Texture2D b)
+    {
+        if (a == null || b == null || a.width != b.width || a.height != b.height)
+            return null;
+
+        var pa = a.GetPixels32();
+        var pb = b.GetPixels32();
+        var diff = new Color32[pa.Length];
+        for (var i = 0; i < pa.Length; i++)
+        {
+            diff[i] = new Color32(
+                (byte)Mathf.Abs(pa[i].r - pb[i].r),
+                (byte)Mathf.Abs(pa[i].g - pb[i].g),
+                (byte)Mathf.Abs(pa[i].b - pb[i].b),
+                255);
+        }
+
+        var tex = new Texture2D(a.width, a.height, TextureFormat.RGBA32, false, true);
+        tex.SetPixels32(diff);
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
     }
 
     private static string CreateGenericDumpDir(string prefix)
