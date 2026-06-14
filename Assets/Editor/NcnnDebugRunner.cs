@@ -70,6 +70,9 @@ public static class NcnnDebugRunner
     private const string SdEnableDumpEnvVar = "AIIMAGE_SD_ENABLE_DUMP";
     private const string SdSyncStageTimingsEnvVar = "AIIMAGE_SD_SYNC_STAGE_TIMINGS";
     private const string SdKeepRawConvWeightsEnvVar = "AIIMAGE_SD_KEEP_RAW_CONV_WEIGHTS";
+    private const string SdUseCommandBufferEnvVar = "AIIMAGE_SD_USE_COMMAND_BUFFER";
+    private const string SdUseAsyncComputeEnvVar = "AIIMAGE_SD_USE_ASYNC_COMPUTE";
+    private const string SdDisallowTempComputeBuffersEnvVar = "AIIMAGE_SD_DISALLOW_TEMP_COMPUTE_BUFFERS";
     private const string MonaiBaselineManifestEnvVar = "AIIMAGE_MONAI_BASELINE_MANIFEST";
     private const string MonaiInputPathsEnvVar = "AIIMAGE_MONAI_INPUT_PATHS";
     private const string MonaiUseBaselineTensorEnvVar = "AIIMAGE_MONAI_USE_BASELINE_TENSOR";
@@ -1188,21 +1191,49 @@ public static class NcnnDebugRunner
         var positivePrompt = ResolveStringEnv(SdPositivePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedPositivePrompt);
         var negativePrompt = ResolveStringEnv(SdNegativePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedNegativePrompt);
         var outputDir = CreateGenericDumpDir("AIImage_YoloInpaintingRepro");
+        var forcedUseCommandBuffer = ResolveOptionalBoolEnv(SdUseCommandBufferEnvVar);
+        var runPack4Rt = !forcedUseCommandBuffer.HasValue || !forcedUseCommandBuffer.Value;
+        var runCommandBuffer = !forcedUseCommandBuffer.HasValue || forcedUseCommandBuffer.Value;
         NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
         NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint");
         try
         {
-            await RunYoloAndInpaintingDebugOnce(
-                inputPath,
-                outputDir,
-                enableDump,
-                stepCount,
-                seed,
-                strength,
-                guidanceScale,
-                positivePrompt,
-                negativePrompt,
-                "batch");
+            if (runPack4Rt)
+            {
+                var modeDir = Path.Combine(outputDir, "pack4_rt");
+                Directory.CreateDirectory(modeDir);
+                await RunYoloAndInpaintingDebugOnce(
+                    inputPath,
+                    modeDir,
+                    enableDump,
+                    stepCount,
+                    seed,
+                    strength,
+                    guidanceScale,
+                    positivePrompt,
+                    negativePrompt,
+                    useCommandBuffer: false,
+                    logTag: "batch.pack4_rt");
+            }
+
+            if (runCommandBuffer)
+            {
+                await ReleaseGpuPressureAsync();
+                var modeDir = Path.Combine(outputDir, "command_buffer");
+                Directory.CreateDirectory(modeDir);
+                await RunYoloAndInpaintingDebugOnce(
+                    inputPath,
+                    modeDir,
+                    enableDump,
+                    stepCount,
+                    seed,
+                    strength,
+                    guidanceScale,
+                    positivePrompt,
+                    negativePrompt,
+                    useCommandBuffer: true,
+                    logTag: "batch.command_buffer");
+            }
         }
         finally
         {
@@ -1337,7 +1368,8 @@ public static class NcnnDebugRunner
                     guidanceScale,
                     positivePrompt,
                     negativePrompt,
-                    "probe#" + iteration.ToString(CultureInfo.InvariantCulture));
+                    useCommandBuffer: ResolveBoolEnv(SdUseCommandBufferEnvVar, false),
+                    logTag: "probe#" + iteration.ToString(CultureInfo.InvariantCulture));
 
                 LogResourceSnapshot("probe_iter_" + iteration.ToString(CultureInfo.InvariantCulture) + "_after_run");
                 WriteResourceSummaryRow(sw, iteration, "after_run", iterationDir);
@@ -1364,6 +1396,7 @@ public static class NcnnDebugRunner
         float guidanceScale,
         string positivePrompt,
         string negativePrompt,
+        bool useCommandBuffer,
         string logTag)
     {
         var tex = LoadTexture(inputPath);
@@ -1437,6 +1470,9 @@ public static class NcnnDebugRunner
             inpaintRunner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, inpaintRunner.decoderTensorTextureFormat);
             inpaintRunner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, inpaintRunner.encoderTensorTextureFormat);
             inpaintRunner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, inpaintRunner.keepRawConvWeightsForTexturePath);
+            inpaintRunner.useCommandBuffer = useCommandBuffer;
+            inpaintRunner.useAsyncComputeCommandBuffer = ResolveBoolEnv(SdUseAsyncComputeEnvVar, inpaintRunner.useAsyncComputeCommandBuffer);
+            inpaintRunner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, inpaintRunner.disallowInferenceTempComputeBuffers);
             inpaintRunner.defaultStepCount = stepCount;
             inpaintRunner.defaultStrength = strength;
             inpaintRunner.defaultGuidanceScale = guidanceScale;
@@ -1461,6 +1497,7 @@ public static class NcnnDebugRunner
 
             Debug.Log(
                 "[" + logTag + "] inpaintError=" + (inpaintResult.error ?? "")
+                + " | mode=" + (useCommandBuffer ? "command_buffer" : "pack4_rt")
                 + " | inpaintElapsedMs=" + inpaintResult.elapsedMs
                 + " | seed=" + inpaintResult.seed.ToString(CultureInfo.InvariantCulture)
                 + " | inpaintDump=" + (inpaintResult.dumpDir ?? inpaintRunner.LastDumpDir ?? ""));
@@ -1489,6 +1526,7 @@ public static class NcnnDebugRunner
                 "steps=" + stepCount.ToString(CultureInfo.InvariantCulture),
                 "strength=" + strength.ToString("0.0000", CultureInfo.InvariantCulture),
                 "guidance_scale=" + guidanceScale.ToString("0.0000", CultureInfo.InvariantCulture),
+                "mode=" + (useCommandBuffer ? "command_buffer" : "pack4_rt"),
                 "yolo_dump=" + (yoloDumpDir ?? string.Empty),
                 "inpaint_dump=" + (inpaintResult.dumpDir ?? inpaintRunner.LastDumpDir ?? string.Empty));
             File.WriteAllText(Path.Combine(outputDir, "summary.txt"), summary);

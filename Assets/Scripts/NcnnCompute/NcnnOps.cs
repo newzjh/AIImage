@@ -2616,6 +2616,29 @@ namespace NcnnCompute
             Dispatch3D(_kBuildSdInpaintInput9Pack4, output.width, output.height, 3, 8, 8);
         }
 
+        public void BuildSdInpaintInput9Pack4(CommandBuffer cmd, ComputeTexture latents, ComputeTexture mask, ComputeTexture maskedLatents, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (latents == null) throw new ArgumentNullException(nameof(latents));
+            if (mask == null) throw new ArgumentNullException(nameof(mask));
+            if (maskedLatents == null) throw new ArgumentNullException(nameof(maskedLatents));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (latents.width != output.width || latents.height != output.height)
+                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires latents/output same width/height");
+            if (mask.width != output.width || mask.height != output.height)
+                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires mask/output same width/height");
+            if (maskedLatents.width != output.width || maskedLatents.height != output.height)
+                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires maskedLatents/output same width/height");
+            if (output.depth < 3)
+                throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires output depth >= 3");
+
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintLatentsArr", latents.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintMaskArr", mask.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintMaskedLatentsArr", maskedLatents.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintInputOutArr", output.nameID);
+            Dispatch3D(cmd, _kBuildSdInpaintInput9Pack4, output.width, output.height, 3, 8, 8);
+        }
+
         public void CopyPack4(CommandBuffer cmd, ComputeTexture src, int srcPackOffset, ComputeTexture dst, int dstPackOffset, int packs)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));

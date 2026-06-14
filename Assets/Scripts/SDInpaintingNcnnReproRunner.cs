@@ -60,6 +60,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private const string ResourceSnapshotEnvVar = "AIIMAGE_SD_RESOURCE_SNAPSHOT";
     private const string EditorLowVramEnvVar = "AIIMAGE_SD_EDITOR_LOW_VRAM";
     private const string AllowEditorFloatTensorEnvVar = "AIIMAGE_SD_ALLOW_EDITOR_FLOAT_TENSOR";
+    private const string InpaintModelRootEnvVar = "AIIMAGE_SD_INPAINT_MODEL_ROOT";
     private static readonly string[] DebugUnetBlobNames = { "156", "out0" };
     private static readonly string[] OfficialUnetCacheBlobNames =
     {
@@ -141,6 +142,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public bool enableDebugDump = false;
     public bool enableLayerRuntimeProfile = false;
     public bool syncLayerRuntimeProfileGpu = false;
+    public bool useCommandBuffer = false;
+    public bool useAsyncComputeCommandBuffer = false;
+    public bool disallowInferenceTempComputeBuffers = false;
     public int layerRuntimeProfileTopN = 30;
     public bool blackMaskMeansInpaint = false;
     public bool useOfficialNoise = true;
@@ -384,14 +388,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         Texture2D generatedResized = null;
         ComputeBuffer condBuf = null;
         ComputeBuffer uncondBuf = null;
-        ComputeBuffer latentMaskBuf = null;
-        ComputeBuffer maskedLatentBuf = null;
-        ComputeBuffer cleanLatentBuf = null;
-        ComputeBuffer initNoiseBuf = null;
-        ComputeBuffer latentsBuf = null;
         RenderTexture latentMaskTex = null;
         RenderTexture maskedLatentTex = null;
+        RenderTexture cleanLatentTex = null;
+        RenderTexture initNoiseTex = null;
         RenderTexture latentsTex = null;
+        RenderTexture decodeLatentsTex = null;
+        RenderTexture condTex = null;
+        RenderTexture uncondTex = null;
         try
         {
             if (sourceImage == null || maskImage == null)
@@ -447,8 +451,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             normalizedMask = NormalizeInpaintMask(resizedMask, blackMaskMeansInpaint);
             maskedSource = BuildMaskedTexture(resizedSource, normalizedMask);
             latentMaskTexture = ReadResizedTextureNearest(normalizedMask, LatentSize, LatentSize);
-            latentMaskBuf = CreateMaskBuffer(latentMaskTexture);
-            if (normalizedMask == null || maskedSource == null || latentMaskTexture == null || latentMaskBuf == null)
+            if (normalizedMask == null || maskedSource == null || latentMaskTexture == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to prepare masked image inputs." });
 
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
@@ -484,12 +487,17 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 WriteFloatArrayRawF32Safe(Path.Combine(_lastDumpDir, "prompt_uncond_f32.bin"), uncond);
             }
 
-            LogStageTrace("prompt buffer upload begin");
-            condBuf = NewFloatBuffer(cond, "SDInpaint.PromptCond");
-            uncondBuf = NewFloatBuffer(uncond, "SDInpaint.PromptUncond");
-            LogStageTrace("prompt buffer upload end");
-            var condView = new NcnnTensorBuffer(condBuf, 2, TextEmbeddingWidth, TokenCount, 1, 1, false);
-            var uncondView = new NcnnTensorBuffer(uncondBuf, 2, TextEmbeddingWidth, TokenCount, 1, 1, false);
+            NcnnTensorBuffer condView = null;
+            NcnnTensorBuffer uncondView = null;
+            if (!useCommandBuffer)
+            {
+                LogStageTrace("prompt buffer upload begin");
+                condBuf = NewFloatBuffer(cond, "SDInpaint.PromptCond");
+                uncondBuf = NewFloatBuffer(uncond, "SDInpaint.PromptUncond");
+                LogStageTrace("prompt buffer upload end");
+                condView = new NcnnTensorBuffer(condBuf, 2, TextEmbeddingWidth, TokenCount, 1, 1, false);
+                uncondView = new NcnnTensorBuffer(uncondBuf, 2, TextEmbeddingWidth, TokenCount, 1, 1, false);
+            }
             LogStageTrace("dispose text model begin");
             DisposeTextModel();
             LogStageTrace("dispose text model end");
@@ -502,24 +510,23 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             var latentRng = CreateLatentNoiseRng(actualSeed);
             var useStrengthMax = strength >= 0.9999f;
             if (!useStrengthMax)
-                cleanLatentBuf = await EncodeImageLatentsAsync(resizedSource, latentRng, ct);
-            initNoiseBuf = NewFloatBuffer(GenerateGaussian(LatentElementCount(), latentRng), "SDInpaint.InitNoise");
-            maskedLatentBuf = await EncodeImageLatentsAsync(maskedSource, latentRng, ct);
-            if ((!useStrengthMax && cleanLatentBuf == null) || initNoiseBuf == null || maskedLatentBuf == null)
+                cleanLatentTex = await EncodeImageLatentsPack4Async(resizedSource, latentRng, ct);
+            initNoiseTex = CreateLatentNoisePack4(latentRng);
+            maskedLatentTex = await EncodeImageLatentsPack4Async(maskedSource, latentRng, ct);
+            if ((!useStrengthMax && cleanLatentTex == null) || initNoiseTex == null || maskedLatentTex == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "VAE encoder failed." });
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
             {
-                if (cleanLatentBuf != null)
-                    WriteBufferStatsSafe(Path.Combine(_lastDumpDir, "latent_clean_stats.txt"), cleanLatentBuf);
-                WriteBufferStatsSafe(Path.Combine(_lastDumpDir, "latent_masked_stats.txt"), maskedLatentBuf);
-                WriteBufferStatsSafe(Path.Combine(_lastDumpDir, "latent_noise_stats.txt"), initNoiseBuf);
+                if (cleanLatentTex != null)
+                    DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_clean_stats.txt"), cleanLatentTex, LatentChannels);
+                DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_masked_stats.txt"), maskedLatentTex, LatentChannels);
+                DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_noise_stats.txt"), initNoiseTex, LatentChannels);
             }
 
             DestroyRuntimeTexture(ref resizedSource);
             DestroyRuntimeTexture(ref resizedMask);
             DestroyRuntimeTexture(ref normalizedMask);
             DestroyRuntimeTexture(ref maskedSource);
-            DestroyRuntimeTexture(ref latentMaskTexture);
             DisposeVaeEncoderModel();
             await ForceStageCleanupAsync(ct, "after_vae_encoder");
             LogResourceSnapshot("after_vae_encoder_cleanup");
@@ -531,19 +538,25 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
             await EnsureUnetLoadedAsync(paths, ct);
             LogResourceSnapshot("after_load_unet");
-            latentMaskTex = BuildLatentMaskPack4(latentMaskBuf);
-            maskedLatentTex = BuildLatentPack4(maskedLatentBuf);
-            latentsTex = useStrengthMax
-                ? BuildNoisyLatentsPack4(initNoiseBuf)
-                : BuildNoisyLatentsPack4(cleanLatentBuf, initNoiseBuf, activeTimesteps[0]);
-            DisposeBuffer(latentMaskBuf, "SDInpaint.LatentMask");
-            latentMaskBuf = null;
-            DisposeBuffer(maskedLatentBuf, "SDInpaint.MaskedLatents");
-            maskedLatentBuf = null;
-            DisposeBuffer(cleanLatentBuf, "SDInpaint.CleanLatents");
-            cleanLatentBuf = null;
-            DisposeBuffer(initNoiseBuf, "SDInpaint.InitNoise");
-            initNoiseBuf = null;
+            latentMaskTex = CreateMaskPack4Texture(latentMaskTexture);
+            DestroyRuntimeTexture(ref latentMaskTexture);
+            if (useCommandBuffer)
+            {
+                condTex = CreateTensorPack4Texture(_unetRepro, cond, 2, TextEmbeddingWidth, TokenCount, 1, 1, tensorTextureFormat);
+                uncondTex = CreateTensorPack4Texture(_unetRepro, uncond, 2, TextEmbeddingWidth, TokenCount, 1, 1, tensorTextureFormat);
+            }
+            latentsTex = useStrengthMax ? initNoiseTex : BuildNoisyLatentsPack4(cleanLatentTex, initNoiseTex, activeTimesteps[0]);
+            initNoiseTex = useStrengthMax ? null : initNoiseTex;
+            if (cleanLatentTex != null)
+            {
+                _unetRepro?.ReturnTempArray(cleanLatentTex);
+                cleanLatentTex = null;
+            }
+            if (initNoiseTex != null)
+            {
+                _unetRepro?.ReturnTempArray(initNoiseTex);
+                initNoiseTex = null;
+            }
             LogResourceSnapshot("after_init_latents");
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
             {
@@ -566,7 +579,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 ReportProgress(0.36f + 0.48f * stepProgress, "Denoise step " + (i + 1).ToString(CultureInfo.InvariantCulture) + "/" + activeTimesteps.Length.ToString(CultureInfo.InvariantCulture));
                 LogResourceSnapshot("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_begin");
 
-                var epsilonTex = await RunCfgUnetPack4Async(latentsTex, latentMaskTex, maskedLatentTex, timestep, condView, uncondView, guidanceScale, ct);
+                var epsilonTex = await RunCfgUnetPack4Async(latentsTex, latentMaskTex, maskedLatentTex, timestep, condView, uncondView, condTex, uncondTex, guidanceScale, ct);
                 if (epsilonTex == null)
                     return Finish(new SDInpaintingNcnnReproResult { error = "UNet inference failed at timestep " + timestep.ToString(CultureInfo.InvariantCulture) + "." });
                 LogResourceSnapshot("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_after_unet");
@@ -605,6 +618,16 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             condBuf = null;
             DisposeBuffer(uncondBuf, "SDInpaint.PromptUncond");
             uncondBuf = null;
+            if (condTex != null)
+            {
+                _unetRepro?.ReturnTempArray(condTex);
+                condTex = null;
+            }
+            if (uncondTex != null)
+            {
+                _unetRepro?.ReturnTempArray(uncondTex);
+                uncondTex = null;
+            }
             if (maskedLatentTex != null)
             {
                 _unetRepro?.ReturnTempArray(maskedLatentTex);
@@ -616,28 +639,26 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 latentMaskTex = null;
             }
 
-            latentsBuf = ExtractLatentPack4ToStandaloneBuffer(latentsTex);
-            if (latentsBuf == null)
-                return Finish(new SDInpaintingNcnnReproResult { error = "Failed to materialize final latents." });
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
-                WriteBufferStatsSafe(Path.Combine(_lastDumpDir, "latent_final_stats.txt"), latentsBuf);
-            _unetRepro.ReturnTempArray(latentsTex);
-            latentsTex = null;
-            LogResourceSnapshot("after_materialize_final_latents");
+                DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_final_stats.txt"), latentsTex, LatentChannels);
+            LogResourceSnapshot("after_final_latents");
 
             ReportProgress(0.88f, "Decode image");
-            var decodeLatentBuf = CloneBufferStandalone(latentsBuf, "SDInpaint.DecodeLatentsInput");
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
-                WriteBufferStatsSafe(Path.Combine(_lastDumpDir, "latent_decode_input_stats.txt"), decodeLatentBuf);
-            DisposeBuffer(latentsBuf, "SDInpaint.FinalLatents");
-            latentsBuf = null;
+                DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_decode_input_stats.txt"), latentsTex, LatentChannels);
+            decodeLatentsTex = latentsTex;
+            latentsTex = null;
             DisposeUnetModel();
             await ForceStageCleanupAsync(ct, "after_unet");
             LogResourceSnapshot("after_unet_cleanup");
             await EnsureVaeDecoderLoadedAsync(paths, ct);
             LogResourceSnapshot("after_load_vae_decoder");
-            generated512 = await DecodeLatentsAsync(decodeLatentBuf, ct);
-            DisposeBuffer(decodeLatentBuf, "SDInpaint.DecodeLatentsInput");
+            generated512 = await DecodeLatentsTextureAsync(decodeLatentsTex, ct);
+            if (decodeLatentsTex != null)
+            {
+                _vaeRepro?.ReturnTempArray(decodeLatentsTex);
+                decodeLatentsTex = null;
+            }
             if (generated512 == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "VAE decoder failed." });
             LogResourceSnapshot("after_decode");
@@ -682,14 +703,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         {
             LogResourceSnapshot("process_finally_begin");
             FlushDebugLogToFile("unet", "unet_layer_debug.txt");
-            if (latentsTex != null)
-                _unetRepro?.ReturnTempArray(latentsTex);
-            if (maskedLatentTex != null)
-                _unetRepro?.ReturnTempArray(maskedLatentTex);
-            if (latentMaskTex != null)
-                _unetRepro?.ReturnTempArray(latentMaskTex);
-            if (latentsBuf != null)
-                DisposeBuffer(latentsBuf, "SDInpaint.FinalLatents");
+            ReleaseTempArrayFallback(ref latentsTex, _unetRepro, "SDInpaint.FinalLatentsTex");
+            ReleaseTempArrayFallback(ref decodeLatentsTex, _vaeRepro, "SDInpaint.DecodeLatentsTex");
+            ReleaseTempArrayFallback(ref maskedLatentTex, _unetRepro, "SDInpaint.MaskedLatentsTex");
+            ReleaseTempArrayFallback(ref latentMaskTex, _unetRepro, "SDInpaint.LatentMaskTex");
+            ReleaseTempArrayFallback(ref cleanLatentTex, _unetRepro, "SDInpaint.CleanLatentsTex");
+            ReleaseTempArrayFallback(ref initNoiseTex, _unetRepro, "SDInpaint.InitNoiseTex");
+            ReleaseTempArrayFallback(ref condTex, _unetRepro, "SDInpaint.PromptCondTex");
+            ReleaseTempArrayFallback(ref uncondTex, _unetRepro, "SDInpaint.PromptUncondTex");
             DisposeTextModel();
             DisposeUnetModel();
             DisposeVaeDecoderModel();
@@ -712,14 +733,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DestroyImmediate(generated512);
             if (generatedResized != null)
                 DestroyImmediate(generatedResized);
-            if (cleanLatentBuf != null)
-                DisposeBuffer(cleanLatentBuf, "SDInpaint.CleanLatents");
-            if (maskedLatentBuf != null)
-                DisposeBuffer(maskedLatentBuf, "SDInpaint.MaskedLatents");
-            if (latentMaskBuf != null)
-                DisposeBuffer(latentMaskBuf, "SDInpaint.LatentMask");
-            if (initNoiseBuf != null)
-                DisposeBuffer(initNoiseBuf, "SDInpaint.InitNoise");
             if (condBuf != null)
                 DisposeBuffer(condBuf, "SDInpaint.PromptCond");
             if (uncondBuf != null)
@@ -736,6 +749,23 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
 
         DestroyImmediate(texture);
+        texture = null;
+    }
+
+    private static void ReleaseTempArrayFallback(ref RenderTexture texture, NcnnRepro owner, string label)
+    {
+        if (texture == null)
+            return;
+
+        if (owner != null)
+        {
+            owner.ReturnTempArray(texture);
+            texture = null;
+            return;
+        }
+
+        NcnnGpuResourceTracker.ReleaseTexture(texture, label ?? "SDInpaint.TempArrayFallback");
+        try { RenderTexture.ReleaseTemporary(texture); } catch { }
         texture = null;
     }
 
@@ -885,6 +915,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
         repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfileGpu;
         repro.TensorTextureFormat = tensorTextureFormat;
+        repro.DisallowInferenceTempComputeBuffers = disallowInferenceTempComputeBuffers;
         repro.DebugBreakOnFirstNonFiniteLayerOutput = enableDebugDump;
         repro.DebugLogAllLayerOutputs = false;
         repro.DebugLogAllLayerHeartbeats = false;
@@ -1308,7 +1339,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (string.IsNullOrWhiteSpace(projectRoot))
             throw new DirectoryNotFoundException("Failed to resolve project root from Application.dataPath.");
 
-        var root = Path.GetFullPath(Path.Combine(projectRoot, inpaintingModelRootRelativePath));
+        var rootOverride = Environment.GetEnvironmentVariable(InpaintModelRootEnvVar);
+        var root = !string.IsNullOrWhiteSpace(rootOverride)
+            ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(rootOverride.Trim()))
+            : Path.GetFullPath(Path.Combine(projectRoot, inpaintingModelRootRelativePath));
         var ncnnRoot = Path.Combine(root, "ncnn");
         var tokenizerRoot = Path.Combine(root, "diffusers", "tokenizer");
 
@@ -1451,6 +1485,204 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
+    private async UniTask<RenderTexture> EncodeImageLatentsPack4Async(Texture source, INormalRng rng, CancellationToken ct)
+    {
+        if (source == null)
+            throw new ArgumentNullException(nameof(source));
+        if (rng == null)
+            throw new ArgumentNullException(nameof(rng));
+
+        RenderTexture inputPack4 = null;
+        RenderTexture meanTex = null;
+        RenderTexture stdTex = null;
+        RenderTexture noiseTex = null;
+        RenderTexture scaledNoiseTex = null;
+        RenderTexture latentTex = null;
+        RenderTexture scaledLatentTex = null;
+        try
+        {
+            inputPack4 = CreateEncoderInputPack4Ncnn(source);
+            if (inputPack4 == null)
+                throw new InvalidOperationException("Failed to create VAE encoder pack4 input.");
+
+            using (var infer = _vaeEncoderRepro.Infer(
+                       inputPack4,
+                       1,
+                       VaeEncoderInputBlobName,
+                       new HashSet<string>(StringComparer.Ordinal) { VaeEncoderMeanBlobName, VaeEncoderStdBlobName }))
+            {
+                meanTex = infer.ExtractTexture(VaeEncoderMeanBlobName);
+                stdTex = infer.ExtractTexture(VaeEncoderStdBlobName);
+            }
+
+            if (meanTex == null || stdTex == null)
+                throw new InvalidOperationException("VAE encoder pack4 output is missing.");
+
+            noiseTex = CreateLatentNoisePack4(rng);
+            scaledNoiseTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
+            latentTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
+            scaledLatentTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
+
+            _ops.BinaryOpPack4(stdTex, noiseTex, 1, 2, scaledNoiseTex);
+            _ops.BinaryOpPack4(meanTex, scaledNoiseTex, 1, 0, latentTex);
+            _ops.BinaryOpScalarPack4(latentTex, LatentScale, 1, 2, scaledLatentTex);
+
+            await UniTask.Yield();
+            ct.ThrowIfCancellationRequested();
+            var result = scaledLatentTex;
+            scaledLatentTex = null;
+            return result;
+        }
+        finally
+        {
+            if (inputPack4 != null)
+                _vaeEncoderRepro?.ReturnTempArray(inputPack4);
+            if (meanTex != null)
+                _vaeEncoderRepro?.ReturnTempArray(meanTex);
+            if (stdTex != null)
+                _vaeEncoderRepro?.ReturnTempArray(stdTex);
+            if (noiseTex != null)
+                _vaeEncoderRepro?.ReturnTempArray(noiseTex);
+            if (scaledNoiseTex != null)
+                _vaeEncoderRepro?.ReturnTempArray(scaledNoiseTex);
+            if (latentTex != null)
+                _vaeEncoderRepro?.ReturnTempArray(latentTex);
+            if (scaledLatentTex != null)
+                _vaeEncoderRepro?.ReturnTempArray(scaledLatentTex);
+        }
+    }
+
+    private RenderTexture CreateEncoderInputPack4Ncnn(Texture source)
+    {
+        Texture2D tempTexture = null;
+        try
+        {
+            var pixels = ReadTexturePixels32(source, out var srcW, out var srcH, out tempTexture);
+            var input = CreateEncoderInputChwNcnn(pixels, srcW, srcH, ModelImageSize, ModelImageSize);
+            return CreateTensorPack4Texture(_vaeEncoderRepro, input, 3, ModelImageSize, ModelImageSize, 1, 3, encoderTensorTextureFormat);
+        }
+        finally
+        {
+            if (tempTexture != null)
+                DestroyImmediate(tempTexture);
+        }
+    }
+
+    private RenderTexture CreateLatentNoisePack4(INormalRng rng)
+    {
+        return CreateTensorPack4Texture(
+            _unetRepro ?? _vaeEncoderRepro,
+            GenerateGaussian(LatentElementCount(), rng),
+            3,
+            LatentSize,
+            LatentSize,
+            1,
+            LatentChannels,
+            tensorTextureFormat);
+    }
+
+    private RenderTexture CreateMaskPack4Texture(Texture2D mask)
+    {
+        if (mask == null)
+            return null;
+
+        var width = mask.width;
+        var height = mask.height;
+        var pixels = mask.GetPixels32();
+        var data = new float[pixels.Length];
+        for (var y = 0; y < height; y++)
+        {
+            var srcRow = (height - 1 - y) * width;
+            var dstRow = y * width;
+            for (var x = 0; x < width; x++)
+                data[dstRow + x] = SampleMaskWeight(pixels[srcRow + x]);
+        }
+
+        return CreateTensorPack4Texture(_unetRepro, data, 3, LatentSize, LatentSize, 1, 1, tensorTextureFormat);
+    }
+
+    private static RenderTexture CreateTensorPack4Texture(
+        NcnnRepro owner,
+        float[] data,
+        int dims,
+        int width,
+        int height,
+        int depth,
+        int channels,
+        RenderTextureFormat format)
+    {
+        if (owner == null)
+            throw new ArgumentNullException(nameof(owner));
+        if (data == null)
+            throw new ArgumentNullException(nameof(data));
+
+        width = Mathf.Max(1, width);
+        height = Mathf.Max(1, height);
+        depth = Mathf.Max(1, depth);
+        channels = Mathf.Max(1, channels);
+        var packsPerDepth = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+        var sliceCount = dims == 4 ? depth * packsPerDepth : packsPerDepth;
+        var rt = owner.RentTempArray(width, height, sliceCount, format);
+        var textureFormat = format == RenderTextureFormat.ARGBFloat ? TextureFormat.RGBAFloat : TextureFormat.RGBAHalf;
+        var wh = width * height;
+        Texture2D slice = null;
+        try
+        {
+            for (var z = 0; z < (dims == 4 ? depth : 1); z++)
+            {
+                for (var pack = 0; pack < packsPerDepth; pack++)
+                {
+                    var sliceIndex = dims == 4 ? z * packsPerDepth + pack : pack;
+                    slice = new Texture2D(width, height, textureFormat, false, true)
+                    {
+                        wrapMode = TextureWrapMode.Clamp,
+                        filterMode = FilterMode.Point
+                    };
+                    var pixels = new Color[wh];
+                    for (var i = 0; i < wh; i++)
+                    {
+                        var c0 = pack * 4;
+                        pixels[i] = new Color(
+                            ReadTensorValue(data, dims, width, height, depth, channels, i, z, c0 + 0),
+                            ReadTensorValue(data, dims, width, height, depth, channels, i, z, c0 + 1),
+                            ReadTensorValue(data, dims, width, height, depth, channels, i, z, c0 + 2),
+                            ReadTensorValue(data, dims, width, height, depth, channels, i, z, c0 + 3));
+                    }
+
+                    slice.SetPixels(pixels);
+                    slice.Apply(false, false);
+                    Graphics.CopyTexture(slice, 0, 0, rt, sliceIndex, 0);
+                    DestroyImmediate(slice);
+                    slice = null;
+                }
+            }
+
+            return rt;
+        }
+        catch
+        {
+            owner.ReturnTempArray(rt);
+            throw;
+        }
+        finally
+        {
+            if (slice != null)
+                DestroyImmediate(slice);
+        }
+    }
+
+    private static float ReadTensorValue(float[] data, int dims, int width, int height, int depth, int channels, int whIndex, int z, int channel)
+    {
+        if (channel >= channels)
+            return 0f;
+
+        var wh = width * height;
+        var index = dims == 4
+            ? ((channel * depth + z) * wh + whIndex)
+            : (channel * wh + whIndex);
+        return index >= 0 && index < data.Length ? data[index] : 0f;
+    }
+
     private async UniTask<Texture2D> DecodeLatentsAsync(ComputeBuffer latentBuf, CancellationToken ct)
     {
         if (latentBuf == null)
@@ -1492,6 +1724,49 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 _vaeRepro?.ReturnTempBuffer(scaledLatent);
             if (inputTex != null)
                 _vaeRepro?.ReturnTempArray(inputTex);
+            if (decodedTex != null)
+                _vaeRepro?.ReturnTempArray(decodedTex);
+            if (clippedTex != null)
+                _vaeRepro?.ReturnTempArray(clippedTex);
+            if (rgbRt != null)
+                ReleaseTemporaryRt(rgbRt, "SDInpaint.DecoderRgbRt");
+        }
+    }
+
+    private async UniTask<Texture2D> DecodeLatentsTextureAsync(RenderTexture latentTex, CancellationToken ct)
+    {
+        if (latentTex == null)
+            return null;
+
+        RenderTexture scaledLatentTex = null;
+        RenderTexture decodedTex = null;
+        RenderTexture clippedTex = null;
+        RenderTexture rgbRt = null;
+        try
+        {
+            scaledLatentTex = _vaeRepro.RentTempArray(LatentSize, LatentSize, 1, decoderTensorTextureFormat);
+            _ops.BinaryOpScalarPack4(latentTex, InvLatentScale, 1, 2, scaledLatentTex);
+
+            using (var infer = _vaeRepro.Infer(scaledLatentTex, 1, VaeDecoderInputBlobName, new HashSet<string>(StringComparer.Ordinal) { VaeDecoderOutputBlobName }))
+            {
+                decodedTex = infer.ExtractTexture(VaeDecoderOutputBlobName);
+            }
+
+            if (decodedTex == null)
+                return null;
+
+            clippedTex = _vaeRepro.RentTempArray(decodedTex.width, decodedTex.height, 1, decoderTensorTextureFormat);
+            _ops.ClipPack4(decodedTex, -1f, 1f, 1, clippedTex);
+            rgbRt = GetTemporaryRt(decodedTex.width, decodedTex.height, RenderTextureFormat.ARGB32, true, "SDInpaint.DecoderRgbRt");
+            _ops.Pack4ToRgb01(clippedTex, rgbRt, true);
+            await UniTask.Yield();
+            ct.ThrowIfCancellationRequested();
+            return RenderTextureToTexture2D(rgbRt, ModelImageSize, ModelImageSize);
+        }
+        finally
+        {
+            if (scaledLatentTex != null)
+                _vaeRepro?.ReturnTempArray(scaledLatentTex);
             if (decodedTex != null)
                 _vaeRepro?.ReturnTempArray(decodedTex);
             if (clippedTex != null)
@@ -1581,9 +1856,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         int timestep,
         NcnnTensorBuffer condView,
         NcnnTensorBuffer uncondView,
+        RenderTexture condTex,
+        RenderTexture uncondTex,
         float guidanceScale,
         CancellationToken ct)
     {
+        if (useCommandBuffer)
+            return await RunCfgUnetPack4CommandBufferAsync(latentsTex, maskTex, maskedLatentTex, timestep, condTex, uncondTex, guidanceScale, ct);
+
         RenderTexture inputTex = null;
         RenderTexture condOutTex = null;
         RenderTexture uncondOutTex = null;
@@ -1651,6 +1931,149 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DisposeBuffer(timestepBuf, "SDInpaint.UnetPack4Timestep");
             ReleaseUnetCache(unetCache);
         }
+    }
+
+    private async UniTask<RenderTexture> RunCfgUnetPack4CommandBufferAsync(
+        RenderTexture latentsTex,
+        RenderTexture maskTex,
+        RenderTexture maskedLatentTex,
+        int timestep,
+        RenderTexture condTex,
+        RenderTexture uncondTex,
+        float guidanceScale,
+        CancellationToken ct)
+    {
+        if (condTex == null || uncondTex == null)
+            throw new InvalidOperationException("UNet command-buffer path requires prompt condition textures.");
+
+        RenderTexture inputTex = null;
+        RenderTexture timestepTex = null;
+        RenderTexture outputReadbackRt = null;
+        ComputeTexture condOutCmd = null;
+        ComputeTexture uncondOutCmd = null;
+        ComputeTexture finalCmd = null;
+        try
+        {
+            inputTex = BuildUnetInputPack4(latentsTex, maskTex, maskedLatentTex);
+            timestepTex = CreateTensorPack4Texture(_unetRepro, new[] { (float)timestep }, 1, 1, 1, 1, 1, tensorTextureFormat);
+
+            using var cmd = new CommandBuffer { name = "SDInpaintUNetCFG" };
+            if (useAsyncComputeCommandBuffer)
+                cmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
+
+            var inputCmd = BindExternalTexture(cmd, inputTex, "SDInpaint.Cmd.UnetInput");
+            var timestepCmd = BindExternalTexture(cmd, timestepTex, "SDInpaint.Cmd.Timestep");
+            var condCmd = BindExternalTexture(cmd, condTex, "SDInpaint.Cmd.Cond");
+            var uncondCmd = BindExternalTexture(cmd, uncondTex, "SDInpaint.Cmd.Uncond");
+
+            var baseShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            {
+                { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
+                { UnetTimestepBlobName, new NcnnRepro.BufferShape(1, 1, 1, 1, 1) }
+            };
+
+            var condInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
+            {
+                { UnetInputBlobName, inputCmd },
+                { UnetTimestepBlobName, timestepCmd },
+                { UnetTextBlobName, condCmd }
+            };
+            var condShapes = new Dictionary<string, NcnnRepro.BufferShape>(baseShapes, StringComparer.Ordinal)
+            {
+                { UnetTextBlobName, new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
+            };
+            condOutCmd = _unetRepro.ForwardPack4(
+                cmd,
+                condInputs,
+                condShapes,
+                out _,
+                new HashSet<string>(StringComparer.Ordinal) { UnetOutputBlobName },
+                UnetOutputBlobName);
+
+            var uncondInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
+            {
+                { UnetInputBlobName, inputCmd },
+                { UnetTimestepBlobName, timestepCmd },
+                { UnetTextBlobName, uncondCmd }
+            };
+            var uncondShapes = new Dictionary<string, NcnnRepro.BufferShape>(baseShapes, StringComparer.Ordinal)
+            {
+                { UnetTextBlobName, new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
+            };
+            uncondOutCmd = _unetRepro.ForwardPack4(
+                cmd,
+                uncondInputs,
+                uncondShapes,
+                out _,
+                new HashSet<string>(StringComparer.Ordinal) { UnetOutputBlobName },
+                UnetOutputBlobName);
+
+            if (condOutCmd == null || uncondOutCmd == null)
+                throw new InvalidOperationException("UNet command-buffer path produced no CFG outputs.");
+
+            finalCmd = _unetRepro.RentTempArray(cmd, LatentSize, LatentSize, 1, tensorTextureFormat);
+            _ops.AddPack4(cmd, condOutCmd, uncondOutCmd, guidanceScale, 1f - guidanceScale, 1, finalCmd);
+
+            outputReadbackRt = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            cmd.CopyTexture(finalCmd.nameID, 0, 0, outputReadbackRt, 0, 0);
+
+            _unetRepro.ReturnTempArray(cmd, condOutCmd);
+            condOutCmd = null;
+            _unetRepro.ReturnTempArray(cmd, uncondOutCmd);
+            uncondOutCmd = null;
+            _unetRepro.ReturnTempArray(cmd, finalCmd);
+            finalCmd = null;
+
+            if (useAsyncComputeCommandBuffer)
+                Graphics.ExecuteCommandBufferAsync(cmd, ComputeQueueType.Default);
+            else
+                Graphics.ExecuteCommandBuffer(cmd);
+
+            _ops.DebugSyncGpu();
+            await UniTask.Yield();
+            ct.ThrowIfCancellationRequested();
+
+            var result = outputReadbackRt;
+            outputReadbackRt = null;
+            return result;
+        }
+        finally
+        {
+            using var cleanupCmd = new CommandBuffer { name = "SDInpaintUNetCFGCleanup" };
+            if (condOutCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, condOutCmd);
+            if (uncondOutCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, uncondOutCmd);
+            if (finalCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, finalCmd);
+            Graphics.ExecuteCommandBuffer(cleanupCmd);
+            if (inputTex != null)
+                _unetRepro?.ReturnTempArray(inputTex);
+            if (timestepTex != null)
+                _unetRepro?.ReturnTempArray(timestepTex);
+            if (outputReadbackRt != null)
+                _unetRepro?.ReturnTempArray(outputReadbackRt);
+        }
+    }
+
+    private static ComputeTexture BindExternalTexture(CommandBuffer cmd, RenderTexture texture, string label)
+    {
+        if (cmd == null)
+            throw new ArgumentNullException(nameof(cmd));
+        if (texture == null)
+            throw new ArgumentNullException(nameof(texture));
+
+        var id = Shader.PropertyToID((label ?? "SDInpaint.ExternalTexture") + "." + Guid.NewGuid().ToString("N"));
+        cmd.SetGlobalTexture(id, texture);
+        return new ComputeTexture
+        {
+            nameID = id,
+            width = texture.width,
+            height = texture.height,
+            depth = Mathf.Max(1, texture.volumeDepth),
+            format = texture.format,
+            trackerLabel = label
+        };
     }
 
     private ComputeBuffer RunUnetOnce(
@@ -1893,6 +2316,42 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 _unetRepro?.ReturnTempArray(cleanTex);
             if (noiseTex != null)
                 _unetRepro?.ReturnTempArray(noiseTex);
+            if (scaledCleanTex != null)
+                _unetRepro?.ReturnTempArray(scaledCleanTex);
+            if (scaledNoiseTex != null)
+                _unetRepro?.ReturnTempArray(scaledNoiseTex);
+            if (outputTex != null)
+                _unetRepro?.ReturnTempArray(outputTex);
+        }
+    }
+
+    private RenderTexture BuildNoisyLatentsPack4(RenderTexture cleanLatentTex, RenderTexture noiseTex, int timestep)
+    {
+        if (cleanLatentTex == null || noiseTex == null)
+            return null;
+
+        var alphaProd = GetAlphaCumprod(timestep);
+        var sqrtAlpha = Mathf.Sqrt(alphaProd);
+        var sqrtOneMinusAlpha = Mathf.Sqrt(Mathf.Max(0f, 1f - alphaProd));
+
+        RenderTexture scaledCleanTex = null;
+        RenderTexture scaledNoiseTex = null;
+        RenderTexture outputTex = null;
+        try
+        {
+            scaledCleanTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            scaledNoiseTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            outputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+            _ops.BinaryOpScalarPack4(cleanLatentTex, sqrtAlpha, 1, 2, scaledCleanTex);
+            _ops.BinaryOpScalarPack4(noiseTex, sqrtOneMinusAlpha, 1, 2, scaledNoiseTex);
+            _ops.BinaryOpPack4(scaledCleanTex, scaledNoiseTex, 1, 0, outputTex);
+
+            var result = outputTex;
+            outputTex = null;
+            return result;
+        }
+        finally
+        {
             if (scaledCleanTex != null)
                 _unetRepro?.ReturnTempArray(scaledCleanTex);
             if (scaledNoiseTex != null)
