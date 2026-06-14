@@ -296,7 +296,7 @@ public sealed class DesignView : BasePageView
         host.Add(desc);
 
         host.Add(CreateBlendSliderRow("闭运算", 0, 4, _edgeCloseRadius, "px", v => _edgeCloseRadius = Mathf.RoundToInt(v)));
-        host.Add(CreateBlendSliderRow("羽化", 0, 20, _edgeFeatherRadius, "px", v => _edgeFeatherRadius = Mathf.RoundToInt(v)));
+        host.Add(CreateBlendSliderRow("羽化", 0, 40, _edgeFeatherRadius, "px", v => _edgeFeatherRadius = Mathf.RoundToInt(v)));
         host.Add(CreateBlendSliderRow("边缘保真", 0f, 1f, _edgePreserve, "", v => _edgePreserve = Mathf.Clamp01(v), "0.00"));
 
         host.Add(CreateToggleRow("Debug Composite Export", _exportCompositeDebug, v => _exportCompositeDebug = v));
@@ -1130,6 +1130,7 @@ public sealed class DesignView : BasePageView
         RenderTexture debugBlendMaskRt = null;
         RenderTexture closedMaskRt = null;
         RenderTexture featherAccumRt = null;
+        RenderTexture featherWorkRt = null;
         RenderTexture erodePingRt = null;
         RenderTexture erodePongRt = null;
         string debugDirectory = null;
@@ -1174,10 +1175,11 @@ public sealed class DesignView : BasePageView
                 tempRtB = CreateWorkingRenderTexture(width, height, "DesignViewCompositeTmpB");
                 closedMaskRt = CreateWorkingRenderTexture(targetRect.width, targetRect.height, "DesignViewClosedMask");
                 featherAccumRt = CreateWorkingRenderTexture(targetRect.width, targetRect.height, "DesignViewFeatherAccum");
+                featherWorkRt = CreateWorkingRenderTexture(targetRect.width, targetRect.height, "DesignViewFeatherWork");
                 erodePingRt = CreateWorkingRenderTexture(targetRect.width, targetRect.height, "DesignViewFeatherErodeA");
                 erodePongRt = CreateWorkingRenderTexture(targetRect.width, targetRect.height, "DesignViewFeatherErodeB");
 
-                if (closedMaskRt == null || featherAccumRt == null || erodePingRt == null || erodePongRt == null)
+                if (closedMaskRt == null || featherAccumRt == null || featherWorkRt == null || erodePingRt == null || erodePongRt == null)
                     continue;
 
                 var prevActive = RenderTexture.active;
@@ -1207,10 +1209,10 @@ public sealed class DesignView : BasePageView
                         cs.SetTexture(accumulateFeatherRingKernel, "_Source", erodePingRt);
                         cs.SetTexture(accumulateFeatherRingKernel, "_Overlay", erodePongRt);
                         cs.SetTexture(accumulateFeatherRingKernel, "_BackgroundRef", featherAccumRt);
-                        cs.SetTexture(accumulateFeatherRingKernel, "_Result", tempRtA);
+                        cs.SetTexture(accumulateFeatherRingKernel, "_Result", featherWorkRt);
                         cs.SetFloat("_DesignViewRingWeight", ring / Mathf.Max(1f, featherRadius));
                         cs.Dispatch(accumulateFeatherRingKernel, layerGx, layerGy, 1);
-                        Graphics.Blit(tempRtA, featherAccumRt);
+                        Graphics.Blit(featherWorkRt, featherAccumRt);
 
                         Swap(ref erodePingRt, ref erodePongRt);
                     }
@@ -1218,8 +1220,9 @@ public sealed class DesignView : BasePageView
 
                 cs.SetTexture(finalizeFeatherMaskKernel, "_Source", featherAccumRt);
                 cs.SetTexture(finalizeFeatherMaskKernel, "_Overlay", erodePingRt);
-                cs.SetTexture(finalizeFeatherMaskKernel, "_Result", featherAccumRt);
+                cs.SetTexture(finalizeFeatherMaskKernel, "_Result", featherWorkRt);
                 cs.Dispatch(finalizeFeatherMaskKernel, layerGx, layerGy, 1);
+                Graphics.Blit(featherWorkRt, featherAccumRt);
 
                 cs.SetTexture(kernel, "_Source", compositeRt);
                 cs.SetTexture(kernel, "_BackgroundRef", backgroundReference);
@@ -1284,6 +1287,7 @@ public sealed class DesignView : BasePageView
                 DestroyRenderTexture(ref debugBlendMaskRt);
                 DestroyRenderTexture(ref closedMaskRt);
                 DestroyRenderTexture(ref featherAccumRt);
+                DestroyRenderTexture(ref featherWorkRt);
                 DestroyRenderTexture(ref erodePingRt);
                 DestroyRenderTexture(ref erodePongRt);
             }
@@ -1330,6 +1334,7 @@ public sealed class DesignView : BasePageView
             DestroyRenderTexture(ref debugBlendMaskRt);
             DestroyRenderTexture(ref closedMaskRt);
             DestroyRenderTexture(ref featherAccumRt);
+            DestroyRenderTexture(ref featherWorkRt);
             DestroyRenderTexture(ref erodePingRt);
             DestroyRenderTexture(ref erodePongRt);
         }
