@@ -137,6 +137,113 @@ namespace NcnnCompute
             return false;
         }
 
+        private static int GetReplayConsumedBottomCount(NcnnParamModel.Layer layer)
+        {
+            if (layer?.bottomNames == null || layer.bottomNames.Length == 0)
+                return 0;
+
+            if (layer.type == NcnnLayerTypes.AtenTo)
+                return 1;
+
+            return layer.bottomNames.Length;
+        }
+
+        private HashSet<int> ResolveReplayRequiredLayerIndices(
+            ICollection<string> availableBlobNames,
+            string stopAfterTopName,
+            int startLayerIndex)
+        {
+            if (string.IsNullOrWhiteSpace(stopAfterTopName))
+                return null;
+
+            if (Model?.layers == null || Model.layers.Count == 0)
+                return null;
+
+            var available = new HashSet<string>(StringComparer.Ordinal);
+            if (availableBlobNames != null)
+            {
+                foreach (var name in availableBlobNames)
+                {
+                    if (!string.IsNullOrWhiteSpace(name))
+                        available.Add(name);
+                }
+            }
+
+            if (available.Contains(stopAfterTopName))
+                return new HashSet<int>();
+
+            var producerByTop = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var li = 0; li < Model.layers.Count; li++)
+            {
+                var topNames = Model.layers[li]?.topNames;
+                if (topNames == null)
+                    continue;
+
+                for (var ti = 0; ti < topNames.Length; ti++)
+                {
+                    var topName = topNames[ti];
+                    if (string.IsNullOrWhiteSpace(topName) || producerByTop.ContainsKey(topName))
+                        continue;
+                    producerByTop[topName] = li;
+                }
+            }
+
+            var required = new HashSet<int>();
+            var visiting = new HashSet<string>(StringComparer.Ordinal);
+
+            void RequireBlob(string blobName)
+            {
+                if (string.IsNullOrWhiteSpace(blobName) || available.Contains(blobName))
+                    return;
+
+                if (!producerByTop.TryGetValue(blobName, out var producerIndex))
+                {
+                    throw new InvalidOperationException(
+                        "Replay target depends on unresolved blob: " + blobName
+                        + " | target=" + stopAfterTopName);
+                }
+
+                if (producerIndex < startLayerIndex)
+                {
+                    throw new InvalidOperationException(
+                        "Replay target requires producer before replay start"
+                        + " | target=" + stopAfterTopName
+                        + " | blob=" + blobName
+                        + " | producer_idx=" + producerIndex
+                        + " | start_idx=" + startLayerIndex);
+                }
+
+                if (!visiting.Add(blobName))
+                {
+                    throw new InvalidOperationException(
+                        "Replay dependency cycle detected"
+                        + " | target=" + stopAfterTopName
+                        + " | blob=" + blobName);
+                }
+
+                try
+                {
+                    if (!required.Add(producerIndex))
+                        return;
+
+                    var layer = Model.layers[producerIndex];
+                    var consumedBottomCount = GetReplayConsumedBottomCount(layer);
+                    if (layer?.bottomNames == null || consumedBottomCount <= 0)
+                        return;
+
+                    for (var bi = 0; bi < layer.bottomNames.Length && bi < consumedBottomCount; bi++)
+                        RequireBlob(layer.bottomNames[bi]);
+                }
+                finally
+                {
+                    visiting.Remove(blobName);
+                }
+            }
+
+            RequireBlob(stopAfterTopName);
+            return required;
+        }
+
         internal InferResult InferWithMultiInputsByLayerRepros(
             Dictionary<string, RenderTexture> textureInputs,
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
@@ -281,6 +388,7 @@ namespace NcnnCompute
             };
 
             var startLayerIndex = 0;
+            HashSet<int> replayRequiredLayerIndices = null;
             if (!string.IsNullOrWhiteSpace(startAtTopName))
             {
                 var foundStart = false;
@@ -299,6 +407,41 @@ namespace NcnnCompute
 
                 if (!foundStart)
                     throw new InvalidOperationException("start top not found in model: " + startAtTopName);
+
+                var availableReplayInputs = new HashSet<string>(StringComparer.Ordinal);
+                if (textureInputs != null)
+                {
+                    foreach (var kv in textureInputs)
+                    {
+                        if (!string.IsNullOrWhiteSpace(kv.Key))
+                            availableReplayInputs.Add(kv.Key);
+                    }
+                }
+
+                if (bufferInputs != null)
+                {
+                    foreach (var kv in bufferInputs)
+                    {
+                        if (!string.IsNullOrWhiteSpace(kv.Key))
+                            availableReplayInputs.Add(kv.Key);
+                    }
+                }
+
+                replayRequiredLayerIndices = ResolveReplayRequiredLayerIndices(
+                    availableReplayInputs,
+                    stopAfterTopName,
+                    startLayerIndex);
+
+                if (DebugLog != null)
+                {
+                    var requiredCount = replayRequiredLayerIndices == null ? 0 : replayRequiredLayerIndices.Count;
+                    DebugLog(
+                        "[ReplaySlice]"
+                        + " | start=" + startAtTopName
+                        + " | stop=" + (stopAfterTopName ?? string.Empty)
+                        + " | start_idx=" + startLayerIndex
+                        + " | required_layers=" + requiredCount);
+                }
             }
 
             bool TryLogFirstNonFiniteLayerOutput(int layerIndex, NcnnParamModel.Layer layer)
@@ -340,6 +483,9 @@ namespace NcnnCompute
                 var runtimeProfile = BeginLayerRuntimeProfile("buffer");
                 for (var li = startLayerIndex; li < Model.layers.Count; li++)
                 {
+                    if (replayRequiredLayerIndices != null && !replayRequiredLayerIndices.Contains(li))
+                        continue;
+
                     var layer = Model.layers[li];
                     var layerOutputPath = string.Empty;
                     var emitHeartbeat = DebugLog != null

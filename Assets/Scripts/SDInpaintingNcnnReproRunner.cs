@@ -753,12 +753,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
             var referenceDir = ResolveExistingDirectory(request.referenceDir) ?? baselineDir;
             var promptKind = string.Equals(request.promptKind, "uncond", StringComparison.OrdinalIgnoreCase) ? "uncond" : "cond";
-            var inputBlobNames = request.inputBlobNames != null && request.inputBlobNames.Length > 0
-                ? request.inputBlobNames
-                : ResolveReplayInputBlobNames(request.startAtTopName);
             var stopAfterTopName = string.IsNullOrWhiteSpace(request.stopAfterTopName)
                 ? (string.IsNullOrWhiteSpace(request.outputBlobName) ? UnetOutputBlobName : request.outputBlobName)
                 : request.stopAfterTopName;
+            var inputBlobNames = request.inputBlobNames != null && request.inputBlobNames.Length > 0
+                ? request.inputBlobNames
+                : ResolveReplayInputBlobNames(request.startAtTopName, stopAfterTopName);
             var outputBlobName = string.IsNullOrWhiteSpace(request.outputBlobName) ? stopAfterTopName : request.outputBlobName;
             var targetBlobName = string.IsNullOrWhiteSpace(request.targetBlobName) ? outputBlobName : request.targetBlobName;
 
@@ -799,6 +799,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             for (var i = 0; i < inputBlobNames.Length; i++)
             {
                 var name = inputBlobNames[i];
+                if (inputBlobData.TryGetValue(name, out var replayInput))
+                {
+                    if (!string.IsNullOrWhiteSpace(replayInput.sourceBlobName))
+                        reportLines.Add("input_source_blob_" + i.ToString(CultureInfo.InvariantCulture) + "=" + replayInput.sourceBlobName);
+                    if (!string.IsNullOrWhiteSpace(replayInput.sourcePath))
+                        reportLines.Add("input_source_path_" + i.ToString(CultureInfo.InvariantCulture) + "=" + replayInput.sourcePath);
+                }
+
                 if (!infer.TryGetLogicalShape(name, out var dims, out var w, out var h, out var d, out var c))
                     continue;
                 reportLines.Add("shape_" + name + "=d" + dims + ":" + w + "x" + h + "x" + d + "x" + c);
@@ -2605,7 +2613,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return BuildLatentPack4(noiseBuf);
     }
 
-    private string[] ResolveReplayInputBlobNames(string startAtTopName)
+    private string[] ResolveReplayInputBlobNames(string startAtTopName, string stopAfterTopName)
     {
         if (string.IsNullOrWhiteSpace(startAtTopName))
             return new[] { UnetInputBlobName, UnetTimestepBlobName, UnetTextBlobName };
@@ -2613,17 +2621,101 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (_unetRepro?.Model?.layers == null)
             throw new InvalidOperationException("UNet model not loaded.");
 
-        for (var i = 0; i < _unetRepro.Model.layers.Count; i++)
+        var boundaryInputs = ResolveReplayBoundaryInputBlobNames(startAtTopName, stopAfterTopName);
+        if (boundaryInputs != null && boundaryInputs.Length > 0)
+            return boundaryInputs;
+
+        throw new InvalidOperationException("replay start top has no resolvable boundary inputs: " + startAtTopName);
+    }
+
+    private string[] ResolveReplayBoundaryInputBlobNames(string startAtTopName, string stopAfterTopName)
+    {
+        if (string.IsNullOrWhiteSpace(startAtTopName))
+            return new[] { UnetInputBlobName, UnetTimestepBlobName, UnetTextBlobName };
+
+        var model = _unetRepro?.Model;
+        if (model?.layers == null || model.layers.Count == 0)
+            throw new InvalidOperationException("UNet model not loaded.");
+
+        var producerIndex = -1;
+        for (var i = 0; i < model.layers.Count; i++)
         {
-            var layer = _unetRepro.Model.layers[i];
+            var layer = model.layers[i];
             if (layer?.topNames == null || Array.IndexOf(layer.topNames, startAtTopName) < 0)
                 continue;
-            if (layer.bottomNames == null || layer.bottomNames.Length == 0)
-                throw new InvalidOperationException("start top has no bottoms: " + startAtTopName);
-            return (string[])layer.bottomNames.Clone();
+            producerIndex = i;
+            break;
         }
 
-        throw new InvalidOperationException("start top not found in UNet model: " + startAtTopName);
+        if (producerIndex < 0)
+            throw new InvalidOperationException("start top not found in UNet model: " + startAtTopName);
+
+        var stopLayerIndex = model.layers.Count - 1;
+        if (!string.IsNullOrWhiteSpace(stopAfterTopName))
+        {
+            var foundStop = false;
+            for (var i = producerIndex + 1; i < model.layers.Count; i++)
+            {
+                var layer = model.layers[i];
+                if (layer?.topNames == null || Array.IndexOf(layer.topNames, stopAfterTopName) < 0)
+                    continue;
+
+                stopLayerIndex = i;
+                foundStop = true;
+                break;
+            }
+
+            if (!foundStop && !string.Equals(stopAfterTopName, startAtTopName, StringComparison.Ordinal))
+                throw new InvalidOperationException("stop top not found after start top in UNet model: " + stopAfterTopName);
+        }
+
+        var available = new HashSet<string>(StringComparer.Ordinal)
+        {
+            startAtTopName
+        };
+        var result = new List<string> { startAtTopName };
+
+        for (var li = producerIndex + 1; li <= stopLayerIndex && li < model.layers.Count; li++)
+        {
+            var layer = model.layers[li];
+            if (layer?.bottomNames != null)
+            {
+                var consumedBottomCount = GetReplayConsumedBottomCount(layer);
+                for (var bi = 0; bi < layer.bottomNames.Length && bi < consumedBottomCount; bi++)
+                {
+                    var bottomName = layer.bottomNames[bi];
+                    if (string.IsNullOrWhiteSpace(bottomName) || available.Contains(bottomName))
+                        continue;
+
+                    available.Add(bottomName);
+                    result.Add(bottomName);
+                }
+            }
+
+            if (layer?.topNames == null)
+                continue;
+
+            for (var ti = 0; ti < layer.topNames.Length; ti++)
+            {
+                var topName = layer.topNames[ti];
+                if (string.IsNullOrWhiteSpace(topName))
+                    continue;
+                available.Add(topName);
+            }
+        }
+
+        return result.ToArray();
+    }
+
+    private static int GetReplayConsumedBottomCount(NcnnParamModel.Layer layer)
+    {
+        if (layer?.bottomNames == null || layer.bottomNames.Length == 0)
+            return 0;
+
+        if (layer.type == NcnnLayerTypes.AtenTo)
+            return 1;
+
+        return layer.bottomNames.Length;
     }
 
     private Dictionary<string, RenderTexture> BuildReplayTextureInputs(
@@ -2688,7 +2780,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     {
         public float[] data;
         public NcnnRepro.BufferShape shape;
+        public string sourceBlobName;
+        public string sourcePath;
     }
+
+    private string _lastReplayResolvedPath;
 
     private Dictionary<string, ReplayBlobInput> LoadReplayInputBlobData(
         string baselineDir,
@@ -2709,7 +2805,21 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 result[blobName] = new ReplayBlobInput
                 {
                     data = data,
-                    shape = shape
+                    shape = shape,
+                    sourceBlobName = blobName,
+                    sourcePath = _lastReplayResolvedPath
+                };
+                continue;
+            }
+
+            if (TryLoadReplayAliasedBlobWithShape(blobName, baselineDir, referenceDir, promptKind, out data, out shape, out var sourceBlobName, out var sourcePath))
+            {
+                result[blobName] = new ReplayBlobInput
+                {
+                    data = data,
+                    shape = shape,
+                    sourceBlobName = sourceBlobName,
+                    sourcePath = sourcePath
                 };
                 continue;
             }
@@ -2720,8 +2830,95 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return result;
     }
 
+    private bool TryLoadReplayAliasedBlobWithShape(
+        string blobName,
+        string baselineDir,
+        string referenceDir,
+        string promptKind,
+        out float[] data,
+        out NcnnRepro.BufferShape shape,
+        out string sourceBlobName,
+        out string sourcePath)
+    {
+        data = null;
+        shape = default;
+        sourceBlobName = null;
+        sourcePath = null;
+
+        var aliasSource = ResolveReplayAliasSourceBlob(blobName);
+        if (string.IsNullOrWhiteSpace(aliasSource) || string.Equals(aliasSource, blobName, StringComparison.Ordinal))
+            return false;
+
+        if (!(TryLoadReplayReferenceBlobWithShape(aliasSource, referenceDir, promptKind, preferUnityPrefix: false, out data, out _)
+            || TryLoadReplayReferenceBlobWithShape(aliasSource, baselineDir, promptKind, preferUnityPrefix: true, out data, out _)))
+        {
+            return false;
+        }
+
+        shape = ResolveReplayBlobShape(blobName, data.Length);
+        sourceBlobName = aliasSource;
+        sourcePath = _lastReplayResolvedPath;
+        return true;
+    }
+
+    private string ResolveReplayAliasSourceBlob(string blobName)
+    {
+        if (string.IsNullOrWhiteSpace(blobName))
+            return null;
+
+        var model = _unetRepro?.Model;
+        if (model?.layers == null)
+            return null;
+
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var current = blobName;
+        while (!string.IsNullOrWhiteSpace(current) && visited.Add(current))
+        {
+            NcnnParamModel.Layer producer = null;
+            for (var i = 0; i < model.layers.Count; i++)
+            {
+                var layer = model.layers[i];
+                if (layer?.topNames == null || Array.IndexOf(layer.topNames, current) < 0)
+                    continue;
+                producer = layer;
+                break;
+            }
+
+            if (producer == null)
+                return null;
+
+            if (producer.type == NcnnLayerTypes.Input)
+                return current;
+
+            if (producer.bottomNames == null || producer.bottomNames.Length == 0 || string.IsNullOrWhiteSpace(producer.bottomNames[0]))
+                return null;
+
+            if (producer.type == NcnnLayerTypes.Split
+                || producer.type == NcnnLayerTypes.AtenTo
+                || producer.type == NcnnLayerTypes.Noop)
+            {
+                current = producer.bottomNames[0];
+                continue;
+            }
+
+            return current;
+        }
+
+        return current;
+    }
+
     private NcnnRepro.BufferShape ResolveReplayBlobShape(string blobName, int valueCount)
     {
+        if (TryResolveReplayBlobShapeFromModelGraph(blobName, out var graphShape))
+        {
+            var expectedCount = checked(graphShape.w * graphShape.h * graphShape.d * graphShape.c);
+            if (expectedCount == valueCount)
+                return graphShape;
+        }
+
+        if (TryResolveKnownSdReplayBlobShape(blobName, valueCount, out var knownShape))
+            return knownShape;
+
         if (string.Equals(blobName, UnetInputBlobName, StringComparison.Ordinal))
             return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels);
         if (string.Equals(blobName, UnetTextBlobName, StringComparison.Ordinal))
@@ -2742,6 +2939,515 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         throw new InvalidOperationException("unable to infer replay blob shape for " + blobName + " | count=" + valueCount.ToString(CultureInfo.InvariantCulture));
     }
 
+    private static bool TryResolveKnownSdReplayBlobShape(string blobName, int valueCount, out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        if (string.IsNullOrWhiteSpace(blobName) || valueCount <= 0)
+            return false;
+
+        static bool TryMatch(string candidate, string blobName, int valueCount, NcnnRepro.BufferShape candidateShape, out NcnnRepro.BufferShape resolved)
+        {
+            resolved = default;
+            if (!string.Equals(blobName, candidate, StringComparison.Ordinal))
+                return false;
+
+            var expectedCount = checked(candidateShape.w * candidateShape.h * candidateShape.d * candidateShape.c);
+            if (expectedCount != valueCount)
+                return false;
+
+            resolved = candidateShape;
+            return true;
+        }
+
+        if (TryMatch("197", blobName, valueCount, new NcnnRepro.BufferShape(3, 320, 64, 1, 64), out shape))
+            return true;
+
+        var shape2d320x4096 = new NcnnRepro.BufferShape(2, 320, 4096, 1, 1);
+        if (TryMatch("198", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("199", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("200", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("201", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("202", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("203", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("204", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("205", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("206", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("207", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("216", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("217", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("218", blobName, valueCount, shape2d320x4096, out shape)
+            || TryMatch("219", blobName, valueCount, shape2d320x4096, out shape))
+        {
+            return true;
+        }
+
+        var shape3d40x4096x8 = new NcnnRepro.BufferShape(3, 40, 4096, 1, 8);
+        if (TryMatch("209", blobName, valueCount, shape3d40x4096x8, out shape)
+            || TryMatch("211", blobName, valueCount, shape3d40x4096x8, out shape)
+            || TryMatch("213", blobName, valueCount, shape3d40x4096x8, out shape)
+            || TryMatch("214", blobName, valueCount, shape3d40x4096x8, out shape))
+        {
+            return true;
+        }
+
+        var shape3d40x8x4096 = new NcnnRepro.BufferShape(3, 40, 8, 1, 4096);
+        if (TryMatch("208", blobName, valueCount, shape3d40x8x4096, out shape)
+            || TryMatch("210", blobName, valueCount, shape3d40x8x4096, out shape)
+            || TryMatch("212", blobName, valueCount, shape3d40x8x4096, out shape)
+            || TryMatch("215", blobName, valueCount, shape3d40x8x4096, out shape))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryResolveReplayBlobShapeFromModelGraph(string blobName, out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        var model = _unetRepro?.Model;
+        if (model?.layers == null || model.layers.Count == 0 || string.IsNullOrWhiteSpace(blobName))
+            return false;
+
+        var known = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+        {
+            [UnetInputBlobName] = new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels),
+            [UnetTextBlobName] = new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1),
+            [UnetTimestepBlobName] = new NcnnRepro.BufferShape(1, 1, 1, 1, 1)
+        };
+
+        for (var li = 0; li < model.layers.Count; li++)
+        {
+            var layer = model.layers[li];
+            if (layer == null)
+                continue;
+
+            var bottomShapes = BuildReplayBottomShapes(layer, known);
+            if (!TryResolveReplayLayerOutputShapes(layer, bottomShapes, out var topShapes))
+                continue;
+
+            if (layer.topNames == null)
+                continue;
+
+            for (var ti = 0; ti < layer.topNames.Length && ti < topShapes.Count; ti++)
+            {
+                var topName = layer.topNames[ti];
+                if (string.IsNullOrWhiteSpace(topName))
+                    continue;
+                known[topName] = topShapes[ti];
+            }
+        }
+
+        return known.TryGetValue(blobName, out shape);
+    }
+
+    private static List<NcnnRepro.BufferShape> BuildReplayBottomShapes(
+        NcnnParamModel.Layer layer,
+        Dictionary<string, NcnnRepro.BufferShape> known)
+    {
+        var result = new List<NcnnRepro.BufferShape>();
+        var bottomNames = layer?.bottomNames;
+        if (bottomNames == null || known == null)
+            return result;
+
+        var consumedBottomCount = GetReplayConsumedBottomCount(layer);
+        for (var i = 0; i < bottomNames.Length && i < consumedBottomCount; i++)
+        {
+            var name = bottomNames[i];
+            if (string.IsNullOrWhiteSpace(name) || !known.TryGetValue(name, out var shape))
+                return null;
+            result.Add(shape);
+        }
+
+        return result;
+    }
+
+    private static bool TryResolveReplayLayerOutputShapes(
+        NcnnParamModel.Layer layer,
+        IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+        out List<NcnnRepro.BufferShape> topShapes)
+    {
+        topShapes = null;
+        if (layer == null || layer.topNames == null || layer.topNames.Length == 0)
+            return false;
+
+        switch (layer.type)
+        {
+            case var t when t == NcnnLayerTypes.Input:
+                return false;
+
+            case var t when t == NcnnLayerTypes.Split:
+            case var t2 when t2 == NcnnLayerTypes.AtenTo:
+            case var t3 when t3 == NcnnLayerTypes.GroupNorm:
+            case var t4 when t4 == NcnnLayerTypes.LayerNorm:
+            case var t5 when t5 == NcnnLayerTypes.Swish:
+            case var t6 when t6 == NcnnLayerTypes.GELU:
+            case var t7 when t7 == NcnnLayerTypes.UnaryOp:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                topShapes = RepeatShape(bottomShapes[0], layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.PnnxExpression:
+                topShapes = RepeatShape(new NcnnRepro.BufferShape(1, 1, 1, 1, 1), layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.Convolution:
+            case var t2 when t2 == NcnnLayerTypes.ConvolutionDepthWise:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                if (!TryResolveReplayConvOutputShape(layer, bottomShapes[0], out var convShape))
+                    return false;
+                topShapes = RepeatShape(convShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.BinaryOp:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                var binaryShape = bottomShapes[0];
+                if (bottomShapes.Count > 1)
+                    binaryShape = ResolveReplayBinaryOutputShape(bottomShapes[0], bottomShapes[1]);
+                topShapes = RepeatShape(binaryShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.InnerProduct:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                if (!TryResolveReplayInnerProductOutputShape(layer, bottomShapes[0], out var ipShape))
+                    return false;
+                topShapes = RepeatShape(ipShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.Gemm:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                if (!TryResolveReplayGemmOutputShape(layer, bottomShapes[0], out var gemmShape))
+                    return false;
+                topShapes = RepeatShape(gemmShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.Reshape:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                var reshapeShape = NcnnRepro.ResolveReshapeShape(bottomShapes[0], layer, bottomShapes);
+                topShapes = RepeatShape(reshapeShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.Permute:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                var dims = Mathf.Clamp(bottomShapes[0].dims, 2, 4);
+                var axes = NcnnRepro.ResolvePermuteAxes(dims, layer.GetInt(0, 0), layer.name);
+                var permuteShape = NcnnRepro.ResolvePermuteShape(bottomShapes[0], dims, axes);
+                topShapes = RepeatShape(permuteShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.SDPA:
+                if (bottomShapes == null || bottomShapes.Count < 3)
+                    return false;
+                var queryShape = bottomShapes[0];
+                var valueShape = bottomShapes[2];
+                topShapes = RepeatShape(new NcnnRepro.BufferShape(3, valueShape.w, queryShape.h, 1, queryShape.c), layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.Slice:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                return TryResolveReplaySliceOutputShapes(layer, bottomShapes[0], out topShapes);
+
+            case var t when t == NcnnLayerTypes.Concat:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                if (!TryResolveReplayConcatOutputShape(layer, bottomShapes, out var concatShape))
+                    return false;
+                topShapes = RepeatShape(concatShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.Tile:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                if (!TryResolveReplayTileOutputShape(layer, bottomShapes[0], out var tileShape))
+                    return false;
+                topShapes = RepeatShape(tileShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.ExpandDims:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                if (!TryResolveReplayExpandDimsOutputShape(layer, bottomShapes[0], out var expandShape))
+                    return false;
+                topShapes = RepeatShape(expandShape, layer.topNames.Length);
+                return true;
+
+            case var t when t == NcnnLayerTypes.Interp:
+                if (bottomShapes == null || bottomShapes.Count < 1)
+                    return false;
+                if (!TryResolveReplayInterpOutputShape(layer, bottomShapes, out var interpShape))
+                    return false;
+                topShapes = RepeatShape(interpShape, layer.topNames.Length);
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private static List<NcnnRepro.BufferShape> RepeatShape(NcnnRepro.BufferShape shape, int count)
+    {
+        var result = new List<NcnnRepro.BufferShape>(Mathf.Max(1, count));
+        for (var i = 0; i < count; i++)
+            result.Add(shape);
+        return result;
+    }
+
+    private static bool TryResolveReplayConvOutputShape(
+        NcnnParamModel.Layer layer,
+        NcnnRepro.BufferShape srcShape,
+        out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        if (srcShape.dims < 3)
+            return false;
+
+        var kernelW = Mathf.Max(1, layer.GetInt(1, 1));
+        var kernelH = Mathf.Max(1, layer.GetInt(11, kernelW));
+        var dilationW = Mathf.Max(1, layer.GetInt(2, 1));
+        var dilationH = Mathf.Max(1, layer.GetInt(12, dilationW));
+        var strideW = Mathf.Max(1, layer.GetInt(3, 1));
+        var strideH = Mathf.Max(1, layer.GetInt(13, strideW));
+        var padLeft = Mathf.Max(0, layer.GetInt(4, 0));
+        var padRight = Mathf.Max(0, layer.GetInt(15, padLeft));
+        var padTop = Mathf.Max(0, layer.GetInt(14, padLeft));
+        var padBottom = Mathf.Max(0, layer.GetInt(16, padTop));
+        var outC = Mathf.Max(1, layer.GetInt(0, srcShape.c));
+
+        var outW = Mathf.Max(1, ((srcShape.w + padLeft + padRight - (dilationW * (kernelW - 1) + 1)) / strideW) + 1);
+        var outH = Mathf.Max(1, ((srcShape.h + padTop + padBottom - (dilationH * (kernelH - 1) + 1)) / strideH) + 1);
+        shape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
+        return true;
+    }
+
+    private static NcnnRepro.BufferShape ResolveReplayBinaryOutputShape(
+        NcnnRepro.BufferShape a,
+        NcnnRepro.BufferShape b)
+    {
+        var aCount = a.w * a.h * a.d * a.c;
+        var bCount = b.w * b.h * b.d * b.c;
+        if (aCount >= bCount)
+            return a;
+        return b;
+    }
+
+    private static bool TryResolveReplayInnerProductOutputShape(
+        NcnnParamModel.Layer layer,
+        NcnnRepro.BufferShape srcShape,
+        out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        var outFeatures = Mathf.Max(1, layer.GetInt(0, 0));
+        if (outFeatures <= 0)
+            return false;
+
+        if (srcShape.dims <= 1)
+        {
+            shape = new NcnnRepro.BufferShape(1, outFeatures, 1, 1, 1);
+            return true;
+        }
+
+        var rows = Mathf.Max(1, srcShape.h);
+        shape = new NcnnRepro.BufferShape(2, outFeatures, rows, 1, 1);
+        return true;
+    }
+
+    private static bool TryResolveReplayGemmOutputShape(
+        NcnnParamModel.Layer layer,
+        NcnnRepro.BufferShape srcShape,
+        out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        var n = Mathf.Max(1, layer.GetInt(8, 0));
+        if (n <= 0)
+            return false;
+
+        var m = srcShape.dims == 1 ? 1 : Mathf.Max(1, srcShape.h);
+        if (srcShape.dims == 1)
+        {
+            shape = new NcnnRepro.BufferShape(1, n, 1, 1, 1);
+            return true;
+        }
+
+        shape = new NcnnRepro.BufferShape(2, n, m, 1, 1);
+        return true;
+    }
+
+    private static bool TryResolveReplaySliceOutputShapes(
+        NcnnParamModel.Layer layer,
+        NcnnRepro.BufferShape srcShape,
+        out List<NcnnRepro.BufferShape> shapes)
+    {
+        shapes = null;
+        if (layer == null || layer.topNames == null || layer.topNames.Length == 0)
+            return false;
+
+        var sliceParams = layer.GetInts(-23300, null);
+        var ncnnAxis = layer.GetInt(1, 0);
+        if (ncnnAxis < 0)
+            ncnnAxis += srcShape.dims;
+        var axis = NcnnRepro.MapNcnnAxisToTensorAxis(srcShape.dims, ncnnAxis);
+        var axisSize = NcnnRepro.GetAxisSize(srcShape.dims, srcShape.w, srcShape.h, srcShape.d, srcShape.c, axis);
+
+        shapes = new List<NcnnRepro.BufferShape>(layer.topNames.Length);
+        var begin = 0;
+        for (var i = 0; i < layer.topNames.Length; i++)
+        {
+            var end = axisSize;
+            if (sliceParams != null && i < sliceParams.Length)
+                end = sliceParams[i] == -233 ? axisSize : sliceParams[i];
+            end = Mathf.Clamp(end, begin, axisSize);
+            var size = Mathf.Max(0, end - begin);
+            if (i == layer.topNames.Length - 1)
+                size = Mathf.Max(0, axisSize - begin);
+
+            var w = srcShape.w;
+            var h = srcShape.h;
+            var d = srcShape.d;
+            var c = srcShape.c;
+            switch (axis)
+            {
+                case 0: w = size; break;
+                case 1: h = size; break;
+                case 2:
+                    if (srcShape.dims == 4) d = size;
+                    else c = size;
+                    break;
+                case 3: c = size; break;
+            }
+
+            shapes.Add(new NcnnRepro.BufferShape(srcShape.dims, Mathf.Max(1, w), Mathf.Max(1, h), Mathf.Max(1, d), Mathf.Max(1, c)));
+            begin = end;
+        }
+
+        return shapes.Count == layer.topNames.Length;
+    }
+
+    private static bool TryResolveReplayConcatOutputShape(
+        NcnnParamModel.Layer layer,
+        IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+        out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        if (bottomShapes == null || bottomShapes.Count == 0)
+            return false;
+
+        var first = bottomShapes[0];
+        var axis = NcnnRepro.MapNcnnAxisToTensorAxis(first.dims, layer.GetInt(0, 0));
+        var w = first.w;
+        var h = first.h;
+        var d = first.d;
+        var c = first.c;
+        for (var i = 1; i < bottomShapes.Count; i++)
+        {
+            var s = bottomShapes[i];
+            switch (axis)
+            {
+                case 0: w += s.w; break;
+                case 1: h += s.h; break;
+                case 2:
+                    if (first.dims == 4) d += s.d;
+                    else c += s.c;
+                    break;
+                case 3: c += s.c; break;
+            }
+        }
+
+        shape = new NcnnRepro.BufferShape(first.dims, w, h, d, c);
+        return true;
+    }
+
+    private static bool TryResolveReplayTileOutputShape(
+        NcnnParamModel.Layer layer,
+        NcnnRepro.BufferShape srcShape,
+        out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        var axis = layer.GetInt(0, 0);
+        var tiles = Mathf.Max(1, layer.GetInt(1, 1));
+        if (axis < 0)
+            axis += srcShape.dims;
+        var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(srcShape.dims, axis);
+        var w = srcShape.w;
+        var h = srcShape.h;
+        var d = srcShape.d;
+        var c = srcShape.c;
+        switch (tensorAxis)
+        {
+            case 0: w *= tiles; break;
+            case 1: h *= tiles; break;
+            case 2:
+                if (srcShape.dims == 4) d *= tiles;
+                else c *= tiles;
+                break;
+            case 3: c *= tiles; break;
+        }
+
+        shape = new NcnnRepro.BufferShape(srcShape.dims, w, h, d, c);
+        return true;
+    }
+
+    private static bool TryResolveReplayExpandDimsOutputShape(
+        NcnnParamModel.Layer layer,
+        NcnnRepro.BufferShape srcShape,
+        out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        var axes = layer.GetInts(-23303, null);
+        if (axes == null || axes.Length == 0)
+            return false;
+
+        var dims = new List<int>(4);
+        if (srcShape.dims == 1) dims.Add(srcShape.w);
+        else if (srcShape.dims == 2) { dims.Add(srcShape.h); dims.Add(srcShape.w); }
+        else if (srcShape.dims == 3) { dims.Add(srcShape.c); dims.Add(srcShape.h); dims.Add(srcShape.w); }
+        else { dims.Add(srcShape.c); dims.Add(srcShape.d); dims.Add(srcShape.h); dims.Add(srcShape.w); }
+
+        for (var i = 0; i < axes.Length; i++)
+        {
+            var axis = axes[i];
+            var currentRank = dims.Count + 1;
+            if (axis < 0)
+                axis += currentRank;
+            axis = Mathf.Clamp(axis, 0, dims.Count);
+            dims.Insert(axis, 1);
+        }
+
+        if (dims.Count == 1)
+            shape = new NcnnRepro.BufferShape(1, dims[0], 1, 1, 1);
+        else if (dims.Count == 2)
+            shape = new NcnnRepro.BufferShape(2, dims[1], dims[0], 1, 1);
+        else if (dims.Count == 3)
+            shape = new NcnnRepro.BufferShape(3, dims[2], dims[1], 1, dims[0]);
+        else
+            shape = new NcnnRepro.BufferShape(4, dims[3], dims[2], dims[1], dims[0]);
+
+        return true;
+    }
+
+    private static bool TryResolveReplayInterpOutputShape(
+        NcnnParamModel.Layer layer,
+        IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+        out NcnnRepro.BufferShape shape)
+    {
+        shape = default;
+        if (bottomShapes == null || bottomShapes.Count == 0)
+            return false;
+
+        var srcShape = bottomShapes[0];
+        var outW = Mathf.Max(1, Mathf.RoundToInt(srcShape.w * layer.GetFloat(1, 1f)));
+        var outH = Mathf.Max(1, Mathf.RoundToInt(srcShape.h * layer.GetFloat(2, 1f)));
+        shape = new NcnnRepro.BufferShape(srcShape.dims, outW, outH, srcShape.d, srcShape.c);
+        return true;
+    }
+
     private bool TryLoadReplayReferenceBlobWithShape(
         string blobName,
         string dir,
@@ -2752,6 +3458,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     {
         data = null;
         shape = default;
+        _lastReplayResolvedPath = null;
         if (string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
             return false;
 
@@ -2768,6 +3475,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 data = ReadFloatArrayRawF32(path);
                 if (data == null || data.Length == 0)
                     continue;
+                _lastReplayResolvedPath = path;
                 shape = ResolveReplayBlobShape(blobName, data.Length);
                 return true;
             }
@@ -2780,6 +3488,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 data = UnpackDebugMatDump(dump);
                 if (data == null || data.Length == 0)
                     continue;
+                _lastReplayResolvedPath = path;
                 shape = ResolveReplayBlobShape(blobName, data.Length, dump);
                 return true;
             }

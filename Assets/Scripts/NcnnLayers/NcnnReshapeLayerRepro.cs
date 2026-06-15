@@ -1901,6 +1901,25 @@ namespace NcnnCompute
             return found;
         }
 
+        private static NcnnParamModel.Layer FindEffectiveSingleConsumer(
+            NcnnParamModel model,
+            string blobName)
+        {
+            var consumer = FindSingleConsumer(model, blobName);
+            var hopGuard = 0;
+            while (consumer != null
+                && hopGuard++ < 8
+                && (consumer.type == NcnnLayerTypes.AtenTo || consumer.type == NcnnLayerTypes.Noop)
+                && consumer.topNames != null
+                && consumer.topNames.Length > 0
+                && !string.IsNullOrWhiteSpace(consumer.topNames[0]))
+            {
+                consumer = FindSingleConsumer(model, consumer.topNames[0]);
+            }
+
+            return consumer;
+        }
+
         private static bool ShouldPromoteGemmPrepTexture(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnTensorBuffer outView)
         {
             if (outView == null)
@@ -1920,7 +1939,7 @@ namespace NcnnCompute
             if (outShape.dims != 2)
                 return false;
 
-            var consumer = FindSingleConsumer(owner.Model, layer.topNames[0]);
+            var consumer = FindEffectiveSingleConsumer(owner.Model, layer.topNames[0]);
             return consumer != null
                 && consumer.type == NcnnLayerTypes.Gemm
                 && consumer.GetInt(5, 0) != 0;
@@ -1950,7 +1969,7 @@ namespace NcnnCompute
             if (CanUseWidthPreservingPack4ToScalar2DReshape(srcShape, outShape))
                 return true;
 
-            var consumer = FindSingleConsumer(owner?.Model, layer?.topNames != null && layer.topNames.Length > 0 ? layer.topNames[0] : null);
+            var consumer = FindEffectiveSingleConsumer(owner?.Model, layer?.topNames != null && layer.topNames.Length > 0 ? layer.topNames[0] : null);
             if (consumer != null
                 && (consumer.type == NcnnLayerTypes.Permute
                     || consumer.type == NcnnLayerTypes.Gemm
