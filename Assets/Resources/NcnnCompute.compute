@@ -4834,6 +4834,14 @@ void NcnnBinaryOpScalarSingleBroadcast(uint3 id : SV_DispatchThreadID)
     {
         bCoord = int3(0, 0, 0);
     }
+    else if (mode == 7)
+    {
+        aCoord = int3(y, 0, 0);
+    }
+    else if (mode == 8)
+    {
+        bCoord = int3(y, 0, 0);
+    }
 
     float a = _BinaryA[aCoord].x;
     float b = _BinaryB[bCoord].x;

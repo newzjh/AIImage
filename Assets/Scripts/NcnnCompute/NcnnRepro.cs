@@ -759,6 +759,19 @@ namespace NcnnCompute
 
             public bool TryGetLogicalShape(string name, out int dims, out int w, out int h, out int d, out int c)
             {
+                if (_textureBlobs.TryGetValue(name, out var textureRef)
+                    && textureRef != null
+                    && textureRef.texture != null
+                    && _textureShapes.TryGetValue(name, out var textureShape))
+                {
+                    dims = textureShape.dims;
+                    w = textureShape.w;
+                    h = textureShape.h;
+                    d = textureShape.d;
+                    c = textureShape.c;
+                    return true;
+                }
+
                 if (_bufferViews.TryGetValue(name, out var view) && view != null && view.buffer != null)
                 {
                     dims = view.dims;

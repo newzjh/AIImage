@@ -524,6 +524,13 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
             var timesteps = BuildTimesteps(stepCount);
             var activeTimesteps = SelectTimestepsByStrength(timesteps, strength);
+            var debugMaxDenoiseSteps = ResolvePositiveIntEnvOrDefault("AIIMAGE_SD_DEBUG_MAX_DENOISE_STEPS", 0);
+            if (debugMaxDenoiseSteps > 0 && activeTimesteps.Length > debugMaxDenoiseSteps)
+            {
+                var truncatedTimesteps = new int[debugMaxDenoiseSteps];
+                Array.Copy(activeTimesteps, truncatedTimesteps, debugMaxDenoiseSteps);
+                activeTimesteps = truncatedTimesteps;
+            }
             if (activeTimesteps == null || activeTimesteps.Length < 1)
                 return Finish(new SDInpaintingNcnnReproResult { error = "No valid timesteps for the requested strength." });
 
@@ -665,7 +672,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     + "steps=" + stepCount.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
                     + "strength=" + strength.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
                     + "guidance_scale=" + guidanceScale.ToString("0.000000", CultureInfo.InvariantCulture) + Environment.NewLine
-                    + "black_mask_means_inpaint=" + BoolText(blackMaskMeansInpaint));
+                    + "black_mask_means_inpaint=" + BoolText(blackMaskMeansInpaint) + Environment.NewLine
+                    + "active_timesteps=" + activeTimesteps.Length.ToString(CultureInfo.InvariantCulture) + Environment.NewLine
+                    + "debug_max_denoise_steps=" + debugMaxDenoiseSteps.ToString(CultureInfo.InvariantCulture));
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "resource_snapshots.txt"), string.Join(Environment.NewLine, _resourceSnapshotLines));
             }
 
@@ -933,6 +942,25 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                    || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(env, "on", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return defaultValue;
+        }
+    }
+
+    private static int ResolvePositiveIntEnvOrDefault(string name, int defaultValue)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(env))
+                return defaultValue;
+
+            if (!int.TryParse(env.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+                return defaultValue;
+
+            return value > 0 ? value : defaultValue;
         }
         catch
         {
@@ -2001,8 +2029,22 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 unetCache = new List<UnetCacheBlob>(OfficialUnetCacheBlobNames.Length);
 
             condOutTex = RunUnetOnceTexture(inputTex, timestepTex, condTex, "cond", unetCache, null);
+            if (condOutTex != null)
+            {
+                var preservedCondOutTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+                _ops.CopyPack4(condOutTex, 0, preservedCondOutTex, 0, Mathf.Max(1, Mathf.CeilToInt(LatentChannels / 4f)));
+                _unetRepro.ReturnTempArray(condOutTex);
+                condOutTex = preservedCondOutTex;
+            }
             var cacheForUncond = unetCache != null && unetCache.Count == OfficialUnetCacheBlobNames.Length ? unetCache : null;
             uncondOutTex = RunUnetOnceTexture(inputTex, timestepTex, uncondTex, "uncond", null, cacheForUncond);
+            if (uncondOutTex != null)
+            {
+                var preservedUncondOutTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
+                _ops.CopyPack4(uncondOutTex, 0, preservedUncondOutTex, 0, Mathf.Max(1, Mathf.CeilToInt(LatentChannels / 4f)));
+                _unetRepro.ReturnTempArray(uncondOutTex);
+                uncondOutTex = preservedUncondOutTex;
+            }
             if (condOutTex == null || uncondOutTex == null)
                 return null;
 
@@ -3618,6 +3660,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;
 
+        if (TryDumpTextureBlobByLogicalShape(infer, blobName, path))
+            return;
+
         try
         {
             var data = infer.GetBufferData(blobName);
@@ -3653,6 +3698,49 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
         catch
         {
+        }
+    }
+
+    private bool TryDumpTextureBlobByLogicalShape(NcnnRepro.InferResult infer, string blobName, string path)
+    {
+        if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
+            return false;
+
+        try
+        {
+            if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
+                return false;
+
+            if (!infer.TryGetExistingTexture(blobName, out var tex) || tex == null)
+                return false;
+
+            var packs = tex.volumeDepth > 0 ? tex.volumeDepth : 1;
+            var physicalChannels = dims == 4
+                ? Mathf.Max(1, Mathf.CeilToInt(c / 4f)) * 4
+                : Mathf.Max(1, packs) * 4;
+            var physicalCount = tex.width * tex.height * Mathf.Max(1, packs) * physicalChannels;
+            var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
+            if (logicalCount <= 0 || logicalCount > physicalCount)
+                return false;
+
+            var physicalBuffer = NewTrackedBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured, "SDInpaint.DumpBlobPhysical");
+            try
+            {
+                if (dims == 4)
+                    _ops.Pack4ToBufferCDHW(tex, tex.width, tex.height, Mathf.Max(1, d), Mathf.Max(1, c), physicalBuffer);
+                else
+                    _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, physicalChannels, physicalBuffer);
+                DumpBufferToFile(path, physicalBuffer, logicalCount);
+                return true;
+            }
+            finally
+            {
+                DisposeBuffer(physicalBuffer, "SDInpaint.DumpBlobPhysical");
+            }
+        }
+        catch
+        {
+            return false;
         }
     }
 

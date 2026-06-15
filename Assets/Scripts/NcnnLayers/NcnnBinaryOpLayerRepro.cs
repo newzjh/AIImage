@@ -1041,7 +1041,7 @@ namespace NcnnCompute
 
             if (aShape.dims == 2 && bShape.dims == 1 && aRows == bCols && aCols > 1)
             {
-                broadcastMode = 4;
+                broadcastMode = 8;
                 outShape = aShape;
                 storageShape = new NcnnRepro.BufferShape(3, aShape.w, aShape.h, 1, 1);
                 return true;
@@ -1049,7 +1049,23 @@ namespace NcnnCompute
 
             if (aShape.dims == 1 && bShape.dims == 2 && aCols == bRows && bCols > 1)
             {
-                broadcastMode = 2;
+                broadcastMode = 7;
+                outShape = bShape;
+                storageShape = new NcnnRepro.BufferShape(3, bShape.w, bShape.h, 1, 1);
+                return true;
+            }
+
+            if (aShape.dims == 2 && bShape.dims == 1 && aCols == bCols && aRows > 1)
+            {
+                broadcastMode = 3;
+                outShape = aShape;
+                storageShape = new NcnnRepro.BufferShape(3, aShape.w, aShape.h, 1, 1);
+                return true;
+            }
+
+            if (aShape.dims == 1 && bShape.dims == 2 && aCols == bCols && bRows > 1)
+            {
+                broadcastMode = 1;
                 outShape = bShape;
                 storageShape = new NcnnRepro.BufferShape(3, bShape.w, bShape.h, 1, 1);
                 return true;
