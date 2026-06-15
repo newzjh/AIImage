@@ -1,0 +1,52 @@
+You are an expert in Stable Diffusion model internals and NCNN conversion.
+
+Task:
+Write a fully working Python pipeline that converts:
+    sd-v1-5-inpainting.ckpt
+into:
+    NCNN .param + .bin files
+
+Requirements:
+
+1. Must support Stable Diffusion v1.5 INPAINTING architecture
+   - UNet input channels = 9 (4 latent + 4 masked latent + 1 mask)
+
+2. Steps:
+   A. Load .ckpt using safetensors or torch
+   B. Convert to HuggingFace Diffusers format:
+      stable-diffusion-inpainting pipeline
+   C. Export UNet, VAE, Text Encoder to ONNX
+   D. Use onnxsim to simplify graphs
+   E. Convert ONNX → NCNN using:
+      onnx2ncnn
+      ncnnoptimize
+
+3. Output structure:
+   /output/ncnn/
+      unet.param
+      unet.bin
+      vae.param
+      vae.bin
+      text_encoder.param
+      text_encoder.bin
+
+4. Must include:
+   - correct inpainting config (v1-inpainting.yaml equivalent)
+   - correct input tensor shapes
+   - dynamic axes handling for batch=1
+   - fp16 export option
+
+5. Must print debug logs for each stage.
+
+6. Must be runnable via CLI:
+
+   python export_sd15_inpaint_to_ncnn.py \
+       --ckpt sd-v1-5-inpainting.ckpt \
+       --output ./ncnn_out \
+       --fp16
+
+7. Prefer torch + diffusers + optimum + onnxruntime tooling
+
+Also include fallback handling if conversion fails:
+- report missing keys
+- detect mismatched UNet input channels
