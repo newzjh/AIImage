@@ -13,12 +13,26 @@ public static class ClipClassificationCache
 {
     public sealed class CachedClipImageRecord
     {
+        public int entryVersion;
         public string key;
         public string identityPath;
         public string filePath;
         public string bestLabel;
         public float bestProbability;
         public float[] imageEmbedding;
+        public long updatedUtcTicks;
+    }
+
+    public sealed class CachedFileMetadata
+    {
+        public int entryVersion;
+        public string key;
+        public string identityPath;
+        public string filePath;
+        public DateTime? captureTime;
+        public string locationText;
+        public string cameraText;
+        public string apertureText;
         public long updatedUtcTicks;
     }
 
@@ -32,6 +46,7 @@ public static class ClipClassificationCache
     [Serializable]
     private sealed class ClipClassificationCacheEntry
     {
+        public int entryVersion;
         public string key;
         public string signature;
         public string identityPath;
@@ -40,10 +55,16 @@ public static class ClipClassificationCache
         public float bestProbability;
         public ClipLabelScore[] scores;
         public float[] imageEmbedding;
+        public bool hasCaptureTime;
+        public long captureTimeBinary;
+        public string locationText;
+        public string cameraText;
+        public string apertureText;
         public long updatedUtcTicks;
     }
 
-    private const int CurrentVersion = 1;
+    private const int CurrentVersion = 2;
+    private const int CurrentEntryVersion = 2;
     private const int MaxEntries = 4096;
     private const string FileKeyPrefix = "file|";
     private const string TextureKeyPrefix = "texture|";
@@ -77,6 +98,79 @@ public static class ClipClassificationCache
             return false;
 
         return TryGetInternal(key, runner.ClassificationCacheSignature, out result);
+    }
+
+    public static bool TryGetMetadataForFile(string filePath, out CachedFileMetadata metadata)
+    {
+        metadata = null;
+
+        var key = BuildFileKey(filePath, out _);
+        if (string.IsNullOrWhiteSpace(key))
+            return false;
+
+        EnsureLoaded();
+        lock (Sync)
+        {
+            if (!Entries.TryGetValue(key, out var entry) || !HasMetadata(entry))
+                return false;
+
+            metadata = BuildCachedMetadata(entry);
+            return metadata != null;
+        }
+    }
+
+    public static void StoreFileMetadata(
+        string filePath,
+        DateTime? captureTime,
+        string locationText,
+        string cameraText,
+        string apertureText)
+    {
+        if (!captureTime.HasValue &&
+            string.IsNullOrWhiteSpace(locationText) &&
+            string.IsNullOrWhiteSpace(cameraText) &&
+            string.IsNullOrWhiteSpace(apertureText))
+        {
+            return;
+        }
+
+        var key = BuildFileKey(filePath, out var normalizedPath);
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(normalizedPath))
+            return;
+
+        EnsureLoaded();
+
+        var startSaveLoop = false;
+        lock (Sync)
+        {
+            RemoveStaleEntriesForIdentityNoLock(key, normalizedPath);
+
+            Entries.TryGetValue(key, out var entry);
+            entry ??= new ClipClassificationCacheEntry
+            {
+                key = key
+            };
+
+            var changed = UpdateSharedEntryFields(entry, key, normalizedPath, normalizedPath);
+            changed |= UpdateMetadataFields(entry, captureTime, locationText, cameraText, apertureText);
+            if (!changed)
+                return;
+
+            entry.updatedUtcTicks = DateTime.UtcNow.Ticks;
+            Entries[key] = entry;
+
+            PruneIfNeededNoLock();
+
+            _dirty = true;
+            if (_saveRunning)
+                return;
+
+            _saveRunning = true;
+            startSaveLoop = true;
+        }
+
+        if (startSaveLoop)
+            PersistDirtyAsync().Forget();
     }
 
     public static bool NeedsEmbeddingUpgradeForFile(ClipNcnnReproRunner runner, string filePath)
@@ -160,6 +254,7 @@ public static class ClipClassificationCache
 
                 list.Add(new CachedClipImageRecord
                 {
+                    entryVersion = GetEffectiveEntryVersion(entry),
                     key = entry.key,
                     identityPath = entry.identityPath,
                     filePath = entry.filePath,
@@ -199,6 +294,7 @@ public static class ClipClassificationCache
 
             record = new CachedClipImageRecord
             {
+                entryVersion = GetEffectiveEntryVersion(entry),
                 key = entry.key,
                 identityPath = entry.identityPath,
                 filePath = entry.filePath,
@@ -338,34 +434,22 @@ public static class ClipClassificationCache
         var startSaveLoop = false;
         lock (Sync)
         {
-            if (!string.IsNullOrWhiteSpace(identityPath))
-            {
-                var staleKeys = new List<string>();
-                foreach (var pair in Entries)
-                {
-                    if (!string.Equals(pair.Key, key, StringComparison.Ordinal) &&
-                        string.Equals(pair.Value?.identityPath, identityPath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        staleKeys.Add(pair.Key);
-                    }
-                }
+            RemoveStaleEntriesForIdentityNoLock(key, identityPath);
 
-                for (var i = 0; i < staleKeys.Count; i++)
-                    Entries.Remove(staleKeys[i]);
-            }
-
-            Entries[key] = new ClipClassificationCacheEntry
+            Entries.TryGetValue(key, out var entry);
+            entry ??= new ClipClassificationCacheEntry
             {
-                key = key,
-                signature = signature,
-                identityPath = identityPath,
-                filePath = NormalizePath(filePath),
-                bestLabel = result.bestLabel,
-                bestProbability = result.bestProbability,
-                scores = CloneScores(result.scores),
-                imageEmbedding = CloneEmbedding(result.imageEmbedding),
-                updatedUtcTicks = DateTime.UtcNow.Ticks
+                key = key
             };
+
+            UpdateSharedEntryFields(entry, key, identityPath, filePath);
+            entry.signature = signature;
+            entry.bestLabel = result.bestLabel;
+            entry.bestProbability = result.bestProbability;
+            entry.scores = CloneScores(result.scores);
+            entry.imageEmbedding = CloneEmbedding(result.imageEmbedding);
+            entry.updatedUtcTicks = DateTime.UtcNow.Ticks;
+            Entries[key] = entry;
 
             PruneIfNeededNoLock();
 
@@ -410,9 +494,11 @@ public static class ClipClassificationCache
                 for (var i = 0; i < cache.entries.Length; i++)
                 {
                     var entry = cache.entries[i];
-                    if (entry == null || string.IsNullOrWhiteSpace(entry.key) || string.IsNullOrWhiteSpace(entry.signature))
+                    if (entry == null || string.IsNullOrWhiteSpace(entry.key))
                         continue;
 
+                    if (entry.entryVersion <= 0)
+                        entry.entryVersion = 1;
                     Entries[entry.key] = entry;
                 }
 
@@ -538,6 +624,115 @@ public static class ClipClassificationCache
         var clone = new float[embedding.Length];
         Array.Copy(embedding, clone, embedding.Length);
         return clone;
+    }
+
+    private static CachedFileMetadata BuildCachedMetadata(ClipClassificationCacheEntry entry)
+    {
+        if (!HasMetadata(entry))
+            return null;
+
+        return new CachedFileMetadata
+        {
+            entryVersion = GetEffectiveEntryVersion(entry),
+            key = entry.key,
+            identityPath = entry.identityPath,
+            filePath = entry.filePath,
+            captureTime = entry.hasCaptureTime ? DateTime.FromBinary(entry.captureTimeBinary) : (DateTime?)null,
+            locationText = entry.locationText,
+            cameraText = entry.cameraText,
+            apertureText = entry.apertureText,
+            updatedUtcTicks = entry.updatedUtcTicks
+        };
+    }
+
+    private static bool HasMetadata(ClipClassificationCacheEntry entry)
+    {
+        return entry != null &&
+               (entry.hasCaptureTime ||
+                !string.IsNullOrWhiteSpace(entry.locationText) ||
+                !string.IsNullOrWhiteSpace(entry.cameraText) ||
+                !string.IsNullOrWhiteSpace(entry.apertureText));
+    }
+
+    private static int GetEffectiveEntryVersion(ClipClassificationCacheEntry entry)
+    {
+        return entry == null || entry.entryVersion <= 0 ? 1 : entry.entryVersion;
+    }
+
+    private static bool UpdateSharedEntryFields(
+        ClipClassificationCacheEntry entry,
+        string key,
+        string identityPath,
+        string filePath)
+    {
+        if (entry == null)
+            return false;
+
+        var normalizedFilePath = NormalizePath(filePath);
+        var changed = entry.entryVersion != CurrentEntryVersion;
+        changed |= !string.Equals(entry.key, key, StringComparison.Ordinal);
+        changed |= !string.Equals(entry.identityPath, identityPath, StringComparison.OrdinalIgnoreCase);
+        changed |= !string.Equals(entry.filePath, normalizedFilePath, StringComparison.OrdinalIgnoreCase);
+
+        entry.entryVersion = CurrentEntryVersion;
+        entry.key = key;
+        entry.identityPath = identityPath;
+        entry.filePath = normalizedFilePath;
+        return changed;
+    }
+
+    private static bool UpdateMetadataFields(
+        ClipClassificationCacheEntry entry,
+        DateTime? captureTime,
+        string locationText,
+        string cameraText,
+        string apertureText)
+    {
+        if (entry == null)
+            return false;
+
+        var normalizedLocation = NormalizeMetadataText(locationText);
+        var normalizedCamera = NormalizeMetadataText(cameraText);
+        var normalizedAperture = NormalizeMetadataText(apertureText);
+        var hasCaptureTime = captureTime.HasValue;
+        var captureTimeBinary = hasCaptureTime ? captureTime.Value.ToBinary() : 0L;
+
+        var changed = entry.hasCaptureTime != hasCaptureTime ||
+                      entry.captureTimeBinary != captureTimeBinary ||
+                      !string.Equals(entry.locationText, normalizedLocation, StringComparison.Ordinal) ||
+                      !string.Equals(entry.cameraText, normalizedCamera, StringComparison.Ordinal) ||
+                      !string.Equals(entry.apertureText, normalizedAperture, StringComparison.Ordinal);
+
+        entry.hasCaptureTime = hasCaptureTime;
+        entry.captureTimeBinary = captureTimeBinary;
+        entry.locationText = normalizedLocation;
+        entry.cameraText = normalizedCamera;
+        entry.apertureText = normalizedAperture;
+        return changed;
+    }
+
+    private static string NormalizeMetadataText(string text)
+    {
+        return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+    }
+
+    private static void RemoveStaleEntriesForIdentityNoLock(string key, string identityPath)
+    {
+        if (string.IsNullOrWhiteSpace(identityPath))
+            return;
+
+        var staleKeys = new List<string>();
+        foreach (var pair in Entries)
+        {
+            if (!string.Equals(pair.Key, key, StringComparison.Ordinal) &&
+                string.Equals(pair.Value?.identityPath, identityPath, StringComparison.OrdinalIgnoreCase))
+            {
+                staleKeys.Add(pair.Key);
+            }
+        }
+
+        for (var i = 0; i < staleKeys.Count; i++)
+            Entries.Remove(staleKeys[i]);
     }
 
     private static string BuildFileKey(string filePath, out string normalizedPath)

@@ -1496,6 +1496,7 @@ public sealed class LibraryView : BasePageView
                     return;
 
                 ApplyPayloadMetadata(entry, payload);
+                PersistCachedMetadata(entry);
 
                 ApplyTypeFromMetadata(entry);
 
@@ -1610,6 +1611,11 @@ public sealed class LibraryView : BasePageView
 
     private void ApplyClipClassification(ThumbnailEntry entry, ClipClassificationResult result)
     {
+        ApplyClipClassificationCore(entry, result, true);
+    }
+
+    private void ApplyClipClassificationCore(ThumbnailEntry entry, ClipClassificationResult result, bool refreshUi)
+    {
         if (entry == null || !string.IsNullOrWhiteSpace(result.error))
             return;
 
@@ -1620,6 +1626,9 @@ public sealed class LibraryView : BasePageView
         entry.faceText = best;
         entry.clipClassificationReady = HasClipEmbedding(result);
         ApplyTypeFromClipMapping(entry);
+
+        if (!refreshUi)
+            return;
 
         if (_sortFaceToggle?.value == true)
         {
@@ -1642,6 +1651,47 @@ public sealed class LibraryView : BasePageView
     private static bool HasClipEmbedding(ClipClassificationResult result)
     {
         return result.imageEmbedding != null && result.imageEmbedding.Length > 0;
+    }
+
+    private bool TryApplyCachedMetadata(ThumbnailEntry entry)
+    {
+        if (entry == null || string.IsNullOrWhiteSpace(entry.fullPath))
+            return false;
+
+        if (!ClipClassificationCache.TryGetMetadataForFile(entry.fullPath, out var metadata) || metadata == null)
+            return false;
+
+        if (metadata.captureTime.HasValue)
+            entry.captureTime = metadata.captureTime.Value;
+        if (!string.IsNullOrWhiteSpace(metadata.locationText))
+            entry.locationText = metadata.locationText;
+        if (!string.IsNullOrWhiteSpace(metadata.cameraText))
+            entry.cameraText = metadata.cameraText;
+        if (!string.IsNullOrWhiteSpace(metadata.apertureText))
+            entry.apertureText = metadata.apertureText;
+
+        return metadata.captureTime.HasValue ||
+               !string.IsNullOrWhiteSpace(metadata.locationText) ||
+               !string.IsNullOrWhiteSpace(metadata.cameraText) ||
+               !string.IsNullOrWhiteSpace(metadata.apertureText);
+    }
+
+    private void PersistCachedMetadata(ThumbnailEntry entry)
+    {
+        if (entry == null || string.IsNullOrWhiteSpace(entry.fullPath))
+            return;
+
+        ClipClassificationCache.StoreFileMetadata(
+            entry.fullPath,
+            entry.captureTime,
+            GetCacheableMetadataText(entry.locationText),
+            GetCacheableMetadataText(entry.cameraText),
+            GetCacheableMetadataText(entry.apertureText));
+    }
+
+    private static string GetCacheableMetadataText(string text)
+    {
+        return HasUsableMetadata(text) ? text : null;
     }
 
     private void UpdateThumbnailVisuals(ThumbnailEntry entry)
@@ -1893,6 +1943,17 @@ public sealed class LibraryView : BasePageView
         return new ThumbnailPayload { thumbnailBytes = LoadImageBytes(filePath) };
     }
 
+    private static ThumbnailPayload LoadMetadataPayload(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return new ThumbnailPayload();
+
+        if (RawPhotoParser.TryReadMetadata(filePath, out var metadataOnly))
+            return CreateThumbnailPayload(null, metadataOnly);
+
+        return new ThumbnailPayload();
+    }
+
     private static void ApplyPayloadMetadata(ThumbnailEntry entry, ThumbnailPayload payload)
     {
         if (entry == null || payload == null)
@@ -2141,6 +2202,43 @@ public sealed class LibraryView : BasePageView
             if (entry == null || string.IsNullOrWhiteSpace(entry.fullPath) || _entryByPath.ContainsKey(entry.fullPath))
                 continue;
 
+            var hasCachedMetadata = TryApplyCachedMetadata(entry);
+            var hasCachedClip = ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out var cachedResult);
+            var hasCachedEmbedding = hasCachedClip && HasClipEmbedding(cachedResult);
+
+            if (!hasCachedMetadata && hasCachedEmbedding)
+            {
+                ThumbnailPayload metadataPayload = null;
+                try
+                {
+                    metadataPayload = await UniTask.RunOnThreadPool(
+                        () => LoadMetadataPayload(entry.fullPath),
+                        cancellationToken: cancellationToken);
+                }
+                catch
+                {
+                }
+
+                ApplyPayloadMetadata(entry, metadataPayload);
+                PersistCachedMetadata(entry);
+            }
+
+            ApplyTypeFromMetadata(entry);
+            if (IsHiddenOriginalSourcePath(entry.fullPath))
+            {
+                entry.type = LibraryImageType.Original;
+                entry.metadataOriginalScore = Mathf.Max(entry.metadataOriginalScore, 1f);
+            }
+
+            if (hasCachedEmbedding)
+            {
+                ApplyClipClassificationCore(entry, cachedResult, false);
+                RememberOriginalMetadata(entry);
+                _entryByPath[entry.fullPath] = entry;
+                imported++;
+                continue;
+            }
+
             ThumbnailPayload payload = null;
             try
             {
@@ -2154,6 +2252,7 @@ public sealed class LibraryView : BasePageView
             }
 
             ApplyPayloadMetadata(entry, payload);
+            PersistCachedMetadata(entry);
             ApplyTypeFromMetadata(entry);
             if (IsHiddenOriginalSourcePath(entry.fullPath))
             {
@@ -2188,13 +2287,7 @@ public sealed class LibraryView : BasePageView
                 if (!string.IsNullOrWhiteSpace(result.error))
                     continue;
 
-                var best = string.IsNullOrWhiteSpace(result.bestLabel) ? EmptyText : result.bestLabel;
-                var top = FormatClipTopScores(result.scores, 2);
-                entry.clipBaseText = string.IsNullOrWhiteSpace(top) ? best : (best + "  " + top);
-                entry.clipText = entry.clipBaseText;
-                entry.faceText = best;
-                entry.clipClassificationReady = true;
-                ApplyTypeFromClipMapping(entry);
+                ApplyClipClassificationCore(entry, result, false);
                 RememberOriginalMetadata(entry);
                 _entryByPath[entry.fullPath] = entry;
                 try { UnityEngine.Object.Destroy(texture); } catch { }
