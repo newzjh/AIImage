@@ -3185,7 +3185,7 @@ namespace NcnnCompute
                     return false;
 
                 shape = GetTextureShape(textureShapes, texture, name);
-                return shape.dims == 3 || shape.dims == 4;
+                return shape.dims >= 1 && shape.dims <= 4;
             }
             catch
             {

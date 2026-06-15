@@ -185,6 +185,9 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            if (TryExecuteRenderTexturePath(owner, layer, context))
+                return;
+
 #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
@@ -192,6 +195,9 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
+            if (TryExecuteCommandBufferTexturePath(owner, layer, context))
+                return;
+
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
             var shapes = context.shapes;
@@ -255,6 +261,499 @@ namespace NcnnCompute
             var tensor = owner.RentTempTensorBuffer(dims, w, h, d, c);
             owner.Ops.CopyBuf(buffer, tensor.buffer, tensor.buffer.count);
             owner.PublishTensorBufferOutput(topName, tensor, preferTexture, textureBlobs, textureShapes, bufferBlobs, bufferRefs, bufferViews, tempOwned);
+        }
+
+        private static bool TryExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (!owner.EnableAttentionMatMulPack4Specializations)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!TryResolveRtPlan(owner, layer, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out var plan))
+                return false;
+
+            RenderTexture queryScaled = null;
+            RenderTexture keyTransposed = null;
+            RenderTexture scores = null;
+            RenderTexture output = null;
+
+            try
+            {
+                queryScaled = owner.RentTempArray(plan.queryStorageShape.w, plan.queryStorageShape.h, plan.querySlices, plan.pack4TextureFormat);
+                owner.Ops.BinaryOpScalarPack4(plan.query.texture, plan.scale, plan.querySlices, 2, queryScaled);
+
+                keyTransposed = owner.RentTempArray(plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat);
+                owner.Ops.PermutePack4Cdhw(
+                    plan.key.texture,
+                    plan.keyShape.w,
+                    plan.keyShape.h,
+                    plan.keyShape.d,
+                    plan.keyShape.c,
+                    new Vector4Int(1, 0, 2, 3),
+                    plan.keyTransposedShape.w,
+                    plan.keyTransposedShape.h,
+                    plan.keyTransposedShape.d,
+                    plan.keyTransposedShape.c,
+                    keyTransposed);
+
+                scores = owner.RentTempArray(plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                owner.Ops.MatMulPack4Cdhw(
+                    queryScaled,
+                    plan.queryShape.h,
+                    plan.queryShape.w,
+                    plan.queryShape.d,
+                    plan.queryShape.c,
+                    keyTransposed,
+                    plan.keyTransposedShape.h,
+                    plan.keyTransposedShape.w,
+                    plan.keyTransposedShape.d,
+                    plan.keyTransposedShape.c,
+                    false,
+                    plan.scoresShape.d,
+                    plan.scoresShape.c,
+                    scores);
+
+                ReturnTemp(owner, ref keyTransposed);
+                ReturnTemp(owner, ref queryScaled);
+
+                output = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
+                owner.Ops.SoftmaxPack4Cdhw(scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, scores);
+                owner.Ops.MatMulPack4Cdhw(
+                    scores,
+                    plan.scoresShape.h,
+                    plan.scoresShape.w,
+                    plan.scoresShape.d,
+                    plan.scoresShape.c,
+                    plan.value.texture,
+                    plan.valueShape.h,
+                    plan.valueShape.w,
+                    plan.valueShape.d,
+                    plan.valueShape.c,
+                    false,
+                    plan.outputShape.d,
+                    plan.outputShape.c,
+                    output);
+
+                ReturnTemp(owner, ref scores);
+
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
+                output = null;
+
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
+            finally
+            {
+                ReturnTemp(owner, ref queryScaled);
+                ReturnTemp(owner, ref keyTransposed);
+                ReturnTemp(owner, ref scores);
+                ReturnTemp(owner, ref output);
+            }
+        }
+
+        private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
+        {
+            if (owner == null || layer == null || context == null)
+                return false;
+            if (!owner.EnableAttentionMatMulPack4Specializations)
+                return false;
+            if (owner.ShouldForceCurrentLayerBufferPath())
+                return false;
+            if (!TryResolveCmdRtPlan(owner, layer, context.blobs, context.shapes, out var plan))
+                return false;
+
+            var cmd = context.commandBuffer;
+            ComputeTexture queryScaled = null;
+            ComputeTexture keyTransposed = null;
+            ComputeTexture scores = null;
+            ComputeTexture output = null;
+
+            try
+            {
+                queryScaled = owner.RentTempArray(cmd, plan.queryStorageShape.w, plan.queryStorageShape.h, plan.querySlices, plan.pack4TextureFormat);
+                owner.Ops.BinaryOpScalarPack4(cmd, plan.query.texture, plan.scale, plan.querySlices, 2, queryScaled);
+
+                keyTransposed = owner.RentTempArray(cmd, plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat);
+                owner.Ops.PermutePack4Cdhw(
+                    cmd,
+                    plan.key.texture,
+                    plan.keyShape.w,
+                    plan.keyShape.h,
+                    plan.keyShape.d,
+                    plan.keyShape.c,
+                    new Vector4Int(1, 0, 2, 3),
+                    plan.keyTransposedShape.w,
+                    plan.keyTransposedShape.h,
+                    plan.keyTransposedShape.d,
+                    plan.keyTransposedShape.c,
+                    keyTransposed);
+
+                scores = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                owner.Ops.MatMulPack4Cdhw(
+                    cmd,
+                    queryScaled,
+                    plan.queryShape.h,
+                    plan.queryShape.w,
+                    plan.queryShape.d,
+                    plan.queryShape.c,
+                    keyTransposed,
+                    plan.keyTransposedShape.h,
+                    plan.keyTransposedShape.w,
+                    plan.keyTransposedShape.d,
+                    plan.keyTransposedShape.c,
+                    false,
+                    plan.scoresShape.d,
+                    plan.scoresShape.c,
+                    scores);
+
+                owner.ReturnTempArray(cmd, keyTransposed);
+                keyTransposed = null;
+                owner.ReturnTempArray(cmd, queryScaled);
+                queryScaled = null;
+
+                output = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
+                owner.Ops.SoftmaxPack4Cdhw(cmd, scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, scores);
+                owner.Ops.MatMulPack4Cdhw(
+                    cmd,
+                    scores,
+                    plan.scoresShape.h,
+                    plan.scoresShape.w,
+                    plan.scoresShape.d,
+                    plan.scoresShape.c,
+                    plan.value.texture,
+                    plan.valueShape.h,
+                    plan.valueShape.w,
+                    plan.valueShape.d,
+                    plan.valueShape.c,
+                    false,
+                    plan.outputShape.d,
+                    plan.outputShape.c,
+                    output);
+
+                owner.ReturnTempArray(cmd, scores);
+                scores = null;
+
+                context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = output,
+                    width = plan.outputStorageShape.w,
+                    height = plan.outputStorageShape.h,
+                    packs = plan.outputPacks,
+                    refs = 1,
+                    owned = true,
+                    hasLogicalShape = true,
+                    logicalShape = plan.outputShape,
+                    hasStorageShape = true,
+                    storageShape = plan.outputStorageShape
+                };
+                context.shapes[layer.topNames[0]] = plan.outputShape;
+                output = null;
+
+                owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
+            finally
+            {
+                ReturnTemp(owner, cmd, ref queryScaled);
+                ReturnTemp(owner, cmd, ref keyTransposed);
+                ReturnTemp(owner, cmd, ref scores);
+                ReturnTemp(owner, cmd, ref output);
+            }
+        }
+
+        private static bool TryResolveRtPlan(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            System.Collections.Generic.Dictionary<string, ComputeBuffer> bufferBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnTensorBuffer> bufferViews,
+            out SdpaRtPlan plan)
+        {
+            plan = default;
+            if (!TryResolveCommonPlan(owner, layer, out var common))
+                return false;
+            if (common.sp.attnMask || common.sp.kvCache || common.sp.int8ScaleTerm)
+                return false;
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var query, out var queryShape)
+                || !owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var key, out var keyShape)
+                || !owner.TryGetPack4Texture(layer.bottomNames[2], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var value, out var valueShape))
+            {
+                return false;
+            }
+
+            if (!TryValidateTextureInputs(query, queryShape, key, keyShape, value, valueShape, common, out var outputShape, out var outputStorageShape))
+                return false;
+
+            plan = new SdpaRtPlan(
+                common.scale,
+                query,
+                queryShape,
+                key,
+                keyShape,
+                value,
+                valueShape,
+                outputShape,
+                outputStorageShape);
+            return true;
+        }
+
+        private static bool TryResolveCmdRtPlan(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            out SdpaCmdRtPlan plan)
+        {
+            plan = default;
+            if (!TryResolveCommonPlan(owner, layer, out var common))
+                return false;
+            if (common.sp.attnMask || common.sp.kvCache || common.sp.int8ScaleTerm)
+                return false;
+            if (!TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[0], out var query, out var queryShape)
+                || !TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[1], out var key, out var keyShape)
+                || !TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[2], out var value, out var valueShape))
+            {
+                return false;
+            }
+
+            if (!TryValidateTextureInputs(query, queryShape, key, keyShape, value, valueShape, common, out var outputShape, out var outputStorageShape))
+                return false;
+
+            plan = new SdpaCmdRtPlan(
+                common.scale,
+                query,
+                queryShape,
+                key,
+                keyShape,
+                value,
+                valueShape,
+                outputShape,
+                outputStorageShape);
+            return true;
+        }
+
+        private static bool TryResolveCommonPlan(NcnnRepro owner, NcnnParamModel.Layer layer, out SdpaCommonPlan plan)
+        {
+            plan = default;
+            if (owner == null || layer == null)
+                return false;
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.SdpaPack sp)
+                return false;
+
+            plan = new SdpaCommonPlan(sp);
+            return true;
+        }
+
+        private static bool TryValidateTextureInputs(
+            object queryTex,
+            NcnnRepro.BufferShape queryShape,
+            object keyTex,
+            NcnnRepro.BufferShape keyShape,
+            object valueTex,
+            NcnnRepro.BufferShape valueShape,
+            in SdpaCommonPlan common,
+            out NcnnRepro.BufferShape outputShape,
+            out NcnnRepro.BufferShape outputStorageShape)
+        {
+            outputShape = default;
+            outputStorageShape = default;
+            if (queryTex == null || keyTex == null || valueTex == null)
+                return false;
+            if (queryShape.dims != 3 || keyShape.dims != 3 || valueShape.dims != 3)
+                return false;
+            if (queryShape.d != 1 || keyShape.d != 1 || valueShape.d != 1)
+                return false;
+            if (queryShape.w <= 0 || queryShape.h <= 0 || queryShape.c <= 0)
+                return false;
+            if (keyShape.w <= 0 || keyShape.h <= 0 || keyShape.c <= 0 || valueShape.w <= 0 || valueShape.h <= 0 || valueShape.c <= 0)
+                return false;
+            if (queryShape.w != keyShape.w)
+                return false;
+            if (keyShape.h != valueShape.h)
+                return false;
+            if (queryShape.c != valueShape.c)
+                return false;
+            if ((queryShape.c % keyShape.c) != 0)
+                return false;
+            if (keyShape.h > 4096)
+                return false;
+
+            outputShape = new NcnnRepro.BufferShape(3, valueShape.w, queryShape.h, 1, queryShape.c);
+            outputStorageShape = outputShape;
+            return true;
+        }
+
+        private static bool TryGetExistingCmdTexture(
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            string blobName,
+            out NcnnRepro.CmdTensorRef texture,
+            out NcnnRepro.BufferShape shape)
+        {
+            texture = null;
+            shape = default;
+            if (blobs == null || string.IsNullOrWhiteSpace(blobName))
+                return false;
+            if (!blobs.TryGetValue(blobName, out texture) || texture == null || texture.texture == null)
+            {
+                texture = null;
+                return false;
+            }
+
+            shape = NcnnRepro.GetCmdShape(shapes, blobs, blobName);
+            return shape.dims >= 1 && shape.dims <= 4;
+        }
+
+        private static void ReturnTemp(NcnnRepro owner, ref RenderTexture texture)
+        {
+            if (owner == null || texture == null)
+                return;
+            owner.ReturnTempArray(texture);
+            texture = null;
+        }
+
+        private static void ReturnTemp(NcnnRepro owner, CommandBuffer cmd, ref ComputeTexture texture)
+        {
+            if (owner == null || cmd == null || texture == null)
+                return;
+            owner.ReturnTempArray(cmd, texture);
+            texture = null;
+        }
+
+        private readonly struct SdpaCommonPlan
+        {
+            public readonly NcnnRepro.SdpaPack sp;
+            public readonly float scale;
+
+            public SdpaCommonPlan(NcnnRepro.SdpaPack sp)
+            {
+                this.sp = sp;
+                scale = sp.scale;
+            }
+        }
+
+        private readonly struct SdpaRtPlan
+        {
+            public readonly float scale;
+            public readonly NcnnRepro.TensorRef query;
+            public readonly NcnnRepro.BufferShape queryShape;
+            public readonly NcnnRepro.BufferShape queryStorageShape;
+            public readonly int querySlices;
+            public readonly NcnnRepro.TensorRef key;
+            public readonly NcnnRepro.BufferShape keyShape;
+            public readonly NcnnRepro.TensorRef value;
+            public readonly NcnnRepro.BufferShape valueShape;
+            public readonly NcnnRepro.BufferShape keyTransposedShape;
+            public readonly NcnnRepro.BufferShape keyTransposedStorageShape;
+            public readonly int keyTransposedSlices;
+            public readonly NcnnRepro.BufferShape scoresShape;
+            public readonly NcnnRepro.BufferShape scoresStorageShape;
+            public readonly int scoresSlices;
+            public readonly NcnnRepro.BufferShape outputShape;
+            public readonly NcnnRepro.BufferShape outputStorageShape;
+            public readonly int outputPacks;
+            public readonly int outputSlices;
+            public readonly RenderTextureFormat pack4TextureFormat;
+
+            public SdpaRtPlan(
+                float scale,
+                NcnnRepro.TensorRef query,
+                NcnnRepro.BufferShape queryShape,
+                NcnnRepro.TensorRef key,
+                NcnnRepro.BufferShape keyShape,
+                NcnnRepro.TensorRef value,
+                NcnnRepro.BufferShape valueShape,
+                NcnnRepro.BufferShape outputShape,
+                NcnnRepro.BufferShape outputStorageShape)
+            {
+                this.scale = Mathf.Approximately(scale, 0f) ? 1f / Mathf.Sqrt(Mathf.Max(1, queryShape.w)) : scale;
+                this.query = query;
+                this.queryShape = queryShape;
+                queryStorageShape = queryShape;
+                querySlices = Mathf.Max(1, queryShape.d * Mathf.CeilToInt(queryShape.c / 4f));
+                this.key = key;
+                this.keyShape = keyShape;
+                this.value = value;
+                this.valueShape = valueShape;
+                keyTransposedShape = new NcnnRepro.BufferShape(4, keyShape.h, keyShape.w, Mathf.Max(1, keyShape.d), keyShape.c);
+                keyTransposedStorageShape = keyTransposedShape;
+                keyTransposedSlices = Mathf.Max(1, keyTransposedShape.d * Mathf.CeilToInt(keyTransposedShape.c / 4f));
+                scoresShape = new NcnnRepro.BufferShape(4, keyShape.h, queryShape.h, Mathf.Max(1, queryShape.d), queryShape.c);
+                scoresStorageShape = scoresShape;
+                scoresSlices = Mathf.Max(1, scoresShape.d * Mathf.CeilToInt(scoresShape.c / 4f));
+                this.outputShape = outputShape;
+                this.outputStorageShape = outputStorageShape;
+                outputPacks = Mathf.Max(1, Mathf.CeilToInt(outputStorageShape.c / 4f));
+                outputSlices = Mathf.Max(1, outputStorageShape.d * outputPacks);
+                pack4TextureFormat = NcnnRepro.ResolveTensorTextureFormat(4);
+            }
+        }
+
+        private readonly struct SdpaCmdRtPlan
+        {
+            public readonly float scale;
+            public readonly NcnnRepro.CmdTensorRef query;
+            public readonly NcnnRepro.BufferShape queryShape;
+            public readonly NcnnRepro.BufferShape queryStorageShape;
+            public readonly int querySlices;
+            public readonly NcnnRepro.CmdTensorRef key;
+            public readonly NcnnRepro.BufferShape keyShape;
+            public readonly NcnnRepro.CmdTensorRef value;
+            public readonly NcnnRepro.BufferShape valueShape;
+            public readonly NcnnRepro.BufferShape keyTransposedShape;
+            public readonly NcnnRepro.BufferShape keyTransposedStorageShape;
+            public readonly int keyTransposedSlices;
+            public readonly NcnnRepro.BufferShape scoresShape;
+            public readonly NcnnRepro.BufferShape scoresStorageShape;
+            public readonly int scoresSlices;
+            public readonly NcnnRepro.BufferShape outputShape;
+            public readonly NcnnRepro.BufferShape outputStorageShape;
+            public readonly int outputPacks;
+            public readonly int outputSlices;
+            public readonly RenderTextureFormat pack4TextureFormat;
+
+            public SdpaCmdRtPlan(
+                float scale,
+                NcnnRepro.CmdTensorRef query,
+                NcnnRepro.BufferShape queryShape,
+                NcnnRepro.CmdTensorRef key,
+                NcnnRepro.BufferShape keyShape,
+                NcnnRepro.CmdTensorRef value,
+                NcnnRepro.BufferShape valueShape,
+                NcnnRepro.BufferShape outputShape,
+                NcnnRepro.BufferShape outputStorageShape)
+            {
+                this.scale = Mathf.Approximately(scale, 0f) ? 1f / Mathf.Sqrt(Mathf.Max(1, queryShape.w)) : scale;
+                this.query = query;
+                this.queryShape = queryShape;
+                queryStorageShape = queryShape;
+                querySlices = Mathf.Max(1, queryShape.d * Mathf.CeilToInt(queryShape.c / 4f));
+                this.key = key;
+                this.keyShape = keyShape;
+                this.value = value;
+                this.valueShape = valueShape;
+                keyTransposedShape = new NcnnRepro.BufferShape(4, keyShape.h, keyShape.w, Mathf.Max(1, keyShape.d), keyShape.c);
+                keyTransposedStorageShape = keyTransposedShape;
+                keyTransposedSlices = Mathf.Max(1, keyTransposedShape.d * Mathf.CeilToInt(keyTransposedShape.c / 4f));
+                scoresShape = new NcnnRepro.BufferShape(4, keyShape.h, queryShape.h, Mathf.Max(1, queryShape.d), queryShape.c);
+                scoresStorageShape = scoresShape;
+                scoresSlices = Mathf.Max(1, scoresShape.d * Mathf.CeilToInt(scoresShape.c / 4f));
+                this.outputShape = outputShape;
+                this.outputStorageShape = outputStorageShape;
+                outputPacks = Mathf.Max(1, Mathf.CeilToInt(outputStorageShape.c / 4f));
+                outputSlices = Mathf.Max(1, outputStorageShape.d * outputPacks);
+                pack4TextureFormat = NcnnRepro.ResolveTensorTextureFormat(4);
+            }
         }
 
         private static bool ResolveSdpaFastPathEnabled()

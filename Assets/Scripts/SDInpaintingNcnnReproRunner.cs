@@ -390,8 +390,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         Texture2D latentMaskTexture = null;
         Texture2D generated512 = null;
         Texture2D generatedResized = null;
-        ComputeBuffer condBuf = null;
-        ComputeBuffer uncondBuf = null;
         RenderTexture latentMaskTex = null;
         RenderTexture maskedLatentTex = null;
         RenderTexture cleanLatentTex = null;
@@ -491,17 +489,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 WriteFloatArrayRawF32Safe(Path.Combine(_lastDumpDir, "prompt_uncond_f32.bin"), uncond);
             }
 
-            NcnnTensorBuffer condView = null;
-            NcnnTensorBuffer uncondView = null;
-            if (!useCommandBuffer)
-            {
-                LogStageTrace("prompt buffer upload begin");
-                condBuf = NewFloatBuffer(cond, "SDInpaint.PromptCond");
-                uncondBuf = NewFloatBuffer(uncond, "SDInpaint.PromptUncond");
-                LogStageTrace("prompt buffer upload end");
-                condView = new NcnnTensorBuffer(condBuf, 2, TextEmbeddingWidth, TokenCount, 1, 1, false);
-                uncondView = new NcnnTensorBuffer(uncondBuf, 2, TextEmbeddingWidth, TokenCount, 1, 1, false);
-            }
             LogStageTrace("dispose text model begin");
             DisposeTextModel();
             LogStageTrace("dispose text model end");
@@ -544,11 +531,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             LogResourceSnapshot("after_load_unet");
             latentMaskTex = CreateMaskPack4Texture(latentMaskTexture);
             DestroyRuntimeTexture(ref latentMaskTexture);
-            if (useCommandBuffer)
-            {
-                condTex = CreateTensorPack4Texture(_unetRepro, cond, 2, TextEmbeddingWidth, TokenCount, 1, 1, tensorTextureFormat);
-                uncondTex = CreateTensorPack4Texture(_unetRepro, uncond, 2, TextEmbeddingWidth, TokenCount, 1, 1, tensorTextureFormat);
-            }
+            condTex = CreateTensorPack4Texture(_unetRepro, cond, 2, TextEmbeddingWidth, TokenCount, 1, 1, tensorTextureFormat);
+            uncondTex = CreateTensorPack4Texture(_unetRepro, uncond, 2, TextEmbeddingWidth, TokenCount, 1, 1, tensorTextureFormat);
             latentsTex = useStrengthMax ? initNoiseTex : BuildNoisyLatentsPack4(cleanLatentTex, initNoiseTex, activeTimesteps[0]);
             initNoiseTex = useStrengthMax ? null : initNoiseTex;
             if (cleanLatentTex != null)
@@ -570,7 +554,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_init_f32.bin"), latentsTex, LatentChannels);
             }
 
-            if (latentMaskTex == null || maskedLatentTex == null || latentsTex == null)
+            if (latentMaskTex == null || maskedLatentTex == null || latentsTex == null || condTex == null || uncondTex == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to initialize latent textures." });
 
             ReportProgress(0.36f, "Sample latents");
@@ -583,7 +567,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 ReportProgress(0.36f + 0.48f * stepProgress, "Denoise step " + (i + 1).ToString(CultureInfo.InvariantCulture) + "/" + activeTimesteps.Length.ToString(CultureInfo.InvariantCulture));
                 LogResourceSnapshot("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_begin");
 
-                var epsilonTex = await RunCfgUnetPack4Async(latentsTex, latentMaskTex, maskedLatentTex, timestep, condView, uncondView, condTex, uncondTex, guidanceScale, ct);
+                var epsilonTex = await RunCfgUnetPack4Async(latentsTex, latentMaskTex, maskedLatentTex, timestep, condTex, uncondTex, guidanceScale, ct);
                 if (epsilonTex == null)
                     return Finish(new SDInpaintingNcnnReproResult { error = "UNet inference failed at timestep " + timestep.ToString(CultureInfo.InvariantCulture) + "." });
                 LogResourceSnapshot("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_after_unet");
@@ -618,10 +602,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 await UniTask.Yield();
             }
 
-            DisposeBuffer(condBuf, "SDInpaint.PromptCond");
-            condBuf = null;
-            DisposeBuffer(uncondBuf, "SDInpaint.PromptUncond");
-            uncondBuf = null;
             if (condTex != null)
             {
                 _unetRepro?.ReturnTempArray(condTex);
@@ -737,10 +717,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DestroyImmediate(generated512);
             if (generatedResized != null)
                 DestroyImmediate(generatedResized);
-            if (condBuf != null)
-                DisposeBuffer(condBuf, "SDInpaint.PromptCond");
-            if (uncondBuf != null)
-                DisposeBuffer(uncondBuf, "SDInpaint.PromptUncond");
             LogResourceSnapshot("process_finally_end");
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "resource_snapshots.txt"), string.Join(Environment.NewLine, _resourceSnapshotLines));
@@ -1050,6 +1026,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         EnsureRuntimeObjects();
         if (_unetRepro?.Model != null)
         {
+            ApplyCommonOptions(_unetRepro);
+            ApplySpatialModelOptions(_unetRepro);
             AttachDebugLog(_unetRepro, "unet");
             return;
         }
@@ -1375,19 +1353,35 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             ? Path.GetFullPath(Environment.ExpandEnvironmentVariables(inpaintRootOverride.Trim()))
             : Path.GetFullPath(Path.Combine(Application.streamingAssetsPath, inpaintingModelRootRelativePath));
 
-        var sdRoots = new List<string> { sdRoot };
-        if (useReferenceAssetFallback)
+        static void AddUniqueRoot(List<string> roots, string root)
         {
-            sdRoots.Add(Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets"));
-            sdRoots.Add(Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "x86", "exe", "assets"));
-            sdRoots.Add(Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "x86", "linux", "assets"));
+            if (roots == null || string.IsNullOrWhiteSpace(root))
+                return;
+
+            var fullRoot = Path.GetFullPath(root);
+            for (var i = 0; i < roots.Count; i++)
+            {
+                if (string.Equals(roots[i], fullRoot, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+
+            roots.Add(fullRoot);
         }
 
-        var inpaintRoots = new List<string>
+        var sdRoots = new List<string>();
+        AddUniqueRoot(sdRoots, sdRoot);
+        if (useReferenceAssetFallback)
         {
-            inpaintRoot,
-            Path.Combine(inpaintRoot, "ncnn")
-        };
+            AddUniqueRoot(sdRoots, Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "Windows", "Binary", "x64", "assets"));
+            AddUniqueRoot(sdRoots, Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "x86", "exe", "assets"));
+            AddUniqueRoot(sdRoots, Path.Combine(projectRoot, "ref", "Stable-Diffusion-NCNN-main", "x86", "linux", "assets"));
+        }
+
+        var inpaintRoots = new List<string>();
+        AddUniqueRoot(inpaintRoots, inpaintRoot);
+        AddUniqueRoot(inpaintRoots, Path.Combine(inpaintRoot, "ncnn"));
+        AddUniqueRoot(inpaintRoots, Path.Combine(projectRoot, "Tools", "sd15inpainting2ncnnExporter", "output", "ncnn"));
+        AddUniqueRoot(inpaintRoots, Path.Combine(projectRoot, "Tools", "sd15inpainting2ncnnExporter", "output", "ncnn_scriptcheck"));
 
         string FindExact(IReadOnlyList<string> roots, string fileName)
         {
@@ -1973,8 +1967,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         RenderTexture maskTex,
         RenderTexture maskedLatentTex,
         int timestep,
-        NcnnTensorBuffer condView,
-        NcnnTensorBuffer uncondView,
         RenderTexture condTex,
         RenderTexture uncondTex,
         float guidanceScale,
@@ -1984,16 +1976,18 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return await RunCfgUnetPack4CommandBufferAsync(latentsTex, maskTex, maskedLatentTex, timestep, condTex, uncondTex, guidanceScale, ct);
 
         RenderTexture inputTex = null;
+        RenderTexture timestepTex = null;
         RenderTexture condOutTex = null;
         RenderTexture uncondOutTex = null;
         RenderTexture finalTex = null;
-        ComputeBuffer timestepBuf = null;
         List<UnetCacheBlob> unetCache = null;
         try
         {
+            if (condTex == null || uncondTex == null)
+                throw new InvalidOperationException("UNet pack4 path requires prompt condition textures.");
+
             inputTex = BuildUnetInputPack4(latentsTex, maskTex, maskedLatentTex);
-            timestepBuf = NewFloatBuffer(new[] { (float)timestep }, "SDInpaint.UnetPack4Timestep");
-            var timestepView = new NcnnTensorBuffer(timestepBuf, 1, 1, 1, 1, 1, false);
+            timestepTex = CreateTensorPack4Texture(_unetRepro, new[] { (float)timestep }, 1, 1, 1, 1, 1, tensorTextureFormat);
             var shouldDumpFirstStep = enableDebugDump && !_unetDebugDumped && !string.IsNullOrWhiteSpace(_lastDumpDir);
 
             if (shouldDumpFirstStep)
@@ -2006,9 +2000,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (useOfficialUnetCache)
                 unetCache = new List<UnetCacheBlob>(OfficialUnetCacheBlobNames.Length);
 
-            condOutTex = RunUnetOnceTexture(inputTex, timestepView, condView, "cond", unetCache, null);
+            condOutTex = RunUnetOnceTexture(inputTex, timestepTex, condTex, "cond", unetCache, null);
             var cacheForUncond = unetCache != null && unetCache.Count == OfficialUnetCacheBlobNames.Length ? unetCache : null;
-            uncondOutTex = RunUnetOnceTexture(inputTex, timestepView, uncondView, "uncond", null, cacheForUncond);
+            uncondOutTex = RunUnetOnceTexture(inputTex, timestepTex, uncondTex, "uncond", null, cacheForUncond);
             if (condOutTex == null || uncondOutTex == null)
                 return null;
 
@@ -2040,14 +2034,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         {
             if (inputTex != null)
                 _unetRepro?.ReturnTempArray(inputTex);
+            if (timestepTex != null)
+                _unetRepro?.ReturnTempArray(timestepTex);
             if (condOutTex != null)
                 _unetRepro?.ReturnTempArray(condOutTex);
             if (uncondOutTex != null)
                 _unetRepro?.ReturnTempArray(uncondOutTex);
             if (finalTex != null)
                 _unetRepro?.ReturnTempArray(finalTex);
-            if (timestepBuf != null)
-                DisposeBuffer(timestepBuf, "SDInpaint.UnetPack4Timestep");
             ReleaseUnetCache(unetCache);
         }
     }
@@ -2263,12 +2257,19 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private RenderTexture RunUnetOnceTexture(
         RenderTexture inputTex,
-        NcnnTensorBuffer timestepView,
-        NcnnTensorBuffer textView,
+        RenderTexture timestepTex,
+        RenderTexture textTex,
         string dumpTag,
         List<UnetCacheBlob> captureCache,
         IReadOnlyList<UnetCacheBlob> reuseCache)
     {
+        if (inputTex == null)
+            throw new ArgumentNullException(nameof(inputTex));
+        if (timestepTex == null)
+            throw new ArgumentNullException(nameof(timestepTex));
+        if (textTex == null)
+            throw new ArgumentNullException(nameof(textTex));
+
         HashSet<string> pinned = null;
         var shouldDumpCond = enableDebugDump
             && !_unetDebugDumped
@@ -2277,11 +2278,15 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         var debugUnetBlobNames = shouldDumpCond ? ResolveDebugUnetBlobNames() : Array.Empty<string>();
         var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
         {
-            { UnetInputBlobName, inputTex }
+            { UnetInputBlobName, inputTex },
+            { UnetTimestepBlobName, timestepTex },
+            { UnetTextBlobName, textTex }
         };
         var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
         {
-            { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) }
+            { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
+            { UnetTimestepBlobName, new NcnnRepro.BufferShape(1, 1, 1, 1, 1) },
+            { UnetTextBlobName, new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
         };
         if (captureCache != null)
         {
@@ -2313,11 +2318,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         using var infer = _unetRepro.InferWithMultiInputs(
             textureInputs,
-            new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal)
-            {
-                { UnetTimestepBlobName, timestepView },
-                { UnetTextBlobName, textView }
-            },
+            null,
             pinned ?? new HashSet<string>(StringComparer.Ordinal) { UnetOutputBlobName },
             textureInputShapes);
 

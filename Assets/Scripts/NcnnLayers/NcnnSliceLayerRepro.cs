@@ -305,7 +305,8 @@ namespace NcnnCompute
         {
             return srcTex != null
                 && srcTex.texture != null
-                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && srcShape.dims >= 1
+                && srcShape.dims <= 4
                 && srcShape.w == srcTex.width
                 && srcShape.h == srcTex.height
                 && (srcShape.dims != 4 || srcShape.d > 0);
@@ -315,7 +316,8 @@ namespace NcnnCompute
         {
             return src != null
                 && src.texture != null
-                && (srcShape.dims == 3 || srcShape.dims == 4)
+                && srcShape.dims >= 1
+                && srcShape.dims <= 4
                 && srcShape.w == src.width
                 && srcShape.h == src.height
                 && (srcShape.dims != 4 || srcShape.d > 0);

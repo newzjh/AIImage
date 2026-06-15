@@ -1474,9 +1474,10 @@ public static class NcnnDebugRunner
             inpaintRunner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, inpaintRunner.decoderTensorTextureFormat);
             inpaintRunner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, inpaintRunner.encoderTensorTextureFormat);
             inpaintRunner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, inpaintRunner.keepRawConvWeightsForTexturePath);
+            inpaintRunner.enableAttentionMatMulPack4Specializations = true;
             inpaintRunner.useCommandBuffer = useCommandBuffer;
             inpaintRunner.useAsyncComputeCommandBuffer = ResolveBoolEnv(SdUseAsyncComputeEnvVar, inpaintRunner.useAsyncComputeCommandBuffer);
-            inpaintRunner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, inpaintRunner.disallowInferenceTempComputeBuffers);
+            inpaintRunner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
             inpaintRunner.defaultStepCount = stepCount;
             inpaintRunner.defaultStrength = strength;
             inpaintRunner.defaultGuidanceScale = guidanceScale;

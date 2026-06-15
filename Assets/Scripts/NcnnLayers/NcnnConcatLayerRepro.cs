@@ -195,7 +195,11 @@ namespace NcnnCompute
 
             var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(firstShape.dims, positiveAxis);
             var concatChannelAxis = firstShape.dims == 4 ? 3 : 2;
-            if ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis)
+            var canUseLowDimLinearConcat =
+                (firstShape.dims == 1 && tensorAxis == 0)
+                || (firstShape.dims == 2 && tensorAxis == 0);
+            if (!canUseLowDimLinearConcat
+                && ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis))
                 return false;
 
             for (var i = 0; i < layer.bottomNames.Length; i++)
@@ -204,19 +208,37 @@ namespace NcnnCompute
                     return false;
 
                 if (shape.dims != firstShape.dims
-                    || shape.w != firstShape.w
-                    || shape.h != firstShape.h
-                    || shape.d != firstShape.d
-                    || width != firstWidth
-                    || height != firstHeight
                     || shape.c <= 0
                     || shape.c > packs * 4)
                 {
                     return false;
                 }
 
-                if (i < layer.bottomNames.Length - 1 && (shape.c & 3) != 0)
-                    return false;
+                if (canUseLowDimLinearConcat)
+                {
+                    if (shape.h != firstShape.h
+                        || shape.d != firstShape.d
+                        || height != firstHeight
+                        || shape.c != firstShape.c
+                        || packs != firstPacks)
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (shape.w != firstShape.w
+                        || shape.h != firstShape.h
+                        || shape.d != firstShape.d
+                        || width != firstWidth
+                        || height != firstHeight)
+                    {
+                        return false;
+                    }
+
+                    if (i < layer.bottomNames.Length - 1 && (shape.c & 3) != 0)
+                        return false;
+                }
             }
 
             return true;
@@ -243,7 +265,7 @@ namespace NcnnCompute
                 width = existingTexture.width;
                 height = existingTexture.height;
                 packs = existingTexture.packs;
-                return shape.dims == 3 || shape.dims == 4;
+                return shape.dims >= 1 && shape.dims <= 4;
             }
 
             if (bufferBlobs != null
@@ -257,7 +279,7 @@ namespace NcnnCompute
                 width = view.w;
                 height = view.h;
                 packs = Mathf.Max(1, Mathf.CeilToInt(view.c / 4f));
-                return (view.dims == 3 || view.dims == 4) && view.c > 0;
+                return view.dims >= 1 && view.dims <= 4 && view.c > 0;
             }
 
             return false;
@@ -285,7 +307,11 @@ namespace NcnnCompute
 
             var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(firstShape.dims, positiveAxis);
             var concatChannelAxis = firstShape.dims == 4 ? 3 : 2;
-            if ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis)
+            var canUseLowDimLinearConcat =
+                (firstShape.dims == 1 && tensorAxis == 0)
+                || (firstShape.dims == 2 && tensorAxis == 0);
+            if (!canUseLowDimLinearConcat
+                && ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis))
                 return false;
 
             var parts = new NcnnRepro.TensorRef[layer.bottomNames.Length];
@@ -293,6 +319,7 @@ namespace NcnnCompute
             parts[0] = firstTex;
             shapes[0] = firstShape;
 
+            var outW = firstShape.w;
             var outC = firstShape.c;
             for (var i = 0; i < layer.bottomNames.Length; i++)
             {
@@ -300,23 +327,45 @@ namespace NcnnCompute
                 {
                     if (!owner.TryGetPack4Texture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews, out parts[i], out shapes[i]))
                         return false;
-                    outC += shapes[i].c;
+                    if (canUseLowDimLinearConcat)
+                        outW += shapes[i].w;
+                    else
+                        outC += shapes[i].c;
                 }
 
                 var shape = shapes[i];
                 var tex = parts[i];
                 if (shape.dims != firstShape.dims
-                    || shape.w != firstShape.w
-                    || shape.h != firstShape.h
-                    || shape.d != firstShape.d
                     || shape.c <= 0
                     || !NcnnRepro.MatchesPack4TextureStorage(tex, shape))
                 {
                     return false;
                 }
 
-                if (i < layer.bottomNames.Length - 1 && (shape.c & 3) != 0)
-                    return false;
+                if (canUseLowDimLinearConcat)
+                {
+                    if (shape.h != firstShape.h
+                        || shape.d != firstShape.d
+                        || shape.c != firstShape.c
+                        || tex.width != shape.w
+                        || tex.height != 1
+                        || tex.packs != parts[0].packs)
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (shape.w != firstShape.w
+                        || shape.h != firstShape.h
+                        || shape.d != firstShape.d)
+                    {
+                        return false;
+                    }
+
+                    if (i < layer.bottomNames.Length - 1 && (shape.c & 3) != 0)
+                        return false;
+                }
             }
 
             if (parts.Length == 1)
@@ -324,6 +373,24 @@ namespace NcnnCompute
                 textureBlobs[layer.topNames[0]] = firstTex;
                 textureShapes[layer.topNames[0]] = firstShape;
                 firstTex.refs++;
+                return true;
+            }
+
+            if (canUseLowDimLinearConcat)
+            {
+                var outShape = new NcnnRepro.BufferShape(firstShape.dims, outW, firstShape.h, firstShape.d, firstShape.c);
+                var outRt = owner.RentTempArray(outShape.w, 1, parts[0].packs, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                var dstOffsetX = 0;
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    var src = parts[i].texture;
+                    var srcWidth = shapes[i].w;
+                    for (var pack = 0; pack < parts[i].packs; pack++)
+                        Graphics.CopyTexture(src, pack, 0, 0, 0, srcWidth, 1, outRt, pack, 0, dstOffsetX, 0);
+                    dstOffsetX += srcWidth;
+                }
+
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
                 return true;
             }
 
@@ -405,7 +472,11 @@ namespace NcnnCompute
             var outD = firstShape.d;
             var outC = firstShape.c;
             var concatChannelAxis = firstShape.dims == 4 ? 3 : 2;
-            var canUseExactPack4 = (firstShape.dims == 3 || firstShape.dims == 4) && tensorAxis == concatChannelAxis;
+            var canUseLowDimLinearConcat =
+                (firstShape.dims == 1 && tensorAxis == 0)
+                || (firstShape.dims == 2 && tensorAxis == 0);
+            var canUseExactPack4 = ((firstShape.dims == 3 || firstShape.dims == 4) && tensorAxis == concatChannelAxis)
+                || canUseLowDimLinearConcat;
 
             for (var i = 0; i < partShapes.Length; i++)
             {
@@ -432,12 +503,14 @@ namespace NcnnCompute
                 }
 
                 var supportsPack4Storage =
-                    shape.dims == 3
+                    shape.dims <= 2
+                        ? shape.h == 1 && shape.d == 1
+                        : shape.dims == 3
                         ? shape.d == 1
                         : shape.dims == 4;
                 if (!supportsPack4Storage
                     || !NcnnRepro.MatchesPack4TextureStorage(parts[i], shape)
-                    || (i < partShapes.Length - 1 && (shape.c & 3) != 0))
+                    || (!canUseLowDimLinearConcat && i < partShapes.Length - 1 && (shape.c & 3) != 0))
                 {
                     canUseExactPack4 = false;
                 }
@@ -456,6 +529,37 @@ namespace NcnnCompute
 
             if (canUseExactPack4)
             {
+                if (canUseLowDimLinearConcat)
+                {
+                    var outArr = owner.RentTempArray(cmd, outShape.w, 1, parts[0].packs, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                    var dstOffsetX = 0;
+                    for (var i = 0; i < parts.Length; i++)
+                    {
+                        var srcWidth = partShapes[i].w;
+                        for (var pack = 0; pack < parts[i].packs; pack++)
+                            cmd.CopyTexture(parts[i].texture.nameID, pack, 0, 0, 0, srcWidth, 1, outArr.nameID, pack, 0, dstOffsetX, 0);
+                        dstOffsetX += srcWidth;
+                    }
+
+                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                    {
+                        texture = outArr,
+                        width = outShape.w,
+                        height = 1,
+                        packs = parts[0].packs,
+                        refs = 1,
+                        owned = true,
+                        hasLogicalShape = true,
+                        logicalShape = outShape,
+                        hasStorageShape = true,
+                        storageShape = outShape
+                    };
+                    if (shapes != null)
+                        shapes[layer.topNames[0]] = outShape;
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
                 var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
                 if (outShape.dims == 3)
                 {

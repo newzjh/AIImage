@@ -922,7 +922,11 @@ namespace NcnnCompute
             var shapeExpr = layer.GetString(6, null);
             var bottomShapes = BuildBottomShapes(owner, layer, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, context.tempOwned, !string.IsNullOrWhiteSpace(shapeExpr));
             if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var src, out var srcShape))
+            {
+                if (owner?.DebugLog != null && layer != null && string.Equals(layer.name, "reshape_491", StringComparison.Ordinal))
+                    owner.DebugLog("[ReshapeRTDiag] layer=" + layer.name + " | hasExistingTexture=false");
                 return false;
+            }
 
             if (ShouldAllowAttentionPack4ReshapeSpecializations(owner))
             {
@@ -936,15 +940,36 @@ namespace NcnnCompute
                     return src != null && src.texture != null;
                 var attentionBottomShapes = BuildBottomShapes(owner, layer, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, context.tempOwned, materializeAll: false);
                 var attentionOutShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, attentionBottomShapes);
-                if (CanUsePack4ToScalar2DReshape(owner, layer, srcShape, attentionOutShape))
+                var canPack4ToScalar2D = CanUsePack4ToScalar2DReshape(owner, layer, srcShape, attentionOutShape);
+                if (canPack4ToScalar2D)
                     return src != null && src.texture != null;
-                if (CanUsePack4ToPack4Reshape(owner, srcShape, attentionOutShape))
+                var canPack4ToPack4 = CanUsePack4ToPack4Reshape(owner, srcShape, attentionOutShape);
+                if (canPack4ToPack4)
                     return src != null && src.texture != null;
                 if (TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out _))
                     return src != null && src.texture != null;
+
+                if (owner?.DebugLog != null && layer != null && string.Equals(layer.name, "reshape_491", StringComparison.Ordinal))
+                {
+                    owner.DebugLog(
+                        "[ReshapeRTDiag] layer=" + layer.name
+                        + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                        + " | out=d" + attentionOutShape.dims + ":" + attentionOutShape.w + "x" + attentionOutShape.h + "x" + attentionOutShape.d + "x" + attentionOutShape.c
+                        + " | canPack4ToScalar2D=" + canPack4ToScalar2D
+                        + " | canPack4ToPack4=" + canPack4ToPack4
+                        + " | attentionSpecializations=" + ShouldAllowAttentionPack4ReshapeSpecializations(owner));
+                }
             }
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (owner?.DebugLog != null && layer != null && string.Equals(layer.name, "reshape_491", StringComparison.Ordinal))
+            {
+                owner.DebugLog(
+                    "[ReshapeRTDiag] layer=" + layer.name
+                    + " | aliasFallback src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                    + " | canAlias=" + CanAliasTextureLayout(owner, srcShape, outShape));
+            }
             return CanAliasTextureLayout(owner, srcShape, outShape) && src != null && src.texture != null;
         }
 
@@ -1915,6 +1940,15 @@ namespace NcnnCompute
                 return false;
             if (outShape.w <= 0 || outShape.h <= 0)
                 return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.d <= 0 || srcShape.c <= 0)
+                return false;
+
+            var srcCount = srcShape.w * srcShape.h * srcShape.d * srcShape.c;
+            var outCount = outShape.w * outShape.h;
+            if (srcCount != outCount)
+                return false;
+            if (CanUseWidthPreservingPack4ToScalar2DReshape(srcShape, outShape))
+                return true;
 
             var consumer = FindSingleConsumer(owner?.Model, layer?.topNames != null && layer.topNames.Length > 0 ? layer.topNames[0] : null);
             if (consumer != null
@@ -1926,6 +1960,27 @@ namespace NcnnCompute
             }
 
             return CanUseCodeFormerStylePack4ToScalar2DReshape(owner, layer, srcShape, outShape);
+        }
+
+        private static bool CanUseWidthPreservingPack4ToScalar2DReshape(
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.BufferShape outShape)
+        {
+            if (srcShape.dims != 3 && srcShape.dims != 4)
+                return false;
+            if (outShape.dims != 2)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || srcShape.d <= 0 || srcShape.c <= 0)
+                return false;
+            if (outShape.w <= 0 || outShape.h <= 0)
+                return false;
+
+            var expectedH = srcShape.h * Mathf.Max(1, srcShape.d) * srcShape.c;
+            if (outShape.w == srcShape.w && outShape.h == expectedH)
+                return true;
+
+            var expectedW = srcShape.w * srcShape.h * Mathf.Max(1, srcShape.d);
+            return outShape.w == expectedW && outShape.h == srcShape.c;
         }
 
         private static bool CanUsePack4ToPack4Reshape(

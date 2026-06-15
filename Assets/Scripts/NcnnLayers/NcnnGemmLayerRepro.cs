@@ -270,7 +270,12 @@ namespace NcnnCompute
                 return false;
             if (!owner._gemm.TryGetValue(layer.name, out var gp))
                 return false;
-            if (gp.transA || !gp.constantB)
+            if (gp.transA)
+                return false;
+
+            if (TryExecuteCommandBufferTextureMatMulPath(owner, layer, context, gp))
+                return true;
+            if (!gp.constantB)
                 return false;
 
             var srcTex = NcnnRepro.GetCmdTensor(context.blobs, layer.bottomNames[0]);
@@ -348,7 +353,11 @@ namespace NcnnCompute
                 return false;
             if (!owner._gemm.TryGetValue(layer.name, out var gp))
                 return false;
-            if (gp.transA || !gp.constantB)
+            if (gp.transA)
+                return false;
+            if (TryExecuteRenderTextureTextureMatMulPath(owner, layer, context, gp))
+                return true;
+            if (!gp.constantB)
                 return false;
             if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
                 return false;
@@ -403,6 +412,218 @@ namespace NcnnCompute
                 layer.bottomNames,
                 context.pinnedNames);
             return true;
+        }
+
+        private static bool TryExecuteCommandBufferTextureMatMulPath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerCommandBufferContext context,
+            NcnnRepro.GemmPack gp)
+        {
+            if (owner == null || layer == null || context == null || gp == null)
+                return false;
+            if (gp.constantB || gp.constantC || gp.broadcastTypeC != 0)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length < 2 || layer.topNames == null || layer.topNames.Length < 1)
+                return false;
+            if (!TryGetScalar2DCmdTexture(context.blobs, context.shapes, layer.bottomNames[0], out var aTex, out var aShape)
+                || !TryGetScalar2DCmdTexture(context.blobs, context.shapes, layer.bottomNames[1], out var bTex, out var bShape))
+            {
+                return false;
+            }
+
+            var m = aShape.h;
+            var k = aShape.w;
+            var bRows = bShape.h;
+            var bCols = bShape.w;
+            var kFromB = gp.transB ? bCols : bRows;
+            var n = gp.transB ? bRows : bCols;
+            if (gp.constantK > 0 && k != gp.constantK)
+                return false;
+            if (k != kFromB || m <= 0 || n <= 0)
+                return false;
+
+            var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
+            var outStorageShape = new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
+            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGBHalf;
+            var outRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
+            owner.Ops.MatMulPack4Cdhw(
+                context.commandBuffer,
+                aTex.texture,
+                m,
+                k,
+                1,
+                1,
+                bTex.texture,
+                bRows,
+                bCols,
+                1,
+                1,
+                gp.transB,
+                1,
+                1,
+                outRt);
+
+            if (!Mathf.Approximately(gp.alpha, 1f))
+            {
+                var scaledRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
+                owner.Ops.BinaryOpScalarPack4(context.commandBuffer, outRt, gp.alpha, 1, 2, scaledRt);
+                owner.ReturnTempArray(context.commandBuffer, outRt);
+                outRt = scaledRt;
+            }
+
+            context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            {
+                texture = outRt,
+                width = outShape.w,
+                height = outShape.h,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = outStorageShape
+            };
+            context.shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdTexture2D][Gemm]"
+                + " | layer=" + layer.name
+                + " | a=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
+                + " | transB=" + (gp.transB ? "1" : "0")
+                + " | alpha=" + gp.alpha.ToString(CultureInfo.InvariantCulture)
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureTextureMatMulPath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerBufferContext context,
+            NcnnRepro.GemmPack gp)
+        {
+            if (owner == null || layer == null || context == null || gp == null)
+                return false;
+            if (gp.constantB || gp.constantC || gp.broadcastTypeC != 0)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length < 2 || layer.topNames == null || layer.topNames.Length < 1)
+                return false;
+            if (!TryGetScalar2DTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var aTex, out var aShape)
+                || !TryGetScalar2DTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[1], out var bTex, out var bShape))
+            {
+                return false;
+            }
+
+            var m = aShape.h;
+            var k = aShape.w;
+            var bRows = bShape.h;
+            var bCols = bShape.w;
+            var kFromB = gp.transB ? bCols : bRows;
+            var n = gp.transB ? bRows : bCols;
+            if (gp.constantK > 0 && k != gp.constantK)
+                return false;
+            if (k != kFromB || m <= 0 || n <= 0)
+                return false;
+
+            var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
+            var outStorageShape = new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
+            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGBHalf;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
+            owner.Ops.MatMulPack4Cdhw(
+                aTex.texture,
+                m,
+                k,
+                1,
+                1,
+                bTex.texture,
+                bRows,
+                bCols,
+                1,
+                1,
+                gp.transB,
+                1,
+                1,
+                outRt);
+
+            if (!Mathf.Approximately(gp.alpha, 1f))
+            {
+                var scaledRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
+                owner.Ops.BinaryOpScalarPack4(outRt, gp.alpha, 1, 2, scaledRt);
+                owner.ReturnTempArray(outRt);
+                outRt = scaledRt;
+            }
+
+            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, outStorageShape);
+            owner.DebugLog?.Invoke(
+                "[Texture2D][Gemm]"
+                + " | layer=" + layer.name
+                + " | a=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
+                + " | transB=" + (gp.transB ? "1" : "0")
+                + " | alpha=" + gp.alpha.ToString(CultureInfo.InvariantCulture)
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            owner.Consume(
+                context.textureBlobs,
+                context.bufferBlobs,
+                context.bufferRefs,
+                context.bufferViews,
+                context.remaining,
+                layer.bottomNames,
+                context.pinnedNames);
+            return true;
+        }
+
+        private static bool TryGetScalar2DTexture(
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            string blobName,
+            out NcnnRepro.TensorRef texture,
+            out NcnnRepro.BufferShape shape)
+        {
+            texture = null;
+            shape = default;
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, blobName, out texture, out shape))
+                return false;
+            return texture != null
+                && texture.texture != null
+                && shape.dims == 2
+                && shape.w > 0
+                && shape.h > 0
+                && texture.width == shape.w
+                && texture.height == shape.h
+                && texture.packs == 1;
+        }
+
+        private static bool TryGetScalar2DCmdTexture(
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes,
+            string blobName,
+            out NcnnRepro.CmdTensorRef texture,
+            out NcnnRepro.BufferShape shape)
+        {
+            texture = null;
+            shape = default;
+            if (blobs == null || shapes == null || string.IsNullOrWhiteSpace(blobName))
+                return false;
+            if (!blobs.TryGetValue(blobName, out texture) || texture == null || texture.texture == null)
+            {
+                texture = null;
+                return false;
+            }
+
+            shape = NcnnRepro.GetCmdShape(shapes, blobs, blobName);
+            return shape.dims == 2
+                && shape.w > 0
+                && shape.h > 0
+                && texture.width == shape.w
+                && texture.height == shape.h
+                && texture.packs == 1;
         }
 
         private static bool ShouldPromoteAttentionGemmOutputTexture(NcnnRepro owner, NcnnParamModel.Layer layer)

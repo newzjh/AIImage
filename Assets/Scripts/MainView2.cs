@@ -1016,6 +1016,10 @@ public sealed class MainView2 : BasePageView
             Host.SDInpaintingRunner.tensorTextureFormat = RenderTextureFormat.ARGBHalf;
             Host.SDInpaintingRunner.encoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
             Host.SDInpaintingRunner.decoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
+            Host.SDInpaintingRunner.enableAttentionMatMulPack4Specializations = true;
+            Host.SDInpaintingRunner.useCommandBuffer = false;
+            Host.SDInpaintingRunner.useAsyncComputeCommandBuffer = false;
+            Host.SDInpaintingRunner.disallowInferenceTempComputeBuffers = true;
             Host.SDInpaintingRunner.ApplyPeopleRemovalPreset();
             Host.SDInpaintingRunner.ReleaseRuntimeResources();
             await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
