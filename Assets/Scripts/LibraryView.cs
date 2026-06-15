@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -32,7 +31,7 @@ public sealed class LibraryView : BasePageView
         "raw",
         "original"
     };
-    private static readonly ExplorerStringComparer ExplorerComparer = new ExplorerStringComparer();
+    private static readonly IComparer<string> ExplorerComparer = ImageNavigationUtility.ExplorerNameComparer;
 
     private enum LibraryImageType
     {
@@ -252,6 +251,26 @@ public sealed class LibraryView : BasePageView
         ClearThumbnailEntries(true);
         _clipClassificationSemaphore.Dispose();
         base.OnDestroy();
+    }
+
+    protected override bool HandleDirectionalImageNavigation(int direction)
+    {
+        if (_visibleEntries.Count == 0)
+            return false;
+
+        var currentPath = ResolveSelectedOrCurrentVisiblePath();
+        if (string.IsNullOrWhiteSpace(currentPath))
+            return false;
+
+        var currentIndex = _visibleEntries.FindIndex(entry => string.Equals(entry.fullPath, currentPath, StringComparison.OrdinalIgnoreCase));
+        if (currentIndex < 0)
+            return false;
+
+        var targetIndex = currentIndex + Math.Sign(direction);
+        if (targetIndex < 0 || targetIndex >= _visibleEntries.Count)
+            return false;
+
+        return SelectVisibleThumbnail(_visibleEntries[targetIndex], true);
     }
 
     private void SyncInitialSelectionFromCurrentImagePath()
@@ -1364,12 +1383,34 @@ public sealed class LibraryView : BasePageView
 
         _lastClickTicks = nowTicks;
         _lastClickPath = entry.fullPath;
-        _selectedThumbnailPath = entry.fullPath;
-        ApplyFilters();
-        UpdateSelectionTips(entry);
+        SelectVisibleThumbnail(entry, true);
 
         if (isDoubleClick)
             Host?.OpenLibraryImageInMain(entry.fullPath);
+    }
+
+    public void SyncSelectionFromImagePath(string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath))
+            return;
+
+        try
+        {
+            var directory = Path.GetDirectoryName(imagePath);
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+                _selectedDirectoryPath = directory;
+        }
+        catch
+        {
+        }
+
+        _selectedThumbnailPath = imagePath;
+
+        if (_visibleEntries.Count == 0)
+            return;
+
+        if (_entryByPath.TryGetValue(imagePath, out var entry))
+            SelectVisibleThumbnail(entry, false);
     }
 
     private void RestoreSelectedThumbnailTips()
@@ -1829,6 +1870,46 @@ public sealed class LibraryView : BasePageView
             target = Mathf.Max(0f, cardBottom - viewportHeight + padding);
 
         _thumbnailScroll.scrollOffset = new Vector2(_thumbnailScroll.scrollOffset.x, target);
+    }
+
+    private string ResolveSelectedOrCurrentVisiblePath()
+    {
+        if (!string.IsNullOrWhiteSpace(_selectedThumbnailPath))
+            return _selectedThumbnailPath;
+
+        var currentPath = Host?.MainPage?.CurrentSourcePathForSync;
+        if (!string.IsNullOrWhiteSpace(currentPath))
+            return currentPath;
+
+        return _visibleEntries.Count > 0 ? _visibleEntries[0].fullPath : null;
+    }
+
+    private bool SelectVisibleThumbnail(ThumbnailEntry entry, bool ensureVisible)
+    {
+        if (entry == null || string.IsNullOrWhiteSpace(entry.fullPath))
+            return false;
+
+        var previousPath = _selectedThumbnailPath;
+        _selectedThumbnailPath = entry.fullPath;
+
+        if (!string.IsNullOrWhiteSpace(previousPath) &&
+            _cardByPath.TryGetValue(previousPath, out var previousCard) &&
+            previousCard != null)
+        {
+            ApplySelectedCardBorder(previousCard, false);
+        }
+
+        if (_cardByPath.TryGetValue(entry.fullPath, out var nextCard) && nextCard != null)
+            ApplySelectedCardBorder(nextCard, true);
+
+        UpdateSelectionTips(entry);
+
+        if (ensureVisible)
+            ScrollToSelectedThumbnailSoon();
+        else
+            ScrollToSelectedThumbnailNow();
+
+        return true;
     }
 
     private void ShowGridStatus(string text)
@@ -2962,48 +3043,4 @@ public sealed class LibraryView : BasePageView
         }
     }
 
-    private sealed class ExplorerStringComparer : IComparer<string>
-    {
-        private readonly CompareInfo _compareInfo = CompareInfo.GetCompareInfo("zh-CN");
-
-        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-        private static extern int StrCmpLogicalW(string left, string right);
-
-        public int Compare(string x, string y)
-        {
-            if (ReferenceEquals(x, y))
-                return 0;
-            if (x == null)
-                return -1;
-            if (y == null)
-                return 1;
-
-            if (IsWindows())
-            {
-                try
-                {
-                    var logicalResult = StrCmpLogicalW(x, y);
-                    if (logicalResult != 0)
-                        return logicalResult;
-                }
-                catch
-                {
-                }
-            }
-
-            var fallback = _compareInfo.Compare(x, y, CompareOptions.IgnoreCase | CompareOptions.StringSort);
-            if (fallback != 0)
-                return fallback;
-            return string.CompareOrdinal(x, y);
-        }
-
-        private static bool IsWindows()
-        {
-            var platform = Environment.OSVersion.Platform;
-            return platform == PlatformID.Win32NT ||
-                   platform == PlatformID.Win32S ||
-                   platform == PlatformID.Win32Windows ||
-                   platform == PlatformID.WinCE;
-        }
-    }
 }

@@ -65,6 +65,11 @@ public sealed class DesignView : BasePageView
 
     protected override float GetSwitchPillAlignment01() => 1f;
 
+    protected override bool HandleDirectionalImageNavigation(int direction)
+    {
+        return Host != null && Host.TryOpenAdjacentMainImage(direction);
+    }
+
     protected override void OnShown()
     {
         if (CompareView != null)

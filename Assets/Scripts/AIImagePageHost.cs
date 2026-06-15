@@ -126,8 +126,21 @@ public sealed class AIImagePageHost : MonoBehaviour
             return false;
 
         RememberLastImagePath(filePath);
+        _libraryView?.SyncSelectionFromImagePath(filePath);
         SyncDesignFromMain();
         return true;
+    }
+
+    public bool TryOpenAdjacentMainImage(int direction)
+    {
+        if (_mainView2 == null)
+            return false;
+
+        var currentPath = _mainView2.CurrentSourcePathForSync;
+        if (!ImageNavigationUtility.TryGetAdjacentImagePath(currentPath, direction, out var adjacentPath))
+            return false;
+
+        return ReloadMainImageFromDisk(adjacentPath, true);
     }
 
     public Texture2D LoadTexture(string filePath, bool forceReload)

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -1348,18 +1348,85 @@ public class MainView : MonoBehaviour
         if (evt == null)
             return;
 
-        if (evt.target is TextField)
+        if (ShouldLetFocusedControlHandleArrowKeys(evt))
             return;
 
         var ctrlOrCmd = evt.ctrlKey || evt.commandKey;
-        if (!ctrlOrCmd)
-            return;
-
-        if (evt.keyCode == KeyCode.Z && !evt.shiftKey)
+        if (ctrlOrCmd && evt.keyCode == KeyCode.Z && !evt.shiftKey)
         {
             UndoLastOperation();
             evt.StopPropagation();
+            evt.PreventDefault();
+            return;
         }
+
+        if (evt.keyCode == KeyCode.LeftArrow || evt.keyCode == KeyCode.RightArrow)
+        {
+            if (TryNavigateAdjacentImage(evt.keyCode == KeyCode.LeftArrow ? -1 : 1))
+            {
+                evt.StopPropagation();
+                evt.PreventDefault();
+            }
+        }
+    }
+
+    private bool ShouldLetFocusedControlHandleArrowKeys(KeyDownEvent evt)
+    {
+        if (evt.keyCode != KeyCode.LeftArrow && evt.keyCode != KeyCode.RightArrow)
+            return false;
+
+        var root = _uiDocument != null ? _uiDocument.rootVisualElement : null;
+        var current = root?.focusController?.focusedElement as VisualElement;
+        while (current != null)
+        {
+            if (current is TextField)
+                return true;
+
+            if (current is Slider ||
+                current is ListView ||
+                current is TreeView ||
+                current is PopupField<string> ||
+                current is DropdownField ||
+                current is Scroller ||
+                current is ScrollView)
+                return true;
+
+            current = current.parent;
+        }
+
+        return false;
+    }
+
+    private bool TryNavigateAdjacentImage(int direction)
+    {
+        if (_imageList == null || _imageFiles.Count == 0 || direction == 0)
+            return false;
+
+        var step = Math.Sign(direction);
+        if (step == 0)
+            return false;
+
+        var currentIndex = _imageList.selectedIndex;
+        if (currentIndex < 0 || currentIndex >= _imageFiles.Count)
+        {
+            var currentPath = _historyEntries.Count > 0 ? _historyEntries[0].sourcePath : null;
+            if (string.IsNullOrWhiteSpace(currentPath))
+                return false;
+
+            currentIndex = _imageFiles.FindIndex(entry =>
+                string.Equals(entry.fullPath, currentPath, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (currentIndex < 0)
+            return false;
+
+        var nextIndex = currentIndex + step;
+        if (nextIndex < 0 || nextIndex >= _imageFiles.Count)
+            return false;
+
+        _imageList.SetSelection(nextIndex);
+        _imageList.ScrollToItem(nextIndex);
+        return true;
     }
 
     private void UndoLastOperation()
@@ -2788,9 +2855,10 @@ public class MainView : MonoBehaviour
         try
         {
             var files = Directory.EnumerateFiles(directoryPath)
-                .Where(IsImageFile)
+                .Where(ImageNavigationUtility.IsImageFile)
                 .Select(p => new ImageFileEntry { fullPath = p, fileName = Path.GetFileName(p) })
-                .OrderBy(f => f.fileName, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(f => f.fileName, ImageNavigationUtility.ExplorerNameComparer)
+                .ThenBy(f => f.fullPath, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             _imageFiles.AddRange(files);
@@ -2804,8 +2872,7 @@ public class MainView : MonoBehaviour
 
     private static bool IsImageFile(string filePath)
     {
-        var ext = Path.GetExtension(filePath);
-        return !string.IsNullOrEmpty(ext) && ImageExtensions.Contains(ext);
+        return ImageNavigationUtility.IsImageFile(filePath);
     }
 
     private void OnImageSelectionChanged(IEnumerable<object> selectedItems)

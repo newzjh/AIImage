@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -21,6 +23,119 @@ public enum SwipeDirection
 {
     Left = -1,
     Right = 1
+}
+
+internal static class ImageNavigationUtility
+{
+    public static readonly IComparer<string> ExplorerNameComparer = new ExplorerStringComparer();
+
+    public static bool TryGetAdjacentImagePath(string currentPath, int direction, out string adjacentPath)
+    {
+        adjacentPath = null;
+        if (direction == 0 || string.IsNullOrWhiteSpace(currentPath) || !File.Exists(currentPath))
+            return false;
+
+        string directoryPath;
+        try
+        {
+            directoryPath = Path.GetDirectoryName(currentPath);
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+            return false;
+
+        List<string> files;
+        try
+        {
+            files = Directory.EnumerateFiles(directoryPath)
+                .Where(IsImageFile)
+                .OrderBy(path => Path.GetFileName(path), ExplorerNameComparer)
+                .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (files.Count <= 1)
+            return false;
+
+        var index = files.FindIndex(path => string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+            return false;
+
+        var nextIndex = index + Math.Sign(direction);
+        if (nextIndex < 0 || nextIndex >= files.Count)
+            return false;
+
+        adjacentPath = files[nextIndex];
+        return !string.Equals(adjacentPath, currentPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsImageFile(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return false;
+
+        var ext = Path.GetExtension(filePath);
+        return !string.IsNullOrEmpty(ext) && ImageExtensions.Contains(ext);
+    }
+
+    private static readonly HashSet<string> ImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".tiff", ".tif", ".exr",
+        ".raw", ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".srw", ".pef"
+    };
+
+    private sealed class ExplorerStringComparer : IComparer<string>
+    {
+        private readonly CompareInfo _compareInfo = CompareInfo.GetCompareInfo("zh-CN");
+
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern int StrCmpLogicalW(string left, string right);
+
+        public int Compare(string x, string y)
+        {
+            if (ReferenceEquals(x, y))
+                return 0;
+            if (x == null)
+                return -1;
+            if (y == null)
+                return 1;
+
+            if (IsWindows())
+            {
+                try
+                {
+                    var logicalResult = StrCmpLogicalW(x, y);
+                    if (logicalResult != 0)
+                        return logicalResult;
+                }
+                catch
+                {
+                }
+            }
+
+            var fallback = _compareInfo.Compare(x, y, CompareOptions.IgnoreCase | CompareOptions.StringSort);
+            if (fallback != 0)
+                return fallback;
+            return string.CompareOrdinal(x, y);
+        }
+
+        private static bool IsWindows()
+        {
+            var platform = Environment.OSVersion.Platform;
+            return platform == PlatformID.Win32NT ||
+                   platform == PlatformID.Win32S ||
+                   platform == PlatformID.Win32Windows ||
+                   platform == PlatformID.WinCE;
+        }
+    }
 }
 
 public abstract class BasePageView : MonoBehaviour
@@ -171,6 +286,7 @@ public abstract class BasePageView : MonoBehaviour
     protected virtual void OnBeforeDetach() { }
     protected virtual void OnLayoutChanged(bool isPortrait, Rect layoutRect) { }
     protected virtual AppPageId? ResolveSwipeTarget(SwipeDirection direction) => null;
+    protected virtual bool HandleDirectionalImageNavigation(int direction) => false;
     protected virtual bool UseOverlaySwitchZone => false;
     protected virtual float GetSwitchPillAlignment01() => 0.5f;
     protected abstract void BuildPage(VisualElement contentRoot);
@@ -1360,7 +1476,7 @@ public abstract class BasePageView : MonoBehaviour
     {
         if (_pageRoot == null)
             return;
-        if (_pageRoot.focusController?.focusedElement is TextField)
+        if (ShouldLetFocusedControlHandleArrowKeys(evt))
             return;
 
         var ctrlOrCmd = evt.ctrlKey || evt.commandKey;
@@ -1377,7 +1493,44 @@ public abstract class BasePageView : MonoBehaviour
             DeleteSelectedHistoryEntry();
             evt.StopPropagation();
             evt.PreventDefault();
+            return;
         }
+
+        if (evt.keyCode == KeyCode.LeftArrow || evt.keyCode == KeyCode.RightArrow)
+        {
+            var direction = evt.keyCode == KeyCode.LeftArrow ? -1 : 1;
+            if (HandleDirectionalImageNavigation(direction))
+            {
+                evt.StopPropagation();
+                evt.PreventDefault();
+            }
+        }
+    }
+
+    private bool ShouldLetFocusedControlHandleArrowKeys(KeyDownEvent evt)
+    {
+        if (evt.keyCode != KeyCode.LeftArrow && evt.keyCode != KeyCode.RightArrow)
+            return false;
+
+        var current = _pageRoot?.focusController?.focusedElement as VisualElement;
+        while (current != null)
+        {
+            if (current is TextField)
+                return true;
+
+            if (current is Slider ||
+                current is ListView ||
+                current is TreeView ||
+                current is PopupField<string> ||
+                current is DropdownField ||
+                current is Scroller ||
+                current is ScrollView)
+                return true;
+
+            current = current.parent;
+        }
+
+        return false;
     }
 
     private void Update()

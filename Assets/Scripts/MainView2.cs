@@ -131,6 +131,11 @@ public sealed class MainView2 : BasePageView
 
     protected override float GetSwitchPillAlignment01() => 0.5f;
 
+    protected override bool HandleDirectionalImageNavigation(int direction)
+    {
+        return Host != null && Host.TryOpenAdjacentMainImage(direction);
+    }
+
     protected override void OnLayoutChanged(bool isPortrait, Rect layoutRect)
     {
         if (_adjustPanel == null || _adjustHost == null)
