@@ -142,7 +142,8 @@ namespace NcnnCompute
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
             ICollection<string> pinnedNames = null,
             Dictionary<string, BufferShape> textureInputShapes = null,
-            string stopAfterTopName = null)
+            string stopAfterTopName = null,
+            string startAtTopName = null)
         {
             static string JoinNames(string[] names)
             {
@@ -279,6 +280,27 @@ namespace NcnnCompute
                 tempOwned = tempOwned
             };
 
+            var startLayerIndex = 0;
+            if (!string.IsNullOrWhiteSpace(startAtTopName))
+            {
+                var foundStart = false;
+                for (var li = 0; li < Model.layers.Count; li++)
+                {
+                    var topNames = Model.layers[li]?.topNames;
+                    if (topNames == null || topNames.Length == 0)
+                        continue;
+                    if (Array.IndexOf(topNames, startAtTopName) < 0)
+                        continue;
+
+                    startLayerIndex = li + 1;
+                    foundStart = true;
+                    break;
+                }
+
+                if (!foundStart)
+                    throw new InvalidOperationException("start top not found in model: " + startAtTopName);
+            }
+
             bool TryLogFirstNonFiniteLayerOutput(int layerIndex, NcnnParamModel.Layer layer)
             {
                 if (!DebugBreakOnFirstNonFiniteLayerOutput || DebugLog == null || layer?.topNames == null)
@@ -316,7 +338,7 @@ namespace NcnnCompute
             try
             {
                 var runtimeProfile = BeginLayerRuntimeProfile("buffer");
-                for (var li = 0; li < Model.layers.Count; li++)
+                for (var li = startLayerIndex; li < Model.layers.Count; li++)
                 {
                     var layer = Model.layers[li];
                     var layerOutputPath = string.Empty;

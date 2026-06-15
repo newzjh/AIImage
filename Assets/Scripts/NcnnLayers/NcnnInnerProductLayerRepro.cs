@@ -260,6 +260,20 @@ namespace NcnnCompute
                 broadcastTypeC: 4,
                 output: outRt);
 
+            if (owner.ShouldCompareTextureLayer(layer.name))
+            {
+                owner.CompareTextureInnerProductPath(
+                    layer.name,
+                    layer.bottomNames[0],
+                    ip,
+                    outRt,
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.textureShapes,
+                    context.bufferViews,
+                    context.tempOwned);
+            }
+
             NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, logicalShape, storageShape);
             owner.Consume(
                 context.textureBlobs,

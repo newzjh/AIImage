@@ -77,6 +77,14 @@ public static class NcnnDebugRunner
     private const string SdUseCommandBufferEnvVar = "AIIMAGE_SD_USE_COMMAND_BUFFER";
     private const string SdUseAsyncComputeEnvVar = "AIIMAGE_SD_USE_ASYNC_COMPUTE";
     private const string SdDisallowTempComputeBuffersEnvVar = "AIIMAGE_SD_DISALLOW_TEMP_COMPUTE_BUFFERS";
+    private const string SdReplayBaselineDirEnvVar = "AIIMAGE_SD_REPLAY_BASELINE_DIR";
+    private const string SdReplayReferenceDirEnvVar = "AIIMAGE_SD_REPLAY_REFERENCE_DIR";
+    private const string SdReplayStartTopEnvVar = "AIIMAGE_SD_REPLAY_START_TOP";
+    private const string SdReplayStopTopEnvVar = "AIIMAGE_SD_REPLAY_STOP_TOP";
+    private const string SdReplayOutputBlobEnvVar = "AIIMAGE_SD_REPLAY_OUTPUT_BLOB";
+    private const string SdReplayTargetBlobEnvVar = "AIIMAGE_SD_REPLAY_TARGET_BLOB";
+    private const string SdReplayPromptKindEnvVar = "AIIMAGE_SD_REPLAY_PROMPT_KIND";
+    private const string SdReplayInputBlobsEnvVar = "AIIMAGE_SD_REPLAY_INPUT_BLOBS";
     private const string MonaiBaselineManifestEnvVar = "AIIMAGE_MONAI_BASELINE_MANIFEST";
     private const string MonaiInputPathsEnvVar = "AIIMAGE_MONAI_INPUT_PATHS";
     private const string MonaiUseBaselineTensorEnvVar = "AIIMAGE_MONAI_USE_BASELINE_TENSOR";
@@ -1186,6 +1194,13 @@ public static class NcnnDebugRunner
 
     private static async UniTask RunYoloAndInpaintingDebugInternal()
     {
+        var replayBaselineDir = ResolveOptionalExistingDirectory(SdReplayBaselineDirEnvVar);
+        if (!string.IsNullOrWhiteSpace(replayBaselineDir))
+        {
+            await RunSdUnetReplayInternal(replayBaselineDir);
+            return;
+        }
+
         var inputPath = ResolveInputPath(DefaultReproStressImagePath);
         var enableDump = ResolveBoolEnv(SdEnableDumpEnvVar, false);
         var stepCount = ResolvePositiveIntEnv(SdStepsEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStepCount);
@@ -1243,6 +1258,65 @@ public static class NcnnDebugRunner
         {
             try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
             NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private static async UniTask RunSdUnetReplayInternal(string baselineDir)
+    {
+        var referenceDir = ResolveOptionalExistingDirectory(SdReplayReferenceDirEnvVar);
+        var startTop = ResolveStringEnv(SdReplayStartTopEnvVar, null);
+        var stopTop = ResolveStringEnv(SdReplayStopTopEnvVar, null);
+        var outputBlob = ResolveStringEnv(SdReplayOutputBlobEnvVar, null);
+        var targetBlob = ResolveStringEnv(SdReplayTargetBlobEnvVar, null);
+        var promptKind = ResolveStringEnv(SdReplayPromptKindEnvVar, "cond");
+        var inputBlobsRaw = ResolveStringEnv(SdReplayInputBlobsEnvVar, null);
+        var inputBlobs = string.IsNullOrWhiteSpace(inputBlobsRaw)
+            ? null
+            : inputBlobsRaw.Split(new[] { ',', ';', '\r', '\n', '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        var outputDir = CreateGenericDumpDir("AIImage_SD_UnetReplay");
+
+        var go = new GameObject("SdUnetReplayRunner");
+        try
+        {
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+            NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.SDUnetReplay");
+            var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+            runner.enableDebugDump = true;
+            runner.enableTempPool = false;
+            runner.maxPooledPerShape = 0;
+            runner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, runner.tensorTextureFormat);
+            runner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, runner.keepRawConvWeightsForTexturePath);
+            runner.enableAttentionMatMulPack4Specializations = true;
+            runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
+
+            var result = await runner.RunUnetBaselineReplayAsync(
+                new SDInpaintingNcnnReproRunner.UnetBaselineReplayRequest(
+                    baselineDir,
+                    referenceDir,
+                    outputDir,
+                    startTop,
+                    stopTop,
+                    outputBlob,
+                    targetBlob,
+                    promptKind,
+                    inputBlobs),
+                CancellationToken.None);
+
+            Debug.Log(
+                "[SDReplay] baseline=" + baselineDir
+                + " | reference=" + (referenceDir ?? baselineDir)
+                + " | outputDir=" + (result.outputDir ?? outputDir)
+                + " | report=" + (result.reportPath ?? string.Empty)
+                + " | error=" + (result.error ?? string.Empty));
+
+            if (!string.IsNullOrWhiteSpace(result.error))
+                throw new InvalidOperationException(result.error);
+        }
+        finally
+        {
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            UnityEngine.Object.DestroyImmediate(go);
         }
     }
 
@@ -3228,6 +3302,21 @@ public static class NcnnDebugRunner
         {
             var env = Environment.GetEnvironmentVariable(envName);
             if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
+                return env;
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    private static string ResolveOptionalExistingDirectory(string envName)
+    {
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env))
                 return env;
         }
         catch

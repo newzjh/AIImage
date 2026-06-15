@@ -732,6 +732,125 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
+    public async UniTask<UnetBaselineReplayResult> RunUnetBaselineReplayAsync(UnetBaselineReplayRequest request, CancellationToken ct)
+    {
+        var outputDir = !string.IsNullOrWhiteSpace(request.outputDir)
+            ? request.outputDir
+            : CreateDumpDir("AIImage_SDInpaint_UnetReplay");
+        Directory.CreateDirectory(outputDir);
+
+        try
+        {
+            EnsureRuntimeObjects();
+            var paths = ResolvePaths();
+            EnsureModelIdentity(paths);
+            await EnsureUnetLoadedAsync(paths, ct);
+            ct.ThrowIfCancellationRequested();
+
+            var baselineDir = ResolveExistingDirectory(request.baselineDir);
+            if (string.IsNullOrWhiteSpace(baselineDir))
+                throw new DirectoryNotFoundException("baseline dir not found: " + (request.baselineDir ?? string.Empty));
+
+            var referenceDir = ResolveExistingDirectory(request.referenceDir) ?? baselineDir;
+            var promptKind = string.Equals(request.promptKind, "uncond", StringComparison.OrdinalIgnoreCase) ? "uncond" : "cond";
+            var inputBlobNames = request.inputBlobNames != null && request.inputBlobNames.Length > 0
+                ? request.inputBlobNames
+                : ResolveReplayInputBlobNames(request.startAtTopName);
+            var stopAfterTopName = string.IsNullOrWhiteSpace(request.stopAfterTopName)
+                ? (string.IsNullOrWhiteSpace(request.outputBlobName) ? UnetOutputBlobName : request.outputBlobName)
+                : request.stopAfterTopName;
+            var outputBlobName = string.IsNullOrWhiteSpace(request.outputBlobName) ? stopAfterTopName : request.outputBlobName;
+            var targetBlobName = string.IsNullOrWhiteSpace(request.targetBlobName) ? outputBlobName : request.targetBlobName;
+
+            var inputBlobData = LoadReplayInputBlobData(baselineDir, referenceDir, promptKind, inputBlobNames);
+            var textureInputs = BuildReplayTextureInputs(inputBlobData);
+            var textureShapes = BuildReplayTextureInputShapes(textureInputs, inputBlobData);
+            var pinned = new HashSet<string>(StringComparer.Ordinal)
+            {
+                outputBlobName
+            };
+            if (!string.IsNullOrWhiteSpace(targetBlobName))
+                pinned.Add(targetBlobName);
+
+            using var infer = _unetRepro.InferWithMultiInputs(
+                textureInputs,
+                null,
+                pinned,
+                textureShapes,
+                stopAfterTopName,
+                request.startAtTopName);
+
+            ct.ThrowIfCancellationRequested();
+
+            var reportLines = new List<string>(32)
+            {
+                "baseline_dir=" + baselineDir,
+                "reference_dir=" + referenceDir,
+                "prompt_kind=" + promptKind,
+                "start_at_top=" + (request.startAtTopName ?? string.Empty),
+                "stop_after_top=" + (stopAfterTopName ?? string.Empty),
+                "output_blob=" + (outputBlobName ?? string.Empty),
+                "target_blob=" + (targetBlobName ?? string.Empty)
+            };
+
+            for (var i = 0; i < inputBlobNames.Length; i++)
+                reportLines.Add("input_blob_" + i.ToString(CultureInfo.InvariantCulture) + "=" + inputBlobNames[i]);
+
+            for (var i = 0; i < inputBlobNames.Length; i++)
+            {
+                var name = inputBlobNames[i];
+                if (!infer.TryGetLogicalShape(name, out var dims, out var w, out var h, out var d, out var c))
+                    continue;
+                reportLines.Add("shape_" + name + "=d" + dims + ":" + w + "x" + h + "x" + d + "x" + c);
+            }
+
+            var candidateData = ExtractBlobDataByLogicalShape(infer, outputBlobName);
+            if (candidateData == null || candidateData.Length == 0)
+                throw new InvalidOperationException("failed to extract replay output blob: " + outputBlobName);
+
+            var candidateBinPath = Path.Combine(outputDir, "unity_replay_" + SanitizeFileName(outputBlobName) + "_f32.bin");
+            WriteFloatArrayRawF32Safe(candidateBinPath, candidateData);
+            WriteFloatArrayStatsSafe(Path.Combine(outputDir, "unity_replay_" + SanitizeFileName(outputBlobName) + "_stats.txt"), candidateData);
+            reportLines.Add("candidate_bin=" + candidateBinPath);
+
+            var targetData = TryLoadReplayReferenceBlob(targetBlobName, referenceDir, promptKind, preferUnityPrefix: false)
+                ?? TryLoadReplayReferenceBlob(targetBlobName, baselineDir, promptKind, preferUnityPrefix: true);
+            if (targetData != null && targetData.Length > 0)
+            {
+                var targetBinPath = Path.Combine(outputDir, "target_" + SanitizeFileName(targetBlobName) + "_f32.bin");
+                WriteFloatArrayRawF32Safe(targetBinPath, targetData);
+                WriteFloatArrayStatsSafe(Path.Combine(outputDir, "target_" + SanitizeFileName(targetBlobName) + "_stats.txt"), targetData);
+                reportLines.Add("target_bin=" + targetBinPath);
+
+                var summary = BuildCompareSummary(candidateData, targetData);
+                reportLines.AddRange(summary);
+            }
+            else
+            {
+                reportLines.Add("compare_status=target_not_found");
+            }
+
+            var reportPath = Path.Combine(outputDir, "compare_report.txt");
+            WriteAllTextSafe(reportPath, string.Join(Environment.NewLine, reportLines));
+            await UniTask.Yield();
+            ct.ThrowIfCancellationRequested();
+            return new UnetBaselineReplayResult(outputDir, reportPath, null);
+        }
+        catch (OperationCanceledException)
+        {
+            var reportPath = Path.Combine(outputDir, "compare_report.txt");
+            WriteAllTextSafe(reportPath, "error=Cancelled");
+            return new UnetBaselineReplayResult(outputDir, reportPath, "Cancelled");
+        }
+        catch (Exception e)
+        {
+            var reportPath = Path.Combine(outputDir, "compare_report.txt");
+            WriteAllTextSafe(reportPath, "error=" + e);
+            UnityEngine.Debug.LogError("[SDInpaint] RunUnetBaselineReplayAsync failed: " + e);
+            return new UnetBaselineReplayResult(outputDir, reportPath, e.ToString());
+        }
+    }
+
     private static void DestroyRuntimeTexture(ref Texture2D texture)
     {
         if (texture == null)
@@ -946,6 +1065,55 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         catch
         {
             return defaultValue;
+        }
+    }
+
+    public readonly struct UnetBaselineReplayRequest
+    {
+        public readonly string baselineDir;
+        public readonly string referenceDir;
+        public readonly string outputDir;
+        public readonly string startAtTopName;
+        public readonly string stopAfterTopName;
+        public readonly string outputBlobName;
+        public readonly string targetBlobName;
+        public readonly string promptKind;
+        public readonly string[] inputBlobNames;
+
+        public UnetBaselineReplayRequest(
+            string baselineDir,
+            string referenceDir,
+            string outputDir,
+            string startAtTopName,
+            string stopAfterTopName,
+            string outputBlobName,
+            string targetBlobName,
+            string promptKind,
+            string[] inputBlobNames)
+        {
+            this.baselineDir = baselineDir;
+            this.referenceDir = referenceDir;
+            this.outputDir = outputDir;
+            this.startAtTopName = startAtTopName;
+            this.stopAfterTopName = stopAfterTopName;
+            this.outputBlobName = outputBlobName;
+            this.targetBlobName = targetBlobName;
+            this.promptKind = promptKind;
+            this.inputBlobNames = inputBlobNames;
+        }
+    }
+
+    public readonly struct UnetBaselineReplayResult
+    {
+        public readonly string outputDir;
+        public readonly string reportPath;
+        public readonly string error;
+
+        public UnetBaselineReplayResult(string outputDir, string reportPath, string error)
+        {
+            this.outputDir = outputDir;
+            this.reportPath = reportPath;
+            this.error = error;
         }
     }
 
@@ -1663,7 +1831,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             scaledNoiseTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
             latentTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
             scaledLatentTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
-
             _ops.BinaryOpPack4(stdTex, noiseTex, 1, 2, scaledNoiseTex);
             _ops.BinaryOpPack4(meanTex, scaledNoiseTex, 1, 0, latentTex);
             _ops.BinaryOpScalarPack4(latentTex, LatentScale, 1, 2, scaledLatentTex);
@@ -2029,22 +2196,13 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 unetCache = new List<UnetCacheBlob>(OfficialUnetCacheBlobNames.Length);
 
             condOutTex = RunUnetOnceTexture(inputTex, timestepTex, condTex, "cond", unetCache, null);
-            if (condOutTex != null)
+            if (shouldDumpFirstStep && condOutTex != null)
             {
-                var preservedCondOutTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
-                _ops.CopyPack4(condOutTex, 0, preservedCondOutTex, 0, Mathf.Max(1, Mathf.CeilToInt(LatentChannels / 4f)));
-                _unetRepro.ReturnTempArray(condOutTex);
-                condOutTex = preservedCondOutTex;
+                _ops.DebugSyncGpu();
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "unity_unet_cond_out_before_uncond_f32.bin"), condOutTex, LatentChannels);
             }
             var cacheForUncond = unetCache != null && unetCache.Count == OfficialUnetCacheBlobNames.Length ? unetCache : null;
             uncondOutTex = RunUnetOnceTexture(inputTex, timestepTex, uncondTex, "uncond", null, cacheForUncond);
-            if (uncondOutTex != null)
-            {
-                var preservedUncondOutTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
-                _ops.CopyPack4(uncondOutTex, 0, preservedUncondOutTex, 0, Mathf.Max(1, Mathf.CeilToInt(LatentChannels / 4f)));
-                _unetRepro.ReturnTempArray(uncondOutTex);
-                uncondOutTex = preservedUncondOutTex;
-            }
             if (condOutTex == null || uncondOutTex == null)
                 return null;
 
@@ -2058,6 +2216,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
             finalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
             _ops.AddPack4(condOutTex, uncondOutTex, guidanceScale, 1f - guidanceScale, 1, finalTex);
+            if (shouldDumpFirstStep)
+            {
+                _ops.DebugSyncGpu();
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "unity_unet_eps_after_sync_f32.bin"), finalTex, LatentChannels);
+            }
 
             if (shouldDumpFirstStep)
             {
@@ -2362,7 +2525,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             textureInputs,
             null,
             pinned ?? new HashSet<string>(StringComparer.Ordinal) { UnetOutputBlobName },
-            textureInputShapes);
+            textureInputShapes,
+            null,
+            null);
 
         if (captureCache != null)
             TryCaptureOfficialUnetCache(infer, captureCache);
@@ -2438,6 +2603,265 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private RenderTexture BuildNoisyLatentsPack4(ComputeBuffer noiseBuf)
     {
         return BuildLatentPack4(noiseBuf);
+    }
+
+    private string[] ResolveReplayInputBlobNames(string startAtTopName)
+    {
+        if (string.IsNullOrWhiteSpace(startAtTopName))
+            return new[] { UnetInputBlobName, UnetTimestepBlobName, UnetTextBlobName };
+
+        if (_unetRepro?.Model?.layers == null)
+            throw new InvalidOperationException("UNet model not loaded.");
+
+        for (var i = 0; i < _unetRepro.Model.layers.Count; i++)
+        {
+            var layer = _unetRepro.Model.layers[i];
+            if (layer?.topNames == null || Array.IndexOf(layer.topNames, startAtTopName) < 0)
+                continue;
+            if (layer.bottomNames == null || layer.bottomNames.Length == 0)
+                throw new InvalidOperationException("start top has no bottoms: " + startAtTopName);
+            return (string[])layer.bottomNames.Clone();
+        }
+
+        throw new InvalidOperationException("start top not found in UNet model: " + startAtTopName);
+    }
+
+    private Dictionary<string, RenderTexture> BuildReplayTextureInputs(
+        Dictionary<string, ReplayBlobInput> inputs)
+    {
+        var result = new Dictionary<string, RenderTexture>(StringComparer.Ordinal);
+        if (inputs == null)
+            return result;
+
+        foreach (var kv in inputs)
+        {
+            var blobName = kv.Key;
+            var input = kv.Value;
+            if (input == null || input.data == null || input.data.Length == 0)
+                throw new FileNotFoundException("replay input blob dump not found for " + blobName);
+
+            var shape = input.shape;
+            var tex = CreateTensorPack4Texture(
+                _unetRepro,
+                input.data,
+                shape.dims,
+                shape.w,
+                shape.h,
+                shape.d,
+                shape.c,
+                tensorTextureFormat);
+            result.Add(blobName, tex);
+        }
+
+        return result;
+    }
+
+    private Dictionary<string, NcnnRepro.BufferShape> BuildReplayTextureInputShapes(
+        Dictionary<string, RenderTexture> textureInputs,
+        Dictionary<string, ReplayBlobInput> inputs)
+    {
+        var result = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal);
+        if (inputs != null)
+        {
+            foreach (var kv in inputs)
+            {
+                if (kv.Value == null || kv.Value.data == null || kv.Value.data.Length == 0)
+                    continue;
+                result[kv.Key] = kv.Value.shape;
+            }
+        }
+
+        if (textureInputs != null)
+        {
+            foreach (var kv in textureInputs)
+            {
+                if (result.ContainsKey(kv.Key))
+                    continue;
+                result[kv.Key] = new NcnnRepro.BufferShape(3, kv.Value.width, kv.Value.height, 1, Mathf.Max(1, kv.Value.volumeDepth) * 4);
+            }
+        }
+
+        return result;
+    }
+
+    private sealed class ReplayBlobInput
+    {
+        public float[] data;
+        public NcnnRepro.BufferShape shape;
+    }
+
+    private Dictionary<string, ReplayBlobInput> LoadReplayInputBlobData(
+        string baselineDir,
+        string referenceDir,
+        string promptKind,
+        string[] inputBlobNames)
+    {
+        var result = new Dictionary<string, ReplayBlobInput>(StringComparer.Ordinal);
+        for (var i = 0; i < inputBlobNames.Length; i++)
+        {
+            var blobName = inputBlobNames[i];
+            if (string.IsNullOrWhiteSpace(blobName))
+                continue;
+
+            if (TryLoadReplayReferenceBlobWithShape(blobName, referenceDir, promptKind, preferUnityPrefix: false, out var data, out var shape)
+                || TryLoadReplayReferenceBlobWithShape(blobName, baselineDir, promptKind, preferUnityPrefix: true, out data, out shape))
+            {
+                result[blobName] = new ReplayBlobInput
+                {
+                    data = data,
+                    shape = shape
+                };
+                continue;
+            }
+
+            throw new FileNotFoundException("replay input blob dump not found for " + blobName);
+        }
+
+        return result;
+    }
+
+    private NcnnRepro.BufferShape ResolveReplayBlobShape(string blobName, int valueCount)
+    {
+        if (string.Equals(blobName, UnetInputBlobName, StringComparison.Ordinal))
+            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels);
+        if (string.Equals(blobName, UnetTextBlobName, StringComparison.Ordinal))
+            return new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
+        if (string.Equals(blobName, UnetTimestepBlobName, StringComparison.Ordinal))
+            return new NcnnRepro.BufferShape(1, 1, 1, 1, 1);
+        if (valueCount == LatentSize * LatentSize * LatentChannels)
+            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, LatentChannels);
+        if (valueCount == LatentSize * LatentSize)
+            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, 1);
+        if ((valueCount % (LatentSize * LatentSize)) == 0)
+            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, valueCount / (LatentSize * LatentSize));
+        if (valueCount == TokenCount * TextEmbeddingWidth)
+            return new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
+        if (valueCount == 1)
+            return new NcnnRepro.BufferShape(1, 1, 1, 1, 1);
+
+        throw new InvalidOperationException("unable to infer replay blob shape for " + blobName + " | count=" + valueCount.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private bool TryLoadReplayReferenceBlobWithShape(
+        string blobName,
+        string dir,
+        string promptKind,
+        bool preferUnityPrefix,
+        out float[] data,
+        out NcnnRepro.BufferShape shape)
+    {
+        data = null;
+        shape = default;
+        if (string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+            return false;
+
+        var candidates = BuildReplayBlobCandidatePaths(blobName, dir, promptKind, preferUnityPrefix);
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            var path = candidates[i];
+            if (!File.Exists(path))
+                continue;
+
+            var ext = Path.GetExtension(path);
+            if (string.Equals(ext, ".bin", StringComparison.OrdinalIgnoreCase))
+            {
+                data = ReadFloatArrayRawF32(path);
+                if (data == null || data.Length == 0)
+                    continue;
+                shape = ResolveReplayBlobShape(blobName, data.Length);
+                return true;
+            }
+
+            if (string.Equals(ext, ".txt", StringComparison.OrdinalIgnoreCase))
+            {
+                var dump = ReadDebugMatDump(path);
+                if (dump == null)
+                    continue;
+                data = UnpackDebugMatDump(dump);
+                if (data == null || data.Length == 0)
+                    continue;
+                shape = ResolveReplayBlobShape(blobName, data.Length, dump);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private NcnnRepro.BufferShape ResolveReplayBlobShape(string blobName, int valueCount, DebugMatDump dump)
+    {
+        if (dump != null && dump.hasHeader)
+        {
+            var dims = Mathf.Clamp(dump.dims, 1, 4);
+            var w = Mathf.Max(1, dump.w);
+            var h = Mathf.Max(1, dump.h);
+            var d = Mathf.Max(1, dump.d);
+            var logicalC = Mathf.Max(1, dump.c) * Mathf.Max(1, dump.elempack);
+            if (dims == 2)
+                return new NcnnRepro.BufferShape(2, w, h, 1, 1);
+            if (dims == 3)
+                return new NcnnRepro.BufferShape(3, w, h, 1, logicalC);
+            if (dims == 4)
+                return new NcnnRepro.BufferShape(4, w, h, d, logicalC);
+            return new NcnnRepro.BufferShape(1, w * Mathf.Max(1, dump.elempack), 1, 1, 1);
+        }
+
+        return ResolveReplayBlobShape(blobName, valueCount);
+    }
+
+    private float[] TryLoadReplayReferenceBlob(string blobName, string dir, string promptKind, bool preferUnityPrefix)
+    {
+        return TryLoadReplayReferenceBlobWithShape(blobName, dir, promptKind, preferUnityPrefix, out var data, out _)
+            ? data
+            : null;
+    }
+
+    private List<string> BuildReplayBlobCandidatePaths(string blobName, string dir, string promptKind, bool preferUnityPrefix)
+    {
+        var result = new List<string>(16);
+
+        void AddIfNew(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                return;
+            var path = Path.Combine(dir, fileName);
+            if (!result.Contains(path))
+                result.Add(path);
+        }
+
+        var prompt = string.Equals(promptKind, "uncond", StringComparison.OrdinalIgnoreCase) ? "uncond" : "cond";
+
+        if (string.Equals(blobName, UnetInputBlobName, StringComparison.Ordinal))
+        {
+            AddIfNew("unity_unet_in0_f32.bin");
+            AddIfNew("unet_in0_f32.bin");
+            AddIfNew("official_unet_in0.txt");
+        }
+        else if (string.Equals(blobName, UnetTimestepBlobName, StringComparison.Ordinal))
+        {
+            AddIfNew("unity_unet_timestep_f32.bin");
+            AddIfNew("official_unet_in1_t.txt");
+        }
+        else if (string.Equals(blobName, UnetTextBlobName, StringComparison.Ordinal))
+        {
+            AddIfNew(prompt == "cond" ? "prompt_cond_f32.bin" : "prompt_uncond_f32.bin");
+            AddIfNew(prompt == "cond" ? "official_cond.txt" : "official_uncond.txt");
+        }
+        else if (string.Equals(blobName, UnetOutputBlobName, StringComparison.Ordinal) || string.Equals(blobName, "outout", StringComparison.Ordinal))
+        {
+            AddIfNew(prompt == "cond" ? "unity_unet_cond_out_f32.bin" : "unity_unet_uncond_out_f32.bin");
+            AddIfNew(prompt == "cond" ? "unet_cond_out_f32.bin" : "unet_uncond_out_f32.bin");
+            AddIfNew(prompt == "cond" ? "official_unet_outout_cond.txt" : "official_unet_outout_uncond.txt");
+        }
+        else
+        {
+            if (preferUnityPrefix)
+                AddIfNew("unity_unet_blob_" + blobName + ".txt");
+            AddIfNew("official_unet_blob_" + blobName + ".txt");
+            AddIfNew("unity_unet_blob_" + blobName + ".txt");
+        }
+
+        return result;
     }
 
     private RenderTexture BuildNoisyLatentsPack4(ComputeBuffer cleanLatentBuf, ComputeBuffer noiseBuf, int timestep)
@@ -2576,7 +3000,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             predDirectionTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
             scaledOriginalTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
             outputTex = _unetRepro.RentTempArray(LatentSize, LatentSize, 1, tensorTextureFormat);
-
             _ops.BinaryOpScalarPack4(epsilonTex, sqrtBetaT, 1, 2, scaledEpsilonTex);
             _ops.BinaryOpPack4(sampleTex, scaledEpsilonTex, 1, 1, predOriginalNumeratorTex);
             _ops.BinaryOpScalarPack4(predOriginalNumeratorTex, Mathf.Max(1e-6f, sqrtAlphaT), 1, 3, predOriginalTex);
@@ -3531,8 +3954,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         ComputeBuffer temp = null;
         try
         {
+            _ops?.DebugSyncGpu();
             temp = _unetRepro.RentTempBuffer(texture.width * texture.height * channelCount, sizeof(float));
             _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, channelCount, temp);
+            _ops?.DebugSyncGpu();
             WriteBufferRawF32Safe(path, temp);
         }
         catch
@@ -3553,8 +3978,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         ComputeBuffer temp = null;
         try
         {
+            _ops?.DebugSyncGpu();
             temp = _unetRepro.RentTempBuffer(texture.width * texture.height * channelCount, sizeof(float));
             _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, channelCount, temp);
+            _ops?.DebugSyncGpu();
             WriteBufferStatsSafe(path, temp);
         }
         catch
@@ -3699,6 +4126,337 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         catch
         {
         }
+    }
+
+    private float[] ExtractBlobDataByLogicalShape(NcnnRepro.InferResult infer, string blobName)
+    {
+        if (infer == null || string.IsNullOrWhiteSpace(blobName))
+            return null;
+
+        if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
+            return null;
+
+        try
+        {
+            if (infer.TryGetExistingTexture(blobName, out var tex) && tex != null)
+            {
+                var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
+                var physicalChannels = dims == 4
+                    ? Mathf.Max(1, Mathf.CeilToInt(c / 4f)) * 4
+                    : Mathf.Max(1, tex.volumeDepth) * 4;
+                var physicalCount = dims == 4
+                    ? tex.width * tex.height * Mathf.Max(1, d) * physicalChannels
+                    : tex.width * tex.height * physicalChannels;
+                var buffer = NewTrackedBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured, "SDInpaint.ReplayExtract");
+                try
+                {
+                    if (dims == 4)
+                        _ops.Pack4ToBufferCDHW(tex, tex.width, tex.height, Mathf.Max(1, d), Mathf.Max(1, c), buffer);
+                    else
+                        _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, physicalChannels, buffer);
+
+                    var all = new float[buffer.count];
+                    buffer.GetData(all);
+                    if (logicalCount < all.Length)
+                        Array.Resize(ref all, logicalCount);
+                    return all;
+                }
+                finally
+                {
+                    DisposeBuffer(buffer, "SDInpaint.ReplayExtract");
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            return infer.GetBufferData(blobName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<string> BuildCompareSummary(float[] candidate, float[] target)
+    {
+        var lines = new List<string>(8);
+        if (candidate == null || target == null || candidate.Length == 0 || target.Length == 0)
+        {
+            lines.Add("compare_status=missing_data");
+            return lines;
+        }
+
+        var count = Math.Min(candidate.Length, target.Length);
+        var finite = 0;
+        var nonFinite = 0;
+        var maxAbs = -1d;
+        var maxIndex = -1;
+        double sumAbs = 0d;
+        double sumSq = 0d;
+        for (var i = 0; i < count; i++)
+        {
+            var a = candidate[i];
+            var b = target[i];
+            if (!float.IsFinite(a) || !float.IsFinite(b))
+            {
+                nonFinite++;
+                continue;
+            }
+
+            var diff = Math.Abs((double)a - b);
+            finite++;
+            sumAbs += diff;
+            sumSq += diff * diff;
+            if (diff > maxAbs)
+            {
+                maxAbs = diff;
+                maxIndex = i;
+            }
+        }
+
+        lines.Add("compare_status=ok");
+        lines.Add("compare_count=" + count.ToString(CultureInfo.InvariantCulture));
+        lines.Add("candidate_len=" + candidate.Length.ToString(CultureInfo.InvariantCulture));
+        lines.Add("target_len=" + target.Length.ToString(CultureInfo.InvariantCulture));
+        lines.Add("finite=" + finite.ToString(CultureInfo.InvariantCulture));
+        lines.Add("nonfinite=" + nonFinite.ToString(CultureInfo.InvariantCulture));
+        lines.Add("mean_abs=" + (finite > 0 ? (sumAbs / finite).ToString("R", CultureInfo.InvariantCulture) : "nan"));
+        lines.Add("rmse=" + (finite > 0 ? Math.Sqrt(sumSq / finite).ToString("R", CultureInfo.InvariantCulture) : "nan"));
+        lines.Add("max_abs=" + (maxAbs >= 0d ? maxAbs.ToString("R", CultureInfo.InvariantCulture) : "nan"));
+        lines.Add("max_abs_index=" + maxIndex.ToString(CultureInfo.InvariantCulture));
+        return lines;
+    }
+
+    private static string ResolveExistingDirectory(string path)
+    {
+        return !string.IsNullOrWhiteSpace(path) && Directory.Exists(path) ? path : null;
+    }
+
+    private static string SanitizeFileName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return "blob";
+
+        var chars = name.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] == Path.DirectorySeparatorChar
+                || chars[i] == Path.AltDirectorySeparatorChar
+                || chars[i] == ':'
+                || chars[i] == '*'
+                || chars[i] == '?'
+                || chars[i] == '\"'
+                || chars[i] == '<'
+                || chars[i] == '>'
+                || chars[i] == '|')
+                chars[i] = '_';
+        }
+
+        return new string(chars);
+    }
+
+    private static float[] ReadFloatArrayRawF32(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return null;
+
+        var bytes = File.ReadAllBytes(path);
+        if (bytes == null || bytes.Length == 0)
+            return Array.Empty<float>();
+        if ((bytes.Length % sizeof(float)) != 0)
+            throw new InvalidDataException("invalid float32 bin byte length: " + path);
+
+        var data = new float[bytes.Length / sizeof(float)];
+        Buffer.BlockCopy(bytes, 0, data, 0, bytes.Length);
+        return data;
+    }
+
+    private sealed class DebugMatDump
+    {
+        public bool hasHeader;
+        public int dims = 1;
+        public int w = 0;
+        public int h = 1;
+        public int d = 1;
+        public int c = 1;
+        public int elempack = 1;
+        public float[] values;
+    }
+
+    private static float[] TryReadDebugFloatDump(string path)
+    {
+        var dump = ReadDebugMatDump(path);
+        return dump == null ? null : UnpackDebugMatDump(dump);
+    }
+
+    private static DebugMatDump ReadDebugMatDump(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return null;
+
+        var lines = File.ReadAllLines(path, Encoding.UTF8);
+        var start = 0;
+        var dump = new DebugMatDump();
+        if (lines.Length > 0 && !string.IsNullOrWhiteSpace(lines[0]) && lines[0][0] == '#')
+        {
+            var header = lines[0];
+            start = 1;
+            dump.hasHeader = true;
+            ParseHeaderInt(header, "dims", ref dump.dims);
+            ParseHeaderInt(header, "w", ref dump.w);
+            ParseHeaderInt(header, "h", ref dump.h);
+            ParseHeaderInt(header, "d", ref dump.d);
+            ParseHeaderInt(header, "c", ref dump.c);
+            ParseHeaderInt(header, "elempack", ref dump.elempack);
+        }
+
+        var values = new List<float>(Mathf.Max(16, lines.Length - start));
+        for (var i = start; i < lines.Length; i++)
+        {
+            var text = lines[i]?.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+                continue;
+            if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+                values.Add(value);
+            else
+                values.Add(float.NaN);
+        }
+
+        if (dump.w <= 0)
+            dump.w = values.Count;
+        dump.values = values.ToArray();
+        return dump;
+    }
+
+    private static void ParseHeaderInt(string header, string key, ref int value)
+    {
+        if (string.IsNullOrWhiteSpace(header) || string.IsNullOrWhiteSpace(key))
+            return;
+
+        var token = key + "=";
+        var index = header.IndexOf(token, StringComparison.Ordinal);
+        if (index < 0)
+            return;
+
+        index += token.Length;
+        var end = index;
+        while (end < header.Length && !char.IsWhiteSpace(header[end]))
+            end++;
+        if (end <= index)
+            return;
+
+        var text = header.Substring(index, end - index);
+        if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            value = parsed;
+    }
+
+    private static float[] UnpackDebugMatDump(DebugMatDump dump)
+    {
+        if (dump == null || dump.values == null)
+            return null;
+
+        var pack = Mathf.Max(1, dump.elempack);
+        var raw = dump.values;
+        if (pack == 1)
+            return raw;
+
+        if (dump.dims == 1)
+        {
+            var outCount = dump.w * pack;
+            var output = new float[outCount];
+            for (var x = 0; x < dump.w; x++)
+            {
+                var srcBase = x * pack;
+                for (var p = 0; p < pack; p++)
+                {
+                    var dst = x * pack + p;
+                    if (srcBase + p < raw.Length && dst < output.Length)
+                        output[dst] = raw[srcBase + p];
+                }
+            }
+
+            return output;
+        }
+
+        if (dump.dims == 2)
+        {
+            var logicalH = dump.h * pack;
+            var output = new float[dump.w * logicalH];
+            for (var yPack = 0; yPack < dump.h; yPack++)
+            {
+                for (var x = 0; x < dump.w; x++)
+                {
+                    var srcBase = (yPack * dump.w + x) * pack;
+                    for (var p = 0; p < pack; p++)
+                    {
+                        var y = yPack * pack + p;
+                        var dst = y * dump.w + x;
+                        if (srcBase + p < raw.Length && dst < output.Length)
+                            output[dst] = raw[srcBase + p];
+                    }
+                }
+            }
+
+            return output;
+        }
+
+        if (dump.dims == 3)
+        {
+            var logicalC = dump.c * pack;
+            var wh = dump.w * dump.h;
+            var cstep = raw.Length / Mathf.Max(1, dump.c * pack);
+            if (cstep < wh)
+                cstep = wh;
+            var output = new float[wh * logicalC];
+            for (var cPack = 0; cPack < dump.c; cPack++)
+            {
+                for (var i = 0; i < wh; i++)
+                {
+                    var srcBase = (cPack * cstep + i) * pack;
+                    for (var p = 0; p < pack; p++)
+                    {
+                        var channel = cPack * pack + p;
+                        var dst = channel * wh + i;
+                        if (srcBase + p < raw.Length && dst < output.Length)
+                            output[dst] = raw[srcBase + p];
+                    }
+                }
+            }
+
+            return output;
+        }
+
+        if (dump.dims == 4)
+        {
+            var logicalC = dump.c * pack;
+            var whd = dump.w * dump.h * dump.d;
+            var cstep = raw.Length / Mathf.Max(1, dump.c * pack);
+            if (cstep < whd)
+                cstep = whd;
+            var output = new float[whd * logicalC];
+            for (var cPack = 0; cPack < dump.c; cPack++)
+            {
+                for (var i = 0; i < whd; i++)
+                {
+                    var srcBase = (cPack * cstep + i) * pack;
+                    for (var p = 0; p < pack; p++)
+                    {
+                        var channel = cPack * pack + p;
+                        var dst = channel * whd + i;
+                        if (srcBase + p < raw.Length && dst < output.Length)
+                            output[dst] = raw[srcBase + p];
+                    }
+                }
+            }
+
+            return output;
+        }
+
+        return raw;
     }
 
     private bool TryDumpTextureBlobByLogicalShape(NcnnRepro.InferResult infer, string blobName, string path)

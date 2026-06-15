@@ -608,7 +608,7 @@ namespace NcnnCompute
             private readonly Dictionary<string, NcnnTensorBuffer> _bufferViews;
             private readonly List<IDisposable> _tempOwned;
             private readonly NcnnRepro _owner;
-            private readonly HashSet<TensorRef> _visitedTextures = new HashSet<TensorRef>();
+            private readonly HashSet<RenderTexture> _visitedTextures = new HashSet<RenderTexture>();
             private readonly HashSet<ComputeBuffer> _visitedBuffers = new HashSet<ComputeBuffer>();
 
             internal InferResult(
@@ -815,7 +815,7 @@ namespace NcnnCompute
                 foreach (var kv in _textureBlobs)
                 {
                     var tr = kv.Value;
-                    if (tr == null || !_visitedTextures.Add(tr))
+                    if (tr == null || tr.texture == null || !_visitedTextures.Add(tr.texture))
                         continue;
                     if (tr.owned && tr.texture != null)
                     {
@@ -881,6 +881,7 @@ namespace NcnnCompute
         internal readonly Dictionary<string, IDisposable> _extraPacks = new Dictionary<string, IDisposable>(StringComparer.Ordinal);
         internal Dictionary<string, int> _blobUseCount;
         private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
+        private readonly List<RenderTexture> _deferredTempRtReleases = new List<RenderTexture>();
         private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
         private readonly HashSet<ComputeTexture> _cmdSets = new HashSet<ComputeTexture>();
         private readonly HashSet<ComputeTexture> _deferredCmdReleases = new HashSet<ComputeTexture>(new DeferredCmdReleaseComparer());
@@ -896,10 +897,12 @@ namespace NcnnCompute
         private int _tempRtLiveCount;
         private int _tempRtPeakLiveCount;
         private bool _trackInferenceTempResources;
+        private int _deferredTempRtReleaseDepth;
 
         private readonly NcnnOps _ops;
         private bool _useTempPool = false;
         private int _maxPooledPerShape = 2;
+        private const int DefaultInferenceTempRtPoolPerShape = 2;
 
         public bool EnableTempPool
         {
@@ -1072,9 +1075,38 @@ namespace NcnnCompute
             _trackInferenceTempResources = true;
         }
 
+        public void BeginDeferredTempRtReleaseScope()
+        {
+            _deferredTempRtReleaseDepth++;
+        }
+
         public void EndInferenceTempResourceTracking()
         {
+            if (_rtPool.Count > 0)
+            {
+                try
+                {
+                    _ops?.DebugSyncGpu();
+                }
+                catch
+                {
+                }
+
+                FlushInferenceTempRenderTexturePool();
+            }
             _trackInferenceTempResources = false;
+        }
+
+        public void EndDeferredTempRtReleaseScope()
+        {
+            if (_deferredTempRtReleaseDepth <= 0)
+                return;
+
+            _deferredTempRtReleaseDepth--;
+            if (_deferredTempRtReleaseDepth > 0)
+                return;
+
+            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.EndDeferredTempRtReleaseScope");
         }
 
         public TempResourceStatsSnapshot GetInferenceTempResourceStats()
@@ -2005,14 +2037,15 @@ namespace NcnnCompute
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
             ICollection<string> pinnedNames = null,
             Dictionary<string, BufferShape> textureInputShapes = null,
-            string stopAfterTopName = null)
+            string stopAfterTopName = null,
+            string startAtTopName = null)
         {
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
             if ((textureInputs == null || textureInputs.Count == 0) && (bufferInputs == null || bufferInputs.Count == 0))
                 throw new ArgumentNullException(nameof(textureInputs));
             if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
-                return InferWithMultiInputsByLayerRepros(textureInputs, bufferInputs, pinnedNames, textureInputShapes, stopAfterTopName);
+                return InferWithMultiInputsByLayerRepros(textureInputs, bufferInputs, pinnedNames, textureInputShapes, stopAfterTopName, startAtTopName);
 
             return null;
         }
@@ -2577,6 +2610,12 @@ namespace NcnnCompute
                 enableRandomWrite = true,
                 msaaSamples = 1,
             };
+            if (TryRentInferenceTempArrayFromPool(w, h, depth, format, allocLabel, out var pooled))
+            {
+                TrackTempRtRent();
+                return pooled;
+            }
+
             var allocated = RenderTexture.GetTemporary(desc);
             NcnnGpuResourceTracker.RegisterTexture(allocated, allocLabel + "|new");
             TrackTempRtRent();
@@ -2589,6 +2628,18 @@ namespace NcnnCompute
         {
             if (rt == null)
                 return;
+
+            if (TryReturnInferenceTempArrayToPool(rt))
+            {
+                TrackTempRtReturn();
+                return;
+            }
+
+            if (TryDeferTempRenderTextureRelease(rt))
+            {
+                TrackTempRtReturn();
+                return;
+            }
 
             TrackTempRtReturn();
             NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray");
@@ -2678,6 +2729,133 @@ namespace NcnnCompute
             _deferredCmdReleases.Clear();
         }
 
+        private bool TryRentInferenceTempArrayFromPool(
+            int w,
+            int h,
+            int depth,
+            RenderTextureFormat format,
+            string label,
+            out RenderTexture rt)
+        {
+            rt = null;
+            if (!_trackInferenceTempResources || _rtPool.Count == 0)
+                return false;
+
+            // Returned temp RTs may still be referenced by queued GPU work from earlier layers in the
+            // same inference. Treat the pool as a quarantine list until EndInferenceTempResourceTracking()
+            // forces a sync, otherwise same-inference reuse can collapse distinct activations.
+            return false;
+        }
+
+        private bool TryReturnInferenceTempArrayToPool(RenderTexture rt)
+        {
+            if (rt == null || !_trackInferenceTempResources)
+                return false;
+
+            var maxPerShape = GetInferenceTempRtPoolMaxPerShape();
+            if (maxPerShape <= 0)
+                return false;
+
+            var key = new RtKey(
+                Mathf.Max(1, rt.width),
+                Mathf.Max(1, rt.height),
+                Mathf.Max(1, rt.volumeDepth > 0 ? rt.volumeDepth : 1),
+                rt.format);
+            if (!_rtPool.TryGetValue(key, out var pool) || pool == null)
+            {
+                pool = new Stack<RenderTexture>(maxPerShape);
+                _rtPool[key] = pool;
+            }
+
+            if (pool.Count >= maxPerShape || !IsMatchingPooledRenderTexture(rt, key))
+                return false;
+
+            pool.Push(rt);
+            return true;
+        }
+
+        private int GetInferenceTempRtPoolMaxPerShape()
+        {
+            if (!_trackInferenceTempResources)
+                return 0;
+            if (_maxPooledPerShape > 0)
+                return _maxPooledPerShape;
+            return DefaultInferenceTempRtPoolPerShape;
+        }
+
+        private static bool IsMatchingPooledRenderTexture(RenderTexture rt, RtKey key)
+        {
+            if (rt == null)
+                return false;
+
+            try
+            {
+                return rt.width == key.w
+                    && rt.height == key.h
+                    && Mathf.Max(1, rt.volumeDepth > 0 ? rt.volumeDepth : 1) == key.d
+                    && rt.format == key.format;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryDeferTempRenderTextureRelease(RenderTexture rt)
+        {
+            if (rt == null || _deferredTempRtReleaseDepth <= 0)
+                return false;
+
+            _deferredTempRtReleases.Add(rt);
+            return true;
+        }
+
+        private void FlushDeferredTempRenderTextureReleases(bool syncGpu, string releaseLabel)
+        {
+            if (_deferredTempRtReleases.Count == 0)
+                return;
+
+            if (syncGpu)
+            {
+                try
+                {
+                    _ops?.DebugSyncGpu();
+                }
+                catch
+                {
+                }
+            }
+
+            for (var i = 0; i < _deferredTempRtReleases.Count; i++)
+            {
+                var rt = _deferredTempRtReleases[i];
+                if (rt == null)
+                    continue;
+                NcnnGpuResourceTracker.ReleaseTexture(rt, releaseLabel ?? "NcnnRepro.FlushDeferredTempRt");
+                try { RenderTexture.ReleaseTemporary(rt); } catch { }
+            }
+
+            _deferredTempRtReleases.Clear();
+        }
+
+        private void FlushInferenceTempRenderTexturePool()
+        {
+            foreach (var kv in _rtPool)
+            {
+                var pool = kv.Value;
+                while (pool != null && pool.Count > 0)
+                {
+                    var rt = pool.Pop();
+                    if (rt == null)
+                        continue;
+                    NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.FlushInferenceTempRtPool");
+                    try { RenderTexture.ReleaseTemporary(rt); } catch { }
+                }
+            }
+
+            _rtPool.Clear();
+        }
+
         private static bool ShouldDeferCommandBufferTempRtRelease()
         {
             var env = Environment.GetEnvironmentVariable("AIIMAGE_CLIP_DEFER_CMD_RT_RELEASE");
@@ -2689,6 +2867,8 @@ namespace NcnnCompute
 
         public void ClearTempPool()
         {
+            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.ClearTempPool");
+            FlushInferenceTempRenderTexturePool();
             foreach (var kv in _rtPool)
             {
                 var pool = kv.Value;
@@ -2753,6 +2933,8 @@ namespace NcnnCompute
                 }
                 _deferredCmdReleases.Clear();
             }
+            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.ReleaseDeferredTempRt");
+            FlushInferenceTempRenderTexturePool();
             ClearTempPool();
         }
 
@@ -6206,14 +6388,30 @@ namespace NcnnCompute
             return packed;
         }
 
-        internal bool ShouldCompareTextureConvLayer(string layerName)
+        internal bool ShouldCompareTextureLayer(string layerName)
         {
             if (!string.IsNullOrWhiteSpace(layerName))
             {
-                if (DebugCompareTextureLayers != null && DebugCompareTextureLayers.Contains(layerName))
+                if (DebugCompareTextureLayers != null
+                    && (DebugCompareTextureLayers.Contains(layerName) || DebugCompareTextureLayers.Contains("*")))
                     return true;
-                if (DebugCompareTextureConvLayers != null && (DebugCompareTextureConvLayers.Contains(layerName) || DebugCompareTextureConvLayers.Contains("*")))
+            }
+
+            return false;
+        }
+
+        internal bool ShouldCompareTextureConvLayer(string layerName)
+        {
+            if (ShouldCompareTextureLayer(layerName))
+                return true;
+
+            if (!string.IsNullOrWhiteSpace(layerName))
+            {
+                if (DebugCompareTextureConvLayers != null
+                    && (DebugCompareTextureConvLayers.Contains(layerName) || DebugCompareTextureConvLayers.Contains("*")))
+                {
                     return true;
+                }
             }
 
             return false;
@@ -6360,6 +6558,117 @@ namespace NcnnCompute
                         + " | valid=" + validCount
                         + " | ref_nan=" + refNanCount
                         + " | tex_nan=" + texNanCount);
+                    for (var i = 0; i < preview.Count; i++)
+                        DebugLog?.Invoke(layerName + " | sample[" + i + "] " + preview[i]);
+                }
+                finally
+                {
+                    ReturnTempBuffer(texturePhysical);
+                }
+            }
+            catch (Exception e)
+            {
+                DebugLog?.Invoke(layerName + " | compare failed: " + e.Message);
+            }
+        }
+
+        internal void CompareTextureInnerProductPath(
+            string layerName,
+            string bottomName,
+            InnerProductPack ip,
+            RenderTexture textureOutput,
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            Dictionary<string, NcnnTensorBuffer> bufferViews,
+            List<IDisposable> tempOwned)
+        {
+            try
+            {
+                using var srcTensor = GetReadableTensorInput(bottomName, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
+                if (srcTensor == null || srcTensor.buffer == null)
+                {
+                    DebugLog?.Invoke(layerName + " | compare skipped: source buffer unavailable");
+                    return;
+                }
+                if (ip == null || ip.w == null || ip.b == null)
+                {
+                    DebugLog?.Invoke(layerName + " | compare skipped: weights unavailable");
+                    return;
+                }
+
+                LogBufferStats(layerName, "src", srcTensor.buffer, srcTensor.elementCount);
+                LogBufferStats(layerName, "weight", ip.w, ip.weightSize);
+                LogBufferStats(layerName, "bias", ip.b, ip.outFeatures);
+
+                var rows = srcTensor.dims == 2 && srcTensor.w == ip.inFeatures ? srcTensor.h : 1;
+                using var refTensor = rows > 1
+                    ? RentTempTensorBuffer(2, ip.outFeatures, rows)
+                    : RentTempTensorBuffer(1, ip.outFeatures);
+                if (rows > 1)
+                    Ops.InnerProduct2D(srcTensor.buffer, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, refTensor.buffer);
+                else
+                    Ops.InnerProduct(srcTensor.buffer, ip.inFeatures, ip.w, ip.b, ip.outFeatures, refTensor.buffer);
+
+                var logicalCount = refTensor.elementCount;
+                var texturePhysical = RentTempBuffer(textureOutput.width * textureOutput.height * 4, sizeof(float));
+                try
+                {
+                    Ops.Pack4ToBufferCHW(textureOutput, textureOutput.width, textureOutput.height, 4, texturePhysical);
+
+                    var refData = new float[logicalCount];
+                    refTensor.buffer.GetData(refData);
+
+                    var texPhysicalData = new float[texturePhysical.count];
+                    texturePhysical.GetData(texPhysicalData);
+
+                    double sumAbs = 0d;
+                    float maxAbs = 0f;
+                    var validCount = 0;
+                    var refNanCount = 0;
+                    var texNanCount = 0;
+                    var preview = new List<string>(8);
+                    var compareCount = Mathf.Min(logicalCount, texPhysicalData.Length);
+                    for (var i = 0; i < compareCount; i++)
+                    {
+                        var rv = refData[i];
+                        var tv = texPhysicalData[i];
+                        var refFinite = !float.IsNaN(rv) && !float.IsInfinity(rv);
+                        var texFinite = !float.IsNaN(tv) && !float.IsInfinity(tv);
+                        if (!refFinite) refNanCount++;
+                        if (!texFinite) texNanCount++;
+                        if (!refFinite || !texFinite)
+                        {
+                            if (preview.Count < 8)
+                            {
+                                preview.Add(i + ": ref=" + rv.ToString("G9", CultureInfo.InvariantCulture)
+                                    + " tex=" + tv.ToString("G9", CultureInfo.InvariantCulture));
+                            }
+                            continue;
+                        }
+
+                        var diff = Mathf.Abs(rv - tv);
+                        sumAbs += diff;
+                        if (diff > maxAbs)
+                            maxAbs = diff;
+                        validCount++;
+                        if (preview.Count < 8)
+                        {
+                            preview.Add(i + ": ref=" + rv.ToString("G9", CultureInfo.InvariantCulture)
+                                + " tex=" + tv.ToString("G9", CultureInfo.InvariantCulture));
+                        }
+                    }
+
+                    var meanAbs = validCount > 0 ? (float)(sumAbs / validCount) : float.NaN;
+                    DebugLog?.Invoke(layerName
+                        + " | texture_vs_buffer mean_abs=" + meanAbs.ToString("G9", CultureInfo.InvariantCulture)
+                        + " | max_abs=" + maxAbs.ToString("G9", CultureInfo.InvariantCulture)
+                        + " | count=" + compareCount
+                        + " | valid=" + validCount
+                        + " | ref_nan=" + refNanCount
+                        + " | tex_nan=" + texNanCount
+                        + " | rows=" + rows.ToString(CultureInfo.InvariantCulture)
+                        + " | out_features=" + ip.outFeatures.ToString(CultureInfo.InvariantCulture));
                     for (var i = 0; i < preview.Count; i++)
                         DebugLog?.Invoke(layerName + " | sample[" + i + "] " + preview[i]);
                 }
