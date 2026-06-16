@@ -24,10 +24,8 @@ public struct SDInpaintingNcnnReproResult
 
 public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 {
-    private const string TextEncoderTokenBlobName = "token";
-    private const string TextEncoderMultiplierBlobName = "multiplier";
-    private const string TextEncoderCondBlobName = "cond";
-    private const string TextEncoderOutputBlobName = "cal_12";
+    private const string TextEncoderTokenBlobName = "in0";
+    private const string TextEncoderOutputBlobName = "out0";
     private const string VaeEncoderInputBlobName = "in0";
     private const string VaeEncoderMeanBlobName = "out0";
     private const string VaeEncoderStdBlobName = "out1";
@@ -104,7 +102,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         public readonly string vaeBinPath;
         public readonly string vaeEncoderParamPath;
         public readonly string vaeEncoderBinPath;
-        public readonly string tokenizerVocabPath;
+        public readonly string tokenizerVocabJsonPath;
+        public readonly string tokenizerMergesPath;
 
         public ResolvedPaths(
             string textParamPath,
@@ -115,7 +114,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             string vaeBinPath,
             string vaeEncoderParamPath,
             string vaeEncoderBinPath,
-            string tokenizerVocabPath)
+            string tokenizerVocabJsonPath,
+            string tokenizerMergesPath)
         {
             this.textParamPath = textParamPath;
             this.textBinPath = textBinPath;
@@ -125,7 +125,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             this.vaeBinPath = vaeBinPath;
             this.vaeEncoderParamPath = vaeEncoderParamPath;
             this.vaeEncoderBinPath = vaeEncoderBinPath;
-            this.tokenizerVocabPath = tokenizerVocabPath;
+            this.tokenizerVocabJsonPath = tokenizerVocabJsonPath;
+            this.tokenizerMergesPath = tokenizerMergesPath;
         }
     }
 
@@ -174,7 +175,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private NcnnRepro _unetRepro;
     private NcnnRepro _vaeRepro;
     private NcnnRepro _vaeEncoderRepro;
-    private StableDiffusionSimpleTokenizer _tokenizer;
+    private ClipBpeTokenizer _tokenizer;
     private ResolvedPaths? _resolvedPaths;
     private string _loadedModelKey;
     private string _lastDumpDir;
@@ -502,7 +503,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             var useStrengthMax = strength >= 0.9999f;
             if (!useStrengthMax)
                 cleanLatentTex = await EncodeImageLatentsPack4Async(resizedSource, latentRng, ct);
-            initNoiseTex = CreateLatentNoisePack4(latentRng);
+            initNoiseTex = CreateLatentNoisePack4(_unetRepro, latentRng);
             maskedLatentTex = await EncodeImageLatentsPack4Async(maskedSource, latentRng, ct);
             if ((!useStrengthMax && cleanLatentTex == null) || initNoiseTex == null || maskedLatentTex == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "VAE encoder failed." });
@@ -1182,7 +1183,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             paths.vaeBinPath + "|" +
             paths.vaeEncoderParamPath + "|" +
             paths.vaeEncoderBinPath + "|" +
-            paths.tokenizerVocabPath + "|" +
+            paths.tokenizerVocabJsonPath + "|" +
+            paths.tokenizerMergesPath + "|" +
             tensorTextureFormat + "|" +
             encoderTensorTextureFormat + "|" +
             decoderTensorTextureFormat + "|" +
@@ -1194,7 +1196,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         Release();
         EnsureRuntimeObjects();
-        _tokenizer = new StableDiffusionSimpleTokenizer(paths.tokenizerVocabPath);
+        _tokenizer = new ClipBpeTokenizer(paths.tokenizerVocabJsonPath, paths.tokenizerMergesPath);
         _loadedModelKey = modelKey;
     }
 
@@ -1419,7 +1421,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             paths.vaeBinPath + "|" +
             paths.vaeEncoderParamPath + "|" +
             paths.vaeEncoderBinPath + "|" +
-            paths.tokenizerVocabPath + "|" +
+            paths.tokenizerVocabJsonPath + "|" +
+            paths.tokenizerMergesPath + "|" +
             tensorTextureFormat + "|" +
             encoderTensorTextureFormat + "|" +
             decoderTensorTextureFormat + "|" +
@@ -1440,7 +1443,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         _vaeRepro.TensorTextureFormat = decoderTensorTextureFormat;
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
 
-        _tokenizer = new StableDiffusionSimpleTokenizer(paths.tokenizerVocabPath);
+        _tokenizer = new ClipBpeTokenizer(paths.tokenizerVocabJsonPath, paths.tokenizerMergesPath);
 
         await LoadModelAsync(_textRepro, paths.textParamPath, paths.textBinPath, "text encoder", ct);
         await LoadModelAsync(_unetRepro, paths.unetParamPath, paths.unetBinPath, "unet", ct);
@@ -1620,8 +1623,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return null;
         }
 
-        var textParamPath = FindExact(sdRoots, "FrozenCLIPEmbedder-fp16.param");
-        var textBinPath = FindExact(sdRoots, "FrozenCLIPEmbedder-fp16.bin");
+        var textParamPath = FindFirst(inpaintRoots, "text_encoder.param", "text_encoder.raw.param");
+        var textBinPath = FindFirst(inpaintRoots, "text_encoder.bin", "text_encoder.raw.bin");
         var unetParamPath = FindExact(inpaintRoots, "unet.param");
         var unetBinPath = FindExact(inpaintRoots, "unet.bin");
         var vaeParamPath = FindFirst(sdRoots,
@@ -1631,12 +1634,16 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         var vaeBinPath = FindExact(sdRoots, "AutoencoderKL-fp16.bin");
         var vaeEncoderParamPath = FindExact(sdRoots, "AutoencoderKL-encoder-512-512-fp16.param");
         var vaeEncoderBinPath = FindExact(sdRoots, "AutoencoderKL-encoder-512-512-fp16.bin");
-        var vocabPath = FindExact(sdRoots, "vocab.txt");
+        var tokenizerRoots = new List<string>();
+        AddUniqueRoot(tokenizerRoots, Path.Combine(projectRoot, "Tools", "sd15inpainting2ncnnExporter", "output", "diffusers", "tokenizer"));
+        AddUniqueRoot(tokenizerRoots, Path.Combine(sdRoot, "tokenizer"));
+        var tokenizerVocabJsonPath = FindExact(tokenizerRoots, "vocab.json");
+        var tokenizerMergesPath = FindExact(tokenizerRoots, "merges.txt");
 
         if (string.IsNullOrWhiteSpace(textParamPath))
-            throw new FileNotFoundException("FrozenCLIPEmbedder-fp16.param not found under StableDiffusion roots.", sdRoot);
+            throw new FileNotFoundException("text_encoder.param not found under SD inpainting roots.", inpaintRoot);
         if (string.IsNullOrWhiteSpace(textBinPath))
-            throw new FileNotFoundException("FrozenCLIPEmbedder-fp16.bin not found under StableDiffusion roots.", sdRoot);
+            throw new FileNotFoundException("text_encoder.bin not found under SD inpainting roots.", inpaintRoot);
         if (string.IsNullOrWhiteSpace(unetParamPath))
             throw new FileNotFoundException("SD inpainting unet.param not found under inpainting roots.", inpaintRoot);
         if (string.IsNullOrWhiteSpace(unetBinPath))
@@ -1649,8 +1656,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             throw new FileNotFoundException("AutoencoderKL-encoder-512-512-fp16.param not found under StableDiffusion roots.", sdRoot);
         if (string.IsNullOrWhiteSpace(vaeEncoderBinPath))
             throw new FileNotFoundException("AutoencoderKL-encoder-512-512-fp16.bin not found under StableDiffusion roots.", sdRoot);
-        if (string.IsNullOrWhiteSpace(vocabPath))
-            throw new FileNotFoundException("vocab.txt not found under StableDiffusion roots.", sdRoot);
+        if (string.IsNullOrWhiteSpace(tokenizerVocabJsonPath))
+            throw new FileNotFoundException("tokenizer vocab.json not found under tokenizer roots.", projectRoot);
+        if (string.IsNullOrWhiteSpace(tokenizerMergesPath))
+            throw new FileNotFoundException("tokenizer merges.txt not found under tokenizer roots.", projectRoot);
 
         _resolvedPaths = new ResolvedPaths(
             textParamPath,
@@ -1661,7 +1670,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             vaeBinPath,
             vaeEncoderParamPath,
             vaeEncoderBinPath,
-            vocabPath);
+            tokenizerVocabJsonPath,
+            tokenizerMergesPath);
         return _resolvedPaths.Value;
     }
 
@@ -1672,24 +1682,25 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             throw new InvalidOperationException("Tokenizer is not loaded.");
 
         ComputeBuffer tokenBuffer = null;
-        ComputeBuffer multiplierBuffer = null;
-        ComputeBuffer condBuffer = null;
         bool? previousTextTempBufferGuard = null;
         try
         {
-            var tokens = new int[TokenCount];
-            var multipliers = new float[TokenCount];
-            _tokenizer.TokenizePrompt77(prompt, tokens, multipliers);
+            var tokens = _tokenizer.Tokenize(prompt ?? string.Empty);
             LogStageTrace("text encode tokens ready"
                 + (string.IsNullOrWhiteSpace(label) ? string.Empty : " | " + label)
                 + " | tokenCount=" + tokens.Length.ToString(CultureInfo.InvariantCulture));
+
+            if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+            {
+                var safeLabel = SanitizeFileName(string.IsNullOrWhiteSpace(label) ? "prompt" : label);
+                WriteAllTextSafe(
+                    Path.Combine(_lastDumpDir, "text_tokens_" + safeLabel + ".txt"),
+                    string.Join(Environment.NewLine, Array.ConvertAll(tokens, value => value.ToString(CultureInfo.InvariantCulture))));
+            }
+
             tokenBuffer = NewTrackedBuffer(tokens.Length, sizeof(int), ComputeBufferType.Structured, "SDInpaint.TextTokens." + (label ?? "prompt"));
             tokenBuffer.SetData(tokens);
-            multiplierBuffer = NewFloatBuffer(multipliers, "SDInpaint.TextMultipliers." + (label ?? "prompt"));
-            condBuffer = NewFloatBuffer(new float[TextEmbeddingWidth], "SDInpaint.TextCondSeed." + (label ?? "prompt"));
             var tokenView = new NcnnTensorBuffer(tokenBuffer, 1, tokens.Length, 1, 1, 1, false);
-            var multiplierView = new NcnnTensorBuffer(multiplierBuffer, 1, multipliers.Length, 1, 1, 1, false);
-            var condView = new NcnnTensorBuffer(condBuffer, 2, TextEmbeddingWidth, 1, 1, 1, false);
             LogStageTrace("text infer begin" + (string.IsNullOrWhiteSpace(label) ? string.Empty : " | " + label));
             previousTextTempBufferGuard = _textRepro.DisallowInferenceTempComputeBuffers;
             _textRepro.DisallowInferenceTempComputeBuffers = false;
@@ -1697,9 +1708,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 null,
                 new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal)
                 {
-                    { TextEncoderTokenBlobName, tokenView },
-                    { TextEncoderMultiplierBlobName, multiplierView },
-                    { TextEncoderCondBlobName, condView }
+                    { TextEncoderTokenBlobName, tokenView }
                 },
                 new HashSet<string>(StringComparer.Ordinal) { TextEncoderOutputBlobName });
 
@@ -1716,8 +1725,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (previousTextTempBufferGuard.HasValue && _textRepro != null)
                 _textRepro.DisallowInferenceTempComputeBuffers = previousTextTempBufferGuard.Value;
             DisposeBuffer(tokenBuffer, "SDInpaint.TextTokens." + (label ?? "prompt"));
-            DisposeBuffer(multiplierBuffer, "SDInpaint.TextMultipliers." + (label ?? "prompt"));
-            DisposeBuffer(condBuffer, "SDInpaint.TextCondSeed." + (label ?? "prompt"));
         }
     }
 
@@ -1835,7 +1842,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (meanTex == null || stdTex == null)
                 throw new InvalidOperationException("VAE encoder pack4 output is missing.");
 
-            noiseTex = CreateLatentNoisePack4(rng);
+            noiseTex = CreateLatentNoisePack4(_vaeEncoderRepro, rng);
             scaledNoiseTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
             latentTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
             scaledLatentTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
@@ -1884,10 +1891,15 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private RenderTexture CreateLatentNoisePack4(INormalRng rng)
+    private RenderTexture CreateLatentNoisePack4(NcnnRepro owner, INormalRng rng)
     {
+        if (owner == null)
+            throw new ArgumentNullException(nameof(owner));
+        if (rng == null)
+            throw new ArgumentNullException(nameof(rng));
+
         return CreateTensorPack4Texture(
-            _unetRepro ?? _vaeEncoderRepro,
+            owner,
             GenerateGaussian(LatentElementCount(), rng),
             3,
             LatentSize,
@@ -2032,7 +2044,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             _ops.Pack4ToRgb01(clippedTex, rgbRt, true);
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
-            return RenderTextureToTexture2D(rgbRt, ModelImageSize, ModelImageSize);
+            var texture = RenderTextureToTexture2D(rgbRt, ModelImageSize, ModelImageSize);
+            ForceOpaqueAlpha(texture);
+            texture?.Apply(false, false);
+            return texture;
         }
         finally
         {
@@ -2077,7 +2092,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             _ops.Pack4ToRgb01(clippedTex, rgbRt, true);
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
-            return RenderTextureToTexture2D(rgbRt, ModelImageSize, ModelImageSize);
+            var texture = RenderTextureToTexture2D(rgbRt, ModelImageSize, ModelImageSize);
+            ForceOpaqueAlpha(texture);
+            texture?.Apply(false, false);
+            return texture;
         }
         finally
         {
@@ -2849,13 +2867,13 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (string.IsNullOrWhiteSpace(aliasSource) || string.Equals(aliasSource, blobName, StringComparison.Ordinal))
             return false;
 
-        if (!(TryLoadReplayReferenceBlobWithShape(aliasSource, referenceDir, promptKind, preferUnityPrefix: false, out data, out _)
-            || TryLoadReplayReferenceBlobWithShape(aliasSource, baselineDir, promptKind, preferUnityPrefix: true, out data, out _)))
+        if (!(TryLoadReplayReferenceBlobWithShape(aliasSource, referenceDir, promptKind, preferUnityPrefix: false, out data, out var sourceShape)
+            || TryLoadReplayReferenceBlobWithShape(aliasSource, baselineDir, promptKind, preferUnityPrefix: true, out data, out sourceShape)))
         {
             return false;
         }
 
-        shape = ResolveReplayBlobShape(blobName, data.Length);
+        shape = sourceShape;
         sourceBlobName = aliasSource;
         sourcePath = _lastReplayResolvedPath;
         return true;
@@ -4424,16 +4442,55 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     {
         if (src == null)
             return null;
-        var rt = ResizeTextureBilinear(src, width, height);
-        if (rt == null)
-            return null;
+
+        if (src.width == width && src.height == height)
+        {
+            if (src is Texture2D sameSizeTex)
+            {
+                try
+                {
+                    var copy = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+                    var pixels = sameSizeTex.GetPixels32();
+                    for (var i = 0; i < pixels.Length; i++)
+                        pixels[i].a = 255;
+                    copy.SetPixels32(pixels);
+                    copy.Apply(false, false);
+                    copy.wrapMode = TextureWrapMode.Clamp;
+                    copy.filterMode = FilterMode.Bilinear;
+                    return copy;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        Texture2D tempTexture = null;
         try
         {
-            return RenderTextureToTexture2D(rt, width, height);
+            var srcPixels = ReadTexturePixels32(src, out var srcW, out var srcH, out tempTexture);
+            if (srcPixels == null || srcPixels.Length <= 0 || srcW <= 0 || srcH <= 0)
+                return null;
+
+            var dstPixels = ResizePixels32Bilinear(srcPixels, srcW, srcH, width, height);
+            if (dstPixels == null || dstPixels.Length <= 0)
+                return null;
+
+            for (var i = 0; i < dstPixels.Length; i++)
+                dstPixels[i].a = 255;
+
+            var texture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+            texture.SetPixels32(dstPixels);
+            texture.Apply(false, false);
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.filterMode = FilterMode.Bilinear;
+            return texture;
         }
         finally
         {
-            ReleaseTemporaryRt(rt, "SDInpaint.ResizeTextureRt");
+            if (tempTexture != null)
+                UnityEngine.Object.DestroyImmediate(tempTexture);
         }
     }
 
@@ -4459,6 +4516,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
 
         var texture = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+        for (var i = 0; i < dstPixels.Length; i++)
+            dstPixels[i].a = 255;
         texture.SetPixels32(dstPixels);
         texture.Apply(false, false);
         texture.wrapMode = TextureWrapMode.Clamp;
@@ -4473,6 +4532,101 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         var rt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, false, "SDInpaint.ResizeTextureRt");
         Graphics.Blit(src, rt);
         return rt;
+    }
+
+    private static Color32[] ResizePixels32Bilinear(Color32[] srcPixels, int srcW, int srcH, int dstW, int dstH)
+    {
+        if (srcPixels == null || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0)
+            return Array.Empty<Color32>();
+        if (srcPixels.Length < srcW * srcH)
+            return Array.Empty<Color32>();
+        if (srcW == dstW && srcH == dstH)
+        {
+            var copy = new Color32[srcW * srcH];
+            Array.Copy(srcPixels, copy, copy.Length);
+            return copy;
+        }
+
+        var dstPixels = new Color32[dstW * dstH];
+        if (srcW == 1 || srcH == 1)
+        {
+            for (var y = 0; y < dstH; y++)
+            {
+                var sy = Mathf.Clamp((int)((long)y * srcH / dstH), 0, srcH - 1);
+                var dstRow = y * dstW;
+                var srcRow = sy * srcW;
+                for (var x = 0; x < dstW; x++)
+                {
+                    var sx = Mathf.Clamp((int)((long)x * srcW / dstW), 0, srcW - 1);
+                    dstPixels[dstRow + x] = srcPixels[srcRow + sx];
+                }
+            }
+
+            return dstPixels;
+        }
+
+        var scaleX = (double)srcW / dstW;
+        var scaleY = (double)srcH / dstH;
+        for (var dy = 0; dy < dstH; dy++)
+        {
+            var fy = (float)((dy + 0.5) * scaleY - 0.5);
+            var sy = (int)Math.Floor(fy);
+            var wy1 = fy - sy;
+            if (sy < 0)
+            {
+                sy = 0;
+                wy1 = 0f;
+            }
+            if (sy >= srcH - 1)
+            {
+                sy = srcH - 2;
+                wy1 = 1f;
+            }
+            var sy1 = sy + 1;
+            var wy0 = 1f - wy1;
+            var srcRow0 = sy * srcW;
+            var srcRow1 = sy1 * srcW;
+            var dstRow = dy * dstW;
+
+            for (var dx = 0; dx < dstW; dx++)
+            {
+                var fx = (float)((dx + 0.5) * scaleX - 0.5);
+                var sx = (int)Math.Floor(fx);
+                var wx1 = fx - sx;
+                if (sx < 0)
+                {
+                    sx = 0;
+                    wx1 = 0f;
+                }
+                if (sx >= srcW - 1)
+                {
+                    sx = srcW - 2;
+                    wx1 = 1f;
+                }
+                var sx1 = sx + 1;
+                var wx0 = 1f - wx1;
+
+                var p00 = srcPixels[srcRow0 + sx];
+                var p10 = srcPixels[srcRow0 + sx1];
+                var p01 = srcPixels[srcRow1 + sx];
+                var p11 = srcPixels[srcRow1 + sx1];
+
+                var r0 = p00.r * wx0 + p10.r * wx1;
+                var g0 = p00.g * wx0 + p10.g * wx1;
+                var b0 = p00.b * wx0 + p10.b * wx1;
+                var r1 = p01.r * wx0 + p11.r * wx1;
+                var g1 = p01.g * wx0 + p11.g * wx1;
+                var b1 = p01.b * wx0 + p11.b * wx1;
+
+                dstPixels[dstRow + dx] = new Color32(
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(r0 * wy0 + r1 * wy1), 0, 255),
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(g0 * wy0 + g1 * wy1), 0, 255),
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(b0 * wy0 + b1 * wy1), 0, 255),
+                    255);
+            }
+        }
+
+        return dstPixels;
     }
 
     private static Texture2D RenderTextureToTexture2D(RenderTexture rt, int width, int height)
@@ -4491,6 +4645,25 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         finally
         {
             RenderTexture.active = previous;
+        }
+    }
+
+    private static void ForceOpaqueAlpha(Texture2D texture)
+    {
+        if (texture == null)
+            return;
+
+        try
+        {
+            var pixels = texture.GetPixels32();
+            if (pixels == null || pixels.Length <= 0)
+                return;
+            for (var i = 0; i < pixels.Length; i++)
+                pixels[i].a = 255;
+            texture.SetPixels32(pixels);
+        }
+        catch
+        {
         }
     }
 

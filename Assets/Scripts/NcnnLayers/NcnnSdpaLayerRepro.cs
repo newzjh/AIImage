@@ -277,6 +277,7 @@ namespace NcnnCompute
             RenderTexture queryScaled = null;
             RenderTexture keyTransposed = null;
             RenderTexture scores = null;
+            RenderTexture weights = null;
             RenderTexture output = null;
 
             try
@@ -318,10 +319,13 @@ namespace NcnnCompute
                 ReturnTemp(owner, ref keyTransposed);
                 ReturnTemp(owner, ref queryScaled);
 
+                weights = owner.RentTempArray(plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                owner.Ops.SoftmaxPack4Cdhw(scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+                ReturnTemp(owner, ref scores);
+
                 output = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
-                owner.Ops.SoftmaxPack4Cdhw(scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, scores);
                 owner.Ops.MatMulPack4Cdhw(
-                    scores,
+                    weights,
                     plan.scoresShape.h,
                     plan.scoresShape.w,
                     plan.scoresShape.d,
@@ -336,7 +340,7 @@ namespace NcnnCompute
                     plan.outputShape.c,
                     output);
 
-                ReturnTemp(owner, ref scores);
+                ReturnTemp(owner, ref weights);
 
                 NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
                 output = null;
@@ -356,6 +360,7 @@ namespace NcnnCompute
                 ReturnTemp(owner, ref queryScaled);
                 ReturnTemp(owner, ref keyTransposed);
                 ReturnTemp(owner, ref scores);
+                ReturnTemp(owner, ref weights);
                 ReturnTemp(owner, ref output);
             }
         }
@@ -375,6 +380,7 @@ namespace NcnnCompute
             ComputeTexture queryScaled = null;
             ComputeTexture keyTransposed = null;
             ComputeTexture scores = null;
+            ComputeTexture weights = null;
             ComputeTexture output = null;
 
             try
@@ -420,11 +426,15 @@ namespace NcnnCompute
                 owner.ReturnTempArray(cmd, queryScaled);
                 queryScaled = null;
 
+                weights = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                owner.Ops.SoftmaxPack4Cdhw(cmd, scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+                owner.ReturnTempArray(cmd, scores);
+                scores = null;
+
                 output = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
-                owner.Ops.SoftmaxPack4Cdhw(cmd, scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, scores);
                 owner.Ops.MatMulPack4Cdhw(
                     cmd,
-                    scores,
+                    weights,
                     plan.scoresShape.h,
                     plan.scoresShape.w,
                     plan.scoresShape.d,
@@ -439,8 +449,8 @@ namespace NcnnCompute
                     plan.outputShape.c,
                     output);
 
-                owner.ReturnTempArray(cmd, scores);
-                scores = null;
+                owner.ReturnTempArray(cmd, weights);
+                weights = null;
 
                 context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                 {
@@ -466,6 +476,7 @@ namespace NcnnCompute
                 ReturnTemp(owner, cmd, ref queryScaled);
                 ReturnTemp(owner, cmd, ref keyTransposed);
                 ReturnTemp(owner, cmd, ref scores);
+                ReturnTemp(owner, cmd, ref weights);
                 ReturnTemp(owner, cmd, ref output);
             }
         }

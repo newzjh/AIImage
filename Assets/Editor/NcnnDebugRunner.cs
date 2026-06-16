@@ -78,6 +78,7 @@ public static class NcnnDebugRunner
     private const string SdUseAsyncComputeEnvVar = "AIIMAGE_SD_USE_ASYNC_COMPUTE";
     private const string SdDisallowTempComputeBuffersEnvVar = "AIIMAGE_SD_DISALLOW_TEMP_COMPUTE_BUFFERS";
     private const string SdReplayBaselineDirEnvVar = "AIIMAGE_SD_REPLAY_BASELINE_DIR";
+    private const string SdDirectBaselineDirEnvVar = "AIIMAGE_SD_DIRECT_BASELINE_DIR";
     private const string SdReplayReferenceDirEnvVar = "AIIMAGE_SD_REPLAY_REFERENCE_DIR";
     private const string SdReplayStartTopEnvVar = "AIIMAGE_SD_REPLAY_START_TOP";
     private const string SdReplayStopTopEnvVar = "AIIMAGE_SD_REPLAY_STOP_TOP";
@@ -493,6 +494,8 @@ public static class NcnnDebugRunner
     public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
 
     public static void RunYoloAndInpaintingDebugBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingDebugBatch), RunYoloAndInpaintingDebugInternal, TimeSpan.FromHours(4));
+
+    public static void RunStableDiffusionBaselineDebugBatch() => RunBatchBlocking(nameof(RunStableDiffusionBaselineDebugBatch), RunStableDiffusionBaselineDebugInternal, TimeSpan.FromHours(4));
 
     public static void RunYoloAndInpaintingProbeBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingProbeBatch), RunYoloAndInpaintingProbeInternal, TimeSpan.FromHours(6));
 
@@ -1258,6 +1261,105 @@ public static class NcnnDebugRunner
         {
             try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
             NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+        }
+    }
+
+    private static async UniTask RunStableDiffusionBaselineDebugInternal()
+    {
+        var baselineDir = ResolveOptionalExistingDirectory(SdDirectBaselineDirEnvVar);
+        if (string.IsNullOrWhiteSpace(baselineDir))
+            throw new DirectoryNotFoundException("baseline dir not found: " + Environment.GetEnvironmentVariable(SdDirectBaselineDirEnvVar));
+
+        var sourcePath = Path.Combine(baselineDir, "01_source_512.png");
+        var maskPath = Path.Combine(baselineDir, "02_mask_512.png");
+        var positivePath = Path.Combine(baselineDir, "positive_prompt.txt");
+        var negativePath = Path.Combine(baselineDir, "negative_prompt.txt");
+        if (!File.Exists(sourcePath) || !File.Exists(maskPath))
+            throw new FileNotFoundException("baseline source or mask missing", baselineDir);
+
+        var source = LoadTexture(sourcePath);
+        var mask = LoadTexture(maskPath);
+        if (source == null || mask == null)
+            throw new InvalidOperationException("Failed to load baseline input textures: " + baselineDir);
+
+        var positivePrompt = File.Exists(positivePath)
+            ? File.ReadAllText(positivePath).Trim()
+            : ResolveStringEnv(SdPositivePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedPositivePrompt);
+        var negativePrompt = File.Exists(negativePath)
+            ? File.ReadAllText(negativePath).Trim()
+            : ResolveStringEnv(SdNegativePromptEnvVar, SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedNegativePrompt);
+
+        var go = new GameObject("StableDiffusionBaselineDebugRunner");
+        try
+        {
+            var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+            runner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, true);
+            runner.enableTempPool = false;
+            runner.maxPooledPerShape = 0;
+            runner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, runner.tensorTextureFormat);
+            runner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, runner.decoderTensorTextureFormat);
+            runner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, runner.encoderTensorTextureFormat);
+            runner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, runner.keepRawConvWeightsForTexturePath);
+            runner.enableAttentionMatMulPack4Specializations = true;
+            runner.useCommandBuffer = ResolveBoolEnv(SdUseCommandBufferEnvVar, false);
+            runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
+
+            var configPath = Path.Combine(baselineDir, "run_config.txt");
+            var stepCount = SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStepCount;
+            var seed = 123456;
+            var strength = SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStrength;
+            var guidanceScale = SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedGuidanceScale;
+            if (File.Exists(configPath))
+            {
+                foreach (var line in File.ReadAllLines(configPath))
+                {
+                    var parts = line.Split(new[] { '=' }, 2);
+                    if (parts.Length != 2)
+                        continue;
+                    var key = parts[0].Trim();
+                    var value = parts[1].Trim();
+                    if (key == "steps" && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedSteps))
+                        stepCount = parsedSteps;
+                    else if (key == "seed" && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedSeed))
+                        seed = parsedSeed;
+                    else if (key == "strength" && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedStrength))
+                        strength = parsedStrength;
+                    else if (key == "guidance_scale" && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedGuidance))
+                        guidanceScale = parsedGuidance;
+                    else if (key == "black_mask_means_inpaint" && bool.TryParse(value, out var parsedBlackMask))
+                        runner.blackMaskMeansInpaint = parsedBlackMask;
+                }
+            }
+
+            var result = await runner.ProcessAsync(
+                source,
+                mask,
+                positivePrompt,
+                negativePrompt,
+                stepCount,
+                seed,
+                strength,
+                guidanceScale,
+                CancellationToken.None);
+
+            Debug.Log(
+                "[SDBaseline] baseline=" + baselineDir
+                + " | error=" + (result.error ?? "")
+                + " | elapsedMs=" + result.elapsedMs
+                + " | seed=" + result.seed.ToString(CultureInfo.InvariantCulture)
+                + " | dump=" + (result.dumpDir ?? runner.LastDumpDir ?? ""));
+
+            if (!string.IsNullOrWhiteSpace(result.error))
+                throw new InvalidOperationException(result.error);
+
+            if (result.texture != null)
+                UnityEngine.Object.DestroyImmediate(result.texture);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(source);
+            UnityEngine.Object.DestroyImmediate(mask);
+            UnityEngine.Object.DestroyImmediate(go);
         }
     }
 
