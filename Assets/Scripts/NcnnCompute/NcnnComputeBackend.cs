@@ -10,9 +10,7 @@ namespace NcnnCompute
 
         public NcnnComputeBackend()
         {
-            _cs = Resources.Load<ComputeShader>("NcnnCompute");
-            if (_cs == null)
-                throw new InvalidOperationException("ComputeShader not found: Resources/NcnnCompute.compute");
+            _cs = NcnnComputeShaderLoader.LoadOrThrow();
             _kPassthrough = _cs.FindKernel("NcnnPassthrough");
         }
 
@@ -35,4 +33,3 @@ namespace NcnnCompute
         }
     }
 }
-

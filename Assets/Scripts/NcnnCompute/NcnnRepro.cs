@@ -898,6 +898,7 @@ namespace NcnnCompute
         private int _tempRtPeakLiveCount;
         private bool _trackInferenceTempResources;
         private int _deferredTempRtReleaseDepth;
+        private bool _allowInferenceTempRtReuse;
 
         private readonly NcnnOps _ops;
         private bool _useTempPool = false;
@@ -911,6 +912,8 @@ namespace NcnnCompute
             {
                 _useTempPool = value;
                 _bufferPool.Enabled = value;
+                if (!value)
+                    _allowInferenceTempRtReuse = false;
             }
         }
 
@@ -1073,6 +1076,7 @@ namespace NcnnCompute
         {
             ResetInferenceTempResourceStats();
             _trackInferenceTempResources = true;
+            _allowInferenceTempRtReuse = false;
         }
 
         public void BeginDeferredTempRtReleaseScope()
@@ -1094,7 +1098,24 @@ namespace NcnnCompute
 
                 FlushInferenceTempRenderTexturePool();
             }
+            _allowInferenceTempRtReuse = false;
             _trackInferenceTempResources = false;
+        }
+
+        public void AllowInferenceTempRtReuseAfterSync()
+        {
+            if (!_trackInferenceTempResources || !_useTempPool)
+                return;
+
+            try
+            {
+                _ops?.DebugSyncGpu();
+            }
+            catch
+            {
+            }
+
+            _allowInferenceTempRtReuse = true;
         }
 
         public void EndDeferredTempRtReleaseScope()
@@ -2738,18 +2759,42 @@ namespace NcnnCompute
             out RenderTexture rt)
         {
             rt = null;
-            if (!_trackInferenceTempResources || _rtPool.Count == 0)
+            if (!_useTempPool || !_trackInferenceTempResources || !_allowInferenceTempRtReuse || _rtPool.Count == 0)
                 return false;
 
-            // Returned temp RTs may still be referenced by queued GPU work from earlier layers in the
-            // same inference. Treat the pool as a quarantine list until EndInferenceTempResourceTracking()
-            // forces a sync, otherwise same-inference reuse can collapse distinct activations.
+            var key = new RtKey(
+                Mathf.Max(1, w),
+                Mathf.Max(1, h),
+                Mathf.Max(1, depth),
+                format);
+            if (!_rtPool.TryGetValue(key, out var pool) || pool == null)
+                return false;
+
+            while (pool.Count > 0)
+            {
+                var pooled = pool.Pop();
+                if (!IsMatchingPooledRenderTexture(pooled, key))
+                {
+                    if (pooled != null)
+                    {
+                        NcnnGpuResourceTracker.ReleaseTexture(pooled, label + "|pool-mismatch");
+                        try { RenderTexture.ReleaseTemporary(pooled); } catch { }
+                    }
+                    continue;
+                }
+
+                NcnnGpuResourceTracker.ReuseTexture(pooled, label + "|pool");
+                rt = pooled;
+                return true;
+            }
+
+            _rtPool.Remove(key);
             return false;
         }
 
         private bool TryReturnInferenceTempArrayToPool(RenderTexture rt)
         {
-            if (rt == null || !_trackInferenceTempResources)
+            if (rt == null || !_useTempPool || !_trackInferenceTempResources)
                 return false;
 
             var maxPerShape = GetInferenceTempRtPoolMaxPerShape();
@@ -2776,11 +2821,11 @@ namespace NcnnCompute
 
         private int GetInferenceTempRtPoolMaxPerShape()
         {
-            if (!_trackInferenceTempResources)
+            if (!_useTempPool || !_trackInferenceTempResources)
                 return 0;
             if (_maxPooledPerShape > 0)
                 return _maxPooledPerShape;
-            return DefaultInferenceTempRtPoolPerShape;
+            return 0;
         }
 
         private static bool IsMatchingPooledRenderTexture(RenderTexture rt, RtKey key)

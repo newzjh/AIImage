@@ -244,6 +244,58 @@ namespace NcnnCompute
             return required;
         }
 
+        private Dictionary<string, int> BuildScopedBlobUseCount(
+            int startLayerIndex,
+            HashSet<int> replayRequiredLayerIndices,
+            string stopAfterTopName)
+        {
+            if (Model?.layers == null || Model.layers.Count == 0)
+            {
+                return _blobUseCount != null
+                    ? new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal)
+                    : new Dictionary<string, int>(StringComparer.Ordinal);
+            }
+
+            var use = new Dictionary<string, int>(StringComparer.Ordinal);
+            var stopReached = string.IsNullOrWhiteSpace(stopAfterTopName);
+            startLayerIndex = Mathf.Clamp(startLayerIndex, 0, Model.layers.Count);
+
+            for (var li = startLayerIndex; li < Model.layers.Count; li++)
+            {
+                if (replayRequiredLayerIndices != null && !replayRequiredLayerIndices.Contains(li))
+                    continue;
+
+                var layer = Model.layers[li];
+                var consumedBottomCount = GetReplayConsumedBottomCount(layer);
+                var bottomNames = layer?.bottomNames;
+                if (bottomNames != null && consumedBottomCount > 0)
+                {
+                    for (var bi = 0; bi < bottomNames.Length && bi < consumedBottomCount; bi++)
+                    {
+                        var name = bottomNames[bi];
+                        if (string.IsNullOrEmpty(name))
+                            continue;
+
+                        use.TryGetValue(name, out var count);
+                        use[name] = count + 1;
+                    }
+                }
+
+                if (!stopReached
+                    && layer?.topNames != null
+                    && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0)
+                {
+                    stopReached = true;
+                    break;
+                }
+            }
+
+            if (!stopReached && !string.IsNullOrWhiteSpace(stopAfterTopName) && _blobUseCount != null)
+                return new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
+
+            return use;
+        }
+
         internal InferResult InferWithMultiInputsByLayerRepros(
             Dictionary<string, RenderTexture> textureInputs,
             Dictionary<string, NcnnTensorBuffer> bufferInputs,
@@ -346,47 +398,6 @@ namespace NcnnCompute
                 return string.Join("; ", parts);
             }
 
-            var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
-            var textureBlobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
-            var textureShapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal);
-            var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
-            var bufferRefs = new Dictionary<string, BufferRef>(StringComparer.Ordinal);
-            var bufferViews = new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal);
-            var indexBlobs = new Dictionary<string, IndexRef>(StringComparer.Ordinal);
-            var tempOwned = new List<IDisposable>();
-
-            RegisterTextureInputs(textureInputs, textureInputShapes, textureBlobs, textureShapes);
-
-            if (bufferInputs != null)
-            {
-                foreach (var kv in bufferInputs)
-                {
-                    if (kv.Value == null || kv.Value.buffer == null)
-                        throw new ArgumentNullException("bufferInputs[\"" + kv.Key + "\"]");
-                    bufferBlobs[kv.Key] = kv.Value.buffer;
-                    bufferRefs[kv.Key] = new BufferRef
-                    {
-                        buffer = kv.Value.buffer,
-                        refs = 1,
-                        owned = false
-                    };
-                    bufferViews[kv.Key] = kv.Value;
-                }
-            }
-
-            var context = new NcnnLayerBufferContext
-            {
-                textureBlobs = textureBlobs,
-                textureShapes = textureShapes,
-                bufferBlobs = bufferBlobs,
-                bufferRefs = bufferRefs,
-                bufferViews = bufferViews,
-                indexBlobs = indexBlobs,
-                remaining = remaining,
-                pinnedNames = pinnedNames,
-                tempOwned = tempOwned
-            };
-
             var startLayerIndex = 0;
             HashSet<int> replayRequiredLayerIndices = null;
             if (!string.IsNullOrWhiteSpace(startAtTopName))
@@ -443,6 +454,47 @@ namespace NcnnCompute
                         + " | required_layers=" + requiredCount);
                 }
             }
+
+            var remaining = BuildScopedBlobUseCount(startLayerIndex, replayRequiredLayerIndices, stopAfterTopName);
+            var textureBlobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
+            var textureShapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal);
+            var bufferBlobs = new Dictionary<string, ComputeBuffer>(StringComparer.Ordinal);
+            var bufferRefs = new Dictionary<string, BufferRef>(StringComparer.Ordinal);
+            var bufferViews = new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal);
+            var indexBlobs = new Dictionary<string, IndexRef>(StringComparer.Ordinal);
+            var tempOwned = new List<IDisposable>();
+
+            RegisterTextureInputs(textureInputs, textureInputShapes, textureBlobs, textureShapes);
+
+            if (bufferInputs != null)
+            {
+                foreach (var kv in bufferInputs)
+                {
+                    if (kv.Value == null || kv.Value.buffer == null)
+                        throw new ArgumentNullException("bufferInputs[\"" + kv.Key + "\"]");
+                    bufferBlobs[kv.Key] = kv.Value.buffer;
+                    bufferRefs[kv.Key] = new BufferRef
+                    {
+                        buffer = kv.Value.buffer,
+                        refs = 1,
+                        owned = false
+                    };
+                    bufferViews[kv.Key] = kv.Value;
+                }
+            }
+
+            var context = new NcnnLayerBufferContext
+            {
+                textureBlobs = textureBlobs,
+                textureShapes = textureShapes,
+                bufferBlobs = bufferBlobs,
+                bufferRefs = bufferRefs,
+                bufferViews = bufferViews,
+                indexBlobs = indexBlobs,
+                remaining = remaining,
+                pinnedNames = pinnedNames,
+                tempOwned = tempOwned
+            };
 
             bool TryLogFirstNonFiniteLayerOutput(int layerIndex, NcnnParamModel.Layer layer)
             {

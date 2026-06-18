@@ -441,9 +441,7 @@ namespace NcnnCompute
 
         public NcnnOps()
         {
-            _cs = Resources.Load<ComputeShader>("NcnnCompute");
-            if (_cs == null)
-                throw new InvalidOperationException("ComputeShader not found: Resources/NcnnCompute.compute");
+            _cs = NcnnComputeShaderLoader.LoadOrThrow();
             _kConv3x3 = _cs.FindKernel("NcnnConv3x3");
             _kConv3dBuf = _cs.FindKernel("NcnnConv3dBuf");
             _kConv3dPack4Cdhw16x4 = _cs.FindKernel("NcnnConv3dPack4CDHW16x4");
