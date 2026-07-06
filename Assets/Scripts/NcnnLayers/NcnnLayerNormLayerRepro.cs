@@ -103,24 +103,49 @@ namespace NcnnCompute
                 throw new InvalidOperationException("LayerNorm render-texture path requires supported pack4 width-norm input: " + layer.name);
 
             var outFormat = ResolveLayerNormOutputFormat(owner, layer, srcShape);
-            var outRt = owner.RentTempArray(
-                srcTex.width,
-                srcTex.height,
-                srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs,
-                outFormat);
-            owner.Ops.LayerNormPack4WidthTex(
-                srcTex.texture,
-                srcShape.w,
-                srcShape.h,
-                srcShape.dims == 4 ? srcShape.d : 1,
-                srcShape.c,
-                srcTex.packs,
-                lp.eps,
-                lp.affine,
-                lp.gamma,
-                lp.beta,
-                outRt);
-            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            var isStrictLinear = NcnnRepro.IsStrictLinearMatTexture(srcTex);
+            var packCount = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, srcShape.c) / 4f));
+            var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
+            var sliceCount = logicalDepth * packCount;
+            RenderTexture materializedInput = null;
+            RenderTexture outRt = null;
+            try
+            {
+                var kernelInput = MaterializePack4WidthInput(owner, srcTex, srcShape, outFormat, ref materializedInput);
+                outRt = owner.RentTempArray(srcShape.w, srcShape.h, sliceCount, outFormat);
+                owner.Ops.LayerNormPack4WidthTex(
+                    kernelInput,
+                    srcShape.w,
+                    srcShape.h,
+                    logicalDepth,
+                    srcShape.c,
+                    packCount,
+                    lp.eps,
+                    lp.affine,
+                    lp.gamma,
+                    lp.beta,
+                    outRt);
+
+                if (isStrictLinear)
+                {
+                    var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                    var outMat = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.ReshapePack4ToLinearMat(outRt, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outMat);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outMat, srcShape, storageShape);
+                }
+                else
+                {
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, srcShape);
+                    outRt = null;
+                }
+            }
+            finally
+            {
+                if (materializedInput != null)
+                    owner.ReturnTempArray(materializedInput);
+                if (outRt != null)
+                    owner.ReturnTempArray(outRt);
+            }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
@@ -262,33 +287,49 @@ namespace NcnnCompute
             if (CanUsePack4WidthCmdPath(src, srcShape, lp))
             {
                 var outFormat = ResolveLayerNormOutputFormat(owner, layer, srcShape);
-                var outArr = owner.RentTempArray(cmd, src.width, src.height, srcShape.dims == 4 ? srcShape.d * src.packs : src.packs, outFormat);
-                owner.Ops.LayerNormPack4WidthTex(
-                    cmd,
-                    src.texture,
-                    srcShape.w,
-                    srcShape.h,
-                    srcShape.dims == 4 ? srcShape.d : 1,
-                    srcShape.c,
-                    src.packs,
-                    lp.eps,
-                    lp.affine,
-                    lp.gamma,
-                    lp.beta,
-                    outArr);
-                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                var isStrictLinear = NcnnRepro.IsStrictLinearMatTexture(src);
+                var packCount = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, srcShape.c) / 4f));
+                var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
+                var sliceCount = logicalDepth * packCount;
+                ComputeTexture materializedInput = null;
+                ComputeTexture outArr = null;
+                try
                 {
-                    texture = outArr,
-                    width = src.width,
-                    height = src.height,
-                    packs = src.packs,
-                    refs = 1,
-                    owned = true,
-                    hasLogicalShape = true,
-                    logicalShape = srcShape,
-                    hasStorageShape = true,
-                    storageShape = srcShape
-                };
+                    var kernelInput = MaterializePack4WidthInput(owner, cmd, src, srcShape, outFormat, ref materializedInput);
+                    outArr = owner.RentTempArray(cmd, srcShape.w, srcShape.h, sliceCount, outFormat);
+                    owner.Ops.LayerNormPack4WidthTex(
+                        cmd,
+                        kernelInput,
+                        srcShape.w,
+                        srcShape.h,
+                        logicalDepth,
+                        srcShape.c,
+                        packCount,
+                        lp.eps,
+                        lp.affine,
+                        lp.gamma,
+                        lp.beta,
+                        outArr);
+                    if (isStrictLinear)
+                    {
+                        var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                        var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                        owner.Ops.ReshapePack4ToLinearMat(cmd, outArr, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outMat);
+                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, srcShape, storageShape, owned: true);
+                    }
+                    else
+                    {
+                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, srcShape, srcShape, owned: true);
+                        outArr = null;
+                    }
+                }
+                finally
+                {
+                    if (materializedInput != null)
+                        owner.ReturnTempArray(cmd, materializedInput);
+                    if (outArr != null)
+                        owner.ReturnTempArray(cmd, outArr);
+                }
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
                 owner.DebugLog?.Invoke(
@@ -353,6 +394,23 @@ namespace NcnnCompute
 
         private static bool CanUsePack4WidthPath(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
         {
+            if (srcTex != null && NcnnRepro.IsStrictLinearMatTexture(srcTex))
+            {
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                return lp != null
+                    && lp.affine
+                    && lp.gamma != null
+                    && lp.beta != null
+                    && (srcShape.dims == 2 || srcShape.dims == 3 || srcShape.dims == 4)
+                    && srcShape.w > 0
+                    && srcShape.w == lp.affineSize
+                    && srcShape.h > 0
+                    && srcShape.c > 0
+                    && storageShape.w == srcTex.width
+                    && storageShape.h == srcTex.height
+                    && srcTex.packs == 1;
+            }
+
             var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
             var expectedVolumeDepth = logicalDepth * Mathf.Max(1, srcTex?.packs ?? 0);
             return srcTex != null
@@ -373,6 +431,24 @@ namespace NcnnCompute
 
         private static bool CanUsePack4WidthCmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
         {
+            if (src != null && NcnnRepro.IsStrictLinearMatTexture(src))
+            {
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                return src.texture != null
+                    && lp != null
+                    && lp.affine
+                    && lp.gamma != null
+                    && lp.beta != null
+                    && (srcShape.dims == 2 || srcShape.dims == 3 || srcShape.dims == 4)
+                    && srcShape.w > 0
+                    && srcShape.w == lp.affineSize
+                    && srcShape.h > 0
+                    && srcShape.c > 0
+                    && storageShape.w == src.width
+                    && storageShape.h == src.height
+                    && src.packs == 1;
+            }
+
             return src != null
                 && src.texture != null
                 && lp != null
@@ -387,6 +463,76 @@ namespace NcnnCompute
                 && (srcShape.dims != 4 || Mathf.Max(1, src.texture.depth) == Mathf.Max(1, srcShape.d) * src.packs)
                 && srcShape.c > 0
                 && src.packs == Mathf.CeilToInt(srcShape.c / 4f);
+        }
+
+        private static RenderTexture MaterializePack4WidthInput(
+            NcnnRepro owner,
+            NcnnRepro.TensorRef source,
+            NcnnRepro.BufferShape logicalShape,
+            RenderTextureFormat pack4Format,
+            ref RenderTexture materialized)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+                return source.texture;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(source, logicalShape);
+            var sliceCount = logicalShape.dims >= 4
+                ? Mathf.Max(1, logicalShape.d) * Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, logicalShape.c) / 4f))
+                : Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, logicalShape.c) / 4f));
+            materialized = owner.RentTempArray(logicalShape.w, logicalShape.h, sliceCount, pack4Format);
+            owner.Ops.ReshapeLinearMatToPack4(
+                source.texture,
+                storageShape.w,
+                storageShape.h,
+                logicalShape.w,
+                logicalShape.h,
+                logicalShape.d,
+                logicalShape.c,
+                logicalShape.dims,
+                materialized);
+            return materialized;
+        }
+
+        private static ComputeTexture MaterializePack4WidthInput(
+            NcnnRepro owner,
+            CommandBuffer cmd,
+            NcnnRepro.CmdTensorRef source,
+            NcnnRepro.BufferShape logicalShape,
+            RenderTextureFormat pack4Format,
+            ref ComputeTexture materialized)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+                return source.texture;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(source, logicalShape);
+            var sliceCount = logicalShape.dims >= 4
+                ? Mathf.Max(1, logicalShape.d) * Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, logicalShape.c) / 4f))
+                : Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, logicalShape.c) / 4f));
+            materialized = owner.RentTempArray(cmd, logicalShape.w, logicalShape.h, sliceCount, pack4Format);
+            owner.Ops.ReshapeLinearMatToPack4(
+                cmd,
+                source.texture,
+                storageShape.w,
+                storageShape.h,
+                logicalShape.w,
+                logicalShape.h,
+                logicalShape.d,
+                logicalShape.c,
+                logicalShape.dims,
+                materialized);
+            return materialized;
         }
     }
 }

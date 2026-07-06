@@ -7006,6 +7006,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _loadedModelKey = null;
         try { _repro?.Release(); } catch { }
         try { _repro?.Dispose(); } catch { }
+        try { _ops?.Dispose(); } catch { }
         _repro = null;
         _ops = null;
     }

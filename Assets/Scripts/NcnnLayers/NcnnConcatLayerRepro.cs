@@ -202,6 +202,11 @@ namespace NcnnCompute
                 && ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis))
                 return false;
 
+            var useStrictLinearConcat =
+                canUseLowDimLinearConcat
+                && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var firstTexRef, out _)
+                && IsStrictLinearLowDimTexture(firstTexRef, firstShape);
+
             for (var i = 0; i < layer.bottomNames.Length; i++)
             {
                 if (!TryResolvePack4ConcatSource(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var shape, out var width, out var height, out var packs))
@@ -216,7 +221,20 @@ namespace NcnnCompute
 
                 if (canUseLowDimLinearConcat)
                 {
-                    if (shape.h != firstShape.h
+                    if (useStrictLinearConcat)
+                    {
+                        if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[i], out var texRef, out _)
+                            || !IsStrictLinearLowDimTexture(texRef, shape)
+                            || shape.h != firstShape.h
+                            || shape.d != firstShape.d
+                            || shape.c != firstShape.c
+                            || height != firstHeight
+                            || packs != firstPacks)
+                        {
+                            return false;
+                        }
+                    }
+                    else if (shape.h != firstShape.h
                         || shape.d != firstShape.d
                         || height != firstHeight
                         || shape.c != firstShape.c
@@ -318,6 +336,7 @@ namespace NcnnCompute
             var shapes = new NcnnRepro.BufferShape[layer.bottomNames.Length];
             parts[0] = firstTex;
             shapes[0] = firstShape;
+            var useStrictLinearConcat = canUseLowDimLinearConcat && IsStrictLinearLowDimTexture(firstTex, firstShape);
 
             var outW = firstShape.w;
             var outC = firstShape.c;
@@ -344,7 +363,18 @@ namespace NcnnCompute
 
                 if (canUseLowDimLinearConcat)
                 {
-                    if (shape.h != firstShape.h
+                    if (useStrictLinearConcat)
+                    {
+                        if (!IsStrictLinearLowDimTexture(tex, shape)
+                            || shape.h != firstShape.h
+                            || shape.d != firstShape.d
+                            || shape.c != firstShape.c)
+                        {
+                            return false;
+                        }
+                    }
+                    else if (NcnnRepro.IsStrictLinearMatTexture(tex)
+                        || shape.h != firstShape.h
                         || shape.d != firstShape.d
                         || shape.c != firstShape.c
                         || tex.width != shape.w
@@ -370,15 +400,30 @@ namespace NcnnCompute
 
             if (parts.Length == 1)
             {
-                textureBlobs[layer.topNames[0]] = firstTex;
+                var storageShape = NcnnRepro.GetTextureStorageShape(firstTex, firstShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(firstTex, firstShape, storageShape);
                 textureShapes[layer.topNames[0]] = firstShape;
-                firstTex.refs++;
                 return true;
             }
 
             if (canUseLowDimLinearConcat)
             {
                 var outShape = new NcnnRepro.BufferShape(firstShape.dims, outW, firstShape.h, firstShape.d, firstShape.c);
+                if (useStrictLinearConcat)
+                {
+                    var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+                    var outMat = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    var dstOffset = 0;
+                    for (var i = 0; i < parts.Length; i++)
+                    {
+                        Graphics.CopyTexture(parts[i].texture, 0, 0, 0, 0, parts[i].texture.width, parts[i].texture.height, outMat, 0, 0, dstOffset, 0);
+                        dstOffset += shapes[i].w;
+                    }
+
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outMat, outShape, storageShape);
+                    return true;
+                }
+
                 var outRt = owner.RentTempArray(outShape.w, 1, parts[0].packs, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
                 var dstOffsetX = 0;
                 for (var i = 0; i < parts.Length; i++)
@@ -475,6 +520,7 @@ namespace NcnnCompute
             var canUseLowDimLinearConcat =
                 (firstShape.dims == 1 && tensorAxis == 0)
                 || (firstShape.dims == 2 && tensorAxis == 0);
+            var canUseLowDimStrictLinearConcat = canUseLowDimLinearConcat && IsStrictLinearLowDimTexture(parts[0], firstShape);
             var canUseExactPack4 = ((firstShape.dims == 3 || firstShape.dims == 4) && tensorAxis == concatChannelAxis)
                 || canUseLowDimLinearConcat;
 
@@ -502,14 +548,16 @@ namespace NcnnCompute
                     else outC += shape.c;
                 }
 
-                var supportsPack4Storage =
-                    shape.dims <= 2
+                var supportsPack4Storage = canUseLowDimStrictLinearConcat
+                    ? IsStrictLinearLowDimTexture(parts[i], shape)
+                    : shape.dims <= 2
                         ? shape.h == 1 && shape.d == 1
                         : shape.dims == 3
                         ? shape.d == 1
                         : shape.dims == 4;
                 if (!supportsPack4Storage
                     || !NcnnRepro.MatchesPack4TextureStorage(parts[i], shape)
+                    || (canUseLowDimStrictLinearConcat && !NcnnRepro.IsStrictLinearMatTexture(parts[i]))
                     || (!canUseLowDimLinearConcat && i < partShapes.Length - 1 && (shape.c & 3) != 0))
                 {
                     canUseExactPack4 = false;
@@ -519,10 +567,10 @@ namespace NcnnCompute
             var outShape = new NcnnRepro.BufferShape(firstShape.dims, outW, outH, outD, outC);
             if (layer.bottomNames.Length == 1)
             {
-                blobs[layer.topNames[0]] = parts[0];
+                var storageShape = NcnnRepro.GetCmdStorageShape(parts[0], partShapes[0]);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(parts[0], outShape, storageShape);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = outShape;
-                parts[0].refs++;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
@@ -531,29 +579,45 @@ namespace NcnnCompute
             {
                 if (canUseLowDimLinearConcat)
                 {
-                    var outArr = owner.RentTempArray(cmd, outShape.w, 1, parts[0].packs, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
-                    var dstOffsetX = 0;
-                    for (var i = 0; i < parts.Length; i++)
+                    if (canUseLowDimStrictLinearConcat)
                     {
-                        var srcWidth = partShapes[i].w;
-                        for (var pack = 0; pack < parts[i].packs; pack++)
-                            cmd.CopyTexture(parts[i].texture.nameID, pack, 0, 0, 0, srcWidth, 1, outArr.nameID, pack, 0, dstOffsetX, 0);
-                        dstOffsetX += srcWidth;
-                    }
+                        var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+                        var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                        var dstOffsetX = 0;
+                        for (var i = 0; i < parts.Length; i++)
+                        {
+                            cmd.CopyTexture(parts[i].texture.nameID, 0, 0, 0, 0, parts[i].texture.width, parts[i].texture.height, outMat.nameID, 0, 0, dstOffsetX, 0);
+                            dstOffsetX += partShapes[i].w;
+                        }
 
-                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, outShape, storageShape, owned: true);
+                    }
+                    else
                     {
-                        texture = outArr,
-                        width = outShape.w,
-                        height = 1,
-                        packs = parts[0].packs,
-                        refs = 1,
-                        owned = true,
-                        hasLogicalShape = true,
-                        logicalShape = outShape,
-                        hasStorageShape = true,
-                        storageShape = outShape
-                    };
+                        var outArr = owner.RentTempArray(cmd, outShape.w, 1, parts[0].packs, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                        var dstOffsetX = 0;
+                        for (var i = 0; i < parts.Length; i++)
+                        {
+                            var srcWidth = partShapes[i].w;
+                            for (var pack = 0; pack < parts[i].packs; pack++)
+                                cmd.CopyTexture(parts[i].texture.nameID, pack, 0, 0, 0, srcWidth, 1, outArr.nameID, pack, 0, dstOffsetX, 0);
+                            dstOffsetX += srcWidth;
+                        }
+
+                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                        {
+                            texture = outArr,
+                            width = outShape.w,
+                            height = 1,
+                            packs = parts[0].packs,
+                            refs = 1,
+                            owned = true,
+                            hasLogicalShape = true,
+                            logicalShape = outShape,
+                            hasStorageShape = true,
+                            storageShape = outShape
+                        };
+                    }
                     if (shapes != null)
                         shapes[layer.topNames[0]] = outShape;
                     owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
@@ -653,6 +717,36 @@ namespace NcnnCompute
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool IsStrictLinearLowDimTexture(NcnnRepro.TensorRef tensor, NcnnRepro.BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || !NcnnRepro.IsStrictLinearMatTexture(tensor))
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(tensor, logicalShape);
+            var expectedHeight = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
+            return storageShape.dims == 2
+                && tensor.packs == 1
+                && tensor.width == Mathf.Max(1, logicalShape.w)
+                && tensor.height == expectedHeight
+                && storageShape.w == tensor.width
+                && storageShape.h == tensor.height;
+        }
+
+        private static bool IsStrictLinearLowDimTexture(NcnnRepro.CmdTensorRef tensor, NcnnRepro.BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || !NcnnRepro.IsStrictLinearMatTexture(tensor))
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(tensor, logicalShape);
+            var expectedHeight = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
+            return storageShape.dims == 2
+                && tensor.packs == 1
+                && tensor.width == Mathf.Max(1, logicalShape.w)
+                && tensor.height == expectedHeight
+                && storageShape.w == tensor.width
+                && storageShape.h == tensor.height;
         }
     }
 }

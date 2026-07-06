@@ -16,6 +16,20 @@ void NcnnPack4ToBufferCHW_Impl(uint3 id)
     _Pack4Out[idx] = o;
 }
 
+void NcnnLinearMatToBuffer_Impl(uint3 id)
+{
+    uint idx = _BaseIndex + id.x;
+    uint w = (uint)max(_Pack4W, 1);
+    uint h = (uint)max(_Pack4H, 1);
+    uint total = w * h;
+    if (idx >= total)
+        return;
+
+    uint y = idx / w;
+    uint x = idx - y * w;
+    _Pack4Out[idx] = _LinearIn0[int2((int)x, (int)y)];
+}
+
 void NcnnPack4ChannelsToWidth_Impl(uint3 id)
 {
     uint ow, oh, od;
@@ -257,6 +271,25 @@ void NcnnPermutePack4CDHW_Impl(uint3 id)
     _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
+void NcnnPermuteLinearMat2D_Impl(uint3 id)
+{
+    uint ow, oh;
+    _LinearOut0.GetDimensions(ow, oh);
+    if (id.x >= ow || id.y >= oh)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int srcX = _PermutePack4Axis0 == 0 ? outX : outY;
+    int srcY = _PermutePack4Axis0 == 1 ? outX : outY;
+
+    float value = 0.0;
+    if (srcX >= 0 && srcX < _PermutePack4InW && srcY >= 0 && srcY < _PermutePack4InH)
+        value = _LinearIn0[int2(srcX, srcY)];
+
+    _LinearOut0[int2(outX, outY)] = value;
+}
+
 void NcnnWindowPartitionPack4_Impl(uint3 id)
 {
     uint w, h, d;
@@ -416,6 +449,24 @@ void NcnnReshapePack4ToScalar2D_Impl(uint3 id)
     _ReshapePack4ToScalar2DOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = float4(scalar, 0.0, 0.0, 0.0);
 }
 
+void NcnnReshapePack4ToLinearMat_Impl(uint3 id)
+{
+    uint ow, oh;
+    _LinearOut0.GetDimensions(ow, oh);
+    if (id.x >= ow || id.y >= oh)
+        return;
+
+    uint linearIndex = id.y * ow + id.x;
+    float scalar = NcnnReadPack4LinearScalar2DInput(
+        linearIndex,
+        _ReshapePack4ToScalar2DInDims,
+        _ReshapePack4ToScalar2DInW,
+        _ReshapePack4ToScalar2DInH,
+        _ReshapePack4ToScalar2DInD,
+        _ReshapePack4ToScalar2DInC);
+    _LinearOut0[int2((int)id.x, (int)id.y)] = scalar;
+}
+
 void NcnnReshapePack4ToPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
@@ -500,6 +551,50 @@ void NcnnReshapeScalar2DToPack4_Impl(uint3 id)
             : ((uint)c * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x;
 
         float scalar = NcnnReadScalar2DLinear(linearIndex, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
+        if (lane == 0) value.x = scalar;
+        else if (lane == 1) value.y = scalar;
+        else if (lane == 2) value.z = scalar;
+        else value.w = scalar;
+    }
+
+    _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = value;
+}
+
+void NcnnReshapeLinearMatToPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _ReshapeScalar2DOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int slice = (int)id.z;
+    int outPacks = max(1, (_ReshapeScalar2DOutC + 3) / 4);
+    int z = 0;
+    int pack = slice;
+    if (_ReshapeScalar2DOutDims >= 4)
+    {
+        z = slice / outPacks;
+        pack = slice - z * outPacks;
+        if (z < 0 || z >= max(1, _ReshapeScalar2DOutD))
+        {
+            _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = 0.0;
+            return;
+        }
+    }
+
+    float4 value = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int c = pack * 4 + lane;
+        if (c >= _ReshapeScalar2DOutC)
+            continue;
+
+        uint linearIndex = _ReshapeScalar2DOutDims >= 4
+            ? (((uint)c * (uint)max(1, _ReshapeScalar2DOutD) + (uint)z) * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x
+            : ((uint)c * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x;
+
+        float scalar = NcnnReadLinearMatScalar(_LinearIn0, linearIndex, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
         if (lane == 0) value.x = scalar;
         else if (lane == 1) value.y = scalar;
         else if (lane == 2) value.z = scalar;

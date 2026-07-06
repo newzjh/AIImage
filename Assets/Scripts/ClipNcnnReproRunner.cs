@@ -671,6 +671,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         try { _imageRepro?.Dispose(); } catch { }
         _imageRepro = null;
         ReleaseTextRuntime();
+        try { _ops?.Dispose(); } catch { }
+        _ops = null;
         _cachedTextEmbeddings = null;
         _cachedTextScores = null;
         _loadedModelKey = null;

@@ -169,6 +169,26 @@ void NcnnFillScalarTexture_Impl(uint3 id)
     _FillScalarOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = float4(value, 0.0, 0.0, 0.0);
 }
 
+void NcnnFillScalarLinearMat_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    uint linearIndex = id.x + id.y * w;
+    float value = 0.0;
+    if (linearIndex < (uint)_FillScalarValueCount)
+    {
+        if (linearIndex == 0) value = _FillScalarValues4.x;
+        else if (linearIndex == 1) value = _FillScalarValues4.y;
+        else if (linearIndex == 2) value = _FillScalarValues4.z;
+        else if (linearIndex == 3) value = _FillScalarValues4.w;
+    }
+
+    _LinearOut0[int2((int)id.x, (int)id.y)] = value;
+}
+
 void NcnnScalePack4_Impl(uint3 id)
 {
     uint w, h, d;

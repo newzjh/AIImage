@@ -334,6 +334,19 @@ namespace NcnnCompute
                             " logical=d" + shape.dims
                             + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c;
                     }
+                    else
+                    {
+                        try
+                        {
+                            var inferredShape = NcnnRepro.GetTextureShape(textureShapes, tex, name);
+                            shapeText =
+                                " logical=d" + inferredShape.dims
+                                + ":" + inferredShape.w + "x" + inferredShape.h + "x" + inferredShape.d + "x" + inferredShape.c;
+                        }
+                        catch
+                        {
+                        }
+                    }
 
                     return name
                         + "=tex:"

@@ -88,9 +88,9 @@ namespace NcnnCompute
 
                     if (hasTexture)
                     {
-                        textureBlobs[layer.topNames[i]] = srcTex;
+                        var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcTexShape);
+                        textureBlobs[layer.topNames[i]] = NcnnRepro.CreateTextureAlias(srcTex, srcTexShape, storageShape);
                         textureShapes[layer.topNames[i]] = srcTexShape;
-                        srcTex.refs++;
                     }
                 }
             }
@@ -98,11 +98,11 @@ namespace NcnnCompute
             {
                 var src = hasTexture ? srcTex : owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                 var shape = hasTexture ? srcTexShape : NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                var storageShape = NcnnRepro.GetTextureStorageShape(src, shape);
                 for (var i = 0; i < layer.topNames.Length; i++)
                 {
-                    textureBlobs[layer.topNames[i]] = src;
+                    textureBlobs[layer.topNames[i]] = NcnnRepro.CreateTextureAlias(src, shape, storageShape);
                     textureShapes[layer.topNames[i]] = shape;
-                    src.refs++;
                 }
             }
 
@@ -122,10 +122,10 @@ namespace NcnnCompute
                                                 var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 for (var i = 0; i < layer.topNames.Length; i++)
                                                 {
-                                                    blobs[layer.topNames[i]] = src;
+                                                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                                                    blobs[layer.topNames[i]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
                                                     if (shapes != null)
                                                         shapes[layer.topNames[i]] = srcShape;
-                                                    src.refs++;
                                                 }
                                                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                                                 continue;

@@ -1,5 +1,43 @@
 // Auto-generated kernel implementation group: NcnnKernels.Pack4Matmul.hlsl
 
+float NcnnApplyUnaryOpLinearScalar(float x)
+{
+    float y = x;
+    int t = _UnaryOpType;
+    if (t == 0) y = abs(x);
+    else if (t == 1) y = -x;
+    else if (t == 2) y = floor(x);
+    else if (t == 3) y = ceil(x);
+    else if (t == 4) y = x * x;
+    else if (t == 5) y = sqrt(max(x, 0.0));
+    else if (t == 6) y = rsqrt(max(x, 1e-12));
+    else if (t == 7) y = exp(x);
+    else if (t == 8) y = log(max(x, 1e-12));
+    else if (t == 9) y = sin(x);
+    else if (t == 10) y = cos(x);
+    else if (t == 11) y = tan(x);
+    else if (t == 15) y = 1.0 / max(x, 1e-12);
+    else if (t == 16) y = tanh(x);
+    return y;
+}
+
+float NcnnApplySwishLinearScalar(float x)
+{
+    return x / (1.0 + exp(-x));
+}
+
+float NcnnApplySigmoidLinearScalar(float x)
+{
+    return 1.0 / (1.0 + exp(-x));
+}
+
+float NcnnApplyGeluLinearScalar(float x)
+{
+    float x3 = x * x * x;
+    float t = clamp(0.79788452 * (x + 0.044715 * x3), -10.0, 10.0);
+    return 0.5 * x * (1.0 + tanh(t));
+}
+
 void NcnnSwishPack4_Impl(uint3 id)
 {
     uint w, h, d;
@@ -10,6 +48,18 @@ void NcnnSwishPack4_Impl(uint3 id)
     float4 x = _ActInArr[int3((int)id.x, (int)id.y, p)];
     float4 y = x / (1.0 + exp(-x));
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
+}
+
+void NcnnSwishLinearMat_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int2 coord = int2((int)id.x, (int)id.y);
+    float x = _LinearIn0[coord];
+    _LinearOut0[coord] = NcnnApplySwishLinearScalar(x);
 }
 
 void NcnnSigmoidPack4_Impl(uint3 id)
@@ -24,6 +74,18 @@ void NcnnSigmoidPack4_Impl(uint3 id)
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
+void NcnnSigmoidLinearMat_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int2 coord = int2((int)id.x, (int)id.y);
+    float x = _LinearIn0[coord];
+    _LinearOut0[coord] = NcnnApplySigmoidLinearScalar(x);
+}
+
 void NcnnGeluPack4_Impl(uint3 id)
 {
     uint w, h, d;
@@ -36,6 +98,30 @@ void NcnnGeluPack4_Impl(uint3 id)
     float4 t = clamp(0.79788452 * (x + 0.044715 * x3), -10.0, 10.0);
     float4 y = 0.5 * x * (1.0 + tanh(t));
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
+}
+
+void NcnnGeluLinearMat_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int2 coord = int2((int)id.x, (int)id.y);
+    float x = _LinearIn0[coord];
+    _LinearOut0[coord] = NcnnApplyGeluLinearScalar(x);
+}
+
+void NcnnUnaryOpLinearMat_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int2 coord = int2((int)id.x, (int)id.y);
+    float x = _LinearIn0[coord];
+    _LinearOut0[coord] = NcnnApplyUnaryOpLinearScalar(x);
 }
 
 void NcnnMatMul2D_Impl(uint3 groupId, uint3 groupThreadId)
@@ -274,6 +360,50 @@ void NcnnGemm2DTextureA_Impl(uint3 id)
     _GemmTexOutArr[int3(col, row, 0)] = float4(sum, 0.0, 0.0, 0.0);
 }
 
+void NcnnGemm2DLinearTextureA_Impl(uint3 id)
+{
+    uint ow, oh;
+    _LinearOut0.GetDimensions(ow, oh);
+    if (id.x >= ow || id.y >= oh)
+        return;
+
+    int row = (int)id.y;
+    int col = (int)id.x;
+    if (row < 0 || row >= _MatM || col < 0 || col >= _MatN)
+        return;
+
+    float sum = 0.0;
+    if (_MatUseC != 0)
+    {
+        if (_MatBroadcastTypeC == 0)
+            sum = _MatC[0];
+        else if (_MatBroadcastTypeC == 1)
+            sum = _MatC[row];
+        else if (_MatBroadcastTypeC == 3)
+            sum = _MatC[row * _MatN + col];
+        else if (_MatBroadcastTypeC == 4)
+            sum = _MatC[col];
+        sum *= _MatBeta;
+    }
+
+    float acc = 0.0;
+    [loop]
+    for (int kk = 0; kk < _MatK; kk++)
+    {
+        float a = 0.0;
+        if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
+            a = _LinearIn0[int2(kk, row)];
+
+        float b = _MatTransB != 0
+            ? _MatB[col * _MatK + kk]
+            : _MatB[kk * _MatN + col];
+        acc += a * b;
+    }
+
+    sum += acc * _MatAlpha;
+    _LinearOut0[int2(col, row)] = sum;
+}
+
 void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int lx = (int)groupThreadId.x;
@@ -493,6 +623,35 @@ void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
     }
 
     _SoftmaxPack4CDHWOutArr[int3(outX, outY, slice)] = o;
+}
+
+void NcnnSoftmaxLinearMat2D_Impl(uint3 id)
+{
+    uint ow, oh;
+    _LinearOut0.GetDimensions(ow, oh);
+    if (id.x >= ow || id.y >= oh)
+        return;
+
+    int x = (int)id.x;
+    int row = (int)id.y;
+    int inW = max(1, _SoftmaxPack4CDHWW);
+    int inH = max(1, _SoftmaxPack4CDHWH);
+    if (x < 0 || x >= inW || row < 0 || row >= inH)
+    {
+        _LinearOut0[int2(x, row)] = 0.0;
+        return;
+    }
+
+    float maxv = _LinearIn0[int2(0, row)];
+    for (int i = 1; i < inW; i++)
+        maxv = max(maxv, _LinearIn0[int2(i, row)]);
+
+    float sum = 0.0;
+    for (int i = 0; i < inW; i++)
+        sum += exp(_LinearIn0[int2(i, row)] - maxv);
+
+    float current = _LinearIn0[int2(x, row)];
+    _LinearOut0[int2(x, row)] = sum > 0.0 ? exp(current - maxv) / sum : 0.0;
 }
 
 void NcnnReductionScalar2D_Impl(uint3 id)
@@ -779,4 +938,290 @@ void NcnnReductionScalar2D_Impl(uint3 id)
     }
 
     _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = float4(result, 0.0, 0.0, 0.0);
+}
+
+void NcnnReductionLinearMat2D_Impl(uint3 id)
+{
+    uint ow, oh;
+    _LinearOut0.GetDimensions(ow, oh);
+    if (id.x >= ow || id.y >= oh)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int axis = _ReduceScalar2DAxis;
+    int inW = max(1, _ReduceScalar2DInW);
+    int inH = max(1, _ReduceScalar2DInH);
+    float coeff = _ReduceScalar2DCoeff;
+    int opType = _ReduceScalar2DOpType;
+
+    float result = 0.0;
+
+    if (axis == 2)
+    {
+        if (outX != 0 || outY != 0)
+        {
+            _LinearOut0[int2(outX, outY)] = 0.0;
+            return;
+        }
+
+        int total = max(1, inW * inH);
+        float acc = _LinearIn0[int2(0, 0)];
+
+        if (opType == 4)
+        {
+            for (int i = 1; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                acc = max(acc, _LinearIn0[int2(x, y)]);
+            }
+            result = acc * coeff;
+        }
+        else if (opType == 5)
+        {
+            for (int i = 1; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                acc = min(acc, _LinearIn0[int2(x, y)]);
+            }
+            result = acc * coeff;
+        }
+        else if (opType == 0 || opType == 3)
+        {
+            float sum = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sum += _LinearIn0[int2(x, y)];
+            }
+            if (opType == 3)
+                sum /= total;
+            result = sum * coeff;
+        }
+        else if (opType == 2)
+        {
+            float sumSq = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                float v = _LinearIn0[int2(x, y)];
+                sumSq += v * v;
+            }
+            result = sumSq * coeff;
+        }
+        else if (opType == 1 || opType == 7)
+        {
+            float sumAbs = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sumAbs += abs(_LinearIn0[int2(x, y)]);
+            }
+            result = sumAbs * coeff;
+        }
+        else if (opType == 6 || opType == 10)
+        {
+            float sumLog = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sumLog += log(max(_LinearIn0[int2(x, y)], 1e-12));
+            }
+            result = exp(sumLog) * coeff;
+        }
+        else if (opType == 9)
+        {
+            float sumVal = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                sumVal += _LinearIn0[int2(x, y)];
+            }
+            result = log(max(sumVal, 1e-12)) * coeff;
+        }
+        else if (opType == 8)
+        {
+            float sumSq = 0.0;
+            for (int i = 0; i < total; i++)
+            {
+                int x = i % inW;
+                int y = i / inW;
+                float v = _LinearIn0[int2(x, y)];
+                sumSq += v * v;
+            }
+            result = sqrt(max(sumSq, 0.0)) * coeff;
+        }
+        else
+        {
+            result = acc * coeff;
+        }
+
+        _LinearOut0[int2(outX, outY)] = result;
+        return;
+    }
+
+    if (axis == 1)
+    {
+        int row = oh == 1 ? outX : outY;
+        if (row < 0 || row >= inH)
+        {
+            _LinearOut0[int2(outX, outY)] = 0.0;
+            return;
+        }
+
+        float acc = _LinearIn0[int2(0, row)];
+        if (opType == 4)
+        {
+            for (int x = 1; x < inW; x++)
+                acc = max(acc, _LinearIn0[int2(x, row)]);
+            result = acc * coeff;
+        }
+        else if (opType == 5)
+        {
+            for (int x = 1; x < inW; x++)
+                acc = min(acc, _LinearIn0[int2(x, row)]);
+            result = acc * coeff;
+        }
+        else if (opType == 0 || opType == 3)
+        {
+            float sum = 0.0;
+            for (int x = 0; x < inW; x++)
+                sum += _LinearIn0[int2(x, row)];
+            if (opType == 3)
+                sum /= inW;
+            result = sum * coeff;
+        }
+        else if (opType == 2)
+        {
+            float sumSq = 0.0;
+            for (int x = 0; x < inW; x++)
+            {
+                float v = _LinearIn0[int2(x, row)];
+                sumSq += v * v;
+            }
+            result = sumSq * coeff;
+        }
+        else if (opType == 1 || opType == 7)
+        {
+            float sumAbs = 0.0;
+            for (int x = 0; x < inW; x++)
+                sumAbs += abs(_LinearIn0[int2(x, row)]);
+            result = sumAbs * coeff;
+        }
+        else if (opType == 6 || opType == 10)
+        {
+            float sumLog = 0.0;
+            for (int x = 0; x < inW; x++)
+                sumLog += log(max(_LinearIn0[int2(x, row)], 1e-12));
+            result = exp(sumLog) * coeff;
+        }
+        else if (opType == 9)
+        {
+            float sumVal = 0.0;
+            for (int x = 0; x < inW; x++)
+                sumVal += _LinearIn0[int2(x, row)];
+            result = log(max(sumVal, 1e-12)) * coeff;
+        }
+        else if (opType == 8)
+        {
+            float sumSq = 0.0;
+            for (int x = 0; x < inW; x++)
+            {
+                float v = _LinearIn0[int2(x, row)];
+                sumSq += v * v;
+            }
+            result = sqrt(max(sumSq, 0.0)) * coeff;
+        }
+        else
+        {
+            result = acc * coeff;
+        }
+
+        _LinearOut0[int2(outX, outY)] = result;
+        return;
+    }
+
+    int col = ow == 1 ? outY : outX;
+    if (col < 0 || col >= inW)
+    {
+        _LinearOut0[int2(outX, outY)] = 0.0;
+        return;
+    }
+
+    float acc = _LinearIn0[int2(col, 0)];
+    if (opType == 4)
+    {
+        for (int y = 1; y < inH; y++)
+            acc = max(acc, _LinearIn0[int2(col, y)]);
+        result = acc * coeff;
+    }
+    else if (opType == 5)
+    {
+        for (int y = 1; y < inH; y++)
+            acc = min(acc, _LinearIn0[int2(col, y)]);
+        result = acc * coeff;
+    }
+    else if (opType == 0 || opType == 3)
+    {
+        float sum = 0.0;
+        for (int y = 0; y < inH; y++)
+            sum += _LinearIn0[int2(col, y)];
+        if (opType == 3)
+            sum /= inH;
+        result = sum * coeff;
+    }
+    else if (opType == 2)
+    {
+        float sumSq = 0.0;
+        for (int y = 0; y < inH; y++)
+        {
+            float v = _LinearIn0[int2(col, y)];
+            sumSq += v * v;
+        }
+        result = sumSq * coeff;
+    }
+    else if (opType == 1 || opType == 7)
+    {
+        float sumAbs = 0.0;
+        for (int y = 0; y < inH; y++)
+            sumAbs += abs(_LinearIn0[int2(col, y)]);
+        result = sumAbs * coeff;
+    }
+    else if (opType == 6 || opType == 10)
+    {
+        float sumLog = 0.0;
+        for (int y = 0; y < inH; y++)
+            sumLog += log(max(_LinearIn0[int2(col, y)], 1e-12));
+        result = exp(sumLog) * coeff;
+    }
+    else if (opType == 9)
+    {
+        float sumVal = 0.0;
+        for (int y = 0; y < inH; y++)
+            sumVal += _LinearIn0[int2(col, y)];
+        result = log(max(sumVal, 1e-12)) * coeff;
+    }
+    else if (opType == 8)
+    {
+        float sumSq = 0.0;
+        for (int y = 0; y < inH; y++)
+        {
+            float v = _LinearIn0[int2(col, y)];
+            sumSq += v * v;
+        }
+        result = sqrt(max(sumSq, 0.0)) * coeff;
+    }
+    else
+    {
+        result = acc * coeff;
+    }
+
+    _LinearOut0[int2(outX, outY)] = result;
 }

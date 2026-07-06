@@ -108,9 +108,9 @@ namespace NcnnCompute
 
             if (IsIdentityCrop(texShape, roi))
             {
-                textureBlobs[layer.topNames[0]] = srcTex;
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, texShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(srcTex, texShape, storageShape);
                 textureShapes[layer.topNames[0]] = texShape;
-                srcTex.refs++;
             }
             else
             {
@@ -144,8 +144,8 @@ namespace NcnnCompute
             {
                 if (IsIdentityCrop(srcShape, roi))
                 {
-                    blobs[layer.topNames[0]] = src;
-                    src.refs++;
+                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
                     shapes[layer.topNames[0]] = srcShape;
                 }
                 else

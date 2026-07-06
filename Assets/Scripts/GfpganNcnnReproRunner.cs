@@ -112,6 +112,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _loaded = false;
         try { _repro?.Dispose(); } catch { }
         _repro = null;
+        try { _ops?.Dispose(); } catch { }
+        _ops = null;
     }
 
     public async UniTask<GfpganResult> ProcessAsync(Texture2D src, CancellationToken ct)

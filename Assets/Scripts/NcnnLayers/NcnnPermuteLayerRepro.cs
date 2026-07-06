@@ -21,7 +21,8 @@ namespace NcnnCompute
                     context.bufferViews,
                     out var srcTex,
                     out var srcShape)
-                && CanUsePack4Permute(srcTex, srcShape, orderType, out _, out _))
+                && (CanUseLinearMatPermute(srcTex, srcShape, orderType, out _, out _)
+                    || CanUsePack4Permute(srcTex, srcShape, orderType, out _, out _)))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
                 return;
@@ -76,21 +77,32 @@ namespace NcnnCompute
             var bufferViews = context.bufferViews;
             var orderType = layer.GetInt(0, 0);
 
-            if (!TryGetPermuteTextureInput(owner, layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
-                || !CanUsePack4Permute(srcTex, srcShape, orderType, out var axes, out var outShape))
+            if (!TryGetPermuteTextureInput(owner, layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
             {
                 throw new InvalidOperationException("Permute render-texture path requires supported pack4 input: " + layer.name);
             }
 
+            var canUseLinearMat = CanUseLinearMatPermute(srcTex, srcShape, orderType, out var axes, out var outShape);
+            var canUsePack4 = !canUseLinearMat && CanUsePack4Permute(srcTex, srcShape, orderType, out axes, out outShape);
+            if (!canUseLinearMat && !canUsePack4)
+                throw new InvalidOperationException("Permute render-texture path requires supported pack4 input: " + layer.name);
+
             if (orderType == 0)
             {
-                textureBlobs[layer.topNames[0]] = srcTex;
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(srcTex, srcShape, storageShape);
                 textureShapes[layer.topNames[0]] = srcShape;
-                srcTex.refs++;
             }
             else
             {
-                if (srcShape.dims == 4)
+                if (canUseLinearMat)
+                {
+                    var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+                    var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.PermuteLinearMat2D(srcTex.texture, srcShape.w, srcShape.h, axes, outRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, storageShape);
+                }
+                else if (srcShape.dims == 4)
                 {
                     var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
                     var outSlices = Mathf.Max(1, outShape.d) * outPacks;
@@ -145,57 +157,69 @@ namespace NcnnCompute
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var orderType = layer.GetInt(0, 0);
-            if (CanUsePack4Permute(src, srcShape, orderType, out var axes, out var outShape))
+            var canUseLinearMat = CanUseLinearMatPermute(src, srcShape, orderType, out var axes, out var outShape);
+            var canUsePack4 = !canUseLinearMat && CanUsePack4Permute(src, srcShape, orderType, out axes, out outShape);
+            if (canUseLinearMat || canUsePack4)
             {
                 if (orderType == 0)
                 {
-                    blobs[layer.topNames[0]] = src;
-                    src.refs++;
+                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
                     shapes[layer.topNames[0]] = srcShape;
                 }
                 else
                 {
-                    var outChannels = srcShape.dims == 2 ? 1 : outShape.c;
-                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(outChannels / 4f));
-                    var outDepth = srcShape.dims == 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
-                    var outFormat = srcShape.dims == 4 ? NcnnRepro.ResolveTensorTextureFormat(outShape.dims) : RenderTextureFormat.ARGBHalf;
-                    var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outDepth, outFormat);
-                    if (srcShape.dims == 4)
+                    if (canUseLinearMat)
                     {
-                        owner.Ops.PermutePack4Cdhw(
-                            cmd,
-                            src.texture,
-                            srcShape.w,
-                            srcShape.h,
-                            srcShape.d,
-                            srcShape.c,
-                            axes,
-                            outShape.w,
-                            outShape.h,
-                            outShape.d,
-                            outShape.c,
-                            outArr);
+                        var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+                        var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                        owner.Ops.PermuteLinearMat2D(cmd, src.texture, srcShape.w, srcShape.h, axes, outMat);
+                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, outShape, storageShape, owned: true);
                     }
                     else
                     {
-                        owner.Ops.PermutePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.dims == 2 ? 1 : srcShape.c, axes, outShape.w, outShape.h, outChannels, outArr);
+                        var outChannels = srcShape.dims == 2 ? 1 : outShape.c;
+                        var outPacks = Mathf.Max(1, Mathf.CeilToInt(outChannels / 4f));
+                        var outDepth = srcShape.dims == 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
+                        var outFormat = srcShape.dims == 4 ? NcnnRepro.ResolveTensorTextureFormat(outShape.dims) : RenderTextureFormat.ARGBHalf;
+                        var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outDepth, outFormat);
+                        if (srcShape.dims == 4)
+                        {
+                            owner.Ops.PermutePack4Cdhw(
+                                cmd,
+                                src.texture,
+                                srcShape.w,
+                                srcShape.h,
+                                srcShape.d,
+                                srcShape.c,
+                                axes,
+                                outShape.w,
+                                outShape.h,
+                                outShape.d,
+                                outShape.c,
+                                outArr);
+                        }
+                        else
+                        {
+                            owner.Ops.PermutePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.dims == 2 ? 1 : srcShape.c, axes, outShape.w, outShape.h, outChannels, outArr);
+                        }
+                        var storageShape = srcShape.dims == 2
+                            ? new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
+                            : outShape;
+                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                        {
+                            texture = outArr,
+                            width = outShape.w,
+                            height = outShape.h,
+                            packs = outPacks,
+                            refs = 1,
+                            owned = true,
+                            hasLogicalShape = true,
+                            logicalShape = outShape,
+                            hasStorageShape = true,
+                            storageShape = storageShape
+                        };
                     }
-                    var storageShape = srcShape.dims == 2
-                        ? new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
-                        : outShape;
-                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-                    {
-                        texture = outArr,
-                        width = outShape.w,
-                        height = outShape.h,
-                        packs = outPacks,
-                        refs = 1,
-                        owned = true,
-                        hasLogicalShape = true,
-                        logicalShape = outShape,
-                        hasStorageShape = true,
-                        storageShape = storageShape
-                    };
                     shapes[layer.topNames[0]] = outShape;
                 }
             }
@@ -251,6 +275,8 @@ namespace NcnnCompute
             outShape = default;
             if (srcTex == null || srcTex.texture == null)
                 return false;
+            if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+                return false;
             return CanUsePack4PermuteCore(srcShape, orderType, out axes, out outShape);
         }
 
@@ -260,6 +286,36 @@ namespace NcnnCompute
             outShape = default;
             if (src == null || src.texture == null)
                 return false;
+            if (NcnnRepro.IsStrictLinearMatTexture(src))
+                return false;
+            return CanUsePack4PermuteCore(srcShape, orderType, out axes, out outShape);
+        }
+
+        private static bool CanUseLinearMatPermute(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, int orderType, out Vector4Int axes, out NcnnRepro.BufferShape outShape)
+        {
+            axes = default;
+            outShape = default;
+            if (srcTex == null || srcTex.texture == null || !NcnnRepro.IsStrictLinearMatTexture(srcTex))
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+            if (srcShape.dims != 2 || storageShape.dims != 2 || srcTex.packs != 1 || storageShape.w != srcTex.width || storageShape.h != srcTex.height)
+                return false;
+
+            return CanUsePack4PermuteCore(srcShape, orderType, out axes, out outShape);
+        }
+
+        private static bool CanUseLinearMatPermute(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, int orderType, out Vector4Int axes, out NcnnRepro.BufferShape outShape)
+        {
+            axes = default;
+            outShape = default;
+            if (src == null || src.texture == null || !NcnnRepro.IsStrictLinearMatTexture(src))
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            if (srcShape.dims != 2 || storageShape.dims != 2 || src.packs != 1 || storageShape.w != src.width || storageShape.h != src.height)
+                return false;
+
             return CanUsePack4PermuteCore(srcShape, orderType, out axes, out outShape);
         }
 

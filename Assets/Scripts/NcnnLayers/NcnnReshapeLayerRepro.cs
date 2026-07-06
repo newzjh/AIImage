@@ -425,10 +425,10 @@ namespace NcnnCompute
 
             if (!TryResolveCmdOutputShape(owner, layer, blobs, shapes, src, out var outShape, out var outW, out var outH, out var outPacks))
             {
-                blobs[layer.topNames[0]] = src;
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
-                src.refs++;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
@@ -461,17 +461,41 @@ namespace NcnnCompute
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
             var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
             var outRt = owner.RentTempArray(cmd, outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
-            owner.Ops.ReshapeScalar2DToPack4(
-                cmd,
-                src.texture,
-                srcShape.w,
-                srcShape.h,
-                outShape.w,
-                outShape.h,
-                outShape.d,
-                outShape.c,
-                outShape.dims,
-                outRt);
+            if (NcnnRepro.IsStrictLinearMatTexture(src))
+            {
+                owner.Ops.ReshapeLinearMatToPack4(
+                    cmd,
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    outShape.w,
+                    outShape.h,
+                    outShape.d,
+                    outShape.c,
+                    outShape.dims,
+                    outRt);
+                owner.DebugLog?.Invoke(
+                    "[CmdTexture][ReshapeScalar2DToPack4]"
+                    + " | layer=" + layer.name
+                    + " | strictLinear=1"
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                    + " | outFormat=" + outRt.format);
+            }
+            else
+            {
+                owner.Ops.ReshapeScalar2DToPack4(
+                    cmd,
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    outShape.w,
+                    outShape.h,
+                    outShape.d,
+                    outShape.c,
+                    outShape.dims,
+                    outRt);
+            }
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outRt,
@@ -654,9 +678,9 @@ namespace NcnnCompute
             if (!CanUsePack4ToScalar2DReshape(owner, layer, srcShape, outShape))
                 return false;
 
-            var outRt = owner.RentTempArray(cmd, outShape.w, Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
-            owner.Ops.ReshapePack4ToScalar2D(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
-            var storageShape = new NcnnRepro.BufferShape(3, outShape.w, Mathf.Max(1, outShape.h), 1, 1);
+            var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+            var outRt = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+            owner.Ops.ReshapePack4ToLinearMat(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outRt,
@@ -672,6 +696,13 @@ namespace NcnnCompute
             };
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdTexture][ReshapePack4ToLinearMat]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | outFormat=" + outRt.format);
             return true;
         }
 
@@ -1089,16 +1120,39 @@ namespace NcnnCompute
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
             var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
             var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
-            owner.Ops.ReshapeScalar2DToPack4(
-                src.texture,
-                srcShape.w,
-                srcShape.h,
-                outShape.w,
-                outShape.h,
-                outShape.d,
-                outShape.c,
-                outShape.dims,
-                outRt);
+            if (NcnnRepro.IsStrictLinearMatTexture(src))
+            {
+                owner.Ops.ReshapeLinearMatToPack4(
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    outShape.w,
+                    outShape.h,
+                    outShape.d,
+                    outShape.c,
+                    outShape.dims,
+                    outRt);
+                owner.DebugLog?.Invoke(
+                    "[Texture][ReshapeScalar2DToPack4]"
+                    + " | layer=" + layer.name
+                    + " | strictLinear=1"
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                    + " | outFormat=" + outRt.format);
+            }
+            else
+            {
+                owner.Ops.ReshapeScalar2DToPack4(
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    outShape.w,
+                    outShape.h,
+                    outShape.d,
+                    outShape.c,
+                    outShape.dims,
+                    outRt);
+            }
             NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
             return true;
         }
@@ -1157,10 +1211,17 @@ namespace NcnnCompute
             if (!CanUsePack4ToScalar2DReshape(owner, layer, srcShape, outShape))
                 return false;
 
-            var outRt = owner.RentTempArray(outShape.w, Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
-            owner.Ops.ReshapePack4ToScalar2D(src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
-            var storageShape = new NcnnRepro.BufferShape(3, outShape.w, Mathf.Max(1, outShape.h), 1, 1);
+            var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+            var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+            owner.Ops.ReshapePack4ToLinearMat(src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
             NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, storageShape);
+            owner.DebugLog?.Invoke(
+                "[Texture][ReshapePack4ToLinearMat]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | outFormat=" + outRt.format);
             return true;
         }
 

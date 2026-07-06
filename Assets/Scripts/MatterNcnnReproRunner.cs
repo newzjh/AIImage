@@ -293,6 +293,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         _loaded = false;
         try { _repro?.Release(); } catch { }
         try { _repro?.Dispose(); } catch { }
+        try { _ops?.Dispose(); } catch { }
         _repro = null;
         _ops = null;
     }

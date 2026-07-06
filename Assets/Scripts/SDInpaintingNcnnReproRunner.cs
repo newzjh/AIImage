@@ -2415,6 +2415,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             width = texture.width,
             height = texture.height,
             depth = Mathf.Max(1, texture.volumeDepth),
+            dimension = texture.dimension,
             format = texture.format,
             trackerLabel = label
         };
@@ -5456,13 +5457,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         try { _unetRepro?.Dispose(); } catch { }
         try { _vaeRepro?.Dispose(); } catch { }
         try { _vaeEncoderRepro?.Dispose(); } catch { }
-        try { _ops?.ReleaseWinogradWorkspace(); } catch { }
+        try { _ops?.Dispose(); } catch { }
         _textRepro = null;
         _unetRepro = null;
         _vaeRepro = null;
         _vaeEncoderRepro = null;
         _tokenizer = null;
         _loadedModelKey = null;
+        _ops = null;
     }
 
     public void ReleaseRuntimeResources()

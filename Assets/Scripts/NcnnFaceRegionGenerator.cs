@@ -149,6 +149,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     private void OnDestroy()
     {
         try { _repro?.Dispose(); } catch { }
+        try { _ops?.Dispose(); } catch { }
         _repro = null;
         _ops = null;
         _loaded = false;

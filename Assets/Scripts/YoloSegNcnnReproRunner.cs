@@ -631,6 +631,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private void Release()
     {
         try { _repro?.Dispose(); } catch { }
+        try { _ops?.Dispose(); } catch { }
         _repro = null;
         _ops = null;
         _loadedModelKey = null;

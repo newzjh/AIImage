@@ -87,17 +87,17 @@ namespace NcnnCompute
             if (textureBlobs.TryGetValue(layer.bottomNames[0], out var srcTex) && srcTex != null && srcTex.texture != null)
             {
                 var srcShape = NcnnRepro.GetTextureShape(textureShapes, srcTex, layer.bottomNames[0]);
-                textureBlobs[layer.topNames[0]] = srcTex;
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(srcTex, srcShape, storageShape);
                 textureShapes[layer.topNames[0]] = srcShape;
-                srcTex.refs++;
             }
             else if (!aliasedBuffer)
             {
                 var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                 var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-                textureBlobs[layer.topNames[0]] = src;
+                var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, srcShape, storageShape);
                 textureShapes[layer.topNames[0]] = srcShape;
-                src.refs++;
             }
 
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -112,10 +112,11 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            blobs[layer.topNames[0]] = src;
-            src.refs++;
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
             if (shapes != null)
-                shapes[layer.topNames[0]] = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+                shapes[layer.topNames[0]] = srcShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
     }

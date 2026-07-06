@@ -38,6 +38,7 @@
 #pragma kernel NcnnInterpDown2Pack4
 #pragma kernel NcnnInterpDown2NearestPack4
 #pragma kernel NcnnPack4ToBufferCHW
+#pragma kernel NcnnLinearMatToBuffer
 #pragma kernel NcnnPack4ChannelsToWidth
 #pragma kernel NcnnPack4ToBufferCDHW
 #pragma kernel NcnnInnerProduct
@@ -45,6 +46,7 @@
 #pragma kernel NcnnFillPack4FromBufferCHW
 #pragma kernel NcnnFillPack4FromBufferCDHW
 #pragma kernel NcnnFillScalarTexture
+#pragma kernel NcnnFillScalarLinearMat
 #pragma kernel NcnnScalePack4
 #pragma kernel NcnnAddBiasPack4
 #pragma kernel NcnnBatchNormPack4
@@ -63,7 +65,9 @@
 #pragma kernel NcnnMaxPoolingIndicesFromValuePack4
 #pragma kernel NcnnMaxUnPoolingPack4
 #pragma kernel NcnnSoftmaxChannelPack4
+#pragma kernel NcnnSoftmaxLinearMat2D
 #pragma kernel NcnnUnaryOpPack4
+#pragma kernel NcnnUnaryOpLinearMat
 #pragma kernel NcnnBinaryOpPack4
 #pragma kernel NcnnBinaryOpPack4Broadcast
 #pragma kernel NcnnBinaryOpPack4BufferScalar
@@ -75,23 +79,30 @@
 #pragma kernel NcnnSlicePack4
 #pragma kernel NcnnPermutePack4
 #pragma kernel NcnnPermutePack4CDHW
+#pragma kernel NcnnPermuteLinearMat2D
 #pragma kernel NcnnWindowPartitionPack4
 #pragma kernel NcnnWindowUnpartitionPack4
 #pragma kernel NcnnReshapePack4ToScalar2D
+#pragma kernel NcnnReshapePack4ToLinearMat
 #pragma kernel NcnnReshapePack4ToPack4
 #pragma kernel NcnnReshapeScalar2DToPack4
+#pragma kernel NcnnReshapeLinearMatToPack4
 #pragma kernel NcnnAttentionReshapePack4
 #pragma kernel NcnnAttentionContextFlattenPack4
 #pragma kernel NcnnSlicePack4CDHW
 #pragma kernel NcnnSwishPack4
+#pragma kernel NcnnSwishLinearMat
 #pragma kernel NcnnSigmoidPack4
+#pragma kernel NcnnSigmoidLinearMat
 #pragma kernel NcnnGeluPack4
+#pragma kernel NcnnGeluLinearMat
 #pragma kernel NcnnMatMul2D
 #pragma kernel NcnnMatMulPack4CDHW
 #pragma kernel NcnnVistaTailPromptDotPack4
 #pragma kernel NcnnVistaTailPromptDotPack4Tex
 #pragma kernel NcnnArgmaxUpdatePack4CDHW
 #pragma kernel NcnnGemm2DTextureA
+#pragma kernel NcnnGemm2DLinearTextureA
 #pragma kernel NcnnGemm2D
 #pragma kernel NcnnGemm2D16
 #pragma kernel NcnnLayerNorm2D
@@ -99,6 +110,7 @@
 #pragma kernel NcnnSoftmax2D
 #pragma kernel NcnnSoftmaxPack4CDHW
 #pragma kernel NcnnReductionScalar2D
+#pragma kernel NcnnReductionLinearMat2D
 #pragma kernel NcnnEmbed
 #pragma kernel NcnnPermute
 #pragma kernel NcnnSlice
@@ -239,6 +251,7 @@ void NcnnInterp2xNearestPack4_Impl(uint3 id);
 void NcnnInterpDown2Pack4_Impl(uint3 id);
 void NcnnInterpDown2NearestPack4_Impl(uint3 id);
 void NcnnPack4ToBufferCHW_Impl(uint3 id);
+void NcnnLinearMatToBuffer_Impl(uint3 id);
 void NcnnPack4ToBufferCDHW_Impl(uint3 id);
 void NcnnInnerProduct_Impl(uint3 id);
 void NcnnInnerProduct2D_Impl(uint3 id);
@@ -253,6 +266,7 @@ void NcnnMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnFillPack4FromBufferCHW_Impl(uint3 id);
 void NcnnFillPack4FromBufferCDHW_Impl(uint3 id);
 void NcnnFillScalarTexture_Impl(uint3 id);
+void NcnnFillScalarLinearMat_Impl(uint3 id);
 void NcnnScalePack4_Impl(uint3 id);
 void NcnnAddBiasPack4_Impl(uint3 id);
 void NcnnBatchNormPack4_Impl(uint3 id);
@@ -299,7 +313,9 @@ void NcnnMaxPoolingIndicesFromValuePack4_Impl(uint3 id);
 void NcnnMaxUnPoolingPack4_Impl(uint3 id);
 void NcnnSoftmaxChannelPack4_Impl(uint3 id);
 void NcnnSoftmaxPack4CDHW_Impl(uint3 id);
+void NcnnSoftmaxLinearMat2D_Impl(uint3 id);
 void NcnnUnaryOpPack4_Impl(uint3 id);
+void NcnnUnaryOpLinearMat_Impl(uint3 id);
 void NcnnBinaryOpPack4_Impl(uint3 id);
 void NcnnBinaryOpPack4Broadcast_Impl(uint3 id);
 void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id);
@@ -311,11 +327,15 @@ void NcnnCropPack4_Impl(uint3 id);
 void NcnnSlicePack4_Impl(uint3 id);
 void NcnnPermutePack4_Impl(uint3 id);
 void NcnnPermutePack4CDHW_Impl(uint3 id);
+void NcnnPermuteLinearMat2D_Impl(uint3 id);
 void NcnnWindowPartitionPack4_Impl(uint3 id);
 void NcnnWindowUnpartitionPack4_Impl(uint3 id);
 void NcnnSwishPack4_Impl(uint3 id);
+void NcnnSwishLinearMat_Impl(uint3 id);
 void NcnnSigmoidPack4_Impl(uint3 id);
+void NcnnSigmoidLinearMat_Impl(uint3 id);
 void NcnnGeluPack4_Impl(uint3 id);
+void NcnnGeluLinearMat_Impl(uint3 id);
 void NcnnEmbed_Impl(uint3 id);
 void NcnnLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnLayerNormPack4WidthTex_Impl(uint3 id);
@@ -341,12 +361,15 @@ void NcnnMatMulPack4CDHW_Impl(uint3 id);
 void NcnnVistaTailPromptDotPack4_Impl(uint3 id);
 void NcnnVistaTailPromptDotPack4Tex_Impl(uint3 id);
 void NcnnReshapePack4ToScalar2D_Impl(uint3 id);
+void NcnnReshapePack4ToLinearMat_Impl(uint3 id);
 void NcnnReshapePack4ToPack4_Impl(uint3 id);
 void NcnnReshapeScalar2DToPack4_Impl(uint3 id);
+void NcnnReshapeLinearMatToPack4_Impl(uint3 id);
 void NcnnAttentionReshapePack4_Impl(uint3 id);
 void NcnnAttentionContextFlattenPack4_Impl(uint3 id);
 void NcnnSlicePack4CDHW_Impl(uint3 id);
 void NcnnGemm2DTextureA_Impl(uint3 id);
+void NcnnGemm2DLinearTextureA_Impl(uint3 id);
 void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnGemm2D16_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnCastBuf_Impl(uint3 id);
@@ -355,6 +378,7 @@ void NcnnPReluBuf_Impl(uint3 id);
 void NcnnReorgBuf_Impl(uint3 id);
 void NcnnReductionRowsBuf_Impl(uint3 id);
 void NcnnReductionScalar2D_Impl(uint3 id);
+void NcnnReductionLinearMat2D_Impl(uint3 id);
 void NcnnConv1dBuf_Impl(uint3 id);
 void NcnnReorgPack4_Impl(uint3 id);
 void NcnnPointwisePack4_Impl(uint3 id);
@@ -672,6 +696,12 @@ void NcnnPack4ToBufferCHW(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(256,1,1)]
+void NcnnLinearMatToBuffer(uint3 id : SV_DispatchThreadID)
+{
+    NcnnLinearMatToBuffer_Impl(id);
+}
+
+[numthreads(256,1,1)]
 void NcnnPack4ToBufferCDHW(uint3 id : SV_DispatchThreadID)
 {
     NcnnPack4ToBufferCDHW_Impl(id);
@@ -853,6 +883,11 @@ void NcnnFillScalarTexture(uint3 id : SV_DispatchThreadID)
     NcnnFillScalarTexture_Impl(id);
 }
 
+[numthreads(8,8,1)]
+void NcnnFillScalarLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnFillScalarLinearMat_Impl(id);
+}
 
 float _ScaleK;
 
@@ -1724,9 +1759,21 @@ void NcnnSoftmaxPack4CDHW(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnSoftmaxLinearMat2D(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSoftmaxLinearMat2D_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnUnaryOpPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnUnaryOpPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnUnaryOpLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnUnaryOpLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -1838,9 +1885,21 @@ void NcnnWindowUnpartitionPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnPermuteLinearMat2D(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPermuteLinearMat2D_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnSwishPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnSwishPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSwishLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSwishLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -1850,9 +1909,21 @@ void NcnnSigmoidPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnSigmoidLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSigmoidLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnGeluPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnGeluPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnGeluLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGeluLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -2066,6 +2137,20 @@ static float NcnnReadScalar2DLinear(uint linearIndex, int inW, int inH)
     return _ReshapeScalar2DInArr[int3((int)x, (int)y, 0)].x;
 }
 
+static float NcnnReadLinearMatScalar(Texture2D<float> tex, uint linearIndex, int inW, int inH)
+{
+    if (inW <= 0 || inH <= 0)
+        return 0.0;
+
+    uint width = (uint)inW;
+    uint x = linearIndex % width;
+    uint y = linearIndex / width;
+    if (y >= (uint)inH)
+        return 0.0;
+
+    return tex[int2((int)x, (int)y)];
+}
+
 static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int inW, int inH, int inD, int inC)
 {
     if (inW <= 0 || inH <= 0 || inD <= 0 || inC <= 0)
@@ -2157,6 +2242,12 @@ void NcnnReshapePack4ToScalar2D(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnReshapePack4ToLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnReshapePack4ToLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnReshapePack4ToPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnReshapePack4ToPack4_Impl(id);
@@ -2166,6 +2257,12 @@ void NcnnReshapePack4ToPack4(uint3 id : SV_DispatchThreadID)
 void NcnnReshapeScalar2DToPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnReshapeScalar2DToPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnReshapeLinearMatToPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnReshapeLinearMatToPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -2190,6 +2287,12 @@ void NcnnSlicePack4CDHW(uint3 id : SV_DispatchThreadID)
 void NcnnGemm2DTextureA(uint3 id : SV_DispatchThreadID)
 {
     NcnnGemm2DTextureA_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DLinearTextureA(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DLinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -2561,6 +2664,12 @@ void NcnnReductionRowsBuf(uint3 id : SV_DispatchThreadID)
 void NcnnReductionScalar2D(uint3 id : SV_DispatchThreadID)
 {
     NcnnReductionScalar2D_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnReductionLinearMat2D(uint3 id : SV_DispatchThreadID)
+{
+    NcnnReductionLinearMat2D_Impl(id);
 }
 
 [numthreads(256,1,1)]

@@ -45,6 +45,8 @@ public static class NcnnDebugRunner
     private const string ClipLogAllBufferMaterializeEnvVar = "AIIMAGE_CLIP_LOG_ALL_BUFFER_MATERIALIZE";
     private const string ClipEnableLayerRuntimeProfileEnvVar = "AIIMAGE_CLIP_ENABLE_LAYER_RUNTIME_PROFILE";
     private const string ClipLayerRuntimeProfileSyncGpuEnvVar = "AIIMAGE_CLIP_LAYER_RUNTIME_PROFILE_SYNC_GPU";
+    private const string CodeFormerEnableDumpEnvVar = "AIIMAGE_CODEFORMER_ENABLE_DUMP";
+    private const string CodeFormerEnableFaceDumpEnvVar = "AIIMAGE_CODEFORMER_ENABLE_FACE_DUMP";
     private const string YoloFlipYEnvVar = "AIIMAGE_YOLOSEG_FLIPY";
     private const string YoloForceBufferConvEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_CONV";
     private const string YoloForceBufferBinaryEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_BINARY";
@@ -2115,8 +2117,8 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<CodeFormerNcnnReproRunner2>();
-            runner.enableDebugDump = true;
-            runner.enableFaceRegionDebugDump = true;
+            runner.enableDebugDump = ResolveBoolEnv(CodeFormerEnableDumpEnvVar, false);
+            runner.enableFaceRegionDebugDump = ResolveBoolEnv(CodeFormerEnableFaceDumpEnvVar, runner.enableDebugDump);
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[CodeFormer Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);

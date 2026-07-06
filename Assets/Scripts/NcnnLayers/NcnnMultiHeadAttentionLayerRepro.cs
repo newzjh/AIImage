@@ -375,9 +375,59 @@ namespace NcnnCompute
                 contextFlat = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
                 output = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat);
 
-                owner.Ops.Gemm2DTextureA(cmd, plan.qTex.texture, plan.pack.qW, plan.pack.qB, plan.rows, plan.embedDim, plan.qShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, qProj);
-                owner.Ops.Gemm2DTextureA(cmd, plan.kTex.texture, plan.pack.kW, plan.pack.kB, plan.rows, plan.embedDim, plan.kShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, kProj);
-                owner.Ops.Gemm2DTextureA(cmd, plan.vTex.texture, plan.pack.vW, plan.pack.vB, plan.rows, plan.embedDim, plan.vShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, vProj);
+                ComputeTexture qScalarInput = null;
+                ComputeTexture kScalarInput = null;
+                ComputeTexture vScalarInput = null;
+                ComputeTexture qScalarMaterialized = null;
+                ComputeTexture kScalarMaterialized = null;
+                ComputeTexture vScalarMaterialized = null;
+                try
+                {
+                    qScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.qTex, plan.qShape, plan.scalarTextureFormat, ref qScalarMaterialized);
+                    if (plan.kTex.texture != null
+                        && plan.qTex.texture != null
+                        && plan.kTex.texture.nameID == plan.qTex.texture.nameID
+                        && NcnnRepro.IsStrictLinearMatTexture(plan.kTex))
+                    {
+                        kScalarInput = qScalarInput;
+                        kScalarMaterialized = qScalarMaterialized;
+                    }
+                    else
+                    {
+                        kScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.kTex, plan.kShape, plan.scalarTextureFormat, ref kScalarMaterialized);
+                    }
+
+                    if (plan.vTex.texture != null
+                        && plan.qTex.texture != null
+                        && plan.vTex.texture.nameID == plan.qTex.texture.nameID
+                        && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                    {
+                        vScalarInput = qScalarInput;
+                        vScalarMaterialized = qScalarMaterialized;
+                    }
+                    else if (plan.vTex.texture != null
+                             && plan.kTex.texture != null
+                             && plan.vTex.texture.nameID == plan.kTex.texture.nameID
+                             && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                    {
+                        vScalarInput = kScalarInput;
+                        vScalarMaterialized = kScalarMaterialized;
+                    }
+                    else
+                    {
+                        vScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.vTex, plan.vShape, plan.scalarTextureFormat, ref vScalarMaterialized);
+                    }
+
+                    owner.Ops.Gemm2DTextureA(cmd, qScalarInput, plan.pack.qW, plan.pack.qB, plan.rows, plan.embedDim, plan.qShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, qProj);
+                    owner.Ops.Gemm2DTextureA(cmd, kScalarInput, plan.pack.kW, plan.pack.kB, plan.rows, plan.embedDim, plan.kShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, kProj);
+                    owner.Ops.Gemm2DTextureA(cmd, vScalarInput, plan.pack.vW, plan.pack.vB, plan.rows, plan.embedDim, plan.vShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, vProj);
+                }
+                finally
+                {
+                    ReturnTempUnique(owner, cmd, ref vScalarMaterialized, qScalarMaterialized, kScalarMaterialized);
+                    ReturnTempUnique(owner, cmd, ref kScalarMaterialized, qScalarMaterialized, null);
+                    ReturnTemp(owner, cmd, ref qScalarMaterialized);
+                }
 
                 owner.Ops.BinaryOpScalarPack4(cmd, qProj, plan.pack.scale, 1, 2, qScaled);
 
@@ -619,9 +669,50 @@ namespace NcnnCompute
             contextFlat = owner.RentTempArray(plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
             output = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat);
 
-            owner.Ops.Gemm2DTextureA(plan.qTex.texture, plan.pack.qW, plan.pack.qB, plan.rows, plan.embedDim, plan.qShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, qProj);
-            owner.Ops.Gemm2DTextureA(plan.kTex.texture, plan.pack.kW, plan.pack.kB, plan.rows, plan.embedDim, plan.kShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, kProj);
-            owner.Ops.Gemm2DTextureA(plan.vTex.texture, plan.pack.vW, plan.pack.vB, plan.rows, plan.embedDim, plan.vShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, vProj);
+            RenderTexture qScalarInput = null;
+            RenderTexture kScalarInput = null;
+            RenderTexture vScalarInput = null;
+            RenderTexture qScalarMaterialized = null;
+            RenderTexture kScalarMaterialized = null;
+            RenderTexture vScalarMaterialized = null;
+            try
+            {
+                qScalarInput = MaterializeScalar2DArrayInput(owner, plan.qTex, plan.qShape, plan.scalarTextureFormat, ref qScalarMaterialized);
+                if (ReferenceEquals(plan.kTex.texture, plan.qTex.texture) && NcnnRepro.IsStrictLinearMatTexture(plan.kTex))
+                {
+                    kScalarInput = qScalarInput;
+                    kScalarMaterialized = qScalarMaterialized;
+                }
+                else
+                {
+                    kScalarInput = MaterializeScalar2DArrayInput(owner, plan.kTex, plan.kShape, plan.scalarTextureFormat, ref kScalarMaterialized);
+                }
+
+                if (ReferenceEquals(plan.vTex.texture, plan.qTex.texture) && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                {
+                    vScalarInput = qScalarInput;
+                    vScalarMaterialized = qScalarMaterialized;
+                }
+                else if (ReferenceEquals(plan.vTex.texture, plan.kTex.texture) && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                {
+                    vScalarInput = kScalarInput;
+                    vScalarMaterialized = kScalarMaterialized;
+                }
+                else
+                {
+                    vScalarInput = MaterializeScalar2DArrayInput(owner, plan.vTex, plan.vShape, plan.scalarTextureFormat, ref vScalarMaterialized);
+                }
+
+                owner.Ops.Gemm2DTextureA(qScalarInput, plan.pack.qW, plan.pack.qB, plan.rows, plan.embedDim, plan.qShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, qProj);
+                owner.Ops.Gemm2DTextureA(kScalarInput, plan.pack.kW, plan.pack.kB, plan.rows, plan.embedDim, plan.kShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, kProj);
+                owner.Ops.Gemm2DTextureA(vScalarInput, plan.pack.vW, plan.pack.vB, plan.rows, plan.embedDim, plan.vShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, vProj);
+            }
+            finally
+            {
+                ReturnTempUnique(owner, ref vScalarMaterialized, qScalarMaterialized, kScalarMaterialized);
+                ReturnTempUnique(owner, ref kScalarMaterialized, qScalarMaterialized, null);
+                ReturnTemp(owner, ref qScalarMaterialized);
+            }
 
             owner.Ops.BinaryOpScalarPack4(qProj, plan.pack.scale, 1, 2, qScaled);
 
@@ -759,6 +850,68 @@ namespace NcnnCompute
                 && texture.packs == 1;
         }
 
+        private static RenderTexture MaterializeScalar2DArrayInput(
+            NcnnRepro owner,
+            NcnnRepro.TensorRef source,
+            NcnnRepro.BufferShape shape,
+            RenderTextureFormat outputFormat,
+            ref RenderTexture materialized)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+                return source.texture;
+
+            materialized = owner.RentTempArray(Mathf.Max(1, shape.w), Mathf.Max(1, shape.h), 1, outputFormat);
+            owner.Ops.ReshapeLinearMatToPack4(
+                source.texture,
+                shape.w,
+                shape.h,
+                shape.w,
+                shape.h,
+                1,
+                1,
+                2,
+                materialized);
+            return materialized;
+        }
+
+        private static ComputeTexture MaterializeScalar2DArrayInput(
+            NcnnRepro owner,
+            CommandBuffer cmd,
+            NcnnRepro.CmdTensorRef source,
+            NcnnRepro.BufferShape shape,
+            RenderTextureFormat outputFormat,
+            ref ComputeTexture materialized)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+                return source.texture;
+
+            materialized = owner.RentTempArray(cmd, Mathf.Max(1, shape.w), Mathf.Max(1, shape.h), 1, outputFormat);
+            owner.Ops.ReshapeLinearMatToPack4(
+                cmd,
+                source.texture,
+                shape.w,
+                shape.h,
+                shape.w,
+                shape.h,
+                1,
+                1,
+                2,
+                materialized);
+            return materialized;
+        }
+
         private static void ReturnTemp(NcnnRepro owner, ref RenderTexture texture)
         {
             if (owner == null || texture == null)
@@ -767,12 +920,36 @@ namespace NcnnCompute
             texture = null;
         }
 
+        private static void ReturnTempUnique(NcnnRepro owner, ref RenderTexture texture, RenderTexture alias0, RenderTexture alias1)
+        {
+            if (texture == null || ReferenceEquals(texture, alias0) || ReferenceEquals(texture, alias1))
+            {
+                texture = null;
+                return;
+            }
+
+            ReturnTemp(owner, ref texture);
+        }
+
         private static void ReturnTemp(NcnnRepro owner, CommandBuffer cmd, ref ComputeTexture texture)
         {
             if (owner == null || cmd == null || texture == null)
                 return;
             owner.ReturnTempArray(cmd, texture);
             texture = null;
+        }
+
+        private static void ReturnTempUnique(NcnnRepro owner, CommandBuffer cmd, ref ComputeTexture texture, ComputeTexture alias0, ComputeTexture alias1)
+        {
+            if (texture == null)
+                return;
+            if ((alias0 != null && texture.nameID == alias0.nameID) || (alias1 != null && texture.nameID == alias1.nameID))
+            {
+                texture = null;
+                return;
+            }
+
+            ReturnTemp(owner, cmd, ref texture);
         }
 
         private readonly struct MultiHeadAttentionRtPlan

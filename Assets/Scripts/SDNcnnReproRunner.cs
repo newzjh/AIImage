@@ -1772,6 +1772,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         try { _unetRepro?.Dispose(); } catch { }
         try { _decoderRepro?.Dispose(); } catch { }
         try { _encoderRepro?.Dispose(); } catch { }
+        try { _ops?.Dispose(); } catch { }
         _clipRepro = null;
         _unetRepro = null;
         _decoderRepro = null;
@@ -1781,6 +1782,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         _loadedSpatialKey = null;
         _logSigmas = null;
         _resolvedPaths = null;
+        _ops = null;
     }
 
     private ResolvedPaths ResolvePaths()

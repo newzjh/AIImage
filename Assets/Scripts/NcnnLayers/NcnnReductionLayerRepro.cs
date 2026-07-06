@@ -544,9 +544,20 @@ namespace NcnnCompute
             if (!CanUseScalarTextureReductionOp(op))
                 return false;
 
-            var outRt = owner.RentTempArray(Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
-            ExecuteScalar2DReduction(owner.Ops, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
-            var storageShape = new NcnnRepro.BufferShape(3, outRt.width, outRt.height, 1, 1);
+            RenderTexture outRt;
+            NcnnRepro.BufferShape storageShape;
+            if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+            {
+                storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+                outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                ExecuteLinearMatReduction(owner.Ops, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+            }
+            else
+            {
+                outRt = owner.RentTempArray(Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
+                ExecuteScalar2DReduction(owner.Ops, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+                storageShape = new NcnnRepro.BufferShape(3, outRt.width, outRt.height, 1, 1);
+            }
             NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, storageShape);
             owner.Consume(
                 context.textureBlobs,
@@ -579,9 +590,20 @@ namespace NcnnCompute
             if (!CanUseScalarTextureReductionOp(op))
                 return false;
 
-            var outRt = owner.RentTempArray(context.commandBuffer, Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
-            ExecuteScalar2DReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
-            var storageShape = new NcnnRepro.BufferShape(3, outRt.width, outRt.height, 1, 1);
+            ComputeTexture outRt;
+            NcnnRepro.BufferShape storageShape;
+            if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+            {
+                storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+                outRt = owner.RentTempMat(context.commandBuffer, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                ExecuteLinearMatReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+            }
+            else
+            {
+                outRt = owner.RentTempArray(context.commandBuffer, Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
+                ExecuteScalar2DReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+                storageShape = new NcnnRepro.BufferShape(3, outRt.width, outRt.height, 1, 1);
+            }
             context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outRt,
@@ -596,6 +618,14 @@ namespace NcnnCompute
                 storageShape = storageShape
             };
             context.shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdTexture][Reduction]"
+                + " | layer=" + layer.name
+                + " | strictLinear=" + (NcnnRepro.IsStrictLinearMatTexture(srcTex) ? "1" : "0")
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | outFormat=" + outRt.format
+                + " | reduceAlongWidth=" + (reduceAlongWidth ? "1" : "0"));
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
             return true;
         }
@@ -713,6 +743,33 @@ namespace NcnnCompute
         {
             var axis = reduceAlongWidth ? 1 : 0;
             ops.ReductionScalar2D(cmd, input, srcShape.w, srcShape.h, axis, op, coeff, output);
+        }
+
+        private static void ExecuteLinearMatReduction(
+            NcnnOps ops,
+            RenderTexture input,
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAlongWidth,
+            int op,
+            float coeff,
+            RenderTexture output)
+        {
+            var axis = reduceAlongWidth ? 1 : 0;
+            ops.ReductionLinearMat2D(input, srcShape.w, srcShape.h, axis, op, coeff, output);
+        }
+
+        private static void ExecuteLinearMatReduction(
+            NcnnOps ops,
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAlongWidth,
+            int op,
+            float coeff,
+            ComputeTexture output)
+        {
+            var axis = reduceAlongWidth ? 1 : 0;
+            ops.ReductionLinearMat2D(cmd, input, srcShape.w, srcShape.h, axis, op, coeff, output);
         }
 
         private static bool TryResolveSpatialReductionAxes(

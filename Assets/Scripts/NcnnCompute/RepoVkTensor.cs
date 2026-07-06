@@ -27,6 +27,7 @@ namespace NcnnCompute
         public NcnnRepro.BufferShape StorageShape { get; }
         public abstract RenderTexture RenderTexture { get; }
         public abstract ComputeTexture ComputeTexture { get; }
+        public abstract TextureDimension Dimension { get; }
         public abstract int Width { get; }
         public abstract int Height { get; }
         public abstract int Depth { get; }
@@ -34,8 +35,8 @@ namespace NcnnCompute
 
         public bool IsRenderTextureBacked => RenderTexture != null;
         public bool IsCommandTextureBacked => ComputeTexture != null;
-        public bool UsesTexture2DPhysicalBacking => RenderTexture != null && RenderTexture.dimension == TextureDimension.Tex2D;
-        public bool UsesTexture2DArrayPhysicalBacking => RenderTexture != null && RenderTexture.dimension == TextureDimension.Tex2DArray;
+        public bool UsesTexture2DPhysicalBacking => Dimension == TextureDimension.Tex2D;
+        public bool UsesTexture2DArrayPhysicalBacking => Dimension == TextureDimension.Tex2DArray;
     }
 
     public sealed class RepoVkMat : RepoVkTensor
@@ -83,11 +84,14 @@ namespace NcnnCompute
 
         public override RenderTexture RenderTexture => _renderTexture;
         public override ComputeTexture ComputeTexture => _computeTexture;
+        public override TextureDimension Dimension => _renderTexture != null
+            ? _renderTexture.dimension
+            : (_computeTexture != null ? _computeTexture.dimension : TextureDimension.Unknown);
         public override int Width => _width;
         public override int Height => _height;
         public override int Depth => _depth;
         public override int Packs => _packs;
-        public bool IsStrictTexture2D => _renderTexture != null && _renderTexture.dimension == TextureDimension.Tex2D;
+        public bool IsStrictTexture2D => Dimension == TextureDimension.Tex2D;
     }
 
     public sealed class RepoVkImageMat : RepoVkTensor
@@ -137,6 +141,9 @@ namespace NcnnCompute
 
         public override RenderTexture RenderTexture => _renderTexture;
         public override ComputeTexture ComputeTexture => _computeTexture;
+        public override TextureDimension Dimension => _renderTexture != null
+            ? _renderTexture.dimension
+            : (_computeTexture != null ? _computeTexture.dimension : TextureDimension.Unknown);
         public override int Width => _width;
         public override int Height => _height;
         public override int Depth => _depth;

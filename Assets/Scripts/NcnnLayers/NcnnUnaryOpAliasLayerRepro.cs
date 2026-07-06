@@ -17,14 +17,9 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            if (owner.TryGetPack4Texture(
-                    layer.bottomNames[0],
-                    context.textureBlobs,
-                    context.textureShapes,
-                    context.bufferBlobs,
-                    context.bufferViews,
-                    out _,
-                    out _))
+            if (NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape)
+                && ((!NcnnRepro.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 3)
+                    || (NcnnRepro.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 2)))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
                 return;
@@ -76,15 +71,23 @@ namespace NcnnCompute
         {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferViews = context.bufferViews;
 
-            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
-                throw new InvalidOperationException(TypeKey + " render-texture path requires pack4 texture input: " + layer.name);
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
+                throw new InvalidOperationException(TypeKey + " render-texture path requires supported texture input: " + layer.name);
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.UnaryOpPack4(srcTex.texture, srcTex.packs, _opType, outRt);
-            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+            {
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.UnaryOpLinearMat(srcTex.texture, _opType, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
+            }
+            else
+            {
+                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.UnaryOpPack4(srcTex.texture, srcTex.packs, _opType, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
@@ -98,17 +101,27 @@ namespace NcnnCompute
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.UnaryOpPack4(cmd, src.texture, src.packs, _opType, outArr);
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            if (NcnnRepro.IsStrictLinearMatTexture(src) && srcShape.dims <= 2)
             {
-                texture = outArr,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
-                refs = 1,
-                owned = true
-            };
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.UnaryOpLinearMat(cmd, src.texture, _opType, outMat);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, srcShape, storageShape, owned: true);
+            }
+            else
+            {
+                var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.UnaryOpPack4(cmd, src.texture, src.packs, _opType, outArr);
+                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                {
+                    texture = outArr,
+                    width = src.width,
+                    height = src.height,
+                    packs = src.packs,
+                    refs = 1,
+                    owned = true
+                };
+            }
             if (shapes != null)
                 shapes[layer.topNames[0]] = srcShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

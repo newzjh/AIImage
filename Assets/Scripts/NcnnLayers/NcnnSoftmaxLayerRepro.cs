@@ -126,9 +126,19 @@ namespace NcnnCompute
                 if (!TryResolvePack4SoftmaxWidthAxis(layer, scalarSrcShape, out var scalarAxis) || scalarAxis != 0)
                     throw new InvalidOperationException("Softmax render-texture scalar2d path currently supports softmax over tensor width axis only: " + layer.name);
 
-                var outScalarRt = owner.RentTempArray(scalarSrcTex.width, scalarSrcTex.height, scalarSrcTex.packs, scalarTextureFormat);
-                owner.Ops.SoftmaxPack4Cdhw(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, 1, 1, outScalarRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outScalarRt, scalarSrcShape);
+                if (NcnnRepro.IsStrictLinearMatTexture(scalarSrcTex))
+                {
+                    var storageShape = NcnnRepro.GetTextureStorageShape(scalarSrcTex, scalarSrcShape);
+                    var outScalarRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.SoftmaxLinearMat2D(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, outScalarRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outScalarRt, scalarSrcShape, storageShape);
+                }
+                else
+                {
+                    var outScalarRt = owner.RentTempArray(scalarSrcTex.width, scalarSrcTex.height, scalarSrcTex.packs, scalarTextureFormat);
+                    owner.Ops.SoftmaxPack4Cdhw(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, 1, 1, outScalarRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outScalarRt, scalarSrcShape);
+                }
                 owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
                 return;
             }
@@ -184,21 +194,31 @@ namespace NcnnCompute
                     return;
                 }
 
-                var outRt = owner.RentTempArray(cmd, src.width, src.height, src.packs, NcnnRepro.ResolveTensorTextureFormat(2));
-                owner.Ops.SoftmaxPack4Cdhw(cmd, src.texture, srcShape.w, srcShape.h, 1, 1, outRt);
-                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                if (NcnnRepro.IsStrictLinearMatTexture(src))
                 {
-                    texture = outRt,
-                    width = src.width,
-                    height = src.height,
-                    packs = src.packs,
-                    refs = 1,
-                    owned = true,
-                    hasLogicalShape = true,
-                    logicalShape = srcShape,
-                    hasStorageShape = true,
-                    storageShape = srcShape
-                };
+                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                    var outRt = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.SoftmaxLinearMat2D(cmd, src.texture, srcShape.w, srcShape.h, outRt);
+                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outRt, srcShape, storageShape, owned: true);
+                }
+                else
+                {
+                    var outRt = owner.RentTempArray(cmd, src.width, src.height, src.packs, NcnnRepro.ResolveTensorTextureFormat(2));
+                    owner.Ops.SoftmaxPack4Cdhw(cmd, src.texture, srcShape.w, srcShape.h, 1, 1, outRt);
+                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                    {
+                        texture = outRt,
+                        width = src.width,
+                        height = src.height,
+                        packs = src.packs,
+                        refs = 1,
+                        owned = true,
+                        hasLogicalShape = true,
+                        logicalShape = srcShape,
+                        hasStorageShape = true,
+                        storageShape = srcShape
+                    };
+                }
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

@@ -302,37 +302,65 @@ namespace NcnnCompute
 
             var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
-            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
-                ? RenderTextureFormat.ARGBFloat
-                : RenderTextureFormat.ARGBHalf;
-            var outRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
-            owner.Ops.Gemm2DTextureA(
-                context.commandBuffer,
-                srcTex.texture,
-                gp.bData,
-                useC ? gp.cData : null,
-                m,
-                n,
-                k,
-                gp.transB,
-                gp.alpha,
-                gp.beta,
-                useC,
-                gp.broadcastTypeC,
-                outRt);
+            var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
+            var outStorageShape = useStrictLinearMat
+                ? NcnnRepro.ResolveLinearMatStorageShape(outShape)
+                : new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
+            var outRt = useStrictLinearMat
+                ? owner.RentTempMat(context.commandBuffer, outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat())
+                : owner.RentTempArray(
+                    context.commandBuffer,
+                    outShape.w,
+                    outShape.h,
+                    1,
+                    ShouldPromoteAttentionGemmOutputTexture(owner, layer) ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
+            if (useStrictLinearMat)
+            {
+                owner.Ops.Gemm2DLinearTextureA(
+                    context.commandBuffer,
+                    srcTex.texture,
+                    gp.bData,
+                    useC ? gp.cData : null,
+                    m,
+                    n,
+                    k,
+                    gp.transB,
+                    gp.alpha,
+                    gp.beta,
+                    useC,
+                    gp.broadcastTypeC,
+                    outRt);
+            }
+            else
+            {
+                owner.Ops.Gemm2DTextureA(
+                    context.commandBuffer,
+                    srcTex.texture,
+                    gp.bData,
+                    useC ? gp.cData : null,
+                    m,
+                    n,
+                    k,
+                    gp.transB,
+                    gp.alpha,
+                    gp.beta,
+                    useC,
+                    gp.broadcastTypeC,
+                    outRt);
+            }
 
             context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outRt,
-                width = outShape.w,
-                height = outShape.h,
+                width = outStorageShape.w,
+                height = outStorageShape.h,
                 packs = 1,
                 refs = 1,
                 owned = true,
                 hasLogicalShape = true,
                 logicalShape = outShape,
                 hasStorageShape = true,
-                storageShape = new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
+                storageShape = outStorageShape
             };
             context.shapes[layer.topNames[0]] = outShape;
             owner.DebugLog?.Invoke(
@@ -340,7 +368,8 @@ namespace NcnnCompute
                 + " | layer=" + layer.name
                 + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
                 + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
-                + " | outFormat=" + outRt.format);
+                + " | outFormat=" + outRt.format
+                + " | linear=" + (useStrictLinearMat ? "1" : "0"));
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
             return true;
         }
@@ -385,24 +414,50 @@ namespace NcnnCompute
 
             var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
-            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
-                ? RenderTextureFormat.ARGBFloat
-                : RenderTextureFormat.ARGBHalf;
-            var outRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
-            owner.Ops.Gemm2DTextureA(
-                srcTex.texture,
-                gp.bData,
-                useC ? gp.cData : null,
-                m,
-                n,
-                k,
-                gp.transB,
-                gp.alpha,
-                gp.beta,
-                useC,
-                gp.broadcastTypeC,
-                outRt);
-            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
+            var outStorageShape = useStrictLinearMat
+                ? NcnnRepro.ResolveLinearMatStorageShape(outShape)
+                : new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
+            var outRt = useStrictLinearMat
+                ? owner.RentTempMat(outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat())
+                : owner.RentTempArray(
+                    outShape.w,
+                    outShape.h,
+                    1,
+                    ShouldPromoteAttentionGemmOutputTexture(owner, layer) ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
+            if (useStrictLinearMat)
+            {
+                owner.Ops.Gemm2DLinearTextureA(
+                    srcTex.texture,
+                    gp.bData,
+                    useC ? gp.cData : null,
+                    m,
+                    n,
+                    k,
+                    gp.transB,
+                    gp.alpha,
+                    gp.beta,
+                    useC,
+                    gp.broadcastTypeC,
+                    outRt);
+            }
+            else
+            {
+                owner.Ops.Gemm2DTextureA(
+                    srcTex.texture,
+                    gp.bData,
+                    useC ? gp.cData : null,
+                    m,
+                    n,
+                    k,
+                    gp.transB,
+                    gp.alpha,
+                    gp.beta,
+                    useC,
+                    gp.broadcastTypeC,
+                    outRt);
+            }
+            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, outStorageShape);
             owner.Consume(
                 context.textureBlobs,
                 context.bufferBlobs,
@@ -444,49 +499,78 @@ namespace NcnnCompute
                 return false;
 
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
-            var outStorageShape = new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
+            var useStrictLinearOut = NcnnRepro.IsStrictLinearMatTexture(aTex) || NcnnRepro.IsStrictLinearMatTexture(bTex);
+            var outStorageShape = useStrictLinearOut
+                ? NcnnRepro.ResolveLinearMatStorageShape(outShape)
+                : new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
             var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
                 ? RenderTextureFormat.ARGBFloat
                 : RenderTextureFormat.ARGBHalf;
-            var outRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
-            owner.Ops.MatMulPack4Cdhw(
-                context.commandBuffer,
-                aTex.texture,
-                m,
-                k,
-                1,
-                1,
-                bTex.texture,
-                bRows,
-                bCols,
-                1,
-                1,
-                gp.transB,
-                1,
-                1,
-                outRt);
-
-            if (!Mathf.Approximately(gp.alpha, 1f))
+            ComputeTexture aMaterialized = null;
+            ComputeTexture bMaterialized = null;
+            ComputeTexture outRt = null;
+            try
             {
-                var scaledRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
-                owner.Ops.BinaryOpScalarPack4(context.commandBuffer, outRt, gp.alpha, 1, 2, scaledRt);
-                owner.ReturnTempArray(context.commandBuffer, outRt);
-                outRt = scaledRt;
+                var aInput = MaterializeScalar2DInput(owner, context.commandBuffer, aTex, aShape, outFormat, ref aMaterialized);
+                var bInput = MaterializeScalar2DInput(owner, context.commandBuffer, bTex, bShape, outFormat, ref bMaterialized);
+                outRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
+                owner.Ops.MatMulPack4Cdhw(
+                    context.commandBuffer,
+                    aInput,
+                    m,
+                    k,
+                    1,
+                    1,
+                    bInput,
+                    bRows,
+                    bCols,
+                    1,
+                    1,
+                    gp.transB,
+                    1,
+                    1,
+                    outRt);
+
+                if (!Mathf.Approximately(gp.alpha, 1f))
+                {
+                    var scaledRt = owner.RentTempArray(context.commandBuffer, outShape.w, outShape.h, 1, outFormat);
+                    owner.Ops.BinaryOpScalarPack4(context.commandBuffer, outRt, gp.alpha, 1, 2, scaledRt);
+                    owner.ReturnTempArray(context.commandBuffer, outRt);
+                    outRt = scaledRt;
+                }
+
+                if (useStrictLinearOut)
+                {
+                    var outMat = owner.RentTempMat(context.commandBuffer, outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.ReshapePack4ToLinearMat(context.commandBuffer, outRt, outShape.w, outShape.h, outShape.d, outShape.c, outShape.dims, outMat);
+                    context.blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, outShape, outStorageShape, owned: true);
+                }
+                else
+                {
+                    context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                    {
+                        texture = outRt,
+                        width = outShape.w,
+                        height = outShape.h,
+                        packs = 1,
+                        refs = 1,
+                        owned = true,
+                        hasLogicalShape = true,
+                        logicalShape = outShape,
+                        hasStorageShape = true,
+                        storageShape = outStorageShape
+                    };
+                    outRt = null;
+                }
             }
-
-            context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+            finally
             {
-                texture = outRt,
-                width = outShape.w,
-                height = outShape.h,
-                packs = 1,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = outShape,
-                hasStorageShape = true,
-                storageShape = outStorageShape
-            };
+                ReturnTempUnique(owner, context.commandBuffer, ref bMaterialized, aMaterialized);
+                if (aMaterialized != null)
+                    owner.ReturnTempArray(context.commandBuffer, aMaterialized);
+                if (outRt != null)
+                    owner.ReturnTempArray(context.commandBuffer, outRt);
+            }
             context.shapes[layer.topNames[0]] = outShape;
             owner.DebugLog?.Invoke(
                 "[CmdTexture2D][Gemm]"
@@ -495,7 +579,8 @@ namespace NcnnCompute
                 + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
                 + " | transB=" + (gp.transB ? "1" : "0")
                 + " | alpha=" + gp.alpha.ToString(CultureInfo.InvariantCulture)
-                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | linear=" + (useStrictLinearOut ? "1" : "0"));
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
             return true;
         }
@@ -530,36 +615,65 @@ namespace NcnnCompute
                 return false;
 
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
-            var outStorageShape = new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
+            var useStrictLinearOut = NcnnRepro.IsStrictLinearMatTexture(aTex) || NcnnRepro.IsStrictLinearMatTexture(bTex);
+            var outStorageShape = useStrictLinearOut
+                ? NcnnRepro.ResolveLinearMatStorageShape(outShape)
+                : new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1);
             var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
                 ? RenderTextureFormat.ARGBFloat
                 : RenderTextureFormat.ARGBHalf;
-            var outRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
-            owner.Ops.MatMulPack4Cdhw(
-                aTex.texture,
-                m,
-                k,
-                1,
-                1,
-                bTex.texture,
-                bRows,
-                bCols,
-                1,
-                1,
-                gp.transB,
-                1,
-                1,
-                outRt);
-
-            if (!Mathf.Approximately(gp.alpha, 1f))
+            RenderTexture aMaterialized = null;
+            RenderTexture bMaterialized = null;
+            RenderTexture outRt = null;
+            try
             {
-                var scaledRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
-                owner.Ops.BinaryOpScalarPack4(outRt, gp.alpha, 1, 2, scaledRt);
-                owner.ReturnTempArray(outRt);
-                outRt = scaledRt;
-            }
+                var aInput = MaterializeScalar2DInput(owner, aTex, aShape, outFormat, ref aMaterialized);
+                var bInput = MaterializeScalar2DInput(owner, bTex, bShape, outFormat, ref bMaterialized);
+                outRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
+                owner.Ops.MatMulPack4Cdhw(
+                    aInput,
+                    m,
+                    k,
+                    1,
+                    1,
+                    bInput,
+                    bRows,
+                    bCols,
+                    1,
+                    1,
+                    gp.transB,
+                    1,
+                    1,
+                    outRt);
 
-            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, outStorageShape);
+                if (!Mathf.Approximately(gp.alpha, 1f))
+                {
+                    var scaledRt = owner.RentTempArray(outShape.w, outShape.h, 1, outFormat);
+                    owner.Ops.BinaryOpScalarPack4(outRt, gp.alpha, 1, 2, scaledRt);
+                    owner.ReturnTempArray(outRt);
+                    outRt = scaledRt;
+                }
+
+                if (useStrictLinearOut)
+                {
+                    var outMat = owner.RentTempMat(outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.ReshapePack4ToLinearMat(outRt, outShape.w, outShape.h, outShape.d, outShape.c, outShape.dims, outMat);
+                    NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outMat, outShape, outStorageShape);
+                }
+                else
+                {
+                    NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, outStorageShape);
+                    outRt = null;
+                }
+            }
+            finally
+            {
+                ReturnTempUnique(owner, ref bMaterialized, aMaterialized);
+                if (aMaterialized != null)
+                    owner.ReturnTempArray(aMaterialized);
+                if (outRt != null)
+                    owner.ReturnTempArray(outRt);
+            }
             owner.DebugLog?.Invoke(
                 "[Texture2D][Gemm]"
                 + " | layer=" + layer.name
@@ -567,7 +681,8 @@ namespace NcnnCompute
                 + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
                 + " | transB=" + (gp.transB ? "1" : "0")
                 + " | alpha=" + gp.alpha.ToString(CultureInfo.InvariantCulture)
-                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | linear=" + (useStrictLinearOut ? "1" : "0"));
             owner.Consume(
                 context.textureBlobs,
                 context.bufferBlobs,
@@ -624,6 +739,96 @@ namespace NcnnCompute
                 && texture.width == shape.w
                 && texture.height == shape.h
                 && texture.packs == 1;
+        }
+
+        private static RenderTexture MaterializeScalar2DInput(
+            NcnnRepro owner,
+            NcnnRepro.TensorRef source,
+            NcnnRepro.BufferShape logicalShape,
+            RenderTextureFormat pack4Format,
+            ref RenderTexture materialized)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+                return source.texture;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(source, logicalShape);
+            materialized = owner.RentTempArray(logicalShape.w, logicalShape.h, 1, pack4Format);
+            owner.Ops.ReshapeLinearMatToPack4(
+                source.texture,
+                storageShape.w,
+                storageShape.h,
+                logicalShape.w,
+                logicalShape.h,
+                1,
+                1,
+                2,
+                materialized);
+            return materialized;
+        }
+
+        private static ComputeTexture MaterializeScalar2DInput(
+            NcnnRepro owner,
+            CommandBuffer cmd,
+            NcnnRepro.CmdTensorRef source,
+            NcnnRepro.BufferShape logicalShape,
+            RenderTextureFormat pack4Format,
+            ref ComputeTexture materialized)
+        {
+            if (owner == null)
+                throw new ArgumentNullException(nameof(owner));
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+                return source.texture;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(source, logicalShape);
+            materialized = owner.RentTempArray(cmd, logicalShape.w, logicalShape.h, 1, pack4Format);
+            owner.Ops.ReshapeLinearMatToPack4(
+                cmd,
+                source.texture,
+                storageShape.w,
+                storageShape.h,
+                logicalShape.w,
+                logicalShape.h,
+                1,
+                1,
+                2,
+                materialized);
+            return materialized;
+        }
+
+        private static void ReturnTempUnique(NcnnRepro owner, ref RenderTexture texture, RenderTexture alias0)
+        {
+            if (texture == null || ReferenceEquals(texture, alias0))
+            {
+                texture = null;
+                return;
+            }
+
+            owner.ReturnTempArray(texture);
+            texture = null;
+        }
+
+        private static void ReturnTempUnique(NcnnRepro owner, CommandBuffer cmd, ref ComputeTexture texture, ComputeTexture alias0)
+        {
+            if (texture == null)
+                return;
+            if (alias0 != null && texture.nameID == alias0.nameID)
+            {
+                texture = null;
+                return;
+            }
+
+            owner.ReturnTempArray(cmd, texture);
+            texture = null;
         }
 
         private static bool ShouldPromoteAttentionGemmOutputTexture(NcnnRepro owner, NcnnParamModel.Layer layer)

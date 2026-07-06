@@ -88,17 +88,19 @@ namespace NcnnCompute
             public readonly int w;
             public readonly int h;
             public readonly int d;
+            public readonly TextureDimension dimension;
             public readonly RenderTextureFormat format;
 
-            public RtKey(int w, int h, int d, RenderTextureFormat format)
+            public RtKey(int w, int h, int d, TextureDimension dimension, RenderTextureFormat format)
             {
                 this.w = w;
                 this.h = h;
                 this.d = d;
+                this.dimension = dimension;
                 this.format = format;
             }
 
-            public bool Equals(RtKey other) => w == other.w && h == other.h && d == other.d && format == other.format;
+            public bool Equals(RtKey other) => w == other.w && h == other.h && d == other.d && dimension == other.dimension && format == other.format;
             public override bool Equals(object obj) => obj is RtKey other && Equals(other);
             public override int GetHashCode()
             {
@@ -107,6 +109,7 @@ namespace NcnnCompute
                     var hash = w;
                     hash = (hash * 397) ^ h;
                     hash = (hash * 397) ^ d;
+                    hash = (hash * 397) ^ (int)dimension;
                     hash = (hash * 397) ^ (int)format;
                     return hash;
                 }
@@ -2668,18 +2671,60 @@ namespace NcnnCompute
                 enableRandomWrite = true,
                 msaaSamples = 1,
             };
-            if (TryRentInferenceTempArrayFromPool(w, h, depth, format, allocLabel, out var pooled))
+            if (TryRentInferenceTempTextureFromPool(w, h, depth, TextureDimension.Tex2DArray, format, allocLabel, out var pooled))
             {
+                _ops?.FillScalarTexture(null, pooled);
                 TrackTempRtRent();
                 return pooled;
             }
 
             var allocated = RenderTexture.GetTemporary(desc);
             NcnnGpuResourceTracker.RegisterTexture(allocated, allocLabel + "|new");
+            _ops?.FillScalarTexture(null, allocated);
             TrackTempRtRent();
             return allocated;
 
-       
+        }
+
+        public RenderTexture RentTempMat(
+            int w,
+            int h,
+            RenderTextureFormat format,
+            [CallerMemberName] string callerMember = null,
+            [CallerLineNumber] int callerLine = 0)
+        {
+            w = Mathf.Max(1, w);
+            h = Mathf.Max(1, h);
+            format = format == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : format;
+            if (WouldExceedTextureSizeLimit(w, h))
+            {
+                throw new InvalidOperationException(
+                    "Texture2D size limit exceeded"
+                    + " | site=" + DescribeCurrentExecutionSite()
+                    + " | requested_size=" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture)
+                    + " | max_size=" + GetMaxTextureSize().ToString(CultureInfo.InvariantCulture));
+            }
+
+            var allocLabel = "NcnnRepro.RentTempMat(" + (callerMember ?? "?") + ":" + callerLine.ToString(CultureInfo.InvariantCulture) + ")";
+            var desc = new RenderTextureDescriptor(w, h, format, 0)
+            {
+                dimension = TextureDimension.Tex2D,
+                volumeDepth = 1,
+                enableRandomWrite = true,
+                msaaSamples = 1,
+            };
+            if (TryRentInferenceTempTextureFromPool(w, h, 1, TextureDimension.Tex2D, format, allocLabel, out var pooled))
+            {
+                _ops?.FillScalarTexture(null, pooled);
+                TrackTempRtRent();
+                return pooled;
+            }
+
+            var allocated = RenderTexture.GetTemporary(desc);
+            NcnnGpuResourceTracker.RegisterTexture(allocated, allocLabel + "|new");
+            _ops?.FillScalarTexture(null, allocated);
+            TrackTempRtRent();
+            return allocated;
         }
 
         public void ReturnTempArray(RenderTexture rt)
@@ -2697,6 +2742,17 @@ namespace NcnnCompute
             {
                 TrackTempRtReturn();
                 return;
+            }
+
+            if (!_trackInferenceTempResources)
+            {
+                try
+                {
+                    _ops?.DebugSyncGpu();
+                }
+                catch
+                {
+                }
             }
 
             TrackTempRtReturn();
@@ -2742,10 +2798,57 @@ namespace NcnnCompute
                 width = w,
                 height = h,
                 depth = depth,
+                dimension = TextureDimension.Tex2DArray,
                 format = format,
                 trackerLabel = allocLabel
             };
             _cmdSets.Add(t);
+            _ops?.FillScalarTexture(cmd, null, t);
+            TrackTempRtRent();
+            return t;
+        }
+
+        public ComputeTexture RentTempMat(CommandBuffer cmd, int w, int h, RenderTextureFormat format)
+        {
+            if (cmd == null)
+                throw new ArgumentNullException(nameof(cmd));
+
+            w = Mathf.Max(1, w);
+            h = Mathf.Max(1, h);
+            format = format == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : format;
+            if (WouldExceedTextureSizeLimit(w, h))
+            {
+                throw new InvalidOperationException(
+                    "Texture2D size limit exceeded"
+                    + " | site=" + DescribeCurrentExecutionSite()
+                    + " | requested_size=" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture)
+                    + " | max_size=" + GetMaxTextureSize().ToString(CultureInfo.InvariantCulture));
+            }
+
+            var desc = new RenderTextureDescriptor(w, h, format, 0)
+            {
+                dimension = TextureDimension.Tex2D,
+                volumeDepth = 1,
+                enableRandomWrite = true,
+                msaaSamples = 1,
+            };
+
+            var id = Shader.PropertyToID(Guid.NewGuid().ToString());
+            var allocLabel = "NcnnRepro.RentTempMatCmd(" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture) + ")";
+            cmd.GetTemporaryRT(id, desc);
+            NcnnGpuResourceTracker.RegisterTextureHandle(id, w, h, 1, format, allocLabel + "|new");
+            var t = new ComputeTexture
+            {
+                nameID = id,
+                width = w,
+                height = h,
+                depth = 1,
+                dimension = TextureDimension.Tex2D,
+                format = format,
+                trackerLabel = allocLabel
+            };
+            _cmdSets.Add(t);
+            _ops?.FillScalarTexture(cmd, null, t);
             TrackTempRtRent();
             return t;
         }
@@ -2787,10 +2890,11 @@ namespace NcnnCompute
             _deferredCmdReleases.Clear();
         }
 
-        private bool TryRentInferenceTempArrayFromPool(
+        private bool TryRentInferenceTempTextureFromPool(
             int w,
             int h,
             int depth,
+            TextureDimension dimension,
             RenderTextureFormat format,
             string label,
             out RenderTexture rt)
@@ -2803,6 +2907,7 @@ namespace NcnnCompute
                 Mathf.Max(1, w),
                 Mathf.Max(1, h),
                 Mathf.Max(1, depth),
+                dimension,
                 format);
             if (!_rtPool.TryGetValue(key, out var pool) || pool == null)
                 return false;
@@ -2842,6 +2947,7 @@ namespace NcnnCompute
                 Mathf.Max(1, rt.width),
                 Mathf.Max(1, rt.height),
                 Mathf.Max(1, rt.volumeDepth > 0 ? rt.volumeDepth : 1),
+                rt.dimension,
                 rt.format);
             if (!_rtPool.TryGetValue(key, out var pool) || pool == null)
             {
@@ -2875,6 +2981,7 @@ namespace NcnnCompute
                 return rt.width == key.w
                     && rt.height == key.h
                     && Mathf.Max(1, rt.volumeDepth > 0 ? rt.volumeDepth : 1) == key.d
+                    && rt.dimension == key.dimension
                     && rt.format == key.format;
             }
             catch
@@ -3030,6 +3137,58 @@ namespace NcnnCompute
             return dims >= 4 ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         }
 
+        internal static RenderTextureFormat ResolveLinearMatTextureFormat()
+        {
+            return RenderTextureFormat.RFloat;
+        }
+
+        internal static BufferShape ResolveLinearMatStorageShape(BufferShape logicalShape)
+        {
+            var logicalWidth = Mathf.Max(1, logicalShape.w);
+            var logicalHeight = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
+            if (logicalShape.dims <= 1)
+                return new BufferShape(2, logicalWidth, 1, 1, 1);
+            if (logicalShape.dims == 2)
+                return new BufferShape(2, logicalWidth, logicalHeight, 1, 1);
+
+            var logicalCount = Mathf.Max(1, logicalShape.w)
+                * Mathf.Max(1, logicalShape.h)
+                * Mathf.Max(1, logicalShape.d)
+                * Mathf.Max(1, logicalShape.c);
+            var widthTiled = logicalCount <= 4096
+                ? logicalCount
+                : AlignUp(Mathf.Min(SystemInfo.maxTextureSize, Mathf.CeilToInt(Mathf.Sqrt(logicalCount))), 16);
+            widthTiled = Mathf.Clamp(Mathf.Max(1, widthTiled), 1, Mathf.Max(1, SystemInfo.maxTextureSize));
+            var heightTiled = Mathf.CeilToInt(logicalCount / (float)widthTiled);
+            if (heightTiled <= Mathf.Max(1, SystemInfo.maxTextureSize))
+                return new BufferShape(2, widthTiled, Mathf.Max(1, heightTiled), 1, 1);
+            return new BufferShape(2, logicalWidth, logicalHeight, 1, 1);
+        }
+
+        internal static bool IsStrictLinearMatTexture(TensorRef tensor)
+        {
+            return tensor != null
+                && tensor.texture != null
+                && tensor.texture.dimension == TextureDimension.Tex2D
+                && tensor.layoutKind == RepoVkTensorLayoutKind.LinearMat;
+        }
+
+        internal static bool IsStrictLinearMatTexture(CmdTensorRef tensor)
+        {
+            return tensor != null
+                && tensor.texture != null
+                && tensor.texture.dimension == TextureDimension.Tex2D
+                && tensor.layoutKind == RepoVkTensorLayoutKind.LinearMat;
+        }
+
+        private static int AlignUp(int value, int alignment)
+        {
+            if (alignment <= 1)
+                return Mathf.Max(1, value);
+            var safeValue = Mathf.Max(1, value);
+            return ((safeValue + alignment - 1) / alignment) * alignment;
+        }
+
         private static RenderTextureFormat ResolveTensorTextureFormatWithOverride(int dims, RenderTextureFormat? formatOverride)
         {
             return formatOverride ?? ResolveTensorTextureFormat(dims);
@@ -3076,7 +3235,9 @@ namespace NcnnCompute
             if (texture == null)
                 return null;
 
-            var layoutKind = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
+            var layoutKind = texture.dimension == TextureDimension.Tex2D
+                ? RepoVkTensorLayoutKind.LinearMat
+                : ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
             if (layoutKind == RepoVkTensorLayoutKind.LinearMat)
                 return new RepoVkMat(texture, logicalShape, storageShape, packs);
 
@@ -3098,6 +3259,8 @@ namespace NcnnCompute
             if (texture == null)
                 return 1;
 
+            if (texture.dimension == TextureDimension.Tex2D)
+                return 1;
             if (storageShape.dims == 4)
                 return Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, storageShape.c) / 4f));
 
@@ -3304,6 +3467,30 @@ namespace NcnnCompute
             }
 
             contract = GetTextureContract(textureShapes, texture, name);
+            return true;
+        }
+
+        internal static bool TryGetExistingCmdTextureContract(
+            Dictionary<string, CmdTensorRef> blobs,
+            Dictionary<string, BufferShape> shapes,
+            string name,
+            out CmdTensorRef texture,
+            out RepoVkTensorContract contract)
+        {
+            texture = null;
+            contract = default;
+            if (blobs == null || string.IsNullOrWhiteSpace(name))
+                return false;
+            if (!blobs.TryGetValue(name, out texture) || texture == null || texture.texture == null)
+            {
+                texture = null;
+                return false;
+            }
+
+            BufferShape? logicalShape = null;
+            if (shapes != null && shapes.TryGetValue(name, out var explicitShape))
+                logicalShape = explicitShape;
+            contract = GetCmdTensorContract(texture, logicalShape, texture.hasStorageShape ? texture.storageShape : (BufferShape?)null);
             return true;
         }
 
@@ -4633,6 +4820,47 @@ namespace NcnnCompute
             }
 
             var shape = GetTextureShape(textureShapes, tr, name);
+            if (IsStrictLinearMatTexture(tr))
+            {
+                var physicalCountLinear = Mathf.Max(1, tr.width) * Mathf.Max(1, tr.height);
+                var logicalCountLinear = shape.w * shape.h * shape.d * shape.c;
+                if (emitMaterializeLog)
+                {
+                    DebugLog("[BufferMaterialize] convert-start | site=" + site + " | name=" + name
+                        + " | layout=linear-mat"
+                        + " | size=" + tr.width + "x" + tr.height
+                        + " | physical=" + physicalCountLinear
+                        + " | logical=" + logicalCountLinear
+                        + " | dims=" + shape.dims
+                        + " | shape=" + shape.w + "x" + shape.h + "x" + shape.c);
+                }
+
+                if (logicalCountLinear <= 0 || logicalCountLinear > physicalCountLinear)
+                    throw new InvalidOperationException("linear texture logical shape mismatch: " + name + " | physical=" + physicalCountLinear + " logical=" + logicalCountLinear);
+
+                var physicalLinearBuffer = RentTempBuffer(physicalCountLinear, sizeof(float));
+                _ops.LinearMatToBuffer(tr.texture, tr.width, tr.height, physicalLinearBuffer);
+                tempOwned.Add(physicalLinearBuffer);
+
+                ComputeBuffer convertedLinear;
+                if (logicalCountLinear == physicalCountLinear)
+                {
+                    convertedLinear = physicalLinearBuffer;
+                }
+                else
+                {
+                    convertedLinear = RentTempBuffer(logicalCountLinear, sizeof(float));
+                    _ops.CopyBufPartial(physicalLinearBuffer, 0, convertedLinear, logicalCountLinear);
+                    tempOwned.Add(convertedLinear);
+                }
+
+                bufferBlobs[name] = convertedLinear;
+                bufferViews[name] = new NcnnTensorBuffer(convertedLinear, shape.dims, shape.w, shape.h, shape.d, shape.c, false);
+                if (emitMaterializeLog)
+                    DebugLog("[BufferMaterialize] convert-done | site=" + site + " | name=" + name + " | mode=linear-mat | count=" + convertedLinear.count);
+                return convertedLinear;
+            }
+
             var sliceCount = GetTextureSliceCount(shape, tr.texture);
             var physicalChannels = tr.packs * 4;
             var physicalCount = tr.width * tr.height * sliceCount * physicalChannels;

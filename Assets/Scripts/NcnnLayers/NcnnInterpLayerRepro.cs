@@ -259,8 +259,8 @@ namespace NcnnCompute
 
             if (IsCmdInterpNoop(srcShape, outShape))
             {
-                blobs[layer.topNames[0]] = src;
-                src.refs++;
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

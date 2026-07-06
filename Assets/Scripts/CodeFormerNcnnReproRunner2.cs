@@ -1570,8 +1570,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             return;
 
         var globalPack4Only = ParseEnvBool(Pack4OnlyEnvVar);
-        var encoderPack4Only = ParseEnvBool(EncoderPack4OnlyEnvVar) ?? globalPack4Only ?? false;
-        var generatorPack4Only = ParseEnvBool(GeneratorPack4OnlyEnvVar) ?? globalPack4Only ?? false;
+        var encoderPack4Only = ParseEnvBool(EncoderPack4OnlyEnvVar) ?? globalPack4Only ?? true;
+        var generatorPack4Only = ParseEnvBool(GeneratorPack4OnlyEnvVar) ?? globalPack4Only ?? true;
 
         _encoderRepro.EnableTempPool = enableTempPool;
         _generatorRepro.EnableTempPool = enableTempPool;
@@ -1783,11 +1783,13 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     {
         try { _encoderRepro?.Dispose(); } catch { }
         try { _generatorRepro?.Dispose(); } catch { }
+        try { _ops?.Dispose(); } catch { }
         _encoderRepro = null;
         _generatorRepro = null;
         _loaded = false;
         _encoderLoaded = false;
         _generatorLoaded = false;
+        _ops = null;
     }
 
     private void EnsureRuntimeObjects()

@@ -327,8 +327,8 @@ namespace NcnnCompute
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             if (pp.top == 0 && pp.bottom == 0 && pp.left == 0 && pp.right == 0 && pp.front == 0 && pp.behind == 0)
             {
-                blobs[layer.topNames[0]] = src;
-                src.refs++;
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
