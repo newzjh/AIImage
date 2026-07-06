@@ -152,9 +152,9 @@ namespace NcnnCompute
                         var canAliasTexture = CanAliasTextureLayout(owner, srcShape, outShape);
                         if (canAliasTexture)
                         {
-                            textureBlobs[layer.topNames[0]] = reshapeTex;
+                            var storageShape = NcnnRepro.GetTextureStorageShape(reshapeTex, srcShape);
+                            textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(reshapeTex, outShape, storageShape);
                             textureShapes[layer.topNames[0]] = outShape;
-                            reshapeTex.refs++;
                         }
                     }
                 }
@@ -168,9 +168,9 @@ namespace NcnnCompute
 
                 if (ShouldKeepVistaTailFeatureTextureAlias(owner, layer, srcShape, outShape))
                 {
-                    textureBlobs[layer.topNames[0]] = src;
+                    var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+                    textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
                     textureShapes[layer.topNames[0]] = outShape;
-                    src.refs++;
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     return;
                 }
@@ -279,16 +279,17 @@ namespace NcnnCompute
                         textureFormatOverride);
                     if (TryShouldKeepVistaTailFeatureTexture(owner, layer, srcShape, outView))
                     {
-                        textureBlobs[layer.topNames[0]] = src;
-                        textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
-                        src.refs++;
+                        var aliasLogicalShape = new NcnnRepro.BufferShape(outView.dims, outView.w, outView.h, outView.d, outView.c);
+                        var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+                        textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, aliasLogicalShape, storageShape);
+                        textureShapes[layer.topNames[0]] = aliasLogicalShape;
                     }
                 }
                 else
                 {
-                    textureBlobs[layer.topNames[0]] = src;
+                    var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+                    textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
                     textureShapes[layer.topNames[0]] = outShape;
-                    src.refs++;
                 }
             }
 
@@ -361,9 +362,9 @@ namespace NcnnCompute
             if (!CanAliasTextureLayout(owner, srcShape, outShape))
                 throw new InvalidOperationException("Reshape render-texture path only supports alias-compatible layout: " + layer.name);
 
-            textureBlobs[layer.topNames[0]] = src;
+            var fallbackStorageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, fallbackStorageShape);
             textureShapes[layer.topNames[0]] = outShape;
-            src.refs++;
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -436,10 +437,10 @@ namespace NcnnCompute
             if (!CanAliasTextureLayout(owner, srcShape, outShape) || !MatchesCmdTextureStorageShape(src, aliasStorageShape))
                 throw new InvalidOperationException("Reshape command-buffer path only supports alias-compatible layout or explicit pack4 specializations: " + layer.name);
 
-            blobs[layer.topNames[0]] = src;
+            var fallbackStorageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, fallbackStorageShape);
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
-            src.refs++;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 

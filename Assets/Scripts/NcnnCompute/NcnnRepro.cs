@@ -57,6 +57,32 @@ namespace NcnnCompute
             }
         }
 
+        public readonly struct RepoVkTensorContract
+        {
+            public RepoVkTensorContract(
+                RepoVkTensor tensor,
+                BufferShape logicalShape,
+                BufferShape storageShape,
+                RepoVkTensorLayoutKind layoutKind)
+            {
+                Tensor = tensor;
+                LogicalShape = logicalShape;
+                StorageShape = storageShape;
+                LayoutKind = layoutKind;
+            }
+
+            public RepoVkTensor Tensor { get; }
+            public BufferShape LogicalShape { get; }
+            public BufferShape StorageShape { get; }
+            public RepoVkTensorLayoutKind LayoutKind { get; }
+            public int Width => Tensor != null ? Tensor.Width : 0;
+            public int Height => Tensor != null ? Tensor.Height : 0;
+            public int Depth => Tensor != null ? Tensor.Depth : 0;
+            public int Packs => Tensor != null ? Tensor.Packs : 0;
+            public bool IsLinearMat => LayoutKind == RepoVkTensorLayoutKind.LinearMat;
+            public bool IsPack4Image => LayoutKind == RepoVkTensorLayoutKind.Pack4Image;
+        }
+
         private readonly struct RtKey : IEquatable<RtKey>
         {
             public readonly int w;
@@ -101,11 +127,13 @@ namespace NcnnCompute
             public BufferShape storageShape;
             public RepoVkTensor repoTensor;
             public RepoVkTensorLayoutKind layoutKind;
+            public TensorRef sharedTextureOwner;
 
             public void ClearTexture()
             {
                 texture = null;
                 repoTensor = null;
+                sharedTextureOwner = null;
             }
         }
 
@@ -142,11 +170,13 @@ namespace NcnnCompute
             public BufferShape storageShape;
             public RepoVkTensor repoTensor;
             public RepoVkTensorLayoutKind layoutKind;
+            public CmdTensorRef sharedTextureOwner;
 
             public void ClearTexture()
             {
                 texture = null;
                 repoTensor = null;
+                sharedTextureOwner = null;
             }
         }
 
@@ -697,19 +727,7 @@ namespace NcnnCompute
                 var logicalShape = _textureShapes.TryGetValue(name, out var existingShape)
                     ? existingShape
                     : new BufferShape(3, materialized.width, materialized.height, 1, Mathf.Max(1, materialized.volumeDepth > 0 ? materialized.volumeDepth : 1) * 4);
-                _textureBlobs[name] = new TensorRef
-                {
-                    texture = materialized,
-                    width = materialized.width,
-                    height = materialized.height,
-                    packs = GetTexturePackCount(logicalShape, materialized),
-                    refs = 1,
-                    owned = true,
-                    hasLogicalShape = true,
-                    logicalShape = logicalShape,
-                    hasStorageShape = true,
-                    storageShape = logicalShape
-                };
+                _textureBlobs[name] = CreateTextureRef(materialized, logicalShape, logicalShape, owned: true);
                 return materialized;
             }
 
@@ -717,7 +735,7 @@ namespace NcnnCompute
             {
                 if (_textureBlobs.TryGetValue(name, out var tr) && tr != null && tr.texture != null)
                 {
-                    tr.owned = false;
+                    DetachTextureOwnership(tr);
                     var rt = tr.texture;
                     tr.ClearTexture();
                     return rt;
@@ -839,15 +857,13 @@ namespace NcnnCompute
 
             public void Dispose()
             {
+                var visited = new HashSet<TensorRef>();
                 foreach (var kv in _textureBlobs)
                 {
                     var tr = kv.Value;
-                    if (tr == null || tr.texture == null || !_visitedTextures.Add(tr.texture))
+                    if (tr == null || tr.texture == null || !visited.Add(tr))
                         continue;
-                    if (tr.owned && tr.texture != null)
-                    {
-                        try { _owner.ReturnTempArray(tr.texture); } catch { }
-                    }
+                    _owner.ReleaseTextureRef(tr);
                 }
 
                 foreach (var owned in _tempOwned)
@@ -1075,6 +1091,7 @@ namespace NcnnCompute
                     if (tr == null || !visited.Add(tr))
                         continue;
 
+                    tr.sharedTextureOwner = null;
                     tr.ClearTexture();
                     tr.owned = false;
                 }
@@ -2520,12 +2537,7 @@ namespace NcnnCompute
         {
             if (tensor == null)
                 throw new ArgumentNullException(nameof(tensor));
-            EnsureRepoVkTensor(tensor);
-            if (tensor.hasLogicalShape)
-                return tensor.logicalShape;
-            if (tensor.repoTensor != null)
-                return tensor.repoTensor.LogicalShape;
-            return new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4));
+            return GetCmdTensorContract(tensor).LogicalShape;
         }
 
         internal static bool TryGetCmdShape(
@@ -2580,14 +2592,7 @@ namespace NcnnCompute
 
                 if (blobs.TryGetValue(b, out var tr) && tr != null)
                 {
-                    tr.refs--;
-                    if (tr.refs <= 0)
-                    {
-                        if (tr.owned && tr.texture != null)
-                            ReturnTempArray(cmd, tr.texture);
-                        tr.ClearTexture();
-                        tr.owned = false;
-                    }
+                    ReleaseCmdTensorRef(cmd, tr);
                 }
                 blobs.Remove(b);
                 shapes?.Remove(b);
@@ -3079,12 +3084,235 @@ namespace NcnnCompute
             return new RepoVkImageMat(texture, logicalShape, storageShape, packs, depth);
         }
 
+        internal static bool BufferShapeEquals(BufferShape a, BufferShape b)
+        {
+            return a.dims == b.dims
+                && a.w == b.w
+                && a.h == b.h
+                && a.d == b.d
+                && a.c == b.c;
+        }
+
+        internal static int GetCmdTexturePackCount(BufferShape storageShape, ComputeTexture texture)
+        {
+            if (texture == null)
+                return 1;
+
+            if (storageShape.dims == 4)
+                return Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, storageShape.c) / 4f));
+
+            return Mathf.Max(1, texture.depth);
+        }
+
+        internal static void SyncTextureContractMetadata(
+            TensorRef tensor,
+            BufferShape logicalShape,
+            BufferShape storageShape)
+        {
+            if (tensor == null || tensor.texture == null)
+                return;
+
+            var packs = GetTexturePackCount(storageShape, tensor.texture);
+            tensor.width = tensor.texture.width;
+            tensor.height = tensor.texture.height;
+            tensor.packs = packs;
+            tensor.hasLogicalShape = true;
+            tensor.logicalShape = logicalShape;
+            tensor.hasStorageShape = true;
+            tensor.storageShape = storageShape;
+            tensor.layoutKind = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
+            tensor.repoTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, packs);
+        }
+
+        internal static void SyncCmdTensorContractMetadata(
+            CmdTensorRef tensor,
+            BufferShape logicalShape,
+            BufferShape storageShape)
+        {
+            if (tensor == null || tensor.texture == null)
+                return;
+
+            var packs = GetCmdTexturePackCount(storageShape, tensor.texture);
+            tensor.width = tensor.texture.width;
+            tensor.height = tensor.texture.height;
+            tensor.packs = packs;
+            tensor.hasLogicalShape = true;
+            tensor.logicalShape = logicalShape;
+            tensor.hasStorageShape = true;
+            tensor.storageShape = storageShape;
+            tensor.layoutKind = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
+            tensor.repoTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, packs);
+        }
+
+        internal static TensorRef CreateTextureRef(
+            RenderTexture texture,
+            BufferShape logicalShape,
+            BufferShape storageShape,
+            bool owned,
+            int refs = 1,
+            TensorRef sharedTextureOwner = null)
+        {
+            if (texture == null)
+                throw new ArgumentNullException(nameof(texture));
+
+            var tensor = new TensorRef
+            {
+                texture = texture,
+                refs = refs,
+                owned = owned,
+                sharedTextureOwner = sharedTextureOwner
+            };
+            SyncTextureContractMetadata(tensor, logicalShape, storageShape);
+            return tensor;
+        }
+
+        internal static CmdTensorRef CreateCmdTensorRef(
+            ComputeTexture texture,
+            BufferShape logicalShape,
+            BufferShape storageShape,
+            bool owned,
+            int refs = 1,
+            CmdTensorRef sharedTextureOwner = null)
+        {
+            if (texture == null)
+                throw new ArgumentNullException(nameof(texture));
+
+            var tensor = new CmdTensorRef
+            {
+                texture = texture,
+                refs = refs,
+                owned = owned,
+                sharedTextureOwner = sharedTextureOwner
+            };
+            SyncCmdTensorContractMetadata(tensor, logicalShape, storageShape);
+            return tensor;
+        }
+
+        internal static TensorRef ResolveTextureLifetimeOwner(TensorRef tensor)
+        {
+            var current = tensor;
+            while (current != null && current.sharedTextureOwner != null)
+                current = current.sharedTextureOwner;
+            return current;
+        }
+
+        internal static CmdTensorRef ResolveCmdTextureLifetimeOwner(CmdTensorRef tensor)
+        {
+            var current = tensor;
+            while (current != null && current.sharedTextureOwner != null)
+                current = current.sharedTextureOwner;
+            return current;
+        }
+
+        internal static TensorRef CreateTextureAlias(
+            TensorRef source,
+            BufferShape logicalShape,
+            BufferShape storageShape)
+        {
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            var lifetimeOwner = ResolveTextureLifetimeOwner(source) ?? source;
+            lifetimeOwner.refs++;
+            return CreateTextureRef(source.texture, logicalShape, storageShape, owned: false, refs: 1, sharedTextureOwner: lifetimeOwner);
+        }
+
+        internal static CmdTensorRef CreateCmdTensorAlias(
+            CmdTensorRef source,
+            BufferShape logicalShape,
+            BufferShape storageShape)
+        {
+            if (source == null || source.texture == null)
+                throw new ArgumentNullException(nameof(source));
+
+            var lifetimeOwner = ResolveCmdTextureLifetimeOwner(source) ?? source;
+            lifetimeOwner.refs++;
+            return CreateCmdTensorRef(source.texture, logicalShape, storageShape, owned: false, refs: 1, sharedTextureOwner: lifetimeOwner);
+        }
+
+        internal static void DetachTextureOwnership(TensorRef tensor)
+        {
+            if (tensor == null)
+                return;
+
+            tensor.owned = false;
+            var lifetimeOwner = ResolveTextureLifetimeOwner(tensor);
+            if (lifetimeOwner != null)
+                lifetimeOwner.owned = false;
+        }
+
+        internal static RepoVkTensorContract GetTextureContract(
+            Dictionary<string, BufferShape> textureShapes,
+            TensorRef tensor,
+            string name)
+        {
+            if (tensor == null || tensor.texture == null)
+                throw new InvalidOperationException("texture contract unavailable: " + name);
+
+            var logicalShape = textureShapes != null && textureShapes.TryGetValue(name, out var explicitShape)
+                ? explicitShape
+                : (tensor.hasLogicalShape ? tensor.logicalShape : default);
+            if (logicalShape.dims <= 0)
+                logicalShape = tensor.repoTensor != null
+                    ? tensor.repoTensor.LogicalShape
+                    : new BufferShape(3, tensor.width, tensor.height, 1, tensor.packs * 4);
+
+            var storageShape = tensor.hasStorageShape
+                ? tensor.storageShape
+                : (tensor.repoTensor != null ? tensor.repoTensor.StorageShape : logicalShape);
+
+            SyncTextureContractMetadata(tensor, logicalShape, storageShape);
+            return new RepoVkTensorContract(tensor.repoTensor, logicalShape, storageShape, tensor.layoutKind);
+        }
+
+        internal static RepoVkTensorContract GetCmdTensorContract(
+            CmdTensorRef tensor,
+            BufferShape? fallbackLogicalShape = null,
+            BufferShape? fallbackStorageShape = null)
+        {
+            if (tensor == null || tensor.texture == null)
+                throw new ArgumentNullException(nameof(tensor));
+
+            var logicalShape = tensor.hasLogicalShape
+                ? tensor.logicalShape
+                : (fallbackLogicalShape ?? (tensor.repoTensor != null
+                    ? tensor.repoTensor.LogicalShape
+                    : new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4))));
+            var storageShape = tensor.hasStorageShape
+                ? tensor.storageShape
+                : (fallbackStorageShape ?? (tensor.repoTensor != null ? tensor.repoTensor.StorageShape : logicalShape));
+
+            SyncCmdTensorContractMetadata(tensor, logicalShape, storageShape);
+            return new RepoVkTensorContract(tensor.repoTensor, logicalShape, storageShape, tensor.layoutKind);
+        }
+
+        internal static bool TryGetExistingTextureContract(
+            Dictionary<string, TensorRef> textureBlobs,
+            Dictionary<string, BufferShape> textureShapes,
+            string name,
+            out TensorRef texture,
+            out RepoVkTensorContract contract)
+        {
+            texture = null;
+            contract = default;
+            if (textureBlobs == null || string.IsNullOrWhiteSpace(name))
+                return false;
+            if (!textureBlobs.TryGetValue(name, out texture) || texture == null || texture.texture == null)
+            {
+                texture = null;
+                return false;
+            }
+
+            contract = GetTextureContract(textureShapes, texture, name);
+            return true;
+        }
+
         internal static void EnsureRepoVkTensor(
             TensorRef tensor,
             BufferShape? fallbackLogicalShape = null,
             BufferShape? fallbackStorageShape = null)
         {
-            if (tensor == null || tensor.repoTensor != null || tensor.texture == null)
+            if (tensor == null || tensor.texture == null)
                 return;
 
             var logicalShape = tensor.hasLogicalShape
@@ -3093,8 +3321,7 @@ namespace NcnnCompute
             var storageShape = tensor.hasStorageShape
                 ? tensor.storageShape
                 : fallbackStorageShape ?? logicalShape;
-            tensor.repoTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, tensor.packs);
-            tensor.layoutKind = tensor.repoTensor != null ? tensor.repoTensor.LayoutKind : ResolveRepoVkLayoutKind(logicalShape, storageShape, tensor.packs);
+            SyncTextureContractMetadata(tensor, logicalShape, storageShape);
         }
 
         internal static void EnsureRepoVkTensor(
@@ -3102,7 +3329,7 @@ namespace NcnnCompute
             BufferShape? fallbackLogicalShape = null,
             BufferShape? fallbackStorageShape = null)
         {
-            if (tensor == null || tensor.repoTensor != null || tensor.texture == null)
+            if (tensor == null || tensor.texture == null)
                 return;
 
             var logicalShape = tensor.hasLogicalShape
@@ -3111,8 +3338,7 @@ namespace NcnnCompute
             var storageShape = tensor.hasStorageShape
                 ? tensor.storageShape
                 : fallbackStorageShape ?? logicalShape;
-            tensor.repoTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, tensor.packs);
-            tensor.layoutKind = tensor.repoTensor != null ? tensor.repoTensor.LayoutKind : ResolveRepoVkLayoutKind(logicalShape, storageShape, tensor.packs);
+            SyncCmdTensorContractMetadata(tensor, logicalShape, storageShape);
         }
 
         internal static int GetTexturePackCount(BufferShape shape, RenderTexture texture)
@@ -3277,19 +3503,7 @@ namespace NcnnCompute
                 : new BufferShape(3, materialized.width, materialized.height, 1, Mathf.Max(1, materialized.volumeDepth > 0 ? materialized.volumeDepth : 1) * 4);
             var packs = GetTexturePackCount(shape, materialized);
 
-            tr = new TensorRef
-            {
-                texture = materialized,
-                width = materialized.width,
-                height = materialized.height,
-                packs = packs,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = shape,
-                hasStorageShape = true,
-                storageShape = shape
-            };
+            tr = CreateTextureRef(materialized, shape, shape, owned: true);
             textureBlobs[name] = tr;
             textureShapes[name] = shape;
             return tr;
@@ -3302,19 +3516,15 @@ namespace NcnnCompute
             out TensorRef texture,
             out BufferShape shape)
         {
-            texture = null;
-            shape = default;
-            if (textureBlobs == null || string.IsNullOrWhiteSpace(name))
-                return false;
-            if (!textureBlobs.TryGetValue(name, out texture) || texture == null || texture.texture == null)
+            if (TryGetExistingTextureContract(textureBlobs, textureShapes, name, out texture, out var contract))
             {
-                texture = null;
-                return false;
+                shape = contract.LogicalShape;
+                return true;
             }
 
-            shape = GetTextureShape(textureShapes, texture, name);
-            EnsureRepoVkTensor(texture, shape, GetTextureStorageShape(texture, shape));
-            return true;
+            texture = null;
+            shape = default;
+            return false;
         }
 
         internal NcnnTensorBuffer RentScratchTensorFromTexture(
@@ -3454,21 +3664,7 @@ namespace NcnnCompute
                 if (logicalCount > physicalCount)
                     throw new InvalidOperationException("texture input logical shape exceeds physical storage: " + kv.Key);
 
-                textureBlobs[kv.Key] = new TensorRef
-                {
-                    texture = rt,
-                    width = rt.width,
-                    height = rt.height,
-                    packs = packs,
-                    refs = useCount,
-                    owned = false,
-                    hasLogicalShape = true,
-                    logicalShape = logicalShape,
-                    hasStorageShape = true,
-                    storageShape = logicalShape,
-                    layoutKind = ResolveRepoVkLayoutKind(logicalShape, logicalShape, packs),
-                    repoTensor = CreateRepoVkTensor(rt, logicalShape, logicalShape, packs)
-                };
+                textureBlobs[kv.Key] = CreateTextureRef(rt, logicalShape, logicalShape, owned: false, refs: useCount);
                 textureShapes[kv.Key] = logicalShape;
             }
         }
@@ -3506,21 +3702,7 @@ namespace NcnnCompute
                 if (logicalCount > physicalCount)
                     throw new InvalidOperationException("command-buffer texture input logical shape exceeds physical storage: " + kv.Key);
 
-                blobs[kv.Key] = new CmdTensorRef
-                {
-                    texture = texture,
-                    width = texture.width,
-                    height = texture.height,
-                    packs = packs,
-                    refs = useCount,
-                    owned = false,
-                    hasLogicalShape = true,
-                    logicalShape = logicalShape,
-                    hasStorageShape = true,
-                    storageShape = logicalShape,
-                    layoutKind = ResolveRepoVkLayoutKind(logicalShape, logicalShape, packs),
-                    repoTensor = CreateRepoVkTensor(texture, logicalShape, logicalShape, packs)
-                };
+                blobs[kv.Key] = CreateCmdTensorRef(texture, logicalShape, logicalShape, owned: false, refs: useCount);
                 shapes[kv.Key] = logicalShape;
             }
         }
@@ -3996,22 +4178,7 @@ namespace NcnnCompute
             RenderTexture texture,
             BufferShape logicalShape)
         {
-            var packs = GetTexturePackCount(logicalShape, texture);
-            textureBlobs[name] = new TensorRef
-            {
-                texture = texture,
-                width = texture.width,
-                height = texture.height,
-                packs = packs,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = logicalShape,
-                hasStorageShape = true,
-                storageShape = logicalShape,
-                layoutKind = ResolveRepoVkLayoutKind(logicalShape, logicalShape, packs),
-                repoTensor = CreateRepoVkTensor(texture, logicalShape, logicalShape, packs)
-            };
+            textureBlobs[name] = CreateTextureRef(texture, logicalShape, logicalShape, owned: true);
             textureShapes[name] = logicalShape;
         }
 
@@ -4023,22 +4190,7 @@ namespace NcnnCompute
             BufferShape logicalShape,
             BufferShape storageShape)
         {
-            var packs = GetTexturePackCount(storageShape, texture);
-            textureBlobs[name] = new TensorRef
-            {
-                texture = texture,
-                width = texture.width,
-                height = texture.height,
-                packs = packs,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = logicalShape,
-                hasStorageShape = true,
-                storageShape = storageShape,
-                layoutKind = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs),
-                repoTensor = CreateRepoVkTensor(texture, logicalShape, storageShape, packs)
-            };
+            textureBlobs[name] = CreateTextureRef(texture, logicalShape, storageShape, owned: true);
             textureShapes[name] = logicalShape;
         }
 
@@ -4135,30 +4287,10 @@ namespace NcnnCompute
             if (rt == null)
                 throw new InvalidOperationException("Failed to materialize CommandBuffer tensor: " + topName);
 
-            blobs[topName] = new CmdTensorRef
-            {
-                texture = rt,
-                width = rt.width,
-                height = rt.height,
-                packs = Mathf.Max(1, Mathf.CeilToInt(tensor.c / 4f)),
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c),
-                hasStorageShape = true,
-                storageShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c),
-                layoutKind = ResolveRepoVkLayoutKind(
-                    new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c),
-                    new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c),
-                    Mathf.Max(1, Mathf.CeilToInt(tensor.c / 4f))),
-                repoTensor = CreateRepoVkTensor(
-                    rt,
-                    new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c),
-                    new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c),
-                    Mathf.Max(1, Mathf.CeilToInt(tensor.c / 4f)))
-            };
+            var logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
+            blobs[topName] = CreateCmdTensorRef(rt, logicalShape, logicalShape, owned: true);
             if (shapes != null)
-                shapes[topName] = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
+                shapes[topName] = logicalShape;
         }
 
         internal void PublishCmdTensorLikeInput(
@@ -4180,25 +4312,17 @@ namespace NcnnCompute
 
             var outArr = RentTempArray(cmd, width, height, packs, RenderTextureFormat.ARGBHalf);
             var storageShapeValue = logicalShape ?? default;
-            blobs[topName] = new CmdTensorRef
-            {
-                texture = outArr,
-                width = width,
-                height = height,
-                packs = packs,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = logicalShape.HasValue,
-                logicalShape = logicalShape ?? default,
-                hasStorageShape = logicalShape.HasValue,
-                storageShape = storageShapeValue,
-                layoutKind = logicalShape.HasValue
-                    ? ResolveRepoVkLayoutKind(logicalShape.Value, storageShapeValue, packs)
-                    : RepoVkTensorLayoutKind.Pack4Image,
-                repoTensor = logicalShape.HasValue
-                    ? CreateRepoVkTensor(outArr, logicalShape.Value, storageShapeValue, packs)
-                    : null
-            };
+            blobs[topName] = logicalShape.HasValue
+                ? CreateCmdTensorRef(outArr, logicalShape.Value, storageShapeValue, owned: true)
+                : new CmdTensorRef
+                {
+                    texture = outArr,
+                    width = width,
+                    height = height,
+                    packs = packs,
+                    refs = 1,
+                    owned = true
+                };
             if (shapes != null)
                 shapes[topName] = logicalShape ?? new BufferShape(3, Mathf.Max(1, width), Mathf.Max(1, height), 1, Mathf.Max(1, packs * 4));
         }
@@ -4307,25 +4431,17 @@ namespace NcnnCompute
                 Ops.CopyPack4(cmd, src.texture, 0, outArr, 0, Mathf.Min(src.packs, outPacks));
             }
 
-            blobs[topName] = new CmdTensorRef
-            {
-                texture = outArr,
-                width = outWidth,
-                height = outHeight,
-                packs = outPacks,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = logicalShape.HasValue,
-                logicalShape = logicalShape ?? default,
-                hasStorageShape = logicalShape.HasValue,
-                storageShape = logicalShape ?? default,
-                layoutKind = logicalShape.HasValue
-                    ? ResolveRepoVkLayoutKind(logicalShape.Value, logicalShape.Value, outPacks)
-                    : RepoVkTensorLayoutKind.Pack4Image,
-                repoTensor = logicalShape.HasValue
-                    ? CreateRepoVkTensor(outArr, logicalShape.Value, logicalShape.Value, outPacks)
-                    : null
-            };
+            blobs[topName] = logicalShape.HasValue
+                ? CreateCmdTensorRef(outArr, logicalShape.Value, logicalShape.Value, owned: true)
+                : new CmdTensorRef
+                {
+                    texture = outArr,
+                    width = outWidth,
+                    height = outHeight,
+                    packs = outPacks,
+                    refs = 1,
+                    owned = true
+                };
             if (shapes != null)
                 shapes[topName] = logicalShape ?? new BufferShape(3, Mathf.Max(1, outWidth), Mathf.Max(1, outHeight), 1, Mathf.Max(1, outPacks * 4));
         }
@@ -4411,6 +4527,52 @@ namespace NcnnCompute
         internal BufferRef NewOwnedBufferRef(string name, ComputeBuffer buffer)
         {
             return NewBufferRef(buffer, true);
+        }
+
+        internal void ReleaseTextureRef(TensorRef tensor)
+        {
+            if (tensor == null)
+                return;
+
+            tensor.refs--;
+            if (tensor.refs > 0)
+                return;
+
+            var lifetimeOwner = tensor.sharedTextureOwner;
+            tensor.sharedTextureOwner = null;
+            if (lifetimeOwner != null)
+                ReleaseTextureRef(lifetimeOwner);
+
+            if (tensor.owned && tensor.texture != null)
+            {
+                try { ReturnTempArray(tensor.texture); } catch { }
+            }
+
+            tensor.ClearTexture();
+            tensor.owned = false;
+        }
+
+        internal void ReleaseCmdTensorRef(CommandBuffer cmd, CmdTensorRef tensor)
+        {
+            if (tensor == null)
+                return;
+
+            tensor.refs--;
+            if (tensor.refs > 0)
+                return;
+
+            var lifetimeOwner = tensor.sharedTextureOwner;
+            tensor.sharedTextureOwner = null;
+            if (lifetimeOwner != null)
+                ReleaseCmdTensorRef(cmd, lifetimeOwner);
+
+            if (tensor.owned && tensor.texture != null)
+            {
+                try { ReturnTempArray(cmd, tensor.texture); } catch { }
+            }
+
+            tensor.ClearTexture();
+            tensor.owned = false;
         }
 
         internal static TensorRef GetTexture(Dictionary<string, TensorRef> blobs, string name)
@@ -4839,12 +5001,7 @@ namespace NcnnCompute
 
                 if (textureBlobs.TryGetValue(name, out var tr) && tr != null)
                 {
-                    tr.refs--;
-                    if (tr.refs <= 0 && tr.owned && tr.texture != null)
-                    {
-                        try { ReturnTempArray(tr.texture); } catch { }
-                        tr.ClearTexture();
-                    }
+                    ReleaseTextureRef(tr);
                 }
                 textureBlobs.Remove(name);
             }
@@ -4874,12 +5031,7 @@ namespace NcnnCompute
 
                 if (textureBlobs.TryGetValue(name, out var tr) && tr != null)
                 {
-                    tr.refs--;
-                    if (tr.refs <= 0 && tr.owned && tr.texture != null)
-                    {
-                        try { ReturnTempArray(tr.texture); } catch { }
-                        tr.ClearTexture();
-                    }
+                    ReleaseTextureRef(tr);
                 }
 
                 if (bufferRefs != null && bufferRefs.TryGetValue(name, out var br) && br != null)
@@ -5490,37 +5642,21 @@ namespace NcnnCompute
 
         internal static BufferShape GetTextureShape(Dictionary<string, BufferShape> textureShapes, TensorRef tr, string name)
         {
-            if (textureShapes != null && textureShapes.TryGetValue(name, out var shape))
-            {
-                EnsureRepoVkTensor(tr, shape, tr != null && tr.hasStorageShape ? tr.storageShape : shape);
-                return shape;
-            }
-            EnsureRepoVkTensor(tr);
-            if (tr != null && tr.hasLogicalShape)
-                return tr.logicalShape;
-            if (tr != null && tr.repoTensor != null)
-                return tr.repoTensor.LogicalShape;
-            return new BufferShape(3, tr.width, tr.height, 1, tr.packs * 4);
+            return GetTextureContract(textureShapes, tr, name).LogicalShape;
         }
 
         internal static BufferShape GetTextureStorageShape(TensorRef tr, BufferShape fallbackLogicalShape)
         {
-            EnsureRepoVkTensor(tr, fallbackLogicalShape, tr != null && tr.hasStorageShape ? tr.storageShape : fallbackLogicalShape);
-            if (tr != null && tr.hasStorageShape)
-                return tr.storageShape;
-            if (tr != null && tr.repoTensor != null)
-                return tr.repoTensor.StorageShape;
-            return fallbackLogicalShape;
+            if (tr == null || tr.texture == null)
+                return fallbackLogicalShape;
+            return GetTextureContract(null, tr, string.Empty).StorageShape;
         }
 
         internal static BufferShape GetCmdStorageShape(CmdTensorRef tr, BufferShape fallbackLogicalShape)
         {
-            EnsureRepoVkTensor(tr, fallbackLogicalShape, tr != null && tr.hasStorageShape ? tr.storageShape : fallbackLogicalShape);
-            if (tr != null && tr.hasStorageShape)
-                return tr.storageShape;
-            if (tr != null && tr.repoTensor != null)
-                return tr.repoTensor.StorageShape;
-            return fallbackLogicalShape;
+            if (tr == null || tr.texture == null)
+                return fallbackLogicalShape;
+            return GetCmdTensorContract(tr, fallbackLogicalShape, tr != null && tr.hasStorageShape ? tr.storageShape : fallbackLogicalShape).StorageShape;
         }
 
         internal static bool MatchesPack4TextureStorage(TensorRef tr, BufferShape logicalShape)

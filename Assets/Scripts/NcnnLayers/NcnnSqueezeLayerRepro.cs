@@ -68,10 +68,11 @@ namespace NcnnCompute
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            blobs[layer.topNames[0]] = src;
+            var outShape = NcnnRepro.ResolveSqueezeShape(srcShape, layer);
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, storageShape);
             if (shapes != null)
-                shapes[layer.topNames[0]] = NcnnRepro.ResolveSqueezeShape(srcShape, layer);
-            src.refs++;
+                shapes[layer.topNames[0]] = outShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 

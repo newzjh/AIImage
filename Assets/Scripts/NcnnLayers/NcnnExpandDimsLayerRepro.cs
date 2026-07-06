@@ -86,19 +86,21 @@ namespace NcnnCompute
 
                 if (textureBlobs.TryGetValue(layer.bottomNames[0], out var expandTex) && expandTex != null && expandTex.texture != null)
                 {
-                    textureBlobs[layer.topNames[0]] = expandTex;
-                    textureShapes[layer.topNames[0]] = ExpandTextureShape(NcnnRepro.GetTextureShape(textureShapes, expandTex, layer.bottomNames[0]), axes);
-                    expandTex.refs++;
+                    var srcShape = NcnnRepro.GetTextureShape(textureShapes, expandTex, layer.bottomNames[0]);
+                    var outShape = ExpandTextureShape(srcShape, axes);
+                    var storageShape = NcnnRepro.GetTextureStorageShape(expandTex, srcShape);
+                    textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(expandTex, outShape, storageShape);
+                    textureShapes[layer.topNames[0]] = outShape;
                 }
             }
             else
             {
                 var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
                 var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
-
-                textureBlobs[layer.topNames[0]] = src;
-                textureShapes[layer.topNames[0]] = ExpandTextureShape(srcShape, axes);
-                src.refs++;
+                var outShape = ExpandTextureShape(srcShape, axes);
+                var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
+                textureShapes[layer.topNames[0]] = outShape;
             }
 
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -171,10 +173,11 @@ namespace NcnnCompute
                 return new NcnnRepro.BufferShape(dims, w, h, d, c);
             }
 
-            blobs[layer.topNames[0]] = src;
+            var outShape = ExpandShape(srcShape, axes);
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, storageShape);
             if (shapes != null)
-                shapes[layer.topNames[0]] = ExpandShape(srcShape, axes);
-            src.refs++;
+                shapes[layer.topNames[0]] = outShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
 

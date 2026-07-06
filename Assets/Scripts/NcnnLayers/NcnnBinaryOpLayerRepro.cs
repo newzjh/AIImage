@@ -792,8 +792,12 @@ namespace NcnnCompute
             out NcnnRepro.TensorRef texture,
             out NcnnRepro.BufferShape shape)
         {
-            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, name, out texture, out shape))
+            if (!NcnnRepro.TryGetExistingTextureContract(textureBlobs, textureShapes, name, out texture, out var contract))
+            {
+                shape = default;
                 return false;
+            }
+            shape = contract.LogicalShape;
             return CanUseScalar2DTexturePath(texture, shape);
         }
 
@@ -806,8 +810,9 @@ namespace NcnnCompute
         {
             texture = null;
             shape = default;
-            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, name, out texture, out shape))
+            if (!NcnnRepro.TryGetExistingTextureContract(textureBlobs, textureShapes, name, out texture, out var contract))
                 return false;
+            shape = contract.LogicalShape;
             return CanUseScalarLikeTexturePath(texture, shape);
         }
 
@@ -822,9 +827,10 @@ namespace NcnnCompute
             texture = null;
             logicalShape = default;
             storageShape = default;
-            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, name, out texture, out logicalShape))
+            if (!NcnnRepro.TryGetExistingTextureContract(textureBlobs, textureShapes, name, out texture, out var contract))
                 return false;
-            storageShape = NcnnRepro.GetTextureStorageShape(texture, logicalShape);
+            logicalShape = contract.LogicalShape;
+            storageShape = contract.StorageShape;
             return CanUseChannelVectorTexturePath(texture, logicalShape, storageShape);
         }
 
