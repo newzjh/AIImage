@@ -119,7 +119,7 @@ namespace NcnnCompute
             {
                 if (tempIdxRt != null)
                 {
-                    idx.texture = null;
+                    idx.ClearTexture();
                     idx.packs = 0;
                     owner.ReturnTempArray(tempIdxRt);
                 }

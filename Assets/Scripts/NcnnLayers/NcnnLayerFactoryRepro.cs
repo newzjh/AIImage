@@ -764,7 +764,7 @@ namespace NcnnCompute
                 var outBlobName = ResolveDefaultOutputBlobName();
                 var outRef = GetCmdTensor(blobs, outBlobName);
                 var keep = outRef.texture;
-                outRef.texture = null;
+                outRef.ClearTexture();
                 outRef.owned = false;
 
                 var visited = new HashSet<CmdTensorRef>();
@@ -880,7 +880,7 @@ namespace NcnnCompute
                 var outRef = GetCmdTensor(blobs, outBlobName);
                 outputLogicalShape = GetCmdShape(shapes, blobs, outBlobName);
                 var keep = outRef.texture;
-                outRef.texture = null;
+                outRef.ClearTexture();
                 outRef.owned = false;
 
                 var visited = new HashSet<CmdTensorRef>();

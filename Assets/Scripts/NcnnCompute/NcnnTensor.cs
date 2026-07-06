@@ -8,6 +8,7 @@ namespace NcnnCompute
         public int width { get; }
         public int height { get; }
         public RenderTexture rt { get; }
+        public RepoVkMat repoVkMat { get; }
 
         public NcnnTensor(int width, int height)
         {
@@ -22,6 +23,10 @@ namespace NcnnCompute
             rt.filterMode = FilterMode.Point;
             rt.Create();
             NcnnGpuResourceTracker.RegisterTexture(rt, "NcnnTensor");
+            repoVkMat = new RepoVkMat(
+                rt,
+                new NcnnRepro.BufferShape(2, width, height, 1, 1),
+                new NcnnRepro.BufferShape(2, width, height, 1, 1));
         }
 
         public void Dispose()
