@@ -723,7 +723,7 @@ namespace NcnnCompute
             _cs.SetInt("_FillD", 1);
             _cs.SetInt("_FillC", c);
             _cs.SetBuffer(_kFillPack4FromBufferChw, "_FillIn", input);
-            _cs.SetTexture(_kFillPack4FromBufferChw, "_FillOutArr", outputPack4);
+            _cs.SetTexture(_kFillPack4FromBufferChw, "_TexOut0Arr", outputPack4);
             Dispatch3D(_kFillPack4FromBufferChw, w, h, outputPack4.volumeDepth, 8, 8);
         }
 
@@ -737,7 +737,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_FillD", 1);
             cmd.SetComputeIntParam(_cs, "_FillC", c);
             cmd.SetComputeBufferParam(_cs, _kFillPack4FromBufferChw, "_FillIn", input);
-            cmd.SetComputeTextureParam(_cs, _kFillPack4FromBufferChw, "_FillOutArr", outputPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kFillPack4FromBufferChw, "_TexOut0Arr", outputPack4.nameID);
             Dispatch3D(cmd, _kFillPack4FromBufferChw, w, h, Mathf.Max(1, Mathf.CeilToInt(c / 4f)), 8, 8);
         }
 
@@ -750,7 +750,7 @@ namespace NcnnCompute
             _cs.SetInt("_FillD", d);
             _cs.SetInt("_FillC", c);
             _cs.SetBuffer(_kFillPack4FromBufferCdhw, "_FillIn", input);
-            _cs.SetTexture(_kFillPack4FromBufferCdhw, "_FillOutArr", outputPack4);
+            _cs.SetTexture(_kFillPack4FromBufferCdhw, "_TexOut0Arr", outputPack4);
             Dispatch3D(_kFillPack4FromBufferCdhw, w, h, outputPack4.volumeDepth, 8, 8);
         }
 
@@ -764,7 +764,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_FillD", d);
             cmd.SetComputeIntParam(_cs, "_FillC", c);
             cmd.SetComputeBufferParam(_cs, _kFillPack4FromBufferCdhw, "_FillIn", input);
-            cmd.SetComputeTextureParam(_cs, _kFillPack4FromBufferCdhw, "_FillOutArr", outputPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kFillPack4FromBufferCdhw, "_TexOut0Arr", outputPack4.nameID);
             Dispatch3D(cmd, _kFillPack4FromBufferCdhw, w, h, outputPack4.depth, 8, 8);
         }
 
@@ -774,7 +774,7 @@ namespace NcnnCompute
             ResolveScalarValues4(values, out var values4, out var count);
             _cs.SetVector("_FillScalarValues4", values4);
             _cs.SetInt("_FillScalarValueCount", count);
-            _cs.SetTexture(_kFillScalarTexture, "_FillScalarOutArr", output);
+            _cs.SetTexture(_kFillScalarTexture, "_TexOut0Arr", output);
             Dispatch3D(_kFillScalarTexture, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -785,7 +785,7 @@ namespace NcnnCompute
             ResolveScalarValues4(values, out var values4, out var count);
             cmd.SetComputeVectorParam(_cs, "_FillScalarValues4", values4);
             cmd.SetComputeIntParam(_cs, "_FillScalarValueCount", count);
-            cmd.SetComputeTextureParam(_cs, _kFillScalarTexture, "_FillScalarOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kFillScalarTexture, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kFillScalarTexture, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -812,8 +812,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_ScaleK", k);
-            _cs.SetTexture(_kScalePack4, "_ScaleInArr", input);
-            _cs.SetTexture(_kScalePack4, "_ScaleOutArr", output);
+            _cs.SetTexture(_kScalePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kScalePack4, "_TexOut0Arr", output);
             Dispatch3D(_kScalePack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -823,8 +823,8 @@ namespace NcnnCompute
             if (bias4 == null) throw new ArgumentNullException(nameof(bias4));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetBuffer(_kAddBiasPack4, "_Bias4", bias4);
-            _cs.SetTexture(_kAddBiasPack4, "_BiasInArr", input);
-            _cs.SetTexture(_kAddBiasPack4, "_BiasOutArr", output);
+            _cs.SetTexture(_kAddBiasPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kAddBiasPack4, "_TexOut0Arr", output);
             Dispatch3D(_kAddBiasPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -836,8 +836,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetBuffer(_kBatchNormPack4, "_BatchNormA4", biasA4);
             _cs.SetBuffer(_kBatchNormPack4, "_BatchNormB4", scaleB4);
-            _cs.SetTexture(_kBatchNormPack4, "_BatchNormInArr", input);
-            _cs.SetTexture(_kBatchNormPack4, "_BatchNormOutArr", output);
+            _cs.SetTexture(_kBatchNormPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kBatchNormPack4, "_TexOut0Arr", output);
             Dispatch3D(_kBatchNormPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -850,8 +850,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeBufferParam(_cs, _kBatchNormPack4, "_BatchNormA4", biasA4);
             cmd.SetComputeBufferParam(_cs, _kBatchNormPack4, "_BatchNormB4", scaleB4);
-            cmd.SetComputeTextureParam(_cs, _kBatchNormPack4, "_BatchNormInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBatchNormPack4, "_BatchNormOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBatchNormPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBatchNormPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBatchNormPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -897,8 +897,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_LreluSlope", slope);
-            _cs.SetTexture(_kLeakyReluPack4, "_LreluInArr", input);
-            _cs.SetTexture(_kLeakyReluPack4, "_LreluOutArr", output);
+            _cs.SetTexture(_kLeakyReluPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kLeakyReluPack4, "_TexOut0Arr", output);
             Dispatch3D(_kLeakyReluPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -908,8 +908,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_LreluSlope", slope);
-            cmd.SetComputeTextureParam(_cs, _kLeakyReluPack4, "_LreluInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kLeakyReluPack4, "_LreluOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kLeakyReluPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kLeakyReluPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kLeakyReluPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -921,8 +921,8 @@ namespace NcnnCompute
             _cs.SetFloat("_LreluSlope", 0f);
             _cs.SetInt("_PReluSlopePack4Count", Mathf.Max(1, slopeCount));
             _cs.SetBuffer(_kPReluPack4, "_PReluSlopePack4Buf", slope);
-            _cs.SetTexture(_kPReluPack4, "_LreluInArr", input);
-            _cs.SetTexture(_kPReluPack4, "_LreluOutArr", output);
+            _cs.SetTexture(_kPReluPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPReluPack4, "_TexOut0Arr", output);
             Dispatch3D(_kPReluPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -935,8 +935,8 @@ namespace NcnnCompute
             cmd.SetComputeFloatParam(_cs, "_LreluSlope", 0f);
             cmd.SetComputeIntParam(_cs, "_PReluSlopePack4Count", Mathf.Max(1, slopeCount));
             cmd.SetComputeBufferParam(_cs, _kPReluPack4, "_PReluSlopePack4Buf", slope);
-            cmd.SetComputeTextureParam(_cs, _kPReluPack4, "_LreluInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPReluPack4, "_LreluOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPReluPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPReluPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPReluPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -946,7 +946,7 @@ namespace NcnnCompute
             if (noise == null) throw new ArgumentNullException(nameof(noise));
             _cs.SetFloat("_NoiseWeight", weight);
             _cs.SetBuffer(_kAddNoiseBroadcastPack4, "_Noise", noise);
-            _cs.SetTexture(_kAddNoiseBroadcastPack4, "_NoiseInOutArr", inOut);
+            _cs.SetTexture(_kAddNoiseBroadcastPack4, "_TexOut0Arr", inOut);
             Dispatch3D(_kAddNoiseBroadcastPack4, inOut.width, inOut.height, packs, 8, 8);
         }
 
@@ -956,8 +956,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_ClipMin", min);
             _cs.SetFloat("_ClipMax", max);
-            _cs.SetTexture(_kClipPack4, "_ClipInArr", input);
-            _cs.SetTexture(_kClipPack4, "_ClipOutArr", output);
+            _cs.SetTexture(_kClipPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kClipPack4, "_TexOut0Arr", output);
             Dispatch3D(_kClipPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -968,8 +968,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_ClipMin", min);
             cmd.SetComputeFloatParam(_cs, "_ClipMax", max);
-            cmd.SetComputeTextureParam(_cs, _kClipPack4, "_ClipInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kClipPack4, "_ClipOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kClipPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kClipPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kClipPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -982,8 +982,8 @@ namespace NcnnCompute
             if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
             _cs.SetInt("_ShuffleChannels", channels);
             _cs.SetInt("_ShuffleGroup", group);
-            _cs.SetTexture(_kShuffleChannelPack4, "_ShuffleInArr", input);
-            _cs.SetTexture(_kShuffleChannelPack4, "_ShuffleOutArr", output);
+            _cs.SetTexture(_kShuffleChannelPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kShuffleChannelPack4, "_TexOut0Arr", output);
             Dispatch3D(_kShuffleChannelPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -997,8 +997,8 @@ namespace NcnnCompute
             if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
             cmd.SetComputeIntParam(_cs, "_ShuffleChannels", channels);
             cmd.SetComputeIntParam(_cs, "_ShuffleGroup", group);
-            cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_ShuffleInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_ShuffleOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kShuffleChannelPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1015,8 +1015,8 @@ namespace NcnnCompute
             _cs.SetInt("_CropPack4OutW", outW);
             _cs.SetInt("_CropPack4OutH", outH);
             _cs.SetInt("_CropPack4OutC", outC);
-            _cs.SetTexture(_kCropPack4, "_CropPack4InArr", input);
-            _cs.SetTexture(_kCropPack4, "_CropPack4OutArr", output);
+            _cs.SetTexture(_kCropPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kCropPack4, "_TexOut0Arr", output);
             Dispatch3D(_kCropPack4, output.width, output.height, output.volumeDepth > 0 ? output.volumeDepth : 1, 8, 8);
         }
 
@@ -1034,8 +1034,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_CropPack4OutW", outW);
             cmd.SetComputeIntParam(_cs, "_CropPack4OutH", outH);
             cmd.SetComputeIntParam(_cs, "_CropPack4OutC", outC);
-            cmd.SetComputeTextureParam(_cs, _kCropPack4, "_CropPack4InArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kCropPack4, "_CropPack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCropPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCropPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kCropPack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
@@ -1051,8 +1051,8 @@ namespace NcnnCompute
             _cs.SetInt("_SlicePack4OutW", outW);
             _cs.SetInt("_SlicePack4OutH", outH);
             _cs.SetInt("_SlicePack4OutC", outC);
-            _cs.SetTexture(_kSlicePack4, "_SlicePack4InArr", input);
-            _cs.SetTexture(_kSlicePack4, "_SlicePack4OutArr", output);
+            _cs.SetTexture(_kSlicePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSlicePack4, "_TexOut0Arr", output);
             Dispatch3D(_kSlicePack4, output.width, output.height, output.volumeDepth > 0 ? output.volumeDepth : 1, 8, 8);
         }
 
@@ -1070,8 +1070,8 @@ namespace NcnnCompute
             _cs.SetInt("_SlicePack4CDHWOutH", outH);
             _cs.SetInt("_SlicePack4CDHWOutD", outD);
             _cs.SetInt("_SlicePack4CDHWOutC", outC);
-            _cs.SetTexture(_kSlicePack4Cdhw, "_SlicePack4CDHWInArr", input);
-            _cs.SetTexture(_kSlicePack4Cdhw, "_SlicePack4CDHWOutArr", output);
+            _cs.SetTexture(_kSlicePack4Cdhw, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSlicePack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kSlicePack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1088,8 +1088,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_SlicePack4OutW", outW);
             cmd.SetComputeIntParam(_cs, "_SlicePack4OutH", outH);
             cmd.SetComputeIntParam(_cs, "_SlicePack4OutC", outC);
-            cmd.SetComputeTextureParam(_cs, _kSlicePack4, "_SlicePack4InArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSlicePack4, "_SlicePack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSlicePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
@@ -1108,8 +1108,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWOutH", outH);
             cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWOutD", outD);
             cmd.SetComputeIntParam(_cs, "_SlicePack4CDHWOutC", outC);
-            cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_SlicePack4CDHWInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_SlicePack4CDHWOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSlicePack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1126,8 +1126,8 @@ namespace NcnnCompute
             _cs.SetInt("_PermutePack4Axis0", axes.x);
             _cs.SetInt("_PermutePack4Axis1", axes.y);
             _cs.SetInt("_PermutePack4Axis2", axes.z);
-            _cs.SetTexture(_kPermutePack4, "_PermutePack4InArr", input);
-            _cs.SetTexture(_kPermutePack4, "_PermutePack4OutArr", output);
+            _cs.SetTexture(_kPermutePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPermutePack4, "_TexOut0Arr", output);
             Dispatch3D(_kPermutePack4, output.width, output.height, output.volumeDepth > 0 ? output.volumeDepth : 1, 8, 8);
         }
 
@@ -1145,8 +1145,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PermutePack4Axis0", axes.x);
             cmd.SetComputeIntParam(_cs, "_PermutePack4Axis1", axes.y);
             cmd.SetComputeIntParam(_cs, "_PermutePack4Axis2", axes.z);
-            cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_PermutePack4InArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_PermutePack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPermutePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
@@ -1166,8 +1166,8 @@ namespace NcnnCompute
             _cs.SetInt("_PermutePack4CDHWAxis1", axes.y);
             _cs.SetInt("_PermutePack4CDHWAxis2", axes.z);
             _cs.SetInt("_PermutePack4CDHWAxis3", axes.w);
-            _cs.SetTexture(_kPermutePack4Cdhw, "_PermutePack4CDHWInArr", input);
-            _cs.SetTexture(_kPermutePack4Cdhw, "_PermutePack4CDHWOutArr", output);
+            _cs.SetTexture(_kPermutePack4Cdhw, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPermutePack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kPermutePack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1188,8 +1188,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis1", axes.y);
             cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis2", axes.z);
             cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis3", axes.w);
-            cmd.SetComputeTextureParam(_cs, _kPermutePack4Cdhw, "_PermutePack4CDHWInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPermutePack4Cdhw, "_PermutePack4CDHWOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4Cdhw, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPermutePack4Cdhw, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
@@ -1210,8 +1210,8 @@ namespace NcnnCompute
             _cs.SetInt("_WindowPartitionPack4TokensA", tokensA);
             _cs.SetInt("_WindowPartitionPack4TokensB", tokensB);
             _cs.SetInt("_WindowPartitionPack4TokensC", tokensC);
-            _cs.SetTexture(_kWindowPartitionPack4, "_WindowPartitionPack4InArr", input);
-            _cs.SetTexture(_kWindowPartitionPack4, "_WindowPartitionPack4OutArr", output);
+            _cs.SetTexture(_kWindowPartitionPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kWindowPartitionPack4, "_TexOut0Arr", output);
             Dispatch3D(_kWindowPartitionPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1233,8 +1233,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4TokensA", tokensA);
             cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4TokensB", tokensB);
             cmd.SetComputeIntParam(_cs, "_WindowPartitionPack4TokensC", tokensC);
-            cmd.SetComputeTextureParam(_cs, _kWindowPartitionPack4, "_WindowPartitionPack4InArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kWindowPartitionPack4, "_WindowPartitionPack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kWindowPartitionPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kWindowPartitionPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kWindowPartitionPack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
@@ -1255,8 +1255,8 @@ namespace NcnnCompute
             _cs.SetInt("_WindowUnpartitionPack4TokensA", tokensA);
             _cs.SetInt("_WindowUnpartitionPack4TokensB", tokensB);
             _cs.SetInt("_WindowUnpartitionPack4TokensC", tokensC);
-            _cs.SetTexture(_kWindowUnpartitionPack4, "_WindowUnpartitionPack4InArr", input);
-            _cs.SetTexture(_kWindowUnpartitionPack4, "_WindowUnpartitionPack4OutArr", output);
+            _cs.SetTexture(_kWindowUnpartitionPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kWindowUnpartitionPack4, "_TexOut0Arr", output);
             Dispatch3D(_kWindowUnpartitionPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1278,8 +1278,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4TokensA", tokensA);
             cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4TokensB", tokensB);
             cmd.SetComputeIntParam(_cs, "_WindowUnpartitionPack4TokensC", tokensC);
-            cmd.SetComputeTextureParam(_cs, _kWindowUnpartitionPack4, "_WindowUnpartitionPack4InArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kWindowUnpartitionPack4, "_WindowUnpartitionPack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kWindowUnpartitionPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kWindowUnpartitionPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kWindowUnpartitionPack4, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
@@ -1292,8 +1292,8 @@ namespace NcnnCompute
             _cs.SetInt("_ReshapePack4ToScalar2DInD", inD);
             _cs.SetInt("_ReshapePack4ToScalar2DInC", inC);
             _cs.SetInt("_ReshapePack4ToScalar2DInDims", inDims);
-            _cs.SetTexture(_kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DInArr", input);
-            _cs.SetTexture(_kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DOutArr", output);
+            _cs.SetTexture(_kReshapePack4ToScalar2D, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReshapePack4ToScalar2D, "_TexOut0Arr", output);
             Dispatch3D(_kReshapePack4ToScalar2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -1307,8 +1307,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInD", inD);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInC", inC);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInDims", inDims);
-            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_ReshapePack4ToScalar2DOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kReshapePack4ToScalar2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -1326,8 +1326,8 @@ namespace NcnnCompute
             _cs.SetInt("_ReshapePack4ToPack4OutD", outD);
             _cs.SetInt("_ReshapePack4ToPack4OutC", outC);
             _cs.SetInt("_ReshapePack4ToPack4OutDims", outDims);
-            _cs.SetTexture(_kReshapePack4ToPack4, "_ReshapePack4ToPack4InArr", input);
-            _cs.SetTexture(_kReshapePack4ToPack4, "_ReshapePack4ToPack4OutArr", output);
+            _cs.SetTexture(_kReshapePack4ToPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReshapePack4ToPack4, "_TexOut0Arr", output);
             Dispatch3D(_kReshapePack4ToPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1346,8 +1346,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutD", outD);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutC", outC);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutDims", outDims);
-            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_ReshapePack4ToPack4InArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_ReshapePack4ToPack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kReshapePack4ToPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1362,8 +1362,8 @@ namespace NcnnCompute
             _cs.SetInt("_ReshapeScalar2DOutD", outD);
             _cs.SetInt("_ReshapeScalar2DOutC", outC);
             _cs.SetInt("_ReshapeScalar2DOutDims", outDims);
-            _cs.SetTexture(_kReshapeScalar2DToPack4, "_ReshapeScalar2DInArr", input);
-            _cs.SetTexture(_kReshapeScalar2DToPack4, "_ReshapeScalar2DOutArr", output);
+            _cs.SetTexture(_kReshapeScalar2DToPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReshapeScalar2DToPack4, "_TexOut0Arr", output);
             Dispatch3D(_kReshapeScalar2DToPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1379,8 +1379,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutD", outD);
             cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutC", outC);
             cmd.SetComputeIntParam(_cs, "_ReshapeScalar2DOutDims", outDims);
-            cmd.SetComputeTextureParam(_cs, _kReshapeScalar2DToPack4, "_ReshapeScalar2DInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kReshapeScalar2DToPack4, "_ReshapeScalar2DOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapeScalar2DToPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapeScalar2DToPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kReshapeScalar2DToPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1394,8 +1394,8 @@ namespace NcnnCompute
             _cs.SetInt("_AttentionReshapeHeadDim", headDim);
             _cs.SetInt("_AttentionReshapeOutD", outD);
             _cs.SetInt("_AttentionReshapeOutC", outC);
-            _cs.SetTexture(_kAttentionReshapePack4, "_AttentionReshapeInArr", input);
-            _cs.SetTexture(_kAttentionReshapePack4, "_AttentionReshapeOutArr", output);
+            _cs.SetTexture(_kAttentionReshapePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kAttentionReshapePack4, "_TexOut0Arr", output);
             Dispatch3D(_kAttentionReshapePack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1410,8 +1410,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_AttentionReshapeHeadDim", headDim);
             cmd.SetComputeIntParam(_cs, "_AttentionReshapeOutD", outD);
             cmd.SetComputeIntParam(_cs, "_AttentionReshapeOutC", outC);
-            cmd.SetComputeTextureParam(_cs, _kAttentionReshapePack4, "_AttentionReshapeInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kAttentionReshapePack4, "_AttentionReshapeOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAttentionReshapePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAttentionReshapePack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kAttentionReshapePack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1425,8 +1425,8 @@ namespace NcnnCompute
             _cs.SetInt("_AttentionContextFlattenInC", inC);
             _cs.SetInt("_AttentionContextFlattenOutC", outC);
             _cs.SetInt("_AttentionContextFlattenOutDims", outDims);
-            _cs.SetTexture(_kAttentionContextFlattenPack4, "_AttentionContextFlattenInArr", input);
-            _cs.SetTexture(_kAttentionContextFlattenPack4, "_AttentionContextFlattenOutArr", output);
+            _cs.SetTexture(_kAttentionContextFlattenPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kAttentionContextFlattenPack4, "_TexOut0Arr", output);
             var logicalOutChannels = outDims == 3 ? Mathf.Max(1, outC) : 1;
             Dispatch3D(_kAttentionContextFlattenPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(logicalOutChannels / 4f))), 8, 8);
         }
@@ -1442,8 +1442,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_AttentionContextFlattenInC", inC);
             cmd.SetComputeIntParam(_cs, "_AttentionContextFlattenOutC", outC);
             cmd.SetComputeIntParam(_cs, "_AttentionContextFlattenOutDims", outDims);
-            cmd.SetComputeTextureParam(_cs, _kAttentionContextFlattenPack4, "_AttentionContextFlattenInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kAttentionContextFlattenPack4, "_AttentionContextFlattenOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAttentionContextFlattenPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAttentionContextFlattenPack4, "_TexOut0Arr", output.nameID);
             var logicalOutChannels = outDims == 3 ? Mathf.Max(1, outC) : 1;
             Dispatch3D(cmd, _kAttentionContextFlattenPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(logicalOutChannels / 4f))), 8, 8);
         }
@@ -1468,10 +1468,10 @@ namespace NcnnCompute
             _cs.SetFloat("_MatBeta", beta);
             _cs.SetInt("_GemmTexAInW", k);
             _cs.SetInt("_GemmTexAInH", m);
-            _cs.SetTexture(_kGemm2DTextureA, "_GemmTexAInArr", a);
+            _cs.SetTexture(_kGemm2DTextureA, "_TexIn0Arr", a);
             _cs.SetBuffer(_kGemm2DTextureA, "_MatB", b);
             _cs.SetBuffer(_kGemm2DTextureA, "_MatC", useC ? c : b);
-            _cs.SetTexture(_kGemm2DTextureA, "_GemmTexOutArr", output);
+            _cs.SetTexture(_kGemm2DTextureA, "_TexOut0Arr", output);
             Dispatch3D(_kGemm2DTextureA, n, m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -1496,10 +1496,10 @@ namespace NcnnCompute
             cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
-            cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_GemmTexAInArr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_TexIn0Arr", a.nameID);
             cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatB", b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatC", useC ? c : b);
-            cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_GemmTexOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kGemm2DTextureA, n, m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -1510,10 +1510,10 @@ namespace NcnnCompute
             if (condAdd == null) throw new ArgumentNullException(nameof(condAdd));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetInt("_SftHalfPacks", halfPacks);
-            _cs.SetTexture(_kSftPack4, "_SftInArr", input);
-            _cs.SetTexture(_kSftPack4, "_SftCondMulArr", condMul);
-            _cs.SetTexture(_kSftPack4, "_SftCondAddArr", condAdd);
-            _cs.SetTexture(_kSftPack4, "_SftOutArr", output);
+            _cs.SetTexture(_kSftPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSftPack4, "_TexIn1Arr", condMul);
+            _cs.SetTexture(_kSftPack4, "_TexIn2Arr", condAdd);
+            _cs.SetTexture(_kSftPack4, "_TexOut0Arr", output);
             Dispatch3D(_kSftPack4, output.width, output.height, outPacks, 8, 8);
         }
 
@@ -1522,7 +1522,7 @@ namespace NcnnCompute
             if (inputPack4 == null) throw new ArgumentNullException(nameof(inputPack4));
             if (outputRgb == null) throw new ArgumentNullException(nameof(outputRgb));
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
-            _cs.SetTexture(_kPack4ToRgb01, "_RgbInArr", inputPack4);
+            _cs.SetTexture(_kPack4ToRgb01, "_TexIn0Arr", inputPack4);
             _cs.SetTexture(_kPack4ToRgb01, "_RgbOut", outputRgb);
             Dispatch2D(_kPack4ToRgb01, outputRgb.width, outputRgb.height, 32, 32);
         }
@@ -1534,7 +1534,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ProbePad", pad);
             cmd.SetComputeIntParam(_cs, "_ProbeCoreW", coreW);
             cmd.SetComputeIntParam(_cs, "_ProbeCoreH", coreH);
-            cmd.SetComputeTextureParam(_cs, _kProbeTilePack4, "_ProbeInArr", tileOutPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kProbeTilePack4, "_TexIn0Arr", tileOutPack4.nameID);
             cmd.SetComputeBufferParam(_cs, _kProbeTilePack4, "_ProbeOut", probeOut);
             cmd.DispatchCompute(_cs, _kProbeTilePack4, 1, 1, 1);
 
@@ -1548,7 +1548,7 @@ namespace NcnnCompute
             _cs.SetInt("_ProbePad", pad);
             _cs.SetInt("_ProbeCoreW", coreW);
             _cs.SetInt("_ProbeCoreH", coreH);
-            _cs.SetTexture(_kProbeTilePack4, "_ProbeInArr", tileOutPack4);
+            _cs.SetTexture(_kProbeTilePack4, "_TexIn0Arr", tileOutPack4);
             _cs.SetBuffer(_kProbeTilePack4, "_ProbeOut", probeOut);
             _cs.Dispatch(_kProbeTilePack4, 1, 1, 1);
         }
@@ -1590,8 +1590,8 @@ namespace NcnnCompute
             _cs.SetInt("_PadBottom", padBottom);
             _cs.SetInt("_PadType", padType);
             _cs.SetVector("_PadValue4", padValue);
-            _cs.SetTexture(_kPaddingPack4, "_PadInArr", input);
-            _cs.SetTexture(_kPaddingPack4, "_PadOutArr", output);
+            _cs.SetTexture(_kPaddingPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPaddingPack4, "_TexOut0Arr", output);
             Dispatch3D(_kPaddingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1605,8 +1605,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PadBottom", padBottom);
             cmd.SetComputeIntParam(_cs, "_PadType", padType);
             cmd.SetComputeVectorParam(_cs, "_PadValue4", padValue);
-            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_PadInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_PadOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPaddingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1621,8 +1621,8 @@ namespace NcnnCompute
             _cs.SetInt("_PoolPadLeft", padLeft);
             _cs.SetInt("_PoolPadTop", padTop);
             _cs.SetInt("_PoolType", poolType);
-            _cs.SetTexture(_kPoolingPack4, "_PoolInArr", input);
-            _cs.SetTexture(_kPoolingPack4, "_PoolOutArr", output);
+            _cs.SetTexture(_kPoolingPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPoolingPack4, "_TexOut0Arr", output);
             Dispatch3D(_kPoolingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1674,8 +1674,8 @@ namespace NcnnCompute
             _cs.SetInt("_Pool4DOutH", outH);
             _cs.SetInt("_Pool4DOutD", outD);
             _cs.SetInt("_Pool4DOutC", outC);
-            _cs.SetTexture(_kPoolingPack4Cdhw, "_Pool4DInArr", input);
-            _cs.SetTexture(_kPoolingPack4Cdhw, "_Pool4DOutArr", output);
+            _cs.SetTexture(_kPoolingPack4Cdhw, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPoolingPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kPoolingPack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1729,8 +1729,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_Pool4DOutH", outH);
             cmd.SetComputeIntParam(_cs, "_Pool4DOutD", outD);
             cmd.SetComputeIntParam(_cs, "_Pool4DOutC", outC);
-            cmd.SetComputeTextureParam(_cs, _kPoolingPack4Cdhw, "_Pool4DInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPoolingPack4Cdhw, "_Pool4DOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPoolingPack4Cdhw, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPoolingPack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPoolingPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
@@ -1745,9 +1745,9 @@ namespace NcnnCompute
             _cs.SetInt("_PoolStrideH", strideH);
             _cs.SetInt("_PoolPadLeft", padLeft);
             _cs.SetInt("_PoolPadTop", padTop);
-            _cs.SetTexture(_kMaxPoolingIndPack4, "_MaxPoolInArr", input);
-            _cs.SetTexture(_kMaxPoolingIndPack4, "_MaxPoolOutArr", output);
-            _cs.SetTexture(_kMaxPoolingIndPack4, "_MaxPoolIndicesArr", indices);
+            _cs.SetTexture(_kMaxPoolingIndPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kMaxPoolingIndPack4, "_TexOut0Arr", output);
+            _cs.SetTexture(_kMaxPoolingIndPack4, "_TexOut1Arr", indices);
             Dispatch3D(_kMaxPoolingIndPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1763,9 +1763,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PoolStrideH", strideH);
             cmd.SetComputeIntParam(_cs, "_PoolPadLeft", padLeft);
             cmd.SetComputeIntParam(_cs, "_PoolPadTop", padTop);
-            cmd.SetComputeTextureParam(_cs, _kMaxPoolingIndPack4, "_MaxPoolInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kMaxPoolingIndPack4, "_MaxPoolOutArr", output.nameID);
-            cmd.SetComputeTextureParam(_cs, _kMaxPoolingIndPack4, "_MaxPoolIndicesArr", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMaxPoolingIndPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMaxPoolingIndPack4, "_TexOut0Arr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMaxPoolingIndPack4, "_TexOut1Arr", indices.nameID);
             Dispatch3D(cmd, _kMaxPoolingIndPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1780,9 +1780,9 @@ namespace NcnnCompute
             _cs.SetInt("_PoolStrideH", strideH);
             _cs.SetInt("_PoolPadLeft", padLeft);
             _cs.SetInt("_PoolPadTop", padTop);
-            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_MaxPoolInArr", input);
-            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_MaxPoolPooledArr", pooled);
-            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_MaxPoolIndicesArr", indices);
+            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_TexIn1Arr", pooled);
+            _cs.SetTexture(_kMaxPoolingIndicesFromValuePack4, "_TexOut1Arr", indices);
             Dispatch3D(_kMaxPoolingIndicesFromValuePack4, pooled.width, pooled.height, packs, 8, 8);
         }
 
@@ -1797,9 +1797,9 @@ namespace NcnnCompute
             _cs.SetInt("_PoolStrideH", strideH);
             _cs.SetInt("_PoolPadLeft", padLeft);
             _cs.SetInt("_PoolPadTop", padTop);
-            _cs.SetTexture(_kMaxUnPoolingPack4, "_MaxUnpoolInArr", input);
-            _cs.SetTexture(_kMaxUnPoolingPack4, "_MaxUnpoolIndicesArr", indices);
-            _cs.SetTexture(_kMaxUnPoolingPack4, "_MaxUnpoolOutArr", output);
+            _cs.SetTexture(_kMaxUnPoolingPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kMaxUnPoolingPack4, "_TexIn1Arr", indices);
+            _cs.SetTexture(_kMaxUnPoolingPack4, "_TexOut0Arr", output);
             Dispatch3D(_kMaxUnPoolingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1815,9 +1815,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PoolStrideH", strideH);
             cmd.SetComputeIntParam(_cs, "_PoolPadLeft", padLeft);
             cmd.SetComputeIntParam(_cs, "_PoolPadTop", padTop);
-            cmd.SetComputeTextureParam(_cs, _kMaxUnPoolingPack4, "_MaxUnpoolInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kMaxUnPoolingPack4, "_MaxUnpoolIndicesArr", indices.nameID);
-            cmd.SetComputeTextureParam(_cs, _kMaxUnPoolingPack4, "_MaxUnpoolOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMaxUnPoolingPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMaxUnPoolingPack4, "_TexIn1Arr", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMaxUnPoolingPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kMaxUnPoolingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1832,8 +1832,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParams(_cs, "_PoolPadLeft", padLeft);
             cmd.SetComputeIntParams(_cs, "_PoolPadTop", padTop);
             cmd.SetComputeIntParams(_cs, "_PoolType", poolType);
-            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_PoolInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_PoolOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPoolingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1842,8 +1842,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetInt("_SoftmaxPacks", packs);
-            _cs.SetTexture(_kSoftmaxChannelPack4, "_SoftmaxInArr", input);
-            _cs.SetTexture(_kSoftmaxChannelPack4, "_SoftmaxOutArr", output);
+            _cs.SetTexture(_kSoftmaxChannelPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSoftmaxChannelPack4, "_TexOut0Arr", output);
             Dispatch3D(_kSoftmaxChannelPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1855,8 +1855,8 @@ namespace NcnnCompute
             _cs.SetInt("_SoftmaxPack4CDHWH", h);
             _cs.SetInt("_SoftmaxPack4CDHWD", d);
             _cs.SetInt("_SoftmaxPack4CDHWC", c);
-            _cs.SetTexture(_kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWInArr", input);
-            _cs.SetTexture(_kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWOutArr", output);
+            _cs.SetTexture(_kSoftmaxPack4Cdhw, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSoftmaxPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kSoftmaxPack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(c / 4f))), 8, 8);
         }
 
@@ -1869,8 +1869,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWH", h);
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWD", d);
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWC", c);
-            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_SoftmaxPack4CDHWOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSoftmaxPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(c / 4f))), 8, 8);
         }
 
@@ -1879,8 +1879,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeIntParam(_cs, "_SoftmaxPacks", packs);
-            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_SoftmaxInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_SoftmaxOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSoftmaxChannelPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1889,8 +1889,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetInt("_UnaryOpType", opType);
-            _cs.SetTexture(_kUnaryOpPack4, "_UnaryInArr", input);
-            _cs.SetTexture(_kUnaryOpPack4, "_UnaryOutArr", output);
+            _cs.SetTexture(_kUnaryOpPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kUnaryOpPack4, "_TexOut0Arr", output);
             Dispatch3D(_kUnaryOpPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -1899,8 +1899,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeIntParam(_cs, "_UnaryOpType", opType);
-            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_UnaryInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_UnaryOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kUnaryOpPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1912,9 +1912,9 @@ namespace NcnnCompute
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 0);
             _cs.SetFloat("_BinaryScalar", 0f);
-            _cs.SetTexture(_kBinaryOpPack4, "_BinaryA", a);
-            _cs.SetTexture(_kBinaryOpPack4, "_BinaryB", b);
-            _cs.SetTexture(_kBinaryOpPack4, "_BinaryOutArr", output);
+            _cs.SetTexture(_kBinaryOpPack4, "_TexIn0Arr", a);
+            _cs.SetTexture(_kBinaryOpPack4, "_TexIn1Arr", b);
+            _cs.SetTexture(_kBinaryOpPack4, "_TexOut0Arr", output);
             Dispatch3D(_kBinaryOpPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1929,9 +1929,9 @@ namespace NcnnCompute
             _cs.SetInt("_BinaryWithScalar", 0);
             _cs.SetFloat("_BinaryScalar", 0f);
             _cs.SetInt("_BinaryPack4BroadcastMode", broadcastMode);
-            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryA", a);
-            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryB", b);
-            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_BinaryOutArr", output);
+            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_TexIn0Arr", a);
+            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_TexIn1Arr", b);
+            _cs.SetTexture(_kBinaryOpPack4Broadcast, "_TexOut0Arr", output);
             Dispatch3D(_kBinaryOpPack4Broadcast, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1943,9 +1943,9 @@ namespace NcnnCompute
             if (scalar.count < 1) throw new ArgumentOutOfRangeException(nameof(scalar));
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryPack4BufferScalarMode", scalarIsA ? 1 : 2);
-            _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_BinaryA", texture);
+            _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_TexIn0Arr", texture);
             _cs.SetBuffer(_kBinaryOpPack4BufferScalar, "_BufB", scalar);
-            _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_BinaryOutArr", output);
+            _cs.SetTexture(_kBinaryOpPack4BufferScalar, "_TexOut0Arr", output);
             Dispatch3D(_kBinaryOpPack4BufferScalar, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1957,9 +1957,9 @@ namespace NcnnCompute
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryPack4ChannelVectorMode", vectorIsA ? 1 : 2);
             _cs.SetInt("_BinaryPack4ChannelVectorPacks", packs);
-            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_BinaryA", texture);
-            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_BinaryB", vector);
-            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_BinaryOutArr", output);
+            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_TexIn0Arr", texture);
+            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_TexIn1Arr", vector);
+            _cs.SetTexture(_kBinaryOpPack4ChannelVectorTex, "_TexOut0Arr", output);
             Dispatch3D(_kBinaryOpPack4ChannelVectorTex, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1971,9 +1971,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryA", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryB", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn1Arr", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -1990,9 +1990,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
             cmd.SetComputeIntParam(_cs, "_BinaryPack4BroadcastMode", broadcastMode);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_BinaryA", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_BinaryB", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_BinaryOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_TexIn1Arr", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4Broadcast, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4Broadcast, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2006,9 +2006,9 @@ namespace NcnnCompute
 
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryPack4BufferScalarMode", scalarIsA ? 1 : 2);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4BufferScalar, "_BinaryA", texture.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4BufferScalar, "_TexIn0Arr", texture.nameID);
             cmd.SetComputeBufferParam(_cs, _kBinaryOpPack4BufferScalar, "_BufB", scalar);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4BufferScalar, "_BinaryOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4BufferScalar, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4BufferScalar, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2021,9 +2021,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryPack4ChannelVectorMode", vectorIsA ? 1 : 2);
             cmd.SetComputeIntParam(_cs, "_BinaryPack4ChannelVectorPacks", packs);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_BinaryA", texture.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_BinaryB", vector.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_BinaryOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_TexIn0Arr", texture.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_TexIn1Arr", vector.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4ChannelVectorTex, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4ChannelVectorTex, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2034,9 +2034,9 @@ namespace NcnnCompute
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 1);
             _cs.SetFloat("_BinaryScalar", b);
-            _cs.SetTexture(_kBinaryOpPack4, "_BinaryA", a);
-            _cs.SetTexture(_kBinaryOpPack4, "_BinaryB", a);
-            _cs.SetTexture(_kBinaryOpPack4, "_BinaryOutArr", output);
+            _cs.SetTexture(_kBinaryOpPack4, "_TexIn0Arr", a);
+            _cs.SetTexture(_kBinaryOpPack4, "_TexIn1Arr", a);
+            _cs.SetTexture(_kBinaryOpPack4, "_TexOut0Arr", output);
             Dispatch3D(_kBinaryOpPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2047,9 +2047,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 1);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", b);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryA", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryB", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn1Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2062,9 +2062,9 @@ namespace NcnnCompute
             _cs.SetInt("_BinaryWithScalar", 0);
             _cs.SetFloat("_BinaryScalar", 0f);
             _cs.SetInt("_BinaryScalarSingleBroadcastMode", broadcastMode);
-            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_BinaryA", a);
-            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_BinaryB", b);
-            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_BinaryOutArr", output);
+            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_TexIn0Arr", a);
+            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_TexIn1Arr", b);
+            _cs.SetTexture(_kBinaryOpScalarSingleBroadcast, "_TexOut0Arr", output);
             Dispatch3D(_kBinaryOpScalarSingleBroadcast, width, height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -2078,9 +2078,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
             cmd.SetComputeIntParam(_cs, "_BinaryScalarSingleBroadcastMode", broadcastMode);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_BinaryA", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_BinaryB", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_BinaryOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_TexIn1Arr", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpScalarSingleBroadcast, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpScalarSingleBroadcast, width, height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -2117,8 +2117,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetTexture(_kSwishPack4, "_ActInArr", input);
-            _cs.SetTexture(_kSwishPack4, "_ActOutArr", output);
+            _cs.SetTexture(_kSwishPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSwishPack4, "_TexOut0Arr", output);
             Dispatch3D(_kSwishPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2126,8 +2126,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_ActInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_ActOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSwishPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2135,8 +2135,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetTexture(_kSigmoidPack4, "_ActInArr", input);
-            _cs.SetTexture(_kSigmoidPack4, "_ActOutArr", output);
+            _cs.SetTexture(_kSigmoidPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSigmoidPack4, "_TexOut0Arr", output);
             Dispatch3D(_kSigmoidPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2144,8 +2144,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_ActInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_ActOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSigmoidPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2154,8 +2154,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetInt("_GeluFast", fastGelu ? 1 : 0);
-            _cs.SetTexture(_kGeluPack4, "_ActInArr", input);
-            _cs.SetTexture(_kGeluPack4, "_ActOutArr", output);
+            _cs.SetTexture(_kGeluPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kGeluPack4, "_TexOut0Arr", output);
             Dispatch3D(_kGeluPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2164,8 +2164,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeIntParams(_cs, "_GeluFast", fastGelu ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_ActInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_ActOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kGeluPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
         }
 
@@ -2545,9 +2545,9 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_CoeffA", coeffA);
             _cs.SetFloat("_CoeffB", coeffB);
-            _cs.SetTexture(_kAddPack4, "_AddA", a);
-            _cs.SetTexture(_kAddPack4, "_AddB", b);
-            _cs.SetTexture(_kAddPack4, "_AddOutArr", output);
+            _cs.SetTexture(_kAddPack4, "_TexIn0Arr", a);
+            _cs.SetTexture(_kAddPack4, "_TexIn1Arr", b);
+            _cs.SetTexture(_kAddPack4, "_TexOut0Arr", output);
             Dispatch3D(_kAddPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2558,9 +2558,9 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_CoeffA", coeffA);
             cmd.SetComputeFloatParam(_cs, "_CoeffB", coeffB);
-            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddA", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddB", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_TexIn1Arr", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kAddPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2574,8 +2574,8 @@ namespace NcnnCompute
             _cs.SetInt("_CopyInOffset", srcPackOffset);
             _cs.SetInt("_CopyOutOffset", dstPackOffset);
             _cs.SetInt("_CopyPacks", packs);
-            _cs.SetTexture(_kCopyPack4, "_CopyInArr", src);
-            _cs.SetTexture(_kCopyPack4, "_CopyOutArr", dst);
+            _cs.SetTexture(_kCopyPack4, "_TexIn0Arr", src);
+            _cs.SetTexture(_kCopyPack4, "_TexOut0Arr", dst);
             Dispatch3D(_kCopyPack4, dst.width, dst.height, packs, 8, 8);
         }
 
@@ -2599,9 +2599,9 @@ namespace NcnnCompute
             _cs.SetInt("_ConcatPack4CDHWAC", aChannels);
             _cs.SetInt("_ConcatPack4CDHWBC", bChannels);
             _cs.SetInt("_ConcatPack4CDHWOutC", outChannels);
-            _cs.SetTexture(_kConcatPack4Cdhw, "_ConcatPack4CDHWAInArr", a);
-            _cs.SetTexture(_kConcatPack4Cdhw, "_ConcatPack4CDHWBInArr", b);
-            _cs.SetTexture(_kConcatPack4Cdhw, "_ConcatPack4CDHWOutArr", output);
+            _cs.SetTexture(_kConcatPack4Cdhw, "_TexIn0Arr", a);
+            _cs.SetTexture(_kConcatPack4Cdhw, "_TexIn1Arr", b);
+            _cs.SetTexture(_kConcatPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kConcatPack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(outChannels / 4f))), 8, 8);
         }
 
@@ -2627,9 +2627,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ConcatPack4CDHWAC", aChannels);
             cmd.SetComputeIntParam(_cs, "_ConcatPack4CDHWBC", bChannels);
             cmd.SetComputeIntParam(_cs, "_ConcatPack4CDHWOutC", outChannels);
-            cmd.SetComputeTextureParam(_cs, _kConcatPack4Cdhw, "_ConcatPack4CDHWAInArr", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kConcatPack4Cdhw, "_ConcatPack4CDHWBInArr", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kConcatPack4Cdhw, "_ConcatPack4CDHWOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConcatPack4Cdhw, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConcatPack4Cdhw, "_TexIn1Arr", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConcatPack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kConcatPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(outChannels / 4f))), 8, 8);
         }
 
@@ -2648,10 +2648,10 @@ namespace NcnnCompute
             if (output.volumeDepth < 3)
                 throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires output volumeDepth >= 3");
 
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintLatentsArr", latents);
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintMaskArr", mask);
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintMaskedLatentsArr", maskedLatents);
-            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_SdInpaintInputOutArr", output);
+            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_TexIn0Arr", latents);
+            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_TexIn1Arr", mask);
+            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_TexIn2Arr", maskedLatents);
+            _cs.SetTexture(_kBuildSdInpaintInput9Pack4, "_TexOut0Arr", output);
             Dispatch3D(_kBuildSdInpaintInput9Pack4, output.width, output.height, 3, 8, 8);
         }
 
@@ -2671,10 +2671,10 @@ namespace NcnnCompute
             if (output.depth < 3)
                 throw new InvalidOperationException("BuildSdInpaintInput9Pack4 requires output depth >= 3");
 
-            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintLatentsArr", latents.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintMaskArr", mask.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintMaskedLatentsArr", maskedLatents.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_SdInpaintInputOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_TexIn0Arr", latents.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_TexIn1Arr", mask.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_TexIn2Arr", maskedLatents.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBuildSdInpaintInput9Pack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBuildSdInpaintInput9Pack4, output.width, output.height, 3, 8, 8);
         }
 
@@ -2689,8 +2689,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_CopyInOffset", srcPackOffset);
             cmd.SetComputeIntParam(_cs, "_CopyOutOffset", dstPackOffset);
             cmd.SetComputeIntParam(_cs, "_CopyPacks", packs);
-            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_CopyInArr", src.nameID);
-            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_CopyOutArr", dst.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_TexIn0Arr", src.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_TexOut0Arr", dst.nameID);
             Dispatch3D(cmd, _kCopyPack4, dst.width, dst.height, packs, 8, 8);
         }
 
@@ -2698,8 +2698,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetTexture(_kInterp2xPack4, "_InterpInArr", input);
-            _cs.SetTexture(_kInterp2xPack4, "_InterpOutArr", output);
+            _cs.SetTexture(_kInterp2xPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kInterp2xPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterp2xPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2709,8 +2709,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_InterpScaleFactorX", scaleX);
             _cs.SetFloat("_InterpScaleFactorY", scaleY);
-            _cs.SetTexture(_kInterpPack4, "_InterpInArr", input);
-            _cs.SetTexture(_kInterpPack4, "_InterpOutArr", output);
+            _cs.SetTexture(_kInterpPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kInterpPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterpPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2720,8 +2720,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_InterpScaleFactorX", scaleX);
             _cs.SetFloat("_InterpScaleFactorY", scaleY);
-            _cs.SetTexture(_kInterpPack4Nearest, "_InterpInArr", input);
-            _cs.SetTexture(_kInterpPack4Nearest, "_InterpOutArr", output);
+            _cs.SetTexture(_kInterpPack4Nearest, "_TexIn0Arr", input);
+            _cs.SetTexture(_kInterpPack4Nearest, "_TexOut0Arr", output);
             Dispatch3D(_kInterpPack4Nearest, output.width, output.height, packs, 8, 8);
         }
 
@@ -2759,8 +2759,8 @@ namespace NcnnCompute
             _cs.SetFloat("_InterpScaleFactorY", scaleY);
             _cs.SetFloat("_InterpScaleFactorZ", scaleZ);
             _cs.SetInt("_InterpResizeType", resizeType);
-            _cs.SetTexture(_kInterpPack4Cdhw, "_InterpInArr", input);
-            _cs.SetTexture(_kInterpPack4Cdhw, "_InterpOutArr", output);
+            _cs.SetTexture(_kInterpPack4Cdhw, "_TexIn0Arr", input);
+            _cs.SetTexture(_kInterpPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kInterpPack4Cdhw, outW, outH, ResolveRenderTextureDispatchDepth(output, outD * outPacks), 8, 8);
         }
 
@@ -2771,8 +2771,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorX", scaleX);
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorY", scaleY);
-            cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_InterpInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_InterpOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2783,8 +2783,8 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorX", scaleX);
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorY", scaleY);
-            cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_InterpInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_InterpOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpPack4Nearest, output.width, output.height, packs, 8, 8);
         }
          
@@ -2792,8 +2792,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_InterpInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_InterpOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterp2xPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2801,8 +2801,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetTexture(_kInterp2xNearestPack4, "_InterpNnInArr", input);
-            _cs.SetTexture(_kInterp2xNearestPack4, "_InterpNnOutArr", output);
+            _cs.SetTexture(_kInterp2xNearestPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kInterp2xNearestPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterp2xNearestPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2810,8 +2810,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_InterpNnInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_InterpNnOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterp2xNearestPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2819,8 +2819,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetTexture(_kInterpDown2Pack4, "_InterpDownInArr", input);
-            _cs.SetTexture(_kInterpDown2Pack4, "_InterpDownOutArr", output);
+            _cs.SetTexture(_kInterpDown2Pack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kInterpDown2Pack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2828,8 +2828,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2837,8 +2837,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetTexture(_kInterpDown2NearestPack4, "_InterpDownNnInArr", input);
-            _cs.SetTexture(_kInterpDown2NearestPack4, "_InterpDownNnOutArr", output);
+            _cs.SetTexture(_kInterpDown2NearestPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kInterpDown2NearestPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2846,8 +2846,8 @@ namespace NcnnCompute
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2917,9 +2917,9 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_CoeffA", coeffA);
             cmd.SetComputeFloatParam(_cs, "_CoeffB", coeffB);
-            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddA", a);
-            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddB", b);
-            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_AddOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_TexIn0Arr", a);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_TexIn1Arr", b);
+            cmd.SetComputeTextureParam(_cs, _kAddPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kAddPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2941,8 +2941,8 @@ namespace NcnnCompute
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_InterpInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_InterpOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterp2xPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2959,8 +2959,8 @@ namespace NcnnCompute
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_InterpNnInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_InterpNnOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterp2xNearestPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2977,8 +2977,8 @@ namespace NcnnCompute
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_InterpDownOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -2995,8 +2995,8 @@ namespace NcnnCompute
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_InterpDownNnOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3019,8 +3019,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PadBottom", padBottom);
             cmd.SetComputeIntParam(_cs, "_PadType", padType);
             cmd.SetComputeVectorParam(_cs, "_PadValue4", padValue);
-            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_PadInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_PadOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kPaddingPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kPaddingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3050,8 +3050,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PoolPadLeft", padLeft);
             cmd.SetComputeIntParam(_cs, "_PoolPadTop", padTop);
             cmd.SetComputeIntParam(_cs, "_PoolType", poolType);
-            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_PoolInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_PoolOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kPoolingPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kPoolingPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3076,8 +3076,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeIntParam(_cs, "_SoftmaxPacks", packs);
-            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_SoftmaxInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_SoftmaxOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxChannelPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kSoftmaxChannelPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3096,8 +3096,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeIntParam(_cs, "_UnaryOpType", opType);
-            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_UnaryInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_UnaryOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kUnaryOpPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kUnaryOpPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3119,9 +3119,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryA", a);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryB", b);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn0Arr", a);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn1Arr", b);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kBinaryOpPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3145,9 +3145,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 1);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", scalarB);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryA", a);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryB", a);
-            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_BinaryOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn0Arr", a);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn1Arr", a);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kBinaryOpPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3168,8 +3168,8 @@ namespace NcnnCompute
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_ActInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_ActOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kSwishPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kSwishPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3186,8 +3186,8 @@ namespace NcnnCompute
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_ActInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_ActOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kSigmoidPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kSigmoidPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -3205,8 +3205,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeIntParam(_cs, "_GeluFast", fast ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_ActInArr", input);
-            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_ActOutArr", output);
+            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_TexIn0Arr", input);
+            cmd.SetComputeTextureParam(_cs, _kGeluPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kGeluPack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -4100,7 +4100,7 @@ namespace NcnnCompute
             _cs.SetInt("_Pack4H", h);
             _cs.SetInt("_Pack4D", 1);
             _cs.SetInt("_Pack4C", c);
-            _cs.SetTexture(_kPack4ToBufferChw, "_Pack4InArr", input);
+            _cs.SetTexture(_kPack4ToBufferChw, "_TexIn0Arr", input);
             _cs.SetBuffer(_kPack4ToBufferChw, "_Pack4Out", output);
             Dispatch1D(_kPack4ToBufferChw, total, 256);
         }
@@ -4116,7 +4116,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_Pack4H", h);
             cmd.SetComputeIntParam(_cs, "_Pack4D", 1);
             cmd.SetComputeIntParam(_cs, "_Pack4C", c);
-            cmd.SetComputeTextureParam(_cs, _kPack4ToBufferChw, "_Pack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPack4ToBufferChw, "_TexIn0Arr", input.nameID);
             cmd.SetComputeBufferParam(_cs, _kPack4ToBufferChw, "_Pack4Out", output);
             Dispatch1D(cmd, _kPack4ToBufferChw, total, 256);
         }
@@ -4131,7 +4131,7 @@ namespace NcnnCompute
             _cs.SetInt("_Pack4H", h);
             _cs.SetInt("_Pack4D", d);
             _cs.SetInt("_Pack4C", c);
-            _cs.SetTexture(_kPack4ToBufferCdhw, "_Pack4InArr", input);
+            _cs.SetTexture(_kPack4ToBufferCdhw, "_TexIn0Arr", input);
             _cs.SetBuffer(_kPack4ToBufferCdhw, "_Pack4Out", output);
             Dispatch1D(_kPack4ToBufferCdhw, total, 256);
         }
@@ -4147,7 +4147,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_Pack4H", h);
             cmd.SetComputeIntParam(_cs, "_Pack4D", d);
             cmd.SetComputeIntParam(_cs, "_Pack4C", c);
-            cmd.SetComputeTextureParam(_cs, _kPack4ToBufferCdhw, "_Pack4InArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPack4ToBufferCdhw, "_TexIn0Arr", input.nameID);
             cmd.SetComputeBufferParam(_cs, _kPack4ToBufferCdhw, "_Pack4Out", output);
             Dispatch1D(cmd, _kPack4ToBufferCdhw, total, 256);
         }
@@ -4284,9 +4284,9 @@ namespace NcnnCompute
             _cs.SetInt("_MatPack4BBatchC", bBatchC);
             _cs.SetInt("_MatPack4OutBatchD", outBatchD);
             _cs.SetInt("_MatPack4OutBatchC", outBatchC);
-            _cs.SetTexture(_kMatMulPack4Cdhw, "_MatPack4AInArr", a);
-            _cs.SetTexture(_kMatMulPack4Cdhw, "_MatPack4BInArr", b);
-            _cs.SetTexture(_kMatMulPack4Cdhw, "_MatPack4OutArr", output);
+            _cs.SetTexture(_kMatMulPack4Cdhw, "_TexIn0Arr", a);
+            _cs.SetTexture(_kMatMulPack4Cdhw, "_TexIn1Arr", b);
+            _cs.SetTexture(_kMatMulPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kMatMulPack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outBatchD * Mathf.CeilToInt(outBatchC / 4f))), 8, 8);
         }
 
@@ -4327,9 +4327,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_MatPack4BBatchC", bBatchC);
             cmd.SetComputeIntParam(_cs, "_MatPack4OutBatchD", outBatchD);
             cmd.SetComputeIntParam(_cs, "_MatPack4OutBatchC", outBatchC);
-            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_MatPack4AInArr", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_MatPack4BInArr", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_MatPack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_TexIn1Arr", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kMatMulPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outBatchD * Mathf.CeilToInt(outBatchC / 4f))), 8, 8);
         }
 
@@ -4346,9 +4346,9 @@ namespace NcnnCompute
             _cs.SetInt("_VistaTailH", height);
             _cs.SetInt("_VistaTailD", depth);
             _cs.SetInt("_VistaTailPacks", packs);
-            _cs.SetTexture(_kVistaTailPromptDotPack4, "_VistaTailInArr", featureTex);
+            _cs.SetTexture(_kVistaTailPromptDotPack4, "_TexIn0Arr", featureTex);
             _cs.SetBuffer(_kVistaTailPromptDotPack4, "_VistaTailPrompt", prompt);
-            _cs.SetTexture(_kVistaTailPromptDotPack4, "_VistaTailOutArr", output);
+            _cs.SetTexture(_kVistaTailPromptDotPack4, "_TexOut0Arr", output);
             Dispatch3D(_kVistaTailPromptDotPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, depth), 8, 8);
         }
 
@@ -4364,9 +4364,9 @@ namespace NcnnCompute
             _cs.SetInt("_VistaTailH", height);
             _cs.SetInt("_VistaTailD", depth);
             _cs.SetInt("_VistaTailPacks", packs);
-            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_VistaTailInArr", featureTex);
-            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_VistaTailPromptTex", promptTexture);
-            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_VistaTailOutArr", output);
+            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_TexIn0Arr", featureTex);
+            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_TexIn1Arr", promptTexture);
+            _cs.SetTexture(_kVistaTailPromptDotPack4Tex, "_TexOut0Arr", output);
             Dispatch3D(_kVistaTailPromptDotPack4Tex, output.width, output.height, ResolveRenderTextureDispatchDepth(output, depth), 8, 8);
         }
 
@@ -4433,8 +4433,8 @@ namespace NcnnCompute
             _cs.SetInt("_LnC", c);
             _cs.SetInt("_LnAffine", affine ? 1 : 0);
             _cs.SetFloat("_LnEps", eps);
-            _cs.SetTexture(_kLayerNormPack4WidthTex, "_LnTexInArr", input);
-            _cs.SetTexture(_kLayerNormPack4WidthTex, "_LnTexOutArr", output);
+            _cs.SetTexture(_kLayerNormPack4WidthTex, "_TexIn0Arr", input);
+            _cs.SetTexture(_kLayerNormPack4WidthTex, "_TexOut0Arr", output);
             _cs.SetBuffer(_kLayerNormPack4WidthTex, "_LnGamma", affine ? gamma : null);
             _cs.SetBuffer(_kLayerNormPack4WidthTex, "_LnBeta", affine ? beta : null);
             Dispatch3D(_kLayerNormPack4WidthTex, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, d * packs)), 8, 8);
@@ -4458,8 +4458,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_LnC", c);
             cmd.SetComputeIntParam(_cs, "_LnAffine", affine ? 1 : 0);
             cmd.SetComputeFloatParam(_cs, "_LnEps", eps);
-            cmd.SetComputeTextureParam(_cs, _kLayerNormPack4WidthTex, "_LnTexInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kLayerNormPack4WidthTex, "_LnTexOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kLayerNormPack4WidthTex, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kLayerNormPack4WidthTex, "_TexOut0Arr", output.nameID);
             if (affine)
             {
                 cmd.SetComputeBufferParam(_cs, _kLayerNormPack4WidthTex, "_LnGamma", gamma);
@@ -4491,8 +4491,8 @@ namespace NcnnCompute
             _cs.SetInt("_ReduceScalar2DAxis", axis);
             _cs.SetInt("_ReduceScalar2DOpType", opType);
             _cs.SetFloat("_ReduceScalar2DCoeff", coeff);
-            _cs.SetTexture(_kReductionScalar2D, "_ReduceScalar2DInArr", input);
-            _cs.SetTexture(_kReductionScalar2D, "_ReduceScalar2DOutArr", output);
+            _cs.SetTexture(_kReductionScalar2D, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReductionScalar2D, "_TexOut0Arr", output);
             Dispatch3D(_kReductionScalar2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -4506,8 +4506,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ReduceScalar2DAxis", axis);
             cmd.SetComputeIntParam(_cs, "_ReduceScalar2DOpType", opType);
             cmd.SetComputeFloatParam(_cs, "_ReduceScalar2DCoeff", coeff);
-            cmd.SetComputeTextureParam(_cs, _kReductionScalar2D, "_ReduceScalar2DInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kReductionScalar2D, "_ReduceScalar2DOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReductionScalar2D, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReductionScalar2D, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kReductionScalar2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
@@ -4805,16 +4805,16 @@ namespace NcnnCompute
             _cs.SetFloat("_GnEps", eps);
             _cs.SetInt("_GnAffine", 1);
 
-            _cs.SetTexture(_kGroupNormPack4Mean, "_GnTexInArr", input);
+            _cs.SetTexture(_kGroupNormPack4Mean, "_TexIn0Arr", input);
             _cs.SetBuffer(_kGroupNormPack4Mean, "_GnStatsOut", stats);
             _cs.Dispatch(_kGroupNormPack4Mean, Mathf.Max(1, group), 1, 1);
 
-            _cs.SetTexture(_kGroupNormPack4Variance, "_GnTexInArr", input);
+            _cs.SetTexture(_kGroupNormPack4Variance, "_TexIn0Arr", input);
             _cs.SetBuffer(_kGroupNormPack4Variance, "_GnStatsOut", stats);
             _cs.Dispatch(_kGroupNormPack4Variance, Mathf.Max(1, group), 1, 1);
 
-            _cs.SetTexture(_kGroupNormPack4ApplyMeanVar, "_GnTexInArr", input);
-            _cs.SetTexture(_kGroupNormPack4ApplyMeanVar, "_GnTexOutArr", output);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVar, "_TexIn0Arr", input);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVar, "_TexOut0Arr", output);
             _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnGamma", gamma);
             _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnBeta", beta);
             _cs.SetBuffer(_kGroupNormPack4ApplyMeanVar, "_GnStatsOut", stats);
@@ -4846,18 +4846,18 @@ namespace NcnnCompute
             _cs.SetFloat("_GnEps", eps);
             _cs.SetInt("_GnAffine", 1);
 
-            _cs.SetTexture(_kGroupNormPack4MeanTex, "_GnTexInArr", input);
-            _cs.SetTexture(_kGroupNormPack4MeanTex, "_GnStatsTexOut", statsA);
+            _cs.SetTexture(_kGroupNormPack4MeanTex, "_TexIn0Arr", input);
+            _cs.SetTexture(_kGroupNormPack4MeanTex, "_TexOut1Arr", statsA);
             _cs.Dispatch(_kGroupNormPack4MeanTex, Mathf.Max(1, group), 1, 1);
 
-            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_GnTexInArr", input);
-            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_GnStatsTexIn", statsA);
-            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_GnStatsTexOut", statsB);
+            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_TexIn0Arr", input);
+            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_TexIn1Arr", statsA);
+            _cs.SetTexture(_kGroupNormPack4VarianceTex, "_TexOut1Arr", statsB);
             _cs.Dispatch(_kGroupNormPack4VarianceTex, Mathf.Max(1, group), 1, 1);
 
-            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_GnTexInArr", input);
-            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_GnTexOutArr", output);
-            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_GnStatsTexIn", statsB);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_TexIn0Arr", input);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_TexOut0Arr", output);
+            _cs.SetTexture(_kGroupNormPack4ApplyMeanVarTex, "_TexIn1Arr", statsB);
             _cs.SetBuffer(_kGroupNormPack4ApplyMeanVarTex, "_GnGamma", gamma);
             _cs.SetBuffer(_kGroupNormPack4ApplyMeanVarTex, "_GnBeta", beta);
             Dispatch3D(_kGroupNormPack4ApplyMeanVarTex, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
@@ -4889,18 +4889,18 @@ namespace NcnnCompute
             cmd.SetComputeFloatParam(_cs, "_GnEps", eps);
             cmd.SetComputeIntParam(_cs, "_GnAffine", 1);
 
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4MeanTex, "_GnTexInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4MeanTex, "_GnStatsTexOut", statsA.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4MeanTex, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4MeanTex, "_TexOut1Arr", statsA.nameID);
             cmd.DispatchCompute(_cs, _kGroupNormPack4MeanTex, Mathf.Max(1, group), 1, 1);
 
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_GnTexInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_GnStatsTexIn", statsA.nameID);
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_GnStatsTexOut", statsB.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_TexIn1Arr", statsA.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4VarianceTex, "_TexOut1Arr", statsB.nameID);
             cmd.DispatchCompute(_cs, _kGroupNormPack4VarianceTex, Mathf.Max(1, group), 1, 1);
 
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnTexInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnTexOutArr", output.nameID);
-            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnStatsTexIn", statsB.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_TexOut0Arr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_TexIn1Arr", statsB.nameID);
             cmd.SetComputeBufferParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnGamma", gamma);
             cmd.SetComputeBufferParam(_cs, _kGroupNormPack4ApplyMeanVarTex, "_GnBeta", beta);
             Dispatch3D(cmd, _kGroupNormPack4ApplyMeanVarTex, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
@@ -5886,8 +5886,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             var outPacks = packs * 4;
-            _cs.SetTexture(_kReorgPack4, "_ReorgInArr", input);
-            _cs.SetTexture(_kReorgPack4, "_ReorgOutArr", output);
+            _cs.SetTexture(_kReorgPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReorgPack4, "_TexOut0Arr", output);
             Dispatch3D(_kReorgPack4, output.width, output.height, outPacks, 8, 8);
         }
 
@@ -5897,8 +5897,8 @@ namespace NcnnCompute
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             var outPacks = packs * 4;
-            cmd.SetComputeTextureParam(_cs, _kReorgPack4, "_ReorgInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kReorgPack4, "_ReorgOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReorgPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReorgPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kReorgPack4, output.width, output.height, outPacks, 8, 8);
         }
 
@@ -5909,8 +5909,8 @@ namespace NcnnCompute
             _cs.SetInt("_PointwiseType", (int)type);
             _cs.SetFloat("_PointwiseA", a);
             _cs.SetFloat("_PointwiseB", b);
-            _cs.SetTexture(_kPointwisePack4, "_PointwiseInArr", input);
-            _cs.SetTexture(_kPointwisePack4, "_PointwiseOutArr", output);
+            _cs.SetTexture(_kPointwisePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPointwisePack4, "_TexOut0Arr", output);
             Dispatch3D(_kPointwisePack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -5922,8 +5922,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PointwiseType", (int)type);
             cmd.SetComputeFloatParam(_cs, "_PointwiseA", a);
             cmd.SetComputeFloatParam(_cs, "_PointwiseB", b);
-            cmd.SetComputeTextureParam(_cs, _kPointwisePack4, "_PointwiseInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPointwisePack4, "_PointwiseOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPointwisePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPointwisePack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPointwisePack4, output.width, output.height, packs, 8, 8);
         }
 
@@ -5934,8 +5934,8 @@ namespace NcnnCompute
             _cs.SetInt("_PixelShufflePack4OutC", outChannels);
             _cs.SetInt("_PixelShufflePack4Scale", scale);
             _cs.SetInt("_PixelShufflePack4Mode", mode);
-            _cs.SetTexture(_kPixelShufflePack4, "_PixelShufflePack4InArr", input);
-            _cs.SetTexture(_kPixelShufflePack4, "_PixelShufflePack4OutArr", output);
+            _cs.SetTexture(_kPixelShufflePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPixelShufflePack4, "_TexOut0Arr", output);
             Dispatch3D(_kPixelShufflePack4, output.width, output.height, output.volumeDepth, 8, 8);
         }
 
@@ -5947,8 +5947,8 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_PixelShufflePack4OutC", outChannels);
             cmd.SetComputeIntParam(_cs, "_PixelShufflePack4Scale", scale);
             cmd.SetComputeIntParam(_cs, "_PixelShufflePack4Mode", mode);
-            cmd.SetComputeTextureParam(_cs, _kPixelShufflePack4, "_PixelShufflePack4InArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPixelShufflePack4, "_PixelShufflePack4OutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPixelShufflePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPixelShufflePack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kPixelShufflePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outChannels / 4f)), 8, 8);
         }
 
