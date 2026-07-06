@@ -659,6 +659,7 @@ public static class NcnnDebugRunner
             : ResolveMonaiInputPathsForRun(baselineManifestPath, useBaselineTensor);
         var outputDir = ResolveStringEnv(MonaiOutputDirEnvVar, null);
         var caseName = ResolveStringEnv(MonaiCaseNameEnvVar, null);
+        var lowPowerMode = MonaiLowPowerModeState.IsEnabled;
         var compareBaseline = ResolveBoolEnv(MonaiCompareBaselineEnvVar, true);
         var enableDump = ResolveBoolEnv(MonaiEnableDumpEnvVar, true);
         var dumpLargeTensors = ResolveBoolEnv(MonaiDumpLargeTensorsEnvVar, true);
@@ -744,6 +745,7 @@ public static class NcnnDebugRunner
             runner.slidingWindowManagedCleanupInterval = ResolvePositiveIntEnvAllowZero(MonaiManagedCleanupIntervalEnvVar, 1);
             runner.slidingWindowResourceSnapshotInterval = ResolvePositiveIntEnvAllowZero(MonaiResourceSnapshotIntervalEnvVar, 1);
             runner.slidingWindowAbortIfPrivateMemoryExceedsMb = Mathf.Max(0f, ResolveFloatEnvOrDefault(MonaiAbortPrivateMemoryMbEnvVar, 8192f));
+            runner.featureHeadChunkDepth = lowPowerMode ? 4 : 8;
             runner.logAllLayerHeartbeats = logAllLayerHeartbeats;
             runner.logAllLayerOutputs = logAllLayerOutputs;
             runner.logAllBufferMaterialize = logAllBufferMaterialize;
@@ -767,6 +769,9 @@ public static class NcnnDebugRunner
             }
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[MONAI Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+            Debug.Log(
+                "[MONAI Debug] low_power_mode=" + lowPowerMode
+                + " | feature_head_chunk_depth=" + runner.featureHeadChunkDepth.ToString(CultureInfo.InvariantCulture));
 
             var request = new MonaiRunRequest
             {
@@ -1084,6 +1089,7 @@ public static class NcnnDebugRunner
             runner.slidingWindowYieldInterval = 1;
             runner.slidingWindowManagedCleanupInterval = 1;
             runner.slidingWindowResourceSnapshotInterval = 1;
+            runner.featureHeadChunkDepth = MonaiLowPowerModeState.IsEnabled ? 4 : 8;
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[MONAI SelfTest Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
 

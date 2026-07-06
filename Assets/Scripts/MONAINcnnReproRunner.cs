@@ -197,6 +197,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public int slidingWindowYieldInterval = 1;
     public int slidingWindowManagedCleanupInterval = 1;
     public int slidingWindowResourceSnapshotInterval = 1;
+    public int featureHeadChunkDepth = 8;
     public float slidingWindowAbortIfPrivateMemoryExceedsMb = 0f;
     public bool forceBufferConvolution = false;
     public bool forceBufferBinaryOp = false;
@@ -2733,6 +2734,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return new JObject
         {
             ["path_mode"] = _lastPathMode ?? string.Empty,
+            ["low_power_mode"] = MonaiLowPowerModeState.IsEnabled,
+            ["feature_head_chunk_depth"] = featureHeadChunkDepth,
             ["process_private_mb"] = privateMb,
             ["process_working_set_mb"] = workingSetMb,
             ["managed_heap_mb"] = managedMb,
@@ -2921,7 +2924,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var plane = checked(width * height);
         var featureChannels = outputHead.featureChannels;
         var outputChannels = outputHead.outputChannels;
-        var baseChunkDepth = Math.Max(1, Math.Min(8, depthCount));
+        var baseChunkDepth = Math.Max(1, Math.Min(Math.Max(1, featureHeadChunkDepth), depthCount));
         var baseChunkVoxelCount = checked(baseChunkDepth * plane);
 
         var featureChunk = new float[checked(featureChannels * baseChunkVoxelCount)];
@@ -3054,7 +3057,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         var voxelCount = checked(depth * plane);
         var featureChannels = outputHead.featureChannels;
         var outputChannels = outputHead.outputChannels;
-        var baseChunkDepth = Math.Max(1, Math.Min(8, depth));
+        var baseChunkDepth = Math.Max(1, Math.Min(Math.Max(1, featureHeadChunkDepth), depth));
         var baseChunkVoxelCount = checked(baseChunkDepth * plane);
 
         var labelMap = new ushort[voxelCount];
@@ -4180,6 +4183,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             ["baseline_manifest_path"] = request.baselineManifestPath,
             ["input_blob_name"] = request.inputBlobName,
             ["output_blob_name"] = request.outputBlobName,
+            ["low_power_mode"] = MonaiLowPowerModeState.IsEnabled,
+            ["feature_head_chunk_depth"] = featureHeadChunkDepth,
             ["threshold"] = request.threshold,
             ["channel_fill"] = request.channelFillMode.ToString(),
             ["normalize_nonzero"] = request.normalizeNonZero,
@@ -4434,6 +4439,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         sb.AppendLine("model_param=" + (request.modelParamPath ?? string.Empty));
         sb.AppendLine("output_dir=" + (_lastDumpDir ?? string.Empty));
         sb.AppendLine("path_mode=" + (_lastPathMode ?? string.Empty));
+        sb.AppendLine("low_power_mode=" + MonaiLowPowerModeState.IsEnabled);
+        sb.AppendLine("feature_head_chunk_depth=" + featureHeadChunkDepth.ToString(CultureInfo.InvariantCulture));
         sb.AppendLine("network_input_shape_ncdhw=1," + request.inputChannels + "," + request.networkInputDepth + "," + request.networkInputHeight + "," + request.networkInputWidth);
         sb.AppendLine("processed_input_shape_ncdhw=1," + request.inputChannels + "," + request.processedInputDepth + "," + request.processedInputHeight + "," + request.processedInputWidth);
         sb.AppendLine("full_input_shape_ncdhw=1," + request.inputChannels + "," + request.fullInputDepth + "," + request.fullInputHeight + "," + request.fullInputWidth);
