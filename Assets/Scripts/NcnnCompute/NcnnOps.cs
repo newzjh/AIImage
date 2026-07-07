@@ -327,6 +327,16 @@ namespace NcnnCompute
         private readonly int _kFillPack4FromBufferCdhw;
         private readonly int _kFillScalarTexture;
         private readonly int _kFillScalarLinearMat;
+        private readonly int _kSentisConstantLinearMat;
+        private readonly int _kSentisRangeLinearMat;
+        private readonly int _kSentisExpandLinearMat;
+        private readonly int _kSentisWhereLinearMat;
+        private readonly int _kSentisGatherLinearMat;
+        private readonly int _kSentisGatherElementsLinearMat;
+        private readonly int _kSentisArgReduceLinearMat;
+        private readonly int _kSentisTopKLinearMat;
+        private readonly int _kSentisOneHotLinearMat;
+        private readonly int _kSentisCumSumLinearMat;
         private readonly int _kScalePack4;
         private readonly int _kAddBiasPack4;
         private readonly int _kBatchNormPack4;
@@ -529,6 +539,16 @@ namespace NcnnCompute
             _kFillPack4FromBufferCdhw = _cs.FindKernel("NcnnFillPack4FromBufferCDHW");
             _kFillScalarTexture = _cs.FindKernel("NcnnFillScalarTexture");
             _kFillScalarLinearMat = _cs.FindKernel("NcnnFillScalarLinearMat");
+            _kSentisConstantLinearMat = _cs.FindKernel("NcnnSentisConstantLinearMat");
+            _kSentisRangeLinearMat = _cs.FindKernel("NcnnSentisRangeLinearMat");
+            _kSentisExpandLinearMat = _cs.FindKernel("NcnnSentisExpandLinearMat");
+            _kSentisWhereLinearMat = _cs.FindKernel("NcnnSentisWhereLinearMat");
+            _kSentisGatherLinearMat = _cs.FindKernel("NcnnSentisGatherLinearMat");
+            _kSentisGatherElementsLinearMat = _cs.FindKernel("NcnnSentisGatherElementsLinearMat");
+            _kSentisArgReduceLinearMat = _cs.FindKernel("NcnnSentisArgReduceLinearMat");
+            _kSentisTopKLinearMat = _cs.FindKernel("NcnnSentisTopKLinearMat");
+            _kSentisOneHotLinearMat = _cs.FindKernel("NcnnSentisOneHotLinearMat");
+            _kSentisCumSumLinearMat = _cs.FindKernel("NcnnSentisCumSumLinearMat");
             _kScalePack4 = _cs.FindKernel("NcnnScalePack4");
             _kAddBiasPack4 = _cs.FindKernel("NcnnAddBiasPack4");
             _kBatchNormPack4 = _cs.FindKernel("NcnnBatchNormPack4");
@@ -884,6 +904,480 @@ namespace NcnnCompute
             if (values.Length > 1) values4.y = values[1];
             if (values.Length > 2) values4.z = values[2];
             if (values.Length > 3) values4.w = values[3];
+        }
+
+        private void SetSentisShape(
+            int kernel,
+            string prefix,
+            NcnnRepro.BufferShape logicalShape,
+            NcnnRepro.BufferShape storageShape)
+        {
+            _cs.SetInt(prefix + "Dims", logicalShape.dims);
+            _cs.SetInt(prefix + "W", Mathf.Max(1, logicalShape.w));
+            _cs.SetInt(prefix + "H", Mathf.Max(1, logicalShape.h));
+            _cs.SetInt(prefix + "D", Mathf.Max(1, logicalShape.d));
+            _cs.SetInt(prefix + "C", Mathf.Max(1, logicalShape.c));
+            _cs.SetInt(prefix + "StorageW", Mathf.Max(1, storageShape.w));
+            _cs.SetInt(prefix + "StorageH", Mathf.Max(1, storageShape.h));
+        }
+
+        private void SetSentisShape(
+            CommandBuffer cmd,
+            string prefix,
+            NcnnRepro.BufferShape logicalShape,
+            NcnnRepro.BufferShape storageShape)
+        {
+            cmd.SetComputeIntParam(_cs, prefix + "Dims", logicalShape.dims);
+            cmd.SetComputeIntParam(_cs, prefix + "W", Mathf.Max(1, logicalShape.w));
+            cmd.SetComputeIntParam(_cs, prefix + "H", Mathf.Max(1, logicalShape.h));
+            cmd.SetComputeIntParam(_cs, prefix + "D", Mathf.Max(1, logicalShape.d));
+            cmd.SetComputeIntParam(_cs, prefix + "C", Mathf.Max(1, logicalShape.c));
+            cmd.SetComputeIntParam(_cs, prefix + "StorageW", Mathf.Max(1, storageShape.w));
+            cmd.SetComputeIntParam(_cs, prefix + "StorageH", Mathf.Max(1, storageShape.h));
+        }
+
+        public void SentisConstantLinearMat(float value, int total, RenderTexture output)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_SentisValue0", value);
+            _cs.SetInt("_SentisTotal", Mathf.Max(1, total));
+            _cs.SetTexture(_kSentisConstantLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisConstantLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisConstantLinearMat(CommandBuffer cmd, float value, int total, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeFloatParam(_cs, "_SentisValue0", value);
+            cmd.SetComputeIntParam(_cs, "_SentisTotal", Mathf.Max(1, total));
+            cmd.SetComputeTextureParam(_cs, _kSentisConstantLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisConstantLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisRangeLinearMat(float start, float delta, int total, RenderTexture output)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_SentisValue0", start);
+            _cs.SetFloat("_SentisValue1", delta);
+            _cs.SetInt("_SentisTotal", Mathf.Max(1, total));
+            _cs.SetTexture(_kSentisRangeLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisRangeLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisRangeLinearMat(CommandBuffer cmd, float start, float delta, int total, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeFloatParam(_cs, "_SentisValue0", start);
+            cmd.SetComputeFloatParam(_cs, "_SentisValue1", delta);
+            cmd.SetComputeIntParam(_cs, "_SentisTotal", Mathf.Max(1, total));
+            cmd.SetComputeTextureParam(_cs, _kSentisRangeLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisRangeLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisExpandLinearMat(
+            RenderTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(_kSentisExpandLinearMat, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(_kSentisExpandLinearMat, "_SentisOut", outShape, outStorageShape);
+            _cs.SetTexture(_kSentisExpandLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kSentisExpandLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisExpandLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisExpandLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
+            cmd.SetComputeTextureParam(_cs, _kSentisExpandLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisExpandLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisExpandLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisWhereLinearMat(
+            RenderTexture cond,
+            NcnnRepro.BufferShape condShape,
+            NcnnRepro.BufferShape condStorageShape,
+            RenderTexture a,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.BufferShape aStorageShape,
+            RenderTexture b,
+            NcnnRepro.BufferShape bShape,
+            NcnnRepro.BufferShape bStorageShape,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture output)
+        {
+            if (cond == null) throw new ArgumentNullException(nameof(cond));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(_kSentisWhereLinearMat, "_SentisIn0", condShape, condStorageShape);
+            SetSentisShape(_kSentisWhereLinearMat, "_SentisIn1", aShape, aStorageShape);
+            SetSentisShape(_kSentisWhereLinearMat, "_SentisIn2", bShape, bStorageShape);
+            SetSentisShape(_kSentisWhereLinearMat, "_SentisOut", outShape, outStorageShape);
+            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearIn0", cond);
+            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearIn1", a);
+            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearIn2", b);
+            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisWhereLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisWhereLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture cond,
+            NcnnRepro.BufferShape condShape,
+            NcnnRepro.BufferShape condStorageShape,
+            ComputeTexture a,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.BufferShape aStorageShape,
+            ComputeTexture b,
+            NcnnRepro.BufferShape bShape,
+            NcnnRepro.BufferShape bStorageShape,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (cond == null) throw new ArgumentNullException(nameof(cond));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(cmd, "_SentisIn0", condShape, condStorageShape);
+            SetSentisShape(cmd, "_SentisIn1", aShape, aStorageShape);
+            SetSentisShape(cmd, "_SentisIn2", bShape, bStorageShape);
+            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
+            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearIn0", cond.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearIn1", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearIn2", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisWhereLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisGatherLinearMat(
+            RenderTexture data,
+            NcnnRepro.BufferShape dataShape,
+            NcnnRepro.BufferShape dataStorageShape,
+            RenderTexture indices,
+            NcnnRepro.BufferShape indicesShape,
+            NcnnRepro.BufferShape indicesStorageShape,
+            int axis,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture output)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(_kSentisGatherLinearMat, "_SentisIn0", dataShape, dataStorageShape);
+            SetSentisShape(_kSentisGatherLinearMat, "_SentisIn1", indicesShape, indicesStorageShape);
+            SetSentisShape(_kSentisGatherLinearMat, "_SentisOut", outShape, outStorageShape);
+            _cs.SetInt("_SentisAxis", axis);
+            _cs.SetTexture(_kSentisGatherLinearMat, "_LinearIn0", data);
+            _cs.SetTexture(_kSentisGatherLinearMat, "_LinearIn1", indices);
+            _cs.SetTexture(_kSentisGatherLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisGatherLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisGatherLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture data,
+            NcnnRepro.BufferShape dataShape,
+            NcnnRepro.BufferShape dataStorageShape,
+            ComputeTexture indices,
+            NcnnRepro.BufferShape indicesShape,
+            NcnnRepro.BufferShape indicesStorageShape,
+            int axis,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(cmd, "_SentisIn0", dataShape, dataStorageShape);
+            SetSentisShape(cmd, "_SentisIn1", indicesShape, indicesStorageShape);
+            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
+            cmd.SetComputeTextureParam(_cs, _kSentisGatherLinearMat, "_LinearIn0", data.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisGatherLinearMat, "_LinearIn1", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisGatherLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisGatherLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisGatherElementsLinearMat(
+            RenderTexture data,
+            NcnnRepro.BufferShape dataShape,
+            NcnnRepro.BufferShape dataStorageShape,
+            RenderTexture indices,
+            NcnnRepro.BufferShape indicesShape,
+            NcnnRepro.BufferShape indicesStorageShape,
+            int axis,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture output)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(_kSentisGatherElementsLinearMat, "_SentisIn0", dataShape, dataStorageShape);
+            SetSentisShape(_kSentisGatherElementsLinearMat, "_SentisIn1", indicesShape, indicesStorageShape);
+            SetSentisShape(_kSentisGatherElementsLinearMat, "_SentisOut", outShape, outStorageShape);
+            _cs.SetInt("_SentisAxis", axis);
+            _cs.SetTexture(_kSentisGatherElementsLinearMat, "_LinearIn0", data);
+            _cs.SetTexture(_kSentisGatherElementsLinearMat, "_LinearIn1", indices);
+            _cs.SetTexture(_kSentisGatherElementsLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisGatherElementsLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisGatherElementsLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture data,
+            NcnnRepro.BufferShape dataShape,
+            NcnnRepro.BufferShape dataStorageShape,
+            ComputeTexture indices,
+            NcnnRepro.BufferShape indicesShape,
+            NcnnRepro.BufferShape indicesStorageShape,
+            int axis,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(cmd, "_SentisIn0", dataShape, dataStorageShape);
+            SetSentisShape(cmd, "_SentisIn1", indicesShape, indicesStorageShape);
+            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
+            cmd.SetComputeTextureParam(_cs, _kSentisGatherElementsLinearMat, "_LinearIn0", data.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisGatherElementsLinearMat, "_LinearIn1", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisGatherElementsLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisGatherElementsLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisArgReduceLinearMat(
+            RenderTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            int axis,
+            bool keepDims,
+            bool selectLast,
+            bool reduceMax,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(_kSentisArgReduceLinearMat, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(_kSentisArgReduceLinearMat, "_SentisOut", outShape, outStorageShape);
+            _cs.SetInt("_SentisAxis", axis);
+            _cs.SetInt("_SentisKeepDims", keepDims ? 1 : 0);
+            _cs.SetInt("_SentisSelectLast", selectLast ? 1 : 0);
+            _cs.SetInt("_SentisMode", reduceMax ? 1 : 0);
+            _cs.SetTexture(_kSentisArgReduceLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kSentisArgReduceLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisArgReduceLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisArgReduceLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            int axis,
+            bool keepDims,
+            bool selectLast,
+            bool reduceMax,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_SentisKeepDims", keepDims ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_SentisSelectLast", selectLast ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_SentisMode", reduceMax ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kSentisArgReduceLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisArgReduceLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisArgReduceLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisTopKLinearMat(
+            RenderTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            int axis,
+            int k,
+            bool largest,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture values,
+            RenderTexture indices)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (values == null) throw new ArgumentNullException(nameof(values));
+            SetSentisShape(_kSentisTopKLinearMat, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(_kSentisTopKLinearMat, "_SentisOut", outShape, outStorageShape);
+            _cs.SetInt("_SentisAxis", axis);
+            _cs.SetInt("_SentisK", Mathf.Max(1, k));
+            _cs.SetInt("_SentisMode", largest ? 1 : 0);
+            _cs.SetInt("_SentisHasIndices", indices != null ? 1 : 0);
+            _cs.SetTexture(_kSentisTopKLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kSentisTopKLinearMat, "_LinearOut0", values);
+            _cs.SetTexture(_kSentisTopKLinearMat, "_LinearOut1", indices != null ? indices : values);
+            Dispatch2D(_cs, _kSentisTopKLinearMat, values.width, values.height, 8, 8);
+        }
+
+        public void SentisTopKLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            int axis,
+            int k,
+            bool largest,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture values,
+            ComputeTexture indices)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (values == null) throw new ArgumentNullException(nameof(values));
+            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_SentisK", Mathf.Max(1, k));
+            cmd.SetComputeIntParam(_cs, "_SentisMode", largest ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_SentisHasIndices", indices != null ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kSentisTopKLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisTopKLinearMat, "_LinearOut0", values.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisTopKLinearMat, "_LinearOut1", indices != null ? indices.nameID : values.nameID);
+            Dispatch2D(cmd, _cs, _kSentisTopKLinearMat, values.width, values.height, 8, 8);
+        }
+
+        public void SentisOneHotLinearMat(
+            RenderTexture indices,
+            NcnnRepro.BufferShape indicesShape,
+            NcnnRepro.BufferShape indicesStorageShape,
+            int axis,
+            int depth,
+            float offValue,
+            float onValue,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture output)
+        {
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(_kSentisOneHotLinearMat, "_SentisIn0", indicesShape, indicesStorageShape);
+            SetSentisShape(_kSentisOneHotLinearMat, "_SentisOut", outShape, outStorageShape);
+            _cs.SetInt("_SentisAxis", axis);
+            _cs.SetInt("_SentisK", Mathf.Max(1, depth));
+            _cs.SetFloat("_SentisValue0", offValue);
+            _cs.SetFloat("_SentisValue1", onValue);
+            _cs.SetTexture(_kSentisOneHotLinearMat, "_LinearIn0", indices);
+            _cs.SetTexture(_kSentisOneHotLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisOneHotLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisOneHotLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture indices,
+            NcnnRepro.BufferShape indicesShape,
+            NcnnRepro.BufferShape indicesStorageShape,
+            int axis,
+            int depth,
+            float offValue,
+            float onValue,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(cmd, "_SentisIn0", indicesShape, indicesStorageShape);
+            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_SentisK", Mathf.Max(1, depth));
+            cmd.SetComputeFloatParam(_cs, "_SentisValue0", offValue);
+            cmd.SetComputeFloatParam(_cs, "_SentisValue1", onValue);
+            cmd.SetComputeTextureParam(_cs, _kSentisOneHotLinearMat, "_LinearIn0", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisOneHotLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisOneHotLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisCumSumLinearMat(
+            RenderTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            int axis,
+            bool exclusive,
+            bool reverse,
+            NcnnRepro.BufferShape outStorageShape,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(_kSentisCumSumLinearMat, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(_kSentisCumSumLinearMat, "_SentisOut", inShape, outStorageShape);
+            _cs.SetInt("_SentisAxis", axis);
+            _cs.SetInt("_SentisExclusive", exclusive ? 1 : 0);
+            _cs.SetInt("_SentisReverse", reverse ? 1 : 0);
+            _cs.SetTexture(_kSentisCumSumLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kSentisCumSumLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kSentisCumSumLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void SentisCumSumLinearMat(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape inStorageShape,
+            int axis,
+            bool exclusive,
+            bool reverse,
+            NcnnRepro.BufferShape outStorageShape,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
+            SetSentisShape(cmd, "_SentisOut", inShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_SentisExclusive", exclusive ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_SentisReverse", reverse ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kSentisCumSumLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSentisCumSumLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSentisCumSumLinearMat, output.width, output.height, 8, 8);
         }
 
         public void ScalePack4(RenderTexture input, float k, int packs, RenderTexture output)

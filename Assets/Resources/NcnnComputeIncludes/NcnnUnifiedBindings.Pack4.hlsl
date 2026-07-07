@@ -9,6 +9,7 @@ RWTexture2DArray<float4> _TexOut1Arr;
 // Shared linear-mat slots used by Texture2D<float>-backed RepoVkMat kernels.
 Texture2D<float> _LinearIn0;
 Texture2D<float> _LinearIn1;
+Texture2D<float> _LinearIn2;
 RWTexture2D<float> _LinearOut0;
 RWTexture2D<float> _LinearOut1;
 

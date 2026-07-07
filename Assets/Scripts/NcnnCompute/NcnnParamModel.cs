@@ -154,6 +154,25 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey MaxUnPooling = NcnnLayerTypeKey.FromString("MaxUnPooling");
         public static readonly NcnnLayerTypeKey Tile = NcnnLayerTypeKey.FromString("Tile");
         public static readonly NcnnLayerTypeKey Unfold = NcnnLayerTypeKey.FromString("Unfold");
+        public static readonly NcnnLayerTypeKey Shape = NcnnLayerTypeKey.FromString("Shape");
+        public static readonly NcnnLayerTypeKey Size = NcnnLayerTypeKey.FromString("Size");
+        public static readonly NcnnLayerTypeKey Range = NcnnLayerTypeKey.FromString("Range");
+        public static readonly NcnnLayerTypeKey ConstantOfShape = NcnnLayerTypeKey.FromString("ConstantOfShape");
+        public static readonly NcnnLayerTypeKey Expand = NcnnLayerTypeKey.FromString("Expand");
+        public static readonly NcnnLayerTypeKey ArgMax = NcnnLayerTypeKey.FromString("ArgMax");
+        public static readonly NcnnLayerTypeKey ArgMin = NcnnLayerTypeKey.FromString("ArgMin");
+        public static readonly NcnnLayerTypeKey Where = NcnnLayerTypeKey.FromString("Where");
+        public static readonly NcnnLayerTypeKey TopK = NcnnLayerTypeKey.FromString("TopK");
+        public static readonly NcnnLayerTypeKey NonZero = NcnnLayerTypeKey.FromString("NonZero");
+        public static readonly NcnnLayerTypeKey OneHot = NcnnLayerTypeKey.FromString("OneHot");
+        public static readonly NcnnLayerTypeKey CumSum = NcnnLayerTypeKey.FromString("CumSum");
+        public static readonly NcnnLayerTypeKey Compress = NcnnLayerTypeKey.FromString("Compress");
+        public static readonly NcnnLayerTypeKey Gather = NcnnLayerTypeKey.FromString("Gather");
+        public static readonly NcnnLayerTypeKey GatherElements = NcnnLayerTypeKey.FromString("GatherElements");
+        public static readonly NcnnLayerTypeKey GatherND = NcnnLayerTypeKey.FromString("GatherND");
+        public static readonly NcnnLayerTypeKey ScatterElements = NcnnLayerTypeKey.FromString("ScatterElements");
+        public static readonly NcnnLayerTypeKey ScatterND = NcnnLayerTypeKey.FromString("ScatterND");
+        public static readonly NcnnLayerTypeKey Scatter = NcnnLayerTypeKey.FromString("Scatter");
     }
 
     [Serializable]

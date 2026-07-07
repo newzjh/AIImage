@@ -48,6 +48,16 @@
 #pragma kernel NcnnFillPack4FromBufferCDHW
 #pragma kernel NcnnFillScalarTexture
 #pragma kernel NcnnFillScalarLinearMat
+#pragma kernel NcnnSentisConstantLinearMat
+#pragma kernel NcnnSentisRangeLinearMat
+#pragma kernel NcnnSentisExpandLinearMat
+#pragma kernel NcnnSentisWhereLinearMat
+#pragma kernel NcnnSentisGatherLinearMat
+#pragma kernel NcnnSentisGatherElementsLinearMat
+#pragma kernel NcnnSentisArgReduceLinearMat
+#pragma kernel NcnnSentisTopKLinearMat
+#pragma kernel NcnnSentisOneHotLinearMat
+#pragma kernel NcnnSentisCumSumLinearMat
 #pragma kernel NcnnScalePack4
 #pragma kernel NcnnAddBiasPack4
 #pragma kernel NcnnBatchNormPack4
@@ -284,6 +294,16 @@ void NcnnFillPack4FromBufferCHW_Impl(uint3 id);
 void NcnnFillPack4FromBufferCDHW_Impl(uint3 id);
 void NcnnFillScalarTexture_Impl(uint3 id);
 void NcnnFillScalarLinearMat_Impl(uint3 id);
+void NcnnSentisConstantLinearMat_Impl(uint3 id);
+void NcnnSentisRangeLinearMat_Impl(uint3 id);
+void NcnnSentisExpandLinearMat_Impl(uint3 id);
+void NcnnSentisWhereLinearMat_Impl(uint3 id);
+void NcnnSentisGatherLinearMat_Impl(uint3 id);
+void NcnnSentisGatherElementsLinearMat_Impl(uint3 id);
+void NcnnSentisArgReduceLinearMat_Impl(uint3 id);
+void NcnnSentisTopKLinearMat_Impl(uint3 id);
+void NcnnSentisOneHotLinearMat_Impl(uint3 id);
+void NcnnSentisCumSumLinearMat_Impl(uint3 id);
 void NcnnScalePack4_Impl(uint3 id);
 void NcnnAddBiasPack4_Impl(uint3 id);
 void NcnnBatchNormPack4_Impl(uint3 id);
@@ -898,6 +918,45 @@ StructuredBuffer<float> _FillIn;
 
 float4 _FillScalarValues4;
 int _FillScalarValueCount;
+int _SentisTotal;
+int _SentisMode;
+int _SentisAxis;
+int _SentisK;
+int _SentisKeepDims;
+int _SentisSelectLast;
+int _SentisHasIndices;
+int _SentisExclusive;
+int _SentisReverse;
+float _SentisValue0;
+float _SentisValue1;
+int _SentisIn0Dims;
+int _SentisIn0W;
+int _SentisIn0H;
+int _SentisIn0D;
+int _SentisIn0C;
+int _SentisIn0StorageW;
+int _SentisIn0StorageH;
+int _SentisIn1Dims;
+int _SentisIn1W;
+int _SentisIn1H;
+int _SentisIn1D;
+int _SentisIn1C;
+int _SentisIn1StorageW;
+int _SentisIn1StorageH;
+int _SentisIn2Dims;
+int _SentisIn2W;
+int _SentisIn2H;
+int _SentisIn2D;
+int _SentisIn2C;
+int _SentisIn2StorageW;
+int _SentisIn2StorageH;
+int _SentisOutDims;
+int _SentisOutW;
+int _SentisOutH;
+int _SentisOutD;
+int _SentisOutC;
+int _SentisOutStorageW;
+int _SentisOutStorageH;
 int _FillW;
 int _FillH;
 int _FillD;
@@ -925,6 +984,66 @@ void NcnnFillScalarTexture(uint3 id : SV_DispatchThreadID)
 void NcnnFillScalarLinearMat(uint3 id : SV_DispatchThreadID)
 {
     NcnnFillScalarLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisConstantLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisConstantLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisRangeLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisRangeLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisExpandLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisExpandLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisWhereLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisWhereLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisGatherLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisGatherLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisGatherElementsLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisGatherElementsLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisArgReduceLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisArgReduceLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisTopKLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisTopKLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisOneHotLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisOneHotLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSentisCumSumLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSentisCumSumLinearMat_Impl(id);
 }
 
 float _ScaleK;
@@ -3034,6 +3153,7 @@ void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4PointwiseNorm.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.PriorBox.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferTensor.hlsl"
+#include "NcnnComputeIncludes/KernelGroups/NcnnKernels.SentisOps.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.GroupNorm.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferAttention.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferPointwiseNorm.hlsl"
