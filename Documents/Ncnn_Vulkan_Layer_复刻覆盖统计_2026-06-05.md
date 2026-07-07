@@ -1,6 +1,6 @@
 # ncnn Vulkan Layer 复刻覆盖统计
 
-更新时间：2026-07-06
+更新时间：2026-07-07
 
 ## 统计口径
 
@@ -23,15 +23,16 @@
   - `别名`：只透传纹理/shape/contract，不做真实算子计算
   - `材质化`：由 buffer 结果或常量直接材质化为纹理，不是该层自己的真实 RT shader
   - `占位`：只发布 shape-correct placeholder，保证链路可编译/可串接
+  - `显式报错`：入口已注册，但因动态输出长度、冲突写入或缺少 shape-tensor 值流，RT/Cmd 路径主动拒绝执行，不回退到 buffer
   - `无`：该路径当前没有独立实现，实际会回到别的路径
 
 ## 最新结论
 
 - 官方 Vulkan layer 数量仍为 `64`
 - 当前工程对官方 `64/64` 全部有复刻入口，覆盖率仍为 `100%`
-- 当前 `NcnnLayerFactoryRepro` 注册入口数为 `77`
-- 当前 `Ncnn*LayerRepro.cs` 实现文件数为 `68`
-- 相比官方 Vulkan 口径，仓内额外扩展了 `13` 个入口：
+- 当前 `NcnnLayerFactoryRepro` 注册入口数为 `96`
+- 当前 `Ncnn*LayerRepro.cs` 实现文件数为 `69`（不含 `NcnnBaseLayerRepro.cs` 基类）
+- 相比官方 Vulkan 口径，仓内额外扩展了 `32` 个入口：
   - `Input`
   - `pnnx.Expression`
   - `aten::to`
@@ -45,6 +46,25 @@
   - `MaxUnPooling`
   - `Squeeze`
   - `Tile`
+  - `Shape`
+  - `Size`
+  - `Range`
+  - `ConstantOfShape`
+  - `Expand`
+  - `ArgMax`
+  - `ArgMin`
+  - `Where`
+  - `TopK`
+  - `NonZero`
+  - `OneHot`
+  - `CumSum`
+  - `Compress`
+  - `Gather`
+  - `GatherElements`
+  - `GatherND`
+  - `ScatterElements`
+  - `ScatterND`
+  - `Scatter`
 
 ## 这轮需要特别记录的变化
 
@@ -59,6 +79,7 @@
   - `GetTextureContract / GetCmdTensorContract`
   - `TryGetExistingTextureContract`
 - 结果上，alias-compatible 的 `reshape` 现在已经能把 `storageShape` 往下游传递，避免不必要的物理重排；这点已经重新用真实 runner 跑过 CLIP 和 Matting 路径验证。
+- 本轮新增 `NcnnSentisLayerRepro`，把 Sentis / ONNX 常见 shape、索引选择、gather/scatter 入口纳入注册表；可静态确定输出形状的分支走 LinearMat 纹理 kernel，动态输出长度或冲突写入类算子显式报错，不走 ComputeBuffer fallback。
 
 ## 代码与验证基线
 
@@ -139,7 +160,7 @@
 | `unaryop_vulkan` | `NcnnUnaryOpLayerRepro` | legacy完整 | 真实 | 真实 | UnaryOp pack4 shader 已接通 |
 | `unfold_vulkan` | `NcnnUnfoldLayerRepro` | legacy完整 | 无 | 占位 | 当前只有 legacy 真值路径 |
 
-## 仓内额外 13 层当前状态
+## 仓内原有额外 13 层当前状态
 
 | 仓内扩展层 | 当前入口 | Buffer(legacy) | RT | Cmd | 备注 |
 | --- | --- | --- | --- | --- | --- |
@@ -157,6 +178,30 @@
 | `Squeeze` | `NcnnSqueezeLayerRepro` | legacy完整 | 无 | 别名 | cmd 当前是统一契约 alias |
 | `Tile` | `NcnnTileLayerRepro` | legacy完整 | 别名 | 占位 | `tiles<=1` 仅 alias；真正 tile 仍无 RT/cmd 真实路径 |
 
+## 本轮新增 Sentis/ONNX 扩展 19 层当前状态
+
+| Sentis/ONNX 扩展层 | 当前入口 | Buffer(legacy) | RT | Cmd | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| `Shape` | `NcnnShapeLayerRepro` | 无 | 真实 | 真实 | 根据已知 logical shape 生成 shape tensor；空 shape slice 显式报错 |
+| `Size` | `NcnnSizeLayerRepro` | 无 | 真实 | 真实 | 根据已知 logical shape 生成元素数量标量 |
+| `Range` | `NcnnRangeLayerRepro` | 无 | 部分 | 部分 | 需要静态 `start/limit/delta`；空 range 显式报错 |
+| `ConstantOfShape` | `NcnnConstantOfShapeLayerRepro` | 无 | 部分 | 部分 | 需要静态 shape 参数；暂不读取动态 shape tensor |
+| `Expand` | `NcnnExpandLayerRepro` | 无 | 部分 | 部分 | 需要静态目标 shape；真实 LinearMat 广播 kernel |
+| `ArgMax` | `NcnnArgReduceLayerRepro(ArgMax)` | 无 | 真实 | 真实 | 支持 `axis/keepdims/selectLastIndex` 静态参数 |
+| `ArgMin` | `NcnnArgReduceLayerRepro(ArgMin)` | 无 | 真实 | 真实 | 支持 `axis/keepdims/selectLastIndex` 静态参数 |
+| `Where` | `NcnnWhereLayerRepro` | 无 | 真实 | 真实 | 三输入广播后走 LinearMat 纹理 kernel |
+| `TopK` | `NcnnTopKLayerRepro` | 无 | 部分 | 部分 | 支持静态 `k/axis/largest`，可输出 values 与 indices |
+| `NonZero` | `NcnnUnsupportedSentisLayerRepro` | 无 | 显式报错 | 显式报错 | 输出长度依赖数据，需要 GPU compaction / shape-tensor 支持 |
+| `OneHot` | `NcnnOneHotLayerRepro` | 无 | 部分 | 部分 | 支持静态 `depth/axis/on_value/off_value` |
+| `CumSum` | `NcnnCumSumLayerRepro` | 无 | 真实 | 真实 | 支持静态 `axis/exclusive/reverse` |
+| `Compress` | `NcnnUnsupportedSentisLayerRepro` | 无 | 显式报错 | 显式报错 | 输出长度依赖 condition，除非上游静态折叠 |
+| `Gather` | `NcnnGatherLayerRepro` | 无 | 真实 | 真实 | 支持 rank<=4 的 LinearMat gather |
+| `GatherElements` | `NcnnGatherElementsLayerRepro` | 无 | 真实 | 真实 | 校验 data/indices 同 rank 与非 axis 维度兼容 |
+| `GatherND` | `NcnnUnsupportedSentisLayerRepro` | 无 | 显式报错 | 显式报错 | 已注册，仍缺 texture-backed ND 索引实现 |
+| `ScatterElements` | `NcnnUnsupportedSentisLayerRepro` | 无 | 显式报错 | 显式报错 | 需要冲突安全 texture 写入 / reduction 策略 |
+| `ScatterND` | `NcnnUnsupportedSentisLayerRepro` | 无 | 显式报错 | 显式报错 | 需要冲突安全 texture 写入 / reduction 策略 |
+| `Scatter` | `NcnnUnsupportedSentisLayerRepro` | 无 | 显式报错 | 显式报错 | 需要冲突安全 texture 写入 / reduction 策略 |
+
 ## Sentis 对比：Sentis 有，而当前复刻 ncnn 还缺的
 
 对比来源：Unity 官方 `Sentis / AI Inference 2.6.1` 的 Supported ONNX operators 页面  
@@ -173,9 +218,9 @@
 
 | 类别 | Sentis 已支持，但当前 ncnn 复刻仍缺 | 备注 |
 | --- | --- | --- |
-| Shape / 元信息 | `Shape`, `Size`, `Range`, `ConstantOfShape`, `Expand` | 当前没有通用 shape tensor 流与按 shape 构造张量的层 |
-| 索引 / 选择 | `ArgMax`, `ArgMin`, `Where`, `TopK`, `NonZero`, `OneHot`, `CumSum`, `Compress` | 这些在当前 `NcnnLayerTypes` 里都没有直接入口 |
-| Gather / Scatter | `Gather`, `GatherElements`, `GatherND`, `ScatterElements`, `ScatterND`, `Scatter` | 当前没有通用 gather/scatter 家族 |
+| Shape / 元信息 | 通用动态 shape tensor 值流、动态输入驱动的 `Range / ConstantOfShape / Expand` | 本轮已有静态参数与元信息可解析路径；动态 shape tensor 暂不读回、不 fallback |
+| 索引 / 选择 | `NonZero`, `Compress`，以及 `TopK` 动态 `k` / `OneHot` 动态 depth 与 values | 本轮已补 `ArgMax / ArgMin / Where / TopK / OneHot / CumSum` 的静态可定形纹理路径 |
+| Gather / Scatter | `GatherND`, `ScatterElements`, `ScatterND`, `Scatter` | 本轮已补 `Gather / GatherElements`；scatter 家族仍缺冲突安全写入策略 |
 | 采样 / 检测 | `GridSample`, `RoiAlign`, `NonMaxSuppression` | 这类对视觉模型接入价值高，但当前没有对应层 |
 | 序列 / 采样随机 | `LSTM`, `Bernoulli`, `Multinomial`, `RandomNormal`, `RandomNormalLike`, `RandomUniform`, `RandomUniformLike` | 当前完全缺层 |
 | 频域 / 音频 | `DFT`, `STFT`, `MelWeightMatrix`, `BlackmanWindow`, `HammingWindow`, `HannWindow` | 当前完全缺层 |
@@ -222,8 +267,8 @@
 
 如果按“最可能直接提升新模型导入成功率”的顺序排：
 
-1. `Shape / Size / Range / ConstantOfShape / Expand`
-2. `Gather / GatherElements / GatherND / Where / TopK / OneHot / NonZero`
+1. 通用 shape tensor 值流，以及动态 `Range / ConstantOfShape / Expand`
+2. `NonZero / Compress / GatherND`，以及动态 `TopK / OneHot` 参数输入
 3. `ScatterElements / ScatterND / Scatter`
 4. `GridSample / RoiAlign / NonMaxSuppression`
 5. `LSTM` 与随机采样类
@@ -240,9 +285,11 @@
 - 仍需继续把更多 `Cmd` 侧的 placeholder 收敛为真实 `ComputeTexture` pack4 路径
 - `InnerProduct / Gemm / MatMul / MultiHeadAttention / SDPA / Reduction / Softmax / Reshape` 这些层已经有部分真实 cmd/RT 特化，但仍不是全覆盖
 - `RotaryEmbed / Flatten / Squeeze / Tile` 这类层在 cmd/RT 侧仍有较明显的“alias-only / placeholder-only”尾巴
+- Sentis 结构类算子当前只承诺 pack4 RT / CommandBuffer 的纹理路径；动态输出长度、动态 shape 值消费、scatter 冲突写入仍需要后续专项实现
 
 ## 本次状态
 
 - 本轮已重新对照当前代码与官方 `ref/ncnn-master/src/layer/vulkan`
 - 本轮已按最新代码状态更新官方 `64` 层与仓内额外 `13` 层的表述
-- 本轮已补入 Sentis 官方支持而当前 ncnn 复刻仍缺的主要缺口
+- 本轮已补入 Sentis 官方支持而当前 ncnn 复刻仍缺的第一批 shape / indexing / gather-scatter 入口
+- 本轮新增 Sentis 纹理 kernel 通过 `dotnet build Assembly-CSharp.csproj -v minimal` 与 Unity batch compute shader 导入验证
