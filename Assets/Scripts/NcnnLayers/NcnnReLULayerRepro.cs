@@ -113,15 +113,8 @@ namespace NcnnCompute
                                                 var outDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
                                                 var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, RenderTextureFormat.ARGBHalf);
                                                 owner.Ops.LeakyReluPack4(cmd, src.texture, slope, src.packs, outArr);
-                                                blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-                                                {
-                                                    texture = outArr,
-                                                    width = src.width,
-                                                    height = src.height,
-                                                    packs = src.packs,
-                                                    refs = 1,
-                                                    owned = true
-                                                };
+                                                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                                                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true);
                                                 if (shapes != null)
                                                     shapes[layer.topNames[0]] = srcShape;
                                                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

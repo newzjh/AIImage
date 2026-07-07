@@ -312,6 +312,16 @@ namespace NcnnCompute
             if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var src, out var srcShape))
                 throw new InvalidOperationException("Reshape render-texture path requires existing texture input: " + layer.name);
 
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (ShouldKeepVistaTailFeatureTextureAlias(owner, layer, srcShape, outShape))
+            {
+                var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
+                textureShapes[layer.topNames[0]] = outShape;
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
             if (ShouldAllowAttentionPack4ReshapeSpecializations(owner))
             {
                 if (TryExecuteRenderTextureWindowPartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
@@ -357,7 +367,6 @@ namespace NcnnCompute
                 }
             }
 
-            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
             if (ShouldAllowGenericPack4ReshapeSpecializations(owner))
             {
                 if (TryExecuteRenderTexturePack4ToScalar2DReshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
@@ -400,6 +409,19 @@ namespace NcnnCompute
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var bottomShapes = BuildCmdBottomShapes(layer, blobs, shapes);
+            var initialOutShape = !string.IsNullOrWhiteSpace(layer.GetString(6, null))
+                ? NcnnRepro.EvaluateReshapeShapeExpression(layer.GetString(6, null), bottomShapes, layer)
+                : NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (ShouldKeepVistaTailFeatureTextureAlias(owner, layer, srcShape, initialOutShape))
+            {
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, initialOutShape, storageShape);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = initialOutShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
 
             if (ShouldAllowAttentionPack4ReshapeSpecializations(owner))
             {

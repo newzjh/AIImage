@@ -150,7 +150,11 @@ namespace NcnnCompute
             var blobs = context.blobs;
             var shapes = context.shapes;
 
-            if (!owner._memoryData.TryGetValue(layer.name, out var mp) || mp.data == null)
+            if (!owner._memoryData.TryGetValue(layer.name, out var mp))
+                throw new InvalidOperationException("MemoryData not found: " + layer.name);
+            if (TryPublishVistaPromptPack4CmdBlob(owner, cmd, layer, mp, blobs, shapes))
+                return;
+            if (mp.data == null && !TryCreateMemoryDataBuffer(mp))
                 throw new InvalidOperationException("MemoryData not found: " + layer.name);
 
             owner.PublishCmdTensorBufferOutput(
@@ -209,6 +213,38 @@ namespace NcnnCompute
                 + " | layer=" + layer.name
                 + " | top=" + layer.topNames[0]
                 + " | packs=" + memoryPack.pack4RtDepth.ToString(CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        private static bool TryPublishVistaPromptPack4CmdBlob(
+            NcnnRepro owner,
+            CommandBuffer cmd,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.MemoryDataPack memoryPack,
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            if (!ShouldUseVistaPromptPack4RtOnly(owner, layer, memoryPack))
+                return false;
+            if (!TryGetOrCreateVistaPromptPack4Rt(memoryPack, memoryPack.w, out var promptRt) || promptRt == null)
+                return false;
+            if (layer.topNames == null || layer.topNames.Length == 0 || string.IsNullOrWhiteSpace(layer.topNames[0]))
+                return false;
+
+            var packs = Mathf.Max(1, memoryPack.pack4RtDepth);
+            var outArr = owner.RentTempArray(cmd, promptRt.width, promptRt.height, packs, promptRt.format);
+            for (var pack = 0; pack < packs; pack++)
+                cmd.CopyTexture(promptRt, pack, 0, outArr.nameID, pack, 0);
+
+            var logicalShape = new NcnnRepro.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, memoryPack.d, memoryPack.c);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, logicalShape, logicalShape, owned: true);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = logicalShape;
+            owner.DebugLog?.Invoke(
+                "[MemoryDataPack4Rt][cmd] direct publish"
+                + " | layer=" + layer.name
+                + " | top=" + layer.topNames[0]
+                + " | packs=" + packs.ToString(CultureInfo.InvariantCulture));
             return true;
         }
 

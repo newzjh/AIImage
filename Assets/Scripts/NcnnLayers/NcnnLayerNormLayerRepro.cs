@@ -337,7 +337,7 @@ namespace NcnnCompute
                     + " | layer=" + layer.name
                     + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
                     + " | packs=" + src.packs
-                    + " | outFormat=" + outArr.format);
+                    + " | outFormat=" + outFormat);
             }
             else
             {
