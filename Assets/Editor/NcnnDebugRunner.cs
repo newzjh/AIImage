@@ -215,6 +215,9 @@ public static class NcnnDebugRunner
             case nameof(RunStableDiffusionDebugBatch):
                 RunStableDiffusionDebugBatch();
                 return;
+            case nameof(RunStableDiffusionBaselineDebugBatch):
+                RunStableDiffusionBaselineDebugBatch();
+                return;
             case nameof(RunCodeFormerStressBatch):
                 RunCodeFormerStressBatch();
                 return;
@@ -1166,7 +1169,20 @@ public static class NcnnDebugRunner
             SDNcnnReproResult result;
             if (initTex != null && maskTex != null)
             {
-                result = await runner.InpaintAsync(initTex, maskTex, positivePrompt, negativePrompt, width, height, steps, seed, strength, CancellationToken.None);
+                result = await RunStableDiffusionInpaintingPack4Async(
+                    go,
+                    initTex,
+                    maskTex,
+                    positivePrompt,
+                    negativePrompt,
+                    steps,
+                    seed,
+                    strength,
+                    runner.enableDebugDump,
+                    runner.tensorTextureFormat,
+                    runner.decoderTensorTextureFormat,
+                    runner.encoderTensorTextureFormat,
+                    runner.keepRawConvWeightsForTexturePath);
             }
             else if (initTex != null)
             {
@@ -1182,14 +1198,16 @@ public static class NcnnDebugRunner
                 + " | elapsedMs=" + result.elapsedMs
                 + " | seed=" + result.seed.ToString(CultureInfo.InvariantCulture)
                 + " | mode=" + (initTex != null ? (maskTex != null ? "inpainting" : "img2img") : "txt2img")
-                + " | dump=" + (runner.LastDumpDir ?? ""));
+                + " | dump=" + (result.dumpDir ?? runner.LastDumpDir ?? ""));
 
             if (result.texture != null)
             {
                 if (runner.enableDebugDump)
                 {
-                    var dir = !string.IsNullOrWhiteSpace(runner.LastDumpDir)
-                        ? runner.LastDumpDir
+                    var dir = !string.IsNullOrWhiteSpace(result.dumpDir)
+                        ? result.dumpDir
+                        : !string.IsNullOrWhiteSpace(runner.LastDumpDir)
+                            ? runner.LastDumpDir
                         : CreateGenericDumpDir("AIImage_SD_NcnnRepro");
                     TryWriteTexturePng(result.texture, dir, "final_output.png");
                 }
@@ -1203,6 +1221,70 @@ public static class NcnnDebugRunner
             if (maskTex != null)
                 UnityEngine.Object.DestroyImmediate(maskTex);
             UnityEngine.Object.DestroyImmediate(go);
+        }
+    }
+
+    private static async UniTask<SDNcnnReproResult> RunStableDiffusionInpaintingPack4Async(
+        GameObject owner,
+        Texture initTex,
+        Texture maskTex,
+        string positivePrompt,
+        string negativePrompt,
+        int steps,
+        int seed,
+        float strength,
+        bool enableDump,
+        RenderTextureFormat tensorFormat,
+        RenderTextureFormat decoderTensorFormat,
+        RenderTextureFormat encoderTensorFormat,
+        bool keepRawConvWeights)
+    {
+        var runner = owner.AddComponent<SDInpaintingNcnnReproRunner>();
+        try
+        {
+            runner.enableDebugDump = enableDump;
+            runner.enableTempPool = false;
+            runner.maxPooledPerShape = 0;
+            runner.useOfficialUnetCache = false;
+            runner.tensorTextureFormat = tensorFormat;
+            runner.decoderTensorTextureFormat = decoderTensorFormat;
+            runner.encoderTensorTextureFormat = encoderTensorFormat;
+            runner.keepRawConvWeightsForTexturePath = keepRawConvWeights;
+            runner.enableAttentionMatMulPack4Specializations = true;
+            runner.useCommandBuffer = ResolveBoolEnv(SdUseCommandBufferEnvVar, false);
+            runner.useAsyncComputeCommandBuffer = ResolveBoolEnv(SdUseAsyncComputeEnvVar, runner.useAsyncComputeCommandBuffer);
+            runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
+            runner.defaultGuidanceScale = ResolveFloatEnvOrDefault(SdGuidanceScaleEnvVar, 7.5f);
+            runner.ProgressChanged += (value, message) =>
+            {
+                Debug.Log("[SD-INPAINT-PACK4] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+            };
+
+            var result = await runner.ProcessAsync(
+                initTex,
+                maskTex,
+                positivePrompt,
+                negativePrompt,
+                steps,
+                seed,
+                strength,
+                runner.defaultGuidanceScale,
+                CancellationToken.None);
+
+            return new SDNcnnReproResult
+            {
+                texture = result.texture,
+                error = result.error,
+                elapsedMs = result.elapsedMs,
+                seed = result.seed,
+                usedInitImage = true,
+                usedMask = true,
+                dumpDir = result.dumpDir ?? runner.LastDumpDir
+            };
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(runner);
         }
     }
 
@@ -1629,8 +1711,10 @@ public static class NcnnDebugRunner
                 throw new InvalidOperationException("YOLO failed: " + yoloResult.error);
             if (yoloResult.mask == null)
                 throw new InvalidOperationException("YOLO mask is null.");
-            if (yoloResult.personCount != 4)
-                throw new InvalidOperationException("Expected 4 persons on 02.png, got " + yoloResult.personCount + ".");
+            if (yoloResult.personCount <= 0)
+                throw new InvalidOperationException("YOLO detected no person regions for inpainting.");
+            if (yoloResult.maskCoverage01 <= 0f)
+                throw new InvalidOperationException("YOLO person mask coverage is zero.");
 
             TryWriteTexturePng(yoloResult.mask, outputDir, "01_person_mask.png");
             TryWriteTexturePng(yoloResult.texture, outputDir, "02_transparent_cutout.png");
