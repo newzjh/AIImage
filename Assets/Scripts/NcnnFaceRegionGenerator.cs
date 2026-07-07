@@ -130,6 +130,9 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public float faceRectThreshold = 0.18f;
     public bool enableTempPool = true;
     public int maxPooledPerShape = 2;
+    public bool disallowBufferAccess = false;
+    public bool disallowBufferOutputs = false;
+    public bool disallowBufferToTextureMaterialization = false;
     public bool autoOpenDumpDir = false;
     public bool enableDetailedProposalDump = true;
     public bool useArgbFloatForDetector = true;
@@ -340,8 +343,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     LogPhase(blobName
                         + " decode-start"
                         + " | logical=" + outW + "x" + outH + "x" + outC);
-                    var data = infer.GetBufferData(blobName);
-                    LogPhase(blobName + " buffer-ready | count=" + data.Length);
+                    var data = ReadInferBlobData(infer, blobName, out var dataSource);
+                    LogPhase(blobName + " data-ready | source=" + dataSource + " | count=" + data.Length);
                     var strideProposalStart = proposals.Count;
                     DecodeYoloV7LiteE(
                         proposals,
@@ -872,7 +875,16 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;
+        _repro.EnableGeneralTextureConvolution = preferTexturePathForFaceDetector || disallowBufferAccess;
+        _repro.EnableConv1x1TextureConvolution = true;
+        _repro.EnableDepthWiseTextureConvolution = true;
         _repro.TensorTextureFormat = useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        _repro.DisallowBufferAccess = disallowBufferAccess;
+        _repro.DisallowBufferOutputs = disallowBufferOutputs;
+        _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
+        _repro.DisallowInferenceTempComputeBuffers = disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
     }
 
     private static void AppendProposalSummary(List<string> lines, List<FaceProposal> proposals, List<int> picked, FaceProposal best, int imgW, int imgH)
@@ -948,34 +960,11 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         {
             if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
             {
-                    lines.Add(blobName + " | shape=missing");
-                    return;
-                }
-
-            float[] data;
-            string sourceKind;
-            try
-            {
-                data = infer.GetBufferData(blobName);
-                sourceKind = "buffer";
+                lines.Add(blobName + " | shape=missing");
+                return;
             }
-            catch
-            {
-                var tex = infer.GetTexture(blobName);
-                if (tex == null)
-                {
-                    lines.Add(blobName + " | preview_error=texture missing");
-                    return;
-                }
 
-                var packs = tex.volumeDepth > 0 ? tex.volumeDepth : 1;
-                var physicalChannels = packs * 4;
-                using var tempBuffer = new ComputeBuffer(tex.width * tex.height * physicalChannels, sizeof(float), ComputeBufferType.Structured);
-                _ops.Pack4ToBufferCHW(tex, tex.width, tex.height, physicalChannels, tempBuffer);
-                data = new float[tempBuffer.count];
-                tempBuffer.GetData(data);
-                sourceKind = "texture";
-            }
+            var data = ReadInferBlobData(infer, blobName, out var sourceKind);
 
             var finiteCount = 0;
             var nonFiniteCount = 0;
@@ -1004,6 +993,48 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         {
             lines.Add(blobName + " | preview_error=" + e.Message);
         }
+    }
+
+    private float[] ReadInferBlobData(NcnnRepro.InferResult infer, string blobName, out string sourceKind)
+    {
+        sourceKind = "none";
+        if (infer == null || string.IsNullOrWhiteSpace(blobName))
+            return Array.Empty<float>();
+
+        if (ShouldAvoidInferenceBufferReadback())
+        {
+            if (infer.TryGetExistingTextureData(blobName, out var textureData) && textureData != null)
+            {
+                sourceKind = "texture-contract";
+                return textureData;
+            }
+
+            throw new InvalidOperationException("pack4-only guard: existing texture data unavailable | blob=" + blobName);
+        }
+
+        try
+        {
+            var data = infer.GetBufferData(blobName);
+            sourceKind = "buffer";
+            return data;
+        }
+        catch
+        {
+            if (infer.TryGetExistingTextureData(blobName, out var textureData) && textureData != null)
+            {
+                sourceKind = "texture-contract";
+                return textureData;
+            }
+
+            throw;
+        }
+    }
+
+    private bool ShouldAvoidInferenceBufferReadback()
+    {
+        return disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
     }
 
     private static string RectToString(Rect rect)

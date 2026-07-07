@@ -102,18 +102,17 @@ namespace NcnnCompute
                     idx.packs = tempIdxRt.volumeDepth > 0 ? tempIdxRt.volumeDepth : 1;
                 }
 
+                var outShape = new NcnnRepro.BufferShape(3, idx.sourceWidth, idx.sourceHeight, 1, srcShape.c);
                 var outRt = owner.RentTempArray(idx.sourceWidth, idx.sourceHeight, src.packs, RenderTextureFormat.ARGBHalf);
-                owner.ApplyMaxUnPoolingCpu(src, srcShape, idx, idx.sourceWidth, idx.sourceHeight, outRt);
-                textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
-                {
-                    texture = outRt,
-                    width = outRt.width,
-                    height = outRt.height,
-                    packs = src.packs,
-                    refs = 1,
-                    owned = true
-                };
-                textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, idx.sourceWidth, idx.sourceHeight, 1, srcShape.c);
+                var kernelW = layer.GetInt(1, 0);
+                var kernelH = layer.GetInt(11, kernelW);
+                var strideW = layer.GetInt(2, 1);
+                var strideH = layer.GetInt(12, strideW);
+                var padLeft = layer.GetInt(3, 0);
+                var padTop = layer.GetInt(13, padLeft);
+                owner.Ops.MaxUnPoolingPack4(src.texture, idx.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outRt);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureRef(outRt, outShape, outShape, owned: true);
+                textureShapes[layer.topNames[0]] = outShape;
             }
             finally
             {

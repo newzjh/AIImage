@@ -223,6 +223,10 @@ namespace NcnnCompute
             var canUseTextureBinary = !owner.ForceBufferBinaryOpAll
                 && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out aTex, out aTexShape)
                 && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out bTex, out bTexShape);
+            var pack4ATex = aTex;
+            var pack4BTex = bTex;
+            var pack4AShape = aTexShape;
+            var pack4BShape = bTexShape;
 
             if (canUseTextureBinary && NcnnRepro.CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
             {
@@ -272,7 +276,15 @@ namespace NcnnCompute
                 return;
             }
 
-            if (TryResolveExactScalar2DTextureBinaryPath(textureBlobs, textureShapes, layer.bottomNames[0], layer.bottomNames[1], out aTex, out aTexShape, out bTex, out bTexShape))
+            if (TryResolveExactScalar2DTextureBinaryPath(
+                textureBlobs,
+                textureShapes,
+                layer.bottomNames[0],
+                layer.bottomNames[1],
+                out var scalar2DATex,
+                out var scalar2DAShape,
+                out var scalar2DBTex,
+                out var scalar2DBShape))
             {
                 RenderTexture aScalarMaterialized = null;
                 RenderTexture bScalarMaterialized = null;
@@ -280,16 +292,16 @@ namespace NcnnCompute
                 RenderTexture finalTexture = null;
                 try
                 {
-                    var lhsTexture = MaterializeScalarLikeTexture(owner, aTex, aTexShape, scalarTextureFormat, ref aScalarMaterialized);
-                    var rhsTexture = MaterializeScalarLikeTexture(owner, bTex, bTexShape, scalarTextureFormat, ref bScalarMaterialized);
+                    var lhsTexture = MaterializeScalarLikeTexture(owner, scalar2DATex, scalar2DAShape, scalarTextureFormat, ref aScalarMaterialized);
+                    var rhsTexture = MaterializeScalarLikeTexture(owner, scalar2DBTex, scalar2DBShape, scalarTextureFormat, ref bScalarMaterialized);
                     if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
                     {
-                        scaledBTexture = owner.RentTempArray(bTex.width, bTex.height, 1, scalarTextureFormat);
+                        scaledBTexture = owner.RentTempArray(scalar2DBTex.width, scalar2DBTex.height, 1, scalarTextureFormat);
                         owner.Ops.ScalePack4(rhsTexture, owner.CodeFormerSftAddScale, 1, scaledBTexture);
                         rhsTexture = scaledBTexture;
                     }
 
-                    finalTexture = owner.RentTempArray(aTex.width, aTex.height, 1, scalarTextureFormat);
+                    finalTexture = owner.RentTempArray(scalar2DATex.width, scalar2DATex.height, 1, scalarTextureFormat);
                     if (isCodeFormerSftMul && owner.CodeFormerBypassSftMul)
                     {
                         owner.Ops.CopyPack4(lhsTexture, 0, finalTexture, 0, 1);
@@ -299,14 +311,14 @@ namespace NcnnCompute
                         owner.Ops.BinaryOpPack4(lhsTexture, rhsTexture, 1, opType, finalTexture);
                         if (isCodeFormerSftMul && owner.CodeFormerSftMulScale != 1f)
                         {
-                            var scaledOutTexture = owner.RentTempArray(aTex.width, aTex.height, 1, scalarTextureFormat);
+                            var scaledOutTexture = owner.RentTempArray(scalar2DATex.width, scalar2DATex.height, 1, scalarTextureFormat);
                             owner.Ops.ScalePack4(finalTexture, owner.CodeFormerSftMulScale, 1, scaledOutTexture);
                             owner.ReturnTempArray(finalTexture);
                             finalTexture = scaledOutTexture;
                         }
                     }
 
-                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, aTexShape);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalar2DAShape);
                     finalTexture = null;
                 }
                 finally
@@ -536,14 +548,14 @@ namespace NcnnCompute
             if (canUseTextureBinary
                 && !isTargetSftAddLayer
                 && !isTargetSftMulLayer
-                && TryResolvePack4SpatialBroadcast(aTex, aTexShape, bTex, bTexShape, out var broadcastMode, out var outShape, out var outWidth, out var outHeight, out var outPacks))
+                && TryResolvePack4SpatialBroadcast(pack4ATex, pack4AShape, pack4BTex, pack4BShape, out var broadcastMode, out var outShape, out var outWidth, out var outHeight, out var outPacks))
             {
                 RenderTexture finalTexture = null;
                 try
                 {
                     var spatialOutDepth = outShape.dims == 4 ? outShape.d * outPacks : outPacks;
                     finalTexture = owner.RentTempArray(outWidth, outHeight, spatialOutDepth, RenderTextureFormat.ARGBHalf);
-                    owner.Ops.BinaryOpPack4Broadcast(aTex.texture, bTex.texture, outPacks, opType, broadcastMode, finalTexture);
+                    owner.Ops.BinaryOpPack4Broadcast(pack4ATex.texture, pack4BTex.texture, outPacks, opType, broadcastMode, finalTexture);
                     NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, outShape);
                     finalTexture = null;
                 }
@@ -557,7 +569,32 @@ namespace NcnnCompute
                 return;
             }
 
+            owner.DebugLog?.Invoke(
+                "[BinaryOpRtUnsupported]"
+                + " | layer=" + (layer.name ?? string.Empty)
+                + " | opType=" + opType.ToString(CultureInfo.InvariantCulture)
+                + " | canUseTextureBinary=" + canUseTextureBinary.ToString()
+                + " | exact=" + (canUseTextureBinary && NcnnRepro.CanUseExactPack4BinaryPath(pack4ATex, pack4AShape, pack4BTex, pack4BShape)).ToString()
+                + " | spatial=" + (canUseTextureBinary && TryResolvePack4SpatialBroadcast(pack4ATex, pack4AShape, pack4BTex, pack4BShape, out _, out _, out _, out _, out _)).ToString()
+                + " | aTex=" + DescribeTensorRef(pack4ATex, pack4AShape)
+                + " | bTex=" + DescribeTensorRef(pack4BTex, pack4BShape));
             throw new InvalidOperationException("BinaryOp render-texture path unsupported config: " + layer.name);
+        }
+
+        private static string DescribeTensorRef(NcnnRepro.TensorRef tensor, NcnnRepro.BufferShape shape)
+        {
+            if (tensor == null || tensor.texture == null)
+                return "null";
+
+            return tensor.width.ToString(CultureInfo.InvariantCulture)
+                + "x" + tensor.height.ToString(CultureInfo.InvariantCulture)
+                + "x" + tensor.packs.ToString(CultureInfo.InvariantCulture)
+                + "p logical=d" + shape.dims.ToString(CultureInfo.InvariantCulture)
+                + ":" + shape.w.ToString(CultureInfo.InvariantCulture)
+                + "x" + shape.h.ToString(CultureInfo.InvariantCulture)
+                + "x" + shape.d.ToString(CultureInfo.InvariantCulture)
+                + "x" + shape.c.ToString(CultureInfo.InvariantCulture)
+                + " storage=" + NcnnRepro.GetTextureStorageShape(tensor, shape).ToString();
         }
 
         private static bool TryResolvePack4SpatialBroadcast(

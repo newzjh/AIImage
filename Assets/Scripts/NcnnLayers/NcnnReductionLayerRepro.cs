@@ -360,46 +360,50 @@ namespace NcnnCompute
 
             if (reduceSpatialOnly && !keepDims)
             {
-                var outRt = owner.RentTempArray(cmd, srcShape.c, 1, 1, RenderTextureFormat.ARGBHalf);
-                owner.Ops.Pack4ChannelsToWidth(cmd, pooled, srcShape.c, outRt);
+                var logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                var storageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalShape);
+                var outRt = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.ReshapePack4ToLinearMat(cmd, pooled, 1, 1, 1, srcShape.c, 3, outRt);
                 owner.ReturnTempArray(cmd, pooled);
                 context.blobs[outTop] = new NcnnRepro.CmdTensorRef
                 {
                     texture = outRt,
-                    width = srcShape.c,
-                    height = 1,
+                    width = outRt.width,
+                    height = outRt.height,
                     packs = 1,
                     refs = 1,
                     owned = true,
                     hasLogicalShape = true,
-                    logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1),
+                    logicalShape = logicalShape,
                     hasStorageShape = true,
-                    storageShape = new NcnnRepro.BufferShape(3, srcShape.c, 1, 1, 1)
+                    storageShape = storageShape
                 };
-                context.shapes[outTop] = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                context.shapes[outTop] = logicalShape;
                 owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
                 return true;
             }
 
             if (reduceSpatialAndChannels && !keepDims)
             {
-                var outRt = owner.RentTempArray(cmd, srcShape.c, 1, 1, RenderTextureFormat.ARGBHalf);
-                owner.Ops.Pack4ChannelsToWidth(cmd, pooled, srcShape.c, outRt);
+                var logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                var storageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalShape);
+                var outRt = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.ReshapePack4ToLinearMat(cmd, pooled, 1, 1, 1, srcShape.c, 3, outRt);
                 owner.ReturnTempArray(cmd, pooled);
                 context.blobs[outTop] = new NcnnRepro.CmdTensorRef
                 {
                     texture = outRt,
-                    width = srcShape.c,
-                    height = 1,
+                    width = outRt.width,
+                    height = outRt.height,
                     packs = 1,
                     refs = 1,
                     owned = true,
                     hasLogicalShape = true,
-                    logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1),
+                    logicalShape = logicalShape,
                     hasStorageShape = true,
-                    storageShape = new NcnnRepro.BufferShape(3, srcShape.c, 1, 1, 1)
+                    storageShape = storageShape
                 };
-                context.shapes[outTop] = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                context.shapes[outTop] = logicalShape;
                 owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
                 return true;
             }
@@ -477,6 +481,42 @@ namespace NcnnCompute
                 return true;
             }
 
+            if (reduceSpatialOnly && !keepDims)
+            {
+                var pooledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PoolingPack4(srcTex.texture, srcTex.packs, srcShape.w, srcShape.h, 1, 1, 0, 0, 1, pooledRt);
+                if (op == 0 && Mathf.Abs(coeff - area) > 1e-6f)
+                {
+                    var scaledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(pooledRt, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff * area, 0f, scaledRt);
+                    owner.ReturnTempArray(pooledRt);
+                    pooledRt = scaledRt;
+                }
+                else if (op == 3 && Mathf.Abs(coeff - 1f) > 1e-6f)
+                {
+                    var scaledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.PointwisePack4(pooledRt, srcTex.packs, NcnnOps.PointwiseType.ScaleScalar, coeff, 0f, scaledRt);
+                    owner.ReturnTempArray(pooledRt);
+                    pooledRt = scaledRt;
+                }
+
+                var logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
+                var storageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalShape);
+                var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.ReshapePack4ToLinearMat(pooledRt, 1, 1, 1, srcShape.c, 3, outRt);
+                owner.ReturnTempArray(pooledRt);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, outTop, outRt, logicalShape, storageShape);
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
+
             if (reduceSpatialAndChannels && !keepDims)
             {
                 var pooledRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
@@ -496,11 +536,11 @@ namespace NcnnCompute
                     pooledRt = scaledRt;
                 }
 
-                var outRt = owner.RentTempArray(srcShape.c, 1, 1, RenderTextureFormat.ARGBHalf);
-                owner.Ops.Pack4ChannelsToWidth(pooledRt, srcShape.c, outRt);
-                owner.ReturnTempArray(pooledRt);
                 var logicalShape = new NcnnRepro.BufferShape(1, srcShape.c, 1, 1, 1);
-                var storageShape = new NcnnRepro.BufferShape(3, srcShape.c, 1, 1, 1);
+                var storageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalShape);
+                var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.ReshapePack4ToLinearMat(pooledRt, 1, 1, 1, srcShape.c, 3, outRt);
+                owner.ReturnTempArray(pooledRt);
                 NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, outTop, outRt, logicalShape, storageShape);
                 owner.Consume(
                     context.textureBlobs,

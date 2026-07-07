@@ -59,6 +59,9 @@ public static class NcnnDebugRunner
     private const string YoloLogAllLayerOutputsEnvVar = "AIIMAGE_YOLOSEG_LOG_ALL_LAYER_OUTPUTS";
     private const string YoloLogAllBufferMaterializeEnvVar = "AIIMAGE_YOLOSEG_LOG_ALL_BUFFER_MATERIALIZE";
     private const string YoloPack4OnlyGuardEnvVar = "AIIMAGE_YOLOSEG_PACK4_ONLY_GUARD";
+    private const string FacePack4OnlyGuardEnvVar = "AIIMAGE_FACE_PACK4_ONLY_GUARD";
+    private const string MattingPack4OnlyGuardEnvVar = "AIIMAGE_MATTING_PACK4_ONLY_GUARD";
+    private const string GfpganPack4OnlyGuardEnvVar = "AIIMAGE_GFPGAN_PACK4_ONLY_GUARD";
     private const string ReproTempPoolEnvVar = "AIIMAGE_REPRO_TEMP_POOL";
     private const string SdWidthEnvVar = "AIIMAGE_SD_WIDTH";
     private const string SdHeightEnvVar = "AIIMAGE_SD_HEIGHT";
@@ -332,6 +335,7 @@ public static class NcnnDebugRunner
             var face = go.AddComponent<NcnnFaceRegionGenerator>();
             face.enableNcnnFaceRegion = true;
             face.preferTexturePathForFaceDetector = ResolveFacePreferTexturePath();
+            ApplyFacePack4GuardFromEnv(face);
             ApplyFaceThresholdOverrides(face);
             face.enableDetailedProposalDump = true;
             face.autoOpenDumpDir = false;
@@ -438,6 +442,7 @@ public static class NcnnDebugRunner
         {
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
+            ApplyGfpganPack4GuardFromEnv(runner);
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[GFPGAN Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
@@ -540,6 +545,10 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<MatterNcnnReproRunner>();
             runner.enableDebugDump = true;
             runner.forceBufferConvolution = false;
+            var mattingPack4OnlyGuard = ResolveBoolEnv(MattingPack4OnlyGuardEnvVar, false);
+            runner.disallowBufferAccess = mattingPack4OnlyGuard;
+            runner.disallowBufferOutputs = mattingPack4OnlyGuard;
+            runner.disallowBufferToTextureMaterialization = mattingPack4OnlyGuard;
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
             Debug.Log("Matting Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | dump=" + (runner.LastDumpDir ?? ""));
             if (!string.IsNullOrWhiteSpace(result.error))
@@ -588,20 +597,14 @@ public static class NcnnDebugRunner
             runner.logAllLayerHeartbeats = ResolveBoolEnv(YoloLogAllLayerHeartbeatsEnvVar, false);
             runner.logAllLayerOutputs = ResolveBoolEnv(YoloLogAllLayerOutputsEnvVar, false);
             runner.logAllBufferMaterialize = ResolveBoolEnv(YoloLogAllBufferMaterializeEnvVar, false);
+            var yoloPack4OnlyGuard = ResolveBoolEnv(YoloPack4OnlyGuardEnvVar, false);
+            runner.disallowBufferAccess = yoloPack4OnlyGuard;
+            runner.disallowBufferOutputs = yoloPack4OnlyGuard;
+            runner.disallowBufferToTextureMaterialization = yoloPack4OnlyGuard;
             runner.targetPersonOnly = true;
             runner.flipYInput = ResolveBoolEnv(YoloFlipYEnvVar, runner.flipYInput);
             runner.enableMaskClose = true;
             runner.enableMaskDilate = true;
-            if (ResolveBoolEnv(YoloPack4OnlyGuardEnvVar, false))
-            {
-                var reproField = typeof(YoloSegNcnnReproRunner).GetField("_repro", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (reproField?.GetValue(runner) is NcnnCompute.NcnnRepro repro)
-                {
-                    repro.DisallowBufferAccess = true;
-                    repro.DisallowBufferOutputs = true;
-                    repro.DisallowBufferToTextureMaterialization = true;
-                }
-            }
             runner.ProgressChanged += (value, message) =>
             {
                 Debug.Log("[YoloSeg-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
@@ -1966,6 +1969,7 @@ public static class NcnnDebugRunner
             var face = go.AddComponent<NcnnFaceRegionGenerator>();
             face.enableNcnnFaceRegion = true;
             face.preferTexturePathForFaceDetector = ResolveFacePreferTexturePath();
+            ApplyFacePack4GuardFromEnv(face);
             ApplyFaceThresholdOverrides(face);
             face.enableDetailedProposalDump = true;
             face.autoOpenDumpDir = false;
@@ -2077,18 +2081,21 @@ public static class NcnnDebugRunner
         if (runner == null)
             return;
 
+        var pack4OnlyGuard = ResolveBoolEnv(ClipPack4OnlyGuardEnvVar, false);
         runner.enableDebugDump = ResolveBoolEnv(ClipEnableDumpEnvVar, defaultEnableDebugDump);
-        runner.forceFullRenderTexturePath = ResolveBoolEnv(ClipForceFullRtEnvVar, runner.forceFullRenderTexturePath);
+        runner.forceFullRenderTexturePath = ResolveBoolEnv(ClipForceFullRtEnvVar, runner.forceFullRenderTexturePath)
+            || pack4OnlyGuard;
         runner.useCommandBuffer = ResolveBoolEnv(ClipUseCommandBufferEnvVar, runner.useCommandBuffer);
         runner.useAsyncComputeCommandBuffer = ResolveBoolEnv(ClipUseAsyncComputeEnvVar, runner.useAsyncComputeCommandBuffer);
         runner.enableGeneralTextureConvolution = ResolveBoolEnv(
             ClipEnableGeneralTexConvEnvVar,
-            runner.enableGeneralTextureConvolution || runner.forceFullRenderTexturePath);
+            runner.enableGeneralTextureConvolution || runner.forceFullRenderTexturePath)
+            || pack4OnlyGuard;
         runner.enableAttentionMatMulPack4Specializations = ResolveBoolEnv(
             ClipEnableAttentionMatMulPack4EnvVar,
-            runner.enableAttentionMatMulPack4Specializations || runner.forceFullRenderTexturePath);
+            runner.enableAttentionMatMulPack4Specializations || runner.forceFullRenderTexturePath)
+            || pack4OnlyGuard;
 
-        var pack4OnlyGuard = ResolveBoolEnv(ClipPack4OnlyGuardEnvVar, false);
         runner.disallowBufferAccess = pack4OnlyGuard;
         runner.disallowBufferOutputs = pack4OnlyGuard;
         runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
@@ -2148,6 +2155,7 @@ public static class NcnnDebugRunner
         {
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
+            ApplyGfpganPack4GuardFromEnv(runner);
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[GFPGAN Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
@@ -3534,6 +3542,28 @@ public static class NcnnDebugRunner
             face.probThreshold = Mathf.Clamp(prob, 0.01f, 0.99f);
         if (TryReadFloatEnv(FaceNmsThresholdEnvVar, out var nms))
             face.nmsThreshold = Mathf.Clamp01(nms);
+    }
+
+    private static void ApplyFacePack4GuardFromEnv(NcnnFaceRegionGenerator face)
+    {
+        if (face == null)
+            return;
+
+        var pack4OnlyGuard = ResolveBoolEnv(FacePack4OnlyGuardEnvVar, false);
+        face.disallowBufferAccess = pack4OnlyGuard;
+        face.disallowBufferOutputs = pack4OnlyGuard;
+        face.disallowBufferToTextureMaterialization = pack4OnlyGuard;
+    }
+
+    private static void ApplyGfpganPack4GuardFromEnv(GfpganNcnnReproRunner runner)
+    {
+        if (runner == null)
+            return;
+
+        var pack4OnlyGuard = ResolveBoolEnv(GfpganPack4OnlyGuardEnvVar, false);
+        runner.disallowBufferAccess = pack4OnlyGuard;
+        runner.disallowBufferOutputs = pack4OnlyGuard;
+        runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
     }
 
     private static bool TryReadFloatEnv(string envName, out float value)

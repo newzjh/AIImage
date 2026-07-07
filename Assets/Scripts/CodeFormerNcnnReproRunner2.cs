@@ -214,6 +214,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
                 faceRegion.enableTempPool = enableTempPool;
                 faceRegion.maxPooledPerShape = maxPooledPerShape;
+                var facePack4Only = ParseEnvBool(Pack4OnlyEnvVar) ?? true;
+                faceRegion.disallowBufferAccess = facePack4Only;
+                faceRegion.disallowBufferOutputs = facePack4Only;
+                faceRegion.disallowBufferToTextureMaterialization = facePack4Only;
                 FaceRegionFace[] faces = null;
                 if (faceRegion != null && faceRegion.enabled)
                 {

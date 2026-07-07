@@ -762,6 +762,137 @@ namespace NcnnCompute
                 return false;
             }
 
+            public bool TryGetExistingTextureData(string name, out float[] data)
+            {
+                data = null;
+                if (!TryGetExistingTextureContract(_textureBlobs, _textureShapes, name, out var textureRef, out var contract))
+                    return false;
+
+                data = ReadExistingTextureData(textureRef.texture, contract.LogicalShape, contract.StorageShape, contract.LayoutKind);
+                return true;
+            }
+
+            public float[] GetExistingTextureData(string name)
+            {
+                if (TryGetExistingTextureData(name, out var data) && data != null)
+                    return data;
+                throw new InvalidOperationException("texture blob not found: " + name);
+            }
+
+            private static float[] ReadExistingTextureData(
+                RenderTexture texture,
+                BufferShape logicalShape,
+                BufferShape storageShape,
+                RepoVkTensorLayoutKind layoutKind)
+            {
+                if (texture == null)
+                    return null;
+
+                var logicalCount = GetShapeElementCount(logicalShape);
+                if (logicalCount <= 0)
+                    return Array.Empty<float>();
+
+                var previousActive = RenderTexture.active;
+                Texture2D readback = null;
+                try
+                {
+                    readback = new Texture2D(
+                        Mathf.Max(1, texture.width),
+                        Mathf.Max(1, texture.height),
+                        TextureFormat.RGBAFloat,
+                        false,
+                        true);
+
+                    if (layoutKind == RepoVkTensorLayoutKind.LinearMat || texture.dimension == TextureDimension.Tex2D)
+                    {
+                        ReadRenderTextureSlice(texture, readback, 0);
+                        var raw = readback.GetRawTextureData<float>();
+                        var linearPhysicalCount = Mathf.Max(1, texture.width) * Mathf.Max(1, texture.height);
+                        if (logicalCount > linearPhysicalCount)
+                            throw new InvalidOperationException("linear texture logical shape mismatch | physical=" + linearPhysicalCount + " logical=" + logicalCount);
+
+                        var values = new float[logicalCount];
+                        for (var i = 0; i < logicalCount; i++)
+                            values[i] = raw[i * 4];
+                        return values;
+                    }
+
+                    var physicalShape = storageShape.dims > 0 ? storageShape : logicalShape;
+                    var physicalW = Mathf.Max(1, physicalShape.w > 0 ? physicalShape.w : texture.width);
+                    var physicalH = Mathf.Max(1, physicalShape.dims >= 2 && physicalShape.h > 0 ? physicalShape.h : texture.height);
+                    var physicalD = physicalShape.dims == 4 ? Mathf.Max(1, physicalShape.d) : 1;
+                    var physicalC = physicalShape.dims >= 3
+                        ? Mathf.Max(1, physicalShape.c)
+                        : Mathf.Max(1, logicalShape.c);
+                    var texturePhysicalCount = checked(physicalW * physicalH * physicalD * physicalC);
+                    if (logicalCount > texturePhysicalCount)
+                        throw new InvalidOperationException("texture logical shape mismatch | physical=" + texturePhysicalCount + " logical=" + logicalCount);
+
+                    var physical = logicalCount == texturePhysicalCount ? null : new float[texturePhysicalCount];
+                    var valuesOut = physical ?? new float[logicalCount];
+                    var packCount = Mathf.Max(1, Mathf.CeilToInt(physicalC / 4f));
+                    var availableSlices = Mathf.Max(1, texture.volumeDepth > 0 ? texture.volumeDepth : 1);
+                    var plane = physicalW * physicalH;
+
+                    for (var z = 0; z < physicalD; z++)
+                    {
+                        for (var pack = 0; pack < packCount; pack++)
+                        {
+                            var slice = physicalShape.dims == 4 ? z * packCount + pack : pack;
+                            if (slice >= availableSlices)
+                                continue;
+
+                            ReadRenderTextureSlice(texture, readback, slice);
+                            var raw = readback.GetRawTextureData<float>();
+                            for (var i = 0; i < plane; i++)
+                            {
+                                for (var lane = 0; lane < 4; lane++)
+                                {
+                                    var c = pack * 4 + lane;
+                                    if (c >= physicalC)
+                                        break;
+
+                                    var dst = physicalShape.dims == 4
+                                        ? ((c * physicalD + z) * plane) + i
+                                        : (c * plane) + i;
+                                    if ((uint)dst < (uint)valuesOut.Length)
+                                        valuesOut[dst] = raw[i * 4 + lane];
+                                }
+                            }
+                        }
+                    }
+
+                    if (physical == null)
+                        return valuesOut;
+
+                    var logicalValues = new float[logicalCount];
+                    Array.Copy(physical, logicalValues, logicalCount);
+                    return logicalValues;
+                }
+                finally
+                {
+                    RenderTexture.active = previousActive;
+                    if (readback != null)
+                        UnityEngine.Object.DestroyImmediate(readback);
+                }
+            }
+
+            private static void ReadRenderTextureSlice(RenderTexture texture, Texture2D readback, int slice)
+            {
+                Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, Mathf.Max(0, slice));
+                readback.ReadPixels(new Rect(0, 0, readback.width, readback.height), 0, 0, false);
+                readback.Apply(false, false);
+            }
+
+            private static int GetShapeElementCount(BufferShape shape)
+            {
+                return checked(
+                    Mathf.Max(1, shape.w)
+                    * Mathf.Max(1, shape.h)
+                    * Mathf.Max(1, shape.d)
+                    * Mathf.Max(1, shape.c));
+            }
+
             public ComputeBuffer GetBuffer(string name)
             {
                 return GetOrMaterializeBuffer(name);

@@ -169,6 +169,9 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public bool enableDepthWiseTextureConvolution = true;
     public bool enableConv1x1TextureConvolution = true;
     public bool enableGeneralTextureConvolution = true;
+    public bool disallowBufferAccess = false;
+    public bool disallowBufferOutputs = false;
+    public bool disallowBufferToTextureMaterialization = false;
     public bool enableLayerPathDebugLog = false;
     public bool logAllLayerHeartbeats = false;
     public bool logAllLayerOutputs = false;
@@ -528,6 +531,12 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             : enableDepthWiseTextureConvolution;
         _repro.EnableConv1x1TextureConvolution = enableConv1x1TextureConvolution;
         _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        _repro.DisallowBufferAccess = disallowBufferAccess;
+        _repro.DisallowBufferOutputs = disallowBufferOutputs;
+        _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
+        _repro.DisallowInferenceTempComputeBuffers = disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
         _repro.DebugCompareTextureLayers = null;
         _repro.DebugLogAllLayerHeartbeats = enableLayerPathDebugLog && logAllLayerHeartbeats;
         _repro.DebugLogAllLayerOutputs = enableLayerPathDebugLog && logAllLayerOutputs;
@@ -655,36 +664,34 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             throw new InvalidOperationException("Blob shape not found: " + blobName);
 
         float[] values;
+        if (ShouldAvoidInferenceBufferReadback())
+        {
+            if (infer.TryGetExistingTextureData(blobName, out values) && values != null)
+                return new BlobData(blobName, values, dims, w, h, d, c);
+
+            throw new InvalidOperationException("pack4-only guard: existing texture data unavailable | blob=" + blobName);
+        }
+
         try
         {
             values = infer.GetBufferData(blobName);
         }
         catch
         {
-            var texture = infer.GetTexture(blobName);
-            if (texture == null)
-                throw new InvalidOperationException("Blob data not found: " + blobName);
+            if (infer.TryGetExistingTextureData(blobName, out values) && values != null)
+                return new BlobData(blobName, values, dims, w, h, d, c);
 
-            var packs = texture.volumeDepth > 0 ? texture.volumeDepth : 1;
-            var physicalChannels = packs * 4;
-            var physicalCount = texture.width * texture.height * physicalChannels;
-            var physicalBuffer = NewTrackedBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured, "YoloSeg.ReadBlobPhysical");
-            try
-            {
-                _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, physicalChannels, physicalBuffer);
-                var physical = new float[physicalCount];
-                physicalBuffer.GetData(physical);
-                var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
-                values = new float[Mathf.Min(logicalCount, physical.Length)];
-                Array.Copy(physical, values, values.Length);
-            }
-            finally
-            {
-                DisposeBuffer(physicalBuffer, "YoloSeg.ReadBlobPhysical");
-            }
+            throw;
         }
 
         return new BlobData(blobName, values, dims, w, h, d, c);
+    }
+
+    private bool ShouldAvoidInferenceBufferReadback()
+    {
+        return disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
     }
 
     private void GenerateProposals(float[] pred, int rowCount, int rowWidth, LetterboxState letterbox, List<Proposal> proposals)

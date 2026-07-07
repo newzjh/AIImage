@@ -20,6 +20,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public bool enableTempPool = true;
     public int maxPooledPerShape = 2;
     public bool enableFaceRegionDebugDump = false;
+    public bool disallowBufferAccess = false;
+    public bool disallowBufferOutputs = false;
+    public bool disallowBufferToTextureMaterialization = false;
 
     public event Action<float, string> ProgressChanged;
 
@@ -186,6 +189,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
             faceRegion.enableTempPool = enableTempPool;
             faceRegion.maxPooledPerShape = maxPooledPerShape;
+            faceRegion.disallowBufferAccess = disallowBufferAccess;
+            faceRegion.disallowBufferOutputs = disallowBufferOutputs;
+            faceRegion.disallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
             RectInt rect = default;
             if (faceRegion != null && faceRegion.enabled)
             {
@@ -349,8 +355,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             //outTex.filterMode = FilterMode.Bilinear;
             return outTex;
         }
-        catch
+        catch (Exception e)
         {
+            UnityEngine.Debug.LogWarning("[GFPGAN Repro] RunGfpgan512 failed: " + e.Message);
             if (outTex != null) DestroyObjectSafe(outTex);
             return null;
         }
@@ -389,7 +396,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         {
             using (var result = _repro.Infer(inputPack4, 1, inputName, pinned))
             {
-                styles = result.GetBufferData("420");
+                styles = ReadInferBlobData(result, "420");
 
                 conditions = new RenderTexture[condNames.Length];
                 for (var i = 0; i < condNames.Length; i++)
@@ -400,8 +407,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
             return styles;
         }
-        catch
+        catch (Exception e)
         {
+            UnityEngine.Debug.LogWarning("[GFPGAN Repro] encoder failed: " + e.Message);
             if (conditions != null)
             {
                 for (var i = 0; i < conditions.Length; i++)
@@ -410,6 +418,39 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             }
             return null;
         }
+    }
+
+    private float[] ReadInferBlobData(NcnnRepro.InferResult result, string blobName)
+    {
+        if (result == null || string.IsNullOrWhiteSpace(blobName))
+            return Array.Empty<float>();
+
+        if (ShouldAvoidInferenceBufferReadback())
+        {
+            if (result.TryGetExistingTextureData(blobName, out var textureData) && textureData != null)
+                return textureData;
+
+            throw new InvalidOperationException("pack4-only guard: existing texture data unavailable | blob=" + blobName);
+        }
+
+        try
+        {
+            return result.GetBufferData(blobName);
+        }
+        catch
+        {
+            if (result.TryGetExistingTextureData(blobName, out var textureData) && textureData != null)
+                return textureData;
+
+            throw;
+        }
+    }
+
+    private bool ShouldAvoidInferenceBufferReadback()
+    {
+        return disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
     }
 
     private RenderTexture RunStyleConv(RenderTexture x, float[] styles, int styleRow, StyleConvWeights w, int sampleMode, bool demodulate)
@@ -881,6 +922,12 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _repro ??= new NcnnRepro(_ops);
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
+        _repro.DisallowBufferAccess = disallowBufferAccess;
+        _repro.DisallowBufferOutputs = disallowBufferOutputs;
+        _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
+        _repro.DisallowInferenceTempComputeBuffers = disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
     }
 
     private static bool IsLikelyVulkanOom(Exception e)

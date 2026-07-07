@@ -186,7 +186,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             {
                 inputPack4 = _imageRepro.RentTempArray(targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
                 _ops.PackRgbToPack4(resized, 0, 0, 1f, 1f, inputPack4, true);
-                if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                if (enableDebugDump && !ShouldAvoidInferenceBufferReadback() && !string.IsNullOrWhiteSpace(_lastDumpDir))
                     DumpPack4TextureLogical(inputPack4, targetSize, targetSize, 3, Path.Combine(_lastDumpDir, "image_blob_in0.txt"));
 
                 System.Collections.Generic.HashSet<string> pinnedImage = null;
@@ -345,12 +345,13 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         var strictProjectionReference = false;
         var allowGeneralTextureConvolution = enableGeneralTextureConvolution || imageUsesTexturePath;
         var allowAttentionMatMulPack4 = enableAttentionMatMulPack4Specializations || imageUsesTexturePath;
+        var avoidInferenceBufferReadback = ShouldAvoidInferenceBufferReadback();
         var captureImageDebugLog = enableDebugDump;
         var enableAnyDebugLogSink = captureImageDebugLog || ShouldForwardReproDebugLogToUnity();
         if (_imageRepro != null)
         {
             ConfigureClipRepro(_imageRepro, strictImageReference, allowGeneralTextureConvolution, allowAttentionMatMulPack4);
-            _imageRepro.DebugCompareTextureLayers = enableDebugDump
+            _imageRepro.DebugCompareTextureLayers = enableDebugDump && !avoidInferenceBufferReadback
                 ? new HashSet<string>(DebugImageCompareLayers, StringComparer.Ordinal)
                 : null;
             _imageCompareLines = captureImageDebugLog ? new List<string>() : null;
@@ -378,6 +379,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         repro.DisallowBufferAccess = disallowBufferAccess;
         repro.DisallowBufferOutputs = disallowBufferOutputs;
         repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
+        repro.DisallowInferenceTempComputeBuffers = disallowBufferAccess
+            || disallowBufferOutputs
+            || disallowBufferToTextureMaterialization;
         repro.DebugLogAllLayerHeartbeats = logAllLayerHeartbeats;
         repro.DebugLogAllLayerOutputs = logAllLayerOutputs;
         repro.DebugLogAllBufferMaterialize = logAllBufferMaterialize;
@@ -1176,6 +1180,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
     private void DumpPack4TextureLogical(RenderTexture texture, int width, int height, int channels, string path)
     {
+        if (ShouldAvoidInferenceBufferReadback())
+            return;
         if (texture == null || width <= 0 || height <= 0 || channels <= 0 || string.IsNullOrWhiteSpace(path))
             return;
 
@@ -1201,27 +1207,38 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         try
         {
             float[] values = null;
-            try
+            if (ShouldAvoidInferenceBufferReadback())
             {
-                values = infer.GetBufferData(blobName);
+                if (!infer.TryGetExistingTextureData(blobName, out values) || values == null)
+                    return;
             }
-            catch
+            else
             {
-                if (infer.TryGetLogicalShape(blobName, out _, out var w, out var h, out var d, out var c))
+                try
                 {
-                    var texture = infer.GetTexture(blobName);
-                    if (texture != null)
+                    values = infer.GetBufferData(blobName);
+                }
+                catch
+                {
+                    if (!infer.TryGetExistingTextureData(blobName, out values) || values == null)
                     {
-                        var packs = texture.volumeDepth > 0 ? texture.volumeDepth : 1;
-                        var physicalChannels = packs * 4;
-                        var physicalCount = texture.width * texture.height * physicalChannels;
-                        using var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
-                        _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, physicalChannels, physicalBuffer);
-                        var physical = new float[physicalCount];
-                        physicalBuffer.GetData(physical);
-                        var logicalCount = w * h * d * c;
-                        values = new float[Mathf.Min(logicalCount, physicalCount)];
-                        Array.Copy(physical, values, values.Length);
+                        if (infer.TryGetLogicalShape(blobName, out _, out var w, out var h, out var d, out var c))
+                        {
+                            var texture = infer.GetTexture(blobName);
+                            if (texture != null)
+                            {
+                                var packs = texture.volumeDepth > 0 ? texture.volumeDepth : 1;
+                                var physicalChannels = packs * 4;
+                                var physicalCount = texture.width * texture.height * physicalChannels;
+                                using var physicalBuffer = new ComputeBuffer(physicalCount, sizeof(float), ComputeBufferType.Structured);
+                                _ops.Pack4ToBufferCHW(texture, texture.width, texture.height, physicalChannels, physicalBuffer);
+                                var physical = new float[physicalCount];
+                                physicalBuffer.GetData(physical);
+                                var logicalCount = w * h * d * c;
+                                values = new float[Mathf.Min(logicalCount, physicalCount)];
+                                Array.Copy(physical, values, values.Length);
+                            }
+                        }
                     }
                 }
             }
@@ -1235,6 +1252,11 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         catch
         {
         }
+    }
+
+    private bool ShouldAvoidInferenceBufferReadback()
+    {
+        return disallowBufferAccess || disallowBufferOutputs || disallowBufferToTextureMaterialization;
     }
 
     private string BuildClassificationCacheSignature()
@@ -1294,7 +1316,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (outputCmd == null)
                 throw new InvalidOperationException("CLIP command-buffer image encoder produced no output texture.");
 
-            outputReadbackRt = _imageRepro.RentTempArray(EmbeddingSize, 1, 1, RenderTextureFormat.ARGBHalf);
+            outputReadbackRt = outputCmd.dimension == TextureDimension.Tex2D
+                ? _imageRepro.RentTempMat(outputCmd.width, outputCmd.height, outputCmd.format)
+                : _imageRepro.RentTempArray(outputCmd.width, outputCmd.height, outputCmd.depth, outputCmd.format);
             cmd.CopyTexture(outputCmd.nameID, 0, 0, outputReadbackRt, 0, 0);
 
             _imageRepro.ReturnTempArray(cmd, outputCmd);
@@ -1384,17 +1408,50 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             }
 
             Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, 0);
-            readbackTex = new Texture2D(width, 1, TextureFormat.RGBAHalf, false, true);
+            var readbackFormat = texture.format switch
+            {
+                RenderTextureFormat.RFloat => TextureFormat.RFloat,
+                RenderTextureFormat.RHalf => TextureFormat.RHalf,
+                RenderTextureFormat.ARGBFloat => TextureFormat.RGBAFloat,
+                _ => TextureFormat.RGBAHalf
+            };
+            readbackTex = new Texture2D(width, 1, readbackFormat, false, true);
             readbackTex.ReadPixels(new Rect(0, 0, width, 1), 0, 0, false);
             readbackTex.Apply(false, false);
 
-            var raw = readbackTex.GetRawTextureData<ushort>();
-            if (raw.Length < width * 4)
-                throw new InvalidOperationException("Readback payload too small for CLIP image embedding: " + raw.Length);
-
             var values = new float[width];
-            for (var i = 0; i < width; i++)
-                values[i] = HalfBitsToFloat(raw[i * 4]);
+            if (readbackFormat == TextureFormat.RFloat)
+            {
+                var rawFloat = readbackTex.GetRawTextureData<float>();
+                if (rawFloat.Length < width)
+                    throw new InvalidOperationException("Readback payload too small for CLIP RFloat embedding: " + rawFloat.Length);
+                for (var i = 0; i < width; i++)
+                    values[i] = rawFloat[i];
+            }
+            else if (readbackFormat == TextureFormat.RHalf)
+            {
+                var rawHalf = readbackTex.GetRawTextureData<ushort>();
+                if (rawHalf.Length < width)
+                    throw new InvalidOperationException("Readback payload too small for CLIP RHalf embedding: " + rawHalf.Length);
+                for (var i = 0; i < width; i++)
+                    values[i] = HalfBitsToFloat(rawHalf[i]);
+            }
+            else if (readbackFormat == TextureFormat.RGBAFloat)
+            {
+                var rawFloat4 = readbackTex.GetRawTextureData<float>();
+                if (rawFloat4.Length < width * 4)
+                    throw new InvalidOperationException("Readback payload too small for CLIP RGBAFloat embedding: " + rawFloat4.Length);
+                for (var i = 0; i < width; i++)
+                    values[i] = rawFloat4[i * 4];
+            }
+            else
+            {
+                var rawHalf4 = readbackTex.GetRawTextureData<ushort>();
+                if (rawHalf4.Length < width * 4)
+                    throw new InvalidOperationException("Readback payload too small for CLIP RGBAHalf embedding: " + rawHalf4.Length);
+                for (var i = 0; i < width; i++)
+                    values[i] = HalfBitsToFloat(rawHalf4[i * 4]);
+            }
 
             if (Application.isBatchMode)
                 UnityEngine.Debug.Log("[CLIP] image embedding readback done | values=" + values.Length);
