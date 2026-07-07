@@ -293,6 +293,7 @@ namespace NcnnCompute
         private readonly int _kConv3x3Pack4;
         private readonly int _kConvPack4General;
         private readonly int _kDeconvolutionPack4General;
+        private readonly int _kDeconvolutionDepthWisePack4;
         private readonly int _kConvDepthWisePack4;
         private readonly int _kWinograd23TransformInput;
         private readonly int _kWinograd23Gemm;
@@ -391,9 +392,14 @@ namespace NcnnCompute
         private readonly int _kReductionScalar2D;
         private readonly int _kReductionLinearMat2D;
         private readonly int _kEmbed;
+        private readonly int _kEmbedTexture;
+        private readonly int _kEmbedTextureLinearIndex;
+        private readonly int _kEmbedTexturePack4Index;
         private readonly int _kPermute;
         private readonly int _kSlice;
         private readonly int _kTile;
+        private readonly int _kTilePack4;
+        private readonly int _kTileLinearMat;
         private readonly int _kReduceSum256;
         private readonly int _kMulScalarBuf;
         private readonly int _kGroupNormStats;
@@ -426,16 +432,27 @@ namespace NcnnCompute
         private readonly int _kQuantizeBuf;
         private readonly int _kDequantizeBuf;
         private readonly int _kRequantizeBuf;
+        private readonly int _kCastPack4;
+        private readonly int _kQuantizePack4;
+        private readonly int _kDequantizePack4;
+        private readonly int _kRequantizePack4;
+        private readonly int _kNormalizePack4;
+        private readonly int _kLrnPack4;
+        private readonly int _kRmsNormPack4;
         private readonly int _kPixelShuffleBuf;
         private readonly int _kRotaryEmbedBuf;
+        private readonly int _kRotaryEmbedPack4;
+        private readonly int _kPriorBox;
         private readonly int _kNormalizeBuf;
         private readonly int _kLrnBuf;
         private readonly int _kRmsNormBuf;
         private readonly int _kUnfoldBuf;
+        private readonly int _kUnfoldPack4;
         private readonly int _kSdpaQkBuf;
         private readonly int _kSdpaSoftmaxBuf;
         private readonly int _kSdpaQkvBuf;
         private readonly int _kSdpaAttentionFast;
+        private ComputeBuffer _fallbackFloatBuffer;
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
         {
@@ -485,6 +502,7 @@ namespace NcnnCompute
             _kConv3x3Pack4 = _cs.FindKernel("NcnnConv3x3Pack4");
             _kConvPack4General = _cs.FindKernel("NcnnConvPack4General");
             _kDeconvolutionPack4General = _cs.FindKernel("NcnnDeconvolutionPack4General");
+            _kDeconvolutionDepthWisePack4 = _cs.FindKernel("NcnnDeconvolutionDepthWisePack4");
             _kConvDepthWisePack4 = _cs.FindKernel("NcnnConvDepthWisePack4");
             _kWinograd23TransformInput = _cs.FindKernel("NcnnWinograd23TransformInputPack4");
             _kWinograd23Gemm = _cs.FindKernel("NcnnWinograd23GemmPack4");
@@ -576,9 +594,14 @@ namespace NcnnCompute
             _kReductionScalar2D = _cs.FindKernel("NcnnReductionScalar2D");
             _kReductionLinearMat2D = _cs.FindKernel("NcnnReductionLinearMat2D");
             _kEmbed = _cs.FindKernel("NcnnEmbed");
+            _kEmbedTexture = _cs.FindKernel("NcnnEmbedTexture");
+            _kEmbedTextureLinearIndex = _cs.FindKernel("NcnnEmbedTextureLinearIndex");
+            _kEmbedTexturePack4Index = _cs.FindKernel("NcnnEmbedTexturePack4Index");
             _kPermute = _cs.FindKernel("NcnnPermute");
             _kSlice = _cs.FindKernel("NcnnSlice");
             _kTile = _cs.FindKernel("NcnnTile");
+            _kTilePack4 = _cs.FindKernel("NcnnTilePack4");
+            _kTileLinearMat = _cs.FindKernel("NcnnTileLinearMat");
             _kReduceSum256 = _cs.FindKernel("NcnnReduceSum256");
             _kMulScalarBuf = _cs.FindKernel("NcnnMulScalarBuf");
             _kGroupNormStats = _cs.FindKernel("NcnnGroupNormStats");
@@ -610,12 +633,22 @@ namespace NcnnCompute
             _kQuantizeBuf = _cs.FindKernel("NcnnQuantizeBuf");
             _kDequantizeBuf = _cs.FindKernel("NcnnDequantizeBuf");
             _kRequantizeBuf = _cs.FindKernel("NcnnRequantizeBuf");
+            _kCastPack4 = _cs.FindKernel("NcnnCastPack4");
+            _kQuantizePack4 = _cs.FindKernel("NcnnQuantizePack4");
+            _kDequantizePack4 = _cs.FindKernel("NcnnDequantizePack4");
+            _kRequantizePack4 = _cs.FindKernel("NcnnRequantizePack4");
+            _kNormalizePack4 = _cs.FindKernel("NcnnNormalizePack4");
+            _kLrnPack4 = _cs.FindKernel("NcnnLrnPack4");
+            _kRmsNormPack4 = _cs.FindKernel("NcnnRmsNormPack4");
             _kPixelShuffleBuf = _cs.FindKernel("NcnnPixelShuffleBuf");
             _kRotaryEmbedBuf = _cs.FindKernel("NcnnRotaryEmbedBuf");
+            _kRotaryEmbedPack4 = _cs.FindKernel("NcnnRotaryEmbedPack4");
+            _kPriorBox = _cs.FindKernel("NcnnPriorBox");
             _kNormalizeBuf = _cs.FindKernel("NcnnNormalizeBuf");
             _kLrnBuf = _cs.FindKernel("NcnnLrnBuf");
             _kRmsNormBuf = _cs.FindKernel("NcnnRmsNormBuf");
             _kUnfoldBuf = _cs.FindKernel("NcnnUnfoldBuf");
+            _kUnfoldPack4 = _cs.FindKernel("NcnnUnfoldPack4");
             _kSdpaQkBuf = _cs.FindKernel("NcnnSdpaQkBuf");
             _kSdpaSoftmaxBuf = _cs.FindKernel("NcnnSdpaSoftmaxBuf");
             _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
@@ -2549,6 +2582,43 @@ namespace NcnnCompute
             Dispatch3D(_kDeconvolutionPack4General, dstPack4.width, dstPack4.height, outPacks, 8, 8);
         }
 
+        public void DeconvolutionDepthWisePack4(RenderTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int inputChannels, int outputChannels, int group, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(inputChannels));
+            if (outputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            _cs.SetInt("_InW", srcPack4.width);
+            _cs.SetInt("_InH", srcPack4.height);
+            _cs.SetInt("_InC", inputChannels);
+            _cs.SetInt("_OutC", outputChannels);
+            _cs.SetInt("_OutW", dstPack4.width);
+            _cs.SetInt("_OutH", dstPack4.height);
+            _cs.SetInt("_ConvGroup", group);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_OutPacks", outPacks);
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kDeconvolutionDepthWisePack4, "_DwConvW4", w4);
+            _cs.SetBuffer(_kDeconvolutionDepthWisePack4, "_DwConvB4", b4);
+            _cs.SetTexture(_kDeconvolutionDepthWisePack4, "_ConvInArr", srcPack4);
+            _cs.SetTexture(_kDeconvolutionDepthWisePack4, "_ConvOutArr", dstPack4);
+            Dispatch3D(_kDeconvolutionDepthWisePack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+        }
+
         public void ConvDepthWisePack4(RenderTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int inputChannels, int outputChannels, int group, int packs, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
         {
             if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
@@ -2670,6 +2740,11 @@ namespace NcnnCompute
                 try { _gpuIdleSync.Release(); } catch { }
                 _gpuIdleSync = null;
             }
+            if (_fallbackFloatBuffer != null)
+            {
+                try { _fallbackFloatBuffer.Release(); } catch { }
+                _fallbackFloatBuffer = null;
+            }
             _winoBottomCap = 0;
             _winoTopCap = 0;
         }
@@ -2731,6 +2806,16 @@ namespace NcnnCompute
             }
         }
 
+        private ComputeBuffer GetFallbackFloatBuffer()
+        {
+            if (_fallbackFloatBuffer == null)
+            {
+                _fallbackFloatBuffer = new ComputeBuffer(1, sizeof(float), ComputeBufferType.Structured);
+                _fallbackFloatBuffer.SetData(new[] { 0f });
+            }
+
+            return _fallbackFloatBuffer;
+        }
 
         private void DispatchWinograd23TransformInput(CommandBuffer cmd, int blockX, int blockY, int inPacks)
         {
@@ -3214,6 +3299,78 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvOutArr", dstPack4.nameID);
             Dispatch3D(cmd, _kConvPack4General, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
+        }
+
+        public void DeconvolutionPack4General(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            cmd.SetComputeIntParam(_cs, "_InW", srcPack4.width);
+            cmd.SetComputeIntParam(_cs, "_InH", srcPack4.height);
+            cmd.SetComputeIntParam(_cs, "_OutW", dstPack4.width);
+            cmd.SetComputeIntParam(_cs, "_OutH", dstPack4.height);
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
+            cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
+            cmd.SetComputeIntParam(_cs, "_StrideWVar", Mathf.Max(1, strideW));
+            cmd.SetComputeIntParam(_cs, "_StrideHVar", Mathf.Max(1, strideH));
+            cmd.SetComputeIntParam(_cs, "_PadLeftVar", Mathf.Max(0, padLeft));
+            cmd.SetComputeIntParam(_cs, "_PadTopVar", Mathf.Max(0, padTop));
+            cmd.SetComputeIntParam(_cs, "_DilationWVar", Mathf.Max(1, dilationW));
+            cmd.SetComputeIntParam(_cs, "_DilationHVar", Mathf.Max(1, dilationH));
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kDeconvolutionPack4General, "_ConvW4", w4);
+            cmd.SetComputeBufferParam(_cs, _kDeconvolutionPack4General, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kDeconvolutionPack4General, "_ConvInArr", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeconvolutionPack4General, "_ConvOutArr", dstPack4.nameID);
+            Dispatch3D(cmd, _kDeconvolutionPack4General, dstPack4.width, dstPack4.height, outPacks, 8, 8);
+        }
+
+        public void DeconvolutionDepthWisePack4(CommandBuffer cmd, ComputeTexture srcPack4, ComputeBuffer w4, ComputeBuffer b4, int inputChannels, int outputChannels, int group, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (w4 == null) throw new ArgumentNullException(nameof(w4));
+            if (b4 == null) throw new ArgumentNullException(nameof(b4));
+            if (inputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(inputChannels));
+            if (outputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (group <= 0) throw new ArgumentOutOfRangeException(nameof(group));
+            if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+
+            cmd.SetComputeIntParam(_cs, "_InW", srcPack4.width);
+            cmd.SetComputeIntParam(_cs, "_InH", srcPack4.height);
+            cmd.SetComputeIntParam(_cs, "_InC", inputChannels);
+            cmd.SetComputeIntParam(_cs, "_OutC", outputChannels);
+            cmd.SetComputeIntParam(_cs, "_OutW", dstPack4.width);
+            cmd.SetComputeIntParam(_cs, "_OutH", dstPack4.height);
+            cmd.SetComputeIntParam(_cs, "_ConvGroup", group);
+            cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
+            cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
+            cmd.SetComputeIntParam(_cs, "_StrideWVar", Mathf.Max(1, strideW));
+            cmd.SetComputeIntParam(_cs, "_StrideHVar", Mathf.Max(1, strideH));
+            cmd.SetComputeIntParam(_cs, "_PadLeftVar", Mathf.Max(0, padLeft));
+            cmd.SetComputeIntParam(_cs, "_PadTopVar", Mathf.Max(0, padTop));
+            cmd.SetComputeIntParam(_cs, "_DilationWVar", Mathf.Max(1, dilationW));
+            cmd.SetComputeIntParam(_cs, "_DilationHVar", Mathf.Max(1, dilationH));
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kDeconvolutionDepthWisePack4, "_DwConvW4", w4);
+            cmd.SetComputeBufferParam(_cs, _kDeconvolutionDepthWisePack4, "_DwConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kDeconvolutionDepthWisePack4, "_ConvInArr", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeconvolutionDepthWisePack4, "_ConvOutArr", dstPack4.nameID);
+            Dispatch3D(cmd, _kDeconvolutionDepthWisePack4, dstPack4.width, dstPack4.height, outPacks, 8, 8);
         }
 
 
@@ -3937,6 +4094,456 @@ namespace NcnnCompute
             Dispatch1D(_kRequantizeBuf, total, 256);
         }
 
+        public void CastPack4(RenderTexture input, NcnnRepro.BufferShape shape, int typeFrom, int typeTo, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            SetQuantShapeParams(shape);
+            _cs.SetInt("_CastTypeFrom", typeFrom);
+            _cs.SetInt("_CastTypeTo", typeTo);
+            _cs.SetTexture(_kCastPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kCastPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kCastPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void CastPack4(CommandBuffer cmd, ComputeTexture input, NcnnRepro.BufferShape shape, int typeFrom, int typeTo, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            SetQuantShapeParams(cmd, shape);
+            cmd.SetComputeIntParam(_cs, "_CastTypeFrom", typeFrom);
+            cmd.SetComputeIntParam(_cs, "_CastTypeTo", typeTo);
+            cmd.SetComputeTextureParam(_cs, _kCastPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCastPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kCastPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void QuantizePack4(RenderTexture input, NcnnRepro.BufferShape shape, ComputeBuffer scale, int scaleDataSize, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (scale == null) throw new ArgumentNullException(nameof(scale));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            SetQuantShapeParams(shape);
+            _cs.SetInt("_QuantScaleInSize", scaleDataSize);
+            _cs.SetBuffer(_kQuantizePack4, "_QuantScale", scale);
+            _cs.SetTexture(_kQuantizePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kQuantizePack4, "_TexOut0Arr", output);
+            Dispatch3D(_kQuantizePack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void QuantizePack4(CommandBuffer cmd, ComputeTexture input, NcnnRepro.BufferShape shape, ComputeBuffer scale, int scaleDataSize, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (scale == null) throw new ArgumentNullException(nameof(scale));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            SetQuantShapeParams(cmd, shape);
+            cmd.SetComputeIntParam(_cs, "_QuantScaleInSize", scaleDataSize);
+            cmd.SetComputeBufferParam(_cs, _kQuantizePack4, "_QuantScale", scale);
+            cmd.SetComputeTextureParam(_cs, _kQuantizePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kQuantizePack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kQuantizePack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void DequantizePack4(RenderTexture input, NcnnRepro.BufferShape shape, ComputeBuffer scale, int scaleDataSize, ComputeBuffer bias, int biasDataSize, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (scale == null) throw new ArgumentNullException(nameof(scale));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetQuantShapeParams(shape);
+            _cs.SetInt("_QuantScaleInSize", scaleDataSize);
+            _cs.SetInt("_QuantBiasSize", biasDataSize);
+            _cs.SetBuffer(_kDequantizePack4, "_QuantScale", scale);
+            _cs.SetBuffer(_kDequantizePack4, "_QuantBias", bias ?? fallback);
+            _cs.SetTexture(_kDequantizePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kDequantizePack4, "_TexOut0Arr", output);
+            Dispatch3D(_kDequantizePack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void DequantizePack4(CommandBuffer cmd, ComputeTexture input, NcnnRepro.BufferShape shape, ComputeBuffer scale, int scaleDataSize, ComputeBuffer bias, int biasDataSize, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (scale == null) throw new ArgumentNullException(nameof(scale));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetQuantShapeParams(cmd, shape);
+            cmd.SetComputeIntParam(_cs, "_QuantScaleInSize", scaleDataSize);
+            cmd.SetComputeIntParam(_cs, "_QuantBiasSize", biasDataSize);
+            cmd.SetComputeBufferParam(_cs, _kDequantizePack4, "_QuantScale", scale);
+            cmd.SetComputeBufferParam(_cs, _kDequantizePack4, "_QuantBias", bias ?? fallback);
+            cmd.SetComputeTextureParam(_cs, _kDequantizePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDequantizePack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kDequantizePack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void RequantizePack4(
+            RenderTexture input,
+            NcnnRepro.BufferShape shape,
+            ComputeBuffer scaleIn,
+            int scaleInDataSize,
+            ComputeBuffer scaleOut,
+            int scaleOutDataSize,
+            ComputeBuffer bias,
+            int biasDataSize,
+            int activationType,
+            float activationParam0,
+            float activationParam1,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (scaleIn == null) throw new ArgumentNullException(nameof(scaleIn));
+            if (scaleOut == null) throw new ArgumentNullException(nameof(scaleOut));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetQuantShapeParams(shape);
+            _cs.SetInt("_QuantScaleInSize", scaleInDataSize);
+            _cs.SetInt("_QuantScaleOutSize", scaleOutDataSize);
+            _cs.SetInt("_QuantBiasSize", biasDataSize);
+            _cs.SetInt("_QuantActType", activationType);
+            _cs.SetFloat("_QuantActParam0", activationParam0);
+            _cs.SetFloat("_QuantActParam1", activationParam1);
+            _cs.SetBuffer(_kRequantizePack4, "_QuantScale", scaleIn);
+            _cs.SetBuffer(_kRequantizePack4, "_QuantScaleOut", scaleOut);
+            _cs.SetBuffer(_kRequantizePack4, "_QuantBias", bias ?? fallback);
+            _cs.SetTexture(_kRequantizePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kRequantizePack4, "_TexOut0Arr", output);
+            Dispatch3D(_kRequantizePack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void RequantizePack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape shape,
+            ComputeBuffer scaleIn,
+            int scaleInDataSize,
+            ComputeBuffer scaleOut,
+            int scaleOutDataSize,
+            ComputeBuffer bias,
+            int biasDataSize,
+            int activationType,
+            float activationParam0,
+            float activationParam1,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (scaleIn == null) throw new ArgumentNullException(nameof(scaleIn));
+            if (scaleOut == null) throw new ArgumentNullException(nameof(scaleOut));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetQuantShapeParams(cmd, shape);
+            cmd.SetComputeIntParam(_cs, "_QuantScaleInSize", scaleInDataSize);
+            cmd.SetComputeIntParam(_cs, "_QuantScaleOutSize", scaleOutDataSize);
+            cmd.SetComputeIntParam(_cs, "_QuantBiasSize", biasDataSize);
+            cmd.SetComputeIntParam(_cs, "_QuantActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_QuantActParam0", activationParam0);
+            cmd.SetComputeFloatParam(_cs, "_QuantActParam1", activationParam1);
+            cmd.SetComputeBufferParam(_cs, _kRequantizePack4, "_QuantScale", scaleIn);
+            cmd.SetComputeBufferParam(_cs, _kRequantizePack4, "_QuantScaleOut", scaleOut);
+            cmd.SetComputeBufferParam(_cs, _kRequantizePack4, "_QuantBias", bias ?? fallback);
+            cmd.SetComputeTextureParam(_cs, _kRequantizePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kRequantizePack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kRequantizePack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void NormalizePack4(
+            RenderTexture input,
+            NcnnRepro.BufferShape shape,
+            ComputeBuffer scale,
+            int scaleDataSize,
+            bool acrossSpatial,
+            bool acrossChannel,
+            bool channelShared,
+            float eps,
+            int epsMode,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetNormShapeParams(shape);
+            _cs.SetInt("_NormScaleSize", scaleDataSize);
+            _cs.SetInt("_NormAcrossSpatial", acrossSpatial ? 1 : 0);
+            _cs.SetInt("_NormAcrossChannel", acrossChannel ? 1 : 0);
+            _cs.SetInt("_NormChannelShared", channelShared ? 1 : 0);
+            _cs.SetFloat("_NormEps", eps);
+            _cs.SetInt("_NormEpsMode", epsMode);
+            _cs.SetBuffer(_kNormalizePack4, "_NormScale", scale ?? fallback);
+            _cs.SetTexture(_kNormalizePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kNormalizePack4, "_TexOut0Arr", output);
+            Dispatch3D(_kNormalizePack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void NormalizePack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape shape,
+            ComputeBuffer scale,
+            int scaleDataSize,
+            bool acrossSpatial,
+            bool acrossChannel,
+            bool channelShared,
+            float eps,
+            int epsMode,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetNormShapeParams(cmd, shape);
+            cmd.SetComputeIntParam(_cs, "_NormScaleSize", scaleDataSize);
+            cmd.SetComputeIntParam(_cs, "_NormAcrossSpatial", acrossSpatial ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_NormAcrossChannel", acrossChannel ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_NormChannelShared", channelShared ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_NormEps", eps);
+            cmd.SetComputeIntParam(_cs, "_NormEpsMode", epsMode);
+            cmd.SetComputeBufferParam(_cs, _kNormalizePack4, "_NormScale", scale ?? fallback);
+            cmd.SetComputeTextureParam(_cs, _kNormalizePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kNormalizePack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kNormalizePack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void LrnPack4(RenderTexture input, int w, int h, int c, int regionType, int localSize, float alpha, float beta, float bias, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (w <= 0 || h <= 0 || c <= 0) throw new ArgumentOutOfRangeException(nameof(w));
+
+            _cs.SetInt("_LrnW", w);
+            _cs.SetInt("_LrnH", h);
+            _cs.SetInt("_LrnC", c);
+            _cs.SetInt("_LrnRegionType", regionType);
+            _cs.SetInt("_LrnLocalSize", localSize);
+            _cs.SetFloat("_LrnAlpha", alpha);
+            _cs.SetFloat("_LrnBeta", beta);
+            _cs.SetFloat("_LrnBias", bias);
+            _cs.SetTexture(_kLrnPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kLrnPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kLrnPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void LrnPack4(CommandBuffer cmd, ComputeTexture input, int w, int h, int c, int regionType, int localSize, float alpha, float beta, float bias, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (w <= 0 || h <= 0 || c <= 0) throw new ArgumentOutOfRangeException(nameof(w));
+
+            cmd.SetComputeIntParam(_cs, "_LrnW", w);
+            cmd.SetComputeIntParam(_cs, "_LrnH", h);
+            cmd.SetComputeIntParam(_cs, "_LrnC", c);
+            cmd.SetComputeIntParam(_cs, "_LrnRegionType", regionType);
+            cmd.SetComputeIntParam(_cs, "_LrnLocalSize", localSize);
+            cmd.SetComputeFloatParam(_cs, "_LrnAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_LrnBeta", beta);
+            cmd.SetComputeFloatParam(_cs, "_LrnBias", bias);
+            cmd.SetComputeTextureParam(_cs, _kLrnPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kLrnPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kLrnPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void RmsNormPack4(RenderTexture input, NcnnRepro.BufferShape shape, ComputeBuffer gamma, int affineSize, bool affine, float eps, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetRmsNormShapeParams(shape);
+            _cs.SetInt("_RmsNormAffineSize", affineSize);
+            _cs.SetInt("_RmsNormAffine", affine ? 1 : 0);
+            _cs.SetFloat("_RmsNormEps", eps);
+            _cs.SetBuffer(_kRmsNormPack4, "_RmsNormGamma", gamma ?? fallback);
+            _cs.SetTexture(_kRmsNormPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kRmsNormPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kRmsNormPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void RmsNormPack4(CommandBuffer cmd, ComputeTexture input, NcnnRepro.BufferShape shape, ComputeBuffer gamma, int affineSize, bool affine, float eps, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var fallback = GetFallbackFloatBuffer();
+            SetRmsNormShapeParams(cmd, shape);
+            cmd.SetComputeIntParam(_cs, "_RmsNormAffineSize", affineSize);
+            cmd.SetComputeIntParam(_cs, "_RmsNormAffine", affine ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_RmsNormEps", eps);
+            cmd.SetComputeBufferParam(_cs, _kRmsNormPack4, "_RmsNormGamma", gamma ?? fallback);
+            cmd.SetComputeTextureParam(_cs, _kRmsNormPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kRmsNormPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kRmsNormPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        private void SetQuantShapeParams(NcnnRepro.BufferShape shape)
+        {
+            _cs.SetInt("_QuantDims", shape.dims);
+            _cs.SetInt("_QuantW", Mathf.Max(1, shape.w));
+            _cs.SetInt("_QuantH", Mathf.Max(1, shape.h));
+            _cs.SetInt("_QuantD", Mathf.Max(1, shape.d));
+            _cs.SetInt("_QuantC", Mathf.Max(1, shape.c));
+        }
+
+        private void SetQuantShapeParams(CommandBuffer cmd, NcnnRepro.BufferShape shape)
+        {
+            cmd.SetComputeIntParam(_cs, "_QuantDims", shape.dims);
+            cmd.SetComputeIntParam(_cs, "_QuantW", Mathf.Max(1, shape.w));
+            cmd.SetComputeIntParam(_cs, "_QuantH", Mathf.Max(1, shape.h));
+            cmd.SetComputeIntParam(_cs, "_QuantD", Mathf.Max(1, shape.d));
+            cmd.SetComputeIntParam(_cs, "_QuantC", Mathf.Max(1, shape.c));
+        }
+
+        private void SetNormShapeParams(NcnnRepro.BufferShape shape)
+        {
+            _cs.SetInt("_NormDims", shape.dims);
+            _cs.SetInt("_NormW", Mathf.Max(1, shape.w));
+            _cs.SetInt("_NormH", Mathf.Max(1, shape.h));
+            _cs.SetInt("_NormD", Mathf.Max(1, shape.d));
+            _cs.SetInt("_NormC", Mathf.Max(1, shape.c));
+        }
+
+        private void SetNormShapeParams(CommandBuffer cmd, NcnnRepro.BufferShape shape)
+        {
+            cmd.SetComputeIntParam(_cs, "_NormDims", shape.dims);
+            cmd.SetComputeIntParam(_cs, "_NormW", Mathf.Max(1, shape.w));
+            cmd.SetComputeIntParam(_cs, "_NormH", Mathf.Max(1, shape.h));
+            cmd.SetComputeIntParam(_cs, "_NormD", Mathf.Max(1, shape.d));
+            cmd.SetComputeIntParam(_cs, "_NormC", Mathf.Max(1, shape.c));
+        }
+
+        private void SetRmsNormShapeParams(NcnnRepro.BufferShape shape)
+        {
+            _cs.SetInt("_RmsNormDims", shape.dims);
+            _cs.SetInt("_RmsNormW", Mathf.Max(1, shape.w));
+            _cs.SetInt("_RmsNormH", Mathf.Max(1, shape.h));
+            _cs.SetInt("_RmsNormD", Mathf.Max(1, shape.d));
+            _cs.SetInt("_RmsNormC", Mathf.Max(1, shape.c));
+        }
+
+        private void SetRmsNormShapeParams(CommandBuffer cmd, NcnnRepro.BufferShape shape)
+        {
+            cmd.SetComputeIntParam(_cs, "_RmsNormDims", shape.dims);
+            cmd.SetComputeIntParam(_cs, "_RmsNormW", Mathf.Max(1, shape.w));
+            cmd.SetComputeIntParam(_cs, "_RmsNormH", Mathf.Max(1, shape.h));
+            cmd.SetComputeIntParam(_cs, "_RmsNormD", Mathf.Max(1, shape.d));
+            cmd.SetComputeIntParam(_cs, "_RmsNormC", Mathf.Max(1, shape.c));
+        }
+
+        private void SetRotaryCacheShapeParams(NcnnRepro.BufferShape cosShape, NcnnRepro.BufferShape sinShape)
+        {
+            _cs.SetInt("_RotaryCosDims", cosShape.dims);
+            _cs.SetInt("_RotaryCosW", Mathf.Max(1, cosShape.w));
+            _cs.SetInt("_RotaryCosH", Mathf.Max(1, cosShape.h));
+            _cs.SetInt("_RotaryCosD", Mathf.Max(1, cosShape.d));
+            _cs.SetInt("_RotaryCosC", Mathf.Max(1, cosShape.c));
+            _cs.SetInt("_RotarySinDims", sinShape.dims);
+            _cs.SetInt("_RotarySinW", Mathf.Max(1, sinShape.w));
+            _cs.SetInt("_RotarySinH", Mathf.Max(1, sinShape.h));
+            _cs.SetInt("_RotarySinD", Mathf.Max(1, sinShape.d));
+            _cs.SetInt("_RotarySinC", Mathf.Max(1, sinShape.c));
+        }
+
+        private void SetRotaryCacheShapeParams(CommandBuffer cmd, NcnnRepro.BufferShape cosShape, NcnnRepro.BufferShape sinShape)
+        {
+            cmd.SetComputeIntParam(_cs, "_RotaryCosDims", cosShape.dims);
+            cmd.SetComputeIntParam(_cs, "_RotaryCosW", Mathf.Max(1, cosShape.w));
+            cmd.SetComputeIntParam(_cs, "_RotaryCosH", Mathf.Max(1, cosShape.h));
+            cmd.SetComputeIntParam(_cs, "_RotaryCosD", Mathf.Max(1, cosShape.d));
+            cmd.SetComputeIntParam(_cs, "_RotaryCosC", Mathf.Max(1, cosShape.c));
+            cmd.SetComputeIntParam(_cs, "_RotarySinDims", sinShape.dims);
+            cmd.SetComputeIntParam(_cs, "_RotarySinW", Mathf.Max(1, sinShape.w));
+            cmd.SetComputeIntParam(_cs, "_RotarySinH", Mathf.Max(1, sinShape.h));
+            cmd.SetComputeIntParam(_cs, "_RotarySinD", Mathf.Max(1, sinShape.d));
+            cmd.SetComputeIntParam(_cs, "_RotarySinC", Mathf.Max(1, sinShape.c));
+        }
+
+        private void SetPriorBoxParams(
+            int mode,
+            int featW,
+            int featH,
+            int imageW,
+            int imageH,
+            int numPrior,
+            int numMinSizes,
+            int numMaxSizes,
+            int numAspectRatios,
+            bool flip,
+            bool clip,
+            bool stepMmdetection,
+            bool centerMmdetection,
+            float stepW,
+            float stepH,
+            float offset)
+        {
+            _cs.SetInt("_PriorMode", mode);
+            _cs.SetInt("_PriorFeatW", Mathf.Max(1, featW));
+            _cs.SetInt("_PriorFeatH", Mathf.Max(1, featH));
+            _cs.SetInt("_PriorImageW", Mathf.Max(1, imageW));
+            _cs.SetInt("_PriorImageH", Mathf.Max(1, imageH));
+            _cs.SetInt("_PriorNumMinSizes", Mathf.Max(0, numMinSizes));
+            _cs.SetInt("_PriorNumMaxSizes", Mathf.Max(0, numMaxSizes));
+            _cs.SetInt("_PriorNumAspectRatios", Mathf.Max(0, numAspectRatios));
+            _cs.SetInt("_PriorNumPrior", Mathf.Max(1, numPrior));
+            _cs.SetInt("_PriorFlip", flip ? 1 : 0);
+            _cs.SetInt("_PriorClip", clip ? 1 : 0);
+            _cs.SetInt("_PriorStepMmdetection", stepMmdetection ? 1 : 0);
+            _cs.SetInt("_PriorCenterMmdetection", centerMmdetection ? 1 : 0);
+            _cs.SetFloat("_PriorStepW", stepW);
+            _cs.SetFloat("_PriorStepH", stepH);
+            _cs.SetFloat("_PriorOffset", offset);
+        }
+
+        private void SetPriorBoxParams(
+            CommandBuffer cmd,
+            int mode,
+            int featW,
+            int featH,
+            int imageW,
+            int imageH,
+            int numPrior,
+            int numMinSizes,
+            int numMaxSizes,
+            int numAspectRatios,
+            bool flip,
+            bool clip,
+            bool stepMmdetection,
+            bool centerMmdetection,
+            float stepW,
+            float stepH,
+            float offset)
+        {
+            cmd.SetComputeIntParam(_cs, "_PriorMode", mode);
+            cmd.SetComputeIntParam(_cs, "_PriorFeatW", Mathf.Max(1, featW));
+            cmd.SetComputeIntParam(_cs, "_PriorFeatH", Mathf.Max(1, featH));
+            cmd.SetComputeIntParam(_cs, "_PriorImageW", Mathf.Max(1, imageW));
+            cmd.SetComputeIntParam(_cs, "_PriorImageH", Mathf.Max(1, imageH));
+            cmd.SetComputeIntParam(_cs, "_PriorNumMinSizes", Mathf.Max(0, numMinSizes));
+            cmd.SetComputeIntParam(_cs, "_PriorNumMaxSizes", Mathf.Max(0, numMaxSizes));
+            cmd.SetComputeIntParam(_cs, "_PriorNumAspectRatios", Mathf.Max(0, numAspectRatios));
+            cmd.SetComputeIntParam(_cs, "_PriorNumPrior", Mathf.Max(1, numPrior));
+            cmd.SetComputeIntParam(_cs, "_PriorFlip", flip ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_PriorClip", clip ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_PriorStepMmdetection", stepMmdetection ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_PriorCenterMmdetection", centerMmdetection ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_PriorStepW", stepW);
+            cmd.SetComputeFloatParam(_cs, "_PriorStepH", stepH);
+            cmd.SetComputeFloatParam(_cs, "_PriorOffset", offset);
+        }
+
         public void PixelShuffleBuf(ComputeBuffer input, int inW, int inH, int inC, int upscaleFactor, int mode, ComputeBuffer output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -3990,6 +4597,177 @@ namespace NcnnCompute
             _cs.SetBuffer(_kRotaryEmbedBuf, "_RotarySin", sin);
             _cs.SetBuffer(_kRotaryEmbedBuf, "_RotaryOut", output);
             Dispatch1D(_kRotaryEmbedBuf, total, 256);
+        }
+
+        public void RotaryEmbedPack4(
+            RenderTexture input,
+            NcnnRepro.BufferShape shape,
+            RenderTexture cos,
+            NcnnRepro.BufferShape cosShape,
+            RenderTexture sin,
+            NcnnRepro.BufferShape sinShape,
+            bool interleaved,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (cos == null) throw new ArgumentNullException(nameof(cos));
+            if (sin == null) throw new ArgumentNullException(nameof(sin));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (shape.dims != 3) throw new ArgumentOutOfRangeException(nameof(shape), "RotaryEmbed pack4 requires dims=3 source");
+            if (shape.w <= 0 || shape.h <= 0 || shape.c <= 0) throw new ArgumentOutOfRangeException(nameof(shape));
+
+            _cs.SetInt("_RotaryEmbedDim", shape.w);
+            _cs.SetInt("_RotarySeqLen", shape.h);
+            _cs.SetInt("_RotaryNumHeads", shape.c);
+            _cs.SetInt("_RotaryInterleaved", interleaved ? 1 : 0);
+            SetRotaryCacheShapeParams(cosShape, sinShape);
+            _cs.SetTexture(_kRotaryEmbedPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kRotaryEmbedPack4, "_TexIn1Arr", cos);
+            _cs.SetTexture(_kRotaryEmbedPack4, "_TexIn2Arr", sin);
+            _cs.SetTexture(_kRotaryEmbedPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kRotaryEmbedPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.CeilToInt(shape.c / 4f)), 8, 8);
+        }
+
+        public void RotaryEmbedPack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            NcnnRepro.BufferShape shape,
+            ComputeTexture cos,
+            NcnnRepro.BufferShape cosShape,
+            ComputeTexture sin,
+            NcnnRepro.BufferShape sinShape,
+            bool interleaved,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (cos == null) throw new ArgumentNullException(nameof(cos));
+            if (sin == null) throw new ArgumentNullException(nameof(sin));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (shape.dims != 3) throw new ArgumentOutOfRangeException(nameof(shape), "RotaryEmbed pack4 requires dims=3 source");
+            if (shape.w <= 0 || shape.h <= 0 || shape.c <= 0) throw new ArgumentOutOfRangeException(nameof(shape));
+
+            cmd.SetComputeIntParam(_cs, "_RotaryEmbedDim", shape.w);
+            cmd.SetComputeIntParam(_cs, "_RotarySeqLen", shape.h);
+            cmd.SetComputeIntParam(_cs, "_RotaryNumHeads", shape.c);
+            cmd.SetComputeIntParam(_cs, "_RotaryInterleaved", interleaved ? 1 : 0);
+            SetRotaryCacheShapeParams(cmd, cosShape, sinShape);
+            cmd.SetComputeTextureParam(_cs, _kRotaryEmbedPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kRotaryEmbedPack4, "_TexIn1Arr", cos.nameID);
+            cmd.SetComputeTextureParam(_cs, _kRotaryEmbedPack4, "_TexIn2Arr", sin.nameID);
+            cmd.SetComputeTextureParam(_cs, _kRotaryEmbedPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kRotaryEmbedPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.CeilToInt(shape.c / 4f)), 8, 8);
+        }
+
+        public void PriorBox(
+            RenderTexture output,
+            int mode,
+            int featW,
+            int featH,
+            int imageW,
+            int imageH,
+            int numPrior,
+            ComputeBuffer minSizes,
+            int numMinSizes,
+            ComputeBuffer maxSizes,
+            int numMaxSizes,
+            ComputeBuffer aspectRatios,
+            int numAspectRatios,
+            ComputeBuffer variances,
+            bool flip,
+            bool clip,
+            bool stepMmdetection,
+            bool centerMmdetection,
+            float stepW,
+            float stepH,
+            float offset)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (minSizes == null) throw new ArgumentNullException(nameof(minSizes));
+            if (maxSizes == null) throw new ArgumentNullException(nameof(maxSizes));
+            if (aspectRatios == null) throw new ArgumentNullException(nameof(aspectRatios));
+            if (variances == null) throw new ArgumentNullException(nameof(variances));
+
+            SetPriorBoxParams(
+                mode,
+                featW,
+                featH,
+                imageW,
+                imageH,
+                numPrior,
+                numMinSizes,
+                numMaxSizes,
+                numAspectRatios,
+                flip,
+                clip,
+                stepMmdetection,
+                centerMmdetection,
+                stepW,
+                stepH,
+                offset);
+            _cs.SetBuffer(_kPriorBox, "_PriorMinSizes", minSizes);
+            _cs.SetBuffer(_kPriorBox, "_PriorMaxSizes", maxSizes);
+            _cs.SetBuffer(_kPriorBox, "_PriorAspectRatios", aspectRatios);
+            _cs.SetBuffer(_kPriorBox, "_PriorVariances", variances);
+            _cs.SetTexture(_kPriorBox, "_LinearOut0", output);
+            Dispatch2D(_kPriorBox, output.width, output.height, 8, 8);
+        }
+
+        public void PriorBox(
+            CommandBuffer cmd,
+            ComputeTexture output,
+            int mode,
+            int featW,
+            int featH,
+            int imageW,
+            int imageH,
+            int numPrior,
+            ComputeBuffer minSizes,
+            int numMinSizes,
+            ComputeBuffer maxSizes,
+            int numMaxSizes,
+            ComputeBuffer aspectRatios,
+            int numAspectRatios,
+            ComputeBuffer variances,
+            bool flip,
+            bool clip,
+            bool stepMmdetection,
+            bool centerMmdetection,
+            float stepW,
+            float stepH,
+            float offset)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (minSizes == null) throw new ArgumentNullException(nameof(minSizes));
+            if (maxSizes == null) throw new ArgumentNullException(nameof(maxSizes));
+            if (aspectRatios == null) throw new ArgumentNullException(nameof(aspectRatios));
+            if (variances == null) throw new ArgumentNullException(nameof(variances));
+
+            SetPriorBoxParams(
+                cmd,
+                mode,
+                featW,
+                featH,
+                imageW,
+                imageH,
+                numPrior,
+                numMinSizes,
+                numMaxSizes,
+                numAspectRatios,
+                flip,
+                clip,
+                stepMmdetection,
+                centerMmdetection,
+                stepW,
+                stepH,
+                offset);
+            cmd.SetComputeBufferParam(_cs, _kPriorBox, "_PriorMinSizes", minSizes);
+            cmd.SetComputeBufferParam(_cs, _kPriorBox, "_PriorMaxSizes", maxSizes);
+            cmd.SetComputeBufferParam(_cs, _kPriorBox, "_PriorAspectRatios", aspectRatios);
+            cmd.SetComputeBufferParam(_cs, _kPriorBox, "_PriorVariances", variances);
+            cmd.SetComputeTextureParam(_cs, _kPriorBox, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kPriorBox, output.width, output.height, 8, 8);
         }
 
         public void NormalizeBuf(
@@ -4129,6 +4907,92 @@ namespace NcnnCompute
             _cs.SetBuffer(_kUnfoldBuf, "_UnfoldIn", input);
             _cs.SetBuffer(_kUnfoldBuf, "_UnfoldOut", output);
             Dispatch1D(_kUnfoldBuf, total, 256);
+        }
+
+        public void UnfoldPack4(
+            RenderTexture input,
+            int inW,
+            int inH,
+            int inC,
+            int outW,
+            int outH,
+            int kernelW,
+            int kernelH,
+            int dilationW,
+            int dilationH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            float padValue,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0 || inH <= 0 || inC <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+
+            _cs.SetInt("_UnfoldInW", inW);
+            _cs.SetInt("_UnfoldInH", inH);
+            _cs.SetInt("_UnfoldInC", inC);
+            _cs.SetInt("_UnfoldOutW", outW);
+            _cs.SetInt("_UnfoldOutH", outH);
+            _cs.SetInt("_UnfoldKernelW", kernelW);
+            _cs.SetInt("_UnfoldKernelH", kernelH);
+            _cs.SetInt("_UnfoldDilationW", dilationW);
+            _cs.SetInt("_UnfoldDilationH", dilationH);
+            _cs.SetInt("_UnfoldStrideW", strideW);
+            _cs.SetInt("_UnfoldStrideH", strideH);
+            _cs.SetInt("_UnfoldPadLeft", padLeft);
+            _cs.SetInt("_UnfoldPadTop", padTop);
+            _cs.SetFloat("_UnfoldPadValue", padValue);
+            _cs.SetTexture(_kUnfoldPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kUnfoldPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kUnfoldPack4, output.width, output.height, 1, 8, 8);
+        }
+
+        public void UnfoldPack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            int inW,
+            int inH,
+            int inC,
+            int outW,
+            int outH,
+            int kernelW,
+            int kernelH,
+            int dilationW,
+            int dilationH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            float padValue,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0 || inH <= 0 || inC <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+
+            cmd.SetComputeIntParam(_cs, "_UnfoldInW", inW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldInH", inH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldInC", inC);
+            cmd.SetComputeIntParam(_cs, "_UnfoldOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldKernelW", kernelW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldKernelH", kernelH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldDilationW", dilationW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldDilationH", dilationH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldStrideW", strideW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldStrideH", strideH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldPadLeft", padLeft);
+            cmd.SetComputeIntParam(_cs, "_UnfoldPadTop", padTop);
+            cmd.SetComputeFloatParam(_cs, "_UnfoldPadValue", padValue);
+            cmd.SetComputeTextureParam(_cs, _kUnfoldPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kUnfoldPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kUnfoldPack4, output.width, output.height, 1, 8, 8);
         }
 
         public void SdpaQkBuf(
@@ -4865,6 +5729,117 @@ namespace NcnnCompute
             Dispatch2D(_cs, _kEmbed, numOutput, words, 8, 8);
         }
 
+        private void SetEmbedTextureParams(
+            int kernel,
+            int words,
+            ComputeBuffer weight,
+            ComputeBuffer bias,
+            int numOutput,
+            int inputDim,
+            bool biasTerm,
+            int indexTextureMode,
+            int indexStorageW,
+            int indexStorageH)
+        {
+            if (weight == null) throw new ArgumentNullException(nameof(weight));
+            if (words <= 0) throw new ArgumentOutOfRangeException(nameof(words));
+            if (numOutput <= 0) throw new ArgumentOutOfRangeException(nameof(numOutput));
+            if (inputDim <= 0) throw new ArgumentOutOfRangeException(nameof(inputDim));
+            if (biasTerm && bias == null) throw new ArgumentNullException(nameof(bias));
+
+            _cs.SetInt("_EmbedWords", words);
+            _cs.SetInt("_EmbedNumOutput", numOutput);
+            _cs.SetInt("_EmbedInputDim", inputDim);
+            _cs.SetInt("_EmbedBiasTerm", biasTerm ? 1 : 0);
+            _cs.SetInt("_EmbedIndexTextureMode", indexTextureMode);
+            _cs.SetInt("_EmbedIndexStorageW", Mathf.Max(1, indexStorageW));
+            _cs.SetInt("_EmbedIndexStorageH", Mathf.Max(1, indexStorageH));
+            _cs.SetBuffer(kernel, "_EmbedW", weight);
+            _cs.SetBuffer(kernel, "_EmbedB", biasTerm ? bias : weight);
+        }
+
+        private void SetEmbedTextureParams(
+            CommandBuffer cmd,
+            int kernel,
+            int words,
+            ComputeBuffer weight,
+            ComputeBuffer bias,
+            int numOutput,
+            int inputDim,
+            bool biasTerm,
+            int indexTextureMode,
+            int indexStorageW,
+            int indexStorageH)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (weight == null) throw new ArgumentNullException(nameof(weight));
+            if (words <= 0) throw new ArgumentOutOfRangeException(nameof(words));
+            if (numOutput <= 0) throw new ArgumentOutOfRangeException(nameof(numOutput));
+            if (inputDim <= 0) throw new ArgumentOutOfRangeException(nameof(inputDim));
+            if (biasTerm && bias == null) throw new ArgumentNullException(nameof(bias));
+
+            cmd.SetComputeIntParam(_cs, "_EmbedWords", words);
+            cmd.SetComputeIntParam(_cs, "_EmbedNumOutput", numOutput);
+            cmd.SetComputeIntParam(_cs, "_EmbedInputDim", inputDim);
+            cmd.SetComputeIntParam(_cs, "_EmbedBiasTerm", biasTerm ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_EmbedIndexTextureMode", indexTextureMode);
+            cmd.SetComputeIntParam(_cs, "_EmbedIndexStorageW", Mathf.Max(1, indexStorageW));
+            cmd.SetComputeIntParam(_cs, "_EmbedIndexStorageH", Mathf.Max(1, indexStorageH));
+            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedW", weight);
+            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedB", biasTerm ? bias : weight);
+        }
+
+        public void EmbedTexture(ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, RenderTexture output)
+        {
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            SetEmbedTextureParams(_kEmbedTexture, words, weight, bias, numOutput, inputDim, biasTerm, 0, 1, 1);
+            _cs.SetBuffer(_kEmbedTexture, "_EmbedIdx", indices);
+            _cs.SetTexture(_kEmbedTexture, "_LinearOut0", output);
+            Dispatch2D(_cs, _kEmbedTexture, output.width, output.height, 8, 8);
+        }
+
+        public void EmbedTexture(RenderTexture indices, bool indexLinearMat, int indexStorageW, int indexStorageH, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, RenderTexture output)
+        {
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var kernel = indexLinearMat ? _kEmbedTextureLinearIndex : _kEmbedTexturePack4Index;
+            SetEmbedTextureParams(kernel, words, weight, bias, numOutput, inputDim, biasTerm, indexLinearMat ? 1 : 2, indexStorageW, indexStorageH);
+            if (indexLinearMat)
+                _cs.SetTexture(kernel, "_LinearIn0", indices);
+            else
+                _cs.SetTexture(kernel, "_TexIn0Arr", indices);
+            _cs.SetTexture(kernel, "_LinearOut0", output);
+            Dispatch2D(_cs, kernel, output.width, output.height, 8, 8);
+        }
+
+        public void EmbedTexture(CommandBuffer cmd, ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            SetEmbedTextureParams(cmd, _kEmbedTexture, words, weight, bias, numOutput, inputDim, biasTerm, 0, 1, 1);
+            cmd.SetComputeBufferParam(_cs, _kEmbedTexture, "_EmbedIdx", indices);
+            cmd.SetComputeTextureParam(_cs, _kEmbedTexture, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kEmbedTexture, output.width, output.height, 8, 8);
+        }
+
+        public void EmbedTexture(CommandBuffer cmd, ComputeTexture indices, bool indexLinearMat, int indexStorageW, int indexStorageH, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var kernel = indexLinearMat ? _kEmbedTextureLinearIndex : _kEmbedTexturePack4Index;
+            SetEmbedTextureParams(cmd, kernel, words, weight, bias, numOutput, inputDim, biasTerm, indexLinearMat ? 1 : 2, indexStorageW, indexStorageH);
+            cmd.SetComputeTextureParam(_cs, kernel, indexLinearMat ? "_LinearIn0" : "_TexIn0Arr", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, kernel, output.width, output.height, 8, 8);
+        }
+
         public void Permute(ComputeBuffer input, int dims, int inW, int inH, int inD, int inC, int orderType, ComputeBuffer output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -4985,6 +5960,117 @@ namespace NcnnCompute
             _cs.SetBuffer(_kTile, "_TileIn", input);
             _cs.SetBuffer(_kTile, "_TileOut", output);
             Dispatch1D(_kTile, outCount, 256);
+        }
+
+        private static int ResolveTileArrayDepth(NcnnRepro.BufferShape shape)
+        {
+            var packs = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, shape.c) / 4f));
+            return shape.dims == 4 ? Mathf.Max(1, shape.d) * packs : packs;
+        }
+
+        private void SetTileTextureParams(
+            int kernel,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape outShape,
+            Vector4Int repeats,
+            NcnnRepro.BufferShape inStorageShape,
+            NcnnRepro.BufferShape outStorageShape)
+        {
+            if (inShape.dims < 1 || inShape.dims > 4) throw new ArgumentOutOfRangeException(nameof(inShape));
+            if (outShape.dims < 1 || outShape.dims > 4) throw new ArgumentOutOfRangeException(nameof(outShape));
+
+            _cs.SetInt("_TileDims", inShape.dims);
+            _cs.SetInt("_TileOutDims", outShape.dims);
+            _cs.SetInt("_TileInW", Mathf.Max(1, inShape.w));
+            _cs.SetInt("_TileInH", Mathf.Max(1, inShape.h));
+            _cs.SetInt("_TileInD", Mathf.Max(1, inShape.d));
+            _cs.SetInt("_TileInC", Mathf.Max(1, inShape.c));
+            _cs.SetInt("_TileOutW", Mathf.Max(1, outShape.w));
+            _cs.SetInt("_TileOutH", Mathf.Max(1, outShape.h));
+            _cs.SetInt("_TileOutD", Mathf.Max(1, outShape.d));
+            _cs.SetInt("_TileOutC", Mathf.Max(1, outShape.c));
+            _cs.SetInt("_TileRepeatW", Mathf.Max(1, repeats.x));
+            _cs.SetInt("_TileRepeatH", Mathf.Max(1, repeats.y));
+            _cs.SetInt("_TileRepeatD", Mathf.Max(1, repeats.z));
+            _cs.SetInt("_TileRepeatC", Mathf.Max(1, repeats.w));
+            _cs.SetInt("_TileInStorageW", Mathf.Max(1, inStorageShape.w));
+            _cs.SetInt("_TileInStorageH", Mathf.Max(1, inStorageShape.h));
+            _cs.SetInt("_TileOutStorageW", Mathf.Max(1, outStorageShape.w));
+            _cs.SetInt("_TileOutStorageH", Mathf.Max(1, outStorageShape.h));
+        }
+
+        private void SetTileTextureParams(
+            CommandBuffer cmd,
+            NcnnRepro.BufferShape inShape,
+            NcnnRepro.BufferShape outShape,
+            Vector4Int repeats,
+            NcnnRepro.BufferShape inStorageShape,
+            NcnnRepro.BufferShape outStorageShape)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (inShape.dims < 1 || inShape.dims > 4) throw new ArgumentOutOfRangeException(nameof(inShape));
+            if (outShape.dims < 1 || outShape.dims > 4) throw new ArgumentOutOfRangeException(nameof(outShape));
+
+            cmd.SetComputeIntParam(_cs, "_TileDims", inShape.dims);
+            cmd.SetComputeIntParam(_cs, "_TileOutDims", outShape.dims);
+            cmd.SetComputeIntParam(_cs, "_TileInW", Mathf.Max(1, inShape.w));
+            cmd.SetComputeIntParam(_cs, "_TileInH", Mathf.Max(1, inShape.h));
+            cmd.SetComputeIntParam(_cs, "_TileInD", Mathf.Max(1, inShape.d));
+            cmd.SetComputeIntParam(_cs, "_TileInC", Mathf.Max(1, inShape.c));
+            cmd.SetComputeIntParam(_cs, "_TileOutW", Mathf.Max(1, outShape.w));
+            cmd.SetComputeIntParam(_cs, "_TileOutH", Mathf.Max(1, outShape.h));
+            cmd.SetComputeIntParam(_cs, "_TileOutD", Mathf.Max(1, outShape.d));
+            cmd.SetComputeIntParam(_cs, "_TileOutC", Mathf.Max(1, outShape.c));
+            cmd.SetComputeIntParam(_cs, "_TileRepeatW", Mathf.Max(1, repeats.x));
+            cmd.SetComputeIntParam(_cs, "_TileRepeatH", Mathf.Max(1, repeats.y));
+            cmd.SetComputeIntParam(_cs, "_TileRepeatD", Mathf.Max(1, repeats.z));
+            cmd.SetComputeIntParam(_cs, "_TileRepeatC", Mathf.Max(1, repeats.w));
+            cmd.SetComputeIntParam(_cs, "_TileInStorageW", Mathf.Max(1, inStorageShape.w));
+            cmd.SetComputeIntParam(_cs, "_TileInStorageH", Mathf.Max(1, inStorageShape.h));
+            cmd.SetComputeIntParam(_cs, "_TileOutStorageW", Mathf.Max(1, outStorageShape.w));
+            cmd.SetComputeIntParam(_cs, "_TileOutStorageH", Mathf.Max(1, outStorageShape.h));
+        }
+
+        public void TilePack4(RenderTexture input, NcnnRepro.BufferShape inShape, NcnnRepro.BufferShape outShape, Vector4Int repeats, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetTileTextureParams(_kTilePack4, inShape, outShape, repeats, inShape, outShape);
+            _cs.SetTexture(_kTilePack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kTilePack4, "_TexOut0Arr", output);
+            Dispatch3D(_kTilePack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, ResolveTileArrayDepth(outShape)), 8, 8);
+        }
+
+        public void TilePack4(CommandBuffer cmd, ComputeTexture input, NcnnRepro.BufferShape inShape, NcnnRepro.BufferShape outShape, Vector4Int repeats, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetTileTextureParams(cmd, inShape, outShape, repeats, inShape, outShape);
+            cmd.SetComputeTextureParam(_cs, _kTilePack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kTilePack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kTilePack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, ResolveTileArrayDepth(outShape)), 8, 8);
+        }
+
+        public void TileLinearMat(RenderTexture input, NcnnRepro.BufferShape inShape, NcnnRepro.BufferShape inStorageShape, NcnnRepro.BufferShape outShape, NcnnRepro.BufferShape outStorageShape, Vector4Int repeats, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetTileTextureParams(_kTileLinearMat, inShape, outShape, repeats, inStorageShape, outStorageShape);
+            _cs.SetTexture(_kTileLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kTileLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kTileLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void TileLinearMat(CommandBuffer cmd, ComputeTexture input, NcnnRepro.BufferShape inShape, NcnnRepro.BufferShape inStorageShape, NcnnRepro.BufferShape outShape, NcnnRepro.BufferShape outStorageShape, Vector4Int repeats, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetTileTextureParams(cmd, inShape, outShape, repeats, inStorageShape, outStorageShape);
+            cmd.SetComputeTextureParam(_cs, _kTileLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kTileLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kTileLinearMat, output.width, output.height, 8, 8);
         }
 
         public void ReduceAllSumOrMean(ComputeBuffer input, int total, bool mean, ComputeBuffer outputScalar)

@@ -14,7 +14,7 @@ namespace NcnnCompute
 
         public override NcnnRepro.LayerLoadMetrics LoadLayer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnBinReader br)
         {
-            owner._extraPacks[layer.name] = new NcnnRepro.PriorBoxPack
+            var pack = new NcnnRepro.PriorBoxPack
             {
                 minSizes = layer.GetFloats(-23300, Array.Empty<float>()),
                 maxSizes = layer.GetFloats(-23301, Array.Empty<float>()),
@@ -36,6 +36,11 @@ namespace NcnnCompute
                 stepMmdetection = layer.GetInt(14, 0) != 0,
                 centerMmdetection = layer.GetInt(15, 0) != 0
             };
+            pack.minSizeBuffer = NewParamBuffer(pack.minSizes);
+            pack.maxSizeBuffer = NewParamBuffer(pack.maxSizes);
+            pack.aspectRatioBuffer = NewParamBuffer(pack.aspectRatios);
+            pack.varianceBuffer = NewParamBuffer(pack.variances);
+            owner._extraPacks[layer.name] = pack;
             return default;
         }
 
@@ -106,9 +111,67 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.PriorBoxPack pp)
+                throw new InvalidOperationException("PriorBox pack not found: " + layer.name);
+            var spec = ResolvePriorBoxSpec(
+                layer,
+                pp,
+                (string name, out NcnnRepro.BufferShape shape) =>
+                {
+                    if (TryResolveLogicalShape(name, textureShapes, bufferBlobs, bufferViews, out var dims, out var w, out var h, out var d, out var c))
+                    {
+                        shape = new NcnnRepro.BufferShape(dims, w, h, d, c);
+                        return true;
+                    }
+
+                    shape = default;
+                    return false;
+                });
+
+            RenderTexture output = null;
+            try
+            {
+                output = owner.RentTempMat(spec.storageShape.w, spec.storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.PriorBox(
+                    output,
+                    spec.mode,
+                    spec.featW,
+                    spec.featH,
+                    spec.imageW,
+                    spec.imageH,
+                    spec.numPrior,
+                    pp.minSizeBuffer,
+                    pp.minSizes?.Length ?? 0,
+                    pp.maxSizeBuffer,
+                    pp.maxSizes?.Length ?? 0,
+                    pp.aspectRatioBuffer,
+                    pp.aspectRatios?.Length ?? 0,
+                    pp.varianceBuffer,
+                    pp.flip,
+                    pp.clip,
+                    pp.stepMmdetection,
+                    pp.centerMmdetection,
+                    spec.stepW,
+                    spec.stepH,
+                    pp.offset);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], output, spec.logicalShape, spec.storageShape);
+                output = null;
+            }
+            finally
+            {
+                if (output != null)
+                    owner.ReturnTempArray(output);
+            }
+
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -122,51 +185,149 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.PriorBoxPack pp)
                 throw new InvalidOperationException("PriorBox pack not found: " + layer.name);
 
-            var featShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var featW = featShape.w;
-            var featH = featShape.h;
-
-            if (layer.bottomNames.Length == 1 && pp.imageWidth == -233 && pp.imageHeight == -233 && (pp.maxSizes == null || pp.maxSizes.Length == 0))
-            {
-                var numSizes = pp.minSizes?.Length ?? 0;
-                var numRatios = pp.aspectRatios?.Length ?? 0;
-                var numPrior = Mathf.Max(1, numSizes - 1 + numRatios);
-                owner.PublishCmdPlaceholder(
-                    cmd,
-                    layer.topNames[0],
-                    new NcnnRepro.BufferShape(1, Mathf.Max(1, 4 * featW * featH * numPrior), 1, 1, 1),
-                    blobs,
-                    shapes);
-            }
-            else
-            {
-                var imageW = pp.imageWidth;
-                var imageH = pp.imageHeight;
-                if (imageW == -233 || imageH == -233)
+            var spec = ResolvePriorBoxSpec(
+                layer,
+                pp,
+                (string name, out NcnnRepro.BufferShape shape) =>
                 {
-                    if (layer.bottomNames.Length < 2)
-                        throw new InvalidOperationException("PriorBox image shape missing: " + layer.name);
-                    var imageShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
-                    if (imageW == -233) imageW = imageShape.w;
-                    if (imageH == -233) imageH = imageShape.h;
-                }
+                    shape = NcnnRepro.GetCmdShape(shapes, blobs, name);
+                    return true;
+                });
 
-                var numMinSize = pp.minSizes?.Length ?? 0;
-                var numMaxSize = pp.maxSizes?.Length ?? 0;
-                var numAspectRatio = pp.aspectRatios?.Length ?? 0;
-                var numPrior = numMinSize * numAspectRatio + numMinSize + numMaxSize;
-                if (pp.flip)
-                    numPrior += numMinSize * numAspectRatio;
-                var total = Mathf.Max(1, 4 * featW * featH * numPrior);
-                owner.PublishCmdPlaceholder(
+            ComputeTexture output = null;
+            try
+            {
+                output = owner.RentTempMat(cmd, spec.storageShape.w, spec.storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.PriorBox(
                     cmd,
-                    layer.topNames[0],
-                    new NcnnRepro.BufferShape(2, total, 2, 1, 1),
-                    blobs,
-                    shapes);
+                    output,
+                    spec.mode,
+                    spec.featW,
+                    spec.featH,
+                    spec.imageW,
+                    spec.imageH,
+                    spec.numPrior,
+                    pp.minSizeBuffer,
+                    pp.minSizes?.Length ?? 0,
+                    pp.maxSizeBuffer,
+                    pp.maxSizes?.Length ?? 0,
+                    pp.aspectRatioBuffer,
+                    pp.aspectRatios?.Length ?? 0,
+                    pp.varianceBuffer,
+                    pp.flip,
+                    pp.clip,
+                    pp.stepMmdetection,
+                    pp.centerMmdetection,
+                    spec.stepW,
+                    spec.stepH,
+                    pp.offset);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, spec.logicalShape, spec.storageShape, owned: true);
+                output = null;
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = spec.logicalShape;
+            }
+            finally
+            {
+                if (output != null)
+                    owner.ReturnTempArray(cmd, output);
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private readonly struct PriorBoxSpec
+        {
+            public readonly int mode;
+            public readonly int featW;
+            public readonly int featH;
+            public readonly int imageW;
+            public readonly int imageH;
+            public readonly int numPrior;
+            public readonly float stepW;
+            public readonly float stepH;
+            public readonly NcnnRepro.BufferShape logicalShape;
+            public readonly NcnnRepro.BufferShape storageShape;
+
+            public PriorBoxSpec(int mode, int featW, int featH, int imageW, int imageH, int numPrior, float stepW, float stepH, NcnnRepro.BufferShape logicalShape)
+            {
+                this.mode = mode;
+                this.featW = featW;
+                this.featH = featH;
+                this.imageW = imageW;
+                this.imageH = imageH;
+                this.numPrior = numPrior;
+                this.stepW = stepW;
+                this.stepH = stepH;
+                this.logicalShape = logicalShape;
+                storageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalShape);
+            }
+        }
+
+        private delegate bool TryGetShapeDelegate(string name, out NcnnRepro.BufferShape shape);
+
+        private static PriorBoxSpec ResolvePriorBoxSpec(NcnnParamModel.Layer layer, NcnnRepro.PriorBoxPack pp, TryGetShapeDelegate tryGetShape)
+        {
+            if (!tryGetShape(layer.bottomNames[0], out var featShape))
+                throw new InvalidOperationException("PriorBox feature shape missing: " + layer.name);
+            if (featShape.dims < 2)
+                throw new InvalidOperationException("PriorBox expects at least 2d feature shape: " + layer.name);
+
+            var featW = Mathf.Max(1, featShape.w);
+            var featH = Mathf.Max(1, featShape.h);
+            var useMxnet = layer.bottomNames.Length == 1
+                && pp.imageWidth == -233
+                && pp.imageHeight == -233
+                && (pp.maxSizes == null || pp.maxSizes.Length == 0);
+            if (useMxnet)
+            {
+                var numPrior = Mathf.Max(1, (pp.minSizes?.Length ?? 0) - 1 + (pp.aspectRatios?.Length ?? 0));
+                var total = Mathf.Max(1, 4 * featW * featH * numPrior);
+                var stepW = pp.stepWidth == -233f ? 1f / featW : pp.stepWidth;
+                var stepH = pp.stepHeight == -233f ? 1f / featH : pp.stepHeight;
+                return new PriorBoxSpec(0, featW, featH, 1, 1, numPrior, stepW, stepH, new NcnnRepro.BufferShape(1, total, 1, 1, 1));
+            }
+
+            var imageW = pp.imageWidth;
+            var imageH = pp.imageHeight;
+            if (imageW == -233 || imageH == -233)
+            {
+                if (layer.bottomNames.Length < 2 || !tryGetShape(layer.bottomNames[1], out var imageShape))
+                    throw new InvalidOperationException("PriorBox image shape missing: " + layer.name);
+                if (imageW == -233) imageW = imageShape.w;
+                if (imageH == -233) imageH = imageShape.h;
+            }
+
+            imageW = Mathf.Max(1, imageW);
+            imageH = Mathf.Max(1, imageH);
+            var stepWidth = pp.stepWidth;
+            var stepHeight = pp.stepHeight;
+            if (stepWidth == -233f)
+            {
+                stepWidth = imageW / (float)featW;
+                if (pp.stepMmdetection)
+                    stepWidth = Mathf.Ceil(imageW / (float)featW);
+            }
+            if (stepHeight == -233f)
+            {
+                stepHeight = imageH / (float)featH;
+                if (pp.stepMmdetection)
+                    stepHeight = Mathf.Ceil(imageH / (float)featH);
+            }
+
+            var numMinSize = pp.minSizes?.Length ?? 0;
+            var numMaxSize = pp.maxSizes?.Length ?? 0;
+            var numAspectRatio = pp.aspectRatios?.Length ?? 0;
+            var caffeNumPrior = numMinSize * numAspectRatio + numMinSize + numMaxSize;
+            if (pp.flip)
+                caffeNumPrior += numMinSize * numAspectRatio;
+            caffeNumPrior = Mathf.Max(1, caffeNumPrior);
+            var caffeTotal = Mathf.Max(1, 4 * featW * featH * caffeNumPrior);
+            return new PriorBoxSpec(1, featW, featH, imageW, imageH, caffeNumPrior, stepWidth, stepHeight, new NcnnRepro.BufferShape(2, caffeTotal, 2, 1, 1));
+        }
+
+        private static ComputeBuffer NewParamBuffer(float[] values)
+        {
+            return NcnnRepro.NewBuffer(values != null && values.Length > 0 ? values : new[] { 0f });
         }
 
         private static bool TryResolveLogicalShape(

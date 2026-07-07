@@ -14,6 +14,51 @@ void NcnnEmbed_Impl(uint3 id)
     _EmbedOut[q * _EmbedNumOutput + p] = v;
 }
 
+float NcnnEmbedValue(int wordIndex, int p)
+{
+    wordIndex = clamp(wordIndex, 0, _EmbedInputDim - 1);
+    float v = _EmbedW[wordIndex * _EmbedNumOutput + p];
+    if (_EmbedBiasTerm != 0)
+        v += _EmbedB[p];
+    return v;
+}
+
+void NcnnEmbedTexture_Impl(uint3 id)
+{
+    int p = (int)id.x;
+    int q = (int)id.y;
+    if (q < 0 || p < 0 || q >= _EmbedWords || p >= _EmbedNumOutput) return;
+
+    _LinearOut0[int2(p, q)] = NcnnEmbedValue(_EmbedIdx[q], p);
+}
+
+void NcnnEmbedTextureLinearIndex_Impl(uint3 id)
+{
+    int p = (int)id.x;
+    int q = (int)id.y;
+    if (q < 0 || p < 0 || q >= _EmbedWords || p >= _EmbedNumOutput) return;
+
+    int storageW = max(1, _EmbedIndexStorageW);
+    int x = q % storageW;
+    int y = q / storageW;
+    int wordIndex = (int)round(_LinearIn0[int2(x, y)]);
+    _LinearOut0[int2(p, q)] = NcnnEmbedValue(wordIndex, p);
+}
+
+void NcnnEmbedTexturePack4Index_Impl(uint3 id)
+{
+    int p = (int)id.x;
+    int q = (int)id.y;
+    if (q < 0 || p < 0 || q >= _EmbedWords || p >= _EmbedNumOutput) return;
+
+    int storageW = max(1, _EmbedIndexStorageW);
+    int x = q % storageW;
+    int y = q / storageW;
+    float4 packed = _TexIn0Arr[int3(x, y, 0)];
+    int wordIndex = (int)round(packed.x);
+    _LinearOut0[int2(p, q)] = NcnnEmbedValue(wordIndex, p);
+}
+
 void NcnnPermute_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
@@ -224,6 +269,94 @@ void NcnnTile_Impl(uint3 id)
     else if (axis == 3) ix = (int)((uint)x % inW4);
     uint inIdx4 = (uint)((((ic * _TileInD + iz) * _TileInH + iy) * _TileInW) + ix);
     _TileOut[idx] = _TileIn[inIdx4];
+}
+
+int NcnnTileLinearIndex(int x, int y, int z, int c, int w, int h, int d)
+{
+    return (((c * max(1, d) + z) * max(1, h) + y) * max(1, w)) + x;
+}
+
+float NcnnTileReadPack4Scalar(int x, int y, int z, int c)
+{
+    if (_TileDims <= 1)
+        return NcnnReadPack4Channel(_TexIn0Arr, x, 0, 0);
+    if (_TileDims == 2)
+        return NcnnReadPack4Channel(_TexIn0Arr, x, y, 0);
+    if (_TileDims == 3)
+        return NcnnReadPack4Channel(_TexIn0Arr, x, y, c);
+    return NcnnReadPack4ChannelCDHW(_TexIn0Arr, x, y, z, c, _TileInC);
+}
+
+void NcnnTilePack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _TexOut0Arr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int outSlice = (int)id.z;
+    int outPackCount = max(1, (_TileOutC + 3) / 4);
+    int outZ = _TileOutDims == 4 ? outSlice / outPackCount : 0;
+    int outPack = _TileOutDims == 4 ? outSlice - outZ * outPackCount : outSlice;
+    if (outZ >= max(1, _TileOutD))
+    {
+        _TexOut0Arr[int3(outX, outY, outSlice)] = 0.0;
+        return;
+    }
+
+    int ix = outX % max(1, _TileInW);
+    int iy = outY % max(1, _TileInH);
+    int iz = outZ % max(1, _TileInD);
+    float4 o = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int oc = outPack * 4 + lane;
+        if (oc >= _TileOutC)
+            continue;
+
+        int ic = oc % max(1, _TileInC);
+        float value = NcnnTileReadPack4Scalar(ix, iy, iz, ic);
+        NcnnWriteLane(o, lane, value);
+    }
+
+    _TexOut0Arr[int3(outX, outY, outSlice)] = o;
+}
+
+void NcnnTileLinearMat_Impl(uint3 id)
+{
+    uint sw, sh;
+    _LinearOut0.GetDimensions(sw, sh);
+    if (id.x >= sw || id.y >= sh)
+        return;
+
+    int outStorageW = max(1, _TileOutStorageW);
+    int outStorageH = max(1, _TileOutStorageH);
+    int outLinear = (int)id.y * outStorageW + (int)id.x;
+    int outTotal = max(1, _TileOutW) * max(1, _TileOutH) * max(1, _TileOutD) * max(1, _TileOutC);
+    if (outLinear >= outTotal || (int)id.y >= outStorageH)
+        return;
+
+    int outX = outLinear % max(1, _TileOutW);
+    int rem = outLinear / max(1, _TileOutW);
+    int outY = rem % max(1, _TileOutH);
+    rem /= max(1, _TileOutH);
+    int outZ = rem % max(1, _TileOutD);
+    int outC = rem / max(1, _TileOutD);
+
+    int ix = outX % max(1, _TileInW);
+    int iy = outY % max(1, _TileInH);
+    int iz = outZ % max(1, _TileInD);
+    int ic = outC % max(1, _TileInC);
+
+    int inLinear = NcnnTileLinearIndex(ix, iy, iz, ic, _TileInW, _TileInH, _TileInD);
+    int inStorageW = max(1, _TileInStorageW);
+    int inX = inLinear % inStorageW;
+    int inY = inLinear / inStorageW;
+    _LinearOut0[int2((int)id.x, (int)id.y)] = _LinearIn0[int2(inX, inY)];
 }
 
 void NcnnReduceSum256_Impl(uint3 groupId, uint3 groupThreadId)

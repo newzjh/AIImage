@@ -53,9 +53,49 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            var hasTexture = textureBlobs.TryGetValue(layer.bottomNames[0], out var srcTex) && srcTex != null && srcTex.texture != null;
+            var hasBuffer = bufferBlobs.TryGetValue(layer.bottomNames[0], out var srcBuf) && srcBuf != null;
+            if (!hasTexture && !hasBuffer)
+                throw new InvalidOperationException("Squeeze source not found: " + layer.name);
+
+            if (hasTexture)
+            {
+                var srcShape = NcnnRepro.GetTextureShape(textureShapes, srcTex, layer.bottomNames[0]);
+                var outShape = NcnnRepro.ResolveSqueezeShape(srcShape, layer);
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(srcTex, outShape, storageShape);
+                if (textureShapes != null)
+                    textureShapes[layer.topNames[0]] = outShape;
+            }
+
+            if (hasBuffer)
+            {
+                var srcView = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                if (srcView == null)
+                    throw new InvalidOperationException("Squeeze buffer view not found: " + layer.name);
+                var squeezed = NcnnRepro.ResolveSqueezeView(srcView, layer);
+                bufferBlobs[layer.topNames[0]] = srcBuf;
+                if (bufferRefs.TryGetValue(layer.bottomNames[0], out var srcRef) && srcRef != null)
+                {
+                    bufferRefs[layer.topNames[0]] = srcRef;
+                    srcRef.refs++;
+                }
+                else
+                {
+                    bufferRefs[layer.topNames[0]] = owner.NewBufferRef(srcBuf, owned: false);
+                }
+                bufferViews[layer.topNames[0]] = squeezed;
+            }
+
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

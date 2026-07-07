@@ -88,9 +88,45 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var bufferBlobs = context.bufferBlobs;
+            var bufferRefs = context.bufferRefs;
+            var bufferViews = context.bufferViews;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.w == null)
+                throw new InvalidOperationException("Embed not found: " + layer.name);
+
+            var words = ResolveInputElementCount(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+            var logicalShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, ep.numOutput), words, 1, 1);
+            var storageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalShape);
+            var output = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+
+            if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var indexBuffer) && indexBuffer != null)
+            {
+                owner.Ops.EmbedTexture(indexBuffer, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
+            }
+            else if (textureBlobs.TryGetValue(layer.bottomNames[0], out var indexTexture) && indexTexture != null && indexTexture.texture != null)
+            {
+                var indexShape = NcnnRepro.GetTextureShape(textureShapes, indexTexture, layer.bottomNames[0]);
+                var indexStorage = NcnnRepro.GetTextureStorageShape(indexTexture, indexShape);
+                var isLinear = NcnnRepro.IsStrictLinearMatTexture(indexTexture);
+                if (!isLinear && indexTexture.texture.dimension != TextureDimension.Tex2DArray)
+                    throw new InvalidOperationException("Embed texture index input requires linear mat or texture array: " + layer.name);
+                if (!isLinear && indexShape.dims > 2)
+                    throw new InvalidOperationException("Embed pack4 texture index input only supports dims<=2: " + layer.name);
+                owner.Ops.EmbedTexture(indexTexture.texture, isLinear, indexStorage.w, indexStorage.h, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
+            }
+            else
+            {
+                owner.ReturnTempArray(output);
+                throw new InvalidOperationException("Embed input not found for texture path: " + layer.bottomNames[0]);
+            }
+
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], output, logicalShape, storageShape);
+            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -101,18 +137,53 @@ namespace NcnnCompute
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            if (!owner._embed.TryGetValue(layer.name, out var ep))
+            if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.w == null)
                 throw new InvalidOperationException("Embed not found: " + layer.name);
 
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var words = Mathf.Max(1, srcShape.w * srcShape.h * srcShape.d * srcShape.c);
-            owner.PublishCmdPlaceholder(
-                cmd,
-                layer.topNames[0],
-                new NcnnRepro.BufferShape(2, Mathf.Max(1, ep.numOutput), words, 1, 1),
-                blobs,
-                shapes);
+            var logicalShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, ep.numOutput), words, 1, 1);
+            var storageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalShape);
+            var output = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcStorage = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            var isLinear = NcnnRepro.IsStrictLinearMatTexture(src);
+            if (!isLinear && src.texture.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("Embed command-buffer index input requires linear mat or texture array: " + layer.name);
+            if (!isLinear && srcShape.dims > 2)
+                throw new InvalidOperationException("Embed command-buffer pack4 index input only supports dims<=2: " + layer.name);
+
+            owner.Ops.EmbedTexture(cmd, src.texture, isLinear, srcStorage.w, srcStorage.h, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, logicalShape, storageShape, owned: true);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = logicalShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static int ResolveInputElementCount(
+            string name,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            Dictionary<string, ComputeBuffer> bufferBlobs,
+            Dictionary<string, NcnnTensorBuffer> bufferViews)
+        {
+            if (textureBlobs != null
+                && textureBlobs.TryGetValue(name, out var texture)
+                && texture != null
+                && texture.texture != null)
+            {
+                var shape = NcnnRepro.GetTextureShape(textureShapes, texture, name);
+                return Mathf.Max(1, shape.w) * Mathf.Max(1, shape.h) * Mathf.Max(1, shape.d) * Mathf.Max(1, shape.c);
+            }
+
+            var view = NcnnRepro.TryGetBufferView(name, bufferBlobs, bufferViews);
+            if (view != null)
+                return Mathf.Max(1, view.elementCount);
+
+            if (bufferBlobs != null && bufferBlobs.TryGetValue(name, out var buffer) && buffer != null)
+                return Mathf.Max(1, buffer.count);
+
+            throw new InvalidOperationException("Embed input shape not found: " + name);
         }
     }
 }

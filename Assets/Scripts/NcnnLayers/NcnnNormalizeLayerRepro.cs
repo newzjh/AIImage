@@ -48,6 +48,26 @@ namespace NcnnCompute
             return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
         }
 
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (owner.TryGetPack4Texture(
+                    layer.bottomNames[0],
+                    context.textureBlobs,
+                    context.textureShapes,
+                    context.bufferBlobs,
+                    context.bufferViews,
+                    out _,
+                    out _))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -95,22 +115,49 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.NormalizePack np)
+                throw new InvalidOperationException("Normalize pack not found: " + layer.name);
+
+            NcnnPack4LayerHelpers.ExecuteShapePreservingRenderTexture(
+                owner,
+                layer,
+                context,
+                "Normalize",
+                (input, shape, output) => owner.Ops.NormalizePack4(
+                    input,
+                    shape,
+                    np.scale,
+                    np.scaleDataSize,
+                    np.acrossSpatial,
+                    np.acrossChannel,
+                    np.channelShared,
+                    np.eps,
+                    np.epsMode,
+                    output));
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-            var cmd = context.commandBuffer;
-            var blobs = context.blobs;
-            var shapes = context.shapes;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.NormalizePack np)
+                throw new InvalidOperationException("Normalize pack not found: " + layer.name);
 
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], srcShape, blobs, shapes);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+            NcnnPack4LayerHelpers.ExecuteShapePreservingCommandBuffer(
+                owner,
+                layer,
+                context,
+                "Normalize",
+                (cmd, input, shape, output) => owner.Ops.NormalizePack4(
+                    cmd,
+                    input,
+                    shape,
+                    np.scale,
+                    np.scaleDataSize,
+                    np.acrossSpatial,
+                    np.acrossChannel,
+                    np.channelShared,
+                    np.eps,
+                    np.epsMode,
+                    output));
         }
     }
 }

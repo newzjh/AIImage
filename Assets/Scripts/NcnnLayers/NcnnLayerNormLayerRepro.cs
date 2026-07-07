@@ -47,6 +47,23 @@ namespace NcnnCompute
                                         owner._layerNorm[layer.name] = lp;
                                         return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
         }
+
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (!owner.ShouldForceCurrentLayerBufferPath()
+                && owner._layerNorm.TryGetValue(layer.name, out var lp)
+                && NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var src, out var srcShape)
+                && CanUsePack4WidthPath(src, srcShape, lp))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -341,14 +358,7 @@ namespace NcnnCompute
             }
             else
             {
-                owner.DebugLog?.Invoke(
-                    "[CmdPlaceholder][LayerNorm]"
-                    + " | layer=" + layer.name
-                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
-                    + " | packs=" + src.packs
-                    + " | affine=" + (lp != null && lp.affine ? "1" : "0")
-                    + " | affineSize=" + (lp != null ? lp.affineSize.ToString(CultureInfo.InvariantCulture) : "null"));
-                owner.PublishCmdPlaceholder(cmd, layer.topNames[0], srcShape, blobs, shapes);
+                throw new InvalidOperationException(BuildLayerNormUnsupportedMessage(layer.name, srcShape, src, lp));
             }
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }
@@ -377,19 +387,25 @@ namespace NcnnCompute
                 return false;
 
             var inputName = layer.bottomNames[0];
-            try
-            {
-                srcTex = owner.GetOrMaterializeTexture(inputName, textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                srcShape = NcnnRepro.GetTextureShape(textureShapes, srcTex, inputName);
-            }
-            catch
-            {
-                srcTex = null;
-                srcShape = default;
+
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, inputName, out srcTex, out srcShape))
                 return false;
-            }
 
             return CanUsePack4WidthPath(srcTex, srcShape, lp);
+        }
+
+        private static string BuildLayerNormUnsupportedMessage(
+            string layerName,
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.LayerNormPack lp)
+        {
+            return "LayerNorm command-buffer pack4 path unsupported: " + layerName
+                + " | reason=requires affine width-normalized texture input"
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | packs=" + (src != null ? src.packs.ToString(CultureInfo.InvariantCulture) : "null")
+                + " | affine=" + (lp != null && lp.affine ? "1" : "0")
+                + " | affineSize=" + (lp != null ? lp.affineSize.ToString(CultureInfo.InvariantCulture) : "null");
         }
 
         private static bool CanUsePack4WidthPath(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)

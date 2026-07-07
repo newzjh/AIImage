@@ -848,3 +848,35 @@ void NcnnPixelShufflePack4_Impl(uint3 id)
 
     _PixelShufflePack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
+
+void NcnnUnfoldPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _TexOut0Arr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh)
+        return;
+
+    int outw = max(1, _UnfoldOutW);
+    int outh = max(1, _UnfoldOutH);
+    int size = outw * outh;
+    int maxk = max(1, _UnfoldKernelW * _UnfoldKernelH);
+    int outRow = (int)id.y;
+    int rem = (int)id.x;
+    if (rem < 0 || rem >= size || outRow < 0 || outRow >= maxk * max(1, _UnfoldInC))
+        return;
+
+    int oy = rem / outw;
+    int ox = rem - oy * outw;
+    int c = outRow / maxk;
+    int k = outRow - c * maxk;
+    int u = k / max(1, _UnfoldKernelW);
+    int v = k - u * max(1, _UnfoldKernelW);
+    int inY = oy * _UnfoldStrideH + u * _UnfoldDilationH - _UnfoldPadTop;
+    int inX = ox * _UnfoldStrideW + v * _UnfoldDilationW - _UnfoldPadLeft;
+
+    float value = _UnfoldPadValue;
+    if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && c < _UnfoldInC)
+        value = NcnnReadPack4Channel(_TexIn0Arr, inX, inY, c);
+
+    _TexOut0Arr[int3((int)id.x, (int)id.y, 0)] = float4(value, 0.0, 0.0, 0.0);
+}

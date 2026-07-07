@@ -31,6 +31,22 @@ namespace NcnnCompute
             return default;
         }
 
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.UnfoldPack up)
+                throw new InvalidOperationException("Unfold pack not found: " + layer.name);
+
+            if (!owner.ShouldForceCurrentLayerBufferPath() && CanUseTexturePath(layer, context, up))
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
+#pragma warning disable CS0618
+            ExecuteComputeBufferPath(owner, layer, context);
+#pragma warning restore CS0618
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
@@ -100,9 +116,75 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
+            var textureBlobs = context.textureBlobs;
+            var textureShapes = context.textureShapes;
+            var remaining = context.remaining;
+            var pinnedNames = context.pinnedNames;
+
+            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.UnfoldPack up)
+                throw new InvalidOperationException("Unfold pack not found: " + layer.name);
+            if (!textureBlobs.TryGetValue(layer.bottomNames[0], out var src) || src == null || src.texture == null)
+                throw new InvalidOperationException("Unfold render-texture path requires texture input: " + layer.name);
+
+            var srcShape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+            if (!CanUseTexturePath(src, srcShape, up))
+                throw new InvalidOperationException("Unfold render-texture path requires dims=2/3 supported texture input: " + layer.name);
+
+            ResolveOutputGeometry(srcShape, up, layer.name, out var inW, out var inH, out var inC, out var outw, out var outh, out var size, out var outRows, out var padLeft, out var padTop);
+            var outShape = new NcnnRepro.BufferShape(2, size, outRows, 1, 1);
+            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            RenderTexture materializedInput = null;
+            RenderTexture output = null;
+            try
+            {
+                var input = src.texture;
+                if (NcnnRepro.IsStrictLinearMatTexture(src))
+                {
+                    materializedInput = owner.RentTempArray(inW, inH, Mathf.Max(1, Mathf.CeilToInt(inC / 4f)), NcnnRepro.ResolveTensorTextureFormat(3));
+                    owner.Ops.ReshapeLinearMatToPack4(
+                        src.texture,
+                        storageShape.w,
+                        storageShape.h,
+                        inW,
+                        inH,
+                        1,
+                        inC,
+                        3,
+                        materializedInput);
+                    input = materializedInput;
+                }
+
+                output = owner.RentTempArray(outShape.w, outShape.h, 1, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                owner.Ops.UnfoldPack4(
+                    input,
+                    inW,
+                    inH,
+                    inC,
+                    outw,
+                    outh,
+                    up.kernelW,
+                    up.kernelH,
+                    up.dilationW,
+                    up.dilationH,
+                    up.strideW,
+                    up.strideH,
+                    padLeft,
+                    padTop,
+                    up.padValue,
+                    output);
+
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], output, outShape);
+                output = null;
+            }
+            finally
+            {
+                if (materializedInput != null)
+                    owner.ReturnTempArray(materializedInput);
+                if (output != null)
+                    owner.ReturnTempArray(output);
+            }
+
+            owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -117,29 +199,157 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Unfold pack not found: " + layer.name);
 
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            if (srcShape.dims != 2 && srcShape.dims != 3)
-                throw new InvalidOperationException("Unfold expects dims=2 or dims=3 source: " + layer.name);
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            if (!CanUseTexturePath(src, srcShape, up))
+                throw new InvalidOperationException("Unfold command-buffer path requires dims=2/3 supported texture input: " + layer.name);
 
-            var inW = srcShape.w;
-            var inH = srcShape.h;
-            var inC = srcShape.dims == 3 ? srcShape.c : 1;
+            ResolveOutputGeometry(srcShape, up, layer.name, out var inW, out var inH, out var inC, out var outw, out var outh, out var size, out var outRows, out var padLeft, out var padTop);
+            var outShape = new NcnnRepro.BufferShape(2, size, outRows, 1, 1);
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            ComputeTexture materializedInput = null;
+            ComputeTexture output = null;
+            try
+            {
+                var input = src.texture;
+                if (NcnnRepro.IsStrictLinearMatTexture(src))
+                {
+                    materializedInput = owner.RentTempArray(cmd, inW, inH, Mathf.Max(1, Mathf.CeilToInt(inC / 4f)), NcnnRepro.ResolveTensorTextureFormat(3));
+                    owner.Ops.ReshapeLinearMatToPack4(
+                        cmd,
+                        src.texture,
+                        storageShape.w,
+                        storageShape.h,
+                        inW,
+                        inH,
+                        1,
+                        inC,
+                        3,
+                        materializedInput);
+                    input = materializedInput;
+                }
+
+                output = owner.RentTempArray(cmd, outShape.w, outShape.h, 1, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                owner.Ops.UnfoldPack4(
+                    cmd,
+                    input,
+                    inW,
+                    inH,
+                    inC,
+                    outw,
+                    outh,
+                    up.kernelW,
+                    up.kernelH,
+                    up.dilationW,
+                    up.dilationH,
+                    up.strideW,
+                    up.strideH,
+                    padLeft,
+                    padTop,
+                    up.padValue,
+                    output);
+
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, outShape, outShape, owned: true);
+                output = null;
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+            }
+            finally
+            {
+                if (materializedInput != null)
+                    owner.ReturnTempArray(cmd, materializedInput);
+                if (output != null)
+                    owner.ReturnTempArray(cmd, output);
+            }
+
+            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool CanUseTexturePath(NcnnParamModel.Layer layer, NcnnLayerBufferContext context, NcnnRepro.UnfoldPack up)
+        {
+            if (context?.textureBlobs == null || layer?.bottomNames == null || layer.bottomNames.Length == 0)
+                return false;
+            if (!context.textureBlobs.TryGetValue(layer.bottomNames[0], out var src) || src == null || src.texture == null)
+                return false;
+            var shape = NcnnRepro.GetTextureShape(context.textureShapes, src, layer.bottomNames[0]);
+            return CanUseTexturePath(src, shape, up);
+        }
+
+        private static bool CanUseTexturePath(NcnnRepro.TensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.UnfoldPack up)
+        {
+            if (src == null || src.texture == null || up == null)
+                return false;
+            if (srcShape.dims != 2 && srcShape.dims != 3)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || up.kernelW <= 0 || up.kernelH <= 0)
+                return false;
+            if (up.strideW <= 0 || up.strideH <= 0 || up.dilationW <= 0 || up.dilationH <= 0)
+                return false;
+            if (NcnnRepro.IsStrictLinearMatTexture(src))
+                return true;
+            if (srcShape.dims == 2)
+            {
+                var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+                return storageShape.dims == 2
+                    && storageShape.w == src.width
+                    && storageShape.h == src.height
+                    && src.packs == 1;
+            }
+
+            return NcnnRepro.MatchesPack4TextureStorage(src, srcShape);
+        }
+
+        private static bool CanUseTexturePath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.UnfoldPack up)
+        {
+            if (src == null || src.texture == null || up == null)
+                return false;
+            if (srcShape.dims != 2 && srcShape.dims != 3)
+                return false;
+            if (srcShape.w <= 0 || srcShape.h <= 0 || up.kernelW <= 0 || up.kernelH <= 0)
+                return false;
+            if (up.strideW <= 0 || up.strideH <= 0 || up.dilationW <= 0 || up.dilationH <= 0)
+                return false;
+            if (NcnnRepro.IsStrictLinearMatTexture(src))
+                return true;
+            if (srcShape.dims == 2)
+            {
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                return storageShape.dims == 2
+                    && storageShape.w == src.width
+                    && storageShape.h == src.height
+                    && src.packs == 1;
+            }
+
+            return NcnnRepro.MatchesPack4TextureStorage(src, srcShape);
+        }
+
+        private static void ResolveOutputGeometry(
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.UnfoldPack up,
+            string layerName,
+            out int inW,
+            out int inH,
+            out int inC,
+            out int outw,
+            out int outh,
+            out int size,
+            out int outRows,
+            out int padLeft,
+            out int padTop)
+        {
+            inW = srcShape.w;
+            inH = srcShape.h;
+            inC = srcShape.dims == 3 ? Mathf.Max(1, srcShape.c) : 1;
             var kernelExtentW = up.dilationW * (up.kernelW - 1) + 1;
             var kernelExtentH = up.dilationH * (up.kernelH - 1) + 1;
-            ResolvePadding(inW, inH, kernelExtentW, kernelExtentH, up, out var padLeft, out var padRight, out var padTop, out var padBottom);
+            ResolvePadding(inW, inH, kernelExtentW, kernelExtentH, up, out padLeft, out var padRight, out padTop, out var padBottom);
             var paddedW = inW + padLeft + padRight;
             var paddedH = inH + padTop + padBottom;
-            var outw = (paddedW - kernelExtentW) / up.strideW + 1;
-            var outh = (paddedH - kernelExtentH) / up.strideH + 1;
-            var size = Mathf.Max(1, outw * outh);
-            var outRows = Mathf.Max(1, up.kernelW * up.kernelH * inC);
-
-            owner.PublishCmdPlaceholder(
-                cmd,
-                layer.topNames[0],
-                new NcnnRepro.BufferShape(2, size, outRows, 1, 1),
-                blobs,
-                shapes);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+            outw = (paddedW - kernelExtentW) / up.strideW + 1;
+            outh = (paddedH - kernelExtentH) / up.strideH + 1;
+            if (outw <= 0 || outh <= 0)
+                throw new InvalidOperationException("Unfold output shape is empty: " + layerName);
+            size = Mathf.Max(1, outw * outh);
+            outRows = Mathf.Max(1, up.kernelW * up.kernelH * inC);
         }
 
         private static void ResolvePadding(

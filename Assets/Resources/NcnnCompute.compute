@@ -21,6 +21,7 @@
 #pragma kernel NcnnConv3x3Pack4
 #pragma kernel NcnnConvPack4General
 #pragma kernel NcnnDeconvolutionPack4General
+#pragma kernel NcnnDeconvolutionDepthWisePack4
 #pragma kernel NcnnConvDepthWisePack4
 #pragma kernel NcnnWinograd23TransformInputPack4
 #pragma kernel NcnnWinograd23GemmPack4
@@ -112,9 +113,14 @@
 #pragma kernel NcnnReductionScalar2D
 #pragma kernel NcnnReductionLinearMat2D
 #pragma kernel NcnnEmbed
+#pragma kernel NcnnEmbedTexture
+#pragma kernel NcnnEmbedTextureLinearIndex
+#pragma kernel NcnnEmbedTexturePack4Index
 #pragma kernel NcnnPermute
 #pragma kernel NcnnSlice
 #pragma kernel NcnnTile
+#pragma kernel NcnnTilePack4
+#pragma kernel NcnnTileLinearMat
 #pragma kernel NcnnReduceSum256
 #pragma kernel NcnnMulScalarBuf
 #pragma kernel NcnnGroupNormStats
@@ -154,12 +160,22 @@
 #pragma kernel NcnnQuantizeBuf
 #pragma kernel NcnnDequantizeBuf
 #pragma kernel NcnnRequantizeBuf
+#pragma kernel NcnnCastPack4
+#pragma kernel NcnnQuantizePack4
+#pragma kernel NcnnDequantizePack4
+#pragma kernel NcnnRequantizePack4
+#pragma kernel NcnnNormalizePack4
+#pragma kernel NcnnLrnPack4
+#pragma kernel NcnnRmsNormPack4
 #pragma kernel NcnnPixelShuffleBuf
 #pragma kernel NcnnRotaryEmbedBuf
+#pragma kernel NcnnRotaryEmbedPack4
+#pragma kernel NcnnPriorBox
 #pragma kernel NcnnNormalizeBuf
 #pragma kernel NcnnLrnBuf
 #pragma kernel NcnnRmsNormBuf
 #pragma kernel NcnnUnfoldBuf
+#pragma kernel NcnnUnfoldPack4
 #pragma kernel NcnnSdpaQkBuf
 #pragma kernel NcnnSdpaSoftmaxBuf
 #pragma kernel NcnnSdpaQkvBuf
@@ -238,6 +254,7 @@ void NcnnWinograd23TransformOutputPack4_Impl(uint3 id);
 void NcnnConv1x1Pack4_Impl(uint3 id);
 void NcnnConvPack4General_Impl(uint3 id);
 void NcnnDeconvolutionPack4General_Impl(uint3 id);
+void NcnnDeconvolutionDepthWisePack4_Impl(uint3 id);
 void NcnnConvDepthWisePack4_Impl(uint3 id);
 void NcnnAddPack4_Impl(uint3 id);
 void NcnnCopyPack4_Impl(uint3 id);
@@ -337,12 +354,17 @@ void NcnnSigmoidLinearMat_Impl(uint3 id);
 void NcnnGeluPack4_Impl(uint3 id);
 void NcnnGeluLinearMat_Impl(uint3 id);
 void NcnnEmbed_Impl(uint3 id);
+void NcnnEmbedTexture_Impl(uint3 id);
+void NcnnEmbedTextureLinearIndex_Impl(uint3 id);
+void NcnnEmbedTexturePack4Index_Impl(uint3 id);
 void NcnnLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnLayerNormPack4WidthTex_Impl(uint3 id);
 void NcnnSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnPermute_Impl(uint3 id);
 void NcnnSlice_Impl(uint3 id);
 void NcnnTile_Impl(uint3 id);
+void NcnnTilePack4_Impl(uint3 id);
+void NcnnTileLinearMat_Impl(uint3 id);
 void NcnnReduceSum256_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnMulScalarBuf_Impl(uint3 id);
 void NcnnGroupNormStats_Impl(uint3 groupId, uint3 groupThreadId);
@@ -386,12 +408,22 @@ void NcnnPixelShufflePack4_Impl(uint3 id);
 void NcnnQuantizeBuf_Impl(uint3 id);
 void NcnnDequantizeBuf_Impl(uint3 id);
 void NcnnRequantizeBuf_Impl(uint3 id);
+void NcnnCastPack4_Impl(uint3 id);
+void NcnnQuantizePack4_Impl(uint3 id);
+void NcnnDequantizePack4_Impl(uint3 id);
+void NcnnRequantizePack4_Impl(uint3 id);
+void NcnnNormalizePack4_Impl(uint3 id);
+void NcnnLrnPack4_Impl(uint3 id);
+void NcnnRmsNormPack4_Impl(uint3 id);
 void NcnnPixelShuffleBuf_Impl(uint3 id);
 void NcnnRotaryEmbedBuf_Impl(uint3 id);
+void NcnnRotaryEmbedPack4_Impl(uint3 id);
+void NcnnPriorBox_Impl(uint3 id);
 void NcnnNormalizeBuf_Impl(uint3 id);
 void NcnnLrnBuf_Impl(uint3 id);
 void NcnnRmsNormBuf_Impl(uint3 id);
 void NcnnUnfoldBuf_Impl(uint3 id);
+void NcnnUnfoldPack4_Impl(uint3 id);
 void NcnnPassthrough_Impl(uint3 id);
 
 [numthreads(256,1,1)]
@@ -577,6 +609,12 @@ void NcnnConvPack4General(uint3 id : SV_DispatchThreadID)
 void NcnnDeconvolutionPack4General(uint3 id : SV_DispatchThreadID)
 {
     NcnnDeconvolutionPack4General_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnDeconvolutionDepthWisePack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnDeconvolutionDepthWisePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -1609,6 +1647,9 @@ int _EmbedWords;
 int _EmbedNumOutput;
 int _EmbedInputDim;
 int _EmbedBiasTerm;
+int _EmbedIndexTextureMode;
+int _EmbedIndexStorageW;
+int _EmbedIndexStorageH;
 
 StructuredBuffer<float> _PermuteIn;
 RWStructuredBuffer<float> _PermuteOut;
@@ -1640,6 +1681,7 @@ int _SliceOutC;
 StructuredBuffer<float> _TileIn;
 RWStructuredBuffer<float> _TileOut;
 int _TileDims;
+int _TileOutDims;
 int _TileInW;
 int _TileInH;
 int _TileInD;
@@ -1650,6 +1692,14 @@ int _TileOutW;
 int _TileOutH;
 int _TileOutD;
 int _TileOutC;
+int _TileRepeatW;
+int _TileRepeatH;
+int _TileRepeatD;
+int _TileRepeatC;
+int _TileInStorageW;
+int _TileInStorageH;
+int _TileOutStorageW;
+int _TileOutStorageH;
 
 StructuredBuffer<float> _ReduceIn;
 RWStructuredBuffer<float> _ReduceOut;
@@ -1932,6 +1982,24 @@ void NcnnEmbed(uint3 id : SV_DispatchThreadID)
     NcnnEmbed_Impl(id);
 }
 
+[numthreads(8,8,1)]
+void NcnnEmbedTexture(uint3 id : SV_DispatchThreadID)
+{
+    NcnnEmbedTexture_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnEmbedTextureLinearIndex(uint3 id : SV_DispatchThreadID)
+{
+    NcnnEmbedTextureLinearIndex_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnEmbedTexturePack4Index(uint3 id : SV_DispatchThreadID)
+{
+    NcnnEmbedTexturePack4Index_Impl(id);
+}
+
 groupshared float _Red0[256];
 groupshared float _Red1[256];
 groupshared float _ReduceSum256_sdata[256];
@@ -1970,6 +2038,18 @@ void NcnnSlice(uint3 id : SV_DispatchThreadID)
 void NcnnTile(uint3 id : SV_DispatchThreadID)
 {
     NcnnTile_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnTilePack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnTilePack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnTileLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnTileLinearMat_Impl(id);
 }
 
 [numthreads(256,1,1)]
@@ -2394,6 +2474,36 @@ int _RotaryEmbedDim;
 int _RotarySeqLen;
 int _RotaryNumHeads;
 int _RotaryInterleaved;
+int _RotaryCosDims;
+int _RotaryCosW;
+int _RotaryCosH;
+int _RotaryCosD;
+int _RotaryCosC;
+int _RotarySinDims;
+int _RotarySinW;
+int _RotarySinH;
+int _RotarySinD;
+int _RotarySinC;
+StructuredBuffer<float> _PriorMinSizes;
+StructuredBuffer<float> _PriorMaxSizes;
+StructuredBuffer<float> _PriorAspectRatios;
+StructuredBuffer<float> _PriorVariances;
+int _PriorMode;
+int _PriorFeatW;
+int _PriorFeatH;
+int _PriorImageW;
+int _PriorImageH;
+int _PriorNumMinSizes;
+int _PriorNumMaxSizes;
+int _PriorNumAspectRatios;
+int _PriorNumPrior;
+int _PriorFlip;
+int _PriorClip;
+int _PriorStepMmdetection;
+int _PriorCenterMmdetection;
+float _PriorStepW;
+float _PriorStepH;
+float _PriorOffset;
 StructuredBuffer<float> _NormIn;
 StructuredBuffer<float> _NormScale;
 RWStructuredBuffer<float> _NormOut;
@@ -2811,6 +2921,48 @@ void NcnnRequantizeBuf(uint3 id : SV_DispatchThreadID)
     NcnnRequantizeBuf_Impl(id);
 }
 
+[numthreads(8,8,1)]
+void NcnnCastPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnCastPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnQuantizePack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnQuantizePack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnDequantizePack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnDequantizePack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnRequantizePack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnRequantizePack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnNormalizePack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnNormalizePack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnLrnPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnLrnPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnRmsNormPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnRmsNormPack4_Impl(id);
+}
+
 [numthreads(256,1,1)]
 void NcnnPixelShuffleBuf(uint3 id : SV_DispatchThreadID)
 {
@@ -2821,6 +2973,18 @@ void NcnnPixelShuffleBuf(uint3 id : SV_DispatchThreadID)
 void NcnnRotaryEmbedBuf(uint3 id : SV_DispatchThreadID)
 {
     NcnnRotaryEmbedBuf_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnRotaryEmbedPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnRotaryEmbedPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPriorBox(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPriorBox_Impl(id);
 }
 
 [numthreads(256,1,1)]
@@ -2848,6 +3012,12 @@ void NcnnUnfoldBuf(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnUnfoldPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnUnfoldPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
 {
     NcnnPassthrough_Impl(id);
@@ -2861,6 +3031,8 @@ void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4Spatial.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4Layout.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4Matmul.hlsl"
+#include "NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4PointwiseNorm.hlsl"
+#include "NcnnComputeIncludes/KernelGroups/NcnnKernels.PriorBox.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferTensor.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.GroupNorm.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferAttention.hlsl"

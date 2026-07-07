@@ -361,6 +361,68 @@ void NcnnDeconvolutionPack4General_Impl(uint3 id)
     _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
 }
 
+void NcnnDeconvolutionDepthWisePack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh) return;
+    int pack = (int)id.z;
+    if (pack < 0 || pack >= _OutPacks) return;
+
+    int group = max(1, _ConvGroup);
+    int outch_g = max(1, _OutC / group);
+    bool isOneToOneDepthWise = _OutC == group && _InC == group;
+    int borderedX = (int)id.x + _PadLeftVar;
+    int borderedY = (int)id.y + _PadTopVar;
+    float4 sum = _DwConvB4[pack];
+
+    for (int ky = 0; ky < _KernelHVar; ky++)
+    {
+        int iyNumerator = borderedY - ky * _DilationHVar;
+        if (iyNumerator < 0)
+            continue;
+        if ((iyNumerator % _StrideHVar) != 0)
+            continue;
+        int iy = iyNumerator / _StrideHVar;
+        if (iy < 0 || iy >= _InH)
+            continue;
+
+        for (int kx = 0; kx < _KernelWVar; kx++)
+        {
+            int ixNumerator = borderedX - kx * _DilationWVar;
+            if (ixNumerator < 0)
+                continue;
+            if ((ixNumerator % _StrideWVar) != 0)
+                continue;
+            int ix = ixNumerator / _StrideWVar;
+            if (ix < 0 || ix >= _InW)
+                continue;
+
+            float4 w = _DwConvW4[(pack * _KernelHVar + ky) * _KernelWVar + kx];
+            if (isOneToOneDepthWise)
+            {
+                sum += _ConvInArr[int3(ix, iy, pack)] * w;
+                continue;
+            }
+
+            [unroll]
+            for (int lane = 0; lane < 4; lane++)
+            {
+                int oc = pack * 4 + lane;
+                if (oc < 0 || oc >= _OutC)
+                    continue;
+
+                int g = min(group - 1, oc / outch_g);
+                float value = NcnnReadLane(sum, lane) + NcnnReadPack4Channel(_ConvInArr, ix, iy, g) * NcnnReadLane(w, lane);
+                NcnnWriteLane(sum, lane, value);
+            }
+        }
+    }
+
+    sum = NcnnApplyActivation(sum);
+    _ConvOutArr[int3((int)id.x, (int)id.y, pack)] = sum;
+}
+
 void NcnnConvDepthWisePack4_Impl(uint3 id)
 {
     uint ow, oh, od;

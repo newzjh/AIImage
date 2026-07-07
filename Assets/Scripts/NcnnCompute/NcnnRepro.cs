@@ -661,9 +661,17 @@ namespace NcnnCompute
             public float offset;
             public bool stepMmdetection;
             public bool centerMmdetection;
+            public ComputeBuffer minSizeBuffer;
+            public ComputeBuffer maxSizeBuffer;
+            public ComputeBuffer aspectRatioBuffer;
+            public ComputeBuffer varianceBuffer;
 
             public void Dispose()
             {
+                try { NcnnGpuResourceTracker.ReleaseBuffer(minSizeBuffer, "NcnnRepro.PriorBoxPack.Dispose"); minSizeBuffer?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(maxSizeBuffer, "NcnnRepro.PriorBoxPack.Dispose"); maxSizeBuffer?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(aspectRatioBuffer, "NcnnRepro.PriorBoxPack.Dispose"); aspectRatioBuffer?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(varianceBuffer, "NcnnRepro.PriorBoxPack.Dispose"); varianceBuffer?.Dispose(); } catch { }
             }
         }
 
