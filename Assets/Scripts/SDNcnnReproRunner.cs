@@ -438,7 +438,73 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         float strength,
         CancellationToken ct)
     {
-        return RunInpaintAsync(initImage, maskImage, positivePrompt, negativePrompt, width, height, stepCount, seed, strength, ct);
+        return RunInpaintPack4Async(initImage, maskImage, positivePrompt, negativePrompt, stepCount, seed, strength, ct);
+    }
+
+    private async UniTask<SDNcnnReproResult> RunInpaintPack4Async(
+        Texture initImage,
+        Texture maskImage,
+        string positivePrompt,
+        string negativePrompt,
+        int stepCount,
+        int seed,
+        float strength,
+        CancellationToken ct)
+    {
+        var runner = gameObject.AddComponent<SDInpaintingNcnnReproRunner>();
+        Action<float, string> forwardProgress = ReportProgress;
+        try
+        {
+            runner.stableDiffusionRootRelativePath = stableDiffusionRootRelativePath;
+            runner.useReferenceAssetFallback = useReferenceAssetFallback;
+            runner.enableDebugDump = enableDebugDump;
+            runner.enableTempPool = enableTempPool;
+            runner.maxPooledPerShape = maxPooledPerShape;
+            runner.keepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
+            runner.tensorTextureFormat = tensorTextureFormat;
+            runner.encoderTensorTextureFormat = encoderTensorTextureFormat;
+            runner.decoderTensorTextureFormat = decoderTensorTextureFormat;
+            runner.useNcnnStyleGroupNorm = useNcnnStyleGroupNorm;
+            runner.useOfficialUnetCache = false;
+            runner.enableMhaParallelSoftmax = enableMhaParallelSoftmax;
+            runner.enableMhaQkvFusion = enableMhaQkvFusion;
+            runner.enableAttentionMatMulPack4Specializations = true;
+            runner.enableLayerRuntimeProfile = enableLayerRuntimeProfile;
+            runner.syncLayerRuntimeProfileGpu = syncLayerRuntimeProfileGpu;
+            runner.useCommandBuffer = ResolveBoolEnv("AIIMAGE_SD_USE_COMMAND_BUFFER", false);
+            runner.useAsyncComputeCommandBuffer = ResolveBoolEnv("AIIMAGE_SD_USE_ASYNC_COMPUTE", runner.useAsyncComputeCommandBuffer);
+            runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv("AIIMAGE_SD_DISALLOW_TEMP_COMPUTE_BUFFERS", true);
+            runner.ProgressChanged += forwardProgress;
+
+            var result = await runner.ProcessAsync(
+                initImage,
+                maskImage,
+                positivePrompt,
+                negativePrompt,
+                Mathf.Max(1, stepCount),
+                seed,
+                Mathf.Clamp01(strength),
+                GuidanceScale,
+                ct);
+
+            _lastDumpDir = result.dumpDir ?? runner.LastDumpDir;
+            return new SDNcnnReproResult
+            {
+                texture = result.texture,
+                error = result.error,
+                elapsedMs = result.elapsedMs,
+                seed = result.seed,
+                usedInitImage = true,
+                usedMask = true,
+                dumpDir = _lastDumpDir
+            };
+        }
+        finally
+        {
+            runner.ProgressChanged -= forwardProgress;
+            UnityEngine.Object.DestroyImmediate(runner);
+            ReportProgress(1f, string.Empty);
+        }
     }
 
     private async UniTask<SDNcnnReproResult> RunAsync(
@@ -652,6 +718,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         }
     }
 
+    [Obsolete("Legacy SD inpainting buffer path is disabled. Use RunInpaintPack4Async/SDInpaintingNcnnReproRunner instead.", true)]
     private async UniTask<SDNcnnReproResult> RunInpaintAsync(
         Texture initImage,
         Texture maskImage,
