@@ -177,7 +177,7 @@ namespace NcnnCompute
 
                 if (!canAliasTexture)
                 {
-                    var scratchTensor = owner.RentScratchTensorFromTexture(src, srcShape);
+                    var scratchTensor = owner.RentScratchTensorFromTexture(src, srcShape, layer.bottomNames[0]);
                     if (TryResolveWindowPartitionOutput(owner, layer, scratchTensor, out var partitionTensor))
                     {
                         owner.PublishTensorBufferOutput(

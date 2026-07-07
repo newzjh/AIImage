@@ -676,6 +676,7 @@ namespace NcnnCompute
             private readonly Dictionary<string, NcnnTensorBuffer> _bufferViews;
             private readonly List<IDisposable> _tempOwned;
             private readonly NcnnRepro _owner;
+            private readonly bool _disallowTextureToBufferFallback;
             private readonly HashSet<RenderTexture> _visitedTextures = new HashSet<RenderTexture>();
             private readonly HashSet<ComputeBuffer> _visitedBuffers = new HashSet<ComputeBuffer>();
 
@@ -686,7 +687,8 @@ namespace NcnnCompute
                 Dictionary<string, BufferRef> bufferRefs,
                 Dictionary<string, NcnnTensorBuffer> bufferViews,
                 List<IDisposable> tempOwned,
-                NcnnRepro owner)
+                NcnnRepro owner,
+                bool disallowTextureToBufferFallback)
             {
                 _textureBlobs = textureBlobs;
                 _textureShapes = textureShapes;
@@ -695,12 +697,23 @@ namespace NcnnCompute
                 _bufferViews = bufferViews;
                 _tempOwned = tempOwned;
                 _owner = owner;
+                _disallowTextureToBufferFallback = disallowTextureToBufferFallback;
             }
 
             private ComputeBuffer GetOrMaterializeBuffer(string name)
             {
                 if (_bufferBlobs.TryGetValue(name, out var existing) && existing != null)
                     return existing;
+
+                if (_disallowTextureToBufferFallback
+                    && _textureBlobs.TryGetValue(name, out var tr)
+                    && tr != null
+                    && tr.texture != null)
+                {
+                    throw _owner.CreateDisallowedBufferPathException(
+                        "pack4-only guard: GetBufferData/texture-to-buffer materialization disallowed",
+                        name);
+                }
 
                 var materialized = _owner.GetOrConvertToBuffer(name, _textureBlobs, _bufferBlobs, _textureShapes, _bufferViews, _tempOwned);
                 if (materialized == null)
@@ -1350,6 +1363,16 @@ namespace NcnnCompute
         internal bool ShouldAllowCurrentLayerBufferGuardBypass()
         {
             return ShouldForceCurrentLayerBufferPath();
+        }
+
+        internal bool ShouldBlockPack4BufferFallback()
+        {
+            if (ShouldAllowCurrentLayerBufferGuardBypass())
+                return false;
+            return DisallowBufferAccess
+                || DisallowBufferOutputs
+                || DisallowBufferToTextureMaterialization
+                || DisallowInferenceTempComputeBuffers;
         }
 
         private static bool MatchesForceBufferToken(ISet<string> set, string value)
@@ -3862,11 +3885,19 @@ namespace NcnnCompute
         internal NcnnTensorBuffer RentScratchTensorFromTexture(
             TensorRef texture,
             BufferShape shape,
+            string blobName = null,
             [CallerMemberName] string callerMember = null,
             [CallerLineNumber] int callerLine = 0)
         {
             if (texture == null || texture.texture == null)
                 throw new ArgumentNullException(nameof(texture));
+            if (ShouldBlockPack4BufferFallback())
+            {
+                throw CreateDisallowedBufferPathException(
+                    "pack4-only guard: texture-to-buffer scratch materialization disallowed",
+                    blobName,
+                    "dims=" + shape.dims + " w=" + shape.w + " h=" + shape.h + " d=" + shape.d + " c=" + shape.c);
+            }
 
             var sliceCount = GetTextureSliceCount(shape, texture.texture);
             var physicalChannels = Mathf.Max(1, texture.packs * 4);
@@ -3916,7 +3947,7 @@ namespace NcnnCompute
                 return existingView;
 
             if (TryGetExistingTexture(textureBlobs, textureShapes, name, out var texture, out var shape))
-                return RentScratchTensorFromTexture(texture, shape, callerMember, callerLine);
+                return RentScratchTensorFromTexture(texture, shape, name, callerMember, callerLine);
 
             var buffer = GetOrConvertToBuffer(name, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             if (buffer == null)
@@ -4552,33 +4583,25 @@ namespace NcnnCompute
                     out _,
                     out _,
                     logSkipReason: false);
-            if (DisallowBufferOutputs && !ShouldAllowCurrentLayerBufferGuardBypass())
+            if (ShouldBlockPack4BufferFallback())
             {
-                if (preferTexture && tensor.dims <= 4 && canRepresentAsTexture)
+                if (!tensor.ownsBuffer && preferTexture && tensor.dims <= 4 && canRepresentAsTexture)
                 {
                     PublishScratchTextureOutput(topName, tensor, textureBlobs, textureShapes, textureFormatOverride);
-                    if (tensor.ownsBuffer)
-                        tensor.Dispose();
                     return;
                 }
 
-                if (preferTexture && tensor.dims <= 4 && !canRepresentAsTexture)
-                {
-                    DebugLog?.Invoke(
-                        "[BufferMaterialize] keep-buffer-only"
-                        + " | site=" + DescribeCurrentExecutionSite()
-                        + " | blob=" + topName
-                        + " | dims=" + tensor.dims
-                        + " | shape=" + tensor.w + "x" + tensor.h + "x" + tensor.d + "x" + tensor.c);
-                }
-                else
-                {
-                    throw CreateDisallowedBufferPathException(
-                        "pack4-only guard: buffer output disallowed",
-                        topName,
-                        "dims=" + tensor.dims + " w=" + tensor.w + " h=" + tensor.h + " d=" + tensor.d + " c=" + tensor.c + " preferTexture=" + preferTexture);
-                }
-
+                throw CreateDisallowedBufferPathException(
+                    "pack4-only guard: buffer output disallowed",
+                    topName,
+                    "dims=" + tensor.dims
+                    + " w=" + tensor.w
+                    + " h=" + tensor.h
+                    + " d=" + tensor.d
+                    + " c=" + tensor.c
+                    + " preferTexture=" + preferTexture
+                    + " ownsBuffer=" + tensor.ownsBuffer
+                    + " canRepresentAsTexture=" + canRepresentAsTexture);
             }
 
             var logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
@@ -4614,6 +4637,13 @@ namespace NcnnCompute
 
             if (!preferTexture || tensor.dims > 3)
                 throw new InvalidOperationException("CommandBuffer outputs currently require dims<=3 materialized texture: " + topName);
+            if (ShouldBlockPack4BufferFallback() && tensor.ownsBuffer)
+            {
+                throw CreateDisallowedBufferPathException(
+                    "pack4-only guard: command-buffer buffer output disallowed",
+                    topName,
+                    "dims=" + tensor.dims + " w=" + tensor.w + " h=" + tensor.h + " d=" + tensor.d + " c=" + tensor.c);
+            }
 
             var rt = MaterializeCmdTextureFromBufferView(cmd, tensor.buffer, tensor);
             if (rt == null)
@@ -4939,7 +4969,7 @@ namespace NcnnCompute
             Dictionary<string, NcnnTensorBuffer> bufferViews,
             List<IDisposable> tempOwned)
         {
-            if (DisallowBufferAccess && !ShouldAllowCurrentLayerBufferGuardBypass())
+            if (ShouldBlockPack4BufferFallback())
             {
                 var detail = bufferBlobs != null && bufferBlobs.TryGetValue(name, out var existing) && existing != null
                     ? "mode=existing-buffer"

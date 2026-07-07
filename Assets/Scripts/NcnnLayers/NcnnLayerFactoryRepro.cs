@@ -681,7 +681,20 @@ namespace NcnnCompute
                 }
 
                 FinishLayerRuntimeProfile(runtimeProfile);
-                return new InferResult(textureBlobs, textureShapes, bufferBlobs, bufferRefs, bufferViews, tempOwned, this);
+                var disallowTextureToBufferFallback =
+                    DisallowBufferAccess
+                    || DisallowBufferOutputs
+                    || DisallowBufferToTextureMaterialization
+                    || DisallowInferenceTempComputeBuffers;
+                return new InferResult(
+                    textureBlobs,
+                    textureShapes,
+                    bufferBlobs,
+                    bufferRefs,
+                    bufferViews,
+                    tempOwned,
+                    this,
+                    disallowTextureToBufferFallback);
             }
             finally
             {

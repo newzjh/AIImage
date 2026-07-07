@@ -4441,22 +4441,6 @@ namespace NcnnCompute
             Dispatch1D(_kPack4ToBufferChw, total, 256);
         }
 
-        public void Pack4ToBufferCHW(CommandBuffer cmd, ComputeTexture input, int w, int h, int c, ComputeBuffer output)
-        {
-            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
-            if (input == null) throw new ArgumentNullException(nameof(input));
-            if (output == null) throw new ArgumentNullException(nameof(output));
-            var total = w * h * c;
-            if (total <= 0) return;
-            cmd.SetComputeIntParam(_cs, "_Pack4W", w);
-            cmd.SetComputeIntParam(_cs, "_Pack4H", h);
-            cmd.SetComputeIntParam(_cs, "_Pack4D", 1);
-            cmd.SetComputeIntParam(_cs, "_Pack4C", c);
-            cmd.SetComputeTextureParam(_cs, _kPack4ToBufferChw, "_TexIn0Arr", input.nameID);
-            cmd.SetComputeBufferParam(_cs, _kPack4ToBufferChw, "_Pack4Out", output);
-            Dispatch1D(cmd, _kPack4ToBufferChw, total, 256);
-        }
-
         public void Pack4ToBufferCDHW(RenderTexture input, int w, int h, int d, int c, ComputeBuffer output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -4470,22 +4454,6 @@ namespace NcnnCompute
             _cs.SetTexture(_kPack4ToBufferCdhw, "_TexIn0Arr", input);
             _cs.SetBuffer(_kPack4ToBufferCdhw, "_Pack4Out", output);
             Dispatch1D(_kPack4ToBufferCdhw, total, 256);
-        }
-
-        public void Pack4ToBufferCDHW(CommandBuffer cmd, ComputeTexture input, int w, int h, int d, int c, ComputeBuffer output)
-        {
-            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
-            if (input == null) throw new ArgumentNullException(nameof(input));
-            if (output == null) throw new ArgumentNullException(nameof(output));
-            var total = w * h * d * c;
-            if (total <= 0) return;
-            cmd.SetComputeIntParam(_cs, "_Pack4W", w);
-            cmd.SetComputeIntParam(_cs, "_Pack4H", h);
-            cmd.SetComputeIntParam(_cs, "_Pack4D", d);
-            cmd.SetComputeIntParam(_cs, "_Pack4C", c);
-            cmd.SetComputeTextureParam(_cs, _kPack4ToBufferCdhw, "_TexIn0Arr", input.nameID);
-            cmd.SetComputeBufferParam(_cs, _kPack4ToBufferCdhw, "_Pack4Out", output);
-            Dispatch1D(cmd, _kPack4ToBufferCdhw, total, 256);
         }
 
         public void Pack4ChannelsToWidth(RenderTexture input, int channels, RenderTexture output)
