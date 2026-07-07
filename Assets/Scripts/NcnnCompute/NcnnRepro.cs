@@ -150,6 +150,12 @@ namespace NcnnCompute
             public int packs;
             public int sourceWidth;
             public int sourceHeight;
+            public int kernelW;
+            public int kernelH;
+            public int strideW;
+            public int strideH;
+            public int padLeft;
+            public int padTop;
             public int refs;
             public bool owned;
 
@@ -165,6 +171,14 @@ namespace NcnnCompute
             public int width;
             public int height;
             public int packs;
+            public int sourceWidth;
+            public int sourceHeight;
+            public int kernelW;
+            public int kernelH;
+            public int strideW;
+            public int strideH;
+            public int padLeft;
+            public int padTop;
             public int refs;
             public bool owned;
             public bool hasLogicalShape;

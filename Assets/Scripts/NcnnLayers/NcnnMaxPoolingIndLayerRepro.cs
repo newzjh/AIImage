@@ -91,6 +91,12 @@ namespace NcnnCompute
                 packs = Mathf.Max(1, Mathf.CeilToInt(srcView.c / 4f)),
                 sourceWidth = srcView.w,
                 sourceHeight = srcView.h,
+                kernelW = kernelW,
+                kernelH = kernelH,
+                strideW = strideW,
+                strideH = strideH,
+                padLeft = padLeft,
+                padTop = padTop,
                 refs = owner._blobUseCount.TryGetValue(layer.topNames[1], out var idxUseCount) ? idxUseCount : 1,
                 owned = true
             };
@@ -157,6 +163,12 @@ namespace NcnnCompute
                 packs = src.packs,
                 sourceWidth = src.width,
                 sourceHeight = src.height,
+                kernelW = kernelW,
+                kernelH = kernelH,
+                strideW = strideW,
+                strideH = strideH,
+                padLeft = padLeft,
+                padTop = padTop,
                 refs = owner._blobUseCount.TryGetValue(layer.topNames[1], out var idxUseCount) ? idxUseCount : 1,
                 owned = true
             };
@@ -215,6 +227,14 @@ namespace NcnnCompute
                     width = outW,
                     height = outH,
                     packs = src.packs,
+                    sourceWidth = srcShape.w,
+                    sourceHeight = srcShape.h,
+                    kernelW = kernelW,
+                    kernelH = kernelH,
+                    strideW = strideW,
+                    strideH = strideH,
+                    padLeft = padLeft,
+                    padTop = padTop,
                     refs = 1,
                     owned = true
                 };

@@ -104,12 +104,12 @@ namespace NcnnCompute
 
                 var outShape = new NcnnRepro.BufferShape(3, idx.sourceWidth, idx.sourceHeight, 1, srcShape.c);
                 var outRt = owner.RentTempArray(idx.sourceWidth, idx.sourceHeight, src.packs, RenderTextureFormat.ARGBHalf);
-                var kernelW = layer.GetInt(1, 0);
-                var kernelH = layer.GetInt(11, kernelW);
-                var strideW = layer.GetInt(2, 1);
-                var strideH = layer.GetInt(12, strideW);
-                var padLeft = layer.GetInt(3, 0);
-                var padTop = layer.GetInt(13, padLeft);
+                var kernelW = idx.kernelW > 0 ? idx.kernelW : layer.GetInt(1, 0);
+                var kernelH = idx.kernelH > 0 ? idx.kernelH : layer.GetInt(11, kernelW);
+                var strideW = idx.strideW > 0 ? idx.strideW : layer.GetInt(2, 1);
+                var strideH = idx.strideH > 0 ? idx.strideH : layer.GetInt(12, strideW);
+                var padLeft = idx.padLeft;
+                var padTop = idx.padTop;
                 owner.Ops.MaxUnPoolingPack4(src.texture, idx.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outRt);
                 textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureRef(outRt, outShape, outShape, owned: true);
                 textureShapes[layer.topNames[0]] = outShape;
@@ -140,17 +140,18 @@ namespace NcnnCompute
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var idx = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[1]);
             var idxShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
-            var kernelW = layer.GetInt(1, 0);
-            var kernelH = layer.GetInt(11, kernelW);
-            var strideW = layer.GetInt(2, 1);
-            var strideH = layer.GetInt(12, strideW);
-            var padLeft = layer.GetInt(3, 0);
+            var kernelW = idx.kernelW > 0 ? idx.kernelW : layer.GetInt(1, 0);
+            var kernelH = idx.kernelH > 0 ? idx.kernelH : layer.GetInt(11, kernelW);
+            var strideW = idx.strideW > 0 ? idx.strideW : layer.GetInt(2, 1);
+            var strideH = idx.strideH > 0 ? idx.strideH : layer.GetInt(12, strideW);
+            var padLeft = idx.padLeft;
             var padRight = layer.GetInt(14, padLeft);
-            var padTop = layer.GetInt(13, padLeft);
+            var padTop = idx.padTop;
             var padBottom = layer.GetInt(15, padTop);
-            var outW = Mathf.Max(srcShape.w, idxShape.w);
-            var outH = Mathf.Max(srcShape.h, idxShape.h);
-            if (strideW > 1 || strideH > 1 || kernelW > 1 || kernelH > 1 || padLeft != 0 || padRight != 0 || padTop != 0 || padBottom != 0)
+            var outW = idx.sourceWidth > 0 ? idx.sourceWidth : Mathf.Max(srcShape.w, idxShape.w);
+            var outH = idx.sourceHeight > 0 ? idx.sourceHeight : Mathf.Max(srcShape.h, idxShape.h);
+            if ((idx.sourceWidth <= 0 || idx.sourceHeight <= 0)
+                && (strideW > 1 || strideH > 1 || kernelW > 1 || kernelH > 1 || padLeft != 0 || padRight != 0 || padTop != 0 || padBottom != 0))
             {
                 outW = Mathf.Max(1, (srcShape.w - 1) * strideW - padLeft - padRight + kernelW);
                 outH = Mathf.Max(1, (srcShape.h - 1) * strideH - padTop - padBottom + kernelH);
