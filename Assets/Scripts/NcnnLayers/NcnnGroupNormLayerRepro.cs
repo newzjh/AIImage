@@ -55,15 +55,14 @@ namespace NcnnCompute
 
             if (owner.EnableGroupNormTexturePath
                 && owner.UseNcnnStyleGroupNorm
-                && owner.TryGetPack4Texture(
-                    layer.bottomNames[0],
+                && NcnnRepro.TryGetExistingTexture(
                     context.textureBlobs,
                     context.textureShapes,
-                    context.bufferBlobs,
-                    context.bufferViews,
+                    layer.bottomNames[0],
                     out var srcTex,
                     out var srcShape)
-                && NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
+                && (NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp)
+                    || CanUseLinearMatPath(srcTex, srcShape, gp)))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
                 return;
@@ -123,39 +122,47 @@ namespace NcnnCompute
         {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferViews = context.bufferViews;
 
             if (!owner._groupNorm.TryGetValue(layer.name, out var gp))
                 throw new InvalidOperationException("GroupNorm not found: " + layer.name);
-            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
-                || !NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
+            if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
             {
-                throw new InvalidOperationException("GroupNorm render-texture path requires supported pack4 input: " + layer.name);
+                throw new InvalidOperationException("GroupNorm render-texture path requires existing texture input: " + layer.name);
             }
 
-            var outRt = owner.RentTempArray(
-                srcTex.width,
-                srcTex.height,
-                srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs,
-                RenderTextureFormat.ARGBHalf);
-            var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
-            var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
-            var logicalD = srcShape.dims == 4 ? srcShape.d : 1;
-            try
+            if (CanUseLinearMatPath(srcTex, srcShape, gp))
             {
-                owner.Ops.GroupNormPack4Tex(srcTex.texture, srcShape.w, srcShape.h, logicalD, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
-                outRt = null;
+                ExecuteLinearMatRenderTexturePath(owner, layer, gp, srcTex, srcShape, textureBlobs, textureShapes);
             }
-            finally
+            else if (NcnnRepro.CanUseGroupNormPack4Path(srcTex, srcShape, gp))
             {
-                if (statsA != null)
-                    owner.ReturnTempArray(statsA);
-                if (statsB != null)
-                    owner.ReturnTempArray(statsB);
-                if (outRt != null)
-                    owner.ReturnTempArray(outRt);
+                var outRt = owner.RentTempArray(
+                    srcTex.width,
+                    srcTex.height,
+                    srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs,
+                    RenderTextureFormat.ARGBHalf);
+                var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+                var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+                var logicalD = srcShape.dims == 4 ? srcShape.d : 1;
+                try
+                {
+                    owner.Ops.GroupNormPack4Tex(srcTex.texture, srcShape.w, srcShape.h, logicalD, srcShape.c, srcTex.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                    outRt = null;
+                }
+                finally
+                {
+                    if (statsA != null)
+                        owner.ReturnTempArray(statsA);
+                    if (statsB != null)
+                        owner.ReturnTempArray(statsB);
+                    if (outRt != null)
+                        owner.ReturnTempArray(outRt);
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException(BuildUnsupportedMessage(layer.name, srcShape, srcTex != null ? srcTex.packs : 0, gp));
             }
 
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
@@ -200,13 +207,178 @@ namespace NcnnCompute
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
             }
+            else if (owner.UseNcnnStyleGroupNorm && CanUseLinearMatCmdPath(src, srcShape, gp))
+            {
+                ExecuteLinearMatCommandBufferPath(owner, layer, gp, src, srcShape, cmd, blobs, shapes);
+            }
             else
             {
-                NcnnRepro.ResolveCmdTextureLayout(srcShape, out var width, out var height, out var packs);
-                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, srcShape);
+                throw new InvalidOperationException(BuildUnsupportedMessage(layer.name, srcShape, src != null ? src.packs : 0, gp));
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static void ExecuteLinearMatRenderTexturePath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.GroupNormPack gp,
+            NcnnRepro.TensorRef srcTex,
+            NcnnRepro.BufferShape srcShape,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+            var pack4Shape = BuildLinearMatPack4Shape(srcShape, gp);
+            var packCount = Mathf.Max(1, Mathf.CeilToInt(pack4Shape.c / 4f));
+            RenderTexture materializedInput = null;
+            RenderTexture outArr = null;
+            RenderTexture linearOut = null;
+            var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+            var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+            try
+            {
+                materializedInput = owner.RentTempArray(pack4Shape.w, pack4Shape.h, packCount, RenderTextureFormat.ARGBFloat);
+                owner.Ops.ReshapeLinearMatToPack4(
+                    srcTex.texture,
+                    storageShape.w,
+                    storageShape.h,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    pack4Shape.d,
+                    pack4Shape.c,
+                    pack4Shape.dims,
+                    materializedInput);
+
+                outArr = owner.RentTempArray(pack4Shape.w, pack4Shape.h, packCount, RenderTextureFormat.ARGBFloat);
+                owner.Ops.GroupNormPack4Tex(
+                    materializedInput,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    1,
+                    pack4Shape.c,
+                    packCount,
+                    gp.group,
+                    gp.eps,
+                    gp.gamma,
+                    gp.beta,
+                    statsA,
+                    statsB,
+                    outArr);
+
+                linearOut = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.ReshapePack4ToLinearMat(
+                    outArr,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    pack4Shape.d,
+                    pack4Shape.c,
+                    pack4Shape.dims,
+                    linearOut);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], linearOut, srcShape, storageShape);
+                owner.DebugLog?.Invoke(
+                    "[Texture][GroupNormLinearMat]"
+                    + " | layer=" + layer.name
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                    + " | pack4=d" + pack4Shape.dims + ":" + pack4Shape.w + "x" + pack4Shape.h + "x" + pack4Shape.d + "x" + pack4Shape.c
+                    + " | packs=" + packCount.ToString(CultureInfo.InvariantCulture));
+                linearOut = null;
+            }
+            finally
+            {
+                if (statsA != null)
+                    owner.ReturnTempArray(statsA);
+                if (statsB != null)
+                    owner.ReturnTempArray(statsB);
+                if (materializedInput != null)
+                    owner.ReturnTempArray(materializedInput);
+                if (outArr != null)
+                    owner.ReturnTempArray(outArr);
+                if (linearOut != null)
+                    owner.ReturnTempArray(linearOut);
+            }
+        }
+
+        private static void ExecuteLinearMatCommandBufferPath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.GroupNormPack gp,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            CommandBuffer cmd,
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            var pack4Shape = BuildLinearMatPack4Shape(srcShape, gp);
+            var packCount = Mathf.Max(1, Mathf.CeilToInt(pack4Shape.c / 4f));
+            var statsA = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+            var statsB = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+            ComputeTexture materializedInput = null;
+            ComputeTexture outArr = null;
+            try
+            {
+                materializedInput = owner.RentTempArray(cmd, pack4Shape.w, pack4Shape.h, packCount, RenderTextureFormat.ARGBFloat);
+                owner.Ops.ReshapeLinearMatToPack4(
+                    cmd,
+                    src.texture,
+                    storageShape.w,
+                    storageShape.h,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    pack4Shape.d,
+                    pack4Shape.c,
+                    pack4Shape.dims,
+                    materializedInput);
+
+                outArr = owner.RentTempArray(cmd, pack4Shape.w, pack4Shape.h, packCount, RenderTextureFormat.ARGBFloat);
+                owner.Ops.GroupNormPack4Tex(
+                    cmd,
+                    materializedInput,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    1,
+                    pack4Shape.c,
+                    packCount,
+                    gp.group,
+                    gp.eps,
+                    gp.gamma,
+                    gp.beta,
+                    statsA,
+                    statsB,
+                    outArr);
+
+                var linearOut = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.ReshapePack4ToLinearMat(
+                    cmd,
+                    outArr,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    pack4Shape.d,
+                    pack4Shape.c,
+                    pack4Shape.dims,
+                    linearOut);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(linearOut, srcShape, storageShape, owned: true);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                owner.DebugLog?.Invoke(
+                    "[CmdTexture][GroupNormLinearMat]"
+                    + " | layer=" + layer.name
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                    + " | pack4=d" + pack4Shape.dims + ":" + pack4Shape.w + "x" + pack4Shape.h + "x" + pack4Shape.d + "x" + pack4Shape.c
+                    + " | packs=" + packCount.ToString(CultureInfo.InvariantCulture));
+            }
+            finally
+            {
+                owner.ReturnTempArray(cmd, statsA);
+                owner.ReturnTempArray(cmd, statsB);
+                if (materializedInput != null)
+                    owner.ReturnTempArray(cmd, materializedInput);
+                if (outArr != null)
+                    owner.ReturnTempArray(cmd, outArr);
+            }
         }
 
         private static bool CanUsePack4CmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.GroupNormPack gp)
@@ -226,6 +398,74 @@ namespace NcnnCompute
                 && gp.group > 0
                 && gp.channels % gp.group == 0
                 && src.packs == Mathf.CeilToInt(gp.channels / 4f);
+        }
+
+        private static bool CanUseLinearMatPath(NcnnRepro.TensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.GroupNormPack gp)
+        {
+            if (src == null || src.texture == null || !NcnnRepro.IsStrictLinearMatTexture(src))
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            return gp != null
+                && gp.affine
+                && gp.gamma != null
+                && gp.beta != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h == gp.channels
+                && gp.channels > 0
+                && gp.group > 0
+                && gp.channels % gp.group == 0
+                && storageShape.dims == 2
+                && storageShape.w == src.width
+                && storageShape.h == src.height
+                && src.packs == 1;
+        }
+
+        private static bool CanUseLinearMatCmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.GroupNormPack gp)
+        {
+            if (src == null || src.texture == null || !NcnnRepro.IsStrictLinearMatTexture(src))
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            return gp != null
+                && gp.affine
+                && gp.gamma != null
+                && gp.beta != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h == gp.channels
+                && gp.channels > 0
+                && gp.group > 0
+                && gp.channels % gp.group == 0
+                && storageShape.dims == 2
+                && storageShape.w == src.width
+                && storageShape.h == src.height
+                && src.packs == 1;
+        }
+
+        private static NcnnRepro.BufferShape BuildLinearMatPack4Shape(NcnnRepro.BufferShape srcShape, NcnnRepro.GroupNormPack gp)
+        {
+            if (srcShape.dims != 2)
+                throw new InvalidOperationException("Linear-mat GroupNorm requires dims=2 input.");
+            if (gp == null || srcShape.h != gp.channels)
+                throw new InvalidOperationException("Linear-mat GroupNorm requires height=channels.");
+            return new NcnnRepro.BufferShape(3, srcShape.w, 1, 1, gp.channels);
+        }
+
+        private static string BuildUnsupportedMessage(
+            string layerName,
+            NcnnRepro.BufferShape srcShape,
+            int packs,
+            NcnnRepro.GroupNormPack gp)
+        {
+            return "GroupNorm pack4 path unsupported: " + layerName
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | packs=" + packs.ToString(CultureInfo.InvariantCulture)
+                + " | affine=" + (gp != null && gp.affine ? "1" : "0")
+                + " | channels=" + (gp != null ? gp.channels.ToString(CultureInfo.InvariantCulture) : "null")
+                + " | group=" + (gp != null ? gp.group.ToString(CultureInfo.InvariantCulture) : "null")
+                + " | supported=pack4_3d4d_or_linear_mat_dims2_height_equals_channels";
         }
     }
 }

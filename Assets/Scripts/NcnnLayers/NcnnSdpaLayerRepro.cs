@@ -282,6 +282,36 @@ namespace NcnnCompute
 
             try
             {
+                if (ResolveSdpaFastPathEnabled())
+                {
+                    output = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
+                    owner.Ops.SdpaAttentionPack4Cdhw(
+                        plan.query.texture,
+                        plan.key.texture,
+                        plan.value.texture,
+                        plan.queryShape.h,
+                        plan.keyShape.h,
+                        plan.queryShape.w,
+                        plan.valueShape.w,
+                        plan.queryShape.c,
+                        plan.keyShape.c,
+                        plan.scale,
+                        output);
+
+                    NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
+                    output = null;
+
+                    owner.Consume(
+                        context.textureBlobs,
+                        context.bufferBlobs,
+                        context.bufferRefs,
+                        context.bufferViews,
+                        context.remaining,
+                        layer.bottomNames,
+                        context.pinnedNames);
+                    return true;
+                }
+
                 queryScaled = owner.RentTempArray(plan.queryStorageShape.w, plan.queryStorageShape.h, plan.querySlices, plan.pack4TextureFormat);
                 owner.Ops.BinaryOpScalarPack4(plan.query.texture, plan.scale, plan.querySlices, 2, queryScaled);
 
@@ -385,6 +415,43 @@ namespace NcnnCompute
 
             try
             {
+                if (ResolveSdpaFastPathEnabled())
+                {
+                    output = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
+                    owner.Ops.SdpaAttentionPack4Cdhw(
+                        cmd,
+                        plan.query.texture,
+                        plan.key.texture,
+                        plan.value.texture,
+                        plan.queryShape.h,
+                        plan.keyShape.h,
+                        plan.queryShape.w,
+                        plan.valueShape.w,
+                        plan.queryShape.c,
+                        plan.keyShape.c,
+                        plan.scale,
+                        output);
+
+                    context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
+                    {
+                        texture = output,
+                        width = plan.outputStorageShape.w,
+                        height = plan.outputStorageShape.h,
+                        packs = plan.outputPacks,
+                        refs = 1,
+                        owned = true,
+                        hasLogicalShape = true,
+                        logicalShape = plan.outputShape,
+                        hasStorageShape = true,
+                        storageShape = plan.outputStorageShape
+                    };
+                    context.shapes[layer.topNames[0]] = plan.outputShape;
+                    output = null;
+
+                    owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                    return true;
+                }
+
                 queryScaled = owner.RentTempArray(cmd, plan.queryStorageShape.w, plan.queryStorageShape.h, plan.querySlices, plan.pack4TextureFormat);
                 owner.Ops.BinaryOpScalarPack4(cmd, plan.query.texture, plan.scale, plan.querySlices, 2, queryScaled);
 

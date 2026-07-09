@@ -1756,7 +1756,7 @@ public static class NcnnDebugRunner
             var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             inpaintRunner.enableDebugDump = enableDump;
             inpaintRunner.ApplyPeopleRemovalPreset();
-            inpaintRunner.useOfficialUnetCache = false;
+            inpaintRunner.useOfficialUnetCache = ResolveBoolEnv("AIIMAGE_SD_USE_OFFICIAL_UNET_CACHE", inpaintRunner.useOfficialUnetCache);
             inpaintRunner.enableTempPool = false;
             inpaintRunner.maxPooledPerShape = 0;
             inpaintRunner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, inpaintRunner.tensorTextureFormat);

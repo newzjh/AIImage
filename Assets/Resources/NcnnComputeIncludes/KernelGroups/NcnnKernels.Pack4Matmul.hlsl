@@ -247,6 +247,107 @@ void NcnnMatMulPack4CDHW_Impl(uint3 id)
     _MatPack4OutArr[int3(outCol, outRow, slice)] = o;
 }
 
+void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
+{
+    int row = (int)groupId.x;
+    int headPack = (int)groupId.y;
+    int outChunk = (int)groupId.z;
+    uint tid = groupThreadId.x;
+    if (row < 0 || row >= _SdpaSrcLen || headPack < 0)
+        return;
+
+    int dst = _SdpaDstLen;
+    int embedDim = _SdpaEmbedDim;
+    int outEmbedDim = _SdpaOutEmbedDim;
+    if (dst <= 0 || dst > 4096 || embedDim <= 0 || outEmbedDim <= 0)
+        return;
+
+    int headsPerGroup = max(1, _SdpaNumHeadsPerGroup);
+    int outX = outChunk * 64 + (int)tid;
+    float4 outValue = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int head = headPack * 4 + lane;
+        bool validHead = head >= 0 && head < _SdpaNumHeads;
+        int keyHead = validHead ? min(max(0, _SdpaNumGroups - 1), head / headsPerGroup) : 0;
+
+        for (int colScore = (int)tid; colScore < dst; colScore += 64)
+        {
+            float s = 0.0;
+            if (validHead)
+            {
+                [loop]
+                for (int i = 0; i < embedDim; i++)
+                {
+                    float q = NcnnReadPack4ChannelCDHW(_SdpaQArr, i, row, 0, head, _SdpaNumHeads);
+                    float k = NcnnReadPack4ChannelCDHW(_SdpaKArr, i, colScore, 0, keyHead, _SdpaNumGroups);
+                    s += q * k;
+                }
+                s *= _SdpaScale;
+            }
+            _SdpaScoresFast[colScore] = s;
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        float localMax = -3.402823466e+38;
+        for (int colMax = (int)tid; colMax < dst; colMax += 64)
+            localMax = max(localMax, _SdpaScoresFast[colMax]);
+        _SdpaReduce[tid] = localMax;
+        GroupMemoryBarrierWithGroupSync();
+
+        [unroll]
+        for (uint stride = 32; stride > 0; stride >>= 1)
+        {
+            if (tid < stride)
+                _SdpaReduce[tid] = max(_SdpaReduce[tid], _SdpaReduce[tid + stride]);
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        float maxValue = _SdpaReduce[0];
+        float localSum = 0.0;
+        for (int colExp = (int)tid; colExp < dst; colExp += 64)
+        {
+            float e = exp(_SdpaScoresFast[colExp] - maxValue);
+            _SdpaScoresFast[colExp] = e;
+            localSum += e;
+        }
+        _SdpaReduce[tid] = localSum;
+        GroupMemoryBarrierWithGroupSync();
+
+        [unroll]
+        for (uint stride2 = 32; stride2 > 0; stride2 >>= 1)
+        {
+            if (tid < stride2)
+                _SdpaReduce[tid] += _SdpaReduce[tid + stride2];
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        float invSum = 1.0 / max(_SdpaReduce[0], 1e-20);
+        for (int colNorm = (int)tid; colNorm < dst; colNorm += 64)
+            _SdpaScoresFast[colNorm] *= invSum;
+        GroupMemoryBarrierWithGroupSync();
+
+        if (validHead && outX < outEmbedDim)
+        {
+            float sum = 0.0;
+            [loop]
+            for (int colValue = 0; colValue < dst; colValue++)
+            {
+                float v = NcnnReadPack4ChannelCDHW(_SdpaVArr, outX, colValue, 0, keyHead, _SdpaNumGroups);
+                sum += _SdpaScoresFast[colValue] * v;
+            }
+            NcnnWriteLane(outValue, lane, sum);
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (outX < outEmbedDim)
+        _SdpaOutArr[int3(outX, row, headPack)] = outValue;
+}
+
 void NcnnVistaTailPromptDotPack4_Impl(uint3 id)
 {
     uint w, h, slices;

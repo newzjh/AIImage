@@ -182,6 +182,23 @@ void NcnnSlicePack4_Impl(uint3 id)
     _SlicePack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
+void NcnnSliceLinearMat2D_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int x = (int)id.x;
+    int y = (int)id.y;
+    if (_SlicePack4Axis == 0)
+        x += _SlicePack4Begin;
+    else if (_SlicePack4Axis == 1)
+        y += _SlicePack4Begin;
+
+    _LinearOut0[int2((int)id.x, (int)id.y)] = _LinearIn0[int2(x, y)];
+}
+
 void NcnnPermutePack4_Impl(uint3 id)
 {
     uint w, h, d;

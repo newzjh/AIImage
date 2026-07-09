@@ -29,6 +29,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private const string VaeEncoderInputBlobName = "in0";
     private const string VaeEncoderMeanBlobName = "out0";
     private const string VaeEncoderStdBlobName = "out1";
+    private const string DefaultVaeEncoderMomentsBlobName = "129";
     private const string VaeDecoderInputBlobName = "input.1";
     private const string VaeDecoderOutputBlobName = "815";
     private const string UnetInputBlobName = "in0";
@@ -192,6 +193,36 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private static bool _openCvNormalTablesReady;
     private readonly Dictionary<string, List<string>> _layerDebugLines = new Dictionary<string, List<string>>(StringComparer.Ordinal);
     private readonly List<string> _resourceSnapshotLines = new List<string>(256);
+
+    private readonly struct VaeEncoderTailInfo
+    {
+        public readonly string momentsBlobName;
+        public readonly string logvarBlobName;
+        public readonly string producerLayerName;
+
+        public VaeEncoderTailInfo(string momentsBlobName, string logvarBlobName, string producerLayerName)
+        {
+            this.momentsBlobName = momentsBlobName;
+            this.logvarBlobName = logvarBlobName;
+            this.producerLayerName = producerLayerName;
+        }
+    }
+
+    private readonly struct VaeDecoderEndpointInfo
+    {
+        public readonly string inputBlobName;
+        public readonly string inputLayerName;
+        public readonly string outputBlobName;
+        public readonly string outputLayerName;
+
+        public VaeDecoderEndpointInfo(string inputBlobName, string inputLayerName, string outputBlobName, string outputLayerName)
+        {
+            this.inputBlobName = inputBlobName;
+            this.inputLayerName = inputLayerName;
+            this.outputBlobName = outputBlobName;
+            this.outputLayerName = outputLayerName;
+        }
+    }
 
     private interface INormalRng
     {
@@ -504,9 +535,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             var latentRng = CreateLatentNoiseRng(actualSeed);
             var useStrengthMax = strength >= 0.9999f;
             if (!useStrengthMax)
-                cleanLatentTex = await EncodeImageLatentsPack4Async(resizedSource, latentRng, ct);
+                cleanLatentTex = await EncodeImageLatentsPack4Async(resizedSource, latentRng, ct, "clean");
             initNoiseTex = CreateLatentNoisePack4(_unetRepro, latentRng, temporary: false, label: "SDInpaint.InitNoisePersistent");
-            maskedLatentTex = await EncodeImageLatentsPack4Async(maskedSource, latentRng, ct);
+            maskedLatentTex = await EncodeImageLatentsPack4Async(maskedSource, latentRng, ct, "masked");
             if ((!useStrengthMax && cleanLatentTex == null) || initNoiseTex == null || maskedLatentTex == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "VAE encoder failed." });
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
@@ -515,6 +546,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_clean_stats.txt"), cleanLatentTex, LatentChannels);
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_masked_stats.txt"), maskedLatentTex, LatentChannels);
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_noise_stats.txt"), initNoiseTex, LatentChannels);
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_masked_f32.bin"), maskedLatentTex, LatentChannels);
             }
 
             DestroyRuntimeTexture(ref resizedSource);
@@ -570,6 +602,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_mask_tex_stats.txt"), latentMaskTex, 1);
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_masked_tex_stats.txt"), maskedLatentTex, LatentChannels);
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_init_tex_stats.txt"), latentsTex, LatentChannels);
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_mask_64_f32.bin"), latentMaskTex, 1);
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_init_f32.bin"), latentsTex, LatentChannels);
             }
 
@@ -600,8 +633,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     latentMaskTex,
                     maskedLatentTex,
                     timestep,
-                    useCommandBuffer ? condTex : (condPromptLinearTex ?? condTex),
-                    useCommandBuffer ? uncondTex : (uncondPromptLinearTex ?? uncondTex),
+                    condPromptLinearTex ?? condTex,
+                    uncondPromptLinearTex ?? uncondTex,
                     condPromptView,
                     uncondPromptView,
                     guidanceScale,
@@ -1083,8 +1116,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         repro.EnableMhaParallelSoftmax = ResolveBoolEnv("AIIMAGE_SD_MHA_PARALLEL_SOFTMAX", enableMhaParallelSoftmax);
         repro.EnableMhaQkvFusion = ResolveBoolEnv("AIIMAGE_SD_MHA_QKV_FUSION", enableMhaQkvFusion);
         repro.UseNcnnStyleGroupNorm = useNcnnStyleGroupNorm;
-        repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
-        repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfileGpu;
+        repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile || ResolveBoolEnv("AIIMAGE_NCNN_PROFILE_LAYERS", false);
+        repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfileGpu || ResolveBoolEnv("AIIMAGE_NCNN_PROFILE_SYNC", false);
         repro.TensorTextureFormat = tensorTextureFormat;
         repro.DisallowInferenceTempComputeBuffers = disallowInferenceTempComputeBuffers;
         repro.DisallowBufferAccess = disallowBufferAccess;
@@ -1275,12 +1308,19 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         EnsureModelIdentity(paths);
         EnsureRuntimeObjects();
         if (_vaeEncoderRepro?.Model != null)
+        {
+            ApplyCommonOptions(_vaeEncoderRepro);
+            ApplySpatialModelOptions(_vaeEncoderRepro);
+            _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
+            AttachDebugLog(_vaeEncoderRepro, "vae_encoder");
             return;
+        }
 
         _vaeEncoderRepro ??= new NcnnRepro(_ops);
         ApplyCommonOptions(_vaeEncoderRepro);
         ApplySpatialModelOptions(_vaeEncoderRepro);
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
+        AttachDebugLog(_vaeEncoderRepro, "vae_encoder");
         await LoadModelAsync(_vaeEncoderRepro, paths.vaeEncoderParamPath, paths.vaeEncoderBinPath, "vae encoder", ct);
     }
 
@@ -1325,6 +1365,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private void DisposeVaeEncoderModel()
     {
+        FlushDebugLogToFile("vae_encoder", "vae_encoder_layer_debug.txt");
         try { _vaeEncoderRepro?.Dispose(); } catch { }
         _vaeEncoderRepro = null;
     }
@@ -1381,6 +1422,156 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
 
         WriteAllTextSafe(Path.Combine(_lastDumpDir, fileName), string.Join(Environment.NewLine, lines));
+    }
+
+    private VaeEncoderTailInfo ResolveVaeEncoderTailInfo()
+    {
+        var fallback = new VaeEncoderTailInfo(DefaultVaeEncoderMomentsBlobName, null, null);
+        var modelLayers = _vaeEncoderRepro?.Model?.layers;
+        if (modelLayers == null || modelLayers.Count == 0)
+            return fallback;
+
+        string momentsBlobName = null;
+        string logvarBlobName = null;
+        for (var i = 0; i < modelLayers.Count; i++)
+        {
+            var layer = modelLayers[i];
+            if (layer?.topNames == null || layer.bottomNames == null || layer.bottomNames.Length == 0)
+                continue;
+            if (layer.type != NcnnLayerTypes.Slice)
+                continue;
+            if (Array.IndexOf(layer.topNames, VaeEncoderMeanBlobName) < 0)
+                continue;
+
+            momentsBlobName = layer.bottomNames[0];
+            if (layer.topNames.Length > 1)
+            {
+                for (var ti = 0; ti < layer.topNames.Length; ti++)
+                {
+                    var candidate = layer.topNames[ti];
+                    if (!string.Equals(candidate, VaeEncoderMeanBlobName, StringComparison.Ordinal))
+                    {
+                        logvarBlobName = candidate;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+
+        if (string.IsNullOrWhiteSpace(momentsBlobName))
+            momentsBlobName = DefaultVaeEncoderMomentsBlobName;
+
+        string producerLayerName = null;
+        for (var i = 0; i < modelLayers.Count; i++)
+        {
+            var layer = modelLayers[i];
+            var topNames = layer?.topNames;
+            if (topNames == null || Array.IndexOf(topNames, momentsBlobName) < 0)
+                continue;
+            producerLayerName = layer.name;
+            break;
+        }
+
+        return new VaeEncoderTailInfo(momentsBlobName, logvarBlobName, producerLayerName);
+    }
+
+    private void DumpVaeEncoderTailInfoSafe(VaeEncoderTailInfo info, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            WriteAllTextSafe(
+                path,
+                "mean_blob=" + VaeEncoderMeanBlobName + Environment.NewLine
+                + "std_blob=" + VaeEncoderStdBlobName + Environment.NewLine
+                + "moments_blob=" + (info.momentsBlobName ?? string.Empty) + Environment.NewLine
+                + "logvar_blob=" + (info.logvarBlobName ?? string.Empty) + Environment.NewLine
+                + "producer_layer=" + (info.producerLayerName ?? string.Empty) + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
+
+    private VaeDecoderEndpointInfo ResolveVaeDecoderEndpointInfo()
+    {
+        var inputBlobName = VaeDecoderInputBlobName;
+        var outputBlobName = VaeDecoderOutputBlobName;
+        string inputLayerName = null;
+        string outputLayerName = null;
+        var modelLayers = _vaeRepro?.Model?.layers;
+        if (modelLayers == null || modelLayers.Count == 0)
+            return new VaeDecoderEndpointInfo(inputBlobName, inputLayerName, outputBlobName, outputLayerName);
+
+        for (var i = 0; i < modelLayers.Count; i++)
+        {
+            var layer = modelLayers[i];
+            if (layer?.topNames == null || layer.topNames.Length == 0)
+                continue;
+            if (layer.type != NcnnLayerTypes.Input)
+                continue;
+
+            for (var ti = 0; ti < layer.topNames.Length; ti++)
+            {
+                var candidate = layer.topNames[ti];
+                if (string.IsNullOrWhiteSpace(candidate))
+                    continue;
+
+                inputBlobName = candidate;
+                inputLayerName = layer.name;
+                break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(inputLayerName))
+                break;
+        }
+
+        for (var i = modelLayers.Count - 1; i >= 0; i--)
+        {
+            var layer = modelLayers[i];
+            if (layer?.topNames == null || layer.topNames.Length == 0)
+                continue;
+            if (layer.type == NcnnLayerTypes.Input)
+                continue;
+
+            for (var ti = layer.topNames.Length - 1; ti >= 0; ti--)
+            {
+                var candidate = layer.topNames[ti];
+                if (string.IsNullOrWhiteSpace(candidate))
+                    continue;
+
+                outputBlobName = candidate;
+                outputLayerName = layer.name;
+                break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(outputLayerName))
+                break;
+        }
+
+        return new VaeDecoderEndpointInfo(inputBlobName, inputLayerName, outputBlobName, outputLayerName);
+    }
+
+    private void DumpVaeDecoderEndpointInfoSafe(VaeDecoderEndpointInfo info, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            WriteAllTextSafe(
+                path,
+                "input_blob=" + (info.inputBlobName ?? string.Empty) + Environment.NewLine
+                + "input_layer=" + (info.inputLayerName ?? string.Empty) + Environment.NewLine
+                + "output_blob=" + (info.outputBlobName ?? string.Empty) + Environment.NewLine
+                + "output_layer=" + (info.outputLayerName ?? string.Empty) + Environment.NewLine);
+        }
+        catch
+        {
+        }
     }
 
     private async UniTask ForceStageCleanupAsync(CancellationToken ct, string label = null)
@@ -1904,7 +2095,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private async UniTask<RenderTexture> EncodeImageLatentsPack4Async(Texture source, INormalRng rng, CancellationToken ct)
+    private async UniTask<RenderTexture> EncodeImageLatentsPack4Async(Texture source, INormalRng rng, CancellationToken ct, string debugLabel = null)
     {
         if (source == null)
             throw new ArgumentNullException(nameof(source));
@@ -1914,29 +2105,63 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         RenderTexture inputPack4 = null;
         RenderTexture meanTex = null;
         RenderTexture stdTex = null;
+        ComputeBuffer meanBufDebug = null;
+        ComputeBuffer stdBufDebug = null;
         RenderTexture noiseTex = null;
         RenderTexture scaledNoiseTex = null;
         RenderTexture latentTex = null;
         RenderTexture scaledLatentTex = null;
         RenderTexture resultTex = null;
+        var vaeTailInfo = default(VaeEncoderTailInfo);
         try
         {
             inputPack4 = CreateEncoderInputPack4Ncnn(source);
             if (inputPack4 == null)
                 throw new InvalidOperationException("Failed to create VAE encoder pack4 input.");
 
+            vaeTailInfo = ResolveVaeEncoderTailInfo();
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && string.Equals(debugLabel, "masked", StringComparison.Ordinal))
+                DumpVaeEncoderTailInfoSafe(vaeTailInfo, Path.Combine(_lastDumpDir, "vae_encoder_tail_info.txt"));
+
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && string.Equals(debugLabel, "masked", StringComparison.Ordinal))
+                DumpVaeEncoderStopBlobDebugSafe(inputPack4, vaeTailInfo.momentsBlobName, vaeTailInfo.momentsBlobName, Path.Combine(_lastDumpDir, "vae_masked_probe_moments"));
+
+            var vaePinnedBlobs = new HashSet<string>(StringComparer.Ordinal) { VaeEncoderMeanBlobName, VaeEncoderStdBlobName };
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && string.Equals(debugLabel, "masked", StringComparison.Ordinal))
+                vaePinnedBlobs.Add(vaeTailInfo.momentsBlobName);
+
             using (var infer = _vaeEncoderRepro.Infer(
                        inputPack4,
                        1,
                        VaeEncoderInputBlobName,
-                       new HashSet<string>(StringComparer.Ordinal) { VaeEncoderMeanBlobName, VaeEncoderStdBlobName }))
+                       vaePinnedBlobs))
             {
+                if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && string.Equals(debugLabel, "masked", StringComparison.Ordinal))
+                {
+                    DumpInferTextureContractSafe(infer, VaeEncoderMeanBlobName, Path.Combine(_lastDumpDir, "vae_masked_mean_contract.txt"));
+                    DumpInferTextureContractSafe(infer, VaeEncoderStdBlobName, Path.Combine(_lastDumpDir, "vae_masked_std_contract.txt"));
+                    DumpInferTextureContractSafe(infer, vaeTailInfo.momentsBlobName, Path.Combine(_lastDumpDir, "vae_masked_moments_contract.txt"));
+                    DumpInferExistingTextureDataRawSafe(infer, VaeEncoderMeanBlobName, Path.Combine(_lastDumpDir, "vae_masked_mean_existing_f32.bin"));
+                    DumpInferExistingTextureDataRawSafe(infer, VaeEncoderStdBlobName, Path.Combine(_lastDumpDir, "vae_masked_std_existing_f32.bin"));
+                    DumpInferExistingTextureDataRawSafe(infer, vaeTailInfo.momentsBlobName, Path.Combine(_lastDumpDir, "vae_masked_moments_existing_f32.bin"));
+                }
+
                 meanTex = infer.ExtractTexture(VaeEncoderMeanBlobName);
                 stdTex = infer.ExtractTexture(VaeEncoderStdBlobName);
             }
 
             if (meanTex == null || stdTex == null)
                 throw new InvalidOperationException("VAE encoder pack4 output is missing.");
+
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && !string.IsNullOrWhiteSpace(debugLabel))
+            {
+                var safeLabel = SanitizeFileName(debugLabel);
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "vae_" + safeLabel + "_input_tex_f32.bin"), inputPack4, 3);
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "vae_" + safeLabel + "_mean_tex_f32.bin"), meanTex, LatentChannels);
+                DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "vae_" + safeLabel + "_std_tex_f32.bin"), stdTex, LatentChannels);
+                DumpBufferRawF32Safe(Path.Combine(_lastDumpDir, "vae_" + safeLabel + "_mean_buf_f32.bin"), meanBufDebug, LatentElementCount());
+                DumpBufferRawF32Safe(Path.Combine(_lastDumpDir, "vae_" + safeLabel + "_std_buf_f32.bin"), stdBufDebug, LatentElementCount());
+            }
 
             noiseTex = CreateLatentNoisePack4(_vaeEncoderRepro, rng);
             scaledNoiseTex = _vaeEncoderRepro.RentTempArray(LatentSize, LatentSize, 1, encoderTensorTextureFormat);
@@ -1962,6 +2187,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 _vaeEncoderRepro?.ReturnTempArray(meanTex);
             if (stdTex != null)
                 _vaeEncoderRepro?.ReturnTempArray(stdTex);
+            if (meanBufDebug != null)
+                _vaeEncoderRepro?.ReturnTempBuffer(meanBufDebug);
+            if (stdBufDebug != null)
+                _vaeEncoderRepro?.ReturnTempBuffer(stdBufDebug);
             if (noiseTex != null)
                 _vaeEncoderRepro?.ReturnTempArray(noiseTex);
             if (scaledNoiseTex != null)
@@ -2150,13 +2379,17 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             inputTex = _vaeRepro.RentTempArray(LatentSize, LatentSize, 1, decoderTensorTextureFormat);
             _ops.FillPack4FromBufferCHW(scaledLatent, LatentSize, LatentSize, LatentChannels, inputTex);
 
-            using (var infer = _vaeRepro.Infer(inputTex, 1, VaeDecoderInputBlobName, new HashSet<string>(StringComparer.Ordinal) { VaeDecoderOutputBlobName }))
+            var endpointInfo = ResolveVaeDecoderEndpointInfo();
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpVaeDecoderEndpointInfoSafe(endpointInfo, Path.Combine(_lastDumpDir, "vae_decoder_endpoint_info.txt"));
+
+            using (var infer = _vaeRepro.Infer(inputTex, 1, endpointInfo.inputBlobName, new HashSet<string>(StringComparer.Ordinal) { endpointInfo.outputBlobName }))
             {
-                decodedTex = infer.ExtractTexture(VaeDecoderOutputBlobName);
+                decodedTex = infer.ExtractTexture(endpointInfo.outputBlobName);
             }
 
             if (decodedTex == null)
-                return null;
+                throw new InvalidOperationException("VAE decoder output texture is missing: " + endpointInfo.outputBlobName);
 
             clippedTex = _vaeRepro.RentTempArray(decodedTex.width, decodedTex.height, 1, decoderTensorTextureFormat);
             _ops.ClipPack4(decodedTex, -1f, 1f, 1, clippedTex);
@@ -2198,13 +2431,17 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             scaledLatentTex = _vaeRepro.RentTempArray(LatentSize, LatentSize, 1, decoderTensorTextureFormat);
             _ops.BinaryOpScalarPack4(latentTex, InvLatentScale, 1, 2, scaledLatentTex);
 
-            using (var infer = _vaeRepro.Infer(scaledLatentTex, 1, VaeDecoderInputBlobName, new HashSet<string>(StringComparer.Ordinal) { VaeDecoderOutputBlobName }))
+            var endpointInfo = ResolveVaeDecoderEndpointInfo();
+            if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                DumpVaeDecoderEndpointInfoSafe(endpointInfo, Path.Combine(_lastDumpDir, "vae_decoder_endpoint_info.txt"));
+
+            using (var infer = _vaeRepro.Infer(scaledLatentTex, 1, endpointInfo.inputBlobName, new HashSet<string>(StringComparer.Ordinal) { endpointInfo.outputBlobName }))
             {
-                decodedTex = infer.ExtractTexture(VaeDecoderOutputBlobName);
+                decodedTex = infer.ExtractTexture(endpointInfo.outputBlobName);
             }
 
             if (decodedTex == null)
-                return null;
+                throw new InvalidOperationException("VAE decoder output texture is missing: " + endpointInfo.outputBlobName);
 
             clippedTex = _vaeRepro.RentTempArray(decodedTex.width, decodedTex.height, 1, decoderTensorTextureFormat);
             _ops.ClipPack4(decodedTex, -1f, 1f, 1, clippedTex);
@@ -2376,14 +2613,17 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (useOfficialUnetCache)
                 unetCache = new List<UnetCacheBlob>(OfficialUnetCacheBlobNames.Length);
 
-            condOutTex = RunUnetOnceTextureMixedInputs(inputTex, timestepView, condTex, condView, "cond", unetCache, null);
+            // Keep text conditioning texture-backed during normal pack4 inference so the
+            // UNet stays on the pack4 RT path. The fixed prompt buffer remains only the
+            // upload source used to build condTex/uncondTex earlier.
+            condOutTex = RunUnetOnceTextureMixedInputs(inputTex, timestepView, condTex, null, "cond", unetCache, null);
             if (shouldDumpFirstStep && condOutTex != null)
             {
                 _ops.DebugSyncGpu();
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "unity_unet_cond_out_before_uncond_f32.bin"), condOutTex, LatentChannels);
             }
             var cacheForUncond = unetCache != null && unetCache.Count == OfficialUnetCacheBlobNames.Length ? unetCache : null;
-            uncondOutTex = RunUnetOnceTextureMixedInputs(inputTex, timestepView, uncondTex, uncondView, "uncond", null, cacheForUncond);
+            uncondOutTex = RunUnetOnceTextureMixedInputs(inputTex, timestepView, uncondTex, null, "uncond", null, cacheForUncond);
             if (condOutTex == null || uncondOutTex == null)
                 return null;
 
@@ -2451,6 +2691,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         RenderTexture condPromptTex = null;
         RenderTexture uncondPromptTex = null;
         RenderTexture outputReadbackRt = null;
+        ComputeTexture condInputCmd = null;
+        ComputeTexture condTimestepCmd = null;
+        ComputeTexture condPromptCmd = null;
+        ComputeTexture uncondInputCmd = null;
+        ComputeTexture uncondTimestepCmd = null;
+        ComputeTexture uncondPromptCmd = null;
         ComputeTexture condOutCmd = null;
         ComputeTexture uncondOutCmd = null;
         ComputeTexture finalCmd = null;
@@ -2467,9 +2713,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (useAsyncComputeCommandBuffer)
                 cmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
 
-            var condInputCmd = BindExternalTexture(cmd, condInputTex, "SDInpaint.Cmd.UnetInput.Cond");
-            var condTimestepCmd = BindExternalTexture(cmd, condTimestepTex, "SDInpaint.Cmd.Timestep.Cond");
-            var condPromptCmd = BindExternalTexture(cmd, condPromptTex, "SDInpaint.Cmd.Cond");
+            condInputCmd = BindExternalTexture(cmd, condInputTex, "SDInpaint.Cmd.UnetInput.Cond");
+            condTimestepCmd = BindExternalTexture(cmd, condTimestepTex, "SDInpaint.Cmd.Timestep.Cond");
+            condPromptCmd = BindExternalTexture(cmd, condPromptTex, "SDInpaint.Cmd.Cond");
 
             var condInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
             {
@@ -2491,9 +2737,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 new HashSet<string>(StringComparer.Ordinal) { UnetInputBlobName, UnetTimestepBlobName, UnetTextBlobName, UnetOutputBlobName },
                 UnetOutputBlobName);
 
-            var uncondInputCmd = BindExternalTexture(cmd, uncondInputTex, "SDInpaint.Cmd.UnetInput.Uncond");
-            var uncondTimestepCmd = BindExternalTexture(cmd, uncondTimestepTex, "SDInpaint.Cmd.Timestep.Uncond");
-            var uncondPromptCmd = BindExternalTexture(cmd, uncondPromptTex, "SDInpaint.Cmd.Uncond");
+            uncondInputCmd = BindExternalTexture(cmd, uncondInputTex, "SDInpaint.Cmd.UnetInput.Uncond");
+            uncondTimestepCmd = BindExternalTexture(cmd, uncondTimestepTex, "SDInpaint.Cmd.Timestep.Uncond");
+            uncondPromptCmd = BindExternalTexture(cmd, uncondPromptTex, "SDInpaint.Cmd.Uncond");
             var uncondInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
             {
                 { UnetInputBlobName, uncondInputCmd },
@@ -2530,6 +2776,19 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             _unetRepro.ReturnTempArray(cmd, finalCmd);
             finalCmd = null;
 
+            _unetRepro.ReturnTempArray(cmd, condInputCmd);
+            condInputCmd = null;
+            _unetRepro.ReturnTempArray(cmd, condTimestepCmd);
+            condTimestepCmd = null;
+            _unetRepro.ReturnTempArray(cmd, condPromptCmd);
+            condPromptCmd = null;
+            _unetRepro.ReturnTempArray(cmd, uncondInputCmd);
+            uncondInputCmd = null;
+            _unetRepro.ReturnTempArray(cmd, uncondTimestepCmd);
+            uncondTimestepCmd = null;
+            _unetRepro.ReturnTempArray(cmd, uncondPromptCmd);
+            uncondPromptCmd = null;
+
             if (useAsyncComputeCommandBuffer)
                 Graphics.ExecuteCommandBufferAsync(cmd, ComputeQueueType.Default);
             else
@@ -2552,6 +2811,18 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 _unetRepro?.ReturnTempArray(cleanupCmd, uncondOutCmd);
             if (finalCmd != null)
                 _unetRepro?.ReturnTempArray(cleanupCmd, finalCmd);
+            if (condInputCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, condInputCmd);
+            if (condTimestepCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, condTimestepCmd);
+            if (condPromptCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, condPromptCmd);
+            if (uncondInputCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, uncondInputCmd);
+            if (uncondTimestepCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, uncondTimestepCmd);
+            if (uncondPromptCmd != null)
+                _unetRepro?.ReturnTempArray(cleanupCmd, uncondPromptCmd);
             Graphics.ExecuteCommandBuffer(cleanupCmd);
             if (condInputTex != null)
                 _unetRepro?.ReturnTempArray(condInputTex);
@@ -2570,25 +2841,38 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static ComputeTexture BindExternalTexture(CommandBuffer cmd, RenderTexture texture, string label)
+    private ComputeTexture BindExternalTexture(CommandBuffer cmd, RenderTexture texture, string label)
     {
         if (cmd == null)
             throw new ArgumentNullException(nameof(cmd));
         if (texture == null)
             throw new ArgumentNullException(nameof(texture));
+        if (_unetRepro == null)
+            throw new InvalidOperationException("UNet command-buffer texture binding requires an NcnnRepro owner.");
 
-        var id = Shader.PropertyToID((label ?? "SDInpaint.ExternalTexture") + "." + Guid.NewGuid().ToString("N"));
-        cmd.SetGlobalTexture(id, texture);
-        return new ComputeTexture
-        {
-            nameID = id,
-            width = texture.width,
-            height = texture.height,
-            depth = Mathf.Max(1, texture.volumeDepth),
-            dimension = texture.dimension,
-            format = texture.format,
-            trackerLabel = label
-        };
+        var bound = texture.dimension == TextureDimension.Tex2D
+            ? _unetRepro.RentTempMat(cmd, texture.width, texture.height, texture.format)
+            : _unetRepro.RentTempArray(cmd, texture.width, texture.height, Mathf.Max(1, texture.volumeDepth), texture.format);
+        bound.trackerLabel = label ?? bound.trackerLabel;
+        CopyRenderTextureToCommandTexture(cmd, texture, bound);
+        return bound;
+    }
+
+    private static void CopyRenderTextureToCommandTexture(CommandBuffer cmd, RenderTexture source, ComputeTexture destination)
+    {
+        if (cmd == null)
+            throw new ArgumentNullException(nameof(cmd));
+        if (source == null)
+            throw new ArgumentNullException(nameof(source));
+        if (destination == null)
+            throw new ArgumentNullException(nameof(destination));
+
+        var slices = Mathf.Max(1, source.dimension == TextureDimension.Tex2DArray ? source.volumeDepth : 1);
+        if (destination.dimension == TextureDimension.Tex2DArray)
+            slices = Mathf.Min(slices, Mathf.Max(1, destination.depth));
+
+        for (var slice = 0; slice < slices; slice++)
+            cmd.CopyTexture(source, slice, 0, destination.nameID, slice, 0);
     }
 
     private static RenderTexture CloneTensorTexture(NcnnRepro owner, RenderTexture source, string label)
@@ -2598,7 +2882,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (source == null)
             throw new ArgumentNullException(nameof(source));
 
-        var clone = owner.RentTempArray(source.width, source.height, Mathf.Max(1, source.volumeDepth), source.format);
+        var clone = source.dimension == TextureDimension.Tex2D
+            ? owner.RentTempMat(source.width, source.height, source.format)
+            : owner.RentTempArray(source.width, source.height, Mathf.Max(1, source.volumeDepth), source.format);
         clone.name = label ?? "SDInpaint.ClonedTensorTexture";
         Graphics.CopyTexture(source, clone);
         return clone;
@@ -2611,15 +2897,40 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (source == null)
             throw new ArgumentNullException(nameof(source));
 
-        var clone = CreatePersistentTensorTexture(
-            owner,
-            source.width,
-            source.height,
-            Mathf.Max(1, source.volumeDepth),
-            source.format,
-            label ?? "SDInpaint.PersistentTensorClone");
+        var clone = source.dimension == TextureDimension.Tex2D
+            ? CreatePersistentTexture2D(source.width, source.height, source.format, label ?? "SDInpaint.PersistentTensorClone")
+            : CreatePersistentTensorTexture(
+                owner,
+                source.width,
+                source.height,
+                Mathf.Max(1, source.volumeDepth),
+                source.format,
+                label ?? "SDInpaint.PersistentTensorClone");
         Graphics.CopyTexture(source, clone);
         return clone;
+    }
+
+    private static RenderTexture CreatePersistentTexture2D(int width, int height, RenderTextureFormat format, string label)
+    {
+        var desc = new RenderTextureDescriptor(Mathf.Max(1, width), Mathf.Max(1, height), format, 0)
+        {
+            dimension = TextureDimension.Tex2D,
+            volumeDepth = 1,
+            enableRandomWrite = true,
+            msaaSamples = 1,
+            useMipMap = false,
+            autoGenerateMips = false
+        };
+
+        var rt = new RenderTexture(desc)
+        {
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp,
+            name = label ?? "SDInpaint.PersistentTensorTexture2D"
+        };
+        rt.Create();
+        NcnnGpuResourceTracker.RegisterTexture(rt, label ?? "SDInpaint.PersistentTensorTexture2D");
+        return rt;
     }
 
     private NcnnTensorBuffer CreatePromptConditionView(RenderTexture texture, string label, out ComputeBuffer buffer, out RenderTexture linearTexture)
@@ -2973,6 +3284,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             textureInputShapes,
             null,
             null);
+        DumpLayerRuntimeProfile(_unetRepro, "unet_" + SanitizeFileName(string.IsNullOrWhiteSpace(dumpTag) ? "run" : dumpTag));
 
         if (captureCache != null)
             TryCaptureOfficialUnetCache(infer, captureCache);
@@ -4263,6 +4575,26 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
+    private void DumpLayerRuntimeProfile(NcnnRepro repro, string label)
+    {
+        if (repro == null || !repro.LayerRuntimeProfileEnabled)
+            return;
+
+        var text = repro.FormatLastLayerRuntimeProfile(Mathf.Max(1, layerRuntimeProfileTopN));
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var profile = repro.LastRuntimeProfile;
+        var safeLabel = SanitizeFileName(string.IsNullOrWhiteSpace(label) ? "layer_profile" : label);
+        UnityEngine.Debug.Log("[SDInpaint] layer profile " + safeLabel
+            + " | totalMs=" + (profile != null ? profile.totalMs.ToString("0.###", CultureInfo.InvariantCulture) : "0")
+            + " | syncGpu=" + (profile != null && profile.syncGpu ? "1" : "0")
+            + Environment.NewLine + text);
+
+        if (!string.IsNullOrWhiteSpace(_lastDumpDir))
+            WriteAllTextSafe(Path.Combine(_lastDumpDir, "layer_profile_" + safeLabel + ".tsv"), text);
+    }
+
     private ComputeBuffer AddNoise(ComputeBuffer cleanLatentBuf, ComputeBuffer noiseBuf, int timestep)
     {
         if (cleanLatentBuf == null || noiseBuf == null)
@@ -4989,8 +5321,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         for (var y = 0; y < height; y++)
         {
             var sy = Mathf.Clamp((int)((long)y * src.height / height), 0, src.height - 1);
-            var srcRow = sy * src.width;
-            var dstRow = y * width;
+            var srcRow = (src.height - 1 - sy) * src.width;
+            var dstRow = (height - 1 - y) * width;
             for (var x = 0; x < width; x++)
             {
                 var sx = Mathf.Clamp((int)((long)x * src.width / width), 0, src.width - 1);
@@ -5311,6 +5643,25 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
+    private static void DumpBufferRawF32Safe(string path, ComputeBuffer buffer, int logicalCount)
+    {
+        if (string.IsNullOrWhiteSpace(path) || buffer == null || logicalCount <= 0)
+            return;
+
+        try
+        {
+            var data = new float[Mathf.Min(buffer.count, logicalCount)];
+            buffer.GetData(data);
+            WriteFloatArrayRawF32Safe(path, data);
+            WriteFloatArrayStatsSafe(
+                Path.Combine(Path.GetDirectoryName(path) ?? string.Empty, Path.GetFileNameWithoutExtension(path) + "_stats.txt"),
+                data);
+        }
+        catch
+        {
+        }
+    }
+
     private void DumpTextureRawF32Safe(string path, RenderTexture texture, int channelCount)
     {
         if (string.IsNullOrWhiteSpace(path) || texture == null || channelCount <= 0)
@@ -5619,6 +5970,20 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 sb.AppendLine("texture=<missing>");
             }
 
+            if (infer.TryGetExistingBufferView(blobName, out var view) && view != null && view.buffer != null)
+            {
+                sb.Append("buffer_count=").Append(view.buffer.count.ToString(CultureInfo.InvariantCulture))
+                    .Append(" dims=").Append(view.dims.ToString(CultureInfo.InvariantCulture))
+                    .Append(" w=").Append(view.w.ToString(CultureInfo.InvariantCulture))
+                    .Append(" h=").Append(view.h.ToString(CultureInfo.InvariantCulture))
+                    .Append(" d=").Append(view.d.ToString(CultureInfo.InvariantCulture))
+                    .Append(" c=").AppendLine(view.c.ToString(CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                sb.AppendLine("buffer=<missing>");
+            }
+
             WriteAllTextSafe(path, sb.ToString());
         }
         catch
@@ -5645,8 +6010,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         try
         {
-            var data = ExtractBlobDataByLogicalShape(infer, blobName);
-            if (data != null)
+            if (TryReadExistingInferBufferData(infer, blobName, out var data) && data != null)
             {
                 WriteFloatArrayRawF32Safe(path, data);
                 return;
@@ -5658,10 +6022,81 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         try
         {
-            WriteFloatArrayRawF32Safe(path, infer.GetBufferData(blobName));
+            var data = ExtractBlobDataByLogicalShape(infer, blobName);
+            if (data != null)
+            {
+                WriteFloatArrayRawF32Safe(path, data);
+                return;
+            }
         }
         catch
         {
+        }
+    }
+
+    private static bool TryReadExistingInferBufferData(NcnnRepro.InferResult infer, string blobName, out float[] data)
+    {
+        data = null;
+        if (infer == null || string.IsNullOrWhiteSpace(blobName))
+            return false;
+
+        if (!infer.TryGetExistingBufferView(blobName, out var view) || view == null || view.buffer == null || view.buffer.count <= 0)
+            return false;
+
+        try
+        {
+            var raw = new float[view.buffer.count];
+            view.buffer.GetData(raw);
+            if (infer.TryGetLogicalShape(blobName, out _, out var w, out var h, out var d, out var c))
+            {
+                var logicalCount = Mathf.Max(1, w) * Mathf.Max(1, h) * Mathf.Max(1, d) * Mathf.Max(1, c);
+                if (logicalCount < raw.Length)
+                    Array.Resize(ref raw, logicalCount);
+            }
+
+            data = raw;
+            return true;
+        }
+        catch
+        {
+            data = null;
+            return false;
+        }
+    }
+
+    private void DumpVaeEncoderStopBlobDebugSafe(RenderTexture inputPack4, string stopAfterTopName, string blobName, string pathStem)
+    {
+        if (_vaeEncoderRepro == null
+            || inputPack4 == null
+            || string.IsNullOrWhiteSpace(stopAfterTopName)
+            || string.IsNullOrWhiteSpace(blobName)
+            || string.IsNullOrWhiteSpace(pathStem))
+        {
+            return;
+        }
+
+        try
+        {
+            var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+            {
+                [VaeEncoderInputBlobName] = inputPack4
+            };
+            var textureShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            {
+                [VaeEncoderInputBlobName] = new NcnnRepro.BufferShape(3, inputPack4.width, inputPack4.height, 1, 3)
+            };
+            using var infer = _vaeEncoderRepro.InferWithMultiInputs(
+                textureInputs,
+                null,
+                new HashSet<string>(StringComparer.Ordinal) { blobName },
+                textureShapes,
+                stopAfterTopName);
+            DumpInferTextureContractSafe(infer, blobName, pathStem + "_contract.txt");
+            DumpInferExistingTextureDataRawSafe(infer, blobName, pathStem + "_existing_f32.bin");
+        }
+        catch (Exception ex)
+        {
+            WriteAllTextSafe(pathStem + "_error.txt", ex.ToString());
         }
     }
 
@@ -5710,12 +6145,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         try
         {
-            return infer.GetBufferData(blobName);
+            if (TryReadExistingInferBufferData(infer, blobName, out var data) && data != null)
+                return data;
         }
         catch
         {
-            return null;
         }
+
+        return null;
     }
 
     private static List<string> BuildCompareSummary(float[] candidate, float[] target)

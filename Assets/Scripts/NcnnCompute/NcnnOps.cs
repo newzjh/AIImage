@@ -369,6 +369,7 @@ namespace NcnnCompute
         private readonly int _kShuffleChannelPack4;
         private readonly int _kCropPack4;
         private readonly int _kSlicePack4;
+        private readonly int _kSliceLinearMat2D;
         private readonly int _kSlicePack4Cdhw;
         private readonly int _kPermutePack4;
         private readonly int _kPermutePack4Cdhw;
@@ -464,6 +465,7 @@ namespace NcnnCompute
         private readonly int _kSdpaSoftmaxBuf;
         private readonly int _kSdpaQkvBuf;
         private readonly int _kSdpaAttentionFast;
+        private readonly int _kSdpaAttentionPack4Cdhw;
         private ComputeBuffer _fallbackFloatBuffer;
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
@@ -583,6 +585,7 @@ namespace NcnnCompute
             _kShuffleChannelPack4 = _cs.FindKernel("NcnnShuffleChannelPack4");
             _kCropPack4 = _cs.FindKernel("NcnnCropPack4");
             _kSlicePack4 = _cs.FindKernel("NcnnSlicePack4");
+            _kSliceLinearMat2D = _cs.FindKernel("NcnnSliceLinearMat2D");
             _kSlicePack4Cdhw = _cs.FindKernel("NcnnSlicePack4CDHW");
             _kPermutePack4 = _cs.FindKernel("NcnnPermutePack4");
             _kPermutePack4Cdhw = _cs.FindKernel("NcnnPermutePack4CDHW");
@@ -677,6 +680,7 @@ namespace NcnnCompute
             _kSdpaSoftmaxBuf = _cs.FindKernel("NcnnSdpaSoftmaxBuf");
             _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
             _kSdpaAttentionFast = _cs.FindKernel("NcnnSdpaAttentionFast");
+            _kSdpaAttentionPack4Cdhw = _cs.FindKernel("NcnnSdpaAttentionPack4CDHW");
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -1711,6 +1715,29 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kSlicePack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSlicePack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void SliceLinearMat2D(RenderTexture input, int axis, int begin, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_SlicePack4Axis", axis);
+            _cs.SetInt("_SlicePack4Begin", begin);
+            _cs.SetTexture(_kSliceLinearMat2D, "_LinearIn0", input);
+            _cs.SetTexture(_kSliceLinearMat2D, "_LinearOut0", output);
+            Dispatch2D(_kSliceLinearMat2D, output.width, output.height, 8, 8);
+        }
+
+        public void SliceLinearMat2D(CommandBuffer cmd, ComputeTexture input, int axis, int begin, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_SlicePack4Axis", axis);
+            cmd.SetComputeIntParam(_cs, "_SlicePack4Begin", begin);
+            cmd.SetComputeTextureParam(_cs, _kSliceLinearMat2D, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSliceLinearMat2D, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kSliceLinearMat2D, output.width, output.height, 8, 8);
         }
 
         public void PermutePack4(RenderTexture input, int inW, int inH, int inC, Vector4Int axes, int outW, int outH, int outC, RenderTexture output)
@@ -6074,6 +6101,152 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_TexIn1Arr", b.nameID);
             cmd.SetComputeTextureParam(_cs, _kMatMulPack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kMatMulPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outBatchD * Mathf.CeilToInt(outBatchC / 4f))), 8, 8);
+        }
+
+        public void SdpaAttentionPack4Cdhw(
+            RenderTexture query,
+            RenderTexture key,
+            RenderTexture value,
+            int srcLen,
+            int dstLen,
+            int embedDim,
+            int outEmbedDim,
+            int numHeads,
+            int numGroups,
+            float scale,
+            RenderTexture output)
+        {
+            if (query == null) throw new ArgumentNullException(nameof(query));
+            if (key == null) throw new ArgumentNullException(nameof(key));
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (srcLen <= 0) throw new ArgumentOutOfRangeException(nameof(srcLen));
+            if (dstLen <= 0 || dstLen > 4096) throw new ArgumentOutOfRangeException(nameof(dstLen));
+            if (embedDim <= 0) throw new ArgumentOutOfRangeException(nameof(embedDim));
+            if (outEmbedDim <= 0) throw new ArgumentOutOfRangeException(nameof(outEmbedDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (numGroups <= 0) throw new ArgumentOutOfRangeException(nameof(numGroups));
+
+            SetSdpaAttentionPack4CdhwParams(
+                _kSdpaAttentionPack4Cdhw,
+                query,
+                key,
+                value,
+                srcLen,
+                dstLen,
+                embedDim,
+                outEmbedDim,
+                numHeads,
+                numGroups,
+                scale,
+                output);
+
+            var headPacks = Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f));
+            var outChunks = Mathf.Max(1, Mathf.CeilToInt(outEmbedDim / 64f));
+            _cs.Dispatch(_kSdpaAttentionPack4Cdhw, Mathf.Max(1, srcLen), headPacks, outChunks);
+        }
+
+        public void SdpaAttentionPack4Cdhw(
+            CommandBuffer cmd,
+            ComputeTexture query,
+            ComputeTexture key,
+            ComputeTexture value,
+            int srcLen,
+            int dstLen,
+            int embedDim,
+            int outEmbedDim,
+            int numHeads,
+            int numGroups,
+            float scale,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (query == null) throw new ArgumentNullException(nameof(query));
+            if (key == null) throw new ArgumentNullException(nameof(key));
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (srcLen <= 0) throw new ArgumentOutOfRangeException(nameof(srcLen));
+            if (dstLen <= 0 || dstLen > 4096) throw new ArgumentOutOfRangeException(nameof(dstLen));
+            if (embedDim <= 0) throw new ArgumentOutOfRangeException(nameof(embedDim));
+            if (outEmbedDim <= 0) throw new ArgumentOutOfRangeException(nameof(outEmbedDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (numGroups <= 0) throw new ArgumentOutOfRangeException(nameof(numGroups));
+
+            SetSdpaAttentionPack4CdhwParams(
+                cmd,
+                _kSdpaAttentionPack4Cdhw,
+                query,
+                key,
+                value,
+                srcLen,
+                dstLen,
+                embedDim,
+                outEmbedDim,
+                numHeads,
+                numGroups,
+                scale,
+                output);
+
+            var headPacks = Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f));
+            var outChunks = Mathf.Max(1, Mathf.CeilToInt(outEmbedDim / 64f));
+            cmd.DispatchCompute(_cs, _kSdpaAttentionPack4Cdhw, Mathf.Max(1, srcLen), headPacks, outChunks);
+        }
+
+        private void SetSdpaAttentionPack4CdhwParams(
+            int kernel,
+            RenderTexture query,
+            RenderTexture key,
+            RenderTexture value,
+            int srcLen,
+            int dstLen,
+            int embedDim,
+            int outEmbedDim,
+            int numHeads,
+            int numGroups,
+            float scale,
+            RenderTexture output)
+        {
+            _cs.SetInt("_SdpaSrcLen", srcLen);
+            _cs.SetInt("_SdpaDstLen", dstLen);
+            _cs.SetInt("_SdpaEmbedDim", embedDim);
+            _cs.SetInt("_SdpaOutEmbedDim", outEmbedDim);
+            _cs.SetInt("_SdpaNumHeads", numHeads);
+            _cs.SetInt("_SdpaNumGroups", numGroups);
+            _cs.SetInt("_SdpaNumHeadsPerGroup", Mathf.Max(1, numHeads / numGroups));
+            _cs.SetFloat("_SdpaScale", scale);
+            _cs.SetTexture(kernel, "_TexIn0Arr", query);
+            _cs.SetTexture(kernel, "_TexIn1Arr", key);
+            _cs.SetTexture(kernel, "_TexIn2Arr", value);
+            _cs.SetTexture(kernel, "_TexOut0Arr", output);
+        }
+
+        private void SetSdpaAttentionPack4CdhwParams(
+            CommandBuffer cmd,
+            int kernel,
+            ComputeTexture query,
+            ComputeTexture key,
+            ComputeTexture value,
+            int srcLen,
+            int dstLen,
+            int embedDim,
+            int outEmbedDim,
+            int numHeads,
+            int numGroups,
+            float scale,
+            ComputeTexture output)
+        {
+            cmd.SetComputeIntParam(_cs, "_SdpaSrcLen", srcLen);
+            cmd.SetComputeIntParam(_cs, "_SdpaDstLen", dstLen);
+            cmd.SetComputeIntParam(_cs, "_SdpaEmbedDim", embedDim);
+            cmd.SetComputeIntParam(_cs, "_SdpaOutEmbedDim", outEmbedDim);
+            cmd.SetComputeIntParam(_cs, "_SdpaNumHeads", numHeads);
+            cmd.SetComputeIntParam(_cs, "_SdpaNumGroups", numGroups);
+            cmd.SetComputeIntParam(_cs, "_SdpaNumHeadsPerGroup", Mathf.Max(1, numHeads / numGroups));
+            cmd.SetComputeFloatParam(_cs, "_SdpaScale", scale);
+            cmd.SetComputeTextureParam(_cs, kernel, "_TexIn0Arr", query.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_TexIn1Arr", key.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_TexIn2Arr", value.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_TexOut0Arr", output.nameID);
         }
 
         public void VistaTailPromptDotPack4(RenderTexture featureTex, int width, int height, int depth, int packs, ComputeBuffer prompt, RenderTexture output)

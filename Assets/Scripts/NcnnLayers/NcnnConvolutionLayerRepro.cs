@@ -281,13 +281,17 @@ namespace NcnnCompute
                                                  && conv.padLeft == conv.padTop
                                                  && (conv.inC & 3) == 0
                                                  && (conv.outC & 3) == 0;
+            var forceGeneralTexturePath = conv.kernelW == 1
+                                          && conv.kernelH == 1
+                                          && owner.ShouldCompareTextureConvLayer(layer.name)
+                                          && canUseGeneralTexturePath;
 
-            if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution)
+            if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution && !forceGeneralTexturePath)
             {
                 if (src.width != outWTex || src.height != outHTex)
                     throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
                 owner.Ops.Conv1x1Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outRt);
-                if (owner.ShouldCompareTextureConvLayer(layer.name))
+                if (owner.ShouldCompareTextureConvLayer(layer.name) && !forceGeneralTexturePath)
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             }
             else if (canUseDepthWiseTexturePath)
@@ -367,6 +371,10 @@ namespace NcnnCompute
                                                     && conv.kernelW > 0
                                                     && conv.kernelH == conv.kernelW
                                                     && !(conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
+                                                var forceGeneralTexturePath = conv.kernelW == 1
+                                                    && conv.kernelH == 1
+                                                    && owner.ShouldCompareTextureConvLayer(layer.name)
+                                                    && canUseGeneralTexturePath;
                                                 var canUseTextureConv = CanUsePack4CmdPath(src, srcShape, conv)
                                                                         && !conv.isDepthWise
                                                                         && conv.group == 1
@@ -397,7 +405,7 @@ namespace NcnnCompute
                                                 var outW = Mathf.Max(1, outShape.w);
                                                 var outH = Mathf.Max(1, outShape.h);
                                                 var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                                                if (canUseConv1x1TexturePath)
+                                                if (canUseConv1x1TexturePath && !forceGeneralTexturePath)
                                                 {
                                                     owner.Ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outArr);
                                                 }

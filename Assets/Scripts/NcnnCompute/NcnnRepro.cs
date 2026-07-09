@@ -1132,7 +1132,7 @@ namespace NcnnCompute
         private bool _useTempPool = false;
         private int _maxPooledPerShape = 2;
         private const int DefaultInferenceTempRtPoolPerShape = 2;
-        private const int DefaultDeferredTempRtReleaseBatchSize = 32;
+        private const int DefaultDeferredTempRtReleaseBatchSize = 8;
         private const string DeferredTempRtReleaseBatchEnvVar = "AIIMAGE_NCNN_DEFERRED_RT_RELEASE_BATCH";
 
         public bool EnableTempPool
@@ -2643,8 +2643,7 @@ namespace NcnnCompute
             var outBlobName = ResolveDefaultOutputBlobName();
             var outRef = GetCmdTensor(blobs, outBlobName);
             var keep = outRef.texture;
-            outRef.ClearTexture();
-            outRef.owned = false;
+            DetachReturnedCmdTextureOwnership(blobs, keep);
 
             var visited = new HashSet<CmdTensorRef>();
             foreach (var kv in blobs)
@@ -3623,6 +3622,33 @@ namespace NcnnCompute
             var lifetimeOwner = ResolveTextureLifetimeOwner(tensor);
             if (lifetimeOwner != null)
                 lifetimeOwner.owned = false;
+        }
+
+        internal static void DetachCmdTextureOwnership(CmdTensorRef tensor)
+        {
+            if (tensor == null)
+                return;
+
+            tensor.owned = false;
+            var lifetimeOwner = ResolveCmdTextureLifetimeOwner(tensor);
+            if (lifetimeOwner != null)
+                lifetimeOwner.owned = false;
+        }
+
+        internal static void DetachReturnedCmdTextureOwnership(Dictionary<string, CmdTensorRef> blobs, ComputeTexture texture)
+        {
+            if (blobs == null || texture == null)
+                return;
+
+            foreach (var kv in blobs)
+            {
+                var candidate = kv.Value;
+                if (candidate == null || candidate.texture == null || candidate.texture.nameID != texture.nameID)
+                    continue;
+
+                DetachCmdTextureOwnership(candidate);
+                candidate.ClearTexture();
+            }
         }
 
         internal static RepoVkTensorContract GetTextureContract(

@@ -90,6 +90,7 @@
 #pragma kernel NcnnShuffleChannelPack4
 #pragma kernel NcnnCropPack4
 #pragma kernel NcnnSlicePack4
+#pragma kernel NcnnSliceLinearMat2D
 #pragma kernel NcnnPermutePack4
 #pragma kernel NcnnPermutePack4CDHW
 #pragma kernel NcnnPermuteLinearMat2D
@@ -192,6 +193,7 @@
 #pragma kernel NcnnSdpaSoftmaxBuf
 #pragma kernel NcnnSdpaQkvBuf
 #pragma kernel NcnnSdpaAttentionFast
+#pragma kernel NcnnSdpaAttentionPack4CDHW
 
 #include "NcnnComputeIncludes/NcnnUnifiedBindings.Pack4.hlsl"
 
@@ -289,6 +291,7 @@ void NcnnSdpaQkBuf_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnSdpaSoftmaxBuf_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnSdpaQkvBuf_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnSdpaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId);
+void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnMhaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnMhaAttentionQkvFast_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId);
@@ -366,6 +369,7 @@ void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id);
 void NcnnShuffleChannelPack4_Impl(uint3 id);
 void NcnnCropPack4_Impl(uint3 id);
 void NcnnSlicePack4_Impl(uint3 id);
+void NcnnSliceLinearMat2D_Impl(uint3 id);
 void NcnnPermutePack4_Impl(uint3 id);
 void NcnnPermutePack4CDHW_Impl(uint3 id);
 void NcnnPermuteLinearMat2D_Impl(uint3 id);
@@ -897,6 +901,12 @@ void NcnnSdpaQkvBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupTh
 void NcnnSdpaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
     NcnnSdpaAttentionFast_Impl(groupId, groupThreadId);
+}
+
+[numthreads(64,1,1)]
+void NcnnSdpaAttentionPack4CDHW(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    NcnnSdpaAttentionPack4CDHW_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
@@ -2043,6 +2053,12 @@ void NcnnCropPack4(uint3 id : SV_DispatchThreadID)
 void NcnnSlicePack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnSlicePack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnSliceLinearMat2D(uint3 id : SV_DispatchThreadID)
+{
+    NcnnSliceLinearMat2D_Impl(id);
 }
 
 [numthreads(8,8,1)]

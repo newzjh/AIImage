@@ -33,7 +33,7 @@ namespace NcnnCompute
                     context.bufferViews,
                     out var srcTex,
                     out var srcShape)
-                && CanUsePack4Slice(srcTex, srcShape))
+                && (CanUseLinearMatSliceSource(srcTex, srcShape) || CanUsePack4Slice(srcTex, srcShape)))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
                 return;
@@ -112,13 +112,17 @@ namespace NcnnCompute
             var bufferBlobs = context.bufferBlobs;
             var bufferViews = context.bufferViews;
 
-            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var texShape)
-                || !CanUsePack4Slice(srcTex, texShape))
+            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var texShape))
             {
-                throw new InvalidOperationException("Slice render-texture path requires supported pack4 input: " + layer.name);
+                throw new InvalidOperationException("Slice render-texture path requires existing texture input: " + layer.name);
             }
 
             var specs = ResolveSliceSpecs(layer, texShape);
+            var canUseLinearMat = CanUseLinearMatSlice(srcTex, texShape, specs);
+            var canUsePack4 = CanUsePack4Slice(srcTex, texShape);
+            if (!canUseLinearMat && !canUsePack4)
+                throw new InvalidOperationException("Slice render-texture path requires supported LinearMat or pack4 input: " + layer.name);
+
             for (var i = 0; i < layer.topNames.Length; i++)
             {
                 var spec = specs[i];
@@ -130,9 +134,16 @@ namespace NcnnCompute
                     continue;
                 }
 
-                var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
-                if (texShape.dims == 4)
+                if (canUseLinearMat)
                 {
+                    var storageShape = NcnnRepro.ResolveLinearMatStorageShape(spec.shape);
+                    var outMat = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.SliceLinearMat2D(srcTex.texture, spec.axis, spec.begin, outMat);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[i], outMat, spec.shape, storageShape);
+                }
+                else if (texShape.dims == 4)
+                {
+                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
                     var outSlices = Mathf.Max(1, spec.shape.d) * outPacks;
                     var outRt = owner.RentTempArray(spec.shape.w, spec.shape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(spec.shape.dims));
                     owner.Ops.SlicePack4Cdhw(
@@ -152,6 +163,7 @@ namespace NcnnCompute
                 }
                 else
                 {
+                    var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
                     var outRt = owner.RentTempArray(spec.shape.w, spec.shape.h, outPacks, RenderTextureFormat.ARGBHalf);
                     owner.Ops.SlicePack4(srcTex.texture, texShape.w, texShape.h, texShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outRt);
                     NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[i], outRt, spec.shape);
@@ -172,18 +184,29 @@ namespace NcnnCompute
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var specs = ResolveSliceSpecs(layer, srcShape);
+            var canUseLinearMat = CanUseLinearMatSlice(src, srcShape, specs);
             var canUsePack4 = CanUsePack4Slice(src, srcShape);
 
             for (var i = 0; i < layer.topNames.Length; i++)
             {
                 var spec = specs[i];
-                if (canUsePack4)
+                if (canUseLinearMat || canUsePack4)
                 {
                     if (IsIdentitySlice(srcShape, spec))
                     {
                         blobs[layer.topNames[i]] = src;
                         src.refs++;
                         shapes[layer.topNames[i]] = srcShape;
+                        continue;
+                    }
+
+                    if (canUseLinearMat)
+                    {
+                        var storageShape = NcnnRepro.ResolveLinearMatStorageShape(spec.shape);
+                        var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                        owner.Ops.SliceLinearMat2D(cmd, src.texture, spec.axis, spec.begin, outMat);
+                        blobs[layer.topNames[i]] = NcnnRepro.CreateCmdTensorRef(outMat, spec.shape, storageShape, owned: true);
+                        shapes[layer.topNames[i]] = spec.shape;
                         continue;
                     }
 
@@ -305,6 +328,7 @@ namespace NcnnCompute
         {
             return srcTex != null
                 && srcTex.texture != null
+                && !NcnnRepro.IsStrictLinearMatTexture(srcTex)
                 && srcShape.dims >= 1
                 && srcShape.dims <= 4
                 && srcShape.w == srcTex.width
@@ -316,11 +340,64 @@ namespace NcnnCompute
         {
             return src != null
                 && src.texture != null
+                && !NcnnRepro.IsStrictLinearMatTexture(src)
                 && srcShape.dims >= 1
                 && srcShape.dims <= 4
                 && srcShape.w == src.width
                 && srcShape.h == src.height
                 && (srcShape.dims != 4 || srcShape.d > 0);
+        }
+
+        private static bool CanUseLinearMatSliceSource(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape)
+        {
+            if (srcTex == null || srcTex.texture == null || !NcnnRepro.IsStrictLinearMatTexture(srcTex))
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+            return srcShape.dims == 2
+                && storageShape.dims == 2
+                && storageShape.w == srcTex.width
+                && storageShape.h == srcTex.height
+                && srcTex.packs == 1;
+        }
+
+        private static bool CanUseLinearMatSliceSource(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape)
+        {
+            if (src == null || src.texture == null || !NcnnRepro.IsStrictLinearMatTexture(src))
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            return srcShape.dims == 2
+                && storageShape.dims == 2
+                && storageShape.w == src.width
+                && storageShape.h == src.height
+                && src.packs == 1;
+        }
+
+        private static bool CanUseLinearMatSlice(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, SliceSpec[] specs)
+        {
+            if (!CanUseLinearMatSliceSource(srcTex, srcShape) || specs == null || specs.Length == 0)
+                return false;
+            for (var i = 0; i < specs.Length; i++)
+            {
+                var spec = specs[i];
+                if (spec.axis < 0 || spec.axis > 1 || spec.shape.dims != 2)
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool CanUseLinearMatSlice(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, SliceSpec[] specs)
+        {
+            if (!CanUseLinearMatSliceSource(src, srcShape) || specs == null || specs.Length == 0)
+                return false;
+            for (var i = 0; i < specs.Length; i++)
+            {
+                var spec = specs[i];
+                if (spec.axis < 0 || spec.axis > 1 || spec.shape.dims != 2)
+                    return false;
+            }
+            return true;
         }
 
         private static bool IsIdentitySlice(NcnnRepro.BufferShape srcShape, SliceSpec spec)
