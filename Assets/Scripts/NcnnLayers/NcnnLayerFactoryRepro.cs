@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -141,6 +142,88 @@ namespace NcnnCompute
 
     public partial class NcnnRepro
     {
+        private static int _fixedInputTextureDumpSequence;
+
+        private static void TryDumpFixedInputTexture(string blobName, RenderTexture texture, NcnnTensorBuffer view)
+        {
+            if (texture == null || view == null || view.dims > 2)
+                return;
+
+            string dumpDir;
+            try
+            {
+                dumpDir = Environment.GetEnvironmentVariable("AIIMAGE_NCNN_DUMP_FIXED_INPUT_TEXTURE_DIR");
+            }
+            catch
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(dumpDir))
+                return;
+
+            try
+            {
+                Directory.CreateDirectory(dumpDir);
+                var sequence = ++_fixedInputTextureDumpSequence;
+                var safeName = SanitizeDumpFileName(blobName);
+                var prefix = Path.Combine(dumpDir, sequence.ToString("0000") + "_" + safeName);
+                File.WriteAllText(
+                    prefix + "_contract.txt",
+                    "blob=" + (blobName ?? string.Empty) + Environment.NewLine
+                    + "dims=" + view.dims + " w=" + view.w + " h=" + view.h + " d=" + view.d + " c=" + view.c + Environment.NewLine
+                    + "texture_width=" + texture.width + " height=" + texture.height + " depth=" + Mathf.Max(1, texture.volumeDepth) + Environment.NewLine
+                    + "dimension=" + texture.dimension + " format=" + texture.format + Environment.NewLine);
+
+                var width = Mathf.Max(1, texture.width);
+                var height = Mathf.Max(1, texture.height);
+                var logicalCount = Mathf.Max(1, view.w) * Mathf.Max(1, view.h) * Mathf.Max(1, view.d) * Mathf.Max(1, view.c);
+                var readCount = Mathf.Min(logicalCount, width * height);
+                var previousActive = RenderTexture.active;
+                Texture2D readback = null;
+                try
+                {
+                    readback = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+                    RenderTexture.active = texture;
+                    readback.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                    readback.Apply(false, false);
+                    var raw = readback.GetRawTextureData<float>();
+                    var values = new float[readCount];
+                    for (var i = 0; i < readCount; i++)
+                        values[i] = raw[i * 4];
+
+                    using var stream = new FileStream(prefix + "_f32.bin", FileMode.Create, FileAccess.Write, FileShare.Read);
+                    using var writer = new BinaryWriter(stream);
+                    for (var i = 0; i < values.Length; i++)
+                        writer.Write(values[i]);
+                }
+                finally
+                {
+                    RenderTexture.active = previousActive;
+                    if (readback != null)
+                        UnityEngine.Object.DestroyImmediate(readback);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static string SanitizeDumpFileName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "blob";
+
+            var chars = value.ToCharArray();
+            for (var i = 0; i < chars.Length; i++)
+            {
+                var ch = chars[i];
+                if (!(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' || ch == '.'))
+                    chars[i] = '_';
+            }
+            return new string(chars);
+        }
+
         private static bool HasStrideBlob(string[] names)
         {
             if (names == null)
@@ -520,6 +603,7 @@ namespace NcnnCompute
                         {
                             var shape = new BufferShape(kv.Value.dims, kv.Value.w, kv.Value.h, kv.Value.d, kv.Value.c);
                             SetTextureBlob(textureBlobs, textureShapes, kv.Key, texture, shape);
+                            TryDumpFixedInputTexture(kv.Key, texture, kv.Value);
                         }
                     }
                 }

@@ -21,6 +21,23 @@ float NcnnApplyUnaryOpLinearScalar(float x)
     return y;
 }
 
+float NcnnApplyBinaryOpLinearScalar(float a, float b)
+{
+    float o = a;
+    int t = _BinaryOpType;
+    if (t == 0) o = a + b;
+    else if (t == 1) o = a - b;
+    else if (t == 2) o = a * b;
+    else if (t == 3) o = a / b;
+    else if (t == 4) o = max(a, b);
+    else if (t == 5) o = min(a, b);
+    else if (t == 6) o = pow(abs(a), b);
+    else if (t == 7) o = b - a;
+    else if (t == 8) o = b / a;
+    else if (t == 9) o = pow(abs(b), a);
+    return o;
+}
+
 float NcnnApplySwishLinearScalar(float x)
 {
     return x / (1.0 + exp(-x));
@@ -122,6 +139,19 @@ void NcnnUnaryOpLinearMat_Impl(uint3 id)
     int2 coord = int2((int)id.x, (int)id.y);
     float x = _LinearIn0[coord];
     _LinearOut0[coord] = NcnnApplyUnaryOpLinearScalar(x);
+}
+
+void NcnnBinaryOpLinearMat_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int2 coord = int2((int)id.x, (int)id.y);
+    float a = _LinearIn0[coord];
+    float b = _BinaryWithScalar != 0 ? _BinaryScalar : _LinearIn1[coord];
+    _LinearOut0[coord] = NcnnApplyBinaryOpLinearScalar(a, b);
 }
 
 void NcnnMatMul2D_Impl(uint3 groupId, uint3 groupThreadId)

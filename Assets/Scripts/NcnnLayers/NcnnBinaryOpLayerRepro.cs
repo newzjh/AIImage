@@ -192,6 +192,15 @@ namespace NcnnCompute
                 }
 
                 var aTexStorageShapeScalar = NcnnRepro.GetTextureStorageShape(aTexScalar, aTexShapeScalar);
+                if (NcnnRepro.IsStrictLinearMatTexture(aTexScalar))
+                {
+                    var outLinear = owner.RentTempMat(aTexStorageShapeScalar.w, aTexStorageShapeScalar.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                    owner.Ops.BinaryOpScalarLinearMat(aTexScalar.texture, scalarB, opType, outLinear);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outLinear, aTexShapeScalar, aTexStorageShapeScalar);
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
                 RenderTexture aScalarMaterialized = null;
                 var aScalarInput = MaterializeScalarLikeTexture(owner, aTexScalar, aTexShapeScalar, scalarTextureFormat, ref aScalarMaterialized);
                 var scalarDepth = ResolveTexturePhysicalDepth(aScalarInput, aTexScalar.packs);
@@ -292,6 +301,44 @@ namespace NcnnCompute
                 RenderTexture finalTexture = null;
                 try
                 {
+                    if (CanUseExactLinearMatBinaryPath(
+                            scalar2DATex,
+                            scalar2DAShape,
+                            scalar2DBTex,
+                            scalar2DBShape,
+                            out var scalar2DStorageShape))
+                    {
+                        var rhsLinear = scalar2DBTex.texture;
+                        if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
+                        {
+                            scaledBTexture = owner.RentTempMat(scalar2DStorageShape.w, scalar2DStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                            owner.Ops.BinaryOpScalarLinearMat(rhsLinear, owner.CodeFormerSftAddScale, 2, scaledBTexture);
+                            rhsLinear = scaledBTexture;
+                        }
+
+                        finalTexture = owner.RentTempMat(scalar2DStorageShape.w, scalar2DStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                        if (isCodeFormerSftMul && owner.CodeFormerBypassSftMul)
+                        {
+                            owner.Ops.BinaryOpScalarLinearMat(scalar2DATex.texture, 0f, 0, finalTexture);
+                        }
+                        else
+                        {
+                            owner.Ops.BinaryOpLinearMat(scalar2DATex.texture, rhsLinear, opType, finalTexture);
+                            if (isCodeFormerSftMul && owner.CodeFormerSftMulScale != 1f)
+                            {
+                                var scaledOutTexture = owner.RentTempMat(scalar2DStorageShape.w, scalar2DStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                                owner.Ops.BinaryOpScalarLinearMat(finalTexture, owner.CodeFormerSftMulScale, 2, scaledOutTexture);
+                                owner.ReturnTempArray(finalTexture);
+                                finalTexture = scaledOutTexture;
+                            }
+                        }
+
+                        NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalar2DAShape, scalar2DStorageShape);
+                        finalTexture = null;
+                        owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        return;
+                    }
+
                     var lhsTexture = MaterializeScalarLikeTexture(owner, scalar2DATex, scalar2DAShape, scalarTextureFormat, ref aScalarMaterialized);
                     var rhsTexture = MaterializeScalarLikeTexture(owner, scalar2DBTex, scalar2DBShape, scalarTextureFormat, ref bScalarMaterialized);
                     if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
@@ -924,6 +971,40 @@ namespace NcnnCompute
                 && texture.packs == 1;
         }
 
+        private static bool CanUseExactLinearMatBinaryPath(
+            NcnnRepro.TensorRef a,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.TensorRef b,
+            NcnnRepro.BufferShape bShape,
+            out NcnnRepro.BufferShape storageShape)
+        {
+            storageShape = default;
+            if (!CanUseScalar2DTexturePath(a, aShape)
+                || !CanUseScalar2DTexturePath(b, bShape)
+                || !NcnnRepro.IsStrictLinearMatTexture(a)
+                || !NcnnRepro.IsStrictLinearMatTexture(b))
+                return false;
+            if (aShape.w != bShape.w
+                || aShape.h != bShape.h
+                || aShape.d != bShape.d
+                || aShape.c != bShape.c)
+                return false;
+
+            var aStorage = NcnnRepro.GetTextureStorageShape(a, aShape);
+            var bStorage = NcnnRepro.GetTextureStorageShape(b, bShape);
+            if (aStorage.dims != bStorage.dims
+                || aStorage.w != bStorage.w
+                || aStorage.h != bStorage.h
+                || a.texture.width != aStorage.w
+                || a.texture.height != aStorage.h
+                || b.texture.width != bStorage.w
+                || b.texture.height != bStorage.h)
+                return false;
+
+            storageShape = aStorage;
+            return true;
+        }
+
         private static bool CanUseScalarLikeTexturePath(NcnnRepro.TensorRef texture, NcnnRepro.BufferShape shape)
         {
             if (texture == null || texture.texture == null)
@@ -970,6 +1051,40 @@ namespace NcnnCompute
                 && texture.width == shape.w
                 && texture.height == shape.h
                 && texture.packs == 1;
+        }
+
+        private static bool CanUseExactLinearMatBinaryPath(
+            NcnnRepro.CmdTensorRef a,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.CmdTensorRef b,
+            NcnnRepro.BufferShape bShape,
+            out NcnnRepro.BufferShape storageShape)
+        {
+            storageShape = default;
+            if (!CanUseScalar2DTexturePath(a, aShape)
+                || !CanUseScalar2DTexturePath(b, bShape)
+                || !NcnnRepro.IsStrictLinearMatTexture(a)
+                || !NcnnRepro.IsStrictLinearMatTexture(b))
+                return false;
+            if (aShape.w != bShape.w
+                || aShape.h != bShape.h
+                || aShape.d != bShape.d
+                || aShape.c != bShape.c)
+                return false;
+
+            var aStorage = NcnnRepro.GetCmdStorageShape(a, aShape);
+            var bStorage = NcnnRepro.GetCmdStorageShape(b, bShape);
+            if (aStorage.dims != bStorage.dims
+                || aStorage.w != bStorage.w
+                || aStorage.h != bStorage.h
+                || a.width != aStorage.w
+                || a.height != aStorage.h
+                || b.width != bStorage.w
+                || b.height != bStorage.h)
+                return false;
+
+            storageShape = aStorage;
+            return true;
         }
 
         private static bool CanUseScalarLikeTexturePath(NcnnRepro.CmdTensorRef texture, NcnnRepro.BufferShape shape)
@@ -1496,6 +1611,16 @@ namespace NcnnCompute
                                                     if (!CanUseScalarLikeTexturePath(a, aShape))
                                                         break;
                                                     var aStorageShape = NcnnRepro.GetCmdStorageShape(a, aShape);
+                                                    if (NcnnRepro.IsStrictLinearMatTexture(a))
+                                                    {
+                                                        var outLinear = owner.RentTempMat(cmd, aStorageShape.w, aStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                                                        owner.Ops.BinaryOpScalarLinearMat(cmd, a.texture, scalarB, opType, outLinear);
+                                                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outLinear, aShape, aStorageShape, owned: true);
+                                                        if (shapes != null)
+                                                            shapes[layer.topNames[0]] = aShape;
+                                                        owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                                                        continue;
+                                                    }
                                                     ComputeTexture aScalarMaterialized = null;
                                                     var aScalarInput = MaterializeScalarLikeTexture(owner, cmd, a, aShape, scalarTextureFormat, ref aScalarMaterialized);
                                                     var scalarDepth = ResolveTexturePhysicalDepth(aScalarInput, a.packs);
@@ -1548,6 +1673,40 @@ namespace NcnnCompute
                                                         ComputeTexture finalOut = null;
                                                         try
                                                         {
+                                                            if (CanUseExactLinearMatBinaryPath(a, aShape, b, bShape, out var scalar2DStorageShape))
+                                                            {
+                                                                var rhsLinear = b.texture;
+                                                                if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
+                                                                {
+                                                                    scaledB = owner.RentTempMat(cmd, scalar2DStorageShape.w, scalar2DStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                                                                    owner.Ops.BinaryOpScalarLinearMat(cmd, rhsLinear, owner.CodeFormerSftAddScale, 2, scaledB);
+                                                                    rhsLinear = scaledB;
+                                                                }
+
+                                                                finalOut = owner.RentTempMat(cmd, scalar2DStorageShape.w, scalar2DStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                                                                if (isCodeFormerSftMul && owner.CodeFormerBypassSftMul)
+                                                                {
+                                                                    owner.Ops.BinaryOpScalarLinearMat(cmd, a.texture, 0f, 0, finalOut);
+                                                                }
+                                                                else
+                                                                {
+                                                                    owner.Ops.BinaryOpLinearMat(cmd, a.texture, rhsLinear, opType, finalOut);
+                                                                    if (isCodeFormerSftMul && owner.CodeFormerSftMulScale != 1f)
+                                                                    {
+                                                                        var scaledOut = owner.RentTempMat(cmd, scalar2DStorageShape.w, scalar2DStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                                                                        owner.Ops.BinaryOpScalarLinearMat(cmd, finalOut, owner.CodeFormerSftMulScale, 2, scaledOut);
+                                                                        owner.ReturnTempArray(cmd, finalOut);
+                                                                        finalOut = scaledOut;
+                                                                    }
+                                                                }
+
+                                                                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(finalOut, aShape, scalar2DStorageShape, owned: true);
+                                                                if (shapes != null)
+                                                                    shapes[layer.topNames[0]] = aShape;
+                                                                finalOut = null;
+                                                            }
+                                                            else
+                                                            {
                                                             var lhs = MaterializeScalarLikeTexture(owner, cmd, a, aShape, scalarTextureFormat, ref aScalarMaterialized);
                                                             var rhs = MaterializeScalarLikeTexture(owner, cmd, b, bShape, scalarTextureFormat, ref bScalarMaterialized);
                                                             if (owner.CodeFormerSftAddScale != 1f && opType == 0 && isTargetSftAddLayer)
@@ -1590,6 +1749,7 @@ namespace NcnnCompute
                                                             if (shapes != null)
                                                                 shapes[layer.topNames[0]] = aShape;
                                                             finalOut = null;
+                                                            }
                                                         }
                                                         finally
                                                         {

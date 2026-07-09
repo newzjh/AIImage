@@ -402,6 +402,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         RenderTexture decodeLatentsTex = null;
         RenderTexture condTex = null;
         RenderTexture uncondTex = null;
+        RenderTexture condPromptLinearTex = null;
+        RenderTexture uncondPromptLinearTex = null;
         ComputeBuffer condPromptBuffer = null;
         ComputeBuffer uncondPromptBuffer = null;
         NcnnTensorBuffer condPromptView = null;
@@ -548,8 +550,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "prompt_cond_tex_f32.bin"), condTex, 1);
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "prompt_uncond_tex_f32.bin"), uncondTex, 1);
             }
-            condPromptView = CreatePromptConditionView(condTex, "SDInpaint.PromptCondBuffer", out condPromptBuffer);
-            uncondPromptView = CreatePromptConditionView(uncondTex, "SDInpaint.PromptUncondBuffer", out uncondPromptBuffer);
+            condPromptView = CreatePromptConditionView(condTex, "SDInpaint.PromptCondBuffer", out condPromptBuffer, out condPromptLinearTex);
+            uncondPromptView = CreatePromptConditionView(uncondTex, "SDInpaint.PromptUncondBuffer", out uncondPromptBuffer, out uncondPromptLinearTex);
             latentsTex = useStrengthMax ? initNoiseTex : BuildNoisyLatentsPack4(cleanLatentTex, initNoiseTex, activeTimesteps[0]);
             initNoiseTex = useStrengthMax ? null : initNoiseTex;
             if (cleanLatentTex != null)
@@ -598,8 +600,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     latentMaskTex,
                     maskedLatentTex,
                     timestep,
-                    condTex,
-                    uncondTex,
+                    useCommandBuffer ? condTex : (condPromptLinearTex ?? condTex),
+                    useCommandBuffer ? uncondTex : (uncondPromptLinearTex ?? uncondTex),
                     condPromptView,
                     uncondPromptView,
                     guidanceScale,
@@ -651,6 +653,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (uncondTex != null)
             {
                 ReleasePersistentTensorTexture(ref uncondTex, "SDInpaint.PromptUncondTex");
+            }
+            if (condPromptLinearTex != null)
+            {
+                ReleasePersistentTensorTexture(ref condPromptLinearTex, "SDInpaint.PromptCondLinearTex");
+            }
+            if (uncondPromptLinearTex != null)
+            {
+                ReleasePersistentTensorTexture(ref uncondPromptLinearTex, "SDInpaint.PromptUncondLinearTex");
             }
             if (maskedLatentTex != null)
             {
@@ -734,6 +744,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             ReleasePersistentTensorTexture(ref initNoiseTex, "SDInpaint.InitNoiseTex");
             ReleasePersistentTensorTexture(ref condTex, "SDInpaint.PromptCondTex");
             ReleasePersistentTensorTexture(ref uncondTex, "SDInpaint.PromptUncondTex");
+            ReleasePersistentTensorTexture(ref condPromptLinearTex, "SDInpaint.PromptCondLinearTex");
+            ReleasePersistentTensorTexture(ref uncondPromptLinearTex, "SDInpaint.PromptUncondLinearTex");
             DisposeBuffer(condPromptBuffer, "SDInpaint.PromptCondBuffer");
             DisposeBuffer(uncondPromptBuffer, "SDInpaint.PromptUncondBuffer");
             DisposeTextModel();
@@ -2610,11 +2622,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return clone;
     }
 
-    private NcnnTensorBuffer CreatePromptConditionView(RenderTexture texture, string label, out ComputeBuffer buffer)
+    private NcnnTensorBuffer CreatePromptConditionView(RenderTexture texture, string label, out ComputeBuffer buffer, out RenderTexture linearTexture)
     {
         if (texture == null)
             throw new ArgumentNullException(nameof(texture));
 
+        linearTexture = null;
         var data = ReadTextureChwDataStable(texture, 1);
         if (data == null || data.Length != TextEmbeddingWidth * TokenCount)
         {
@@ -2625,7 +2638,58 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
 
         buffer = NewFloatBuffer(data, label);
+        linearTexture = CreatePersistentLinearMatTexture(buffer, TextEmbeddingWidth, TokenCount, (label ?? "SDInpaint.Prompt") + ".LinearMat");
         return new NcnnTensorBuffer(buffer, 2, TextEmbeddingWidth, TokenCount, 1, 1, false);
+    }
+
+    private RenderTexture CreatePersistentLinearMatTexture(ComputeBuffer buffer, int width, int height, string label)
+    {
+        if (buffer == null)
+            throw new ArgumentNullException(nameof(buffer));
+        if (_ops == null)
+            throw new InvalidOperationException("NcnnOps is required to upload prompt LinearMat texture.");
+
+        width = Mathf.Max(1, width);
+        height = Mathf.Max(1, height);
+        if (buffer.count < width * height)
+            throw new ArgumentException("linear mat buffer is smaller than texture shape", nameof(buffer));
+
+        var desc = new RenderTextureDescriptor(width, height, RenderTextureFormat.RFloat, 0)
+        {
+            dimension = TextureDimension.Tex2D,
+            volumeDepth = 1,
+            enableRandomWrite = true,
+            msaaSamples = 1,
+            useMipMap = false,
+            autoGenerateMips = false
+        };
+
+        RenderTexture rt = null;
+        try
+        {
+            rt = new RenderTexture(desc)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                name = label ?? "SDInpaint.PersistentLinearMatTexture"
+            };
+            rt.Create();
+            NcnnGpuResourceTracker.RegisterTexture(rt, label ?? "SDInpaint.PersistentLinearMatTexture");
+
+            _ops.FillLinearMatFromBuffer(buffer, width, height, rt);
+            _ops.DebugSyncGpu();
+            return rt;
+        }
+        catch
+        {
+            if (rt != null)
+            {
+                NcnnGpuResourceTracker.ReleaseTexture(rt, label ?? "SDInpaint.PersistentLinearMatTexture");
+                try { rt.Release(); } catch { }
+                try { DestroyImmediate(rt); } catch { }
+            }
+            throw;
+        }
     }
 
     private ComputeBuffer RunUnetOnce(
@@ -2895,12 +2959,16 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             }
         }
 
+        var bufferInputs = new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal)
+        {
+            { UnetTimestepBlobName, timestepView }
+        };
+        if (textTex == null && textView != null)
+            bufferInputs[UnetTextBlobName] = textView;
+
         using var infer = _unetRepro.InferWithMultiInputs(
             textureInputs,
-            new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal)
-            {
-                { UnetTimestepBlobName, timestepView }
-            },
+            bufferInputs,
             pinned ?? new HashSet<string>(StringComparer.Ordinal) { UnetOutputBlobName },
             textureInputShapes,
             null,

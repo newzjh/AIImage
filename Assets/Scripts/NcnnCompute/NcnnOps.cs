@@ -359,6 +359,7 @@ namespace NcnnCompute
         private readonly int _kSoftmaxLinearMat2D;
         private readonly int _kUnaryOpPack4;
         private readonly int _kUnaryOpLinearMat;
+        private readonly int _kBinaryOpLinearMat;
         private readonly int _kBinaryOpPack4;
         private readonly int _kBinaryOpPack4Broadcast;
         private readonly int _kBinaryOpPack4BufferScalar;
@@ -572,6 +573,7 @@ namespace NcnnCompute
             _kSoftmaxLinearMat2D = _cs.FindKernel("NcnnSoftmaxLinearMat2D");
             _kUnaryOpPack4 = _cs.FindKernel("NcnnUnaryOpPack4");
             _kUnaryOpLinearMat = _cs.FindKernel("NcnnUnaryOpLinearMat");
+            _kBinaryOpLinearMat = _cs.FindKernel("NcnnBinaryOpLinearMat");
             _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
             _kBinaryOpPack4Broadcast = _cs.FindKernel("NcnnBinaryOpPack4Broadcast");
             _kBinaryOpPack4BufferScalar = _cs.FindKernel("NcnnBinaryOpPack4BufferScalar");
@@ -2688,6 +2690,60 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kUnaryOpLinearMat, "_LinearIn0", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kUnaryOpLinearMat, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kUnaryOpLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void BinaryOpLinearMat(RenderTexture a, RenderTexture b, int opType, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 0);
+            _cs.SetFloat("_BinaryScalar", 0f);
+            _cs.SetTexture(_kBinaryOpLinearMat, "_LinearIn0", a);
+            _cs.SetTexture(_kBinaryOpLinearMat, "_LinearIn1", b);
+            _cs.SetTexture(_kBinaryOpLinearMat, "_LinearOut0", output);
+            Dispatch2D(_kBinaryOpLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void BinaryOpScalarLinearMat(RenderTexture a, float scalarB, int opType, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 1);
+            _cs.SetFloat("_BinaryScalar", scalarB);
+            _cs.SetTexture(_kBinaryOpLinearMat, "_LinearIn0", a);
+            _cs.SetTexture(_kBinaryOpLinearMat, "_LinearOut0", output);
+            Dispatch2D(_kBinaryOpLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void BinaryOpLinearMat(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int opType, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMat, "_LinearIn0", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMat, "_LinearIn1", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kBinaryOpLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void BinaryOpScalarLinearMat(CommandBuffer cmd, ComputeTexture a, float scalarB, int opType, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 1);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", scalarB);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMat, "_LinearIn0", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kBinaryOpLinearMat, output.width, output.height, 8, 8);
         }
 
         public void BinaryOpPack4(RenderTexture a, RenderTexture b, int packs, int opType, RenderTexture output)

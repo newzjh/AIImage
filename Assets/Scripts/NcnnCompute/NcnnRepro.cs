@@ -773,8 +773,8 @@ namespace NcnnCompute
             {
                 if (_textureBlobs.TryGetValue(name, out var tr) && tr != null && tr.texture != null)
                 {
-                    DetachTextureOwnership(tr);
                     var rt = tr.texture;
+                    DetachExtractedTextureOwnership(rt);
                     tr.ClearTexture();
                     return rt;
                 }
@@ -783,6 +783,22 @@ namespace NcnnCompute
                 if (materialized == null)
                     throw new InvalidOperationException("blob not found: " + name);
                 return materialized;
+            }
+
+            private void DetachExtractedTextureOwnership(RenderTexture texture)
+            {
+                if (texture == null)
+                    return;
+
+                foreach (var kv in _textureBlobs)
+                {
+                    var candidate = kv.Value;
+                    if (candidate == null || !ReferenceEquals(candidate.texture, texture))
+                        continue;
+
+                    DetachTextureOwnership(candidate);
+                    candidate.sharedTextureOwner = null;
+                }
             }
 
             public bool TryGetExistingTexture(string name, out RenderTexture texture)
@@ -1116,6 +1132,8 @@ namespace NcnnCompute
         private bool _useTempPool = false;
         private int _maxPooledPerShape = 2;
         private const int DefaultInferenceTempRtPoolPerShape = 2;
+        private const int DefaultDeferredTempRtReleaseBatchSize = 32;
+        private const string DeferredTempRtReleaseBatchEnvVar = "AIIMAGE_NCNN_DEFERRED_RT_RELEASE_BATCH";
 
         public bool EnableTempPool
         {
@@ -1299,6 +1317,7 @@ namespace NcnnCompute
 
         public void EndInferenceTempResourceTracking()
         {
+            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.EndInferenceTempResourceTracking");
             if (_rtPool.Count > 0)
             {
                 try
@@ -2920,6 +2939,16 @@ namespace NcnnCompute
                 return;
             }
 
+            if (_trackInferenceTempResources)
+            {
+                _deferredTempRtReleases.Add(rt);
+                TrackTempRtReturn();
+                var batchSize = GetDeferredTempRtReleaseBatchSize();
+                if (batchSize > 0 && _deferredTempRtReleases.Count >= batchSize)
+                    FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.DeferredTempRtReleaseBatch");
+                return;
+            }
+
             if (!_trackInferenceTempResources)
             {
                 try
@@ -3201,6 +3230,22 @@ namespace NcnnCompute
             }
 
             _deferredTempRtReleases.Clear();
+        }
+
+        private static int GetDeferredTempRtReleaseBatchSize()
+        {
+            try
+            {
+                var env = Environment.GetEnvironmentVariable(DeferredTempRtReleaseBatchEnvVar);
+                if (!string.IsNullOrWhiteSpace(env)
+                    && int.TryParse(env, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+                    return Mathf.Max(0, value);
+            }
+            catch
+            {
+            }
+
+            return DefaultDeferredTempRtReleaseBatchSize;
         }
 
         private void FlushInferenceTempRenderTexturePool()
