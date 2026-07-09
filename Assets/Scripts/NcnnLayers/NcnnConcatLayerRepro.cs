@@ -311,11 +311,21 @@ namespace NcnnCompute
             System.Collections.Generic.Dictionary<string, ComputeBuffer> bufferBlobs,
             System.Collections.Generic.Dictionary<string, NcnnTensorBuffer> bufferViews)
         {
-            if (layer.bottomNames == null || layer.bottomNames.Length == 0)
+            bool Fail(string reason)
+            {
+                var message = "[ConcatRT] unsupported"
+                    + " | layer=" + (layer?.name ?? "")
+                    + " | reason=" + reason;
+                if (owner?.DebugLog != null)
+                    owner.DebugLog.Invoke(message);
                 return false;
+            }
+
+            if (layer.bottomNames == null || layer.bottomNames.Length == 0)
+                return Fail("no bottoms");
 
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var firstTex, out var firstShape))
-                return false;
+                return Fail("first texture unavailable: " + layer.bottomNames[0]);
 
             var positiveAxis = layer.GetInt(0, 0);
             if (positiveAxis < 0)
@@ -330,7 +340,7 @@ namespace NcnnCompute
                 || (firstShape.dims == 2 && (tensorAxis == 0 || tensorAxis == 1));
             if (!canUseLowDimLinearConcat
                 && ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis))
-                return false;
+                return Fail("unsupported axis/dims dims=" + firstShape.dims + " tensorAxis=" + tensorAxis);
 
             var parts = new NcnnRepro.TensorRef[layer.bottomNames.Length];
             var shapes = new NcnnRepro.BufferShape[layer.bottomNames.Length];
@@ -346,7 +356,7 @@ namespace NcnnCompute
                 if (i > 0)
                 {
                     if (!owner.TryGetPack4Texture(layer.bottomNames[i], textureBlobs, textureShapes, bufferBlobs, bufferViews, out parts[i], out shapes[i]))
-                        return false;
+                        return Fail("part texture unavailable: " + layer.bottomNames[i]);
                     if (canUseLowDimLinearConcat)
                     {
                         if (tensorAxis == 0)
@@ -360,11 +370,14 @@ namespace NcnnCompute
 
                 var shape = shapes[i];
                 var tex = parts[i];
-                if (shape.dims != firstShape.dims
-                    || shape.c <= 0
-                    || !NcnnRepro.MatchesPack4TextureStorage(tex, shape))
+                if (shape.dims != firstShape.dims || shape.c <= 0)
                 {
-                    return false;
+                    return Fail("shape mismatch/basic invalid part=" + i + " shape=d" + shape.dims + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c);
+                }
+
+                if (!canUseLowDimLinearConcat && !NcnnRepro.MatchesPack4TextureStorage(tex, shape))
+                {
+                    return Fail("pack4 storage mismatch part=" + i);
                 }
 
                 if (canUseLowDimLinearConcat)
@@ -377,7 +390,10 @@ namespace NcnnCompute
                             || shape.d != firstShape.d
                             || shape.c != firstShape.c)
                         {
-                            return false;
+                            return Fail("strict lowdim mismatch part=" + i
+                                + " strict=" + NcnnRepro.IsStrictLinearMatTexture(tex)
+                                + " tex=" + tex.width + "x" + tex.height + "x" + tex.packs
+                                + " shape=d" + shape.dims + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c);
                         }
                     }
                     else if (NcnnRepro.IsStrictLinearMatTexture(tex)
@@ -389,7 +405,11 @@ namespace NcnnCompute
                         || tex.height != LowDimTextureStorageHeight(shape)
                         || tex.packs != parts[0].packs)
                     {
-                        return false;
+                        return Fail("lowdim storage mismatch part=" + i
+                            + " strict=" + NcnnRepro.IsStrictLinearMatTexture(tex)
+                            + " tex=" + tex.width + "x" + tex.height + "x" + tex.packs
+                            + " expected=" + LowDimTextureStorageWidth(shape) + "x" + LowDimTextureStorageHeight(shape) + "x" + parts[0].packs
+                            + " shape=d" + shape.dims + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c);
                     }
                 }
                 else
@@ -398,7 +418,7 @@ namespace NcnnCompute
                         || shape.h != firstShape.h
                         || shape.d != firstShape.d)
                     {
-                        return false;
+                        return Fail("spatial mismatch part=" + i);
                     }
 
                 }
@@ -622,7 +642,7 @@ namespace NcnnCompute
                         ? shape.d == 1
                         : shape.dims == 4;
                 if (!supportsPack4Storage
-                    || !NcnnRepro.MatchesPack4TextureStorage(parts[i], shape)
+                    || (!canUseLowDimLinearConcat && !NcnnRepro.MatchesPack4TextureStorage(parts[i], shape))
                     || (canUseLowDimStrictLinearConcat && !NcnnRepro.IsStrictLinearMatTexture(parts[i])))
                 {
                     canUseExactPack4 = false;
@@ -862,12 +882,13 @@ namespace NcnnCompute
 
             var storageShape = NcnnRepro.GetTextureStorageShape(tensor, logicalShape);
             var expectedHeight = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
-            return storageShape.dims == 2
-                && tensor.packs == 1
+            return tensor.packs == 1
                 && tensor.width == Mathf.Max(1, logicalShape.w)
                 && tensor.height == expectedHeight
                 && storageShape.w == tensor.width
-                && storageShape.h == tensor.height;
+                && storageShape.h == tensor.height
+                && Mathf.Max(1, storageShape.d) == 1
+                && Mathf.Max(1, storageShape.c) == 1;
         }
 
         private static bool IsStrictLinearLowDimTexture(NcnnRepro.CmdTensorRef tensor, NcnnRepro.BufferShape logicalShape)
@@ -877,12 +898,13 @@ namespace NcnnCompute
 
             var storageShape = NcnnRepro.GetCmdStorageShape(tensor, logicalShape);
             var expectedHeight = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
-            return storageShape.dims == 2
-                && tensor.packs == 1
+            return tensor.packs == 1
                 && tensor.width == Mathf.Max(1, logicalShape.w)
                 && tensor.height == expectedHeight
                 && storageShape.w == tensor.width
-                && storageShape.h == tensor.height;
+                && storageShape.h == tensor.height
+                && Mathf.Max(1, storageShape.d) == 1
+                && Mathf.Max(1, storageShape.c) == 1;
         }
     }
 }
