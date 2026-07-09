@@ -325,6 +325,7 @@ namespace NcnnCompute
         private readonly int _kPackRgbToPack4Gfpgan;
         private readonly int _kFillPack4FromBufferChw;
         private readonly int _kFillPack4FromBufferCdhw;
+        private readonly int _kFillLinearMatFromBuffer;
         private readonly int _kFillScalarTexture;
         private readonly int _kFillScalarLinearMat;
         private readonly int _kSentisConstantLinearMat;
@@ -537,6 +538,7 @@ namespace NcnnCompute
             _kPackRgbToPack4Gfpgan = _cs.FindKernel("NcnnPackRgbToPack4Gfpgan");
             _kFillPack4FromBufferChw = _cs.FindKernel("NcnnFillPack4FromBufferCHW");
             _kFillPack4FromBufferCdhw = _cs.FindKernel("NcnnFillPack4FromBufferCDHW");
+            _kFillLinearMatFromBuffer = _cs.FindKernel("NcnnFillLinearMatFromBuffer");
             _kFillScalarTexture = _cs.FindKernel("NcnnFillScalarTexture");
             _kFillScalarLinearMat = _cs.FindKernel("NcnnFillScalarLinearMat");
             _kSentisConstantLinearMat = _cs.FindKernel("NcnnSentisConstantLinearMat");
@@ -847,6 +849,29 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, _kFillPack4FromBufferCdhw, "_FillIn", input);
             cmd.SetComputeTextureParam(_cs, _kFillPack4FromBufferCdhw, "_TexOut0Arr", outputPack4.nameID);
             Dispatch3D(cmd, _kFillPack4FromBufferCdhw, w, h, outputPack4.depth, 8, 8);
+        }
+
+        public void FillLinearMatFromBuffer(ComputeBuffer input, int w, int h, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_FillW", w);
+            _cs.SetInt("_FillH", h);
+            _cs.SetBuffer(_kFillLinearMatFromBuffer, "_FillIn", input);
+            _cs.SetTexture(_kFillLinearMatFromBuffer, "_LinearOut0", output);
+            Dispatch2D(_kFillLinearMatFromBuffer, output.width, output.height, 8, 8);
+        }
+
+        public void FillLinearMatFromBuffer(CommandBuffer cmd, ComputeBuffer input, int w, int h, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_FillW", w);
+            cmd.SetComputeIntParam(_cs, "_FillH", h);
+            cmd.SetComputeBufferParam(_cs, _kFillLinearMatFromBuffer, "_FillIn", input);
+            cmd.SetComputeTextureParam(_cs, _kFillLinearMatFromBuffer, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kFillLinearMatFromBuffer, output.width, output.height, 8, 8);
         }
 
         public void FillScalarTexture(float[] values, RenderTexture output)

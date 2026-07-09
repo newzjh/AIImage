@@ -72,32 +72,19 @@ namespace NcnnCompute
 
             var hasTexture = textureBlobs.TryGetValue(layer.bottomNames[0], out var srcTex) && srcTex != null && srcTex.texture != null;
             var srcTexShape = hasTexture ? NcnnRepro.GetTextureShape(textureShapes, srcTex, layer.bottomNames[0]) : default;
-            if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var srcBuf) && srcBuf != null)
+            if (hasTexture)
             {
-                var srcTensor = NcnnRepro.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcTexShape);
                 for (var i = 0; i < layer.topNames.Length; i++)
                 {
-                    bufferBlobs[layer.topNames[i]] = srcBuf;
-                    if (bufferRefs.TryGetValue(layer.bottomNames[0], out var srcRef) && srcRef != null)
-                    {
-                        bufferRefs[layer.topNames[i]] = srcRef;
-                        srcRef.refs++;
-                    }
-                    if (srcTensor != null)
-                        bufferViews[layer.topNames[i]] = srcTensor;
-
-                    if (hasTexture)
-                    {
-                        var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcTexShape);
-                        textureBlobs[layer.topNames[i]] = NcnnRepro.CreateTextureAlias(srcTex, srcTexShape, storageShape);
-                        textureShapes[layer.topNames[i]] = srcTexShape;
-                    }
+                    textureBlobs[layer.topNames[i]] = NcnnRepro.CreateTextureAlias(srcTex, srcTexShape, storageShape);
+                    textureShapes[layer.topNames[i]] = srcTexShape;
                 }
             }
             else
             {
-                var src = hasTexture ? srcTex : owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
-                var shape = hasTexture ? srcTexShape : NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
+                var src = owner.GetOrMaterializeTexture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
+                var shape = NcnnRepro.GetTextureShape(textureShapes, src, layer.bottomNames[0]);
                 var storageShape = NcnnRepro.GetTextureStorageShape(src, shape);
                 for (var i = 0; i < layer.topNames.Length; i++)
                 {

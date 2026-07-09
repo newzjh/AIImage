@@ -355,6 +355,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     public bool enableLayerRuntimeProfile = false;
     public bool syncLayerRuntimeProfileGpu = false;
     public bool syncStageTimings = false;
+    public bool disallowBufferAccess = false;
+    public bool disallowBufferOutputs = false;
+    public bool disallowBufferToTextureMaterialization = false;
     public int layerRuntimeProfileTopN = 40;
 
     public event Action<float, string> ProgressChanged;
@@ -474,6 +477,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             runner.useCommandBuffer = ResolveBoolEnv("AIIMAGE_SD_USE_COMMAND_BUFFER", false);
             runner.useAsyncComputeCommandBuffer = ResolveBoolEnv("AIIMAGE_SD_USE_ASYNC_COMPUTE", runner.useAsyncComputeCommandBuffer);
             runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv("AIIMAGE_SD_DISALLOW_TEMP_COMPUTE_BUFFERS", true);
+            runner.disallowBufferAccess = disallowBufferAccess;
+            runner.disallowBufferOutputs = disallowBufferOutputs;
+            runner.disallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
             runner.ProgressChanged += forwardProgress;
 
             var result = await runner.ProcessAsync(
@@ -1797,6 +1803,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         repro.UseNcnnStyleGroupNorm = useNcnnStyleGroupNorm;
         repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile || ResolveBoolEnv("AIIMAGE_NCNN_PROFILE_LAYERS", false);
         repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfileGpu || ResolveBoolEnv("AIIMAGE_NCNN_PROFILE_SYNC", false);
+        repro.DisallowBufferAccess = disallowBufferAccess;
+        repro.DisallowBufferOutputs = disallowBufferOutputs;
+        repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
     }
 
     private bool ResolveEncoderForceBufferConvolution()

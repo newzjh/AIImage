@@ -46,6 +46,7 @@
 #pragma kernel NcnnPackRgbToPack4Gfpgan
 #pragma kernel NcnnFillPack4FromBufferCHW
 #pragma kernel NcnnFillPack4FromBufferCDHW
+#pragma kernel NcnnFillLinearMatFromBuffer
 #pragma kernel NcnnFillScalarTexture
 #pragma kernel NcnnFillScalarLinearMat
 #pragma kernel NcnnSentisConstantLinearMat
@@ -292,6 +293,7 @@ void NcnnMhaAttentionQkvFast_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnFillPack4FromBufferCHW_Impl(uint3 id);
 void NcnnFillPack4FromBufferCDHW_Impl(uint3 id);
+void NcnnFillLinearMatFromBuffer_Impl(uint3 id);
 void NcnnFillScalarTexture_Impl(uint3 id);
 void NcnnFillScalarLinearMat_Impl(uint3 id);
 void NcnnSentisConstantLinearMat_Impl(uint3 id);
@@ -972,6 +974,12 @@ void NcnnFillPack4FromBufferCHW(uint3 id : SV_DispatchThreadID)
 void NcnnFillPack4FromBufferCDHW(uint3 id : SV_DispatchThreadID)
 {
     NcnnFillPack4FromBufferCDHW_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnFillLinearMatFromBuffer(uint3 id : SV_DispatchThreadID)
+{
+    NcnnFillLinearMatFromBuffer_Impl(id);
 }
 
 [numthreads(8,8,1)]

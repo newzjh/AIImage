@@ -274,6 +274,8 @@ namespace NcnnCompute
             RenderTexture vHead = null;
             RenderTexture kHeadT = null;
             RenderTexture scores = null;
+            RenderTexture attnMaskTiled = null;
+            RenderTexture scoresBiased = null;
             RenderTexture weights = null;
             RenderTexture contextHeads = null;
             RenderTexture contextPermuted = null;
@@ -294,6 +296,8 @@ namespace NcnnCompute
                     ref vHead,
                     ref kHeadT,
                     ref scores,
+                    ref attnMaskTiled,
+                    ref scoresBiased,
                     ref weights,
                     ref contextHeads,
                     ref contextPermuted,
@@ -323,6 +327,8 @@ namespace NcnnCompute
                 ReturnTemp(owner, ref vHead);
                 ReturnTemp(owner, ref kHeadT);
                 ReturnTemp(owner, ref scores);
+                ReturnTemp(owner, ref attnMaskTiled);
+                ReturnTemp(owner, ref scoresBiased);
                 ReturnTemp(owner, ref weights);
                 ReturnTemp(owner, ref contextHeads);
                 ReturnTemp(owner, ref contextPermuted);
@@ -352,6 +358,8 @@ namespace NcnnCompute
             ComputeTexture vHead = null;
             ComputeTexture kHeadT = null;
             ComputeTexture scores = null;
+            ComputeTexture attnMaskTiled = null;
+            ComputeTexture scoresBiased = null;
             ComputeTexture weights = null;
             ComputeTexture contextHeads = null;
             ComputeTexture contextPermuted = null;
@@ -369,6 +377,11 @@ namespace NcnnCompute
                 vHead = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
                 kHeadT = owner.RentTempArray(cmd, plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat);
                 scores = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                if (plan.hasAttnMask)
+                {
+                    attnMaskTiled = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                    scoresBiased = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                }
                 weights = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
                 contextHeads = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
                 contextPermuted = owner.RentTempArray(cmd, plan.contextPermutedStorageShape.w, plan.contextPermutedStorageShape.h, plan.contextPermutedSlices, plan.pack4TextureFormat);
@@ -466,7 +479,27 @@ namespace NcnnCompute
                     plan.scoresShape.c,
                     scores);
 
-                owner.Ops.SoftmaxPack4Cdhw(cmd, scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+                if (plan.hasAttnMask)
+                {
+                    ComputeTexture attnMaskScalarInput = null;
+                    ComputeTexture attnMaskScalarMaterialized = null;
+                    try
+                    {
+                        attnMaskScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.attnMaskTex, plan.attnMaskShape, plan.scalarTextureFormat, ref attnMaskScalarMaterialized);
+                        owner.Ops.TilePack4(cmd, attnMaskScalarInput, plan.attnMaskShape, plan.scoresShape, ResolveAttentionMaskTileRepeats(plan.scoresShape), attnMaskTiled);
+                        owner.Ops.BinaryOpPack4(cmd, scores, attnMaskTiled, plan.scoresSlices, 0, scoresBiased);
+                    }
+                    finally
+                    {
+                        ReturnTemp(owner, cmd, ref attnMaskScalarMaterialized);
+                    }
+
+                    owner.Ops.SoftmaxPack4Cdhw(cmd, scoresBiased, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+                }
+                else
+                {
+                    owner.Ops.SoftmaxPack4Cdhw(cmd, scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+                }
 
                 owner.Ops.MatMulPack4Cdhw(
                     cmd,
@@ -554,6 +587,8 @@ namespace NcnnCompute
                 ReturnTemp(owner, cmd, ref vHead);
                 ReturnTemp(owner, cmd, ref kHeadT);
                 ReturnTemp(owner, cmd, ref scores);
+                ReturnTemp(owner, cmd, ref attnMaskTiled);
+                ReturnTemp(owner, cmd, ref scoresBiased);
                 ReturnTemp(owner, cmd, ref weights);
                 ReturnTemp(owner, cmd, ref contextHeads);
                 ReturnTemp(owner, cmd, ref contextPermuted);
@@ -574,12 +609,12 @@ namespace NcnnCompute
                 return false;
             if (!owner._multiHeadAttention.TryGetValue(layer.name, out var pack) || pack == null)
                 return false;
-            if (pack.attnMask || pack.kvCache)
+            if (pack.kvCache)
                 return false;
             if ((pack.embedDim % Mathf.Max(1, pack.numHeads)) != 0)
                 return false;
 
-            ResolveBottomBlobIndices(layer.bottomNames?.Length ?? 0, pack.attnMask, pack.kvCache, out var qBlobIndex, out var kBlobIndex, out var vBlobIndex, out _);
+            ResolveBottomBlobIndices(layer.bottomNames?.Length ?? 0, pack.attnMask, pack.kvCache, out var qBlobIndex, out var kBlobIndex, out var vBlobIndex, out var attnMaskIndex);
             if (!TryGetScalar2DTexture(textureBlobs, textureShapes, layer.bottomNames[qBlobIndex], out var qTex, out var qShape)
                 || !TryGetScalar2DTexture(textureBlobs, textureShapes, layer.bottomNames[kBlobIndex], out var kTex, out var kShape)
                 || !TryGetScalar2DTexture(textureBlobs, textureShapes, layer.bottomNames[vBlobIndex], out var vTex, out var vShape))
@@ -592,10 +627,19 @@ namespace NcnnCompute
                 return false;
             if (kShape.h != rows || vShape.h != rows)
                 return false;
+            NcnnRepro.TensorRef attnMaskTex = null;
+            NcnnRepro.BufferShape attnMaskShape = default;
+            if (attnMaskIndex >= 0)
+            {
+                if (!TryGetScalar2DTexture(textureBlobs, textureShapes, layer.bottomNames[attnMaskIndex], out attnMaskTex, out attnMaskShape))
+                    return false;
+                if (attnMaskShape.w != kShape.h || attnMaskShape.h != rows)
+                    return false;
+            }
             if (pack.qW == null || pack.qB == null || pack.kW == null || pack.kB == null || pack.vW == null || pack.vB == null || pack.oW == null || pack.oB == null)
                 return false;
 
-            plan = new MultiHeadAttentionRtPlan(pack, qTex, qShape, kTex, kShape, vTex, vShape, rows);
+            plan = new MultiHeadAttentionRtPlan(pack, qTex, qShape, kTex, kShape, vTex, vShape, rows, attnMaskTex, attnMaskShape);
             return true;
         }
 
@@ -611,12 +655,12 @@ namespace NcnnCompute
                 return false;
             if (!owner._multiHeadAttention.TryGetValue(layer.name, out var pack) || pack == null)
                 return false;
-            if (pack.attnMask || pack.kvCache)
+            if (pack.kvCache)
                 return false;
             if ((pack.embedDim % Mathf.Max(1, pack.numHeads)) != 0)
                 return false;
 
-            ResolveBottomBlobIndices(layer.bottomNames?.Length ?? 0, pack.attnMask, pack.kvCache, out var qBlobIndex, out var kBlobIndex, out var vBlobIndex, out _);
+            ResolveBottomBlobIndices(layer.bottomNames?.Length ?? 0, pack.attnMask, pack.kvCache, out var qBlobIndex, out var kBlobIndex, out var vBlobIndex, out var attnMaskIndex);
             if (!TryGetScalar2DTexture(blobs, shapes, layer.bottomNames[qBlobIndex], out var qTex, out var qShape)
                 || !TryGetScalar2DTexture(blobs, shapes, layer.bottomNames[kBlobIndex], out var kTex, out var kShape)
                 || !TryGetScalar2DTexture(blobs, shapes, layer.bottomNames[vBlobIndex], out var vTex, out var vShape))
@@ -629,10 +673,19 @@ namespace NcnnCompute
                 return false;
             if (kShape.h != rows || vShape.h != rows)
                 return false;
+            NcnnRepro.CmdTensorRef attnMaskTex = null;
+            NcnnRepro.BufferShape attnMaskShape = default;
+            if (attnMaskIndex >= 0)
+            {
+                if (!TryGetScalar2DTexture(blobs, shapes, layer.bottomNames[attnMaskIndex], out attnMaskTex, out attnMaskShape))
+                    return false;
+                if (attnMaskShape.w != kShape.h || attnMaskShape.h != rows)
+                    return false;
+            }
             if (pack.qW == null || pack.qB == null || pack.kW == null || pack.kB == null || pack.vW == null || pack.vB == null || pack.oW == null || pack.oB == null)
                 return false;
 
-            plan = new MultiHeadAttentionCmdRtPlan(pack, qTex, qShape, kTex, kShape, vTex, vShape, rows);
+            plan = new MultiHeadAttentionCmdRtPlan(pack, qTex, qShape, kTex, kShape, vTex, vShape, rows, attnMaskTex, attnMaskShape);
             return true;
         }
 
@@ -648,6 +701,8 @@ namespace NcnnCompute
             ref RenderTexture vHead,
             ref RenderTexture kHeadT,
             ref RenderTexture scores,
+            ref RenderTexture attnMaskTiled,
+            ref RenderTexture scoresBiased,
             ref RenderTexture weights,
             ref RenderTexture contextHeads,
             ref RenderTexture contextPermuted,
@@ -663,6 +718,11 @@ namespace NcnnCompute
             vHead = owner.RentTempArray(plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
             kHeadT = owner.RentTempArray(plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat);
             scores = owner.RentTempArray(plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+            if (plan.hasAttnMask)
+            {
+                attnMaskTiled = owner.RentTempArray(plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                scoresBiased = owner.RentTempArray(plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+            }
             weights = owner.RentTempArray(plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
             contextHeads = owner.RentTempArray(plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
             contextPermuted = owner.RentTempArray(plan.contextPermutedStorageShape.w, plan.contextPermutedStorageShape.h, plan.contextPermutedSlices, plan.pack4TextureFormat);
@@ -749,7 +809,27 @@ namespace NcnnCompute
                 plan.scoresShape.c,
                 scores);
 
-            owner.Ops.SoftmaxPack4Cdhw(scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+            if (plan.hasAttnMask)
+            {
+                RenderTexture attnMaskScalarInput = null;
+                RenderTexture attnMaskScalarMaterialized = null;
+                try
+                {
+                    attnMaskScalarInput = MaterializeScalar2DArrayInput(owner, plan.attnMaskTex, plan.attnMaskShape, plan.scalarTextureFormat, ref attnMaskScalarMaterialized);
+                    owner.Ops.TilePack4(attnMaskScalarInput, plan.attnMaskShape, plan.scoresShape, ResolveAttentionMaskTileRepeats(plan.scoresShape), attnMaskTiled);
+                    owner.Ops.BinaryOpPack4(scores, attnMaskTiled, plan.scoresSlices, 0, scoresBiased);
+                }
+                finally
+                {
+                    ReturnTemp(owner, ref attnMaskScalarMaterialized);
+                }
+
+                owner.Ops.SoftmaxPack4Cdhw(scoresBiased, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+            }
+            else
+            {
+                owner.Ops.SoftmaxPack4Cdhw(scores, plan.scoresShape.w, plan.scoresShape.h, plan.scoresShape.d, plan.scoresShape.c, weights);
+            }
 
             owner.Ops.MatMulPack4Cdhw(
                 weights,
@@ -822,6 +902,15 @@ namespace NcnnCompute
                 && texture.width == shape.w
                 && texture.height == shape.h
                 && texture.packs == 1;
+        }
+
+        private static Vector4Int ResolveAttentionMaskTileRepeats(NcnnRepro.BufferShape scoresShape)
+        {
+            return new Vector4Int(
+                1,
+                1,
+                Mathf.Max(1, scoresShape.d),
+                Mathf.Max(1, scoresShape.c));
         }
 
         private static bool TryGetScalar2DTexture(
@@ -961,6 +1050,9 @@ namespace NcnnCompute
             public readonly NcnnRepro.BufferShape kShape;
             public readonly NcnnRepro.TensorRef vTex;
             public readonly NcnnRepro.BufferShape vShape;
+            public readonly bool hasAttnMask;
+            public readonly NcnnRepro.TensorRef attnMaskTex;
+            public readonly NcnnRepro.BufferShape attnMaskShape;
             public readonly int rows;
             public readonly int embedDim;
             public readonly int numHeads;
@@ -992,7 +1084,9 @@ namespace NcnnCompute
                 NcnnRepro.BufferShape kShape,
                 NcnnRepro.TensorRef vTex,
                 NcnnRepro.BufferShape vShape,
-                int rows)
+                int rows,
+                NcnnRepro.TensorRef attnMaskTex,
+                NcnnRepro.BufferShape attnMaskShape)
             {
                 this.pack = pack;
                 this.qTex = qTex;
@@ -1001,6 +1095,9 @@ namespace NcnnCompute
                 this.kShape = kShape;
                 this.vTex = vTex;
                 this.vShape = vShape;
+                hasAttnMask = attnMaskTex != null && attnMaskTex.texture != null;
+                this.attnMaskTex = attnMaskTex;
+                this.attnMaskShape = hasAttnMask ? attnMaskShape : default;
                 this.rows = rows;
                 embedDim = pack.embedDim;
                 numHeads = Mathf.Max(1, pack.numHeads);
@@ -1035,6 +1132,9 @@ namespace NcnnCompute
             public readonly NcnnRepro.BufferShape kShape;
             public readonly NcnnRepro.CmdTensorRef vTex;
             public readonly NcnnRepro.BufferShape vShape;
+            public readonly bool hasAttnMask;
+            public readonly NcnnRepro.CmdTensorRef attnMaskTex;
+            public readonly NcnnRepro.BufferShape attnMaskShape;
             public readonly int rows;
             public readonly int embedDim;
             public readonly int numHeads;
@@ -1066,7 +1166,9 @@ namespace NcnnCompute
                 NcnnRepro.BufferShape kShape,
                 NcnnRepro.CmdTensorRef vTex,
                 NcnnRepro.BufferShape vShape,
-                int rows)
+                int rows,
+                NcnnRepro.CmdTensorRef attnMaskTex,
+                NcnnRepro.BufferShape attnMaskShape)
             {
                 this.pack = pack;
                 this.qTex = qTex;
@@ -1075,6 +1177,9 @@ namespace NcnnCompute
                 this.kShape = kShape;
                 this.vTex = vTex;
                 this.vShape = vShape;
+                hasAttnMask = attnMaskTex != null && attnMaskTex.texture != null;
+                this.attnMaskTex = attnMaskTex;
+                this.attnMaskShape = hasAttnMask ? attnMaskShape : default;
                 this.rows = rows;
                 embedDim = pack.embedDim;
                 numHeads = Mathf.Max(1, pack.numHeads);

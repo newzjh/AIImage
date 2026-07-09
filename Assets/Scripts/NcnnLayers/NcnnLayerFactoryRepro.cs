@@ -512,6 +512,16 @@ namespace NcnnCompute
                         owned = false
                     };
                     bufferViews[kv.Key] = kv.Value;
+
+                    if (!textureBlobs.ContainsKey(kv.Key))
+                    {
+                        var texture = MaterializeScratchTextureFromBufferView(kv.Value.buffer, kv.Value);
+                        if (texture != null)
+                        {
+                            var shape = new BufferShape(kv.Value.dims, kv.Value.w, kv.Value.h, kv.Value.d, kv.Value.c);
+                            SetTextureBlob(textureBlobs, textureShapes, kv.Key, texture, shape);
+                        }
+                    }
                 }
             }
 

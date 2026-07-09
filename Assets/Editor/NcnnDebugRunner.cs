@@ -82,6 +82,7 @@ public static class NcnnDebugRunner
     private const string SdUseCommandBufferEnvVar = "AIIMAGE_SD_USE_COMMAND_BUFFER";
     private const string SdUseAsyncComputeEnvVar = "AIIMAGE_SD_USE_ASYNC_COMPUTE";
     private const string SdDisallowTempComputeBuffersEnvVar = "AIIMAGE_SD_DISALLOW_TEMP_COMPUTE_BUFFERS";
+    private const string SdPack4OnlyGuardEnvVar = "AIIMAGE_SD_PACK4_ONLY_GUARD";
     private const string SdReplayBaselineDirEnvVar = "AIIMAGE_SD_REPLAY_BASELINE_DIR";
     private const string SdDirectBaselineDirEnvVar = "AIIMAGE_SD_DIRECT_BASELINE_DIR";
     private const string SdReplayReferenceDirEnvVar = "AIIMAGE_SD_REPLAY_REFERENCE_DIR";
@@ -1153,6 +1154,7 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<SDNcnnReproRunner>();
+            var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, true);
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
@@ -1161,6 +1163,9 @@ public static class NcnnDebugRunner
             runner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, runner.encoderTensorTextureFormat);
             runner.syncStageTimings = ResolveBoolEnv(SdSyncStageTimingsEnvVar, runner.syncStageTimings);
             runner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, runner.keepRawConvWeightsForTexturePath);
+            runner.disallowBufferAccess = pack4OnlyGuard;
+            runner.disallowBufferOutputs = pack4OnlyGuard;
+            runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
             runner.ProgressChanged += (value, message) =>
             {
                 Debug.Log("[SD-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
@@ -1242,6 +1247,7 @@ public static class NcnnDebugRunner
         var runner = owner.AddComponent<SDInpaintingNcnnReproRunner>();
         try
         {
+            var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = enableDump;
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
@@ -1254,6 +1260,9 @@ public static class NcnnDebugRunner
             runner.useCommandBuffer = ResolveBoolEnv(SdUseCommandBufferEnvVar, false);
             runner.useAsyncComputeCommandBuffer = ResolveBoolEnv(SdUseAsyncComputeEnvVar, runner.useAsyncComputeCommandBuffer);
             runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
+            runner.disallowBufferAccess = pack4OnlyGuard;
+            runner.disallowBufferOutputs = pack4OnlyGuard;
+            runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
             runner.defaultGuidanceScale = ResolveFloatEnvOrDefault(SdGuidanceScaleEnvVar, 7.5f);
             runner.ProgressChanged += (value, message) =>
             {
@@ -1386,6 +1395,7 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+            var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, true);
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
@@ -1396,6 +1406,9 @@ public static class NcnnDebugRunner
             runner.enableAttentionMatMulPack4Specializations = true;
             runner.useCommandBuffer = ResolveBoolEnv(SdUseCommandBufferEnvVar, false);
             runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
+            runner.disallowBufferAccess = pack4OnlyGuard;
+            runner.disallowBufferOutputs = pack4OnlyGuard;
+            runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
 
             var configPath = Path.Combine(baselineDir, "run_config.txt");
             var stepCount = SDInpaintingNcnnReproRunner.PeopleRemovalRecommendedStepCount;
@@ -1476,6 +1489,7 @@ public static class NcnnDebugRunner
             NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
             NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.SDUnetReplay");
             var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+            var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = true;
             runner.enableTempPool = false;
             runner.maxPooledPerShape = 0;
@@ -1483,6 +1497,9 @@ public static class NcnnDebugRunner
             runner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, runner.keepRawConvWeightsForTexturePath);
             runner.enableAttentionMatMulPack4Specializations = true;
             runner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
+            runner.disallowBufferAccess = pack4OnlyGuard;
+            runner.disallowBufferOutputs = pack4OnlyGuard;
+            runner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
 
             var result = await runner.RunUnetBaselineReplayAsync(
                 new SDInpaintingNcnnReproRunner.UnetBaselineReplayRequest(
@@ -1736,6 +1753,7 @@ public static class NcnnDebugRunner
             LogResourceSnapshot(logTag + "_after_yolo_release");
 
             var inpaintRunner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+            var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             inpaintRunner.enableDebugDump = enableDump;
             inpaintRunner.ApplyPeopleRemovalPreset();
             inpaintRunner.useOfficialUnetCache = false;
@@ -1749,6 +1767,9 @@ public static class NcnnDebugRunner
             inpaintRunner.useCommandBuffer = useCommandBuffer;
             inpaintRunner.useAsyncComputeCommandBuffer = ResolveBoolEnv(SdUseAsyncComputeEnvVar, inpaintRunner.useAsyncComputeCommandBuffer);
             inpaintRunner.disallowInferenceTempComputeBuffers = ResolveBoolEnv(SdDisallowTempComputeBuffersEnvVar, true);
+            inpaintRunner.disallowBufferAccess = pack4OnlyGuard;
+            inpaintRunner.disallowBufferOutputs = pack4OnlyGuard;
+            inpaintRunner.disallowBufferToTextureMaterialization = pack4OnlyGuard;
             inpaintRunner.defaultStepCount = stepCount;
             inpaintRunner.defaultStrength = strength;
             inpaintRunner.defaultGuidanceScale = guidanceScale;

@@ -3744,6 +3744,13 @@ namespace NcnnCompute
             if (!TryResolveTensorTextureMaterialization(view, out var texW, out var texH, out var channels, out var sliceCount, out var format))
                 return null;
 
+            if (view.dims <= 2)
+            {
+                var linear = RentTempMat(texW, texH, ResolveLinearMatTextureFormat());
+                _ops.FillLinearMatFromBuffer(buffer, texW, texH, linear);
+                return linear;
+            }
+
             var rt = RentTempArray(texW, texH, sliceCount, ResolveTensorTextureFormatWithOverride(view.dims, formatOverride));
             if (view.dims == 4)
                 _ops.FillPack4FromBufferCDHW(buffer, texW, texH, view.d, channels, rt);
@@ -3797,6 +3804,13 @@ namespace NcnnCompute
             else
             {
                 return null;
+            }
+
+            if (view.dims <= 2)
+            {
+                var linear = RentTempMat(cmd, texW, texH, ResolveLinearMatTextureFormat());
+                _ops.FillLinearMatFromBuffer(cmd, buffer, texW, texH, linear);
+                return linear;
             }
 
             var channelPacks = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
@@ -4643,8 +4657,8 @@ namespace NcnnCompute
             if (tensor == null || tensor.buffer == null)
                 throw new ArgumentNullException(nameof(tensor));
 
-            if (!preferTexture || tensor.dims > 3)
-                throw new InvalidOperationException("CommandBuffer outputs currently require dims<=3 materialized texture: " + topName);
+            if (!preferTexture || tensor.dims > 4)
+                throw new InvalidOperationException("CommandBuffer outputs currently require dims<=4 materialized texture: " + topName);
             if (ShouldBlockPack4BufferFallback() && tensor.ownsBuffer)
             {
                 throw CreateDisallowedBufferPathException(

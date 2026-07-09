@@ -30,6 +30,20 @@ void NcnnLinearMatToBuffer_Impl(uint3 id)
     _Pack4Out[idx] = _LinearIn0[int2((int)x, (int)y)];
 }
 
+void NcnnFillLinearMatFromBuffer_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    uint logicalW = (uint)max(_FillW, 1);
+    uint logicalH = (uint)max(_FillH, 1);
+    uint idx = id.y * logicalW + id.x;
+    uint total = logicalW * logicalH;
+    _LinearOut0[int2((int)id.x, (int)id.y)] = idx < total ? _FillIn[idx] : 0.0;
+}
+
 void NcnnPack4ChannelsToWidth_Impl(uint3 id)
 {
     uint ow, oh, od;
