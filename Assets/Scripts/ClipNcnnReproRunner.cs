@@ -75,11 +75,11 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     public bool enableTempPool = true;
     public int maxPooledPerShape = 4;
     public bool enableDebugDump = false;
-    public bool forceFullRenderTexturePath = false;
+    public bool forceFullRenderTexturePath = true;
     public bool useCommandBuffer = false;
     public bool useAsyncComputeCommandBuffer = true;
-    public bool enableGeneralTextureConvolution = false;
-    public bool enableAttentionMatMulPack4Specializations = false;
+    public bool enableGeneralTextureConvolution = true;
+    public bool enableAttentionMatMulPack4Specializations = true;
     public bool disallowBufferAccess = false;
     public bool disallowBufferOutputs = false;
     public bool disallowBufferToTextureMaterialization = false;
