@@ -59,6 +59,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private const string StageUnloadUnusedAssetsEnvVar = "AIIMAGE_SD_STAGE_UNLOAD_UNUSED_ASSETS";
     private const string StageReleaseWinogradEnvVar = "AIIMAGE_SD_STAGE_RELEASE_WINOGRAD";
     private const string StageGcCollectEnvVar = "AIIMAGE_SD_STAGE_GC_COLLECT";
+    private const string StageTimingsEnvVar = "AIIMAGE_SD_STAGE_TIMINGS";
     private const string ResourceSnapshotEnvVar = "AIIMAGE_SD_RESOURCE_SNAPSHOT";
     private const string EditorLowVramEnvVar = "AIIMAGE_SD_EDITOR_LOW_VRAM";
     private const string AllowEditorFloatTensorEnvVar = "AIIMAGE_SD_ALLOW_EDITOR_FLOAT_TENSOR";
@@ -146,6 +147,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public bool enableMhaQkvFusion = true;
     public bool enableAttentionMatMulPack4Specializations = true;
     public bool enableDebugDump = false;
+    public bool enableStageTimings = false;
     public bool enableLayerRuntimeProfile = false;
     public bool syncLayerRuntimeProfileGpu = false;
     public bool useCommandBuffer = false;
@@ -407,13 +409,28 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         var sourceOutputHeight = 0;
         var destroySourceReadable = false;
         var destroyMaskReadable = false;
+        var stageTimingsEnabled = enableStageTimings || ResolveBoolEnv(StageTimingsEnvVar, false);
 
         SDInpaintingNcnnReproResult Finish(SDInpaintingNcnnReproResult result)
         {
             result.elapsedMs = totalSw.ElapsedMilliseconds;
             result.seed = actualSeed;
             result.dumpDir = _lastDumpDir;
+            if (stageTimingsEnabled)
+                UnityEngine.Debug.Log("[SDInpaint][StageTiming] total | elapsedMs=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture));
             return result;
+        }
+
+        void LogStageTiming(string label, Stopwatch sw)
+        {
+            if (!stageTimingsEnabled)
+                return;
+            if (sw == null)
+                return;
+            sw.Stop();
+            UnityEngine.Debug.Log("[SDInpaint][StageTiming] " + label
+                + " | elapsedMs=" + sw.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture)
+                + " | totalMs=" + totalSw.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
         }
 
         Texture2D sourceReadable = null;
@@ -451,18 +468,23 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (enableDebugDump)
                 _lastDumpDir = CreateDumpDir("AIImage_SDInpaint_NcnnRepro");
 
+            var stageSw = Stopwatch.StartNew();
             EnsureRuntimeObjects();
             EnsureSchedulerTables();
             var paths = ResolvePaths();
             EnsureModelIdentity(paths);
+            LogStageTiming("init_runtime", stageSw);
             LogResourceSnapshot("process_begin");
 
             ReportProgress(0.02f, "Load models");
+            stageSw = Stopwatch.StartNew();
             await EnsureTextEncoderLoadedAsync(paths, ct);
+            LogStageTiming("load_text_encoder", stageSw);
             LogResourceSnapshot("after_load_text");
             ct.ThrowIfCancellationRequested();
 
             ReportProgress(0.12f, "Prepare images");
+            stageSw = Stopwatch.StartNew();
             sourceReadable = EnsureReadableTexture(sourceImage);
             maskReadable = EnsureReadableTexture(maskImage);
             if (sourceReadable == null || maskReadable == null)
@@ -507,9 +529,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "positive_prompt.txt"), positivePrompt ?? string.Empty);
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "negative_prompt.txt"), negativePrompt ?? string.Empty);
             }
+            LogStageTiming("prepare_images", stageSw);
             LogResourceSnapshot("after_prepare_images");
 
             ReportProgress(0.20f, "Encode prompts");
+            stageSw = Stopwatch.StartNew();
             LogStageTrace("prompt encode begin | positive");
             condTex = await EncodePromptAsync(positivePrompt ?? string.Empty, "positive", ct);
             LogStageTrace("prompt encode end | positive | tex=" + (condTex != null
@@ -522,16 +546,22 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 : "<null>"));
             if (condTex == null || uncondTex == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Prompt conditioning failed." });
+            LogStageTiming("encode_prompts", stageSw);
 
+            stageSw = Stopwatch.StartNew();
             LogStageTrace("dispose text model begin");
             DisposeTextModel();
             LogStageTrace("dispose text model end");
             await ForceStageCleanupAsync(ct, "after_text");
+            LogStageTiming("text_cleanup", stageSw);
             LogResourceSnapshot("after_text_cleanup");
 
             ReportProgress(0.28f, "Encode images");
+            stageSw = Stopwatch.StartNew();
             await EnsureVaeEncoderLoadedAsync(paths, ct);
+            LogStageTiming("load_vae_encoder", stageSw);
             LogResourceSnapshot("after_load_vae_encoder");
+            stageSw = Stopwatch.StartNew();
             var latentRng = CreateLatentNoiseRng(actualSeed);
             var useStrengthMax = strength >= 0.9999f;
             if (!useStrengthMax)
@@ -553,10 +583,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             DestroyRuntimeTexture(ref resizedMask);
             DestroyRuntimeTexture(ref normalizedMask);
             DestroyRuntimeTexture(ref maskedSource);
+            LogStageTiming("encode_image_latents", stageSw);
+            stageSw = Stopwatch.StartNew();
             DisposeVaeEncoderModel();
             await ForceStageCleanupAsync(ct, "after_vae_encoder");
+            LogStageTiming("vae_encoder_cleanup", stageSw);
             LogResourceSnapshot("after_vae_encoder_cleanup");
 
+            stageSw = Stopwatch.StartNew();
             var timesteps = BuildTimesteps(stepCount);
             var activeTimesteps = SelectTimestepsByStrength(timesteps, strength);
             var debugMaxDenoiseSteps = ResolvePositiveIntEnvOrDefault("AIIMAGE_SD_DEBUG_MAX_DENOISE_STEPS", 0);
@@ -568,9 +602,13 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             }
             if (activeTimesteps == null || activeTimesteps.Length < 1)
                 return Finish(new SDInpaintingNcnnReproResult { error = "No valid timesteps for the requested strength." });
+            LogStageTiming("build_timesteps", stageSw);
 
+            stageSw = Stopwatch.StartNew();
             await EnsureUnetLoadedAsync(paths, ct);
+            LogStageTiming("load_unet", stageSw);
             LogResourceSnapshot("after_load_unet");
+            stageSw = Stopwatch.StartNew();
             latentMaskTex = CreateMaskPack4Texture(latentMaskTexture);
             DestroyRuntimeTexture(ref latentMaskTexture);
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
@@ -605,6 +643,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_mask_64_f32.bin"), latentMaskTex, 1);
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "latent_init_f32.bin"), latentsTex, LatentChannels);
             }
+            LogStageTiming("init_latent_inputs", stageSw);
 
             if (latentMaskTex == null
                 || maskedLatentTex == null
@@ -614,8 +653,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to initialize latent textures." });
 
             ReportProgress(0.36f, "Sample latents");
+            var denoiseSw = Stopwatch.StartNew();
             for (var i = 0; i < activeTimesteps.Length; i++)
             {
+                var stepSw = Stopwatch.StartNew();
                 ct.ThrowIfCancellationRequested();
                 var timestep = activeTimesteps[i];
                 var prevTimestep = i + 1 < activeTimesteps.Length ? activeTimesteps[i + 1] : -1;
@@ -628,6 +669,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     DumpTextureRefSafe(Path.Combine(_lastDumpDir, "latent_before_unet_step_" + i.ToString(CultureInfo.InvariantCulture) + "_ref.txt"), latentsTex);
                 }
 
+                var unetSw = Stopwatch.StartNew();
                 var epsilonTex = await RunCfgUnetPack4Async(
                     latentsTex,
                     latentMaskTex,
@@ -639,6 +681,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     uncondPromptView,
                     guidanceScale,
                     ct);
+                LogStageTiming("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_unet_cfg", unetSw);
                 if (epsilonTex == null)
                     return Finish(new SDInpaintingNcnnReproResult { error = "UNet inference failed at timestep " + timestep.ToString(CultureInfo.InvariantCulture) + "." });
                 LogResourceSnapshot("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_after_unet");
@@ -651,6 +694,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
                 try
                 {
+                    var ddimSw = Stopwatch.StartNew();
                     if (!string.IsNullOrWhiteSpace(_lastDumpDir))
                     {
                         DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "epsilon_step_" + i.ToString(CultureInfo.InvariantCulture) + "_stats.txt"), epsilonTex, LatentChannels);
@@ -669,6 +713,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
                     ReleasePersistentTensorTexture(ref latentsTex, "SDInpaint.LatentsTex");
                     latentsTex = nextLatents;
+                    LogStageTiming("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_ddim_step", ddimSw);
                     LogResourceSnapshot("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_after_ddim");
                 }
                 finally
@@ -677,8 +722,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 }
 
                 await UniTask.Yield();
+                LogStageTiming("denoise_step_" + (i + 1).ToString(CultureInfo.InvariantCulture) + "_total", stepSw);
             }
+            LogStageTiming("denoise_total", denoiseSw);
 
+            stageSw = Stopwatch.StartNew();
             if (condTex != null)
             {
                 ReleasePersistentTensorTexture(ref condTex, "SDInpaint.PromptCondTex");
@@ -706,18 +754,24 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_final_stats.txt"), latentsTex, LatentChannels);
+            LogStageTiming("release_denoise_inputs", stageSw);
             LogResourceSnapshot("after_final_latents");
 
             ReportProgress(0.88f, "Decode image");
+            stageSw = Stopwatch.StartNew();
             if (!string.IsNullOrWhiteSpace(_lastDumpDir))
                 DumpLatentTextureStatsSafe(Path.Combine(_lastDumpDir, "latent_decode_input_stats.txt"), latentsTex, LatentChannels);
             decodeLatentsTex = latentsTex;
             latentsTex = null;
             DisposeUnetModel();
             await ForceStageCleanupAsync(ct, "after_unet");
+            LogStageTiming("unet_cleanup", stageSw);
             LogResourceSnapshot("after_unet_cleanup");
+            stageSw = Stopwatch.StartNew();
             await EnsureVaeDecoderLoadedAsync(paths, ct);
+            LogStageTiming("load_vae_decoder", stageSw);
             LogResourceSnapshot("after_load_vae_decoder");
+            stageSw = Stopwatch.StartNew();
             generated512 = await DecodeLatentsTextureAsync(decodeLatentsTex, ct);
             if (decodeLatentsTex != null)
             {
@@ -725,8 +779,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             }
             if (generated512 == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "VAE decoder failed." });
+            LogStageTiming("decode_latents", stageSw);
             LogResourceSnapshot("after_decode");
 
+            stageSw = Stopwatch.StartNew();
             generatedResized = ReadResizedTexture(generated512, sourceOutputWidth, sourceOutputHeight);
             if (generatedResized == null)
                 return Finish(new SDInpaintingNcnnReproResult { error = "Failed to scale generated image back to source size." });
@@ -751,6 +807,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 WriteAllTextSafe(Path.Combine(_lastDumpDir, "resource_snapshots.txt"), string.Join(Environment.NewLine, _resourceSnapshotLines));
             }
 
+            LogStageTiming("final_resize_and_dump", stageSw);
             ReportProgress(1f, string.Empty);
             return Finish(new SDInpaintingNcnnReproResult { texture = finalTexture });
         }

@@ -251,6 +251,8 @@ namespace NcnnCompute
 
     public sealed class NcnnOps : IDisposable
     {
+        private static readonly float[] ZeroScalar = { 0f };
+
         public enum PointwiseType
         {
             Elu = 0,
@@ -396,6 +398,9 @@ namespace NcnnCompute
         private readonly int _kArgmaxUpdatePack4Cdhw;
         private readonly int _kGemm2DTextureA;
         private readonly int _kGemm2DLinearTextureA;
+        private readonly int _kGemm2DAttentionQkvTextureA;
+        private readonly int _kGemm2DAttentionQkvLinearTextureA;
+        private readonly int _kGemm2DAttentionPack4ToLinearTextureA;
         private readonly int _kGemm2D;
         private readonly int _kGemm2D16;
         private readonly int _kLayerNorm2D;
@@ -466,6 +471,9 @@ namespace NcnnCompute
         private readonly int _kSdpaQkvBuf;
         private readonly int _kSdpaAttentionFast;
         private readonly int _kSdpaAttentionPack4Cdhw;
+        private readonly bool _probeFastZeroGemm;
+        private readonly bool _probeFastZeroSdpa;
+        private readonly int _gemmTextureOutsPerThread;
         private ComputeBuffer _fallbackFloatBuffer;
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
@@ -480,6 +488,63 @@ namespace NcnnCompute
             if (output == null)
                 return Mathf.Max(1, fallbackPacks);
             return Mathf.Max(1, output.depth > 0 ? output.depth : fallbackPacks);
+        }
+
+        private static bool ResolveProbeFlag(string specificEnvVar, string token)
+        {
+            if (ResolveBoolEnv(specificEnvVar, false))
+                return true;
+
+            var combined = Environment.GetEnvironmentVariable("AIIMAGE_NCNN_PROBE_FAST_ZERO");
+            if (string.IsNullOrWhiteSpace(combined))
+                return false;
+
+            var parts = combined.Split(new[] { ',', ';', '|', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                var part = parts[i].Trim();
+                if (string.Equals(part, "all", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(part, token, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool ResolveBoolEnv(string name, bool defaultValue)
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(value))
+                return defaultValue;
+
+            value = value.Trim();
+            if (string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "on", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (string.Equals(value, "0", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "false", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "no", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "off", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return defaultValue;
+        }
+
+        private static int ResolveIntEnvClamped(string name, int defaultValue, int minValue, int maxValue)
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(value)
+                && int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                return Mathf.Clamp(parsed, minValue, maxValue);
+
+            return Mathf.Clamp(defaultValue, minValue, maxValue);
+        }
+
+        private int ResolveGemmTextureDispatchColumns(int n)
+        {
+            return Mathf.Max(1, Mathf.CeilToInt(n / (float)Mathf.Max(1, _gemmTextureOutsPerThread)));
         }
 
         public bool EnableConv3dTile3x3Pack4FastPath { get; set; }
@@ -612,6 +677,9 @@ namespace NcnnCompute
             _kArgmaxUpdatePack4Cdhw = _cs.FindKernel("NcnnArgmaxUpdatePack4CDHW");
             _kGemm2DTextureA = _cs.FindKernel("NcnnGemm2DTextureA");
             _kGemm2DLinearTextureA = _cs.FindKernel("NcnnGemm2DLinearTextureA");
+            _kGemm2DAttentionQkvTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvTextureA");
+            _kGemm2DAttentionQkvLinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvLinearTextureA");
+            _kGemm2DAttentionPack4ToLinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionPack4ToLinearTextureA");
             _kGemm2D = _cs.FindKernel("NcnnGemm2D");
             _kGemm2D16 = _cs.FindKernel("NcnnGemm2D16");
             _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
@@ -681,6 +749,22 @@ namespace NcnnCompute
             _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
             _kSdpaAttentionFast = _cs.FindKernel("NcnnSdpaAttentionFast");
             _kSdpaAttentionPack4Cdhw = _cs.FindKernel("NcnnSdpaAttentionPack4CDHW");
+            _probeFastZeroGemm = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_GEMM_ZERO", "gemm");
+            _probeFastZeroSdpa = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_SDPA_ZERO", "sdpa");
+            _gemmTextureOutsPerThread = ResolveIntEnvClamped("AIIMAGE_NCNN_GEMM_TEX_OUTS_PER_THREAD", 1, 1, 4);
+            if (_probeFastZeroGemm || _probeFastZeroSdpa)
+            {
+                UnityEngine.Debug.LogWarning("[NcnnOps] Fast-zero probe enabled: gemm="
+                    + _probeFastZeroGemm.ToString()
+                    + ", sdpa=" + _probeFastZeroSdpa.ToString()
+                    + ". Output is intentionally invalid and must only be used for performance probes.");
+            }
+            if (_gemmTextureOutsPerThread != 1)
+            {
+                UnityEngine.Debug.LogWarning("[NcnnOps] Gemm texture outs/thread probe enabled: "
+                    + _gemmTextureOutsPerThread.ToString(CultureInfo.InvariantCulture)
+                    + ". This is an experimental shader micro-kernel switch.");
+            }
         }
 
         public void TextureToBuffer3(Texture src, int offsetX, int offsetY, NcnnTensorBuffer output)
@@ -2174,6 +2258,12 @@ namespace NcnnCompute
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
             if (useC && c == null) throw new ArgumentNullException(nameof(c));
 
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
             _cs.SetInt("_MatM", m);
             _cs.SetInt("_MatN", n);
             _cs.SetInt("_MatK", k);
@@ -2184,11 +2274,12 @@ namespace NcnnCompute
             _cs.SetFloat("_MatBeta", beta);
             _cs.SetInt("_GemmTexAInW", k);
             _cs.SetInt("_GemmTexAInH", m);
+            _cs.SetInt("_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             _cs.SetTexture(_kGemm2DTextureA, "_TexIn0Arr", a);
             _cs.SetBuffer(_kGemm2DTextureA, "_MatB", b);
             _cs.SetBuffer(_kGemm2DTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DTextureA, "_TexOut0Arr", output);
-            Dispatch3D(_kGemm2DTextureA, n, m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+            Dispatch3D(_kGemm2DTextureA, ResolveGemmTextureDispatchColumns(n), m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void Gemm2DTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, ComputeTexture output)
@@ -2202,6 +2293,12 @@ namespace NcnnCompute
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
             if (useC && c == null) throw new ArgumentNullException(nameof(c));
 
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
             cmd.SetComputeIntParam(_cs, "_MatM", m);
             cmd.SetComputeIntParam(_cs, "_MatN", n);
             cmd.SetComputeIntParam(_cs, "_MatK", k);
@@ -2212,11 +2309,12 @@ namespace NcnnCompute
             cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
+            cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_TexIn0Arr", a.nameID);
             cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatB", b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_TexOut0Arr", output.nameID);
-            Dispatch3D(cmd, _kGemm2DTextureA, n, m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+            Dispatch3D(cmd, _kGemm2DTextureA, ResolveGemmTextureDispatchColumns(n), m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void Gemm2DLinearTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, RenderTexture output)
@@ -2229,6 +2327,12 @@ namespace NcnnCompute
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
             if (useC && c == null) throw new ArgumentNullException(nameof(c));
 
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
             _cs.SetInt("_MatM", m);
             _cs.SetInt("_MatN", n);
             _cs.SetInt("_MatK", k);
@@ -2239,11 +2343,12 @@ namespace NcnnCompute
             _cs.SetFloat("_MatBeta", beta);
             _cs.SetInt("_GemmTexAInW", k);
             _cs.SetInt("_GemmTexAInH", m);
+            _cs.SetInt("_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             _cs.SetTexture(_kGemm2DLinearTextureA, "_LinearIn0", a);
             _cs.SetBuffer(_kGemm2DLinearTextureA, "_MatB", b);
             _cs.SetBuffer(_kGemm2DLinearTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DLinearTextureA, "_LinearOut0", output);
-            Dispatch2D(_kGemm2DLinearTextureA, n, m, 8, 8);
+            Dispatch2D(_kGemm2DLinearTextureA, ResolveGemmTextureDispatchColumns(n), m, 8, 8);
         }
 
         public void Gemm2DLinearTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, ComputeTexture output)
@@ -2257,6 +2362,12 @@ namespace NcnnCompute
             if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
             if (useC && c == null) throw new ArgumentNullException(nameof(c));
 
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
             cmd.SetComputeIntParam(_cs, "_MatM", m);
             cmd.SetComputeIntParam(_cs, "_MatN", n);
             cmd.SetComputeIntParam(_cs, "_MatK", k);
@@ -2267,11 +2378,233 @@ namespace NcnnCompute
             cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
+            cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             cmd.SetComputeTextureParam(_cs, _kGemm2DLinearTextureA, "_LinearIn0", a.nameID);
             cmd.SetComputeBufferParam(_cs, _kGemm2DLinearTextureA, "_MatB", b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DLinearTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DLinearTextureA, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kGemm2DLinearTextureA, n, m, 8, 8);
+            Dispatch2D(cmd, _cs, _kGemm2DLinearTextureA, ResolveGemmTextureDispatchColumns(n), m, 8, 8);
+        }
+
+        public void Gemm2DAttentionQkvTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetInt("_AttentionGemmHeadDim", headDim);
+            _cs.SetInt("_AttentionGemmNumHeads", numHeads);
+            _cs.SetInt("_GemmTexAInW", k);
+            _cs.SetInt("_GemmTexAInH", m);
+            _cs.SetTexture(_kGemm2DAttentionQkvTextureA, "_TexIn0Arr", a);
+            _cs.SetBuffer(_kGemm2DAttentionQkvTextureA, "_MatB", b);
+            _cs.SetBuffer(_kGemm2DAttentionQkvTextureA, "_MatC", useC ? c : b);
+            _cs.SetTexture(_kGemm2DAttentionQkvTextureA, "_TexOut0Arr", output);
+            Dispatch3D(_kGemm2DAttentionQkvTextureA, headDim, m, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
+        }
+
+        public void Gemm2DAttentionQkvTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_MatM", m);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", k);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatUseC", useC ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBroadcastTypeC", broadcastTypeC);
+            cmd.SetComputeFloatParam(_cs, "_MatAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmHeadDim", headDim);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvTextureA, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvTextureA, "_MatB", b);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvTextureA, "_MatC", useC ? c : b);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvTextureA, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kGemm2DAttentionQkvTextureA, headDim, m, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
+        }
+
+        public void Gemm2DAttentionQkvLinearTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetInt("_AttentionGemmHeadDim", headDim);
+            _cs.SetInt("_AttentionGemmNumHeads", numHeads);
+            _cs.SetInt("_GemmTexAInW", k);
+            _cs.SetInt("_GemmTexAInH", m);
+            _cs.SetTexture(_kGemm2DAttentionQkvLinearTextureA, "_LinearIn0", a);
+            _cs.SetBuffer(_kGemm2DAttentionQkvLinearTextureA, "_MatB", b);
+            _cs.SetBuffer(_kGemm2DAttentionQkvLinearTextureA, "_MatC", useC ? c : b);
+            _cs.SetTexture(_kGemm2DAttentionQkvLinearTextureA, "_TexOut0Arr", output);
+            Dispatch3D(_kGemm2DAttentionQkvLinearTextureA, headDim, m, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
+        }
+
+        public void Gemm2DAttentionQkvLinearTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_MatM", m);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", k);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatUseC", useC ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBroadcastTypeC", broadcastTypeC);
+            cmd.SetComputeFloatParam(_cs, "_MatAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmHeadDim", headDim);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_LinearIn0", a.nameID);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_MatB", b);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_MatC", useC ? c : b);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kGemm2DAttentionQkvLinearTextureA, headDim, m, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
+        }
+
+        public void Gemm2DAttentionPack4ToLinearTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetInt("_AttentionGemmHeadDim", headDim);
+            _cs.SetInt("_AttentionGemmNumHeads", numHeads);
+            _cs.SetTexture(_kGemm2DAttentionPack4ToLinearTextureA, "_TexIn0Arr", a);
+            _cs.SetBuffer(_kGemm2DAttentionPack4ToLinearTextureA, "_MatB", b);
+            _cs.SetBuffer(_kGemm2DAttentionPack4ToLinearTextureA, "_MatC", useC ? c : b);
+            _cs.SetTexture(_kGemm2DAttentionPack4ToLinearTextureA, "_LinearOut0", output);
+            Dispatch2D(_kGemm2DAttentionPack4ToLinearTextureA, n, m, 8, 8);
+        }
+
+        public void Gemm2DAttentionPack4ToLinearTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_MatM", m);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", k);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatUseC", useC ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBroadcastTypeC", broadcastTypeC);
+            cmd.SetComputeFloatParam(_cs, "_MatAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmHeadDim", headDim);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_MatB", b);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_MatC", useC ? c : b);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kGemm2DAttentionPack4ToLinearTextureA, n, m, 8, 8);
         }
 
         public void SftPack4(RenderTexture input, RenderTexture condMul, RenderTexture condAdd, int outPacks, int halfPacks, RenderTexture output)
@@ -6043,6 +6376,12 @@ namespace NcnnCompute
             if (bRows <= 0) throw new ArgumentOutOfRangeException(nameof(bRows));
             if (bCols <= 0) throw new ArgumentOutOfRangeException(nameof(bCols));
 
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
             var n = transB ? bRows : bCols;
             _cs.SetInt("_MatM", aRows);
             _cs.SetInt("_MatN", n);
@@ -6086,6 +6425,12 @@ namespace NcnnCompute
             if (bRows <= 0) throw new ArgumentOutOfRangeException(nameof(bRows));
             if (bCols <= 0) throw new ArgumentOutOfRangeException(nameof(bCols));
 
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
             var n = transB ? bRows : bCols;
             cmd.SetComputeIntParam(_cs, "_MatM", aRows);
             cmd.SetComputeIntParam(_cs, "_MatN", n);
@@ -6126,6 +6471,12 @@ namespace NcnnCompute
             if (outEmbedDim <= 0) throw new ArgumentOutOfRangeException(nameof(outEmbedDim));
             if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
             if (numGroups <= 0) throw new ArgumentOutOfRangeException(nameof(numGroups));
+
+            if (_probeFastZeroSdpa)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
 
             SetSdpaAttentionPack4CdhwParams(
                 _kSdpaAttentionPack4Cdhw,
@@ -6171,6 +6522,12 @@ namespace NcnnCompute
             if (outEmbedDim <= 0) throw new ArgumentOutOfRangeException(nameof(outEmbedDim));
             if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
             if (numGroups <= 0) throw new ArgumentOutOfRangeException(nameof(numGroups));
+
+            if (_probeFastZeroSdpa)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
 
             SetSdpaAttentionPack4CdhwParams(
                 cmd,

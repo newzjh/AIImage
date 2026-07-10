@@ -87,6 +87,12 @@ namespace NcnnCompute
             if (!canUseLinearMat && !canUsePack4)
                 throw new InvalidOperationException("Permute render-texture path requires supported pack4 input: " + layer.name);
 
+            if (TryExecuteDirectAttentionPermuteAlias(owner, layer, srcTex, srcShape, orderType, outShape, textureBlobs, textureShapes))
+            {
+                owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
+                return;
+            }
+
             if (orderType == 0)
             {
                 var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
@@ -161,6 +167,12 @@ namespace NcnnCompute
             var canUsePack4 = !canUseLinearMat && CanUsePack4Permute(src, srcShape, orderType, out axes, out outShape);
             if (canUseLinearMat || canUsePack4)
             {
+                if (TryExecuteDirectAttentionPermuteAlias(owner, layer, src, srcShape, orderType, outShape, blobs, shapes))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
                 if (orderType == 0)
                 {
                     var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
@@ -267,6 +279,173 @@ namespace NcnnCompute
                 && srcTex.width == srcShape.w
                 && srcTex.height == srcShape.h
                 && srcTex.packs == 1;
+        }
+
+        private static bool TryExecuteDirectAttentionPermuteAlias(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            int orderType,
+            NcnnRepro.BufferShape outShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner?.Model?.layers == null || layer == null || src == null || src.texture == null || orderType != 2)
+                return false;
+            if (srcShape.dims != 3 || outShape.dims != 3)
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            if (!IsDirectAttentionPackedStorage(src, srcShape, storageShape))
+                return false;
+
+            var isQkvPrep = srcShape.w == storageShape.w
+                && srcShape.h == storageShape.c
+                && srcShape.c == storageShape.h
+                && outShape.w == storageShape.w
+                && outShape.h == storageShape.h
+                && outShape.c == storageShape.c
+                && HasSingleConsumerOfType(owner.Model, layer.topNames, NcnnLayerTypes.SDPA);
+            var isContextFlatten = srcShape.w == storageShape.w
+                && srcShape.h == storageShape.h
+                && srcShape.c == storageShape.c
+                && outShape.w == storageShape.w
+                && outShape.h == storageShape.c
+                && outShape.c == storageShape.h
+                && HasSingleConsumerOfType(owner.Model, layer.topNames, NcnnLayerTypes.Reshape);
+            if (!isQkvPrep && !isContextFlatten)
+                return false;
+
+            textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
+            textureShapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[Attention][PermuteAlias]"
+                + " | layer=" + layer.name
+                + " | mode=" + (isQkvPrep ? "qkv" : "context")
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteDirectAttentionPermuteAlias(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            int orderType,
+            NcnnRepro.BufferShape outShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            if (owner?.Model?.layers == null || layer == null || src == null || src.texture == null || orderType != 2)
+                return false;
+            if (srcShape.dims != 3 || outShape.dims != 3)
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            if (!IsDirectAttentionPackedStorage(src, srcShape, storageShape))
+                return false;
+
+            var isQkvPrep = srcShape.w == storageShape.w
+                && srcShape.h == storageShape.c
+                && srcShape.c == storageShape.h
+                && outShape.w == storageShape.w
+                && outShape.h == storageShape.h
+                && outShape.c == storageShape.c
+                && HasSingleConsumerOfType(owner.Model, layer.topNames, NcnnLayerTypes.SDPA);
+            var isContextFlatten = srcShape.w == storageShape.w
+                && srcShape.h == storageShape.h
+                && srcShape.c == storageShape.c
+                && outShape.w == storageShape.w
+                && outShape.h == storageShape.c
+                && outShape.c == storageShape.h
+                && HasSingleConsumerOfType(owner.Model, layer.topNames, NcnnLayerTypes.Reshape);
+            if (!isQkvPrep && !isContextFlatten)
+                return false;
+
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, storageShape);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdAttention][PermuteAlias]"
+                + " | layer=" + layer.name
+                + " | mode=" + (isQkvPrep ? "qkv" : "context")
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool IsDirectAttentionPackedStorage(
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.BufferShape storageShape)
+        {
+            return src != null
+                && src.texture != null
+                && !NcnnRepro.IsStrictLinearMatTexture(src)
+                && storageShape.dims == 3
+                && storageShape.d == 1
+                && storageShape.w > 0
+                && storageShape.h > 0
+                && storageShape.c > 1
+                && src.width == storageShape.w
+                && src.height == storageShape.h
+                && src.packs == Mathf.Max(1, Mathf.CeilToInt(storageShape.c / 4f));
+        }
+
+        private static bool IsDirectAttentionPackedStorage(
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            NcnnRepro.BufferShape storageShape)
+        {
+            return src != null
+                && src.texture != null
+                && !NcnnRepro.IsStrictLinearMatTexture(src)
+                && storageShape.dims == 3
+                && storageShape.d == 1
+                && storageShape.w > 0
+                && storageShape.h > 0
+                && storageShape.c > 1
+                && src.width == storageShape.w
+                && src.height == storageShape.h
+                && src.packs == Mathf.Max(1, Mathf.CeilToInt(storageShape.c / 4f));
+        }
+
+        private static bool HasSingleConsumerOfType(NcnnParamModel model, string[] topNames, NcnnLayerTypeKey type)
+        {
+            if (model == null || topNames == null || topNames.Length == 0)
+                return false;
+
+            var consumer = FindSingleConsumer(model, topNames[0]);
+            return consumer != null && consumer.type == type;
+        }
+
+        private static NcnnParamModel.Layer FindSingleConsumer(NcnnParamModel model, string blobName)
+        {
+            if (model?.layers == null || string.IsNullOrWhiteSpace(blobName))
+                return null;
+
+            NcnnParamModel.Layer found = null;
+            for (var i = 0; i < model.layers.Count; i++)
+            {
+                var candidate = model.layers[i];
+                if (candidate?.bottomNames == null)
+                    continue;
+                for (var j = 0; j < candidate.bottomNames.Length; j++)
+                {
+                    if (!string.Equals(candidate.bottomNames[j], blobName, StringComparison.Ordinal))
+                        continue;
+                    if (found != null)
+                        return null;
+                    found = candidate;
+                    break;
+                }
+            }
+
+            return found;
         }
 
         private static bool CanUsePack4Permute(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, int orderType, out Vector4Int axes, out NcnnRepro.BufferShape outShape)

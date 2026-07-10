@@ -322,6 +322,13 @@ namespace NcnnCompute
                 return;
             }
 
+            if (TryExecuteRenderTextureDirectAttentionQkvReshapeAlias(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes)
+                || TryExecuteRenderTextureDirectAttentionContextReshapeAlias(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+            {
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
             if (ShouldAllowAttentionPack4ReshapeSpecializations(owner))
             {
                 if (TryExecuteRenderTextureWindowPartition(owner, layer, src, srcShape, textureBlobs, textureShapes))
@@ -419,6 +426,13 @@ namespace NcnnCompute
                 blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, initialOutShape, storageShape);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = initialOutShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
+
+            if (TryExecuteCommandBufferDirectAttentionQkvReshapeAlias(owner, layer, src, srcShape, bottomShapes, blobs, shapes)
+                || TryExecuteCommandBufferDirectAttentionContextReshapeAlias(owner, layer, src, srcShape, bottomShapes, blobs, shapes))
+            {
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
@@ -635,6 +649,82 @@ namespace NcnnCompute
                 + " | layer=" + layer.name
                 + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
                 + " | dst=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferDirectAttentionQkvReshapeAlias(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            if (owner?.Model?.layers == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (srcShape.dims != 2)
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            if (storageShape.dims != 3 || storageShape.d != 1 || storageShape.c <= 1)
+                return false;
+
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (outShape.dims != 3 || outShape.w != storageShape.w || outShape.h != storageShape.c || outShape.c != storageShape.h)
+                return false;
+
+            var consumer = FindSingleConsumer(owner.Model, layer.topNames != null && layer.topNames.Length > 0 ? layer.topNames[0] : null);
+            if (consumer == null || consumer.type != NcnnLayerTypes.Permute || consumer.GetInt(0, -1) != 2)
+                return false;
+
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, storageShape);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdAttentionQkv][ReshapeAlias]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferDirectAttentionContextReshapeAlias(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            if (owner?.Model?.layers == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (srcShape.dims != 3)
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+            if (storageShape.dims != 3 || storageShape.d != 1 || storageShape.c <= 1)
+                return false;
+
+            var producer = FindSingleProducer(owner.Model, layer.bottomNames != null && layer.bottomNames.Length > 0 ? layer.bottomNames[0] : null);
+            if (producer == null || producer.type != NcnnLayerTypes.Permute || producer.GetInt(0, -1) != 2)
+                return false;
+
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (outShape.dims != 2 || outShape.w != storageShape.w * storageShape.c || outShape.h != storageShape.h)
+                return false;
+
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, storageShape);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdAttentionContext][ReshapeAlias]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
             return true;
         }
 
@@ -1270,6 +1360,80 @@ namespace NcnnCompute
                     outRt);
             }
             NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureDirectAttentionQkvReshapeAlias(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner?.Model?.layers == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (srcShape.dims != 2)
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            if (storageShape.dims != 3 || storageShape.d != 1 || storageShape.c <= 1)
+                return false;
+
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (outShape.dims != 3 || outShape.w != storageShape.w || outShape.h != storageShape.c || outShape.c != storageShape.h)
+                return false;
+
+            var consumer = FindSingleConsumer(owner.Model, layer.topNames != null && layer.topNames.Length > 0 ? layer.topNames[0] : null);
+            if (consumer == null || consumer.type != NcnnLayerTypes.Permute || consumer.GetInt(0, -1) != 2)
+                return false;
+
+            textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
+            textureShapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[AttentionQkv][ReshapeAlias]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureDirectAttentionContextReshapeAlias(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner?.Model?.layers == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (srcShape.dims != 3)
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
+            if (storageShape.dims != 3 || storageShape.d != 1 || storageShape.c <= 1)
+                return false;
+
+            var producer = FindSingleProducer(owner.Model, layer.bottomNames != null && layer.bottomNames.Length > 0 ? layer.bottomNames[0] : null);
+            if (producer == null || producer.type != NcnnLayerTypes.Permute || producer.GetInt(0, -1) != 2)
+                return false;
+
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (outShape.dims != 2 || outShape.w != storageShape.w * storageShape.c || outShape.h != storageShape.h)
+                return false;
+
+            textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
+            textureShapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[AttentionContext][ReshapeAlias]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | storage=d" + storageShape.dims + ":" + storageShape.w + "x" + storageShape.h + "x" + storageShape.d + "x" + storageShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
             return true;
         }
 

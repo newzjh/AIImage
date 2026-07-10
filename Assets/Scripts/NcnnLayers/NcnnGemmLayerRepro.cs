@@ -273,6 +273,8 @@ namespace NcnnCompute
             if (gp.transA)
                 return false;
 
+            if (TryExecuteCommandBufferAttentionProjectionTexturePath(owner, layer, context, gp))
+                return true;
             if (TryExecuteCommandBufferTextureMatMulPath(owner, layer, context, gp))
                 return true;
             if (!gp.constantB)
@@ -384,6 +386,8 @@ namespace NcnnCompute
                 return false;
             if (gp.transA)
                 return false;
+            if (TryExecuteRenderTextureAttentionProjectionTexturePath(owner, layer, context, gp))
+                return true;
             if (TryExecuteRenderTextureTextureMatMulPath(owner, layer, context, gp))
                 return true;
             if (!gp.constantB)
@@ -466,6 +470,355 @@ namespace NcnnCompute
                 context.remaining,
                 layer.bottomNames,
                 context.pinnedNames);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureAttentionProjectionTexturePath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerBufferContext context,
+            NcnnRepro.GemmPack gp)
+        {
+            if (owner == null || layer == null || context == null || gp == null || !gp.constantB)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length < 1 || layer.topNames == null || layer.topNames.Length < 1)
+                return false;
+            if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
+                return false;
+            if (srcTex == null || srcTex.texture == null || srcShape.dims != 2 || srcShape.w <= 0 || srcShape.h <= 0)
+                return false;
+
+            var bRows = gp.transB ? gp.constantN : gp.constantK;
+            var bCols = gp.transB ? gp.constantK : gp.constantN;
+            var kFromB = gp.transB ? bCols : bRows;
+            var m = srcShape.h;
+            var k = srcShape.w;
+            var n = gp.transB ? bRows : bCols;
+            if (gp.constantK > 0 && k != gp.constantK)
+                return false;
+            if (k != kFromB || n <= 0)
+                return false;
+
+            var logicalOutShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
+            var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
+            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGBHalf;
+
+            if (TryResolveAttentionQkvProjectionSpec(owner, layer, logicalOutShape, out var packedQkvShape))
+            {
+                var outSlices = Mathf.Max(1, Mathf.CeilToInt(packedQkvShape.c / 4f));
+                var outRt = owner.RentTempArray(packedQkvShape.w, packedQkvShape.h, outSlices, outFormat);
+                if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+                {
+                    owner.Ops.Gemm2DAttentionQkvLinearTextureA(
+                        srcTex.texture,
+                        gp.bData,
+                        useC ? gp.cData : null,
+                        m,
+                        n,
+                        k,
+                        gp.transB,
+                        gp.alpha,
+                        gp.beta,
+                        useC,
+                        gp.broadcastTypeC,
+                        packedQkvShape.w,
+                        packedQkvShape.c,
+                        outRt);
+                }
+                else if (srcTex.width == srcShape.w && srcTex.height == srcShape.h && srcTex.packs == 1)
+                {
+                    owner.Ops.Gemm2DAttentionQkvTextureA(
+                        srcTex.texture,
+                        gp.bData,
+                        useC ? gp.cData : null,
+                        m,
+                        n,
+                        k,
+                        gp.transB,
+                        gp.alpha,
+                        gp.beta,
+                        useC,
+                        gp.broadcastTypeC,
+                        packedQkvShape.w,
+                        packedQkvShape.c,
+                        outRt);
+                }
+                else
+                {
+                    owner.ReturnTempArray(outRt);
+                    return false;
+                }
+
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, logicalOutShape, packedQkvShape);
+                owner.DebugLog?.Invoke(
+                    "[AttentionQkv][Gemm]"
+                    + " | layer=" + layer.name
+                    + " | linear=" + (NcnnRepro.IsStrictLinearMatTexture(srcTex) ? "1" : "0")
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | packed=d" + packedQkvShape.dims + ":" + packedQkvShape.w + "x" + packedQkvShape.h + "x" + packedQkvShape.d + "x" + packedQkvShape.c);
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
+
+            if (!TryResolveAttentionPackedLinearMatInput(srcTex, srcShape, out var packedAttentionInputShape))
+                return false;
+
+            var outStorageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalOutShape);
+            var outMat = owner.RentTempMat(outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+            owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
+                srcTex.texture,
+                gp.bData,
+                useC ? gp.cData : null,
+                m,
+                n,
+                k,
+                gp.transB,
+                gp.alpha,
+                gp.beta,
+                useC,
+                gp.broadcastTypeC,
+                packedAttentionInputShape.w,
+                packedAttentionInputShape.c,
+                outMat);
+            NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outMat, logicalOutShape, outStorageShape);
+            owner.DebugLog?.Invoke(
+                "[AttentionOutProj][Gemm]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | packed=d" + packedAttentionInputShape.dims + ":" + packedAttentionInputShape.w + "x" + packedAttentionInputShape.h + "x" + packedAttentionInputShape.d + "x" + packedAttentionInputShape.c
+                + " | out=d" + logicalOutShape.dims + ":" + logicalOutShape.w + "x" + logicalOutShape.h + "x" + logicalOutShape.d + "x" + logicalOutShape.c);
+            owner.Consume(
+                context.textureBlobs,
+                context.bufferBlobs,
+                context.bufferRefs,
+                context.bufferViews,
+                context.remaining,
+                layer.bottomNames,
+                context.pinnedNames);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferAttentionProjectionTexturePath(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerCommandBufferContext context,
+            NcnnRepro.GemmPack gp)
+        {
+            if (owner == null || layer == null || context == null || gp == null || !gp.constantB)
+                return false;
+            if (layer.bottomNames == null || layer.bottomNames.Length < 1 || layer.topNames == null || layer.topNames.Length < 1)
+                return false;
+            if (!context.blobs.TryGetValue(layer.bottomNames[0], out var srcTex) || srcTex == null || srcTex.texture == null)
+                return false;
+
+            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (srcShape.dims != 2 || srcShape.w <= 0 || srcShape.h <= 0)
+                return false;
+
+            var bRows = gp.transB ? gp.constantN : gp.constantK;
+            var bCols = gp.transB ? gp.constantK : gp.constantN;
+            var kFromB = gp.transB ? bCols : bRows;
+            var m = srcShape.h;
+            var k = srcShape.w;
+            var n = gp.transB ? bRows : bCols;
+            if (gp.constantK > 0 && k != gp.constantK)
+                return false;
+            if (k != kFromB || n <= 0)
+                return false;
+
+            var logicalOutShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
+            var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
+            var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGBHalf;
+
+            if (TryResolveAttentionQkvProjectionSpec(owner, layer, logicalOutShape, out var packedQkvShape))
+            {
+                var outSlices = Mathf.Max(1, Mathf.CeilToInt(packedQkvShape.c / 4f));
+                var outArr = owner.RentTempArray(context.commandBuffer, packedQkvShape.w, packedQkvShape.h, outSlices, outFormat);
+                if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+                {
+                    owner.Ops.Gemm2DAttentionQkvLinearTextureA(
+                        context.commandBuffer,
+                        srcTex.texture,
+                        gp.bData,
+                        useC ? gp.cData : null,
+                        m,
+                        n,
+                        k,
+                        gp.transB,
+                        gp.alpha,
+                        gp.beta,
+                        useC,
+                        gp.broadcastTypeC,
+                        packedQkvShape.w,
+                        packedQkvShape.c,
+                        outArr);
+                }
+                else if (srcTex.width == srcShape.w && srcTex.height == srcShape.h && srcTex.packs == 1)
+                {
+                    owner.Ops.Gemm2DAttentionQkvTextureA(
+                        context.commandBuffer,
+                        srcTex.texture,
+                        gp.bData,
+                        useC ? gp.cData : null,
+                        m,
+                        n,
+                        k,
+                        gp.transB,
+                        gp.alpha,
+                        gp.beta,
+                        useC,
+                        gp.broadcastTypeC,
+                        packedQkvShape.w,
+                        packedQkvShape.c,
+                        outArr);
+                }
+                else
+                {
+                    owner.ReturnTempArray(context.commandBuffer, outArr);
+                    return false;
+                }
+
+                context.blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, logicalOutShape, packedQkvShape, owned: true);
+                context.shapes[layer.topNames[0]] = logicalOutShape;
+                owner.DebugLog?.Invoke(
+                    "[CmdAttentionQkv][Gemm]"
+                    + " | layer=" + layer.name
+                    + " | linear=" + (NcnnRepro.IsStrictLinearMatTexture(srcTex) ? "1" : "0")
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | packed=d" + packedQkvShape.dims + ":" + packedQkvShape.w + "x" + packedQkvShape.h + "x" + packedQkvShape.d + "x" + packedQkvShape.c);
+                owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
+
+            if (!TryResolveAttentionPackedLinearMatInput(srcTex, srcShape, out var packedAttentionInputShape))
+                return false;
+
+            var outStorageShape = NcnnRepro.ResolveLinearMatStorageShape(logicalOutShape);
+            var outMat = owner.RentTempMat(context.commandBuffer, outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+            owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
+                context.commandBuffer,
+                srcTex.texture,
+                gp.bData,
+                useC ? gp.cData : null,
+                m,
+                n,
+                k,
+                gp.transB,
+                gp.alpha,
+                gp.beta,
+                useC,
+                gp.broadcastTypeC,
+                packedAttentionInputShape.w,
+                packedAttentionInputShape.c,
+                outMat);
+            context.blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, logicalOutShape, outStorageShape, owned: true);
+            context.shapes[layer.topNames[0]] = logicalOutShape;
+            owner.DebugLog?.Invoke(
+                "[CmdAttentionOutProj][Gemm]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | packed=d" + packedAttentionInputShape.dims + ":" + packedAttentionInputShape.w + "x" + packedAttentionInputShape.h + "x" + packedAttentionInputShape.d + "x" + packedAttentionInputShape.c
+                + " | out=d" + logicalOutShape.dims + ":" + logicalOutShape.w + "x" + logicalOutShape.h + "x" + logicalOutShape.d + "x" + logicalOutShape.c);
+            owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+            return true;
+        }
+
+        private static bool TryResolveAttentionQkvProjectionSpec(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.BufferShape logicalOutShape,
+            out NcnnRepro.BufferShape packedShape)
+        {
+            packedShape = default;
+            if (owner?.Model?.layers == null || layer?.topNames == null || layer.topNames.Length == 0)
+                return false;
+
+            var reshape = FindSingleConsumer(owner.Model, layer.topNames[0]);
+            if (reshape == null || reshape.type != NcnnLayerTypes.Reshape || reshape.topNames == null || reshape.topNames.Length == 0)
+                return false;
+
+            var reshapeOut = NcnnRepro.ResolveReshapeShape(logicalOutShape, reshape);
+            if (reshapeOut.dims != 3 || reshapeOut.d != 1 || reshapeOut.w <= 0 || reshapeOut.h <= 0 || reshapeOut.c <= 0)
+                return false;
+
+            var permute = FindSingleConsumer(owner.Model, reshape.topNames[0]);
+            if (permute == null || permute.type != NcnnLayerTypes.Permute || permute.topNames == null || permute.topNames.Length == 0 || permute.GetInt(0, -1) != 2)
+                return false;
+
+            var permuteOut = NcnnRepro.ResolvePermuteShape(reshapeOut, 3, NcnnRepro.ResolvePermuteAxes(3, 2, permute.name));
+            if (permuteOut.dims != 3
+                || permuteOut.d != 1
+                || permuteOut.w != reshapeOut.w
+                || permuteOut.h != reshapeOut.c
+                || permuteOut.c != reshapeOut.h)
+            {
+                return false;
+            }
+
+            var sdpa = FindSingleConsumer(owner.Model, permute.topNames[0]);
+            if (sdpa == null || sdpa.type != NcnnLayerTypes.SDPA)
+                return false;
+            if (logicalOutShape.w != permuteOut.w * permuteOut.c || logicalOutShape.h != permuteOut.h)
+                return false;
+
+            packedShape = permuteOut;
+            return true;
+        }
+
+        private static bool TryResolveAttentionPackedLinearMatInput(
+            NcnnRepro.TensorRef source,
+            NcnnRepro.BufferShape logicalShape,
+            out NcnnRepro.BufferShape packedShape)
+        {
+            packedShape = default;
+            if (source == null || source.texture == null || logicalShape.dims != 2 || NcnnRepro.IsStrictLinearMatTexture(source))
+                return false;
+
+            var storageShape = NcnnRepro.GetTextureStorageShape(source, logicalShape);
+            if (storageShape.dims != 3 || storageShape.d != 1 || storageShape.w <= 0 || storageShape.h <= 0 || storageShape.c <= 1)
+                return false;
+            if (source.width != storageShape.w || source.height != storageShape.h)
+                return false;
+            if (source.packs != Mathf.Max(1, Mathf.CeilToInt(storageShape.c / 4f)))
+                return false;
+            if (logicalShape.w != storageShape.w * storageShape.c || logicalShape.h != storageShape.h)
+                return false;
+
+            packedShape = storageShape;
+            return true;
+        }
+
+        private static bool TryResolveAttentionPackedLinearMatInput(
+            NcnnRepro.CmdTensorRef source,
+            NcnnRepro.BufferShape logicalShape,
+            out NcnnRepro.BufferShape packedShape)
+        {
+            packedShape = default;
+            if (source == null || source.texture == null || logicalShape.dims != 2 || NcnnRepro.IsStrictLinearMatTexture(source))
+                return false;
+
+            var storageShape = NcnnRepro.GetCmdStorageShape(source, logicalShape);
+            if (storageShape.dims != 3 || storageShape.d != 1 || storageShape.w <= 0 || storageShape.h <= 0 || storageShape.c <= 1)
+                return false;
+            if (source.width != storageShape.w || source.height != storageShape.h)
+                return false;
+            if (source.packs != Mathf.Max(1, Mathf.CeilToInt(storageShape.c / 4f)))
+                return false;
+            if (logicalShape.w != storageShape.w * storageShape.c || logicalShape.h != storageShape.h)
+                return false;
+
+            packedShape = storageShape;
             return true;
         }
 
