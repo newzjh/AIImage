@@ -157,6 +157,40 @@ void NcnnBinaryOpLinearMat_Impl(uint3 id)
     _LinearOut0[coord] = NcnnApplyBinaryOpLinearScalar(a, b);
 }
 
+void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id)
+{
+    uint w, h, d;
+    _TexOut0Arr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    int packX = (int)id.x;
+    int row = (int)id.y;
+    int baseCol = packX * 4;
+    float4 a = _TexIn0Arr[int3(packX, row, (int)id.z)];
+    float4 o = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int col = baseCol + lane;
+        if (_BinaryWithScalar == 0)
+        {
+            uint linearW, linearH;
+            _LinearIn1.GetDimensions(linearW, linearH);
+            if (col >= (int)linearW || row >= (int)linearH)
+                continue;
+        }
+        float packValue = NcnnReadLane(a, lane);
+        float linearValue = _BinaryWithScalar != 0 ? _BinaryScalar : _LinearIn1[int2(col, row)];
+        float lhs = _BinaryPack4LinearMixedMode == 2 ? linearValue : packValue;
+        float rhs = _BinaryPack4LinearMixedMode == 2 ? packValue : linearValue;
+        NcnnWriteLane(o, lane, NcnnApplyBinaryOpLinearScalar(lhs, rhs));
+    }
+
+    _TexOut0Arr[int3(packX, row, (int)id.z)] = o;
+}
+
 void NcnnMatMul2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int lx = (int)groupThreadId.x;
@@ -495,6 +529,31 @@ float NcnnGemm2DReadB(int col, int kk)
         : _MatB[kk * _MatN + col];
 }
 
+int NcnnGemmPack4LinearOutPacksPerThread()
+{
+    return clamp(_GemmTexOutsPerThread, 1, 2);
+}
+
+float4 NcnnGemm2DReadB4(int baseCol, int kk)
+{
+    float4 b = 0.0;
+    if (baseCol < _MatN) b.x = NcnnGemm2DReadB(baseCol, kk);
+    if (baseCol + 1 < _MatN) b.y = NcnnGemm2DReadB(baseCol + 1, kk);
+    if (baseCol + 2 < _MatN) b.z = NcnnGemm2DReadB(baseCol + 2, kk);
+    if (baseCol + 3 < _MatN) b.w = NcnnGemm2DReadB(baseCol + 3, kk);
+    return b;
+}
+
+float4 NcnnResolveGemm2DBias4(int row, int baseCol)
+{
+    float4 bias = 0.0;
+    if (baseCol < _MatN) bias.x = NcnnResolveGemm2DBias(row, baseCol);
+    if (baseCol + 1 < _MatN) bias.y = NcnnResolveGemm2DBias(row, baseCol + 1);
+    if (baseCol + 2 < _MatN) bias.z = NcnnResolveGemm2DBias(row, baseCol + 2);
+    if (baseCol + 3 < _MatN) bias.w = NcnnResolveGemm2DBias(row, baseCol + 3);
+    return bias;
+}
+
 float NcnnGemm2DTextureAValue(int row, int col)
 {
     float acc = 0.0;
@@ -525,6 +584,40 @@ float NcnnGemm2DLinearTextureAValue(int row, int col)
     }
 
     return NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha;
+}
+
+float NcnnGemm2DPack4LinearTextureARead(int row, int kk)
+{
+    if (kk < 0 || kk >= _MatK || row < 0 || row >= _GemmTexAInH)
+        return 0.0;
+
+    if (_GemmTexAInW == _MatK)
+        return _LinearIn0[int2(kk, row)];
+
+    int packX = kk >> 2;
+    if (packX < 0 || packX >= _GemmTexAInW)
+        return 0.0;
+
+    return NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3);
+}
+
+float NcnnGemm2DPack4LinearTextureAReadLinear(int row, int kk)
+{
+    if (kk < 0 || kk >= _MatK || kk >= _GemmTexAInW || row < 0 || row >= _GemmTexAInH)
+        return 0.0;
+    return _LinearIn0[int2(kk, row)];
+}
+
+float NcnnGemm2DPack4LinearTextureAReadPack4(int row, int kk)
+{
+    if (kk < 0 || kk >= _MatK || row < 0 || row >= _GemmTexAInH)
+        return 0.0;
+
+    int packX = kk >> 2;
+    if (packX < 0 || packX >= _GemmTexAInW)
+        return 0.0;
+
+    return NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3);
 }
 
 void NcnnGemm2DTextureA_Impl(uint3 id)
@@ -630,6 +723,136 @@ void NcnnGemm2DLinearTextureA_Impl(uint3 id)
     if (valid3) _LinearOut0[int2(baseCol + 3, row)] = NcnnResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha;
 }
 
+void NcnnGemm2DPack4LinearTextureA_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int row = (int)id.y;
+    int baseCol = (int)id.x * 4;
+    if (row < 0 || row >= _MatM || baseCol >= _MatN)
+        return;
+
+    bool valid0 = baseCol < _MatN;
+    bool valid1 = baseCol + 1 < _MatN;
+    bool valid2 = baseCol + 2 < _MatN;
+    bool valid3 = baseCol + 3 < _MatN;
+    float acc0 = 0.0;
+    float acc1 = 0.0;
+    float acc2 = 0.0;
+    float acc3 = 0.0;
+
+    [loop]
+    for (int kk = 0; kk < _MatK; kk++)
+    {
+        float a = NcnnGemm2DPack4LinearTextureARead(row, kk);
+        if (valid0) acc0 += a * NcnnGemm2DReadB(baseCol, kk);
+        if (valid1) acc1 += a * NcnnGemm2DReadB(baseCol + 1, kk);
+        if (valid2) acc2 += a * NcnnGemm2DReadB(baseCol + 2, kk);
+        if (valid3) acc3 += a * NcnnGemm2DReadB(baseCol + 3, kk);
+    }
+
+    float4 o = 0.0;
+    if (valid0) o.x = NcnnResolveGemm2DBias(row, baseCol) + acc0 * _MatAlpha;
+    if (valid1) o.y = NcnnResolveGemm2DBias(row, baseCol + 1) + acc1 * _MatAlpha;
+    if (valid2) o.z = NcnnResolveGemm2DBias(row, baseCol + 2) + acc2 * _MatAlpha;
+    if (valid3) o.w = NcnnResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha;
+    _GemmTexOutArr[int3((int)id.x, row, 0)] = o;
+}
+
+void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    int packsPerThread = NcnnGemmPack4LinearOutPacksPerThread();
+    int outPackX = (int)id.x * packsPerThread;
+    if (outPackX >= (int)ow || id.y >= oh || id.z >= od)
+        return;
+
+    int row = (int)id.y;
+    int baseCol0 = outPackX * 4;
+    int baseCol1 = baseCol0 + 4;
+    if (row < 0 || row >= _MatM || baseCol0 >= _MatN)
+        return;
+
+    bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
+    float4 acc0 = 0.0;
+    float4 acc1 = 0.0;
+
+    [loop]
+    for (int kk = 0; kk < _MatK; kk++)
+    {
+        float a = NcnnGemm2DPack4LinearTextureAReadLinear(row, kk);
+        acc0 += a * NcnnGemm2DReadB4(baseCol0, kk);
+        if (writeSecondPack)
+            acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);
+    }
+
+    _GemmTexOutArr[int3(outPackX, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol0) + acc0 * _MatAlpha;
+    if (writeSecondPack)
+        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol1) + acc1 * _MatAlpha;
+}
+
+void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    int packsPerThread = NcnnGemmPack4LinearOutPacksPerThread();
+    int outPackX = (int)id.x * packsPerThread;
+    if (outPackX >= (int)ow || id.y >= oh || id.z >= od)
+        return;
+
+    int row = (int)id.y;
+    int baseCol0 = outPackX * 4;
+    int baseCol1 = baseCol0 + 4;
+    if (row < 0 || row >= _MatM || row >= _GemmTexAInH || baseCol0 >= _MatN)
+        return;
+
+    bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
+    float4 acc0 = 0.0;
+    float4 acc1 = 0.0;
+
+    [loop]
+    for (int packX = 0; packX < _GemmTexAInW; packX++)
+    {
+        int kkBase = packX << 2;
+        float4 a = _GemmTexAInArr[int3(packX, row, 0)];
+        if (kkBase + 3 < _MatK)
+        {
+            acc0 += a.x * NcnnGemm2DReadB4(baseCol0, kkBase);
+            acc0 += a.y * NcnnGemm2DReadB4(baseCol0, kkBase + 1);
+            acc0 += a.z * NcnnGemm2DReadB4(baseCol0, kkBase + 2);
+            acc0 += a.w * NcnnGemm2DReadB4(baseCol0, kkBase + 3);
+            if (writeSecondPack)
+            {
+                acc1 += a.x * NcnnGemm2DReadB4(baseCol1, kkBase);
+                acc1 += a.y * NcnnGemm2DReadB4(baseCol1, kkBase + 1);
+                acc1 += a.z * NcnnGemm2DReadB4(baseCol1, kkBase + 2);
+                acc1 += a.w * NcnnGemm2DReadB4(baseCol1, kkBase + 3);
+            }
+            continue;
+        }
+
+        [unroll]
+        for (int lane = 0; lane < 4; lane++)
+        {
+            int kk = kkBase + lane;
+            if (kk >= _MatK)
+                break;
+            float av = NcnnReadLane(a, lane);
+            acc0 += av * NcnnGemm2DReadB4(baseCol0, kk);
+            if (writeSecondPack)
+                acc1 += av * NcnnGemm2DReadB4(baseCol1, kk);
+        }
+    }
+
+    _GemmTexOutArr[int3(outPackX, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol0) + acc0 * _MatAlpha;
+    if (writeSecondPack)
+        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol1) + acc1 * _MatAlpha;
+}
+
 void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
 {
     uint ow, oh, od;
@@ -664,6 +887,48 @@ void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
             float a = 0.0;
             if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
                 a = _LinearIn0[int2(kk, row)];
+            acc += a * NcnnGemm2DReadB(col, kk);
+        }
+
+        NcnnWriteLane(o, lane, NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha);
+    }
+
+    _GemmTexOutArr[int3(outX, row, headPack)] = o;
+}
+
+void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int row = (int)id.y;
+    int headPack = (int)id.z;
+    int headDim = max(1, _AttentionGemmHeadDim);
+    int numHeads = max(1, _AttentionGemmNumHeads);
+    if (outX < 0 || outX >= headDim || row < 0 || row >= _MatM)
+        return;
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int head = headPack * 4 + lane;
+        if (head < 0 || head >= numHeads)
+            continue;
+
+        int col = head * headDim + outX;
+        if (col < 0 || col >= _MatN)
+            continue;
+
+        float acc = 0.0;
+        [loop]
+        for (int kk = 0; kk < _MatK; kk++)
+        {
+            int packX = kk >> 2;
+            float a = _GemmTexAInArr[int3(packX, row, 0)][kk & 3];
             acc += a * NcnnGemm2DReadB(col, kk);
         }
 
@@ -740,6 +1005,49 @@ void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id)
     }
 
     _LinearOut0[int2(col, row)] = NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha;
+}
+
+void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    int packsPerThread = NcnnGemmPack4LinearOutPacksPerThread();
+    int outPackX = (int)id.x * packsPerThread;
+    if (outPackX >= (int)ow || id.y >= oh || id.z >= od)
+        return;
+
+    int row = (int)id.y;
+    int baseCol0 = outPackX * 4;
+    int baseCol1 = baseCol0 + 4;
+    int headDim = max(1, _AttentionGemmHeadDim);
+    int headCount = max(1, _AttentionGemmNumHeads);
+    if (row < 0 || row >= _MatM || baseCol0 >= _MatN)
+        return;
+
+    bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
+    float4 acc0 = 0.0;
+    float4 acc1 = 0.0;
+
+    [loop]
+    for (int head = 0; head < headCount; head++)
+    {
+        [loop]
+        for (int dim = 0; dim < headDim; dim++)
+        {
+            int kk = head * headDim + dim;
+            if (kk >= _MatK)
+                break;
+
+            float a = NcnnReadPack4Channel(_GemmTexAInArr, dim, row, head);
+            acc0 += a * NcnnGemm2DReadB4(baseCol0, kk);
+            if (writeSecondPack)
+                acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);
+        }
+    }
+
+    _GemmTexOutArr[int3(outPackX, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol0) + acc0 * _MatAlpha;
+    if (writeSecondPack)
+        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol1) + acc1 * _MatAlpha;
 }
 
 void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId)
@@ -912,6 +1220,59 @@ void NcnnLayerNormPack4WidthTex_Impl(uint3 id)
     }
 
     _LnTexOutArr[int3(x, y, slice)] = o;
+}
+
+void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _LnTexOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int packX = (int)id.x;
+    int row = (int)id.y;
+    int logicalW = max(1, _LnW);
+    int storageW = max(1, (logicalW + 3) / 4);
+    if (row < 0 || row >= _LnH || packX < 0 || packX >= storageW)
+        return;
+
+    float sum = 0.0;
+    float sqsum = 0.0;
+    for (int px = 0; px < storageW; px++)
+    {
+        float4 v = _LnTexInArr[int3(px, row, 0)];
+        [unroll]
+        for (int lane = 0; lane < 4; lane++)
+        {
+            int col = px * 4 + lane;
+            if (col >= logicalW)
+                continue;
+            float scalar = NcnnReadLane(v, lane);
+            sum += scalar;
+            sqsum += scalar * scalar;
+        }
+    }
+
+    float invCount = 1.0 / (float)logicalW;
+    float mean = sum * invCount;
+    float variance = sqsum * invCount - mean * mean;
+    float invstd = rsqrt(max(variance + _LnEps, 1e-20));
+
+    float4 src = _LnTexInArr[int3(packX, row, 0)];
+    float4 o = 0.0;
+    [unroll]
+    for (int outLane = 0; outLane < 4; outLane++)
+    {
+        int col = packX * 4 + outLane;
+        if (col >= logicalW)
+            continue;
+        float normalized = (NcnnReadLane(src, outLane) - mean) * invstd;
+        if (_LnAffine != 0)
+            normalized = normalized * _LnGamma[col] + _LnBeta[col];
+        NcnnWriteLane(o, outLane, normalized);
+    }
+
+    _LnTexOutArr[int3(packX, row, 0)] = o;
 }
 
 void NcnnSoftmaxPack4CDHW_Impl(uint3 id)

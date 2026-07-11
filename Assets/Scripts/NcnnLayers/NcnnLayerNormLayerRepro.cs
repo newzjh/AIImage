@@ -120,6 +120,16 @@ namespace NcnnCompute
                 throw new InvalidOperationException("LayerNorm render-texture path requires supported pack4 width-norm input: " + layer.name);
 
             var outFormat = ResolveLayerNormOutputFormat(owner, layer, srcShape);
+            if (CanUsePack4Linear2DPath(srcTex, srcShape, lp))
+            {
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                var outMat = owner.RentTempArray(storageShape.w, storageShape.h, 1, srcTex.texture.format);
+                owner.Ops.LayerNormPack4Linear2D(srcTex.texture, srcShape.w, srcShape.h, lp.eps, lp.affine, lp.gamma, lp.beta, outMat);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outMat, srcShape, storageShape);
+                owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
+                return;
+            }
+
             var isStrictLinear = NcnnRepro.IsStrictLinearMatTexture(srcTex);
             var packCount = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, srcShape.c) / 4f));
             var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
@@ -304,6 +314,24 @@ namespace NcnnCompute
             if (CanUsePack4WidthCmdPath(src, srcShape, lp))
             {
                 var outFormat = ResolveLayerNormOutputFormat(owner, layer, srcShape);
+                if (CanUsePack4Linear2DPath(src, srcShape, lp))
+                {
+                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                    var outMat = owner.RentTempArray(cmd, storageShape.w, storageShape.h, 1, src.texture.format);
+                    owner.Ops.LayerNormPack4Linear2D(cmd, src.texture, srcShape.w, srcShape.h, lp.eps, lp.affine, lp.gamma, lp.beta, outMat);
+                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, srcShape, storageShape, owned: true);
+                    if (shapes != null)
+                        shapes[layer.topNames[0]] = srcShape;
+                    owner.DebugLog?.Invoke(
+                        "[CmdTexture][LayerNormPack4Linear2D]"
+                        + " | layer=" + layer.name
+                        + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                        + " | storage=" + storageShape.w + "x" + storageShape.h
+                        + " | outFormat=" + src.texture.format);
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
                 var isStrictLinear = NcnnRepro.IsStrictLinearMatTexture(src);
                 var packCount = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, srcShape.c) / 4f));
                 var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
@@ -410,6 +438,9 @@ namespace NcnnCompute
 
         private static bool CanUsePack4WidthPath(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
         {
+            if (CanUsePack4Linear2DPath(srcTex, srcShape, lp))
+                return true;
+
             if (srcTex != null && NcnnRepro.IsStrictLinearMatTexture(srcTex))
             {
                 var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
@@ -447,6 +478,9 @@ namespace NcnnCompute
 
         private static bool CanUsePack4WidthCmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
         {
+            if (CanUsePack4Linear2DPath(src, srcShape, lp))
+                return true;
+
             if (src != null && NcnnRepro.IsStrictLinearMatTexture(src))
             {
                 var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
@@ -479,6 +513,36 @@ namespace NcnnCompute
                 && (srcShape.dims != 4 || Mathf.Max(1, src.texture.depth) == Mathf.Max(1, srcShape.d) * src.packs)
                 && srcShape.c > 0
                 && src.packs == Mathf.CeilToInt(srcShape.c / 4f);
+        }
+
+        private static bool CanUsePack4Linear2DPath(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
+        {
+            return srcTex != null
+                && srcTex.texture != null
+                && lp != null
+                && lp.affine
+                && lp.gamma != null
+                && lp.beta != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h > 0
+                && srcShape.w == lp.affineSize
+                && NcnnRepro.IsPack4LinearMatTexture(srcTex, srcShape);
+        }
+
+        private static bool CanUsePack4Linear2DPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)
+        {
+            return src != null
+                && src.texture != null
+                && lp != null
+                && lp.affine
+                && lp.gamma != null
+                && lp.beta != null
+                && srcShape.dims == 2
+                && srcShape.w > 0
+                && srcShape.h > 0
+                && srcShape.w == lp.affineSize
+                && NcnnRepro.IsPack4LinearMatTexture(src, srcShape);
         }
 
         private static RenderTexture MaterializePack4WidthInput(

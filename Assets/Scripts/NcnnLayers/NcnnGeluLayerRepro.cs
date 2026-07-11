@@ -17,7 +17,8 @@ namespace NcnnCompute
             if (!owner.ForceBufferGeluAll
                 && !owner.ShouldForceCurrentLayerBufferPath()
                 && NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape)
-                && ((!NcnnRepro.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 3)
+                && ((NcnnRepro.IsPack4LinearMatTexture(srcTex, srcShape) && srcShape.dims == 2)
+                    || (!NcnnRepro.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 3)
                     || (NcnnRepro.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 2)))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
@@ -74,7 +75,14 @@ namespace NcnnCompute
             if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape) || srcShape.dims > 3)
                 throw new InvalidOperationException("GELU render-texture path requires existing <=3D texture input: " + layer.name);
 
-            if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+            if (NcnnRepro.IsPack4LinearMatTexture(srcTex, srcShape))
+            {
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                var outRt = owner.RentTempArray(storageShape.w, storageShape.h, 1, srcTex.texture.format);
+                owner.Ops.GeluPack4(srcTex.texture, 1, false, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
+            }
+            else if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
             {
                 var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
                 var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
@@ -102,7 +110,14 @@ namespace NcnnCompute
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
                                                 var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 var fast = layer.GetInt(0, 0) != 0;
-                                                if (NcnnRepro.IsStrictLinearMatTexture(src) && srcShape.dims <= 2)
+                                                if (NcnnRepro.IsPack4LinearMatTexture(src, srcShape))
+                                                {
+                                                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                                                    var outMat = owner.RentTempArray(cmd, storageShape.w, storageShape.h, 1, src.texture.format);
+                                                    owner.Ops.GeluPack4(cmd, src.texture, 1, fast, outMat);
+                                                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outMat, srcShape, storageShape, owned: true);
+                                                }
+                                                else if (NcnnRepro.IsStrictLinearMatTexture(src) && srcShape.dims <= 2)
                                                 {
                                                     var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
                                                     var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());

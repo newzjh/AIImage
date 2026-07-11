@@ -82,6 +82,7 @@
 #pragma kernel NcnnUnaryOpLinearMat
 #pragma kernel NcnnBinaryOpLinearMat
 #pragma kernel NcnnBinaryOpPack4
+#pragma kernel NcnnBinaryOpPack4LinearMixed
 #pragma kernel NcnnBinaryOpPack4Broadcast
 #pragma kernel NcnnBinaryOpPack4BufferScalar
 #pragma kernel NcnnBinaryOpPack4ChannelVectorTex
@@ -117,13 +118,19 @@
 #pragma kernel NcnnArgmaxUpdatePack4CDHW
 #pragma kernel NcnnGemm2DTextureA
 #pragma kernel NcnnGemm2DLinearTextureA
+#pragma kernel NcnnGemm2DPack4LinearTextureA
+#pragma kernel NcnnGemm2DPack4LinearTextureAFromLinear
+#pragma kernel NcnnGemm2DPack4LinearTextureAFromPack4
 #pragma kernel NcnnGemm2DAttentionQkvTextureA
 #pragma kernel NcnnGemm2DAttentionQkvLinearTextureA
+#pragma kernel NcnnGemm2DAttentionQkvPack4LinearTextureA
 #pragma kernel NcnnGemm2DAttentionPack4ToLinearTextureA
+#pragma kernel NcnnGemm2DAttentionPack4ToPack4LinearTextureA
 #pragma kernel NcnnGemm2D
 #pragma kernel NcnnGemm2D16
 #pragma kernel NcnnLayerNorm2D
 #pragma kernel NcnnLayerNormPack4WidthTex
+#pragma kernel NcnnLayerNormPack4Linear2D
 #pragma kernel NcnnSoftmax2D
 #pragma kernel NcnnSoftmaxPack4CDHW
 #pragma kernel NcnnReductionScalar2D
@@ -247,6 +254,7 @@ int _BinaryPack4BroadcastMode;
 int _BinaryPack4BufferScalarMode;
 int _BinaryPack4ChannelVectorMode;
 int _BinaryPack4ChannelVectorPacks;
+int _BinaryPack4LinearMixedMode;
 int _BinaryScalarSingleBroadcastMode;
 Texture2DArray<float4> _CodeFormerSoftOneHotArr;
 RWTexture2DArray<float4> _CodeFormerMinEncodingArr;
@@ -364,6 +372,7 @@ void NcnnUnaryOpPack4_Impl(uint3 id);
 void NcnnUnaryOpLinearMat_Impl(uint3 id);
 void NcnnBinaryOpLinearMat_Impl(uint3 id);
 void NcnnBinaryOpPack4_Impl(uint3 id);
+void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id);
 void NcnnBinaryOpPack4Broadcast_Impl(uint3 id);
 void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id);
 void NcnnBinaryOpPack4ChannelVectorTex_Impl(uint3 id);
@@ -390,6 +399,7 @@ void NcnnEmbedTextureLinearIndex_Impl(uint3 id);
 void NcnnEmbedTexturePack4Index_Impl(uint3 id);
 void NcnnLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnLayerNormPack4WidthTex_Impl(uint3 id);
+void NcnnLayerNormPack4Linear2D_Impl(uint3 id);
 void NcnnSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnPermute_Impl(uint3 id);
 void NcnnSlice_Impl(uint3 id);
@@ -423,9 +433,14 @@ void NcnnAttentionContextFlattenPack4_Impl(uint3 id);
 void NcnnSlicePack4CDHW_Impl(uint3 id);
 void NcnnGemm2DTextureA_Impl(uint3 id);
 void NcnnGemm2DLinearTextureA_Impl(uint3 id);
+void NcnnGemm2DPack4LinearTextureA_Impl(uint3 id);
+void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id);
+void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id);
 void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id);
 void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id);
+void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id);
 void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id);
+void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id);
 void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnGemm2D16_Impl(uint3 groupId, uint3 groupThreadId);
 void NcnnCastBuf_Impl(uint3 id);
@@ -1696,6 +1711,7 @@ int _ReshapePack4ToPack4OutH;
 int _ReshapePack4ToPack4OutD;
 int _ReshapePack4ToPack4OutC;
 int _ReshapePack4ToPack4OutDims;
+int _ReshapePack4ToPack4InputPack4Linear;
 
 
 int _ReshapeScalar2DInW;
@@ -1987,6 +2003,12 @@ void NcnnBinaryOpPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnBinaryOpPack4LinearMixed(uint3 id : SV_DispatchThreadID)
+{
+    NcnnBinaryOpPack4LinearMixed_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnBinaryOpPack4Broadcast(uint3 id : SV_DispatchThreadID)
 {
     NcnnBinaryOpPack4Broadcast_Impl(id);
@@ -2034,16 +2056,22 @@ void NcnnWriteLane(inout float4 v, int lane, float value)
 
 float NcnnReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel)
 {
-    float4 v = tex[int3(x, y, channel / 4)];
-    return NcnnReadLane(v, channel % 4);
+    float4 v = tex[int3(x, y, channel >> 2)];
+    return NcnnReadLane(v, channel & 3);
 }
 
 float NcnnReadPack4ChannelCDHW(Texture2DArray<float4> tex, int x, int y, int z, int channel, int channelCount)
 {
-    int packCount = max(1, (channelCount + 3) / 4);
-    int slice = z * packCount + channel / 4;
+    int packCount = max(1, (channelCount + 3) >> 2);
+    int slice = z * packCount + (channel >> 2);
     float4 v = tex[int3(x, y, slice)];
-    return NcnnReadLane(v, channel % 4);
+    return NcnnReadLane(v, channel & 3);
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DAttentionQkvPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -2174,6 +2202,12 @@ void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupT
 void NcnnLayerNormPack4WidthTex(uint3 id : SV_DispatchThreadID)
 {
     NcnnLayerNormPack4WidthTex_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnLayerNormPack4Linear2D(uint3 id : SV_DispatchThreadID)
+{
+    NcnnLayerNormPack4Linear2D_Impl(id);
 }
 
 [numthreads(256,1,1)]
@@ -2439,6 +2473,16 @@ static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW
         return 0.0;
 
     uint width = (uint)inW;
+    if (_ReshapePack4ToPack4InputPack4Linear != 0 && inDims == 2)
+    {
+        uint row = linearIndex / width;
+        uint col = linearIndex - row * width;
+        if (row >= (uint)inH)
+            return 0.0;
+        float4 packed = _ReshapePack4ToPack4InArr[int3((int)(col >> 2), (int)row, 0)];
+        return NcnnReadLane(packed, (int)(col & 3));
+    }
+
     uint x = linearIndex % width;
     uint index = linearIndex / width;
 
@@ -2536,6 +2580,24 @@ void NcnnGemm2DLinearTextureA(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnGemm2DPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DPack4LinearTextureA_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DPack4LinearTextureAFromLinear(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DPack4LinearTextureAFromLinear_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DPack4LinearTextureAFromPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DPack4LinearTextureAFromPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnGemm2DAttentionQkvTextureA(uint3 id : SV_DispatchThreadID)
 {
     NcnnGemm2DAttentionQkvTextureA_Impl(id);
@@ -2551,6 +2613,12 @@ void NcnnGemm2DAttentionQkvLinearTextureA(uint3 id : SV_DispatchThreadID)
 void NcnnGemm2DAttentionPack4ToLinearTextureA(uint3 id : SV_DispatchThreadID)
 {
     NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DAttentionPack4ToPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]

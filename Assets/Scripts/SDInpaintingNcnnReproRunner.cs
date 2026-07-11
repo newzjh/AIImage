@@ -1445,7 +1445,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (repro == null)
             return;
 
-        if (!enableDebugDump || string.IsNullOrWhiteSpace(_lastDumpDir) || string.IsNullOrWhiteSpace(key))
+        var enableLayerPathLog = ResolveBoolEnv("AIIMAGE_SD_ENABLE_LAYER_PATH_LOG", false);
+        var captureToFile = enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir) && !string.IsNullOrWhiteSpace(key);
+        if (!captureToFile && !enableLayerPathLog)
         {
             repro.DebugLog = null;
             return;
@@ -1456,17 +1458,21 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             lines = new List<string>(256);
             _layerDebugLines[key] = lines;
         }
-        else
+        else if (captureToFile)
         {
             lines.Clear();
         }
 
         repro.DebugLog = line =>
         {
-            if (string.IsNullOrWhiteSpace(line) || lines.Count >= 20000)
+            if (string.IsNullOrWhiteSpace(line))
                 return;
 
-            lines.Add(line);
+            if (captureToFile && lines.Count < 20000)
+                lines.Add(line);
+
+            if (enableLayerPathLog)
+                UnityEngine.Debug.Log("[SDInpaint][" + key + "] " + line);
         };
     }
 
@@ -6164,6 +6170,17 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         if (!infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
             return null;
+
+        try
+        {
+            // This honors the tensor contract, including RFloat LinearMat outputs.
+            // The pack4-only readback below is retained for older debug contracts.
+            if (infer.TryGetExistingTextureData(blobName, out var textureData) && textureData != null)
+                return textureData;
+        }
+        catch
+        {
+        }
 
         try
         {

@@ -192,6 +192,16 @@ namespace NcnnCompute
                 }
 
                 var aTexStorageShapeScalar = NcnnRepro.GetTextureStorageShape(aTexScalar, aTexShapeScalar);
+                if (NcnnRepro.IsPack4LinearMatTexture(aTexScalar, aTexShapeScalar))
+                {
+                    var storageShape = NcnnRepro.GetTextureStorageShape(aTexScalar, aTexShapeScalar);
+                    var outRt = owner.RentTempArray(storageShape.w, storageShape.h, 1, aTexScalar.texture.format);
+                    owner.Ops.BinaryOpScalarPack4(aTexScalar.texture, scalarB, 1, opType, outRt);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, aTexShapeScalar, storageShape);
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
                 if (NcnnRepro.IsStrictLinearMatTexture(aTexScalar))
                 {
                     var outLinear = owner.RentTempMat(aTexStorageShapeScalar.w, aTexStorageShapeScalar.h, NcnnRepro.ResolveLinearMatTextureFormat());
@@ -229,13 +239,83 @@ namespace NcnnCompute
             NcnnRepro.TensorRef bTex = null;
             NcnnRepro.BufferShape aTexShape = default;
             NcnnRepro.BufferShape bTexShape = default;
-            var canUseTextureBinary = !owner.ForceBufferBinaryOpAll
-                && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out aTex, out aTexShape)
-                && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out bTex, out bTexShape);
+            var canUseTextureBinary = false;
             var pack4ATex = aTex;
             var pack4BTex = bTex;
             var pack4AShape = aTexShape;
             var pack4BShape = bTexShape;
+
+            if (TryResolveExactPack4LinearBinaryPath(
+                    textureBlobs,
+                    textureShapes,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    out var pack4LinearA,
+                    out var pack4LinearAShape,
+                    out var pack4LinearB,
+                    out _,
+                    out var pack4LinearStorageShape))
+            {
+                RenderTexture finalTexture = null;
+                try
+                {
+                    finalTexture = owner.RentTempArray(pack4LinearStorageShape.w, pack4LinearStorageShape.h, 1, pack4LinearA.texture.format);
+                    owner.Ops.BinaryOpPack4(pack4LinearA.texture, pack4LinearB.texture, 1, opType, finalTexture);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, pack4LinearAShape, pack4LinearStorageShape);
+                    finalTexture = null;
+                }
+                finally
+                {
+                    if (finalTexture != null)
+                        owner.ReturnTempArray(finalTexture);
+                }
+
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            if (TryResolvePack4LinearMixedBinaryPath(
+                    textureBlobs,
+                    textureShapes,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    out var mixedPack4Linear,
+                    out var mixedLinear,
+                    out var mixedOutShape,
+                    out var mixedStorageShape,
+                    out var mixedPack4IsA))
+            {
+                RenderTexture finalTexture = null;
+                try
+                {
+                    finalTexture = owner.RentTempArray(mixedStorageShape.w, mixedStorageShape.h, 1, mixedPack4Linear.texture.format);
+                    owner.Ops.BinaryOpPack4LinearMixed(mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, finalTexture);
+                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, mixedOutShape, mixedStorageShape);
+                    finalTexture = null;
+                }
+                finally
+                {
+                    if (finalTexture != null)
+                        owner.ReturnTempArray(finalTexture);
+                }
+
+                owner.DebugLog?.Invoke(
+                    "[Texture][BinaryOpPack4LinearMixed]"
+                    + " | layer=" + layer.name
+                    + " | pack4IsA=" + (mixedPack4IsA ? "1" : "0")
+                    + " | out=d" + mixedOutShape.dims + ":" + mixedOutShape.w + "x" + mixedOutShape.h + "x" + mixedOutShape.d + "x" + mixedOutShape.c
+                    + " | storage=d" + mixedStorageShape.dims + ":" + mixedStorageShape.w + "x" + mixedStorageShape.h + "x" + mixedStorageShape.d + "x" + mixedStorageShape.c);
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
+            canUseTextureBinary = !owner.ForceBufferBinaryOpAll
+                && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out aTex, out aTexShape)
+                && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out bTex, out bTexShape);
+            pack4ATex = aTex;
+            pack4BTex = bTex;
+            pack4AShape = aTexShape;
+            pack4BShape = bTexShape;
 
             if (canUseTextureBinary && NcnnRepro.CanUseExactPack4BinaryPath(aTex, aTexShape, bTex, bTexShape))
             {
@@ -866,6 +946,172 @@ namespace NcnnCompute
                 && aTex.packs == bTex.packs;
         }
 
+        private static bool TryResolveExactPack4LinearBinaryPath(
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            string aName,
+            string bName,
+            out NcnnRepro.TensorRef aTex,
+            out NcnnRepro.BufferShape aShape,
+            out NcnnRepro.TensorRef bTex,
+            out NcnnRepro.BufferShape bShape,
+            out NcnnRepro.BufferShape storageShape)
+        {
+            aTex = null;
+            aShape = default;
+            bTex = null;
+            bShape = default;
+            storageShape = default;
+
+            if (!NcnnRepro.TryGetExistingTextureContract(textureBlobs, textureShapes, aName, out aTex, out var aContract)
+                || !NcnnRepro.TryGetExistingTextureContract(textureBlobs, textureShapes, bName, out bTex, out var bContract))
+                return false;
+
+            aShape = aContract.LogicalShape;
+            bShape = bContract.LogicalShape;
+            if (aShape.w != bShape.w
+                || aShape.h != bShape.h
+                || aShape.d != bShape.d
+                || aShape.c != bShape.c
+                || !NcnnRepro.IsPack4LinearMatTexture(aTex, aShape)
+                || !NcnnRepro.IsPack4LinearMatTexture(bTex, bShape))
+                return false;
+
+            var aStorage = aContract.StorageShape;
+            var bStorage = bContract.StorageShape;
+            if (!NcnnRepro.BufferShapeEquals(aStorage, bStorage))
+                return false;
+
+            storageShape = aStorage;
+            return true;
+        }
+
+        private static bool TryResolvePack4LinearMixedBinaryPath(
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes,
+            string aName,
+            string bName,
+            out NcnnRepro.TensorRef pack4Linear,
+            out NcnnRepro.TensorRef linear,
+            out NcnnRepro.BufferShape logicalShape,
+            out NcnnRepro.BufferShape storageShape,
+            out bool pack4IsA)
+        {
+            pack4Linear = null;
+            linear = null;
+            logicalShape = default;
+            storageShape = default;
+            pack4IsA = false;
+
+            if (!NcnnRepro.TryGetExistingTextureContract(textureBlobs, textureShapes, aName, out var aTex, out var aContract)
+                || !NcnnRepro.TryGetExistingTextureContract(textureBlobs, textureShapes, bName, out var bTex, out var bContract))
+                return false;
+
+            var aShape = aContract.LogicalShape;
+            var bShape = bContract.LogicalShape;
+            if (aShape.dims != 2
+                || bShape.dims != 2
+                || aShape.w != bShape.w
+                || aShape.h != bShape.h
+                || aShape.d != bShape.d
+                || aShape.c != bShape.c)
+            {
+                return false;
+            }
+
+            var aPack4 = NcnnRepro.IsPack4LinearMatTexture(aTex, aShape);
+            var bPack4 = NcnnRepro.IsPack4LinearMatTexture(bTex, bShape);
+            var aLinear = NcnnRepro.IsStrictLinearMatTexture(aTex);
+            var bLinear = NcnnRepro.IsStrictLinearMatTexture(bTex);
+            if (aPack4 == bPack4)
+                return false;
+
+            if (aPack4 && bLinear)
+            {
+                pack4Linear = aTex;
+                linear = bTex;
+                logicalShape = aShape;
+                storageShape = aContract.StorageShape;
+                pack4IsA = true;
+                return true;
+            }
+
+            if (bPack4 && aLinear)
+            {
+                pack4Linear = bTex;
+                linear = aTex;
+                logicalShape = bShape;
+                storageShape = bContract.StorageShape;
+                pack4IsA = false;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolvePack4LinearMixedBinaryPath(
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes,
+            string aName,
+            string bName,
+            out NcnnRepro.CmdTensorRef pack4Linear,
+            out NcnnRepro.CmdTensorRef linear,
+            out NcnnRepro.BufferShape logicalShape,
+            out NcnnRepro.BufferShape storageShape,
+            out bool pack4IsA)
+        {
+            pack4Linear = null;
+            linear = null;
+            logicalShape = default;
+            storageShape = default;
+            pack4IsA = false;
+
+            if (!NcnnRepro.TryGetExistingCmdTextureContract(blobs, shapes, aName, out var aTex, out var aContract)
+                || !NcnnRepro.TryGetExistingCmdTextureContract(blobs, shapes, bName, out var bTex, out var bContract))
+                return false;
+
+            var aShape = aContract.LogicalShape;
+            var bShape = bContract.LogicalShape;
+            if (aShape.dims != 2
+                || bShape.dims != 2
+                || aShape.w != bShape.w
+                || aShape.h != bShape.h
+                || aShape.d != bShape.d
+                || aShape.c != bShape.c)
+            {
+                return false;
+            }
+
+            var aPack4 = NcnnRepro.IsPack4LinearMatTexture(aTex, aShape);
+            var bPack4 = NcnnRepro.IsPack4LinearMatTexture(bTex, bShape);
+            var aLinear = NcnnRepro.IsStrictLinearMatTexture(aTex);
+            var bLinear = NcnnRepro.IsStrictLinearMatTexture(bTex);
+            if (aPack4 == bPack4)
+                return false;
+
+            if (aPack4 && bLinear)
+            {
+                pack4Linear = aTex;
+                linear = bTex;
+                logicalShape = aShape;
+                storageShape = aContract.StorageShape;
+                pack4IsA = true;
+                return true;
+            }
+
+            if (bPack4 && aLinear)
+            {
+                pack4Linear = bTex;
+                linear = aTex;
+                logicalShape = bShape;
+                storageShape = bContract.StorageShape;
+                pack4IsA = false;
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool TryResolveScalarSingleBroadcastTextureBinaryPath(
             Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
             Dictionary<string, NcnnRepro.BufferShape> textureShapes,
@@ -1009,6 +1255,8 @@ namespace NcnnCompute
         {
             if (texture == null || texture.texture == null)
                 return false;
+            if (NcnnRepro.IsPack4LinearMatTexture(texture, shape))
+                return true;
             if (texture.packs == 1
                 && ((shape.dims == 1 && shape.w > 0 && texture.width == shape.w && texture.height == 1)
                     || (shape.dims == 2 && shape.w > 0 && shape.h > 0 && texture.width == shape.w && texture.height == shape.h)))
@@ -1091,6 +1339,8 @@ namespace NcnnCompute
         {
             if (texture == null || texture.texture == null)
                 return false;
+            if (NcnnRepro.IsPack4LinearMatTexture(texture, shape))
+                return true;
             if (texture.packs == 1
                 && ((shape.dims == 1 && shape.w > 0 && texture.width == shape.w && texture.height == 1)
                     || (shape.dims == 2 && shape.w > 0 && shape.h > 0 && texture.width == shape.w && texture.height == shape.h)))
@@ -1486,7 +1736,37 @@ namespace NcnnCompute
             NcnnRepro.TensorRef bTex = null;
             NcnnRepro.BufferShape aTexShape = default;
             NcnnRepro.BufferShape bTexShape = default;
-            var canUseTextureBinary = !owner.ForceBufferBinaryOpAll
+            var canUseTextureBinary = false;
+
+            if (TryResolveExactPack4LinearBinaryPath(
+                    context.textureBlobs,
+                    context.textureShapes,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _))
+            {
+                return true;
+            }
+
+            if (TryResolvePack4LinearMixedBinaryPath(
+                    context.textureBlobs,
+                    context.textureShapes,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _))
+            {
+                return true;
+            }
+
+            canUseTextureBinary = !owner.ForceBufferBinaryOpAll
                 && owner.TryGetPack4Texture(layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out aTex, out aTexShape)
                 && owner.TryGetPack4Texture(layer.bottomNames[1], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out bTex, out bTexShape);
 
@@ -1611,6 +1891,17 @@ namespace NcnnCompute
                                                     if (!CanUseScalarLikeTexturePath(a, aShape))
                                                         break;
                                                     var aStorageShape = NcnnRepro.GetCmdStorageShape(a, aShape);
+                                                    if (NcnnRepro.IsPack4LinearMatTexture(a, aShape))
+                                                    {
+                                                        var scalarPack4Out = owner.RentTempArray(cmd, aStorageShape.w, aStorageShape.h, 1, a.texture.format);
+                                                        owner.Ops.BinaryOpScalarPack4(cmd, a.texture, scalarB, 1, opType, scalarPack4Out);
+                                                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(scalarPack4Out, aShape, aStorageShape, owned: true);
+                                                        if (shapes != null)
+                                                            shapes[layer.topNames[0]] = aShape;
+                                                        owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                                                        continue;
+                                                    }
+
                                                     if (NcnnRepro.IsStrictLinearMatTexture(a))
                                                     {
                                                         var outLinear = owner.RentTempMat(cmd, aStorageShape.w, aStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
@@ -1636,7 +1927,39 @@ namespace NcnnCompute
                                                 {
                                                     var b = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[1]);
                                                     var bShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
-                                                    if (CanUseExactCmdBinaryPath(a, aShape, b, bShape))
+                                                    if (NcnnRepro.IsPack4LinearMatTexture(a, aShape)
+                                                        && NcnnRepro.IsPack4LinearMatTexture(b, bShape)
+                                                        && aShape.w == bShape.w
+                                                        && aShape.h == bShape.h
+                                                        && aShape.d == bShape.d
+                                                        && aShape.c == bShape.c
+                                                        && NcnnRepro.BufferShapeEquals(NcnnRepro.GetCmdStorageShape(a, aShape), NcnnRepro.GetCmdStorageShape(b, bShape)))
+                                                    {
+                                                        var storageShape = NcnnRepro.GetCmdStorageShape(a, aShape);
+                                                        var outArr = owner.RentTempArray(cmd, storageShape.w, storageShape.h, 1, a.texture.format);
+                                                        owner.Ops.BinaryOpPack4(cmd, a.texture, b.texture, 1, opType, outArr);
+                                                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, aShape, storageShape, owned: true);
+                                                        if (shapes != null)
+                                                            shapes[layer.topNames[0]] = aShape;
+                                                    }
+                                                    else if (TryResolvePack4LinearMixedBinaryPath(
+                                                        blobs,
+                                                        shapes,
+                                                        layer.bottomNames[0],
+                                                        layer.bottomNames[1],
+                                                        out var mixedPack4Linear,
+                                                        out var mixedLinear,
+                                                        out var mixedOutShape,
+                                                        out var mixedStorageShape,
+                                                        out var mixedPack4IsA))
+                                                    {
+                                                        var outArr = owner.RentTempArray(cmd, mixedStorageShape.w, mixedStorageShape.h, 1, mixedPack4Linear.texture.format);
+                                                        owner.Ops.BinaryOpPack4LinearMixed(cmd, mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, outArr);
+                                                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, mixedOutShape, mixedStorageShape, owned: true);
+                                                        if (shapes != null)
+                                                            shapes[layer.topNames[0]] = mixedOutShape;
+                                                    }
+                                                    else if (CanUseExactCmdBinaryPath(a, aShape, b, bShape))
                                                     {
                                                         var outDepth = aShape.dims == 4 ? Mathf.Max(1, aShape.d) * a.packs : a.packs;
                                                         var outArr = owner.RentTempArray(cmd, a.width, a.height, outDepth, RenderTextureFormat.ARGBHalf);

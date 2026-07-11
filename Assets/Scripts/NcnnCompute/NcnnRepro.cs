@@ -868,6 +868,12 @@ namespace NcnnCompute
                         return values;
                     }
 
+                    if (TryReadPack4LinearMatData(texture, readback, logicalShape, storageShape, out var pack4LinearValues))
+                        return pack4LinearValues;
+
+                    if (TryReadAttentionPackedLinearData(texture, readback, logicalShape, storageShape, out var attentionValues))
+                        return attentionValues;
+
                     var physicalShape = storageShape.dims > 0 ? storageShape : logicalShape;
                     var physicalW = Mathf.Max(1, physicalShape.w > 0 ? physicalShape.w : texture.width);
                     var physicalH = Mathf.Max(1, physicalShape.dims >= 2 && physicalShape.h > 0 ? physicalShape.h : texture.height);
@@ -933,6 +939,100 @@ namespace NcnnCompute
                 Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, Mathf.Max(0, slice));
                 readback.ReadPixels(new Rect(0, 0, readback.width, readback.height), 0, 0, false);
                 readback.Apply(false, false);
+            }
+
+            private static bool TryReadAttentionPackedLinearData(
+                RenderTexture texture,
+                Texture2D readback,
+                BufferShape logicalShape,
+                BufferShape storageShape,
+                out float[] values)
+            {
+                values = null;
+                if (logicalShape.dims != 2
+                    || storageShape.dims != 3
+                    || storageShape.d != 1
+                    || storageShape.w <= 0
+                    || storageShape.h != logicalShape.h
+                    || storageShape.c <= 4
+                    || logicalShape.w != storageShape.w * storageShape.c
+                    || texture.dimension != TextureDimension.Tex2DArray
+                    || texture.width != storageShape.w
+                    || texture.height != storageShape.h)
+                {
+                    return false;
+                }
+
+                var headDim = storageShape.w;
+                var tokens = storageShape.h;
+                var heads = storageShape.c;
+                var packs = Mathf.CeilToInt(heads / 4f);
+                if (texture.volumeDepth < packs)
+                    return false;
+
+                values = new float[logicalShape.w * logicalShape.h];
+                for (var headPack = 0; headPack < packs; headPack++)
+                {
+                    ReadRenderTextureSlice(texture, readback, headPack);
+                    var raw = readback.GetRawTextureData<float>();
+                    for (var token = 0; token < tokens; token++)
+                    {
+                        for (var dim = 0; dim < headDim; dim++)
+                        {
+                            var srcBase = (token * headDim + dim) * 4;
+                            for (var lane = 0; lane < 4; lane++)
+                            {
+                                var head = headPack * 4 + lane;
+                                if (head >= heads)
+                                    break;
+                                values[token * logicalShape.w + head * headDim + dim] = raw[srcBase + lane];
+                            }
+                        }
+                    }
+                }
+
+                return true;
+            }
+
+            // Debug/replay readback only. Pack4 linear matrices store four adjacent logical
+            // columns in one RGBA texel rather than as four channel-major image planes.
+            private static bool TryReadPack4LinearMatData(
+                RenderTexture texture,
+                Texture2D readback,
+                BufferShape logicalShape,
+                BufferShape storageShape,
+                out float[] values)
+            {
+                values = null;
+                if (logicalShape.dims != 2
+                    || storageShape.dims != 3
+                    || storageShape.w != Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f)
+                    || storageShape.h != Mathf.Max(1, logicalShape.h)
+                    || storageShape.d != 1
+                    || storageShape.c != 4
+                    || texture.dimension != TextureDimension.Tex2DArray
+                    || texture.width != storageShape.w
+                    || texture.height != storageShape.h
+                    || texture.volumeDepth < 1)
+                {
+                    return false;
+                }
+
+                values = new float[logicalShape.w * logicalShape.h];
+                ReadRenderTextureSlice(texture, readback, 0);
+                var raw = readback.GetRawTextureData<float>();
+                for (var row = 0; row < logicalShape.h; row++)
+                {
+                    for (var packX = 0; packX < storageShape.w; packX++)
+                    {
+                        var srcBase = (row * storageShape.w + packX) * 4;
+                        var dstBase = row * logicalShape.w + packX * 4;
+                        for (var lane = 0; lane < 4 && dstBase + lane < values.Length && packX * 4 + lane < logicalShape.w; lane++)
+                            values[dstBase + lane] = raw[srcBase + lane];
+                    }
+                }
+
+                return true;
             }
 
             private static int GetShapeElementCount(BufferShape shape)
@@ -3385,6 +3485,13 @@ namespace NcnnCompute
             return new BufferShape(2, logicalWidth, logicalHeight, 1, 1);
         }
 
+        internal static BufferShape ResolvePack4LinearMatStorageShape(BufferShape logicalShape)
+        {
+            var logicalWidth = Mathf.Max(1, logicalShape.w);
+            var logicalHeight = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
+            return new BufferShape(3, Mathf.CeilToInt(logicalWidth / 4f), logicalHeight, 1, 4);
+        }
+
         internal static bool IsStrictLinearMatTexture(TensorRef tensor)
         {
             return tensor != null
@@ -3393,12 +3500,44 @@ namespace NcnnCompute
                 && tensor.layoutKind == RepoVkTensorLayoutKind.LinearMat;
         }
 
+        internal static bool IsPack4LinearMatTexture(TensorRef tensor, BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || logicalShape.dims != 2)
+                return false;
+            if (tensor.texture.dimension != TextureDimension.Tex2DArray || tensor.packs != 1)
+                return false;
+            var storageShape = GetTextureStorageShape(tensor, logicalShape);
+            return storageShape.dims == 3
+                && storageShape.w == Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f)
+                && storageShape.h == Mathf.Max(1, logicalShape.h)
+                && storageShape.d == 1
+                && storageShape.c == 4
+                && tensor.width == storageShape.w
+                && tensor.height == storageShape.h;
+        }
+
         internal static bool IsStrictLinearMatTexture(CmdTensorRef tensor)
         {
             return tensor != null
                 && tensor.texture != null
                 && tensor.texture.dimension == TextureDimension.Tex2D
                 && tensor.layoutKind == RepoVkTensorLayoutKind.LinearMat;
+        }
+
+        internal static bool IsPack4LinearMatTexture(CmdTensorRef tensor, BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || logicalShape.dims != 2)
+                return false;
+            if (tensor.texture.dimension != TextureDimension.Tex2DArray || tensor.packs != 1)
+                return false;
+            var storageShape = GetCmdStorageShape(tensor, logicalShape);
+            return storageShape.dims == 3
+                && storageShape.w == Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f)
+                && storageShape.h == Mathf.Max(1, logicalShape.h)
+                && storageShape.d == 1
+                && storageShape.c == 4
+                && tensor.width == storageShape.w
+                && tensor.height == storageShape.h;
         }
 
         private static int AlignUp(int value, int alignment)
@@ -4333,6 +4472,8 @@ namespace NcnnCompute
                     {
                         sb.Append(":c");
                         sb.Append(shape.c.ToString(CultureInfo.InvariantCulture));
+                        if (IsPack4LinearMatTexture(tex, shape))
+                            sb.Append(":p4lin");
                     }
                     continue;
                 }

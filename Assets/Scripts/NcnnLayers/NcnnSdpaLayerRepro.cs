@@ -274,6 +274,13 @@ namespace NcnnCompute
             if (!TryResolveRtPlan(owner, layer, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out var plan))
                 return false;
 
+            owner.DebugLog?.Invoke(
+                "[Pack4SDPA] layer=" + layer.name
+                + " | q=d" + plan.queryShape.dims + ":" + plan.queryShape.w + "x" + plan.queryShape.h + "x" + plan.queryShape.d + "x" + plan.queryShape.c
+                + " | k=d" + plan.keyShape.dims + ":" + plan.keyShape.w + "x" + plan.keyShape.h + "x" + plan.keyShape.d + "x" + plan.keyShape.c
+                + " | v=d" + plan.valueShape.dims + ":" + plan.valueShape.w + "x" + plan.valueShape.h + "x" + plan.valueShape.d + "x" + plan.valueShape.c
+                + " | scale=" + plan.scale.ToString("G9", CultureInfo.InvariantCulture));
+
             RenderTexture queryScaled = null;
             RenderTexture keyTransposed = null;
             RenderTexture scores = null;

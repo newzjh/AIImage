@@ -363,6 +363,7 @@ namespace NcnnCompute
         private readonly int _kUnaryOpLinearMat;
         private readonly int _kBinaryOpLinearMat;
         private readonly int _kBinaryOpPack4;
+        private readonly int _kBinaryOpPack4LinearMixed;
         private readonly int _kBinaryOpPack4Broadcast;
         private readonly int _kBinaryOpPack4BufferScalar;
         private readonly int _kBinaryOpPack4ChannelVectorTex;
@@ -398,13 +399,19 @@ namespace NcnnCompute
         private readonly int _kArgmaxUpdatePack4Cdhw;
         private readonly int _kGemm2DTextureA;
         private readonly int _kGemm2DLinearTextureA;
+        private readonly int _kGemm2DPack4LinearTextureA;
+        private readonly int _kGemm2DPack4LinearTextureAFromLinear;
+        private readonly int _kGemm2DPack4LinearTextureAFromPack4;
         private readonly int _kGemm2DAttentionQkvTextureA;
         private readonly int _kGemm2DAttentionQkvLinearTextureA;
+        private readonly int _kGemm2DAttentionQkvPack4LinearTextureA;
         private readonly int _kGemm2DAttentionPack4ToLinearTextureA;
+        private readonly int _kGemm2DAttentionPack4ToPack4LinearTextureA;
         private readonly int _kGemm2D;
         private readonly int _kGemm2D16;
         private readonly int _kLayerNorm2D;
         private readonly int _kLayerNormPack4WidthTex;
+        private readonly int _kLayerNormPack4Linear2D;
         private readonly int _kSoftmax2D;
         private readonly int _kSoftmaxPack4Cdhw;
         private readonly int _kReductionScalar2D;
@@ -473,7 +480,9 @@ namespace NcnnCompute
         private readonly int _kSdpaAttentionPack4Cdhw;
         private readonly bool _probeFastZeroGemm;
         private readonly bool _probeFastZeroSdpa;
+        private readonly bool _probeFastZeroBinaryOp;
         private readonly int _gemmTextureOutsPerThread;
+        private readonly int _gemmPack4LinearOutPacksPerThread;
         private ComputeBuffer _fallbackFloatBuffer;
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
@@ -545,6 +554,11 @@ namespace NcnnCompute
         private int ResolveGemmTextureDispatchColumns(int n)
         {
             return Mathf.Max(1, Mathf.CeilToInt(n / (float)Mathf.Max(1, _gemmTextureOutsPerThread)));
+        }
+
+        private int ResolveGemmPack4LinearTextureDispatchColumns(int packWidth)
+        {
+            return Mathf.Max(1, Mathf.CeilToInt(packWidth / (float)Mathf.Max(1, _gemmPack4LinearOutPacksPerThread)));
         }
 
         public bool EnableConv3dTile3x3Pack4FastPath { get; set; }
@@ -642,6 +656,7 @@ namespace NcnnCompute
             _kUnaryOpLinearMat = _cs.FindKernel("NcnnUnaryOpLinearMat");
             _kBinaryOpLinearMat = _cs.FindKernel("NcnnBinaryOpLinearMat");
             _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
+            _kBinaryOpPack4LinearMixed = _cs.FindKernel("NcnnBinaryOpPack4LinearMixed");
             _kBinaryOpPack4Broadcast = _cs.FindKernel("NcnnBinaryOpPack4Broadcast");
             _kBinaryOpPack4BufferScalar = _cs.FindKernel("NcnnBinaryOpPack4BufferScalar");
             _kBinaryOpPack4ChannelVectorTex = _cs.FindKernel("NcnnBinaryOpPack4ChannelVectorTex");
@@ -677,13 +692,19 @@ namespace NcnnCompute
             _kArgmaxUpdatePack4Cdhw = _cs.FindKernel("NcnnArgmaxUpdatePack4CDHW");
             _kGemm2DTextureA = _cs.FindKernel("NcnnGemm2DTextureA");
             _kGemm2DLinearTextureA = _cs.FindKernel("NcnnGemm2DLinearTextureA");
+            _kGemm2DPack4LinearTextureA = _cs.FindKernel("NcnnGemm2DPack4LinearTextureA");
+            _kGemm2DPack4LinearTextureAFromLinear = _cs.FindKernel("NcnnGemm2DPack4LinearTextureAFromLinear");
+            _kGemm2DPack4LinearTextureAFromPack4 = _cs.FindKernel("NcnnGemm2DPack4LinearTextureAFromPack4");
             _kGemm2DAttentionQkvTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvTextureA");
             _kGemm2DAttentionQkvLinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvLinearTextureA");
+            _kGemm2DAttentionQkvPack4LinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvPack4LinearTextureA");
             _kGemm2DAttentionPack4ToLinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionPack4ToLinearTextureA");
+            _kGemm2DAttentionPack4ToPack4LinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionPack4ToPack4LinearTextureA");
             _kGemm2D = _cs.FindKernel("NcnnGemm2D");
             _kGemm2D16 = _cs.FindKernel("NcnnGemm2D16");
             _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
             _kLayerNormPack4WidthTex = _cs.FindKernel("NcnnLayerNormPack4WidthTex");
+            _kLayerNormPack4Linear2D = _cs.FindKernel("NcnnLayerNormPack4Linear2D");
             _kSoftmax2D = _cs.FindKernel("NcnnSoftmax2D");
             _kSoftmaxPack4Cdhw = _cs.FindKernel("NcnnSoftmaxPack4CDHW");
             _kReductionScalar2D = _cs.FindKernel("NcnnReductionScalar2D");
@@ -751,12 +772,15 @@ namespace NcnnCompute
             _kSdpaAttentionPack4Cdhw = _cs.FindKernel("NcnnSdpaAttentionPack4CDHW");
             _probeFastZeroGemm = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_GEMM_ZERO", "gemm");
             _probeFastZeroSdpa = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_SDPA_ZERO", "sdpa");
+            _probeFastZeroBinaryOp = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_BINARY_ZERO", "binary");
             _gemmTextureOutsPerThread = ResolveIntEnvClamped("AIIMAGE_NCNN_GEMM_TEX_OUTS_PER_THREAD", 1, 1, 4);
-            if (_probeFastZeroGemm || _probeFastZeroSdpa)
+            _gemmPack4LinearOutPacksPerThread = ResolveIntEnvClamped("AIIMAGE_NCNN_GEMM_PACK4_TEX_OUTS_PER_THREAD", 2, 1, 2);
+            if (_probeFastZeroGemm || _probeFastZeroSdpa || _probeFastZeroBinaryOp)
             {
                 UnityEngine.Debug.LogWarning("[NcnnOps] Fast-zero probe enabled: gemm="
                     + _probeFastZeroGemm.ToString()
                     + ", sdpa=" + _probeFastZeroSdpa.ToString()
+                    + ", binary=" + _probeFastZeroBinaryOp.ToString()
                     + ". Output is intentionally invalid and must only be used for performance probes.");
             }
             if (_gemmTextureOutsPerThread != 1)
@@ -764,6 +788,12 @@ namespace NcnnCompute
                 UnityEngine.Debug.LogWarning("[NcnnOps] Gemm texture outs/thread probe enabled: "
                     + _gemmTextureOutsPerThread.ToString(CultureInfo.InvariantCulture)
                     + ". This is an experimental shader micro-kernel switch.");
+            }
+            if (_gemmPack4LinearOutPacksPerThread != 2)
+            {
+                UnityEngine.Debug.LogWarning("[NcnnOps] Gemm pack4-linear output packs/thread override enabled: "
+                    + _gemmPack4LinearOutPacksPerThread.ToString(CultureInfo.InvariantCulture)
+                    + ". Default optimized pack4 RT path uses 2.");
             }
         }
 
@@ -2079,7 +2109,7 @@ namespace NcnnCompute
             Dispatch2D(cmd, _cs, _kReshapePack4ToLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void ReshapePack4ToPack4(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, int outW, int outH, int outD, int outC, int outDims, RenderTexture output)
+        public void ReshapePack4ToPack4(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, int outW, int outH, int outD, int outC, int outDims, RenderTexture output, bool inputPack4Linear = false)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -2093,12 +2123,13 @@ namespace NcnnCompute
             _cs.SetInt("_ReshapePack4ToPack4OutD", outD);
             _cs.SetInt("_ReshapePack4ToPack4OutC", outC);
             _cs.SetInt("_ReshapePack4ToPack4OutDims", outDims);
+            _cs.SetInt("_ReshapePack4ToPack4InputPack4Linear", inputPack4Linear ? 1 : 0);
             _cs.SetTexture(_kReshapePack4ToPack4, "_TexIn0Arr", input);
             _cs.SetTexture(_kReshapePack4ToPack4, "_TexOut0Arr", output);
             Dispatch3D(_kReshapePack4ToPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
-        public void ReshapePack4ToPack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, int outW, int outH, int outD, int outC, int outDims, ComputeTexture output)
+        public void ReshapePack4ToPack4(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, int outW, int outH, int outD, int outC, int outDims, ComputeTexture output, bool inputPack4Linear = false)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -2113,6 +2144,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutD", outD);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutC", outC);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4OutDims", outDims);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToPack4InputPack4Linear", inputPack4Linear ? 1 : 0);
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kReshapePack4ToPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
@@ -2386,6 +2418,79 @@ namespace NcnnCompute
             Dispatch2D(cmd, _cs, _kGemm2DLinearTextureA, ResolveGemmTextureDispatchColumns(n), m, 8, 8);
         }
 
+        public void Gemm2DPack4LinearTextureA(RenderTexture a, bool inputPacked, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetInt("_GemmTexAInW", inputPacked ? Mathf.CeilToInt(k / 4f) : k);
+            _cs.SetInt("_GemmTexAInH", m);
+            _cs.SetInt("_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
+            var kernel = inputPacked ? _kGemm2DPack4LinearTextureAFromPack4 : _kGemm2DPack4LinearTextureAFromLinear;
+            _cs.SetTexture(kernel, inputPacked ? "_TexIn0Arr" : "_LinearIn0", a);
+            _cs.SetBuffer(kernel, "_MatB", b);
+            _cs.SetBuffer(kernel, "_MatC", useC ? c : b);
+            _cs.SetTexture(kernel, "_TexOut0Arr", output);
+            var dispatchWidth = ResolveGemmPack4LinearTextureDispatchColumns(output.width);
+            Dispatch3D(kernel, dispatchWidth, m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void Gemm2DPack4LinearTextureA(CommandBuffer cmd, ComputeTexture a, bool inputPacked, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_MatM", m);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", k);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatUseC", useC ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBroadcastTypeC", broadcastTypeC);
+            cmd.SetComputeFloatParam(_cs, "_MatAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInW", inputPacked ? Mathf.CeilToInt(k / 4f) : k);
+            cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
+            cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
+            var kernel = inputPacked ? _kGemm2DPack4LinearTextureAFromPack4 : _kGemm2DPack4LinearTextureAFromLinear;
+            cmd.SetComputeTextureParam(_cs, kernel, inputPacked ? "_TexIn0Arr" : "_LinearIn0", a.nameID);
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatB", b);
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatC", useC ? c : b);
+            cmd.SetComputeTextureParam(_cs, kernel, "_TexOut0Arr", output.nameID);
+            var dispatchWidth = ResolveGemmPack4LinearTextureDispatchColumns(output.width);
+            Dispatch3D(cmd, kernel, dispatchWidth, m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
         public void Gemm2DAttentionQkvTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, RenderTexture output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -2536,6 +2641,77 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kGemm2DAttentionQkvLinearTextureA, headDim, m, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
         }
 
+        public void Gemm2DAttentionQkvPack4LinearTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetInt("_AttentionGemmHeadDim", headDim);
+            _cs.SetInt("_AttentionGemmNumHeads", numHeads);
+            _cs.SetTexture(_kGemm2DAttentionQkvPack4LinearTextureA, "_TexIn0Arr", a);
+            _cs.SetBuffer(_kGemm2DAttentionQkvPack4LinearTextureA, "_MatB", b);
+            _cs.SetBuffer(_kGemm2DAttentionQkvPack4LinearTextureA, "_MatC", useC ? c : b);
+            _cs.SetTexture(_kGemm2DAttentionQkvPack4LinearTextureA, "_TexOut0Arr", output);
+            Dispatch3D(_kGemm2DAttentionQkvPack4LinearTextureA, headDim, m, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
+        }
+
+        public void Gemm2DAttentionQkvPack4LinearTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_MatM", m);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", k);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatUseC", useC ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBroadcastTypeC", broadcastTypeC);
+            cmd.SetComputeFloatParam(_cs, "_MatAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmHeadDim", headDim);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_MatB", b);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_MatC", useC ? c : b);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kGemm2DAttentionQkvPack4LinearTextureA, headDim, m, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
+        }
+
         public void Gemm2DAttentionPack4ToLinearTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, RenderTexture output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -2605,6 +2781,79 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kGemm2DAttentionPack4ToLinearTextureA, n, m, 8, 8);
+        }
+
+        public void Gemm2DAttentionPack4ToPack4LinearTextureA(RenderTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, RenderTexture output)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_MatM", m);
+            _cs.SetInt("_MatN", n);
+            _cs.SetInt("_MatK", k);
+            _cs.SetInt("_MatTransB", transB ? 1 : 0);
+            _cs.SetInt("_MatUseC", useC ? 1 : 0);
+            _cs.SetInt("_MatBroadcastTypeC", broadcastTypeC);
+            _cs.SetFloat("_MatAlpha", alpha);
+            _cs.SetFloat("_MatBeta", beta);
+            _cs.SetInt("_AttentionGemmHeadDim", headDim);
+            _cs.SetInt("_AttentionGemmNumHeads", numHeads);
+            _cs.SetInt("_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
+            _cs.SetTexture(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexIn0Arr", a);
+            _cs.SetBuffer(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatB", b);
+            _cs.SetBuffer(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatC", useC ? c : b);
+            _cs.SetTexture(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexOut0Arr", output);
+            Dispatch3D(_kGemm2DAttentionPack4ToPack4LinearTextureA, ResolveGemmPack4LinearTextureDispatchColumns(output.width), m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void Gemm2DAttentionPack4ToPack4LinearTextureA(CommandBuffer cmd, ComputeTexture a, ComputeBuffer b, ComputeBuffer c, int m, int n, int k, bool transB, float alpha, float beta, bool useC, int broadcastTypeC, int headDim, int numHeads, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (m <= 0) throw new ArgumentOutOfRangeException(nameof(m));
+            if (n <= 0) throw new ArgumentOutOfRangeException(nameof(n));
+            if (k <= 0) throw new ArgumentOutOfRangeException(nameof(k));
+            if (headDim <= 0) throw new ArgumentOutOfRangeException(nameof(headDim));
+            if (numHeads <= 0) throw new ArgumentOutOfRangeException(nameof(numHeads));
+            if (useC && c == null) throw new ArgumentNullException(nameof(c));
+
+            if (_probeFastZeroGemm)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_MatM", m);
+            cmd.SetComputeIntParam(_cs, "_MatN", n);
+            cmd.SetComputeIntParam(_cs, "_MatK", k);
+            cmd.SetComputeIntParam(_cs, "_MatTransB", transB ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatUseC", useC ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBroadcastTypeC", broadcastTypeC);
+            cmd.SetComputeFloatParam(_cs, "_MatAlpha", alpha);
+            cmd.SetComputeFloatParam(_cs, "_MatBeta", beta);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmHeadDim", headDim);
+            cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
+            cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexIn0Arr", a.nameID);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatB", b);
+            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatC", useC ? c : b);
+            cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kGemm2DAttentionPack4ToPack4LinearTextureA, ResolveGemmPack4LinearTextureDispatchColumns(output.width), m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void SftPack4(RenderTexture input, RenderTexture condMul, RenderTexture condAdd, int outPacks, int halfPacks, RenderTexture output)
@@ -3057,6 +3306,12 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 0);
             _cs.SetFloat("_BinaryScalar", 0f);
@@ -3070,6 +3325,12 @@ namespace NcnnCompute
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 1);
             _cs.SetFloat("_BinaryScalar", scalarB);
@@ -3084,6 +3345,12 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
@@ -3098,6 +3365,12 @@ namespace NcnnCompute
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 1);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", scalarB);
@@ -3111,6 +3384,12 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 0);
             _cs.SetFloat("_BinaryScalar", 0f);
@@ -3120,6 +3399,27 @@ namespace NcnnCompute
             Dispatch3D(_kBinaryOpPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, packs), 8, 8);
         }
 
+        public void BinaryOpPack4LinearMixed(RenderTexture pack4Linear, RenderTexture linear, bool pack4IsA, int opType, RenderTexture output)
+        {
+            if (pack4Linear == null) throw new ArgumentNullException(nameof(pack4Linear));
+            if (linear == null) throw new ArgumentNullException(nameof(linear));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 0);
+            _cs.SetFloat("_BinaryScalar", 0f);
+            _cs.SetInt("_BinaryPack4LinearMixedMode", pack4IsA ? 1 : 2);
+            _cs.SetTexture(_kBinaryOpPack4LinearMixed, "_TexIn0Arr", pack4Linear);
+            _cs.SetTexture(_kBinaryOpPack4LinearMixed, "_LinearIn1", linear);
+            _cs.SetTexture(_kBinaryOpPack4LinearMixed, "_TexOut0Arr", output);
+            Dispatch3D(_kBinaryOpPack4LinearMixed, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
         public void BinaryOpPack4Broadcast(RenderTexture a, RenderTexture b, int packs, int opType, int broadcastMode, RenderTexture output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -3127,6 +3427,12 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             if (broadcastMode != 1 && broadcastMode != 2)
                 throw new ArgumentOutOfRangeException(nameof(broadcastMode));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
             _cs.SetInt("_BinaryOpType", opType);
             _cs.SetInt("_BinaryWithScalar", 0);
             _cs.SetFloat("_BinaryScalar", 0f);
@@ -3170,6 +3476,12 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
             cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
@@ -3177,6 +3489,28 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexIn1Arr", b.nameID);
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
+        }
+
+        public void BinaryOpPack4LinearMixed(CommandBuffer cmd, ComputeTexture pack4Linear, ComputeTexture linear, bool pack4IsA, int opType, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (pack4Linear == null) throw new ArgumentNullException(nameof(pack4Linear));
+            if (linear == null) throw new ArgumentNullException(nameof(linear));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
+            cmd.SetComputeIntParam(_cs, "_BinaryPack4LinearMixedMode", pack4IsA ? 1 : 2);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixed, "_TexIn0Arr", pack4Linear.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixed, "_LinearIn1", linear.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixed, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kBinaryOpPack4LinearMixed, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void BinaryOpPack4Broadcast(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int packs, int opType, int broadcastMode, ComputeTexture output)
@@ -3187,6 +3521,11 @@ namespace NcnnCompute
             if (output == null) throw new ArgumentNullException(nameof(output));
             if (broadcastMode != 1 && broadcastMode != 2)
                 throw new ArgumentOutOfRangeException(nameof(broadcastMode));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
 
             cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
             cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
@@ -6739,6 +7078,52 @@ namespace NcnnCompute
                 cmd.SetComputeBufferParam(_cs, _kLayerNormPack4WidthTex, "_LnBeta", beta);
             }
             Dispatch3D(cmd, _kLayerNormPack4WidthTex, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, d * packs)), 8, 8);
+        }
+
+        public void LayerNormPack4Linear2D(RenderTexture input, int logicalW, int logicalH, float eps, bool affine, ComputeBuffer gamma, ComputeBuffer beta, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (logicalW <= 0) throw new ArgumentOutOfRangeException(nameof(logicalW));
+            if (logicalH <= 0) throw new ArgumentOutOfRangeException(nameof(logicalH));
+            if (affine && (gamma == null || beta == null)) throw new ArgumentNullException(nameof(gamma));
+
+            _cs.SetInt("_LnW", logicalW);
+            _cs.SetInt("_LnH", logicalH);
+            _cs.SetInt("_LnD", 1);
+            _cs.SetInt("_LnC", 4);
+            _cs.SetInt("_LnAffine", affine ? 1 : 0);
+            _cs.SetFloat("_LnEps", eps);
+            _cs.SetTexture(_kLayerNormPack4Linear2D, "_TexIn0Arr", input);
+            _cs.SetTexture(_kLayerNormPack4Linear2D, "_TexOut0Arr", output);
+            _cs.SetBuffer(_kLayerNormPack4Linear2D, "_LnGamma", affine ? gamma : null);
+            _cs.SetBuffer(_kLayerNormPack4Linear2D, "_LnBeta", affine ? beta : null);
+            Dispatch3D(_kLayerNormPack4Linear2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void LayerNormPack4Linear2D(CommandBuffer cmd, ComputeTexture input, int logicalW, int logicalH, float eps, bool affine, ComputeBuffer gamma, ComputeBuffer beta, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (logicalW <= 0) throw new ArgumentOutOfRangeException(nameof(logicalW));
+            if (logicalH <= 0) throw new ArgumentOutOfRangeException(nameof(logicalH));
+            if (affine && (gamma == null || beta == null)) throw new ArgumentNullException(nameof(gamma));
+
+            cmd.SetComputeIntParam(_cs, "_LnW", logicalW);
+            cmd.SetComputeIntParam(_cs, "_LnH", logicalH);
+            cmd.SetComputeIntParam(_cs, "_LnD", 1);
+            cmd.SetComputeIntParam(_cs, "_LnC", 4);
+            cmd.SetComputeIntParam(_cs, "_LnAffine", affine ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_LnEps", eps);
+            cmd.SetComputeTextureParam(_cs, _kLayerNormPack4Linear2D, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kLayerNormPack4Linear2D, "_TexOut0Arr", output.nameID);
+            if (affine)
+            {
+                cmd.SetComputeBufferParam(_cs, _kLayerNormPack4Linear2D, "_LnGamma", gamma);
+                cmd.SetComputeBufferParam(_cs, _kLayerNormPack4Linear2D, "_LnBeta", beta);
+            }
+            Dispatch3D(cmd, _kLayerNormPack4Linear2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void Softmax2D(ComputeBuffer input, ComputeBuffer output, int rows, int cols)
