@@ -1087,10 +1087,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     {
         ApplyEditorLowVramGuardIfNeeded();
         _ops ??= new NcnnOps();
-        _textRepro ??= new NcnnRepro(_ops);
-        _unetRepro ??= new NcnnRepro(_ops);
-        _vaeRepro ??= new NcnnRepro(_ops);
-        _vaeEncoderRepro ??= new NcnnRepro(_ops);
+        _textRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _unetRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _vaeRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _vaeEncoderRepro ??= NcnnInferenceSessionFactory.Create(_ops);
     }
 
     private void ApplyEditorLowVramGuardIfNeeded()
@@ -1361,7 +1361,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (_textRepro?.Model != null)
             return;
 
-        _textRepro ??= new NcnnRepro(_ops);
+        _textRepro ??= NcnnInferenceSessionFactory.Create(_ops);
         ApplyCommonOptions(_textRepro);
         ApplySpatialModelOptions(_textRepro);
         AttachDebugLog(_textRepro, "text_encoder");
@@ -1381,7 +1381,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
         }
 
-        _vaeEncoderRepro ??= new NcnnRepro(_ops);
+        _vaeEncoderRepro ??= NcnnInferenceSessionFactory.Create(_ops);
         ApplyCommonOptions(_vaeEncoderRepro);
         ApplySpatialModelOptions(_vaeEncoderRepro);
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
@@ -1401,7 +1401,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
         }
 
-        _unetRepro ??= new NcnnRepro(_ops);
+        _unetRepro ??= NcnnInferenceSessionFactory.Create(_ops);
         ApplyCommonOptions(_unetRepro);
         ApplySpatialModelOptions(_unetRepro);
         AttachDebugLog(_unetRepro, "unet");
@@ -1415,7 +1415,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (_vaeRepro?.Model != null)
             return;
 
-        _vaeRepro ??= new NcnnRepro(_ops);
+        _vaeRepro ??= NcnnInferenceSessionFactory.Create(_ops);
         ApplyCommonOptions(_vaeRepro);
         ApplySpatialModelOptions(_vaeRepro);
         _vaeRepro.TensorTextureFormat = decoderTensorTextureFormat;

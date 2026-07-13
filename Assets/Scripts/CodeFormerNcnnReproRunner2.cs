@@ -1801,9 +1801,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         if (_ops == null)
             _ops = new NcnnOps();
         if (_encoderRepro == null)
-            _encoderRepro = new NcnnRepro(_ops);
+            _encoderRepro = NcnnInferenceSessionFactory.Create(_ops);
         if (_generatorRepro == null)
-            _generatorRepro = new NcnnRepro(_ops);
+            _generatorRepro = NcnnInferenceSessionFactory.Create(_ops);
         ApplyReproOptions();
     }
 

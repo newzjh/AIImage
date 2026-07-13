@@ -37,24 +37,25 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void InferResult_DoesNotExposeProductionBufferReadback()
     {
-        var source = ReadAssetSource("Scripts/NcnnCompute/NcnnRepro.cs");
+        var source = ReadPackageSource("NcnnCompute", "NcnnRepro.cs");
         foreach (var api in ForbiddenPublicReadbackApis)
             Assert.That(source, Does.Not.Contain(api), "Production InferResult must not expose " + api);
 
         Assert.That(source, Does.Contain("ReadTextureDataForOutput"));
         Assert.That(source, Does.Contain("#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE"));
         Assert.That(source, Does.Contain("public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;"));
+        Assert.That(source, Does.Contain("IInferenceSession"));
     }
 
     [Test]
     public void ProductionBoundary_AllowsFixedBufferInputsAndRejectsIntermediateMaterializationWithTensorContract()
     {
-        var repro = ReadAssetSource("Scripts/NcnnCompute/NcnnRepro.cs");
-        var factory = ReadAssetSource("Scripts/NcnnLayers/NcnnLayerFactoryRepro.cs");
-        var reshape = ReadAssetSource("Scripts/NcnnLayers/NcnnReshapeLayerRepro.cs");
-        var embed = ReadAssetSource("Scripts/NcnnLayers/NcnnEmbedLayerRepro.cs");
-        var innerProduct = ReadAssetSource("Scripts/NcnnLayers/NcnnInnerProductLayerRepro.cs");
-        var permute = ReadAssetSource("Scripts/NcnnLayers/NcnnPermuteLayerRepro.cs");
+        var repro = ReadPackageSource("NcnnCompute", "NcnnRepro.cs");
+        var factory = ReadPackageSource("NcnnLayers", "NcnnLayerFactoryRepro.cs");
+        var reshape = ReadPackageSource("NcnnLayers", "NcnnReshapeLayerRepro.cs");
+        var embed = ReadPackageSource("NcnnLayers", "NcnnEmbedLayerRepro.cs");
+        var innerProduct = ReadPackageSource("NcnnLayers", "NcnnInnerProductLayerRepro.cs");
+        var permute = ReadPackageSource("NcnnLayers", "NcnnPermuteLayerRepro.cs");
         var inpainting = ReadAssetSource("Scripts/SDInpaintingNcnnReproRunner.cs");
 
         Assert.That(repro, Does.Contain("if (!IsDebugOracleExecution)\n                return true;"));
@@ -67,7 +68,7 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(factory, Does.Contain("if (IsDebugOracleExecution && !textureBlobs.ContainsKey(kv.Key))"));
         Assert.That(factory, Does.Contain("fixed Buffer input is a valid graph boundary"));
         Assert.That(factory, Does.Contain("SetCurrentBufferExecutionContext(context)"));
-        var input = ReadAssetSource("Scripts/NcnnLayers/NcnnInputLayerRepro.cs");
+        var input = ReadPackageSource("NcnnLayers", "NcnnInputLayerRepro.cs");
         Assert.That(input, Does.Contain("Input is a graph-boundary alias"));
         Assert.That(input, Does.Contain("context.bufferBlobs[topName] = inputBuffer"));
         Assert.That(input, Does.Not.Contain("Materialize"));
@@ -78,11 +79,11 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(innerProduct, Does.Contain("Gemm2DAttentionPack4ToLinearTextureA"));
         Assert.That(innerProduct, Does.Contain("TryResolveAttentionPack4ToLinearInput"));
         Assert.That(permute, Does.Contain("HasSingleContextFlattenConsumer"));
-        var binaryOp = ReadAssetSource("Scripts/NcnnLayers/NcnnBinaryOpLayerRepro.cs");
-        var slice = ReadAssetSource("Scripts/NcnnLayers/NcnnSliceLayerRepro.cs");
-        var ops = ReadAssetSource("Scripts/NcnnCompute/NcnnOps.cs");
-        var computeShader = ReadAssetSource("Resources/NcnnCompute.compute");
-        var matmulKernels = ReadAssetSource("Resources/NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4Matmul.hlsl");
+        var binaryOp = ReadPackageSource("NcnnLayers", "NcnnBinaryOpLayerRepro.cs");
+        var slice = ReadPackageSource("NcnnLayers", "NcnnSliceLayerRepro.cs");
+        var ops = ReadPackageSource("NcnnCompute", "NcnnOps.cs");
+        var computeShader = ReadKernelSource("NcnnCompute.compute");
+        var matmulKernels = ReadKernelSource("NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl");
         Assert.That(binaryOp, Does.Contain("broadcastMode = 4"));
         Assert.That(binaryOp, Does.Contain("bShape.c == 1"));
         Assert.That(binaryOp, Does.Contain("IsStrictLinearMatTexture(scalarTexture)"));
@@ -103,8 +104,8 @@ public sealed class NcnnProductionPathAuditTests
         var root = Path.GetDirectoryName(Application.dataPath);
         var allowedRoots = new[]
         {
-            Path.Combine(root, "Assets", "Scripts", "NcnnCompute"),
-            Path.Combine(root, "Assets", "Scripts", "NcnnLayers")
+            Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute"),
+            Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers")
         };
         var violations = new List<string>();
 
@@ -145,7 +146,7 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void ProductionAuditLog_StatesThatIntermediateBufferMaterializationIsZero()
     {
-        var source = ReadAssetSource("Scripts/NcnnCompute/NcnnRepro.cs");
+        var source = ReadPackageSource("NcnnCompute", "NcnnRepro.cs");
         Assert.That(source, Does.Contain("[InferencePathAudit] mode=ProductionTextureOnly"));
         Assert.That(source, Does.Contain("intermediate_buffer_materializations=0"));
     }
@@ -163,6 +164,24 @@ public sealed class NcnnProductionPathAuditTests
     private static string ReadAssetSource(string relativePath)
     {
         return File.ReadAllText(Path.Combine(Application.dataPath, relativePath));
+    }
+
+    private static string ReadPackageSource(params string[] relativePath)
+    {
+        var root = Path.GetDirectoryName(Application.dataPath);
+        var path = Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime");
+        foreach (var segment in relativePath)
+            path = Path.Combine(path, segment);
+        return File.ReadAllText(path);
+    }
+
+    private static string ReadKernelSource(params string[] relativePath)
+    {
+        var root = Path.GetDirectoryName(Application.dataPath);
+        var path = Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources");
+        foreach (var segment in relativePath)
+            path = Path.Combine(path, segment);
+        return File.ReadAllText(path);
     }
 
     private static string MakeAssetRelative(string root, string path)

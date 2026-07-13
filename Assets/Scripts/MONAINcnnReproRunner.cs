@@ -643,7 +643,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private void EnsureRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _repro ??= new NcnnRepro(_ops);
+        _repro ??= NcnnInferenceSessionFactory.Create(_ops);
     }
 
     private void ApplyReproOptions()

@@ -305,14 +305,14 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private void EnsureRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _imageRepro ??= new NcnnRepro(_ops);
+        _imageRepro ??= NcnnInferenceSessionFactory.Create(_ops);
     }
 
     private void EnsureTextRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _textRepro ??= new NcnnRepro(_ops);
-        _projectionRepro ??= new NcnnRepro(_ops);
+        _textRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _projectionRepro ??= NcnnInferenceSessionFactory.Create(_ops);
     }
 
     private void EnsureTokenizer(string clipRoot)

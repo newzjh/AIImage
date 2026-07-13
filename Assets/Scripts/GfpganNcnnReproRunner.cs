@@ -919,7 +919,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     private void EnsureRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _repro ??= new NcnnRepro(_ops);
+        _repro ??= NcnnInferenceSessionFactory.Create(_ops);
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
         // The encoder contains standard 3x3/1x1 convolutions. Enable the existing

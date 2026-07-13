@@ -256,7 +256,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         if (_ops == null)
             _ops = new NcnnOps();
         if (_repro == null)
-            _repro = new NcnnRepro(_ops);
+            _repro = NcnnInferenceSessionFactory.Create(_ops);
     }
 
     private void ApplyReproOptions()

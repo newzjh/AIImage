@@ -984,7 +984,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         {
             UnityEngine.Debug.Log("[SD] Load CLIP | param=" + paths.clipParamPath + " | bin=" + paths.clipBinPath);
             _clipRepro?.Dispose();
-            _clipRepro = new NcnnRepro(_ops);
+            _clipRepro = NcnnInferenceSessionFactory.Create(_ops);
             ApplyCommonOptions(_clipRepro);
             _clipDebugDumped = false;
             var clipParamText = File.ReadAllText(paths.clipParamPath);
@@ -1009,9 +1009,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         _unetRepro?.Dispose();
         _decoderRepro?.Dispose();
         _encoderRepro?.Dispose();
-        _unetRepro = new NcnnRepro(_ops);
-        _decoderRepro = new NcnnRepro(_ops);
-        _encoderRepro = needEncoder ? new NcnnRepro(_ops) : null;
+        _unetRepro = NcnnInferenceSessionFactory.Create(_ops);
+        _decoderRepro = NcnnInferenceSessionFactory.Create(_ops);
+        _encoderRepro = needEncoder ? NcnnInferenceSessionFactory.Create(_ops) : null;
         _unetDebugDumped = false;
         _unetUncondDebugDumped = false;
         ApplyCommonOptions(_unetRepro);
@@ -1781,9 +1781,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     private void EnsureRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _clipRepro ??= new NcnnRepro(_ops);
-        _unetRepro ??= new NcnnRepro(_ops);
-        _decoderRepro ??= new NcnnRepro(_ops);
+        _clipRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _unetRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _decoderRepro ??= NcnnInferenceSessionFactory.Create(_ops);
     }
 
     private void ApplyCommonOptions(NcnnRepro repro)

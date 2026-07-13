@@ -871,7 +871,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         if (_ops == null)
             _ops = new NcnnOps();
         if (_repro == null)
-            _repro = new NcnnRepro(_ops);
+            _repro = NcnnInferenceSessionFactory.Create(_ops);
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;

@@ -1237,7 +1237,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     {
         if (_repro == null)
         {
-            _repro = new NcnnRepro(new NcnnOps());
+            _repro = NcnnInferenceSessionFactory.Create(new NcnnOps());
             _repro.OnConvComplete += OnConvCompleteHandler;
         }
 

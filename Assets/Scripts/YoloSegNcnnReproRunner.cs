@@ -511,7 +511,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private void EnsureRuntimeObjects()
     {
         _ops ??= new NcnnOps();
-        _repro ??= new NcnnRepro(_ops);
+        _repro ??= NcnnInferenceSessionFactory.Create(_ops);
         _imageProcessingCs ??= Resources.Load<ComputeShader>("ImageProcessing");
     }
 
