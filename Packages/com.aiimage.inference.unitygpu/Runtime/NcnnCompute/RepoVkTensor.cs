@@ -10,6 +10,185 @@ namespace NcnnCompute
         Pack4Image = 1
     }
 
+    public enum InferenceTensorDataType
+    {
+        Unknown = 0,
+        Float32 = 1,
+        Float16 = 2,
+        Int8 = 3
+    }
+
+    public enum InferenceTensorLifetime
+    {
+        ExternalInput = 0,
+        GraphOwned = 1,
+        SharedAlias = 2,
+        ExtractedOutput = 3
+    }
+
+    public readonly struct TensorPacking
+    {
+        public TensorPacking(int packSize, int packCount)
+        {
+            PackSize = Mathf.Max(1, packSize);
+            PackCount = Mathf.Max(1, packCount);
+        }
+
+        public int PackSize { get; }
+        public int PackCount { get; }
+        public bool IsPack4 => PackSize == 4;
+    }
+
+    public readonly struct TensorQuantizationMetadata
+    {
+        public TensorQuantizationMetadata(string scheme, float scale, int zeroPoint, int channelAxis = -1)
+        {
+            Scheme = scheme ?? string.Empty;
+            Scale = scale;
+            ZeroPoint = zeroPoint;
+            ChannelAxis = channelAxis;
+        }
+
+        public string Scheme { get; }
+        public float Scale { get; }
+        public int ZeroPoint { get; }
+        public int ChannelAxis { get; }
+        public bool IsQuantized => !string.IsNullOrEmpty(Scheme);
+        public static TensorQuantizationMetadata None => default;
+    }
+
+    public readonly struct TensorProvenance
+    {
+        public TensorProvenance(string producer, string nodeName, string blobName, string debugName)
+        {
+            Producer = producer ?? string.Empty;
+            NodeName = nodeName ?? string.Empty;
+            BlobName = blobName ?? string.Empty;
+            DebugName = debugName ?? string.Empty;
+        }
+
+        public string Producer { get; }
+        public string NodeName { get; }
+        public string BlobName { get; }
+        public string DebugName { get; }
+    }
+
+    public interface IInferenceTensor
+    {
+        TensorDescriptor Descriptor { get; }
+        bool IsDescriptorPublished { get; }
+    }
+
+    public sealed class TensorDescriptor
+    {
+        public TensorDescriptor(
+            NcnnRepro.BufferShape logicalShape,
+            NcnnRepro.BufferShape storageShape,
+            RepoVkTensorLayoutKind layout,
+            TensorPacking packing,
+            InferenceTensorDataType dataType,
+            TensorQuantizationMetadata quantization,
+            string aliasGroup,
+            InferenceTensorLifetime lifetime,
+            IInferenceTensor owner,
+            TensorProvenance provenance,
+            RepoVkTensor nativeTensor)
+        {
+            if (logicalShape.dims <= 0)
+                throw new ArgumentOutOfRangeException(nameof(logicalShape));
+            if (storageShape.dims <= 0)
+                throw new ArgumentOutOfRangeException(nameof(storageShape));
+            if (packing.PackSize <= 0 || packing.PackCount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(packing));
+
+            LogicalShape = logicalShape;
+            StorageShape = storageShape;
+            Layout = layout;
+            Packing = packing;
+            DataType = dataType;
+            Quantization = quantization;
+            AliasGroup = string.IsNullOrWhiteSpace(aliasGroup) ? Guid.NewGuid().ToString("N") : aliasGroup;
+            Lifetime = lifetime;
+            Owner = owner;
+            Provenance = provenance;
+            NativeTensor = nativeTensor;
+        }
+
+        public NcnnRepro.BufferShape LogicalShape { get; }
+        public NcnnRepro.BufferShape StorageShape { get; }
+        public RepoVkTensorLayoutKind Layout { get; }
+        public TensorPacking Packing { get; }
+        public InferenceTensorDataType DataType { get; }
+        public TensorQuantizationMetadata Quantization { get; }
+        public string AliasGroup { get; }
+        public InferenceTensorLifetime Lifetime { get; }
+        public IInferenceTensor Owner { get; }
+        public TensorProvenance Provenance { get; }
+        public RepoVkTensor NativeTensor { get; }
+
+        public bool IsStorageLayoutCompatibleWith(
+            NcnnRepro.BufferShape targetStorageShape,
+            RepoVkTensorLayoutKind targetLayout,
+            TensorPacking targetPacking,
+            InferenceTensorDataType targetDataType)
+        {
+            return ShapeEquals(StorageShape, targetStorageShape)
+                && Layout == targetLayout
+                && Packing.PackSize == targetPacking.PackSize
+                && Packing.PackCount == targetPacking.PackCount
+                && DataType == targetDataType;
+        }
+
+        public override string ToString()
+        {
+            return "logical=" + FormatShape(LogicalShape)
+                + " storage=" + FormatShape(StorageShape)
+                + " layout=" + Layout
+                + " pack=" + Packing.PackSize + "x" + Packing.PackCount
+                + " dtype=" + DataType
+                + " alias_group=" + AliasGroup;
+        }
+
+        internal static bool ShapeEquals(NcnnRepro.BufferShape a, NcnnRepro.BufferShape b)
+        {
+            return a.dims == b.dims
+                && a.w == b.w
+                && a.h == b.h
+                && a.d == b.d
+                && a.c == b.c;
+        }
+
+        internal static string FormatShape(NcnnRepro.BufferShape shape)
+        {
+            return "dims=" + shape.dims
+                + " w=" + shape.w
+                + " h=" + shape.h
+                + " d=" + shape.d
+                + " c=" + shape.c;
+        }
+    }
+
+    public sealed class TensorAliasTransformRequiredException : InvalidOperationException
+    {
+        public TensorAliasTransformRequiredException(TensorDescriptor source, NcnnRepro.BufferShape targetLogicalShape, NcnnRepro.BufferShape targetStorageShape)
+            : base(
+                "texture alias requires a real texture transform; buffer fallback is prohibited"
+                + " | source_logical=" + TensorDescriptor.FormatShape(source.LogicalShape)
+                + " | source_storage=" + TensorDescriptor.FormatShape(source.StorageShape)
+                + " | target_logical=" + TensorDescriptor.FormatShape(targetLogicalShape)
+                + " | target_storage=" + TensorDescriptor.FormatShape(targetStorageShape)
+                + " | requires_texture_transform=true")
+        {
+            SourceDescriptor = source;
+            TargetLogicalShape = targetLogicalShape;
+            TargetStorageShape = targetStorageShape;
+        }
+
+        public TensorDescriptor SourceDescriptor { get; }
+        public NcnnRepro.BufferShape TargetLogicalShape { get; }
+        public NcnnRepro.BufferShape TargetStorageShape { get; }
+    }
+
     public abstract class RepoVkTensor
     {
         protected RepoVkTensor(

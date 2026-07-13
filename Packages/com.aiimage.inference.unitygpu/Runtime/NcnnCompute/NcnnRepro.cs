@@ -62,26 +62,29 @@ namespace NcnnCompute
                 this.d = d;
                 this.c = c;
             }
+
+            public override string ToString()
+            {
+                return TensorDescriptor.FormatShape(this);
+            }
         }
 
         public readonly struct RepoVkTensorContract
         {
-            public RepoVkTensorContract(
-                RepoVkTensor tensor,
-                BufferShape logicalShape,
-                BufferShape storageShape,
-                RepoVkTensorLayoutKind layoutKind)
+            public RepoVkTensorContract(IInferenceTensor tensor)
             {
-                Tensor = tensor;
-                LogicalShape = logicalShape;
-                StorageShape = storageShape;
-                LayoutKind = layoutKind;
+                Descriptor = tensor != null
+                    ? tensor.Descriptor
+                    : throw new ArgumentNullException(nameof(tensor));
+                if (Descriptor == null)
+                    throw new InvalidOperationException("tensor descriptor has not been published");
             }
 
-            public RepoVkTensor Tensor { get; }
-            public BufferShape LogicalShape { get; }
-            public BufferShape StorageShape { get; }
-            public RepoVkTensorLayoutKind LayoutKind { get; }
+            public TensorDescriptor Descriptor { get; }
+            public RepoVkTensor Tensor => Descriptor != null ? Descriptor.NativeTensor : null;
+            public BufferShape LogicalShape => Descriptor != null ? Descriptor.LogicalShape : default;
+            public BufferShape StorageShape => Descriptor != null ? Descriptor.StorageShape : default;
+            public RepoVkTensorLayoutKind LayoutKind => Descriptor != null ? Descriptor.Layout : default;
             public int Width => Tensor != null ? Tensor.Width : 0;
             public int Height => Tensor != null ? Tensor.Height : 0;
             public int Depth => Tensor != null ? Tensor.Depth : 0;
@@ -123,7 +126,7 @@ namespace NcnnCompute
             }
         }
 
-        public sealed class TensorRef
+        public sealed class TensorRef : IInferenceTensor
         {
             public RenderTexture texture;
             public int width;
@@ -138,6 +141,29 @@ namespace NcnnCompute
             public RepoVkTensor repoTensor;
             public RepoVkTensorLayoutKind layoutKind;
             public TensorRef sharedTextureOwner;
+            private TensorDescriptor _descriptor;
+
+            public TensorDescriptor Descriptor => _descriptor;
+            public bool IsDescriptorPublished => _descriptor != null;
+
+            internal void PublishDescriptor(TensorDescriptor descriptor)
+            {
+                if (descriptor == null)
+                    throw new ArgumentNullException(nameof(descriptor));
+                if (_descriptor != null)
+                    return;
+
+                _descriptor = descriptor;
+                repoTensor = descriptor.NativeTensor;
+                layoutKind = descriptor.Layout;
+                logicalShape = descriptor.LogicalShape;
+                storageShape = descriptor.StorageShape;
+                hasLogicalShape = true;
+                hasStorageShape = true;
+                width = descriptor.NativeTensor != null ? descriptor.NativeTensor.Width : width;
+                height = descriptor.NativeTensor != null ? descriptor.NativeTensor.Height : height;
+                packs = descriptor.Packing.PackCount;
+            }
 
             public void ClearTexture()
             {
@@ -172,7 +198,7 @@ namespace NcnnCompute
             }
         }
 
-        public sealed class CmdTensorRef
+        public sealed class CmdTensorRef : IInferenceTensor
         {
             public ComputeTexture texture;
             public int width;
@@ -195,6 +221,29 @@ namespace NcnnCompute
             public RepoVkTensor repoTensor;
             public RepoVkTensorLayoutKind layoutKind;
             public CmdTensorRef sharedTextureOwner;
+            private TensorDescriptor _descriptor;
+
+            public TensorDescriptor Descriptor => _descriptor;
+            public bool IsDescriptorPublished => _descriptor != null;
+
+            internal void PublishDescriptor(TensorDescriptor descriptor)
+            {
+                if (descriptor == null)
+                    throw new ArgumentNullException(nameof(descriptor));
+                if (_descriptor != null)
+                    return;
+
+                _descriptor = descriptor;
+                repoTensor = descriptor.NativeTensor;
+                layoutKind = descriptor.Layout;
+                logicalShape = descriptor.LogicalShape;
+                storageShape = descriptor.StorageShape;
+                hasLogicalShape = true;
+                hasStorageShape = true;
+                width = descriptor.NativeTensor != null ? descriptor.NativeTensor.Width : width;
+                height = descriptor.NativeTensor != null ? descriptor.NativeTensor.Height : height;
+                packs = descriptor.Packing.PackCount;
+            }
 
             public void ClearTexture()
             {
@@ -780,7 +829,7 @@ namespace NcnnCompute
                 var logicalShape = _textureShapes.TryGetValue(name, out var existingShape)
                     ? existingShape
                     : new BufferShape(3, materialized.width, materialized.height, 1, Mathf.Max(1, materialized.volumeDepth > 0 ? materialized.volumeDepth : 1) * 4);
-                _textureBlobs[name] = CreateTextureRef(materialized, logicalShape, logicalShape, owned: true);
+                _textureBlobs[name] = CreateTextureRef(materialized, logicalShape, logicalShape, owned: true, blobName: name);
                 return materialized;
             }
 
@@ -3748,53 +3797,113 @@ namespace NcnnCompute
             return Mathf.Max(1, texture.depth);
         }
 
+        private static InferenceTensorDataType ResolveInferenceTensorDataType(RenderTextureFormat format)
+        {
+            switch (format)
+            {
+                case RenderTextureFormat.RHalf:
+                case RenderTextureFormat.RGHalf:
+                case RenderTextureFormat.ARGBHalf:
+                    return InferenceTensorDataType.Float16;
+                case RenderTextureFormat.RFloat:
+                case RenderTextureFormat.RGFloat:
+                case RenderTextureFormat.ARGBFloat:
+                    return InferenceTensorDataType.Float32;
+                default:
+                    return InferenceTensorDataType.Unknown;
+            }
+        }
+
+        private static TensorProvenance CreateTensorProvenance(string blobName, string debugName)
+        {
+            return new TensorProvenance("NcnnRepro", debugName, blobName, debugName);
+        }
+
+        private static TensorPacking ResolveTensorPacking(BufferShape storageShape, RepoVkTensorLayoutKind layout, int packCount)
+        {
+            var packSize = layout == RepoVkTensorLayoutKind.Pack4Image
+                || (storageShape.dims >= 3 && Mathf.Max(1, storageShape.c) > 1)
+                ? 4
+                : 1;
+            return new TensorPacking(packSize, packCount);
+        }
+
         internal static void SyncTextureContractMetadata(
             TensorRef tensor,
             BufferShape logicalShape,
-            BufferShape storageShape)
+            BufferShape storageShape,
+            TensorProvenance? provenance = null)
         {
             if (tensor == null || tensor.texture == null)
                 return;
 
+            if (tensor.IsDescriptorPublished)
+                return;
+
             var packs = GetTexturePackCount(storageShape, tensor.texture);
-            tensor.width = tensor.texture.width;
-            tensor.height = tensor.texture.height;
-            tensor.packs = packs;
-            tensor.hasLogicalShape = true;
-            tensor.logicalShape = logicalShape;
-            tensor.hasStorageShape = true;
-            tensor.storageShape = storageShape;
-            tensor.layoutKind = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
-            tensor.repoTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, packs);
+            var layout = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
+            var nativeTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, packs);
+            var owner = ResolveTextureLifetimeOwner(tensor) ?? tensor;
+            var ownerDescriptor = owner != null ? owner.Descriptor : null;
+            var descriptor = new TensorDescriptor(
+                logicalShape,
+                storageShape,
+                layout,
+                ResolveTensorPacking(storageShape, layout, packs),
+                ResolveInferenceTensorDataType(tensor.texture.format),
+                TensorQuantizationMetadata.None,
+                ownerDescriptor != null ? ownerDescriptor.AliasGroup : null,
+                ReferenceEquals(owner, tensor)
+                    ? (tensor.owned ? InferenceTensorLifetime.GraphOwned : InferenceTensorLifetime.ExternalInput)
+                    : InferenceTensorLifetime.SharedAlias,
+                owner,
+                provenance ?? CreateTensorProvenance(string.Empty, tensor.texture.name),
+                nativeTensor);
+            tensor.PublishDescriptor(descriptor);
         }
 
         internal static void SyncCmdTensorContractMetadata(
             CmdTensorRef tensor,
             BufferShape logicalShape,
-            BufferShape storageShape)
+            BufferShape storageShape,
+            TensorProvenance? provenance = null)
         {
             if (tensor == null || tensor.texture == null)
                 return;
 
+            if (tensor.IsDescriptorPublished)
+                return;
+
             var packs = GetCmdTexturePackCount(storageShape, tensor.texture);
-            tensor.width = tensor.texture.width;
-            tensor.height = tensor.texture.height;
-            tensor.packs = packs;
-            tensor.hasLogicalShape = true;
-            tensor.logicalShape = logicalShape;
-            tensor.hasStorageShape = true;
-            tensor.storageShape = storageShape;
-            tensor.layoutKind = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
-            tensor.repoTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, packs);
+            var layout = ResolveRepoVkLayoutKind(logicalShape, storageShape, packs);
+            var nativeTensor = CreateRepoVkTensor(tensor.texture, logicalShape, storageShape, packs);
+            var owner = ResolveCmdTextureLifetimeOwner(tensor) ?? tensor;
+            var ownerDescriptor = owner != null ? owner.Descriptor : null;
+            var descriptor = new TensorDescriptor(
+                logicalShape,
+                storageShape,
+                layout,
+                ResolveTensorPacking(storageShape, layout, packs),
+                ResolveInferenceTensorDataType(tensor.texture.format),
+                TensorQuantizationMetadata.None,
+                ownerDescriptor != null ? ownerDescriptor.AliasGroup : null,
+                ReferenceEquals(owner, tensor)
+                    ? (tensor.owned ? InferenceTensorLifetime.GraphOwned : InferenceTensorLifetime.ExternalInput)
+                    : InferenceTensorLifetime.SharedAlias,
+                owner,
+                provenance ?? CreateTensorProvenance(string.Empty, tensor.texture.trackerLabel),
+                nativeTensor);
+            tensor.PublishDescriptor(descriptor);
         }
 
-        internal static TensorRef CreateTextureRef(
+        public static TensorRef CreateTextureRef(
             RenderTexture texture,
             BufferShape logicalShape,
             BufferShape storageShape,
             bool owned,
             int refs = 1,
-            TensorRef sharedTextureOwner = null)
+            TensorRef sharedTextureOwner = null,
+            string blobName = null)
         {
             if (texture == null)
                 throw new ArgumentNullException(nameof(texture));
@@ -3806,17 +3915,18 @@ namespace NcnnCompute
                 owned = owned,
                 sharedTextureOwner = sharedTextureOwner
             };
-            SyncTextureContractMetadata(tensor, logicalShape, storageShape);
+            SyncTextureContractMetadata(tensor, logicalShape, storageShape, CreateTensorProvenance(blobName, texture.name));
             return tensor;
         }
 
-        internal static CmdTensorRef CreateCmdTensorRef(
+        public static CmdTensorRef CreateCmdTensorRef(
             ComputeTexture texture,
             BufferShape logicalShape,
             BufferShape storageShape,
             bool owned,
             int refs = 1,
-            CmdTensorRef sharedTextureOwner = null)
+            CmdTensorRef sharedTextureOwner = null,
+            string blobName = null)
         {
             if (texture == null)
                 throw new ArgumentNullException(nameof(texture));
@@ -3828,7 +3938,7 @@ namespace NcnnCompute
                 owned = owned,
                 sharedTextureOwner = sharedTextureOwner
             };
-            SyncCmdTensorContractMetadata(tensor, logicalShape, storageShape);
+            SyncCmdTensorContractMetadata(tensor, logicalShape, storageShape, CreateTensorProvenance(blobName, texture.trackerLabel));
             return tensor;
         }
 
@@ -3848,7 +3958,7 @@ namespace NcnnCompute
             return current;
         }
 
-        internal static TensorRef CreateTextureAlias(
+        public static TensorRef CreateTextureAlias(
             TensorRef source,
             BufferShape logicalShape,
             BufferShape storageShape)
@@ -3856,12 +3966,28 @@ namespace NcnnCompute
             if (source == null || source.texture == null)
                 throw new ArgumentNullException(nameof(source));
 
+            EnsureRepoVkTensor(source);
+            var sourceDescriptor = source.Descriptor;
+            var targetPacks = GetTexturePackCount(storageShape, source.texture);
+            var targetLayout = ResolveRepoVkLayoutKind(logicalShape, storageShape, targetPacks);
+            var targetPacking = ResolveTensorPacking(storageShape, targetLayout, targetPacks);
+            var targetDataType = ResolveInferenceTensorDataType(source.texture.format);
+            if (!sourceDescriptor.IsStorageLayoutCompatibleWith(storageShape, targetLayout, targetPacking, targetDataType))
+                throw new TensorAliasTransformRequiredException(sourceDescriptor, logicalShape, storageShape);
+
             var lifetimeOwner = ResolveTextureLifetimeOwner(source) ?? source;
             lifetimeOwner.refs++;
-            return CreateTextureRef(source.texture, logicalShape, storageShape, owned: false, refs: 1, sharedTextureOwner: lifetimeOwner);
+            return CreateTextureRef(
+                source.texture,
+                logicalShape,
+                storageShape,
+                owned: false,
+                refs: 1,
+                sharedTextureOwner: lifetimeOwner,
+                blobName: sourceDescriptor.Provenance.BlobName);
         }
 
-        internal static CmdTensorRef CreateCmdTensorAlias(
+        public static CmdTensorRef CreateCmdTensorAlias(
             CmdTensorRef source,
             BufferShape logicalShape,
             BufferShape storageShape)
@@ -3869,9 +3995,25 @@ namespace NcnnCompute
             if (source == null || source.texture == null)
                 throw new ArgumentNullException(nameof(source));
 
+            EnsureRepoVkTensor(source);
+            var sourceDescriptor = source.Descriptor;
+            var targetPacks = GetCmdTexturePackCount(storageShape, source.texture);
+            var targetLayout = ResolveRepoVkLayoutKind(logicalShape, storageShape, targetPacks);
+            var targetPacking = ResolveTensorPacking(storageShape, targetLayout, targetPacks);
+            var targetDataType = ResolveInferenceTensorDataType(source.texture.format);
+            if (!sourceDescriptor.IsStorageLayoutCompatibleWith(storageShape, targetLayout, targetPacking, targetDataType))
+                throw new TensorAliasTransformRequiredException(sourceDescriptor, logicalShape, storageShape);
+
             var lifetimeOwner = ResolveCmdTextureLifetimeOwner(source) ?? source;
             lifetimeOwner.refs++;
-            return CreateCmdTensorRef(source.texture, logicalShape, storageShape, owned: false, refs: 1, sharedTextureOwner: lifetimeOwner);
+            return CreateCmdTensorRef(
+                source.texture,
+                logicalShape,
+                storageShape,
+                owned: false,
+                refs: 1,
+                sharedTextureOwner: lifetimeOwner,
+                blobName: sourceDescriptor.Provenance.BlobName);
         }
 
         internal static void DetachTextureOwnership(TensorRef tensor)
@@ -3920,20 +4062,10 @@ namespace NcnnCompute
             if (tensor == null || tensor.texture == null)
                 throw new InvalidOperationException("texture contract unavailable: " + name);
 
-            var logicalShape = textureShapes != null && textureShapes.TryGetValue(name, out var explicitShape)
-                ? explicitShape
-                : (tensor.hasLogicalShape ? tensor.logicalShape : default);
-            if (logicalShape.dims <= 0)
-                logicalShape = tensor.repoTensor != null
-                    ? tensor.repoTensor.LogicalShape
-                    : new BufferShape(3, tensor.width, tensor.height, 1, tensor.packs * 4);
-
-            var storageShape = tensor.hasStorageShape
-                ? tensor.storageShape
-                : (tensor.repoTensor != null ? tensor.repoTensor.StorageShape : logicalShape);
-
-            SyncTextureContractMetadata(tensor, logicalShape, storageShape);
-            return new RepoVkTensorContract(tensor.repoTensor, logicalShape, storageShape, tensor.layoutKind);
+            // The per-name dictionary remains for legacy execution bookkeeping only.
+            // Published tensor descriptors are the sole source of contract metadata.
+            EnsureRepoVkTensor(tensor);
+            return new RepoVkTensorContract(tensor);
         }
 
         internal static RepoVkTensorContract GetCmdTensorContract(
@@ -3944,17 +4076,8 @@ namespace NcnnCompute
             if (tensor == null || tensor.texture == null)
                 throw new ArgumentNullException(nameof(tensor));
 
-            var logicalShape = tensor.hasLogicalShape
-                ? tensor.logicalShape
-                : (fallbackLogicalShape ?? (tensor.repoTensor != null
-                    ? tensor.repoTensor.LogicalShape
-                    : new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4))));
-            var storageShape = tensor.hasStorageShape
-                ? tensor.storageShape
-                : (fallbackStorageShape ?? (tensor.repoTensor != null ? tensor.repoTensor.StorageShape : logicalShape));
-
-            SyncCmdTensorContractMetadata(tensor, logicalShape, storageShape);
-            return new RepoVkTensorContract(tensor.repoTensor, logicalShape, storageShape, tensor.layoutKind);
+            EnsureRepoVkTensor(tensor);
+            return new RepoVkTensorContract(tensor);
         }
 
         internal static bool TryGetExistingTextureContract(
@@ -3974,7 +4097,7 @@ namespace NcnnCompute
                 return false;
             }
 
-            contract = GetTextureContract(textureShapes, texture, name);
+            contract = GetTextureContract(null, texture, name);
             return true;
         }
 
@@ -3995,10 +4118,7 @@ namespace NcnnCompute
                 return false;
             }
 
-            BufferShape? logicalShape = null;
-            if (shapes != null && shapes.TryGetValue(name, out var explicitShape))
-                logicalShape = explicitShape;
-            contract = GetCmdTensorContract(texture, logicalShape, texture.hasStorageShape ? texture.storageShape : (BufferShape?)null);
+            contract = GetCmdTensorContract(texture);
             return true;
         }
 
@@ -4010,12 +4130,15 @@ namespace NcnnCompute
             if (tensor == null || tensor.texture == null)
                 return;
 
+            if (tensor.IsDescriptorPublished)
+                return;
+
             var logicalShape = tensor.hasLogicalShape
                 ? tensor.logicalShape
-                : fallbackLogicalShape ?? new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4));
+                : new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4));
             var storageShape = tensor.hasStorageShape
                 ? tensor.storageShape
-                : fallbackStorageShape ?? logicalShape;
+                : logicalShape;
             SyncTextureContractMetadata(tensor, logicalShape, storageShape);
         }
 
@@ -4027,12 +4150,15 @@ namespace NcnnCompute
             if (tensor == null || tensor.texture == null)
                 return;
 
+            if (tensor.IsDescriptorPublished)
+                return;
+
             var logicalShape = tensor.hasLogicalShape
                 ? tensor.logicalShape
-                : fallbackLogicalShape ?? new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4));
+                : new BufferShape(3, Mathf.Max(1, tensor.width), Mathf.Max(1, tensor.height), 1, Mathf.Max(1, tensor.packs * 4));
             var storageShape = tensor.hasStorageShape
                 ? tensor.storageShape
-                : fallbackStorageShape ?? logicalShape;
+                : logicalShape;
             SyncCmdTensorContractMetadata(tensor, logicalShape, storageShape);
         }
 
@@ -4219,7 +4345,7 @@ namespace NcnnCompute
                 : new BufferShape(3, materialized.width, materialized.height, 1, Mathf.Max(1, materialized.volumeDepth > 0 ? materialized.volumeDepth : 1) * 4);
             var packs = GetTexturePackCount(shape, materialized);
 
-            tr = CreateTextureRef(materialized, shape, shape, owned: true);
+            tr = CreateTextureRef(materialized, shape, shape, owned: true, blobName: name);
             textureBlobs[name] = tr;
             textureShapes[name] = shape;
             return tr;
@@ -4388,7 +4514,7 @@ namespace NcnnCompute
                 if (logicalCount > physicalCount)
                     throw new InvalidOperationException("texture input logical shape exceeds physical storage: " + kv.Key);
 
-                textureBlobs[kv.Key] = CreateTextureRef(rt, logicalShape, logicalShape, owned: false, refs: useCount);
+                textureBlobs[kv.Key] = CreateTextureRef(rt, logicalShape, logicalShape, owned: false, refs: useCount, blobName: kv.Key);
                 textureShapes[kv.Key] = logicalShape;
             }
         }
@@ -4426,7 +4552,7 @@ namespace NcnnCompute
                 if (logicalCount > physicalCount)
                     throw new InvalidOperationException("command-buffer texture input logical shape exceeds physical storage: " + kv.Key);
 
-                blobs[kv.Key] = CreateCmdTensorRef(texture, logicalShape, logicalShape, owned: false, refs: useCount);
+                blobs[kv.Key] = CreateCmdTensorRef(texture, logicalShape, logicalShape, owned: false, refs: useCount, blobName: kv.Key);
                 shapes[kv.Key] = logicalShape;
             }
         }
@@ -4904,7 +5030,7 @@ namespace NcnnCompute
             RenderTexture texture,
             BufferShape logicalShape)
         {
-            textureBlobs[name] = CreateTextureRef(texture, logicalShape, logicalShape, owned: true);
+            textureBlobs[name] = CreateTextureRef(texture, logicalShape, logicalShape, owned: true, blobName: name);
             textureShapes[name] = logicalShape;
         }
 
@@ -4916,7 +5042,7 @@ namespace NcnnCompute
             BufferShape logicalShape,
             BufferShape storageShape)
         {
-            textureBlobs[name] = CreateTextureRef(texture, logicalShape, storageShape, owned: true);
+            textureBlobs[name] = CreateTextureRef(texture, logicalShape, storageShape, owned: true, blobName: name);
             textureShapes[name] = logicalShape;
         }
 
@@ -5013,7 +5139,7 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Failed to materialize CommandBuffer tensor: " + topName);
 
             var logicalShape = new BufferShape(tensor.dims, tensor.w, tensor.h, tensor.d, tensor.c);
-            blobs[topName] = CreateCmdTensorRef(rt, logicalShape, logicalShape, owned: true);
+            blobs[topName] = CreateCmdTensorRef(rt, logicalShape, logicalShape, owned: true, blobName: topName);
             if (shapes != null)
                 shapes[topName] = logicalShape;
         }
@@ -5038,7 +5164,7 @@ namespace NcnnCompute
             var outArr = RentTempArray(cmd, width, height, packs, RenderTextureFormat.ARGBHalf);
             var storageShapeValue = logicalShape ?? default;
             blobs[topName] = logicalShape.HasValue
-                ? CreateCmdTensorRef(outArr, logicalShape.Value, storageShapeValue, owned: true)
+                ? CreateCmdTensorRef(outArr, logicalShape.Value, storageShapeValue, owned: true, blobName: topName)
                 : new CmdTensorRef
                 {
                     texture = outArr,
@@ -5157,7 +5283,7 @@ namespace NcnnCompute
             }
 
             blobs[topName] = logicalShape.HasValue
-                ? CreateCmdTensorRef(outArr, logicalShape.Value, logicalShape.Value, owned: true)
+                ? CreateCmdTensorRef(outArr, logicalShape.Value, logicalShape.Value, owned: true, blobName: topName)
                 : new CmdTensorRef
                 {
                     texture = outArr,
@@ -6422,7 +6548,7 @@ namespace NcnnCompute
         {
             if (tr == null || tr.texture == null)
                 return fallbackLogicalShape;
-            return GetCmdTensorContract(tr, fallbackLogicalShape, tr != null && tr.hasStorageShape ? tr.storageShape : fallbackLogicalShape).StorageShape;
+            return GetCmdTensorContract(tr).StorageShape;
         }
 
         internal static bool MatchesPack4TextureStorage(TensorRef tr, BufferShape logicalShape)
