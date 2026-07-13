@@ -1,0 +1,14 @@
+{
+  "name": "AIImage.Inference.Kernels",
+  "rootNamespace": "AIImage.Inference.Kernels",
+  "references": ["AIImage.Inference.UnityGpu"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

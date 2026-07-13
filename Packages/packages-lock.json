@@ -1,5 +1,46 @@
 {
   "dependencies": {
+    "com.aiimage.inference.core": {
+      "version": "file:com.aiimage.inference.core",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
+    "com.aiimage.inference.kernels": {
+      "version": "file:com.aiimage.inference.kernels",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.aiimage.inference.unitygpu": "0.1.0-pre.1"
+      }
+    },
+    "com.aiimage.inference.unitygpu": {
+      "version": "file:com.aiimage.inference.unitygpu",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.aiimage.inference.core": "0.1.0-pre.1",
+        "com.cysharp.unitask": "2.5.4"
+      }
+    },
+    "com.aiimage.inference.validation": {
+      "version": "file:com.aiimage.inference.validation",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.aiimage.inference.core": "0.1.0-pre.1",
+        "com.aiimage.inference.unitygpu": "0.1.0-pre.1",
+        "com.aiimage.inference.kernels": "0.1.0-pre.1",
+        "com.unity.test-framework": "1.1.33"
+      }
+    },
+    "com.cysharp.unitask": {
+      "version": "2.5.4",
+      "depth": 1,
+      "source": "registry",
+      "dependencies": {},
+      "url": "https://upr.voltstro.dev"
+    },
     "com.unity.cinemachine": {
       "version": "2.10.5",
       "depth": 0,

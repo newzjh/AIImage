@@ -1,0 +1,14 @@
+{
+  "name": "AIImage.Inference.UnityGpu",
+  "rootNamespace": "AIImage.Inference.UnityGpu",
+  "references": ["AIImage.Inference.Core", "UniTask"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

@@ -1,5 +1,9 @@
 {
   "dependencies": {
+    "com.aiimage.inference.core": "file:com.aiimage.inference.core",
+    "com.aiimage.inference.unitygpu": "file:com.aiimage.inference.unitygpu",
+    "com.aiimage.inference.kernels": "file:com.aiimage.inference.kernels",
+    "com.aiimage.inference.validation": "file:com.aiimage.inference.validation",
     "com.unity.cinemachine": "2.10.5",
     "com.unity.collab-proxy": "2.9.3",
     "com.unity.ide.rider": "3.0.38",
@@ -43,6 +47,9 @@
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0"
   },
+  "testables": [
+    "com.aiimage.inference.validation"
+  ],
   "scopedRegistries": [
     {
       "name": "VoltUPR",

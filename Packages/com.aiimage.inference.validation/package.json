@@ -1,0 +1,23 @@
+{
+  "name": "com.aiimage.inference.validation",
+  "displayName": "AIImage Inference Validation",
+  "version": "0.1.0-pre.1",
+  "unity": "2022.3",
+  "description": "Editor-only validation helpers and package boundary checks for AIImage inference.",
+  "keywords": ["aiimage", "inference", "validation", "testing"],
+  "author": { "name": "AIImage" },
+  "license": "SEE LICENSE IN LICENSE.md",
+  "samples": [
+    {
+      "displayName": "Validation smoke",
+      "description": "Describes editor-only package validation.",
+      "path": "Samples~/ValidationSmoke"
+    }
+  ],
+  "dependencies": {
+    "com.aiimage.inference.core": "0.1.0-pre.1",
+    "com.aiimage.inference.unitygpu": "0.1.0-pre.1",
+    "com.aiimage.inference.kernels": "0.1.0-pre.1",
+    "com.unity.test-framework": "1.1.33"
+  }
+}

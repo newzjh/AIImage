@@ -1,0 +1,14 @@
+{
+  "name": "AIImage.Inference.Validation",
+  "rootNamespace": "AIImage.Inference.Validation",
+  "references": ["AIImage.Inference.Core", "AIImage.Inference.UnityGpu", "AIImage.Inference.Kernels"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

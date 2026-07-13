@@ -1,0 +1,15 @@
+{
+  "name": "AIImage.Inference.Validation.Tests",
+  "rootNamespace": "AIImage.Inference.Validation.Tests",
+  "references": ["AIImage.Inference.Core", "AIImage.Inference.Validation"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": ["TestAssemblies"]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "com.aiimage.inference.unitygpu",
+  "displayName": "AIImage Inference Unity GPU Backend",
+  "version": "0.1.0-pre.1",
+  "unity": "2022.3",
+  "description": "Unity Pack4 texture and CommandBuffer backend for AIImage inference.",
+  "keywords": ["aiimage", "inference", "unity", "gpu", "pack4"],
+  "author": { "name": "AIImage" },
+  "license": "SEE LICENSE IN LICENSE.md",
+  "samples": [
+    {
+      "displayName": "Runner integration",
+      "description": "Explains how application runners resolve the packaged inference runtime.",
+      "path": "Samples~/RunnerIntegration"
+    }
+  ],
+  "dependencies": {
+    "com.aiimage.inference.core": "0.1.0-pre.1",
+    "com.cysharp.unitask": "2.5.4"
+  }
+}
