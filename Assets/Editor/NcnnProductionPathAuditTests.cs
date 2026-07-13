@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using NcnnCompute;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -151,6 +152,108 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(source, Does.Contain("intermediate_buffer_materializations=0"));
     }
 
+    [Test]
+    public void TensorDescriptor_CompatibleViewsKeepRenderTextureOwnerAndRemainImmutable()
+    {
+        var texture = new RenderTexture(4, 4, 0, RenderTextureFormat.ARGBHalf);
+        try
+        {
+            var storage = new NcnnRepro.BufferShape(3, 4, 4, 1, 8);
+            var source = NcnnRepro.CreateTextureRef(texture, storage, storage, owned: false, blobName: "source");
+            var descriptor = source.Descriptor;
+
+            var reshape = NcnnRepro.CreateTextureAlias(
+                source,
+                new NcnnRepro.BufferShape(2, 16, 8, 1, 1),
+                storage);
+            var squeeze = NcnnRepro.CreateTextureAlias(
+                source,
+                new NcnnRepro.BufferShape(2, 16, 8, 1, 1),
+                storage);
+            var flatten = NcnnRepro.CreateTextureAlias(
+                source,
+                new NcnnRepro.BufferShape(1, 128, 1, 1, 1),
+                storage);
+
+            Assert.That(reshape.texture, Is.SameAs(texture));
+            Assert.That(squeeze.texture, Is.SameAs(texture));
+            Assert.That(flatten.texture, Is.SameAs(texture));
+            Assert.That(reshape.sharedTextureOwner, Is.SameAs(source));
+            Assert.That(flatten.Descriptor.Owner, Is.SameAs(source));
+            Assert.That(source.refs, Is.EqualTo(4));
+            Assert.That(flatten.Descriptor.AliasGroup, Is.EqualTo(descriptor.AliasGroup));
+
+            source.logicalShape = new NcnnRepro.BufferShape(3, 1, 1, 1, 1);
+            source.storageShape = new NcnnRepro.BufferShape(3, 1, 1, 1, 1);
+            Assert.That(source.Descriptor, Is.SameAs(descriptor));
+            Assert.That(source.Descriptor.LogicalShape, Is.EqualTo(storage));
+            Assert.That(source.Descriptor.StorageShape, Is.EqualTo(storage));
+            Assert.That(typeof(TensorDescriptor).GetProperty(nameof(TensorDescriptor.LogicalShape)).CanWrite, Is.False);
+            Assert.That(typeof(TensorDescriptor).GetProperty(nameof(TensorDescriptor.StorageShape)).CanWrite, Is.False);
+
+        }
+        finally
+        {
+            texture.Release();
+            UnityEngine.Object.DestroyImmediate(texture);
+        }
+    }
+
+    [Test]
+    public void TensorDescriptor_IncompatibleAliasRequiresTextureTransformWithoutBufferFallback()
+    {
+        var texture = new RenderTexture(4, 4, 0, RenderTextureFormat.ARGBHalf);
+        try
+        {
+            var sourceStorage = new NcnnRepro.BufferShape(3, 4, 4, 1, 8);
+            var source = NcnnRepro.CreateTextureRef(texture, sourceStorage, sourceStorage, owned: false, blobName: "source");
+            var targetLogical = new NcnnRepro.BufferShape(3, 8, 2, 1, 8);
+            var targetStorage = new NcnnRepro.BufferShape(3, 8, 2, 1, 8);
+
+            var error = Assert.Throws<TensorAliasTransformRequiredException>(
+                () => NcnnRepro.CreateTextureAlias(source, targetLogical, targetStorage));
+
+            Assert.That(error.Message, Does.Contain("source_logical=dims=3 w=4 h=4 d=1 c=8"));
+            Assert.That(error.Message, Does.Contain("source_storage=dims=3 w=4 h=4 d=1 c=8"));
+            Assert.That(error.Message, Does.Contain("target_logical=dims=3 w=8 h=2 d=1 c=8"));
+            Assert.That(error.Message, Does.Contain("target_storage=dims=3 w=8 h=2 d=1 c=8"));
+            Assert.That(error.Message, Does.Contain("requires_texture_transform=true"));
+            Assert.That(error.Message, Does.Contain("buffer fallback is prohibited"));
+        }
+        finally
+        {
+            texture.Release();
+            UnityEngine.Object.DestroyImmediate(texture);
+        }
+    }
+
+    [Test]
+    public void TensorDescriptor_CommandTextureAliasRetainsOwnerAndDescriptor()
+    {
+        var texture = new ComputeTexture
+        {
+            nameID = 17,
+            width = 4,
+            height = 4,
+            depth = 2,
+            dimension = UnityEngine.Rendering.TextureDimension.Tex2DArray,
+            format = RenderTextureFormat.ARGBHalf,
+            trackerLabel = "cmd-source"
+        };
+        var storage = new NcnnRepro.BufferShape(3, 4, 4, 1, 8);
+        var source = NcnnRepro.CreateCmdTensorRef(texture, storage, storage, owned: false, blobName: "cmd-source");
+        var alias = NcnnRepro.CreateCmdTensorAlias(
+            source,
+            new NcnnRepro.BufferShape(1, 128, 1, 1, 1),
+            storage);
+
+        Assert.That(alias.texture, Is.SameAs(texture));
+        Assert.That(alias.sharedTextureOwner, Is.SameAs(source));
+        Assert.That(alias.Descriptor.Owner, Is.SameAs(source));
+        Assert.That(alias.Descriptor.AliasGroup, Is.EqualTo(source.Descriptor.AliasGroup));
+        Assert.That(alias.Descriptor.Lifetime, Is.EqualTo(InferenceTensorLifetime.SharedAlias));
+    }
+
     public static void RunBatchValidation()
     {
         var tests = new NcnnProductionPathAuditTests();
@@ -158,6 +261,9 @@ public sealed class NcnnProductionPathAuditTests
         tests.ProductionBoundary_AllowsFixedBufferInputsAndRejectsIntermediateMaterializationWithTensorContract();
         tests.LegacyBufferCalls_AreConfinedToTheAuditedEngineDirectories();
         tests.ProductionAuditLog_StatesThatIntermediateBufferMaterializationIsZero();
+        tests.TensorDescriptor_CompatibleViewsKeepRenderTextureOwnerAndRemainImmutable();
+        tests.TensorDescriptor_IncompatibleAliasRequiresTextureTransformWithoutBufferFallback();
+        tests.TensorDescriptor_CommandTextureAliasRetainsOwnerAndDescriptor();
         Debug.Log("[NcnnProductionPathAudit] passed");
     }
 
