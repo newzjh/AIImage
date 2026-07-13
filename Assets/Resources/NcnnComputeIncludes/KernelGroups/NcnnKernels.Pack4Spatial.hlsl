@@ -707,15 +707,24 @@ void NcnnBinaryOpPack4Broadcast_Impl(uint3 id)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
 
-    int3 aCoord = _BinaryPack4BroadcastMode == 1
+    int broadcastMode = _BinaryPack4BroadcastMode;
+    int3 aCoord = broadcastMode == 1
         ? int3(0, 0, p)
         : int3((int)id.x, (int)id.y, p);
-    int3 bCoord = _BinaryPack4BroadcastMode == 2
+    int3 bCoord = broadcastMode == 2
         ? int3(0, 0, p)
         : int3((int)id.x, (int)id.y, p);
+    if (broadcastMode == 3)
+        aCoord.z = 0;
+    else if (broadcastMode == 4)
+        bCoord.z = 0;
 
     float4 a = _BinaryA[aCoord];
     float4 b = _BinaryB[bCoord];
+    if (broadcastMode == 3)
+        a = a.xxxx;
+    else if (broadcastMode == 4)
+        b = b.xxxx;
 
     float4 o = a;
     int t = _BinaryOpType;

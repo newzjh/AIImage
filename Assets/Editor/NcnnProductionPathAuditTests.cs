@@ -47,10 +47,15 @@ public sealed class NcnnProductionPathAuditTests
     }
 
     [Test]
-    public void ProductionBoundary_RejectsBufferInputsAndMaterializationWithTensorContract()
+    public void ProductionBoundary_AllowsFixedBufferInputsAndRejectsIntermediateMaterializationWithTensorContract()
     {
         var repro = ReadAssetSource("Scripts/NcnnCompute/NcnnRepro.cs");
         var factory = ReadAssetSource("Scripts/NcnnLayers/NcnnLayerFactoryRepro.cs");
+        var reshape = ReadAssetSource("Scripts/NcnnLayers/NcnnReshapeLayerRepro.cs");
+        var embed = ReadAssetSource("Scripts/NcnnLayers/NcnnEmbedLayerRepro.cs");
+        var innerProduct = ReadAssetSource("Scripts/NcnnLayers/NcnnInnerProductLayerRepro.cs");
+        var permute = ReadAssetSource("Scripts/NcnnLayers/NcnnPermuteLayerRepro.cs");
+        var inpainting = ReadAssetSource("Scripts/SDInpaintingNcnnReproRunner.cs");
 
         Assert.That(repro, Does.Contain("if (!IsDebugOracleExecution)\n                return true;"));
         Assert.That(repro, Does.Contain("logical_shape="));
@@ -59,8 +64,37 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(repro, Does.Contain("dtype="));
         Assert.That(repro, Does.Contain("rejected_fallback="));
         Assert.That(factory, Does.Not.Contain("rejects ComputeBuffer model input"));
-        Assert.That(factory, Does.Contain("MaterializeScratchTextureFromBufferView"));
+        Assert.That(factory, Does.Contain("if (IsDebugOracleExecution && !textureBlobs.ContainsKey(kv.Key))"));
+        Assert.That(factory, Does.Contain("fixed Buffer input is a valid graph boundary"));
         Assert.That(factory, Does.Contain("SetCurrentBufferExecutionContext(context)"));
+        var input = ReadAssetSource("Scripts/NcnnLayers/NcnnInputLayerRepro.cs");
+        Assert.That(input, Does.Contain("Input is a graph-boundary alias"));
+        Assert.That(input, Does.Contain("context.bufferBlobs[topName] = inputBuffer"));
+        Assert.That(input, Does.Not.Contain("Materialize"));
+        Assert.That(reshape, Does.Contain("owner.ExecutionMode == NcnnInferenceExecutionMode.ProductionTextureOnly"));
+        Assert.That(reshape, Does.Contain("ReshapePack4ToLinearMat"));
+        Assert.That(embed, Does.Contain("public override void ExecuteBuffer"));
+        Assert.That(embed, Does.Contain("owner.Ops.EmbedTexture(indexBuffer"));
+        Assert.That(innerProduct, Does.Contain("Gemm2DAttentionPack4ToLinearTextureA"));
+        Assert.That(innerProduct, Does.Contain("TryResolveAttentionPack4ToLinearInput"));
+        Assert.That(permute, Does.Contain("HasSingleContextFlattenConsumer"));
+        var binaryOp = ReadAssetSource("Scripts/NcnnLayers/NcnnBinaryOpLayerRepro.cs");
+        var slice = ReadAssetSource("Scripts/NcnnLayers/NcnnSliceLayerRepro.cs");
+        var ops = ReadAssetSource("Scripts/NcnnCompute/NcnnOps.cs");
+        var computeShader = ReadAssetSource("Resources/NcnnCompute.compute");
+        var matmulKernels = ReadAssetSource("Resources/NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4Matmul.hlsl");
+        Assert.That(binaryOp, Does.Contain("broadcastMode = 4"));
+        Assert.That(binaryOp, Does.Contain("bShape.c == 1"));
+        Assert.That(binaryOp, Does.Contain("IsStrictLinearMatTexture(scalarTexture)"));
+        Assert.That(binaryOp, Does.Contain("BinaryOpLinearMatFixedInputScalar"));
+        Assert.That(slice, Does.Contain("srcShape.dims == 1 || srcShape.dims == 2"));
+        Assert.That(slice, Does.Contain("srcShape.dims == 1 && spec.axis != 0"));
+        Assert.That(ops, Does.Contain("BinaryOpLinearMatFixedInputScalar(RenderTexture texture, ComputeBuffer scalar"));
+        Assert.That(computeShader, Does.Contain("#pragma kernel NcnnBinaryOpLinearMatFixedInputScalar"));
+        Assert.That(matmulKernels, Does.Contain("void NcnnBinaryOpLinearMatFixedInputScalar_Impl"));
+        Assert.That(inpainting, Does.Contain("FrozenCLIPEmbedder-fp16.param"));
+        Assert.That(inpainting, Does.Contain("FrozenCLIPEmbedder-fp16.bin"));
+        Assert.That(inpainting, Does.Contain("stopAfterTopName: TextEncoderOutputBlobName"));
     }
 
     [Test]
@@ -120,7 +154,7 @@ public sealed class NcnnProductionPathAuditTests
     {
         var tests = new NcnnProductionPathAuditTests();
         tests.InferResult_DoesNotExposeProductionBufferReadback();
-        tests.ProductionBoundary_RejectsBufferInputsAndMaterializationWithTensorContract();
+        tests.ProductionBoundary_AllowsFixedBufferInputsAndRejectsIntermediateMaterializationWithTensorContract();
         tests.LegacyBufferCalls_AreConfinedToTheAuditedEngineDirectories();
         tests.ProductionAuditLog_StatesThatIntermediateBufferMaterializationIsZero();
         Debug.Log("[NcnnProductionPathAudit] passed");

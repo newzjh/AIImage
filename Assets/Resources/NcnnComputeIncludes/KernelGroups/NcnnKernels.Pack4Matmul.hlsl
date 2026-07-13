@@ -157,6 +157,23 @@ void NcnnBinaryOpLinearMat_Impl(uint3 id)
     _LinearOut0[coord] = NcnnApplyBinaryOpLinearScalar(a, b);
 }
 
+// The scalar is a fixed graph input, uploaded once in a ComputeBuffer. The
+// activation and output remain Texture2D LinearMat resources.
+void NcnnBinaryOpLinearMatFixedInputScalar_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int2 coord = int2((int)id.x, (int)id.y);
+    float textureValue = _LinearIn0[coord];
+    float scalarValue = _BufB[0];
+    float a = _BinaryPack4BufferScalarMode == 1 ? scalarValue : textureValue;
+    float b = _BinaryPack4BufferScalarMode == 1 ? textureValue : scalarValue;
+    _LinearOut0[coord] = NcnnApplyBinaryOpLinearScalar(a, b);
+}
+
 void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id)
 {
     uint w, h, d;

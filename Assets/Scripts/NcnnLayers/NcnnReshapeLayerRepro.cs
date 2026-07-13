@@ -2479,7 +2479,8 @@ namespace NcnnCompute
         private static bool ShouldAllowGenericPack4ReshapeSpecializations(NcnnRepro owner)
         {
             return owner != null
-                && (owner.EnableAttentionMatMulPack4Specializations
+                && (owner.ExecutionMode == NcnnInferenceExecutionMode.ProductionTextureOnly
+                    || owner.EnableAttentionMatMulPack4Specializations
                     || owner.DisallowBufferAccess
                     || owner.DisallowBufferOutputs
                     || owner.DisallowBufferToTextureMaterialization

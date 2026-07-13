@@ -362,6 +362,7 @@ namespace NcnnCompute
         private readonly int _kUnaryOpPack4;
         private readonly int _kUnaryOpLinearMat;
         private readonly int _kBinaryOpLinearMat;
+        private readonly int _kBinaryOpLinearMatFixedInputScalar;
         private readonly int _kBinaryOpPack4;
         private readonly int _kBinaryOpPack4LinearMixed;
         private readonly int _kBinaryOpPack4Broadcast;
@@ -655,6 +656,7 @@ namespace NcnnCompute
             _kUnaryOpPack4 = _cs.FindKernel("NcnnUnaryOpPack4");
             _kUnaryOpLinearMat = _cs.FindKernel("NcnnUnaryOpLinearMat");
             _kBinaryOpLinearMat = _cs.FindKernel("NcnnBinaryOpLinearMat");
+            _kBinaryOpLinearMatFixedInputScalar = _cs.FindKernel("NcnnBinaryOpLinearMatFixedInputScalar");
             _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
             _kBinaryOpPack4LinearMixed = _cs.FindKernel("NcnnBinaryOpPack4LinearMixed");
             _kBinaryOpPack4Broadcast = _cs.FindKernel("NcnnBinaryOpPack4Broadcast");
@@ -3339,6 +3341,21 @@ namespace NcnnCompute
             Dispatch2D(_kBinaryOpLinearMat, output.width, output.height, 8, 8);
         }
 
+        public void BinaryOpLinearMatFixedInputScalar(RenderTexture texture, ComputeBuffer scalar, int opType, bool scalarIsA, RenderTexture output)
+        {
+            if (texture == null) throw new ArgumentNullException(nameof(texture));
+            if (scalar == null) throw new ArgumentNullException(nameof(scalar));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (scalar.count < 1) throw new ArgumentOutOfRangeException(nameof(scalar));
+
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryPack4BufferScalarMode", scalarIsA ? 1 : 2);
+            _cs.SetTexture(_kBinaryOpLinearMatFixedInputScalar, "_LinearIn0", texture);
+            _cs.SetBuffer(_kBinaryOpLinearMatFixedInputScalar, "_BufB", scalar);
+            _cs.SetTexture(_kBinaryOpLinearMatFixedInputScalar, "_LinearOut0", output);
+            Dispatch2D(_kBinaryOpLinearMatFixedInputScalar, output.width, output.height, 8, 8);
+        }
+
         public void BinaryOpLinearMat(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int opType, ComputeTexture output)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
@@ -3377,6 +3394,22 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMat, "_LinearIn0", a.nameID);
             cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMat, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kBinaryOpLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void BinaryOpLinearMatFixedInputScalar(CommandBuffer cmd, ComputeTexture texture, ComputeBuffer scalar, int opType, bool scalarIsA, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (texture == null) throw new ArgumentNullException(nameof(texture));
+            if (scalar == null) throw new ArgumentNullException(nameof(scalar));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (scalar.count < 1) throw new ArgumentOutOfRangeException(nameof(scalar));
+
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryPack4BufferScalarMode", scalarIsA ? 1 : 2);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMatFixedInputScalar, "_LinearIn0", texture.nameID);
+            cmd.SetComputeBufferParam(_cs, _kBinaryOpLinearMatFixedInputScalar, "_BufB", scalar);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMatFixedInputScalar, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kBinaryOpLinearMatFixedInputScalar, output.width, output.height, 8, 8);
         }
 
         public void BinaryOpPack4(RenderTexture a, RenderTexture b, int packs, int opType, RenderTexture output)
@@ -3425,7 +3458,7 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            if (broadcastMode != 1 && broadcastMode != 2)
+            if (broadcastMode < 1 || broadcastMode > 4)
                 throw new ArgumentOutOfRangeException(nameof(broadcastMode));
             if (_probeFastZeroBinaryOp)
             {
@@ -3519,7 +3552,7 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            if (broadcastMode != 1 && broadcastMode != 2)
+            if (broadcastMode < 1 || broadcastMode > 4)
                 throw new ArgumentOutOfRangeException(nameof(broadcastMode));
             if (_probeFastZeroBinaryOp)
             {

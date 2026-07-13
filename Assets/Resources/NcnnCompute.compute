@@ -81,6 +81,7 @@
 #pragma kernel NcnnUnaryOpPack4
 #pragma kernel NcnnUnaryOpLinearMat
 #pragma kernel NcnnBinaryOpLinearMat
+#pragma kernel NcnnBinaryOpLinearMatFixedInputScalar
 #pragma kernel NcnnBinaryOpPack4
 #pragma kernel NcnnBinaryOpPack4LinearMixed
 #pragma kernel NcnnBinaryOpPack4Broadcast
@@ -371,6 +372,7 @@ void NcnnSoftmaxLinearMat2D_Impl(uint3 id);
 void NcnnUnaryOpPack4_Impl(uint3 id);
 void NcnnUnaryOpLinearMat_Impl(uint3 id);
 void NcnnBinaryOpLinearMat_Impl(uint3 id);
+void NcnnBinaryOpLinearMatFixedInputScalar_Impl(uint3 id);
 void NcnnBinaryOpPack4_Impl(uint3 id);
 void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id);
 void NcnnBinaryOpPack4Broadcast_Impl(uint3 id);
@@ -1994,6 +1996,12 @@ void NcnnUnaryOpLinearMat(uint3 id : SV_DispatchThreadID)
 void NcnnBinaryOpLinearMat(uint3 id : SV_DispatchThreadID)
 {
     NcnnBinaryOpLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnBinaryOpLinearMatFixedInputScalar(uint3 id : SV_DispatchThreadID)
+{
+    NcnnBinaryOpLinearMatFixedInputScalar_Impl(id);
 }
 
 [numthreads(8,8,1)]

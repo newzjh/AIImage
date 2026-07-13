@@ -20,6 +20,15 @@ namespace NcnnCompute
                 return;
             }
 
+            // Prefer the concrete Pack4 implementation in strict production mode.
+            // CanExecuteRenderTexturePath is a fast preflight and may reject a valid
+            // low-dimensional scalar/broadcast representation conservatively.
+            if (owner.ShouldBlockPack4BufferFallback())
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
 #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
@@ -656,10 +665,20 @@ namespace NcnnCompute
                 RenderTexture finalTexture = null;
                 try
                 {
-                    var scalarOutDepth = scalarTextureShape.dims == 4 ? scalarTextureShape.d * scalarTexture.packs : scalarTexture.packs;
-                    finalTexture = owner.RentTempArray(scalarTexture.width, scalarTexture.height, scalarOutDepth, RenderTextureFormat.ARGBHalf);
-                    owner.Ops.BinaryOpPack4BufferScalar(scalarTexture.texture, scalarBuffer, scalarTexture.packs, opType, scalarIsA, finalTexture);
-                    NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalarTextureShape);
+                    var scalarStorageShape = NcnnRepro.GetTextureStorageShape(scalarTexture, scalarTextureShape);
+                    if (NcnnRepro.IsStrictLinearMatTexture(scalarTexture))
+                    {
+                        finalTexture = owner.RentTempMat(scalarStorageShape.w, scalarStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                        owner.Ops.BinaryOpLinearMatFixedInputScalar(scalarTexture.texture, scalarBuffer, opType, scalarIsA, finalTexture);
+                        NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalarTextureShape, scalarStorageShape);
+                    }
+                    else
+                    {
+                        var scalarOutDepth = scalarTextureShape.dims == 4 ? scalarTextureShape.d * scalarTexture.packs : scalarTexture.packs;
+                        finalTexture = owner.RentTempArray(scalarTexture.width, scalarTexture.height, scalarOutDepth, RenderTextureFormat.ARGBHalf);
+                        owner.Ops.BinaryOpPack4BufferScalar(scalarTexture.texture, scalarBuffer, scalarTexture.packs, opType, scalarIsA, finalTexture);
+                        NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalarTextureShape);
+                    }
                     finalTexture = null;
                 }
                 finally
@@ -745,6 +764,42 @@ namespace NcnnCompute
                 return false;
             if ((aShape.dims != 3 && aShape.dims != 4) || aShape.dims != bShape.dims)
                 return false;
+
+            var matchingSpatialExtent = aShape.w == bShape.w
+                && aShape.h == bShape.h
+                && aShape.d == bShape.d;
+            if (matchingSpatialExtent
+                && aShape.c == 1
+                && bShape.c > 1
+                && aTex.packs == 1
+                && bTex.packs == Mathf.Max(1, Mathf.CeilToInt(bShape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(aTex, aShape)
+                && NcnnRepro.MatchesPack4TextureStorage(bTex, bShape))
+            {
+                broadcastMode = 3;
+                outWidth = bTex.width;
+                outHeight = bTex.height;
+                outPacks = bTex.packs;
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
+                return true;
+            }
+
+            if (matchingSpatialExtent
+                && bShape.c == 1
+                && aShape.c > 1
+                && bTex.packs == 1
+                && aTex.packs == Mathf.Max(1, Mathf.CeilToInt(aShape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(aTex, aShape)
+                && NcnnRepro.MatchesPack4TextureStorage(bTex, bShape))
+            {
+                broadcastMode = 4;
+                outWidth = aTex.width;
+                outHeight = aTex.height;
+                outPacks = aTex.packs;
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
+                return true;
+            }
+
             if (aShape.c != bShape.c || aTex.packs != bTex.packs)
                 return false;
 
@@ -2327,6 +2382,42 @@ namespace NcnnCompute
                 return false;
             if ((aShape.dims != 3 && aShape.dims != 4) || aShape.dims != bShape.dims)
                 return false;
+
+            var matchingSpatialExtent = aShape.w == bShape.w
+                && aShape.h == bShape.h
+                && aShape.d == bShape.d;
+            if (matchingSpatialExtent
+                && aShape.c == 1
+                && bShape.c > 1
+                && a.packs == 1
+                && b.packs == Mathf.Max(1, Mathf.CeilToInt(bShape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(a, aShape)
+                && NcnnRepro.MatchesPack4TextureStorage(b, bShape))
+            {
+                broadcastMode = 3;
+                outWidth = b.width;
+                outHeight = b.height;
+                outPacks = b.packs;
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
+                return true;
+            }
+
+            if (matchingSpatialExtent
+                && bShape.c == 1
+                && aShape.c > 1
+                && b.packs == 1
+                && a.packs == Mathf.Max(1, Mathf.CeilToInt(aShape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(a, aShape)
+                && NcnnRepro.MatchesPack4TextureStorage(b, bShape))
+            {
+                broadcastMode = 4;
+                outWidth = a.width;
+                outHeight = a.height;
+                outPacks = a.packs;
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
+                return true;
+            }
+
             if (aShape.c != bShape.c || a.packs != b.packs)
                 return false;
 

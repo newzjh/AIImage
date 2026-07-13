@@ -48,6 +48,14 @@ namespace NcnnCompute
                                         owner._embed[layer.name] = ep;
                                         return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
         }
+
+        public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
+        {
+            // Fixed token/index buffers are legal inference inputs. Embed writes its activation
+            // directly to a LinearMat texture, so it must not select the legacy buffer output path.
+            ExecuteRenderTexturePath(owner, layer, context);
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {

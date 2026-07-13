@@ -106,6 +106,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         public readonly string vaeEncoderBinPath;
         public readonly string tokenizerVocabJsonPath;
         public readonly string tokenizerMergesPath;
+        public readonly bool tokenizerUsesSimpleClipVocab;
 
         public ResolvedPaths(
             string textParamPath,
@@ -117,7 +118,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             string vaeEncoderParamPath,
             string vaeEncoderBinPath,
             string tokenizerVocabJsonPath,
-            string tokenizerMergesPath)
+            string tokenizerMergesPath,
+            bool tokenizerUsesSimpleClipVocab)
         {
             this.textParamPath = textParamPath;
             this.textBinPath = textBinPath;
@@ -129,6 +131,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             this.vaeEncoderBinPath = vaeEncoderBinPath;
             this.tokenizerVocabJsonPath = tokenizerVocabJsonPath;
             this.tokenizerMergesPath = tokenizerMergesPath;
+            this.tokenizerUsesSimpleClipVocab = tokenizerUsesSimpleClipVocab;
         }
     }
 
@@ -1332,6 +1335,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             paths.vaeEncoderBinPath + "|" +
             paths.tokenizerVocabJsonPath + "|" +
             paths.tokenizerMergesPath + "|" +
+            BoolText(paths.tokenizerUsesSimpleClipVocab) + "|" +
             tensorTextureFormat + "|" +
             encoderTensorTextureFormat + "|" +
             decoderTensorTextureFormat + "|" +
@@ -1343,7 +1347,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         Release();
         EnsureRuntimeObjects();
-        _tokenizer = new ClipBpeTokenizer(paths.tokenizerVocabJsonPath, paths.tokenizerMergesPath);
+        _tokenizer = new ClipBpeTokenizer(
+            paths.tokenizerVocabJsonPath,
+            paths.tokenizerMergesPath,
+            paths.tokenizerUsesSimpleClipVocab);
         _loadedModelKey = modelKey;
     }
 
@@ -1357,6 +1364,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         _textRepro ??= new NcnnRepro(_ops);
         ApplyCommonOptions(_textRepro);
         ApplySpatialModelOptions(_textRepro);
+        AttachDebugLog(_textRepro, "text_encoder");
         await LoadModelAsync(_textRepro, paths.textParamPath, paths.textBinPath, "text encoder", ct);
     }
 
@@ -1756,7 +1764,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         _vaeRepro.TensorTextureFormat = decoderTensorTextureFormat;
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
 
-        _tokenizer = new ClipBpeTokenizer(paths.tokenizerVocabJsonPath, paths.tokenizerMergesPath);
+        _tokenizer = new ClipBpeTokenizer(
+            paths.tokenizerVocabJsonPath,
+            paths.tokenizerMergesPath,
+            paths.tokenizerUsesSimpleClipVocab);
 
         await LoadModelAsync(_textRepro, paths.textParamPath, paths.textBinPath, "text encoder", ct);
         await LoadModelAsync(_unetRepro, paths.unetParamPath, paths.unetBinPath, "unet", ct);
@@ -1938,6 +1949,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         var textParamPath = FindFirst(inpaintRoots, "text_encoder.param", "text_encoder.raw.param");
         var textBinPath = FindFirst(inpaintRoots, "text_encoder.bin", "text_encoder.raw.bin");
+        if (string.IsNullOrWhiteSpace(textParamPath))
+            textParamPath = FindFirst(sdRoots, "FrozenCLIPEmbedder-fp16.param");
+        if (string.IsNullOrWhiteSpace(textBinPath))
+            textBinPath = FindFirst(sdRoots, "FrozenCLIPEmbedder-fp16.bin");
         var unetParamPath = FindExact(inpaintRoots, "unet.param");
         var unetBinPath = FindExact(inpaintRoots, "unet.bin");
         var vaeParamPath = FindFirst(sdRoots,
@@ -1952,6 +1967,21 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         AddUniqueRoot(tokenizerRoots, Path.Combine(sdRoot, "tokenizer"));
         var tokenizerVocabJsonPath = FindExact(tokenizerRoots, "vocab.json");
         var tokenizerMergesPath = FindExact(tokenizerRoots, "merges.txt");
+        var tokenizerUsesSimpleClipVocab = false;
+        if (string.IsNullOrWhiteSpace(tokenizerVocabJsonPath) || string.IsNullOrWhiteSpace(tokenizerMergesPath))
+        {
+            var simpleTokenizerRoots = new List<string>();
+            AddUniqueRoot(simpleTokenizerRoots, Path.Combine(Application.streamingAssetsPath, "Clip"));
+
+            var simpleVocabPath = FindExact(simpleTokenizerRoots, "vocab.txt");
+            var simpleBpePath = FindExact(simpleTokenizerRoots, "bpe_simple_vocab_16e6.txt");
+            if (!string.IsNullOrWhiteSpace(simpleVocabPath) && !string.IsNullOrWhiteSpace(simpleBpePath))
+            {
+                tokenizerVocabJsonPath = simpleVocabPath;
+                tokenizerMergesPath = simpleBpePath;
+                tokenizerUsesSimpleClipVocab = true;
+            }
+        }
 
         if (string.IsNullOrWhiteSpace(textParamPath))
             throw new FileNotFoundException("text_encoder.param not found under SD inpainting roots.", inpaintRoot);
@@ -1970,9 +2000,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (string.IsNullOrWhiteSpace(vaeEncoderBinPath))
             throw new FileNotFoundException("AutoencoderKL-encoder-512-512-fp16.bin not found under StableDiffusion roots.", sdRoot);
         if (string.IsNullOrWhiteSpace(tokenizerVocabJsonPath))
-            throw new FileNotFoundException("tokenizer vocab.json not found under tokenizer roots.", projectRoot);
+            throw new FileNotFoundException("Tokenizer vocabulary not found. Expected diffusers vocab.json or StreamingAssets/Clip/vocab.txt.", projectRoot);
         if (string.IsNullOrWhiteSpace(tokenizerMergesPath))
-            throw new FileNotFoundException("tokenizer merges.txt not found under tokenizer roots.", projectRoot);
+            throw new FileNotFoundException("Tokenizer merges not found. Expected diffusers merges.txt or StreamingAssets/Clip/bpe_simple_vocab_16e6.txt.", projectRoot);
 
         _resolvedPaths = new ResolvedPaths(
             textParamPath,
@@ -1984,7 +2014,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             vaeEncoderParamPath,
             vaeEncoderBinPath,
             tokenizerVocabJsonPath,
-            tokenizerMergesPath);
+            tokenizerMergesPath,
+            tokenizerUsesSimpleClipVocab);
         return _resolvedPaths.Value;
     }
 
@@ -2021,7 +2052,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 {
                     { TextEncoderTokenBlobName, tokenView }
                 },
-                new HashSet<string>(StringComparer.Ordinal) { TextEncoderOutputBlobName });
+                new HashSet<string>(StringComparer.Ordinal) { TextEncoderOutputBlobName },
+                stopAfterTopName: TextEncoderOutputBlobName);
 
             if (!infer.TryGetLogicalShape(TextEncoderOutputBlobName, out var dims, out var w, out var h, out var d, out var c))
                 throw new InvalidOperationException("Text encoder output logical shape is missing.");
@@ -6867,16 +6899,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         private readonly Dictionary<string, string> _cache = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<byte, string> _byteEncoder;
 
-        public ClipBpeTokenizer(string vocabJsonPath, string mergesPath)
+        public ClipBpeTokenizer(string vocabPath, string mergesPath, bool useSimpleClipVocab)
         {
-            if (string.IsNullOrWhiteSpace(vocabJsonPath) || !File.Exists(vocabJsonPath))
-                throw new FileNotFoundException("Tokenizer vocab.json not found.", vocabJsonPath);
+            if (string.IsNullOrWhiteSpace(vocabPath) || !File.Exists(vocabPath))
+                throw new FileNotFoundException("Tokenizer vocabulary not found.", vocabPath);
             if (string.IsNullOrWhiteSpace(mergesPath) || !File.Exists(mergesPath))
                 throw new FileNotFoundException("Tokenizer merges.txt not found.", mergesPath);
-
-            var json = File.ReadAllText(vocabJsonPath);
-            _encoder = JsonConvert.DeserializeObject<Dictionary<string, int>>(json)
-                       ?? throw new InvalidDataException("Failed to parse tokenizer vocab.json.");
 
             var merges = new List<(string first, string second)>();
             using (var sr = new StreamReader(mergesPath))
@@ -6893,6 +6921,33 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     if (parts.Length >= 2)
                         merges.Add((parts[0], parts[1]));
                 }
+            }
+
+            if (useSimpleClipVocab)
+            {
+                var byteVocabulary = File.ReadAllLines(vocabPath);
+                if (byteVocabulary.Length < 256)
+                    throw new InvalidDataException("Tokenizer vocab.txt is incomplete: " + vocabPath);
+
+                var vocabulary = new List<string>(byteVocabulary.Length * 2 + merges.Count + 2);
+                for (var i = 0; i < byteVocabulary.Length; i++)
+                    vocabulary.Add(byteVocabulary[i]);
+                for (var i = 0; i < byteVocabulary.Length; i++)
+                    vocabulary.Add(byteVocabulary[i] + "</w>");
+                for (var i = 0; i < merges.Count; i++)
+                    vocabulary.Add(merges[i].first + merges[i].second);
+                vocabulary.Add("<start_of_text>");
+                vocabulary.Add("<end_of_text>");
+
+                _encoder = new Dictionary<string, int>(vocabulary.Count, StringComparer.Ordinal);
+                for (var i = 0; i < vocabulary.Count; i++)
+                    _encoder[vocabulary[i]] = i;
+            }
+            else
+            {
+                var json = File.ReadAllText(vocabPath);
+                _encoder = JsonConvert.DeserializeObject<Dictionary<string, int>>(json)
+                           ?? throw new InvalidDataException("Failed to parse tokenizer vocab.json.");
             }
 
             _bpeRanks = new Dictionary<(string first, string second), int>(merges.Count);

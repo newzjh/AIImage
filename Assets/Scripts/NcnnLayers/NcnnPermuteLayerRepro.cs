@@ -313,7 +313,7 @@ namespace NcnnCompute
                 && outShape.w == storageShape.w
                 && outShape.h == storageShape.c
                 && outShape.c == storageShape.h
-                && HasSingleConsumerOfType(owner.Model, layer.topNames, NcnnLayerTypes.Reshape);
+                && HasSingleContextFlattenConsumer(owner.Model, layer.topNames);
             if (!isQkvPrep && !isContextFlatten)
                 return false;
 
@@ -361,7 +361,7 @@ namespace NcnnCompute
                 && outShape.w == storageShape.w
                 && outShape.h == storageShape.c
                 && outShape.c == storageShape.h
-                && HasSingleConsumerOfType(owner.Model, layer.topNames, NcnnLayerTypes.Reshape);
+                && HasSingleContextFlattenConsumer(owner.Model, layer.topNames);
             if (!isQkvPrep && !isContextFlatten)
                 return false;
 
@@ -421,6 +421,22 @@ namespace NcnnCompute
 
             var consumer = FindSingleConsumer(model, topNames[0]);
             return consumer != null && consumer.type == type;
+        }
+
+        private static bool HasSingleContextFlattenConsumer(NcnnParamModel model, string[] topNames)
+        {
+            if (model == null || topNames == null || topNames.Length == 0)
+                return false;
+
+            var reshape = FindSingleConsumer(model, topNames[0]);
+            if (reshape == null
+                || reshape.type != NcnnLayerTypes.Reshape
+                || reshape.topNames == null
+                || reshape.topNames.Length != 1)
+                return false;
+
+            var next = FindSingleConsumer(model, reshape.topNames[0]);
+            return next != null && next.type == NcnnLayerTypes.InnerProduct;
         }
 
         private static NcnnParamModel.Layer FindSingleConsumer(NcnnParamModel model, string blobName)

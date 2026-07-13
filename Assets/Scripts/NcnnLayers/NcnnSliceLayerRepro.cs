@@ -397,7 +397,7 @@ namespace NcnnCompute
                 return false;
 
             var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
-            return srcShape.dims == 2
+            return (srcShape.dims == 1 || srcShape.dims == 2)
                 && storageShape.dims == 2
                 && storageShape.w == srcTex.width
                 && storageShape.h == srcTex.height
@@ -410,7 +410,7 @@ namespace NcnnCompute
                 return false;
 
             var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
-            return srcShape.dims == 2
+            return (srcShape.dims == 1 || srcShape.dims == 2)
                 && storageShape.dims == 2
                 && storageShape.w == src.width
                 && storageShape.h == src.height
@@ -424,7 +424,10 @@ namespace NcnnCompute
             for (var i = 0; i < specs.Length; i++)
             {
                 var spec = specs[i];
-                if (spec.axis < 0 || spec.axis > 1 || spec.shape.dims != 2)
+                if (spec.shape.dims != srcShape.dims
+                    || spec.axis < 0
+                    || spec.axis > 1
+                    || (srcShape.dims == 1 && spec.axis != 0))
                     return false;
             }
             return true;
@@ -437,7 +440,10 @@ namespace NcnnCompute
             for (var i = 0; i < specs.Length; i++)
             {
                 var spec = specs[i];
-                if (spec.axis < 0 || spec.axis > 1 || spec.shape.dims != 2)
+                if (spec.shape.dims != srcShape.dims
+                    || spec.axis < 0
+                    || spec.axis > 1
+                    || (srcShape.dims == 1 && spec.axis != 0))
                     return false;
             }
             return true;

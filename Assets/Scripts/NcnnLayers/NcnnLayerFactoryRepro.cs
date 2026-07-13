@@ -609,7 +609,12 @@ namespace NcnnCompute
                     };
                     bufferViews[kv.Key] = kv.Value;
 
-                    if (!textureBlobs.ContainsKey(kv.Key))
+                    // A fixed Buffer input is a valid graph boundary, but it is not an
+                    // activation fallback. Production layers must consume it directly
+                    // (for example, Embed token indices) or reject it with the tensor
+                    // contract; only an explicitly requested debug-oracle run may upload
+                    // it to a texture for legacy numerical comparison.
+                    if (IsDebugOracleExecution && !textureBlobs.ContainsKey(kv.Key))
                     {
                         var texture = MaterializeScratchTextureFromBufferView(kv.Value.buffer, kv.Value);
                         if (texture != null)

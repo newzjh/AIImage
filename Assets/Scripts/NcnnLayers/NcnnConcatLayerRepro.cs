@@ -17,6 +17,14 @@ namespace NcnnCompute
                 return;
             }
 
+            // The capability predicate is intentionally conservative. In production,
+            // retry the concrete Pack4 implementation before considering legacy Buffer.
+            if (owner.ShouldBlockPack4BufferFallback())
+            {
+                ExecuteRenderTexturePath(owner, layer, context);
+                return;
+            }
+
             #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
             #pragma warning restore CS0618

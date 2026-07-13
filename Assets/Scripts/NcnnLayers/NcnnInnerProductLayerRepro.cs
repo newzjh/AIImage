@@ -147,6 +147,41 @@ namespace NcnnCompute
             var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
             if (srcTex == null || srcTex.texture == null)
                 return false;
+            if (TryResolveAttentionPack4ToLinearInput(srcTex, srcShape, ip, out var attentionStorageShape, out var attentionRows, out var headDim, out var numHeads))
+            {
+                var attentionOutShape = attentionRows > 1
+                    ? new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), attentionRows, 1, 1)
+                    : new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+                var attentionOutStorage = NcnnRepro.ResolveLinearMatStorageShape(attentionOutShape);
+                var attentionOut = owner.RentTempMat(context.commandBuffer, attentionOutStorage.w, attentionOutStorage.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
+                    context.commandBuffer,
+                    srcTex.texture,
+                    ip.w,
+                    ip.b,
+                    attentionRows,
+                    ip.outFeatures,
+                    ip.inFeatures,
+                    transB: true,
+                    alpha: 1f,
+                    beta: 1f,
+                    useC: true,
+                    broadcastTypeC: 4,
+                    headDim: headDim,
+                    numHeads: numHeads,
+                    output: attentionOut);
+                context.blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(attentionOut, attentionOutShape, attentionOutStorage, owned: true);
+                context.shapes[layer.topNames[0]] = attentionOutShape;
+                owner.DebugLog?.Invoke(
+                    "[CmdTexture][InnerProductAttentionPack4ToLinear]"
+                    + " | layer=" + layer.name
+                    + " | headDim=" + headDim
+                    + " | heads=" + numHeads
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | storage=d" + attentionStorageShape.dims + ":" + attentionStorageShape.w + "x" + attentionStorageShape.h + "x" + attentionStorageShape.d + "x" + attentionStorageShape.c);
+                owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
             if (srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.packs != 1)
                 return false;
 
@@ -250,6 +285,46 @@ namespace NcnnCompute
                 return false;
             if (srcTex == null || srcTex.texture == null)
                 return false;
+            if (TryResolveAttentionPack4ToLinearInput(srcTex, srcShape, ip, out var attentionStorageShape, out var attentionRows, out var headDim, out var numHeads))
+            {
+                var attentionOutShape = attentionRows > 1
+                    ? new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), attentionRows, 1, 1)
+                    : new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
+                var attentionOutStorage = NcnnRepro.ResolveLinearMatStorageShape(attentionOutShape);
+                var attentionOut = owner.RentTempMat(attentionOutStorage.w, attentionOutStorage.h, NcnnRepro.ResolveLinearMatTextureFormat());
+                owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
+                    srcTex.texture,
+                    ip.w,
+                    ip.b,
+                    attentionRows,
+                    ip.outFeatures,
+                    ip.inFeatures,
+                    transB: true,
+                    alpha: 1f,
+                    beta: 1f,
+                    useC: true,
+                    broadcastTypeC: 4,
+                    headDim: headDim,
+                    numHeads: numHeads,
+                    output: attentionOut);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], attentionOut, attentionOutShape, attentionOutStorage);
+                owner.DebugLog?.Invoke(
+                    "[Texture][InnerProductAttentionPack4ToLinear]"
+                    + " | layer=" + layer.name
+                    + " | headDim=" + headDim
+                    + " | heads=" + numHeads
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | storage=d" + attentionStorageShape.dims + ":" + attentionStorageShape.w + "x" + attentionStorageShape.h + "x" + attentionStorageShape.d + "x" + attentionStorageShape.c);
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
             if (srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.packs != 1)
                 return false;
 
@@ -343,6 +418,72 @@ namespace NcnnCompute
                 layer.bottomNames,
                 context.pinnedNames);
             return true;
+        }
+
+        private static bool TryResolveAttentionPack4ToLinearInput(
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape logicalShape,
+            NcnnRepro.InnerProductPack ip,
+            out NcnnRepro.BufferShape storageShape,
+            out int rows,
+            out int headDim,
+            out int numHeads)
+        {
+            storageShape = default;
+            rows = 0;
+            headDim = 0;
+            numHeads = 0;
+            if (src == null || src.texture == null || ip == null || logicalShape.dims != 2)
+                return false;
+
+            storageShape = NcnnRepro.GetTextureStorageShape(src, logicalShape);
+            if (storageShape.dims != 3
+                || storageShape.d != 1
+                || storageShape.w <= 0
+                || storageShape.h <= 0
+                || storageShape.c <= 1
+                || !NcnnRepro.MatchesPack4TextureStorage(src, storageShape))
+                return false;
+
+            headDim = storageShape.w;
+            numHeads = storageShape.c;
+            rows = storageShape.h;
+            return logicalShape.w == ip.inFeatures
+                && logicalShape.w == headDim * numHeads
+                && logicalShape.h == rows;
+        }
+
+        private static bool TryResolveAttentionPack4ToLinearInput(
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape logicalShape,
+            NcnnRepro.InnerProductPack ip,
+            out NcnnRepro.BufferShape storageShape,
+            out int rows,
+            out int headDim,
+            out int numHeads)
+        {
+            storageShape = default;
+            rows = 0;
+            headDim = 0;
+            numHeads = 0;
+            if (src == null || src.texture == null || ip == null || logicalShape.dims != 2)
+                return false;
+
+            storageShape = NcnnRepro.GetCmdStorageShape(src, logicalShape);
+            if (storageShape.dims != 3
+                || storageShape.d != 1
+                || storageShape.w <= 0
+                || storageShape.h <= 0
+                || storageShape.c <= 1
+                || !NcnnRepro.MatchesPack4TextureStorage(src, storageShape))
+                return false;
+
+            headDim = storageShape.w;
+            numHeads = storageShape.c;
+            rows = storageShape.h;
+            return logicalShape.w == ip.inFeatures
+                && logicalShape.w == headDim * numHeads
+                && logicalShape.h == rows;
         }
     }
 }

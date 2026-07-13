@@ -922,6 +922,19 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _repro ??= new NcnnRepro(_ops);
         _repro.EnableTempPool = enableTempPool;
         _repro.MaxPooledPerShape = maxPooledPerShape;
+        // The encoder contains standard 3x3/1x1 convolutions. Enable the existing
+        // Pack4 kernels before model loading so it cannot select the legacy buffer path.
+        _repro.EnableGeneralTextureConvolution = true;
+        _repro.EnableConv1x1TextureConvolution = true;
+        _repro.EnableDepthWiseTextureConvolution = true;
+        _repro.DebugLog ??= line =>
+        {
+            if (!string.IsNullOrEmpty(line)
+                && line.StartsWith("[InferencePathAudit]", StringComparison.Ordinal))
+            {
+                UnityEngine.Debug.Log("[GFPGAN Repro] " + line);
+            }
+        };
         _repro.DisallowBufferAccess = disallowBufferAccess;
         _repro.DisallowBufferOutputs = disallowBufferOutputs;
         _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
