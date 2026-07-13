@@ -136,7 +136,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public bool autoOpenDumpDir = false;
     public bool enableDetailedProposalDump = true;
     public bool useArgbFloatForDetector = true;
-    public int maxDetectedFaces = 5;
+    public int maxDetectedFaces = 12;
     [Range(0.05f, 0.95f)] public float maxFaceAreaRatio = 0.45f;
     [Range(0.2f, 3f)] public float maxFaceAspectRatio = 1.6f;
 
