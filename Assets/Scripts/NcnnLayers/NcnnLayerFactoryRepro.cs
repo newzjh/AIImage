@@ -120,6 +120,19 @@ namespace NcnnCompute
             return result;
         }
 
+        // Metadata consumers must inspect registration without instantiating or executing a layer.
+        public static IReadOnlyList<NcnnLayerTypeKey> GetRegisteredLayerTypes()
+        {
+            var types = new List<NcnnLayerTypeKey>(Registry.Keys);
+            types.Sort((left, right) => string.CompareOrdinal(left.ToString(), right.ToString()));
+            return types;
+        }
+
+        public static bool IsRegistered(NcnnLayerTypeKey typeKey)
+        {
+            return Registry.ContainsKey(typeKey);
+        }
+
         public static NcnnBaseLayerRepro Create(NcnnParamModel.Layer layer)
         {
             if (layer == null)
