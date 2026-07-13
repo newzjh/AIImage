@@ -13,6 +13,12 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
+    public enum NcnnInferenceExecutionMode
+    {
+        ProductionTextureOnly = 0,
+        DebugOracle = 1
+    }
+
     public partial class NcnnRepro : IDisposable
     {
         internal static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
@@ -710,6 +716,14 @@ namespace NcnnCompute
 
             private ComputeBuffer GetOrMaterializeBuffer(string name)
             {
+                if (!_owner.IsDebugOracleExecution)
+                {
+                    throw _owner.CreateDisallowedBufferPathException(
+                        "production texture-only contract rejects InferResult buffer readback",
+                        name,
+                        "rejected_fallback=InferResult.GetBuffer/GetBufferView");
+                }
+
                 if (_bufferBlobs.TryGetValue(name, out var existing) && existing != null)
                     return existing;
 
@@ -719,7 +733,7 @@ namespace NcnnCompute
                     && tr.texture != null)
                 {
                     throw _owner.CreateDisallowedBufferPathException(
-                        "pack4-only guard: GetBufferData/texture-to-buffer materialization disallowed",
+                        "pack4-only guard: texture-to-buffer materialization disallowed",
                         name);
                 }
 
@@ -828,6 +842,12 @@ namespace NcnnCompute
                 if (TryGetExistingTextureData(name, out var data) && data != null)
                     return data;
                 throw new InvalidOperationException("texture blob not found: " + name);
+            }
+
+            // Production output readback only. This never creates a ComputeBuffer.
+            public float[] ReadTextureDataForOutput(string name)
+            {
+                return GetExistingTextureData(name);
             }
 
             private static float[] ReadExistingTextureData(
@@ -1044,19 +1064,7 @@ namespace NcnnCompute
                     * Mathf.Max(1, shape.c));
             }
 
-            public ComputeBuffer GetBuffer(string name)
-            {
-                return GetOrMaterializeBuffer(name);
-            }
-
-            public float[] GetBufferData(string name)
-            {
-                var buf = GetBuffer(name);
-                var data = new float[buf.count];
-                buf.GetData(data);
-                return data;
-            }
-
+#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
             public NcnnTensorBuffer GetBufferView(string name)
             {
                 if (_bufferViews.TryGetValue(name, out var view) && view != null && view.buffer != null)
@@ -1139,6 +1147,7 @@ namespace NcnnCompute
                 DetachTempOwnedBuffer(buf);
                 return buf;
             }
+#endif
 
             public void Dispose()
             {
@@ -1266,6 +1275,7 @@ namespace NcnnCompute
         public bool EnableAttentionMatMulPack4Specializations { get; set; }
         public bool EnableVistaTailPack4Specializations { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
         public bool DisallowBufferAccess { get; set; }
         public bool DisallowBufferOutputs { get; set; }
         public bool DisallowBufferToTextureMaterialization { get; set; }
@@ -1301,6 +1311,47 @@ namespace NcnnCompute
         private const int FallbackMaxTextureSize = 16384;
         private string _currentExecutingLayerName;
         private string _currentExecutingLayerTypeName;
+        private NcnnLayerBufferContext _currentBufferContext;
+
+        public static bool IsDebugOracleBuild
+        {
+            get
+            {
+#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
+                return true;
+#else
+                return false;
+#endif
+            }
+        }
+
+        public bool IsDebugOracleExecution => IsDebugOracleBuild
+            && (ExecutionMode == NcnnInferenceExecutionMode.DebugOracle || HasDebugOracleIntent());
+
+        private bool HasDebugOracleIntent()
+        {
+            return ForceBufferBinaryOpAll
+                || ForceCpuGemmAll
+                || ForceBufferGeluAll
+                || ForceBufferConvolution
+                || ForceBufferConvolutionAll
+                || ForceBufferOutputsForDims4
+                || (ForceBufferLayerTypes != null && ForceBufferLayerTypes.Count > 0)
+                || (ForceBufferLayerNames != null && ForceBufferLayerNames.Count > 0)
+                || (DebugCompareTextureLayers != null && DebugCompareTextureLayers.Count > 0)
+                || (DebugCompareTextureConvLayers != null && DebugCompareTextureConvLayers.Count > 0)
+                || (DebugCompareMaxPoolingLayers != null && DebugCompareMaxPoolingLayers.Count > 0);
+        }
+
+        internal void SetCurrentBufferExecutionContext(NcnnLayerBufferContext context)
+        {
+            _currentBufferContext = context;
+        }
+
+        internal void ClearCurrentBufferExecutionContext()
+        {
+            _currentBufferContext = null;
+        }
 
         internal void NotifyConvComplete(string layerName, string mode, int srcW, int srcH, int inPacks, int outPacks, double gpuMs)
         {
@@ -1408,6 +1459,8 @@ namespace NcnnCompute
             ResetInferenceTempResourceStats();
             _trackInferenceTempResources = true;
             _allowInferenceTempRtReuse = false;
+            if (!IsDebugOracleExecution)
+                DebugLog?.Invoke("[InferencePathAudit] mode=ProductionTextureOnly | activation_storage=Pack4Texture | buffer_materialization=forbidden");
         }
 
         public void BeginDeferredTempRtReleaseScope()
@@ -1432,6 +1485,8 @@ namespace NcnnCompute
             }
             _allowInferenceTempRtReuse = false;
             _trackInferenceTempResources = false;
+            if (!IsDebugOracleExecution)
+                DebugLog?.Invoke("[InferencePathAudit] completed | intermediate_buffer_materializations=0");
         }
 
         public void AllowInferenceTempRtReuseAfterSync()
@@ -1494,6 +1549,8 @@ namespace NcnnCompute
 
         internal bool ShouldBlockPack4BufferFallback()
         {
+            if (!IsDebugOracleExecution)
+                return true;
             if (ShouldAllowCurrentLayerBufferGuardBypass())
                 return false;
             return DisallowBufferAccess
@@ -1514,6 +1571,54 @@ namespace NcnnCompute
             if (!string.IsNullOrWhiteSpace(_currentExecutingLayerTypeName) || !string.IsNullOrWhiteSpace(_currentExecutingLayerName))
                 return (_currentExecutingLayerTypeName ?? "Unknown") + ":" + (_currentExecutingLayerName ?? "Unknown");
             return "outside-layer";
+        }
+
+        private static string DescribeShape(BufferShape shape)
+        {
+            return "d" + shape.dims + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c;
+        }
+
+        private static string DescribeTextureDtype(RenderTexture texture)
+        {
+            if (texture == null)
+                return "unknown";
+            return texture.format == RenderTextureFormat.ARGBFloat ? "FP32" : "FP16";
+        }
+
+        private string DescribeCurrentBlobContract(string blobName)
+        {
+            const string unknown = "unknown";
+            if (string.IsNullOrWhiteSpace(blobName) || _currentBufferContext == null)
+                return "logical_shape=" + unknown + " | storage_shape=" + unknown + " | layout=" + unknown + " | dtype=" + unknown;
+
+            var textureBlobs = _currentBufferContext.textureBlobs;
+            var textureShapes = _currentBufferContext.textureShapes;
+            if (textureBlobs != null
+                && textureBlobs.TryGetValue(blobName, out var textureRef)
+                && textureRef != null
+                && textureRef.texture != null)
+            {
+                var logical = GetTextureShape(textureShapes, textureRef, blobName);
+                var storage = GetTextureStorageShape(textureRef, logical);
+                return "logical_shape=" + DescribeShape(logical)
+                    + " | storage_shape=" + DescribeShape(storage)
+                    + " | layout=" + textureRef.layoutKind
+                    + " | dtype=" + DescribeTextureDtype(textureRef.texture);
+            }
+
+            var bufferViews = _currentBufferContext.bufferViews;
+            if (bufferViews != null
+                && bufferViews.TryGetValue(blobName, out var bufferView)
+                && bufferView != null)
+            {
+                var logical = new BufferShape(bufferView.dims, bufferView.w, bufferView.h, bufferView.d, bufferView.c);
+                return "logical_shape=" + DescribeShape(logical)
+                    + " | storage_shape=" + DescribeShape(logical)
+                    + " | layout=Linear"
+                    + " | dtype=FP32";
+            }
+
+            return "logical_shape=" + unknown + " | storage_shape=" + unknown + " | layout=" + unknown + " | dtype=" + unknown;
         }
 
         private static long EstimateTempBufferBytes(int count, int stride)
@@ -1573,7 +1678,10 @@ namespace NcnnCompute
 
         private void ValidateTempBufferAllowed(int count, int stride)
         {
-            if (!_trackInferenceTempResources || !DisallowInferenceTempComputeBuffers)
+            if (!_trackInferenceTempResources)
+                return;
+
+            if (IsDebugOracleExecution && !DisallowInferenceTempComputeBuffers)
                 return;
 
             var detail =
@@ -1712,16 +1820,17 @@ namespace NcnnCompute
             sb.Append(reason);
             sb.Append(" | site=");
             sb.Append(DescribeCurrentExecutionSite());
-            if (!string.IsNullOrWhiteSpace(blobName))
-            {
-                sb.Append(" | blob=");
-                sb.Append(blobName);
-            }
+            sb.Append(" | blob=");
+            sb.Append(string.IsNullOrWhiteSpace(blobName) ? "unknown" : blobName);
             if (!string.IsNullOrWhiteSpace(detail))
             {
                 sb.Append(" | ");
                 sb.Append(detail);
             }
+            sb.Append(" | ");
+            sb.Append(DescribeCurrentBlobContract(blobName));
+            sb.Append(" | rejected_fallback=");
+            sb.Append(reason);
             return new InvalidOperationException(sb.ToString());
         }
 
@@ -3943,7 +4052,7 @@ namespace NcnnCompute
         {
             if (buffer == null || view == null)
                 return null;
-            if (!ignoreGuard && DisallowBufferToTextureMaterialization && !ShouldAllowCurrentLayerBufferGuardBypass())
+            if (!ignoreGuard && ShouldBlockPack4BufferFallback())
             {
                 throw CreateDisallowedBufferPathException(
                     "pack4-only guard: buffer-to-texture materialization disallowed",
@@ -3983,6 +4092,13 @@ namespace NcnnCompute
         {
             if (cmd == null || buffer == null || view == null)
                 return null;
+            if (ShouldBlockPack4BufferFallback())
+            {
+                throw CreateDisallowedBufferPathException(
+                    "production texture-only contract rejects command-buffer buffer-to-texture materialization",
+                    null,
+                    "dims=" + view.dims + " w=" + view.w + " h=" + view.h + " d=" + view.d + " c=" + view.c);
+            }
 
             int texW;
             int texH;
@@ -4055,7 +4171,7 @@ namespace NcnnCompute
                 return null;
             if (!bufferViews.TryGetValue(name, out var view) || view == null)
                 return null;
-            if (DisallowBufferToTextureMaterialization && !ShouldAllowCurrentLayerBufferGuardBypass())
+            if (ShouldBlockPack4BufferFallback())
                 throw CreateDisallowedBufferPathException("pack4-only guard: buffer-to-texture materialization disallowed", name);
             return MaterializeTextureFromBufferView(buffer, view);
         }

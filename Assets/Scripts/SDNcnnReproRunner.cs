@@ -1194,7 +1194,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 _clipDebugDumped = true;
             }
 
-            var chunkData = infer.GetBufferData(ClipOutputBlobName);
+            var chunkData = infer.ReadTextureDataForOutput(ClipOutputBlobName);
             if (chunkData == null || chunkData.Length != rowsPerChunk * TextEmbeddingWidth)
                 throw new InvalidOperationException("CLIP conditioning output invalid for prompt chunk " + (i + 1).ToString(CultureInfo.InvariantCulture));
 
@@ -1290,6 +1290,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                         TryDumpAnyBlob(infer, encoderDebugBlobs[i], Path.Combine(_lastDumpDir, "unity_encoder_blob_" + encoderDebugBlobs[i] + ".txt"), true, _encoderRepro);
                 }
 
+#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
                 meanBuf = infer.ExtractBuffer(EncoderMeanBlobName);
                 try
                 {
@@ -1299,6 +1300,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 {
                     stdTex = infer.ExtractTexture(EncoderStdBlobName);
                 }
+#else
+                throw new NotSupportedException("Stable Diffusion encoder latent extraction requires legacy ComputeBuffer output; Pack4 CommandBuffer latent path is not implemented.");
+#endif
             }
 
             if (stdBuf == null)
@@ -2975,7 +2979,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
         try
         {
-            var data = infer.GetBufferData(blobName);
+            var data = infer.ReadTextureDataForOutput(blobName);
             WriteFloatArray(path, data);
             return;
         }

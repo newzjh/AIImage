@@ -1014,8 +1014,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
         try
         {
-            var data = infer.GetBufferData(blobName);
-            sourceKind = "buffer";
+            var data = infer.ReadTextureDataForOutput(blobName);
+            sourceKind = "texture-output";
             return data;
         }
         catch

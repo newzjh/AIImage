@@ -920,9 +920,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     var path = Path.Combine(dir, "generator_stats.txt");
                     File.AppendAllText(path, blobName + " | view=dims" + dims + " w=" + w + " h=" + h + " d=" + d + " c=" + c + Environment.NewLine);
 
-                    if (dims == 1 || inferResult.GetBuffer(blobName) != null)
+                    if (dims == 1 || inferResult.TryGetExistingTexture(blobName, out _))
                     {
-                        var data = inferResult.GetBufferData(blobName);
+                        var data = inferResult.ReadTextureDataForOutput(blobName);
                         AppendStatsLineTo(path, blobName, data);
                         if (dims == 1)
                             AppendMatrixStatsLineTo(path, blobName, data, w, 1, false);
@@ -1094,7 +1094,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         try
         {
-            var data = inferResult.GetBufferData(blobName);
+            var data = inferResult.ReadTextureDataForOutput(blobName);
             await DumpFloatArrayAsNormalizedImageAsync(dir, fileName, data, width, height, ct);
             AppendStatsLine(dir, blobName, data);
             AppendPreviewLine(Path.Combine(dir, "encoder_stats.txt"), blobName, data, 16);
@@ -2057,7 +2057,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         try
         {
-            var data = inferResult.GetBufferData(blobName);
+            var data = inferResult.ReadTextureDataForOutput(blobName);
             AppendPreviewLine(Path.Combine(dir, "encoder_stats.txt"), blobName, data, maxCount);
         }
         catch

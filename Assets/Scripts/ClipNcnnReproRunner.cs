@@ -613,7 +613,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 TryDumpAnyBlob(infer, DebugTextBlobNames[i], Path.Combine(_lastDumpDir, "text_blob_" + DebugTextBlobNames[i] + ".txt"));
         }
 
-        var textOutput = infer.GetBufferData(OutputBlobName);
+        var textOutput = infer.ReadTextureDataForOutput(OutputBlobName);
         if (textOutput == null || textOutput.Length != EmbeddingSize * tokens.Length)
             throw new InvalidOperationException("Text encoder output invalid for prompt: " + prompt);
 
@@ -632,7 +632,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             { InputBlobName, rowView }
         });
 
-        var embedding = projInfer.GetBufferData(OutputBlobName);
+        var embedding = projInfer.ReadTextureDataForOutput(OutputBlobName);
         if (embedding == null || embedding.Length != EmbeddingSize)
             throw new InvalidOperationException("Projection output invalid for prompt: " + prompt);
         NormalizeInPlace(embedding);
@@ -1216,7 +1216,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             {
                 try
                 {
-                    values = infer.GetBufferData(blobName);
+                    values = infer.ReadTextureDataForOutput(blobName);
                 }
                 catch
                 {
@@ -1294,7 +1294,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             }
         }
 
-        return infer.GetBufferData(OutputBlobName);
+        return infer.ReadTextureDataForOutput(OutputBlobName);
     }
 
     private async UniTask<float[]> EncodeImageWithCommandBufferAsync(Texture resizedInput, int targetSize, CancellationToken ct)

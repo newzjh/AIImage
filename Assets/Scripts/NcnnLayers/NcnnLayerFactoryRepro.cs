@@ -634,6 +634,7 @@ namespace NcnnCompute
                 pinnedNames = pinnedNames,
                 tempOwned = tempOwned
             };
+            SetCurrentBufferExecutionContext(context);
 
             bool TryLogFirstNonFiniteLayerOutput(int layerIndex, NcnnParamModel.Layer layer)
             {
@@ -824,6 +825,7 @@ namespace NcnnCompute
             }
             finally
             {
+                ClearCurrentBufferExecutionContext();
                 EndInferenceTempResourceTracking();
             }
         }

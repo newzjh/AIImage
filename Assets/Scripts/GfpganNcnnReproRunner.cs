@@ -435,7 +435,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         try
         {
-            return result.GetBufferData(blobName);
+            return result.ReadTextureDataForOutput(blobName);
         }
         catch
         {

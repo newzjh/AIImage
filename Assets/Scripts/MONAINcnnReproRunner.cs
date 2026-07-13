@@ -2287,22 +2287,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             return new InferOutputShape(textureDims, textureW, textureH, textureD, textureC);
         }
 
-        if (infer.TryGetExistingBufferView(blobName, out var existingView) && existingView != null && existingView.buffer != null)
-            return new InferOutputShape(existingView.dims, existingView.w, existingView.h, existingView.d, existingView.c);
-
         if (infer.TryGetLogicalShape(blobName, out var dims, out var w, out var h, out var d, out var c))
             return new InferOutputShape(dims, w, h, d, c);
-
-        try
-        {
-            var view = infer.GetBufferView(blobName);
-            if (view != null && view.buffer != null)
-                return new InferOutputShape(view.dims, view.w, view.h, view.d, view.c);
-        }
-        catch (Exception e)
-        {
-            AppendDebugLine("GetInferOutputShape buffer path unavailable | blob=" + blobName + " | " + e.Message);
-        }
 
         throw new InvalidOperationException((missingPrefix ?? "Infer output missing: ") + blobName);
     }
@@ -2319,9 +2305,6 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         if (infer == null)
             throw new ArgumentNullException(nameof(infer));
 
-        if (infer.TryGetExistingBufferView(blobName, out var existingView) && existingView != null && existingView.buffer != null)
-            return infer.GetBufferData(blobName);
-
         var hasExistingTexture = infer.TryGetExistingTexture(blobName, out var texture) && texture != null;
         if (hasExistingTexture)
             return ReadTextureOutputData(
@@ -2331,7 +2314,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         try
         {
-            return infer.GetBufferData(blobName);
+            return infer.ReadTextureDataForOutput(blobName);
         }
         catch (Exception e)
         {
@@ -5264,11 +5247,6 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 {
                     view = new InferOutputShape(dims, w, h, d, c);
                     data = ReadTextureOutputData(existingTexture, view);
-                }
-                else if (infer.TryGetExistingBufferView(blobName, out var bufferView) && bufferView != null && bufferView.buffer != null)
-                {
-                    view = new InferOutputShape(bufferView.dims, bufferView.w, bufferView.h, bufferView.d, bufferView.c);
-                    data = infer.GetBufferData(blobName);
                 }
                 else
                 {

@@ -2104,6 +2104,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                        VaeEncoderInputBlobName,
                        new HashSet<string>(StringComparer.Ordinal) { VaeEncoderMeanBlobName, VaeEncoderStdBlobName }))
             {
+#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
                 meanBuf = infer.ExtractBuffer(VaeEncoderMeanBlobName);
                 try
                 {
@@ -2113,6 +2114,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 {
                     stdTex = infer.ExtractTexture(VaeEncoderStdBlobName);
                 }
+#else
+                throw new NotSupportedException("Stable Diffusion inpainting encoder latent extraction requires legacy ComputeBuffer output; Pack4 CommandBuffer latent path is not implemented.");
+#endif
             }
 
             if (meanBuf == null)
@@ -5960,7 +5964,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         try
         {
-            var data = infer.GetBufferData(blobName);
+            var data = infer.ReadTextureDataForOutput(blobName);
             WriteFloatArraySafe(path, data);
             return;
         }
@@ -6033,6 +6037,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 sb.AppendLine("texture=<missing>");
             }
 
+#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
             if (infer.TryGetExistingBufferView(blobName, out var view) && view != null && view.buffer != null)
             {
                 sb.Append("buffer_count=").Append(view.buffer.count.ToString(CultureInfo.InvariantCulture))
@@ -6043,8 +6048,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     .Append(" c=").AppendLine(view.c.ToString(CultureInfo.InvariantCulture));
             }
             else
+#endif
             {
-                sb.AppendLine("buffer=<missing>");
+                sb.AppendLine("buffer=<debug-oracle-only>");
             }
 
             WriteAllTextSafe(path, sb.ToString());
@@ -6099,6 +6105,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private static bool TryReadExistingInferBufferData(NcnnRepro.InferResult infer, string blobName, out float[] data)
     {
+#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
         data = null;
         if (infer == null || string.IsNullOrWhiteSpace(blobName))
             return false;
@@ -6125,6 +6132,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             data = null;
             return false;
         }
+#else
+        data = null;
+        return false;
+#endif
     }
 
     private void DumpVaeEncoderStopBlobDebugSafe(RenderTexture inputPack4, string stopAfterTopName, string blobName, string pathStem)

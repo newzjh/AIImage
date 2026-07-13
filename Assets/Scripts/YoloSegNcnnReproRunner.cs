@@ -674,7 +674,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
         try
         {
-            values = infer.GetBufferData(blobName);
+            values = infer.ReadTextureDataForOutput(blobName);
         }
         catch
         {
