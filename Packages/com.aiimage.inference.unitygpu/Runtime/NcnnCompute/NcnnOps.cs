@@ -247,6 +247,9 @@ namespace NcnnCompute
         public TextureDimension dimension;
         public RenderTextureFormat format;
         public string trackerLabel;
+        public bool isTemporary;
+        public bool isReleased;
+        public NcnnTemporaryRtDescriptor temporaryDescriptor;
     }
 
     public sealed class NcnnOps : IDisposable

@@ -94,39 +94,6 @@ namespace NcnnCompute
             public bool IsPack4Image => LayoutKind == RepoVkTensorLayoutKind.Pack4Image;
         }
 
-        private readonly struct RtKey : IEquatable<RtKey>
-        {
-            public readonly int w;
-            public readonly int h;
-            public readonly int d;
-            public readonly TextureDimension dimension;
-            public readonly RenderTextureFormat format;
-
-            public RtKey(int w, int h, int d, TextureDimension dimension, RenderTextureFormat format)
-            {
-                this.w = w;
-                this.h = h;
-                this.d = d;
-                this.dimension = dimension;
-                this.format = format;
-            }
-
-            public bool Equals(RtKey other) => w == other.w && h == other.h && d == other.d && dimension == other.dimension && format == other.format;
-            public override bool Equals(object obj) => obj is RtKey other && Equals(other);
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    var hash = w;
-                    hash = (hash * 397) ^ h;
-                    hash = (hash * 397) ^ d;
-                    hash = (hash * 397) ^ (int)dimension;
-                    hash = (hash * 397) ^ (int)format;
-                    return hash;
-                }
-            }
-        }
-
         public sealed class TensorRef : IInferenceTensor
         {
             public RenderTexture texture;
@@ -251,23 +218,6 @@ namespace NcnnCompute
                 texture = null;
                 repoTensor = null;
                 sharedTextureOwner = null;
-            }
-        }
-
-        private sealed class DeferredCmdReleaseComparer : IEqualityComparer<ComputeTexture>
-        {
-            public bool Equals(ComputeTexture x, ComputeTexture y)
-            {
-                if (ReferenceEquals(x, y))
-                    return true;
-                if (x == null || y == null)
-                    return false;
-                return x.nameID == y.nameID;
-            }
-
-            public int GetHashCode(ComputeTexture obj)
-            {
-                return obj != null ? obj.nameID : 0;
             }
         }
 
@@ -1278,11 +1228,6 @@ namespace NcnnCompute
         internal readonly Dictionary<string, MultiHeadAttentionPack> _multiHeadAttention = new Dictionary<string, MultiHeadAttentionPack>(StringComparer.Ordinal);
         internal readonly Dictionary<string, IDisposable> _extraPacks = new Dictionary<string, IDisposable>(StringComparer.Ordinal);
         internal Dictionary<string, int> _blobUseCount;
-        private readonly Dictionary<RtKey, Stack<RenderTexture>> _rtPool = new Dictionary<RtKey, Stack<RenderTexture>>();
-        private readonly List<RenderTexture> _deferredTempRtReleases = new List<RenderTexture>();
-        private readonly NcnnTempComputeBufferPool _bufferPool = new NcnnTempComputeBufferPool();
-        private readonly HashSet<ComputeTexture> _cmdSets = new HashSet<ComputeTexture>();
-        private readonly HashSet<ComputeTexture> _deferredCmdReleases = new HashSet<ComputeTexture>(new DeferredCmdReleaseComparer());
         private readonly float[] _gpuSyncScratch = new float[1];
         private int _runtimeProfileInferenceIndex;
         private int _tempBufferRentCount;
@@ -1296,37 +1241,8 @@ namespace NcnnCompute
         private int _tempRtPeakLiveCount;
         private bool _trackInferenceTempResources;
         private bool _isDisposed;
-        private int _deferredTempRtReleaseDepth;
-        private bool _allowInferenceTempRtReuse;
 
         private readonly NcnnOps _ops;
-        private bool _useTempPool = false;
-        private int _maxPooledPerShape = 2;
-        private const int DefaultInferenceTempRtPoolPerShape = 2;
-        private const int DefaultDeferredTempRtReleaseBatchSize = 8;
-        private const string DeferredTempRtReleaseBatchEnvVar = "AIIMAGE_NCNN_DEFERRED_RT_RELEASE_BATCH";
-
-        public bool EnableTempPool
-        {
-            get => _useTempPool;
-            set
-            {
-                _useTempPool = value;
-                _bufferPool.Enabled = value;
-                if (!value)
-                    _allowInferenceTempRtReuse = false;
-            }
-        }
-
-        public int MaxPooledPerShape
-        {
-            get => _maxPooledPerShape;
-            set
-            {
-                _maxPooledPerShape = Mathf.Max(0, value);
-                _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
-            }
-        }
 
         public const bool EnableWinograd23 = false;
         public bool PreferTexturePathForFaceDetector { get; set; }
@@ -1337,6 +1253,7 @@ namespace NcnnCompute
         public bool EnableAttentionMatMulPack4Specializations { get; set; }
         public bool EnableVistaTailPack4Specializations { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        public long TemporaryTextureBudgetBytes { get; set; }
         public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
         // Production CommandBuffer execution is always planned strictly. DebugOracle is the
         // only explicit relaxation path and remains unavailable in non-debug builds.
@@ -2701,63 +2618,15 @@ namespace NcnnCompute
         {
             ResetInferenceTempResourceStats();
             _trackInferenceTempResources = true;
-            _allowInferenceTempRtReuse = false;
             if (!IsDebugOracleExecution)
                 DebugLog?.Invoke("[InferencePathAudit] mode=ProductionTextureOnly | activation_storage=Pack4Texture | buffer_materialization=forbidden");
         }
 
-        public void BeginDeferredTempRtReleaseScope()
-        {
-            _deferredTempRtReleaseDepth++;
-        }
-
         public void EndInferenceTempResourceTracking()
         {
-            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.EndInferenceTempResourceTracking");
-            if (_rtPool.Count > 0)
-            {
-                try
-                {
-                    _ops?.DebugSyncGpu();
-                }
-                catch
-                {
-                }
-
-                FlushInferenceTempRenderTexturePool();
-            }
-            _allowInferenceTempRtReuse = false;
             _trackInferenceTempResources = false;
             if (!IsDebugOracleExecution)
                 DebugLog?.Invoke("[InferencePathAudit] completed | intermediate_buffer_materializations=0");
-        }
-
-        public void AllowInferenceTempRtReuseAfterSync()
-        {
-            if (!_trackInferenceTempResources || !_useTempPool)
-                return;
-
-            try
-            {
-                _ops?.DebugSyncGpu();
-            }
-            catch
-            {
-            }
-
-            _allowInferenceTempRtReuse = true;
-        }
-
-        public void EndDeferredTempRtReleaseScope()
-        {
-            if (_deferredTempRtReleaseDepth <= 0)
-                return;
-
-            _deferredTempRtReleaseDepth--;
-            if (_deferredTempRtReleaseDepth > 0)
-                return;
-
-            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.EndDeferredTempRtReleaseScope");
         }
 
         public TempResourceStatsSnapshot GetInferenceTempResourceStats()
@@ -2921,9 +2790,6 @@ namespace NcnnCompute
 
         private void ValidateTempBufferAllowed(int count, int stride)
         {
-            if (!_trackInferenceTempResources)
-                return;
-
             if (IsDebugOracleExecution && !DisallowInferenceTempComputeBuffers)
                 return;
 
@@ -3080,7 +2946,6 @@ namespace NcnnCompute
         public NcnnRepro(NcnnOps ops)
         {
             _ops = ops ?? throw new ArgumentNullException(nameof(ops));
-            _bufferPool.MaxPooledPerShape = _maxPooledPerShape;
         }
 
         public void LoadModel(string paramText, NcnnBinReader br, Action<LoadProgress> onProgress = null)
@@ -4262,13 +4127,18 @@ namespace NcnnCompute
         {
             ValidateTempBufferAllowed(count, stride);
             TrackTempBufferRent(count, stride);
-            return _bufferPool.Rent(count, stride, type, GetTempBufferLabel(callerMember, callerLine));
+            var buffer = new ComputeBuffer(Mathf.Max(1, count), Math.Max(1, stride), type);
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, Mathf.Max(1, count), Math.Max(1, stride), GetTempBufferLabel(callerMember, callerLine));
+            return buffer;
         }
 
         internal void ReturnTempBuffer(ComputeBuffer buffer)
         {
             TrackTempBufferReturn(buffer);
-            _bufferPool.Return(buffer, "NcnnRepro.ReturnTempBuffer");
+            if (buffer == null)
+                return;
+            NcnnGpuResourceTracker.ReleaseBuffer(buffer, "NcnnRepro.ReturnTempBuffer");
+            try { buffer.Dispose(); } catch { }
         }
 
         internal NcnnTensorBuffer RentTempTensorBuffer(
@@ -4317,15 +4187,14 @@ namespace NcnnCompute
                 enableRandomWrite = true,
                 msaaSamples = 1,
             };
-            if (TryRentInferenceTempTextureFromPool(w, h, depth, TextureDimension.Tex2DArray, format, allocLabel, out var pooled))
-            {
-                _ops?.FillScalarTexture(null, pooled);
-                TrackTempRtRent();
-                return pooled;
-            }
-
+            var temporaryDescriptor = CreateTemporaryRtDescriptor(
+                new BufferShape(3, w, h, 1, depth * 4),
+                new BufferShape(3, w, h, 1, depth * 4),
+                desc,
+                allocLabel);
+            EnsureTemporaryTextureBudget(temporaryDescriptor);
             var allocated = RenderTexture.GetTemporary(desc);
-            NcnnGpuResourceTracker.RegisterTexture(allocated, allocLabel + "|new");
+            NcnnGpuResourceTracker.RegisterTemporaryTexture(allocated, temporaryDescriptor);
             _ops?.FillScalarTexture(null, allocated);
             TrackTempRtRent();
             return allocated;
@@ -4359,15 +4228,14 @@ namespace NcnnCompute
                 enableRandomWrite = true,
                 msaaSamples = 1,
             };
-            if (TryRentInferenceTempTextureFromPool(w, h, 1, TextureDimension.Tex2D, format, allocLabel, out var pooled))
-            {
-                _ops?.FillScalarTexture(null, pooled);
-                TrackTempRtRent();
-                return pooled;
-            }
-
+            var temporaryDescriptor = CreateTemporaryRtDescriptor(
+                new BufferShape(2, w, h, 1, 1),
+                new BufferShape(2, w, h, 1, 1),
+                desc,
+                allocLabel);
+            EnsureTemporaryTextureBudget(temporaryDescriptor);
             var allocated = RenderTexture.GetTemporary(desc);
-            NcnnGpuResourceTracker.RegisterTexture(allocated, allocLabel + "|new");
+            NcnnGpuResourceTracker.RegisterTemporaryTexture(allocated, temporaryDescriptor);
             _ops?.FillScalarTexture(null, allocated);
             TrackTempRtRent();
             return allocated;
@@ -4377,40 +4245,6 @@ namespace NcnnCompute
         {
             if (rt == null)
                 return;
-
-            if (TryReturnInferenceTempArrayToPool(rt))
-            {
-                TrackTempRtReturn();
-                return;
-            }
-
-            if (TryDeferTempRenderTextureRelease(rt))
-            {
-                TrackTempRtReturn();
-                return;
-            }
-
-            if (_trackInferenceTempResources)
-            {
-                _deferredTempRtReleases.Add(rt);
-                TrackTempRtReturn();
-                var batchSize = GetDeferredTempRtReleaseBatchSize();
-                if (batchSize > 0 && _deferredTempRtReleases.Count >= batchSize)
-                    FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.DeferredTempRtReleaseBatch");
-                return;
-            }
-
-            if (!_trackInferenceTempResources)
-            {
-                try
-                {
-                    _ops?.DebugSyncGpu();
-                }
-                catch
-                {
-                }
-            }
-
             TrackTempRtReturn();
             NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ReturnTempArray");
             RenderTexture.ReleaseTemporary(rt);
@@ -4446,8 +4280,14 @@ namespace NcnnCompute
 
             var id = Shader.PropertyToID(Guid.NewGuid().ToString());
             var allocLabel = "NcnnRepro.RentTempArrayCmd(" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture) + "x" + depth.ToString(CultureInfo.InvariantCulture) + ")";
+            var temporaryDescriptor = CreateTemporaryRtDescriptor(
+                new BufferShape(3, w, h, 1, depth * 4),
+                new BufferShape(3, w, h, 1, depth * 4),
+                desc,
+                allocLabel);
+            EnsureTemporaryTextureBudget(temporaryDescriptor);
             cmd.GetTemporaryRT(id, desc);
-            NcnnGpuResourceTracker.RegisterTextureHandle(id, w, h, depth, format, allocLabel + "|new");
+            NcnnGpuResourceTracker.RegisterTemporaryTextureHandle(id, temporaryDescriptor);
             var t = new ComputeTexture
             {
                 nameID = id,
@@ -4456,9 +4296,10 @@ namespace NcnnCompute
                 depth = depth,
                 dimension = TextureDimension.Tex2DArray,
                 format = format,
-                trackerLabel = allocLabel
+                trackerLabel = allocLabel,
+                isTemporary = true,
+                temporaryDescriptor = temporaryDescriptor
             };
-            _cmdSets.Add(t);
             _ops?.FillScalarTexture(cmd, null, t);
             TrackTempRtRent();
             return t;
@@ -4491,8 +4332,14 @@ namespace NcnnCompute
 
             var id = Shader.PropertyToID(Guid.NewGuid().ToString());
             var allocLabel = "NcnnRepro.RentTempMatCmd(" + w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture) + ")";
+            var temporaryDescriptor = CreateTemporaryRtDescriptor(
+                new BufferShape(2, w, h, 1, 1),
+                new BufferShape(2, w, h, 1, 1),
+                desc,
+                allocLabel);
+            EnsureTemporaryTextureBudget(temporaryDescriptor);
             cmd.GetTemporaryRT(id, desc);
-            NcnnGpuResourceTracker.RegisterTextureHandle(id, w, h, 1, format, allocLabel + "|new");
+            NcnnGpuResourceTracker.RegisterTemporaryTextureHandle(id, temporaryDescriptor);
             var t = new ComputeTexture
             {
                 nameID = id,
@@ -4501,9 +4348,10 @@ namespace NcnnCompute
                 depth = 1,
                 dimension = TextureDimension.Tex2D,
                 format = format,
-                trackerLabel = allocLabel
+                trackerLabel = allocLabel,
+                isTemporary = true,
+                temporaryDescriptor = temporaryDescriptor
             };
-            _cmdSets.Add(t);
             _ops?.FillScalarTexture(cmd, null, t);
             TrackTempRtRent();
             return t;
@@ -4511,239 +4359,50 @@ namespace NcnnCompute
 
         public void ReturnTempArray(CommandBuffer cmd, ComputeTexture t)
         {
-            if (cmd == null || t == null)
+            if (cmd == null || t == null || !t.isTemporary || t.isReleased)
                 return;
-
-            if (_cmdSets.Contains(t))
-            {
-                _cmdSets.Remove(t);
-                if (ShouldDeferCommandBufferTempRtRelease())
-                {
-                    _deferredCmdReleases.Add(t);
-                    return;
-                }
-
-                TrackTempRtReturn();
-                NcnnGpuResourceTracker.ReleaseTextureHandle(t.nameID, t.trackerLabel ?? "NcnnRepro.ReturnTempArrayCmd");
-                cmd.ReleaseTemporaryRT(t.nameID);
-            }
+            t.isReleased = true;
+            TrackTempRtReturn();
+            NcnnGpuResourceTracker.ReleaseTextureHandle(t.nameID, t.trackerLabel ?? "NcnnRepro.ReturnTempArrayCmd");
+            cmd.ReleaseTemporaryRT(t.nameID);
         }
 
-        private void FlushDeferredCommandBufferTempRtReleases(CommandBuffer cmd)
+        internal NcnnTemporaryRtDescriptor CreateTemporaryRtDescriptor(
+            TensorDescriptor tensorDescriptor,
+            RenderTextureDescriptor renderTextureDescriptor,
+            string label)
         {
-            if (cmd == null || _deferredCmdReleases.Count == 0)
-                return;
+            if (tensorDescriptor == null)
+                throw new ArgumentNullException(nameof(tensorDescriptor));
 
-            foreach (var texture in _deferredCmdReleases)
-            {
-                if (texture == null)
-                    continue;
-                TrackTempRtReturn();
-                NcnnGpuResourceTracker.ReleaseTextureHandle(texture.nameID, texture.trackerLabel ?? "NcnnRepro.FlushDeferredCmdTempArray");
-                cmd.ReleaseTemporaryRT(texture.nameID);
-            }
-
-            _deferredCmdReleases.Clear();
+            return CreateTemporaryRtDescriptor(
+                tensorDescriptor.LogicalShape,
+                tensorDescriptor.StorageShape,
+                renderTextureDescriptor,
+                label);
         }
 
-        private bool TryRentInferenceTempTextureFromPool(
-            int w,
-            int h,
-            int depth,
-            TextureDimension dimension,
-            RenderTextureFormat format,
-            string label,
-            out RenderTexture rt)
+        private NcnnTemporaryRtDescriptor CreateTemporaryRtDescriptor(
+            BufferShape logicalShape,
+            BufferShape storageShape,
+            RenderTextureDescriptor renderTextureDescriptor,
+            string label)
         {
-            rt = null;
-            if (!_useTempPool || !_trackInferenceTempResources || !_allowInferenceTempRtReuse || _rtPool.Count == 0)
-                return false;
-
-            var key = new RtKey(
-                Mathf.Max(1, w),
-                Mathf.Max(1, h),
-                Mathf.Max(1, depth),
-                dimension,
-                format);
-            if (!_rtPool.TryGetValue(key, out var pool) || pool == null)
-                return false;
-
-            while (pool.Count > 0)
-            {
-                var pooled = pool.Pop();
-                if (!IsMatchingPooledRenderTexture(pooled, key))
-                {
-                    if (pooled != null)
-                    {
-                        NcnnGpuResourceTracker.ReleaseTexture(pooled, label + "|pool-mismatch");
-                        try { RenderTexture.ReleaseTemporary(pooled); } catch { }
-                    }
-                    continue;
-                }
-
-                NcnnGpuResourceTracker.ReuseTexture(pooled, label + "|pool");
-                rt = pooled;
-                return true;
-            }
-
-            _rtPool.Remove(key);
-            return false;
+            return new NcnnTemporaryRtDescriptor(
+                logicalShape,
+                storageShape,
+                renderTextureDescriptor,
+                SessionId,
+                DescribeCurrentExecutionSite(),
+                label);
         }
 
-        private bool TryReturnInferenceTempArrayToPool(RenderTexture rt)
+        private void EnsureTemporaryTextureBudget(NcnnTemporaryRtDescriptor descriptor)
         {
-            if (rt == null || !_useTempPool || !_trackInferenceTempResources)
-                return false;
-
-            var maxPerShape = GetInferenceTempRtPoolMaxPerShape();
-            if (maxPerShape <= 0)
-                return false;
-
-            var key = new RtKey(
-                Mathf.Max(1, rt.width),
-                Mathf.Max(1, rt.height),
-                Mathf.Max(1, rt.volumeDepth > 0 ? rt.volumeDepth : 1),
-                rt.dimension,
-                rt.format);
-            if (!_rtPool.TryGetValue(key, out var pool) || pool == null)
-            {
-                pool = new Stack<RenderTexture>(maxPerShape);
-                _rtPool[key] = pool;
-            }
-
-            if (pool.Count >= maxPerShape || !IsMatchingPooledRenderTexture(rt, key))
-                return false;
-
-            pool.Push(rt);
-            return true;
-        }
-
-        private int GetInferenceTempRtPoolMaxPerShape()
-        {
-            if (!_useTempPool || !_trackInferenceTempResources)
-                return 0;
-            if (_maxPooledPerShape > 0)
-                return _maxPooledPerShape;
-            return 0;
-        }
-
-        private static bool IsMatchingPooledRenderTexture(RenderTexture rt, RtKey key)
-        {
-            if (rt == null)
-                return false;
-
-            try
-            {
-                return rt.width == key.w
-                    && rt.height == key.h
-                    && Mathf.Max(1, rt.volumeDepth > 0 ? rt.volumeDepth : 1) == key.d
-                    && rt.dimension == key.dimension
-                    && rt.format == key.format;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private bool TryDeferTempRenderTextureRelease(RenderTexture rt)
-        {
-            if (rt == null || _deferredTempRtReleaseDepth <= 0)
-                return false;
-
-            _deferredTempRtReleases.Add(rt);
-            return true;
-        }
-
-        private void FlushDeferredTempRenderTextureReleases(bool syncGpu, string releaseLabel)
-        {
-            if (_deferredTempRtReleases.Count == 0)
-                return;
-
-            if (syncGpu)
-            {
-                try
-                {
-                    _ops?.DebugSyncGpu();
-                }
-                catch
-                {
-                }
-            }
-
-            for (var i = 0; i < _deferredTempRtReleases.Count; i++)
-            {
-                var rt = _deferredTempRtReleases[i];
-                if (rt == null)
-                    continue;
-                NcnnGpuResourceTracker.ReleaseTexture(rt, releaseLabel ?? "NcnnRepro.FlushDeferredTempRt");
-                try { RenderTexture.ReleaseTemporary(rt); } catch { }
-            }
-
-            _deferredTempRtReleases.Clear();
-        }
-
-        private static int GetDeferredTempRtReleaseBatchSize()
-        {
-            try
-            {
-                var env = Environment.GetEnvironmentVariable(DeferredTempRtReleaseBatchEnvVar);
-                if (!string.IsNullOrWhiteSpace(env)
-                    && int.TryParse(env, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
-                    return Mathf.Max(0, value);
-            }
-            catch
-            {
-            }
-
-            return DefaultDeferredTempRtReleaseBatchSize;
-        }
-
-        private void FlushInferenceTempRenderTexturePool()
-        {
-            foreach (var kv in _rtPool)
-            {
-                var pool = kv.Value;
-                while (pool != null && pool.Count > 0)
-                {
-                    var rt = pool.Pop();
-                    if (rt == null)
-                        continue;
-                    NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.FlushInferenceTempRtPool");
-                    try { RenderTexture.ReleaseTemporary(rt); } catch { }
-                }
-            }
-
-            _rtPool.Clear();
-        }
-
-        private static bool ShouldDeferCommandBufferTempRtRelease()
-        {
-            var env = Environment.GetEnvironmentVariable("AIIMAGE_CLIP_DEFER_CMD_RT_RELEASE");
-            return !string.IsNullOrWhiteSpace(env)
-                && (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(env, "yes", StringComparison.OrdinalIgnoreCase));
-        }
-
-        public void ClearTempPool()
-        {
-            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.ClearTempPool");
-            FlushInferenceTempRenderTexturePool();
-            foreach (var kv in _rtPool)
-            {
-                var pool = kv.Value;
-                while (pool.Count > 0)
-                {
-                    var rt = pool.Pop();
-                    if (rt == null)
-                        continue;
-                    NcnnGpuResourceTracker.ReleaseTexture(rt, "NcnnRepro.ClearTempPool");
-                    try { RenderTexture.ReleaseTemporary(rt); } catch { }
-                }
-            }
-            _rtPool.Clear();
-            _bufferPool.Clear("NcnnRepro.ClearTempPool");
+            NcnnGpuResourceTracker.EnsureTemporaryTextureBudget(
+                NcnnGpuResourceTracker.EstimateTemporaryTextureBytes(descriptor),
+                TemporaryTextureBudgetBytes,
+                descriptor.Node);
         }
 
         public void Release()
@@ -4774,29 +4433,6 @@ namespace NcnnCompute
             Model = null;
             LayerRepros = null;
             _blobUseCount = null;
-            if (_cmdSets.Count > 0)
-            {
-                foreach (var cmdTex in _cmdSets)
-                {
-                    if (cmdTex == null)
-                        continue;
-                    NcnnGpuResourceTracker.ReleaseTextureHandle(cmdTex.nameID, cmdTex.trackerLabel ?? "NcnnRepro.ReleaseCmdTempArray");
-                }
-                _cmdSets.Clear();
-            }
-            if (_deferredCmdReleases.Count > 0)
-            {
-                foreach (var cmdTex in _deferredCmdReleases)
-                {
-                    if (cmdTex == null)
-                        continue;
-                    NcnnGpuResourceTracker.ReleaseTextureHandle(cmdTex.nameID, cmdTex.trackerLabel ?? "NcnnRepro.ReleaseDeferredCmdTempArray");
-                }
-                _deferredCmdReleases.Clear();
-            }
-            FlushDeferredTempRenderTextureReleases(true, "NcnnRepro.ReleaseDeferredTempRt");
-            FlushInferenceTempRenderTexturePool();
-            ClearTempPool();
         }
 
         public void Dispose()
@@ -6608,6 +6244,24 @@ namespace NcnnCompute
 
             tensor.ClearTexture();
             tensor.owned = false;
+        }
+
+        internal void ReleaseAllCmdTemporaryTensors(CommandBuffer cmd, Dictionary<string, CmdTensorRef> blobs)
+        {
+            if (cmd == null || blobs == null)
+                return;
+
+            var visited = new HashSet<CmdTensorRef>();
+            foreach (var tensor in blobs.Values)
+            {
+                if (tensor == null || !visited.Add(tensor))
+                    continue;
+                if (tensor.owned && tensor.texture != null)
+                    ReturnTempArray(cmd, tensor.texture);
+                tensor.sharedTextureOwner = null;
+                tensor.ClearTexture();
+                tensor.owned = false;
+            }
         }
 
         internal static TensorRef GetTexture(Dictionary<string, TensorRef> blobs, string name)

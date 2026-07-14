@@ -849,6 +849,8 @@ namespace NcnnCompute
                 new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { [inputBlobName] = inputPack4 },
                 new Dictionary<string, BufferShape>(StringComparer.Ordinal) { [inputBlobName] = inputShape });
             BeginInferenceTempResourceTracking();
+            Dictionary<string, CmdTensorRef> blobs = null;
+            var returned = false;
             try
             {
                 var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
@@ -856,7 +858,7 @@ namespace NcnnCompute
                 {
                     [inputBlobName] = inputShape
                 };
-                var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
+                blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
                 {
                     [inputBlobName] = new CmdTensorRef
                     {
@@ -940,12 +942,13 @@ namespace NcnnCompute
                     if (tr.owned && tr.texture != null)
                         ReturnTempArray(cmd, tr.texture);
                 }
-                FlushDeferredCommandBufferTempRtReleases(cmd);
-
+                returned = true;
                 return keep;
             }
             finally
             {
+                if (!returned && blobs != null)
+                    ReleaseAllCmdTemporaryTensors(cmd, blobs);
                 EndInferenceTempResourceTracking();
             }
         }
@@ -966,11 +969,13 @@ namespace NcnnCompute
 
             EnsureCommandBufferTextureExecutionPlan(textureInputs, textureInputShapes);
             BeginInferenceTempResourceTracking();
+            Dictionary<string, CmdTensorRef> blobs = null;
+            var returned = false;
             try
             {
                 var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
                 var shapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal);
-                var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal);
+                blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal);
                 RegisterCmdTextureInputs(textureInputs, textureInputShapes, blobs, shapes);
 
                 var context = new NcnnLayerCommandBufferContext
@@ -1056,12 +1061,13 @@ namespace NcnnCompute
                     if (tr.owned && tr.texture != null)
                         ReturnTempArray(cmd, tr.texture);
                 }
-                FlushDeferredCommandBufferTempRtReleases(cmd);
-
+                returned = true;
                 return keep;
             }
             finally
             {
+                if (!returned && blobs != null)
+                    ReleaseAllCmdTemporaryTensors(cmd, blobs);
                 EndInferenceTempResourceTracking();
             }
         }
