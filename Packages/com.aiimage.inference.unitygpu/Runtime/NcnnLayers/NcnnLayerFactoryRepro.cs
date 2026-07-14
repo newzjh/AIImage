@@ -842,13 +842,19 @@ namespace NcnnCompute
             string inputBlobName = "data",
             ICollection<string> pinnedNames = null)
         {
+            if (inputPack4 == null)
+                throw new ArgumentNullException(nameof(inputPack4));
+            var inputShape = new BufferShape(3, inputPack4.width, inputPack4.height, 1, ResolveInputLogicalChannels(inputBlobName, inputPacks * 4));
+            EnsureCommandBufferTextureExecutionPlan(
+                new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { [inputBlobName] = inputPack4 },
+                new Dictionary<string, BufferShape>(StringComparer.Ordinal) { [inputBlobName] = inputShape });
             BeginInferenceTempResourceTracking();
             try
             {
                 var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
                 var shapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal)
                 {
-                    [inputBlobName] = new BufferShape(3, inputPack4.width, inputPack4.height, 1, ResolveInputLogicalChannels(inputBlobName, inputPacks * 4))
+                    [inputBlobName] = inputShape
                 };
                 var blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal)
                 {
@@ -958,6 +964,7 @@ namespace NcnnCompute
             if (textureInputs == null || textureInputs.Count == 0)
                 throw new ArgumentNullException(nameof(textureInputs));
 
+            EnsureCommandBufferTextureExecutionPlan(textureInputs, textureInputShapes);
             BeginInferenceTempResourceTracking();
             try
             {

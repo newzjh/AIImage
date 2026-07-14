@@ -43,6 +43,11 @@ namespace NcnnCompute
                                             c = Mathf.Max(1, c),
                                             cpuData = a
                                         };
+                                        if (TryCreateChannelVectorTexture(memoryPack))
+                                        {
+                                            owner._memoryData[layer.name] = memoryPack;
+                                            return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+                                        }
                                         if (ShouldUseVistaPromptPack4RtOnly(owner, layer, memoryPack))
                                         {
                                             phaseSw.Restart();
@@ -132,6 +137,8 @@ namespace NcnnCompute
 
             if (!owner._memoryData.TryGetValue(layer.name, out var mp))
                 throw new InvalidOperationException("MemoryData not found: " + layer.name);
+            if (TryPublishChannelVectorCmdBlob(owner, cmd, layer, mp, blobs, shapes))
+                return;
             if (TryPublishVistaPromptPack4CmdBlob(owner, cmd, layer, mp, blobs, shapes))
                 return;
             if (mp.data == null && !TryCreateMemoryDataBuffer(mp))
@@ -144,6 +151,80 @@ namespace NcnnCompute
                 preferTexture: true,
                 blobs,
                 shapes);
+        }
+
+        private static bool TryCreateChannelVectorTexture(NcnnRepro.MemoryDataPack memoryPack)
+        {
+            if (memoryPack == null
+                || memoryPack.dims != 3
+                || memoryPack.w != 1
+                || memoryPack.h != 1
+                || memoryPack.d != 1
+                || memoryPack.c <= 0
+                || memoryPack.cpuData == null
+                || memoryPack.cpuData.Length < memoryPack.c)
+            {
+                return false;
+            }
+
+            try
+            {
+                var pixels = new Color[memoryPack.c];
+                for (var index = 0; index < pixels.Length; index++)
+                    pixels[index] = new Color(memoryPack.cpuData[index], 0f, 0f, 0f);
+
+                var texture = new Texture2D(memoryPack.c, 1, TextureFormat.RGBAHalf, false, true)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    anisoLevel = 0,
+                    name = "NcnnMemoryDataChannelVector"
+                };
+                texture.SetPixels(pixels);
+                texture.Apply(false, true);
+                memoryPack.channelVectorTexture = texture;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryPublishChannelVectorCmdBlob(
+            NcnnRepro owner,
+            CommandBuffer cmd,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.MemoryDataPack memoryPack,
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            if (memoryPack?.channelVectorTexture == null
+                || memoryPack.dims != 3
+                || memoryPack.w != 1
+                || memoryPack.h != 1
+                || memoryPack.d != 1
+                || memoryPack.c <= 0
+                || layer?.topNames == null
+                || layer.topNames.Length == 0
+                || string.IsNullOrWhiteSpace(layer.topNames[0]))
+            {
+                return false;
+            }
+
+            var vector = owner.RentTempArray(cmd, memoryPack.c, 1, 1, RenderTextureFormat.ARGBHalf);
+            cmd.CopyTexture(memoryPack.channelVectorTexture, 0, 0, vector.nameID, 0, 0);
+            var logicalShape = new NcnnRepro.BufferShape(1, memoryPack.c, 1, 1, 1);
+            var storageShape = new NcnnRepro.BufferShape(3, memoryPack.c, 1, 1, 1);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(vector, logicalShape, storageShape, owned: true, blobName: layer.topNames[0]);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = logicalShape;
+            owner.DebugLog?.Invoke(
+                "[MemoryDataChannelVector][cmd] texture copy"
+                + " | layer=" + layer.name
+                + " | top=" + layer.topNames[0]
+                + " | channels=" + memoryPack.c.ToString(CultureInfo.InvariantCulture));
+            return true;
         }
 
         private static bool ShouldUseVistaPromptPack4RtOnly(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnRepro.MemoryDataPack memoryPack)

@@ -149,8 +149,8 @@ namespace NcnnCompute
             "Deconvolution3D", "DeconvolutionDepthWise", "Eltwise", "ExpandDims", "Flatten", "GELU",
             "Gemm", "GroupNorm", "InnerProduct", "Interp", "LayerNorm", "MatMul", "Packing", "Padding",
             "Permute", "PixelShuffle", "Pooling", "Pooling3D", "PReLU", "Quantize", "Dequantize",
-            "Requantize", "ReLU", "Reorg", "Reshape", "Scale", "Sigmoid", "Slice", "Softmax",
-            "Swish", "Tile", "UnaryOp", "Unfold", "Shape", "Size", "Range", "ConstantOfShape", "Expand",
+            "Requantize", "Reduction", "ReLU", "Reorg", "Reshape", "Scale", "Sigmoid", "Slice", "Softmax",
+            "Swish", "Tile", "UnaryOp", "Unfold", "MemoryData", "Shape", "Size", "Range", "ConstantOfShape", "Expand",
             "ArgMax", "ArgMin", "Where", "TopK", "OneHot", "CumSum", "Gather", "GatherElements"
         };
 
@@ -214,6 +214,15 @@ namespace NcnnCompute
 
         public static bool IsStrictlySupported(NcnnOperatorCapability capability, string targetBackend, string targetDtype)
         {
+            return IsStrictlySupported(capability, targetBackend, targetDtype, null);
+        }
+
+        public static bool IsStrictlySupported(
+            NcnnOperatorCapability capability,
+            string targetBackend,
+            string targetDtype,
+            string targetLayout)
+        {
             if (capability == null || !string.Equals(capability.status, NcnnOperatorCapabilityStatus.Supported, StringComparison.Ordinal))
                 return false;
 
@@ -224,9 +233,14 @@ namespace NcnnCompute
                 && !capability.renderTexture)
                 return false;
 
-            return string.Equals(targetDtype, "FP32", StringComparison.OrdinalIgnoreCase) ? capability.fp32
+            var dtypeSupported = string.Equals(targetDtype, "FP32", StringComparison.OrdinalIgnoreCase) ? capability.fp32
                 : string.Equals(targetDtype, "FP16", StringComparison.OrdinalIgnoreCase) ? capability.fp16
                 : string.Equals(targetDtype, "INT8", StringComparison.OrdinalIgnoreCase) && capability.int8;
+            if (!dtypeSupported)
+                return false;
+
+            return string.IsNullOrWhiteSpace(targetLayout)
+                || (capability.layouts ?? Array.Empty<string>()).Any(layout => string.Equals(layout, targetLayout, StringComparison.OrdinalIgnoreCase));
         }
 
         private static NcnnOperatorCapability CreateCapability(string operatorName)
@@ -235,10 +249,16 @@ namespace NcnnCompute
             var isAliasOnly = AliasOnlyOperators.Contains(operatorName);
             var hasTexturePath = TextureAndCommandBufferOperators.Contains(operatorName);
             var isSentis = SentisOperators.Contains(operatorName);
+            // These two pointwise paths record a complete production contract. Other texture
+            // entries may expose an FP16 Pack4 branch, but remain partial until the loaded
+            // runtime profile proves that a concrete node cannot reach a fallback.
+            var hasVerifiedCommandBufferPack4 = operatorName == "ReLU" || operatorName == "Sigmoid";
             var status = isUnsupported
                 ? NcnnOperatorCapabilityStatus.Unsupported
                 : isAliasOnly
                     ? NcnnOperatorCapabilityStatus.AliasOnly
+                    : hasVerifiedCommandBufferPack4
+                        ? NcnnOperatorCapabilityStatus.Supported
                     : hasTexturePath
                         ? NcnnOperatorCapabilityStatus.Partial
                         : NcnnOperatorCapabilityStatus.DebugOnly;
@@ -253,12 +273,14 @@ namespace NcnnCompute
                 shapeInference = isAliasOnly,
                 renderTexture = hasTexturePath && !isUnsupported,
                 commandBuffer = hasTexturePath && !isUnsupported,
-                fp32 = !isUnsupported,
-                fp16 = false,
+                fp32 = hasTexturePath && !isUnsupported,
+                fp16 = hasTexturePath && !isUnsupported,
                 int8 = false,
                 layouts = ResolveLayouts(operatorName),
                 ranks = ResolveRanks(operatorName),
-                verifiedModels = Array.Empty<string>(),
+                verifiedModels = hasVerifiedCommandBufferPack4
+                    ? new[] { "pack4-command-buffer-smoke" }
+                    : Array.Empty<string>(),
                 status = status,
                 limitations = ResolveLimitations(operatorName, status),
                 requiredParameters = RequiredParameters.TryGetValue(operatorName, out var parameters) ? parameters : Array.Empty<string>()
@@ -316,6 +338,8 @@ namespace NcnnCompute
                 return "Only alias/view semantics are known. Strict planning requires a separately proven logical/storage layout match.";
             if (status == NcnnOperatorCapabilityStatus.DebugOnly)
                 return "The factory entry exists, but no verified Pack4 RenderTexture and CommandBuffer production contract is recorded.";
+            if (status == NcnnOperatorCapabilityStatus.Supported)
+                return "Verified FP16 Pack4 CommandBuffer pointwise dispatch. Other dtype/layout combinations remain unsupported.";
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
                 return "Only narrow texture specializations exist; generic CommandBuffer execution includes placeholder branches and is not strict-plan eligible.";
             if (operatorName == "LayerNorm" || operatorName == "Softmax" || operatorName == "Reduction"

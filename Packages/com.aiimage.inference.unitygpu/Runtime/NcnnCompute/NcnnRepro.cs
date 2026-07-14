@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -411,6 +412,7 @@ namespace NcnnCompute
         public sealed class MemoryDataPack : IDisposable
         {
             public ComputeBuffer data;
+            public Texture2D channelVectorTexture;
             public int dims;
             public int w;
             public int h;
@@ -424,6 +426,7 @@ namespace NcnnCompute
             public void Dispose()
             {
                 try { NcnnGpuResourceTracker.ReleaseBuffer(data, "NcnnRepro.MemoryDataPack.Dispose"); data?.Dispose(); } catch { }
+                try { if (channelVectorTexture != null) UnityEngine.Object.DestroyImmediate(channelVectorTexture); } catch { }
                 try
                 {
                     if (pack4Rt != null)
@@ -1335,6 +1338,12 @@ namespace NcnnCompute
         public bool EnableVistaTailPack4Specializations { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
         public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
+        // Production CommandBuffer execution is always planned strictly. DebugOracle is the
+        // only explicit relaxation path and remains unavailable in non-debug builds.
+        public bool StrictTextureInference => !IsExplicitDebugOracleExecution;
+        public string StrictTextureTargetDtype { get; set; } = "FP16";
+        public string StrictTextureTargetLayout { get; set; } = NcnnTexturePlanLayout.Packed4;
+        public NcnnTextureExecutionPlan LastTextureExecutionPlan { get; private set; }
         public bool DisallowBufferAccess { get; set; }
         public bool DisallowBufferOutputs { get; set; }
         public bool DisallowBufferToTextureMaterialization { get; set; }
@@ -1384,8 +1393,1168 @@ namespace NcnnCompute
             }
         }
 
+        // Legacy buffer/debug controls may still be used by immediate diagnostic runners.
+        // CommandBuffer planning is relaxed only by the explicit execution mode below.
         public bool IsDebugOracleExecution => IsDebugOracleBuild
             && (ExecutionMode == NcnnInferenceExecutionMode.DebugOracle || HasDebugOracleIntent());
+
+        private bool IsExplicitDebugOracleExecution => IsDebugOracleBuild
+            && ExecutionMode == NcnnInferenceExecutionMode.DebugOracle;
+
+        private void EnsureCommandBufferTextureExecutionPlan(
+            Dictionary<string, ComputeTexture> textureInputs,
+            Dictionary<string, BufferShape> textureInputShapes)
+        {
+            if (Model == null)
+                throw new InvalidOperationException("model not loaded");
+
+            var inputs = new List<NcnnTexturePlanTensorDescriptor>();
+            foreach (var kv in textureInputs ?? new Dictionary<string, ComputeTexture>(StringComparer.Ordinal))
+            {
+                var texture = kv.Value;
+                if (texture == null)
+                    throw new ArgumentNullException("textureInputs[\"" + kv.Key + "\"]");
+
+                var depth = Mathf.Max(1, texture.depth);
+                var fallbackChannels = string.Equals(kv.Key, "data", StringComparison.OrdinalIgnoreCase) ? 3 : depth * 4;
+                var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
+                    ? suppliedShape
+                    : new BufferShape(3, texture.width, texture.height, 1, ResolveInputLogicalChannels(kv.Key, fallbackChannels));
+                inputs.Add(new NcnnTexturePlanTensorDescriptor
+                {
+                    blob = kv.Key,
+                    logicalShape = new[] { logicalShape.dims, logicalShape.w, logicalShape.h, logicalShape.d, logicalShape.c },
+                    storageShape = new[] { logicalShape.dims, logicalShape.w, logicalShape.h, logicalShape.d, logicalShape.c },
+                    layout = StrictTextureTargetLayout,
+                    dtype = ResolveTexturePlanDtype(texture.format),
+                    aliasGroup = "input:" + kv.Key,
+                    textureBacked = true
+                });
+            }
+
+            CompleteTextureExecutionPlan(inputs, IsExplicitDebugOracleExecution);
+        }
+
+        private void CompleteTextureExecutionPlan(
+            List<NcnnTexturePlanTensorDescriptor> inputs,
+            bool debugOracleRelaxed)
+        {
+            LastTextureExecutionPlan = NcnnTextureExecutionPlanner.Analyze(Model, new NcnnTextureExecutionPlanRequest
+            {
+                modelName = LastLoadProfile?.modelMagic ?? string.Empty,
+                targetBackend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                targetDtype = StrictTextureTargetDtype,
+                targetLayout = StrictTextureTargetLayout,
+                strict = StrictTextureInference,
+                debugOracleRelaxed = debugOracleRelaxed,
+                inputs = inputs.ToArray(),
+                nodeVerifier = VerifyStrictCommandBufferPack4Node
+            });
+            NcnnTextureExecutionPlanner.ThrowIfDispatchRejected(LastTextureExecutionPlan);
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPack4Node(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!string.Equals(request?.targetBackend, NcnnOperatorCapabilityBackend.CommandBuffer, StringComparison.Ordinal)
+                || !string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(request?.targetLayout, NcnnTexturePlanLayout.Packed4, StringComparison.OrdinalIgnoreCase))
+            {
+                return RejectStrictCommandBufferPack4Node("The loaded runtime profile only proves the FP16 Packed4 CommandBuffer branch.");
+            }
+
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            switch (operatorName)
+            {
+                case "Convolution":
+                    return VerifyStrictCommandBufferConvolution(layer, inputs, request);
+                case "ConvolutionDepthWise":
+                    return VerifyStrictCommandBufferDepthWiseConvolution(layer, inputs, request);
+                case "Eltwise":
+                    return VerifyStrictCommandBufferEltwise(layer, inputs, request);
+                case "Concat":
+                    return VerifyStrictCommandBufferConcat(layer, inputs, request);
+                case "BinaryOp":
+                    return VerifyStrictCommandBufferBinaryOp(layer, inputs, request);
+                case "Interp":
+                    return VerifyStrictCommandBufferInterp(layer, inputs, request);
+                case "PixelShuffle":
+                    return VerifyStrictCommandBufferPixelShuffle(layer, inputs, request);
+                case "UnaryOp":
+                    return VerifyStrictCommandBufferUnaryOp(layer, inputs, request);
+                case "GELU":
+                    return VerifyStrictCommandBufferGelu(layer, inputs, request);
+                case "MemoryData":
+                    return VerifyStrictCommandBufferMemoryData(layer, request);
+                case "InnerProduct":
+                    return VerifyStrictCommandBufferInnerProduct(layer, inputs, request);
+                case "Pooling":
+                    return VerifyStrictCommandBufferPooling(layer, inputs, request);
+                case "Reduction":
+                    return VerifyStrictCommandBufferReduction(layer, inputs, request);
+                case "BatchNorm":
+                    return VerifyStrictCommandBufferBatchNorm(layer, inputs, request);
+                case "Reshape":
+                    return VerifyStrictCommandBufferReshape(layer, inputs, request);
+                case "Permute":
+                    return VerifyStrictCommandBufferPermute(layer, inputs, request);
+                case "Gemm":
+                    return VerifyStrictCommandBufferGemm(layer, inputs, request);
+                case "Slice":
+                    return VerifyStrictCommandBufferSlice(layer, inputs, request);
+                case "MatMul":
+                    return VerifyStrictCommandBufferMatMul(layer, inputs, request);
+                case "Softmax":
+                    return VerifyStrictCommandBufferSoftmax(layer, inputs, request);
+                default:
+                    return RejectStrictCommandBufferPack4Node("No loaded-runtime Pack4 proof exists for operator " + (operatorName ?? string.Empty) + ".");
+            }
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferConvolution(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("CommandBuffer convolution requires a 2D Pack4 activation.");
+            if (!_conv.TryGetValue(layer.name, out var conv) || conv == null)
+                return RejectStrictCommandBufferPack4Node("Packed convolution weights were not loaded for this layer.");
+            if (input.c != conv.inC)
+                return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded convolution profile.");
+            if (conv.isDepthWise || conv.group != 1)
+                return RejectStrictCommandBufferPack4Node("The CommandBuffer convolution path does not prove this depthwise/group configuration.");
+            if (conv.packedWeight4 == null || conv.packedBias4 == null)
+                return RejectStrictCommandBufferPack4Node("The required Pack4 convolution weights or bias are unavailable.");
+
+            var hasConv1x1Path = conv.kernelW == 1
+                && conv.kernelH == 1
+                && EnableConv1x1TextureConvolution;
+            var hasSpecialized3x3Path = conv.kernelW == 3
+                && conv.kernelH == 3
+                && conv.strideW == 1
+                && conv.strideH == 1
+                && conv.padLeft == conv.padRight
+                && conv.padLeft == conv.padTop
+                && conv.padTop == conv.padBottom
+                && (conv.inC & 3) == 0
+                && (conv.outC & 3) == 0;
+            var hasGeneralPath = EnableGeneralTextureConvolution
+                && conv.kernelW > 0
+                && conv.kernelH == conv.kernelW
+                && !(conv.kernelW == 1 && !EnableConv1x1TextureConvolution);
+            if (!hasConv1x1Path && !hasSpecialized3x3Path && !hasGeneralPath)
+                return RejectStrictCommandBufferPack4Node("No loaded CommandBuffer Pack4 convolution branch matches this kernel profile.");
+
+            var output = new BufferShape(
+                3,
+                ComputeConvOut(input.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight),
+                ComputeConvOut(input.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom),
+                1,
+                conv.outC);
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:convolution");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDepthWiseConvolution(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("CommandBuffer depthwise convolution requires a 2D Pack4 activation.");
+            if (!_conv.TryGetValue(layer.name, out var conv) || conv == null)
+                return RejectStrictCommandBufferPack4Node("Packed depthwise convolution weights were not loaded for this layer.");
+            if (input.c != conv.inC)
+                return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded depthwise convolution profile.");
+            if (!EnableDepthWiseTextureConvolution
+                || !conv.isDepthWise
+                || conv.group <= 0
+                || conv.group != conv.inC
+                || conv.outC <= 0
+                || conv.outC % conv.group != 0
+                || conv.packedDepthWiseWeight4 == null
+                || conv.packedBias4 == null)
+            {
+                return RejectStrictCommandBufferPack4Node("No loaded CommandBuffer Pack4 depthwise convolution branch matches this profile.");
+            }
+
+            var output = new BufferShape(
+                3,
+                ComputeConvOut(input.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight),
+                ComputeConvOut(input.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom),
+                1,
+                conv.outC);
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:convolution-depthwise");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPooling(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Pooling profile requires a 2D Pack4 activation.");
+            if (layer.GetInt(4, 0) != 1)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Pooling profile supports global pooling only.");
+            if (layer.GetInt(7, 0) != 0)
+                return RejectStrictCommandBufferPack4Node("Adaptive pooling does not have a verified CommandBuffer Pack4 path.");
+            if (layer.GetInt(0, 0) != 1)
+                return RejectStrictCommandBufferPack4Node("The verified global Pooling profile supports average pooling only.");
+
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(3, 1, 1, 1, input.c),
+                request,
+                "command-buffer-pack4:pooling-global");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferEltwise(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (shapes.Length == 0 || shapes.Any(shape => !StrictPlanShapesEqual(shape, shapes[0])))
+                return RejectStrictCommandBufferPack4Node("Eltwise CommandBuffer Pack4 requires equal descriptor-backed input shapes.");
+            var operation = layer.GetInt(0, 1);
+            if (operation != 0 && operation != 1 && operation != 2)
+                return RejectStrictCommandBufferPack4Node("The Eltwise operation is outside the verified CommandBuffer Pack4 subset.");
+            return AcceptStrictCommandBufferPack4Node(layer, shapes[0], request, "command-buffer-pack4:eltwise");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferConcat(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (shapes.Length < 2 || (shapes[0].dims != 3 && shapes[0].dims != 4))
+                return RejectStrictCommandBufferPack4Node("Concat CommandBuffer Pack4 requires two or more 3D/4D inputs.");
+
+            var axis = layer.GetInt(0, 0);
+            if (axis < 0)
+                axis += shapes[0].dims;
+            if (axis < 0 || axis >= shapes[0].dims)
+                return RejectStrictCommandBufferPack4Node("Concat axis is outside the input rank.");
+            var tensorAxis = MapNcnnAxisToTensorAxis(shapes[0].dims, axis);
+            var channelAxis = shapes[0].dims == 4 ? 3 : 2;
+            if (tensorAxis != channelAxis)
+                return RejectStrictCommandBufferPack4Node("Only channel-axis Concat has a verified CommandBuffer Pack4 path.");
+
+            var outputChannels = 0;
+            for (var index = 0; index < shapes.Length; index++)
+            {
+                var shape = shapes[index];
+                if (shape.dims != shapes[0].dims
+                    || shape.w != shapes[0].w
+                    || shape.h != shapes[0].h
+                    || shape.d != shapes[0].d)
+                {
+                    return RejectStrictCommandBufferPack4Node("Concat inputs do not preserve the required Pack4 spatial descriptor.");
+                }
+                outputChannels += shape.c;
+            }
+
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(shapes[0].dims, shapes[0].w, shapes[0].h, shapes[0].d, outputChannels),
+                request,
+                "command-buffer-pack4:concat-channel");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferBinaryOp(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            var operation = layer.GetInt(0, 0);
+            if (operation < 0 || operation > 9)
+                return RejectStrictCommandBufferPack4Node("The BinaryOp code is outside the verified CommandBuffer Pack4 kernel range.");
+
+            if (layer.GetInt(1, 0) != 0)
+            {
+                if (!TryGetSingleStrictPlanShape(inputs, out var scalarInput, out var scalarReason))
+                    return RejectStrictCommandBufferPack4Node(scalarReason);
+                if (scalarInput.dims < 3 || scalarInput.dims > 4)
+                    return RejectStrictCommandBufferPack4Node("The verified scalar BinaryOp profile requires a 3D or 4D Pack4 texture.");
+                var storage = inputs[0].storageShape;
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    scalarInput,
+                    new BufferShape(storage[0], storage[1], storage[2], storage[3], storage[4]),
+                    request,
+                    "command-buffer-pack4:binary-scalar");
+            }
+
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (shapes.Length != 2)
+                return RejectStrictCommandBufferPack4Node("BinaryOp CommandBuffer Pack4 requires exactly two descriptor-backed inputs.");
+
+            if ((shapes[0].dims == 3 || shapes[0].dims == 4)
+                && StrictPlanShapesEqual(shapes[0], shapes[1]))
+            {
+                return AcceptStrictCommandBufferPack4Node(layer, shapes[0], request, "command-buffer-pack4:binary-exact");
+            }
+
+            if (TryResolveStrictCommandBufferChannelVector(inputs[0], shapes[0], inputs[1], shapes[1], out var channelVectorOutput))
+                return AcceptStrictCommandBufferPack4Node(layer, channelVectorOutput, request, "command-buffer-pack4:binary-channel-vector");
+
+            if (TryResolveStrictCommandBufferSpatialBroadcast(shapes[0], shapes[1], out var spatialBroadcastOutput))
+                return AcceptStrictCommandBufferPack4Node(layer, spatialBroadcastOutput, request, "command-buffer-pack4:binary-spatial-broadcast");
+
+            return RejectStrictCommandBufferPack4Node("BinaryOp does not match an exact or channel-vector CommandBuffer Pack4 descriptor profile.");
+        }
+
+        private static bool TryResolveStrictCommandBufferSpatialBroadcast(
+            BufferShape first,
+            BufferShape second,
+            out BufferShape output)
+        {
+            output = default;
+            if ((first.dims != 3 && first.dims != 4)
+                || first.dims != second.dims
+                || first.c != second.c)
+            {
+                return false;
+            }
+
+            var firstIsScalarSpatial = first.w == 1 && first.h == 1 && first.d == 1;
+            var secondIsScalarSpatial = second.w == 1 && second.h == 1 && second.d == 1;
+            if (firstIsScalarSpatial && !secondIsScalarSpatial)
+            {
+                output = second;
+                return true;
+            }
+
+            if (secondIsScalarSpatial && !firstIsScalarSpatial)
+            {
+                output = first;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveStrictCommandBufferChannelVector(
+            NcnnTexturePlanTensorDescriptor firstDescriptor,
+            BufferShape first,
+            NcnnTexturePlanTensorDescriptor secondDescriptor,
+            BufferShape second,
+            out BufferShape output)
+        {
+            output = default;
+            if ((first.dims == 3 || first.dims == 4)
+                && IsStrictCommandBufferChannelVector(secondDescriptor, second, first.c))
+            {
+                output = first;
+                return true;
+            }
+
+            if ((second.dims == 3 || second.dims == 4)
+                && IsStrictCommandBufferChannelVector(firstDescriptor, first, second.c))
+            {
+                output = second;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsStrictCommandBufferChannelVector(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            BufferShape logicalShape,
+            int expectedChannels)
+        {
+            var storage = descriptor?.storageShape;
+            return descriptor != null
+                && (logicalShape.dims == 1 || (logicalShape.dims == 2 && logicalShape.h == 1))
+                && logicalShape.w == expectedChannels
+                && storage != null
+                && storage.Length == 5
+                && storage[0] == 3
+                && storage[1] == expectedChannels
+                && storage[2] == 1
+                && storage[3] == 1
+                && storage[4] == 1;
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferInterp(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("CommandBuffer Interp requires a 2D Pack4 activation.");
+            if (!string.IsNullOrWhiteSpace(layer.GetString(9, null)))
+                return RejectStrictCommandBufferPack4Node("Dynamic Interp size expressions are not proven by the static CommandBuffer Pack4 profile.");
+
+            var resizeType = layer.GetInt(0, 0);
+            if (resizeType != 0 && resizeType != 1 && resizeType != 3)
+                return RejectStrictCommandBufferPack4Node("The Interp mode is outside the verified CommandBuffer Pack4 subset.");
+            var scaleX = layer.GetFloat(2, 1f);
+            var scaleY = layer.GetFloat(1, 1f);
+            var outputWidth = layer.GetInt(4, 0);
+            var outputHeight = layer.GetInt(3, 0);
+            if (outputWidth == 0)
+                outputWidth = Mathf.Max(1, (int)(input.w * Mathf.Max(0f, scaleX)));
+            if (outputHeight == 0)
+                outputHeight = Mathf.Max(1, (int)(input.h * Mathf.Max(0f, scaleY)));
+            if (outputWidth <= 0 || outputHeight <= 0)
+                return RejectStrictCommandBufferPack4Node("Interp resolved a non-positive output extent.");
+
+            if (outputWidth == input.w && outputHeight == input.h)
+                return AcceptStrictCommandBufferPack4NoopAlias(layer, inputs[0], request);
+
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(3, outputWidth, outputHeight, 1, input.c),
+                request,
+                "command-buffer-pack4:interp");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPixelShuffle(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            var factor = layer.GetInt(0, 1);
+            var divisor = factor * factor;
+            if (input.dims != 3 || input.d != 1 || factor <= 0 || input.c % divisor != 0)
+                return RejectStrictCommandBufferPack4Node("PixelShuffle does not meet the CommandBuffer Pack4 shape contract.");
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(3, input.w * factor, input.h * factor, 1, input.c / divisor),
+                request,
+                "command-buffer-pack4:pixel-shuffle");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferUnaryOp(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            var operation = layer.GetInt(0, 0);
+            if ((operation < 0 || operation > 11) && operation != 15 && operation != 16)
+                return RejectStrictCommandBufferPack4Node("The UnaryOp code is outside the verified CommandBuffer Pack4 kernel range.");
+            return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:unary");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferGelu(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims < 1 || input.dims > 4)
+                return RejectStrictCommandBufferPack4Node("GELU has no verified CommandBuffer Pack4 path for this rank.");
+            return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:gelu");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMemoryData(
+            NcnnParamModel.Layer layer,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!_memoryData.TryGetValue(layer.name, out var memory) || memory == null)
+                return RejectStrictCommandBufferPack4Node("MemoryData was not loaded for this node.");
+            if (memory.channelVectorTexture == null
+                || memory.dims != 3
+                || memory.w != 1
+                || memory.h != 1
+                || memory.d != 1
+                || memory.c <= 0)
+            {
+                return RejectStrictCommandBufferPack4Node("Only loaded 1x1 channel-vector MemoryData has a texture-native CommandBuffer path.");
+            }
+
+            var logicalShape = new BufferShape(1, memory.c, 1, 1, 1);
+            var storageShape = new BufferShape(3, memory.c, 1, 1, 1);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                logicalShape,
+                storageShape,
+                request,
+                "command-buffer-pack4:memory-data-channel-vector");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferInnerProduct(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 1 && input.dims != 2)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer InnerProduct profile requires a vector or matrix input.");
+            if (!_innerProduct.TryGetValue(layer.name, out var innerProduct)
+                || innerProduct == null
+                || innerProduct.w == null
+                || innerProduct.b == null
+                || innerProduct.inFeatures <= 0
+                || innerProduct.outFeatures <= 0)
+            {
+                return RejectStrictCommandBufferPack4Node("The loaded InnerProduct weights or bias are unavailable.");
+            }
+            if (input.w != innerProduct.inFeatures)
+                return RejectStrictCommandBufferPack4Node("InnerProduct input width does not match the loaded weight profile.");
+
+            var expectedInputStorage = ResolveLinearMatStorageShape(input);
+            var inputStorage = inputs[0]?.storageShape;
+            if (inputStorage == null
+                || inputStorage.Length != 5
+                || inputStorage[0] != expectedInputStorage.dims
+                || inputStorage[1] != expectedInputStorage.w
+                || inputStorage[2] != expectedInputStorage.h
+                || inputStorage[3] != expectedInputStorage.d
+                || inputStorage[4] != expectedInputStorage.c)
+            {
+                return RejectStrictCommandBufferPack4Node("InnerProduct input storage does not prove the required LinearMat CommandBuffer texture layout.");
+            }
+
+            var output = input.dims == 2
+                ? new BufferShape(2, innerProduct.outFeatures, input.h, 1, 1)
+                : new BufferShape(1, innerProduct.outFeatures, 1, 1, 1);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                ResolveLinearMatStorageShape(output),
+                request,
+                "command-buffer-pack4:inner-product-linear-mat");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferReduction(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("The verified Reduction profile requires a 2D Pack4 activation.");
+
+            var operation = layer.GetInt(0, 0);
+            if (operation != 0 && operation != 3)
+                return RejectStrictCommandBufferPack4Node("The Reduction operation is outside the verified SUM/MEAN CommandBuffer Pack4 subset.");
+            if (layer.GetInt(1, 1) != 0)
+                return RejectStrictCommandBufferPack4Node("Reduction over channels is not part of the verified CommandBuffer Pack4 profile.");
+
+            var axes = layer.GetInts(-23303, null);
+            if (axes == null || axes.Length != 2)
+                return RejectStrictCommandBufferPack4Node("The verified Reduction profile requires spatial axes H and W.");
+            var axis0 = axes[0] < 0 ? axes[0] + input.dims : axes[0];
+            var axis1 = axes[1] < 0 ? axes[1] + input.dims : axes[1];
+            if (!((axis0 == 1 && axis1 == 2) || (axis0 == 2 && axis1 == 1)))
+                return RejectStrictCommandBufferPack4Node("The verified Reduction profile requires spatial axes H and W.");
+
+            if (layer.GetInt(4, 0) != 0)
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    new BufferShape(3, 1, 1, 1, input.c),
+                    request,
+                    "command-buffer-pack4:reduction-spatial");
+
+            var logicalShape = new BufferShape(1, input.c, 1, 1, 1);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                logicalShape,
+                ResolveLinearMatStorageShape(logicalShape),
+                request,
+                "command-buffer-pack4:reduction-spatial-linear");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferBatchNorm(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("The verified BatchNorm profile requires a 2D Pack4 activation.");
+            if (!_batchNorm.TryGetValue(layer.name, out var batchNorm)
+                || batchNorm == null
+                || batchNorm.channels != input.c
+                || batchNorm.biasA4 == null
+                || batchNorm.scaleB4 == null)
+            {
+                return RejectStrictCommandBufferPack4Node("The loaded BatchNorm Pack4 constants do not match the input descriptor.");
+            }
+            return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:batch-norm");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferReshape(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            BufferShape output;
+            try
+            {
+                output = ResolveReshapeShape(input, layer);
+            }
+            catch (Exception exception)
+            {
+                return RejectStrictCommandBufferPack4Node("Reshape output shape resolution failed: " + exception.Message);
+            }
+
+            if (GetStrictPlanElementCount(input) != GetStrictPlanElementCount(output))
+                return RejectStrictCommandBufferPack4Node("Reshape changes the logical element count.");
+
+            if (input.dims >= 3 && input.dims <= 4 && output.dims >= 1 && output.dims <= 2
+                && CanUseStrictPack4ToLinearMatReshape(layer))
+            {
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    output,
+                    ResolveLinearMatStorageShape(output),
+                    request,
+                    "command-buffer-pack4:reshape-pack4-to-linear-mat");
+            }
+
+            if (input.dims >= 3 && output.dims >= 3 && output.dims <= 4 && !StrictPlanShapesEqual(input, output))
+            {
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    output,
+                    request,
+                    "command-buffer-pack4:reshape-pack4-to-pack4");
+            }
+
+            if (input.dims == 2 && output.dims >= 3 && output.dims <= 4
+                && HasStrictPack4LinearMatStorage(inputs[0], input))
+            {
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    output,
+                    request,
+                    "command-buffer-pack4:reshape-pack4-linear-to-pack4");
+            }
+
+            if (input.dims == 2 && output.dims >= 3 && output.dims <= 4
+                && HasStrictLinearMatStorage(inputs[0], input))
+            {
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    output,
+                    request,
+                    "command-buffer-pack4:reshape-linear-mat-to-pack4");
+            }
+
+            if (input.dims == 2 && output.dims >= 3 && output.dims <= 4
+                && HasStrictScalar2DPack4Storage(inputs[0], input))
+            {
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    output,
+                    request,
+                    "command-buffer-pack4:reshape-scalar-2d-to-pack4");
+            }
+
+            return RejectStrictCommandBufferPack4Node("No loaded CommandBuffer Pack4 reshape transform matches this logical/storage profile.");
+        }
+
+        private static bool HasStrictPack4LinearMatStorage(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            BufferShape logicalShape)
+        {
+            if (descriptor?.storageShape == null || descriptor.storageShape.Length != 5 || logicalShape.dims != 2)
+                return false;
+            var storage = descriptor.storageShape;
+            return storage[0] == 3
+                && storage[1] == Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f)
+                && storage[2] == Mathf.Max(1, logicalShape.h)
+                && storage[3] == 1
+                && storage[4] == 4;
+        }
+
+        private static bool HasStrictLinearMatStorage(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            BufferShape logicalShape)
+        {
+            if (descriptor?.storageShape == null || descriptor.storageShape.Length != 5 || logicalShape.dims != 2)
+                return false;
+            var expected = ResolveLinearMatStorageShape(logicalShape);
+            var storage = descriptor.storageShape;
+            return storage[0] == expected.dims
+                && storage[1] == expected.w
+                && storage[2] == expected.h
+                && storage[3] == expected.d
+                && storage[4] == expected.c;
+        }
+
+        private static bool HasStrictScalar2DPack4Storage(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            BufferShape logicalShape)
+        {
+            var storage = descriptor?.storageShape;
+            return logicalShape.dims == 2
+                && storage != null
+                && storage.Length == 5
+                && storage[0] == 3
+                && storage[1] == logicalShape.w
+                && storage[2] == logicalShape.h
+                && storage[3] == 1
+                && storage[4] == 1;
+        }
+
+        private bool CanUseStrictPack4ToLinearMatReshape(NcnnParamModel.Layer layer)
+        {
+            if (Model?.layers == null || layer?.topNames == null || layer.topNames.Length == 0)
+                return false;
+
+            var outputBlob = layer.topNames[0];
+            var consumerCount = 0;
+            NcnnParamModel.Layer consumer = null;
+            foreach (var candidate in Model.layers)
+            {
+                if (candidate?.bottomNames == null || !candidate.bottomNames.Contains(outputBlob))
+                    continue;
+                consumer = candidate;
+                consumerCount++;
+            }
+
+            return consumerCount == 1
+                && (consumer.type == NcnnLayerTypes.Permute
+                    || consumer.type == NcnnLayerTypes.Gemm
+                    || consumer.type == NcnnLayerTypes.InnerProduct);
+        }
+
+        private static long GetStrictPlanElementCount(BufferShape shape)
+        {
+            return (long)Mathf.Max(1, shape.w)
+                * Mathf.Max(1, shape.h)
+                * Mathf.Max(1, shape.d)
+                * Mathf.Max(1, shape.c);
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPermute(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            var orderType = layer.GetInt(0, 0);
+            BufferShape output;
+            try
+            {
+                if (input.dims == 2)
+                {
+                    if (orderType != 1)
+                        return RejectStrictCommandBufferPack4Node("The verified LinearMat CommandBuffer permute profile requires a 2D transpose (order=1).");
+                    output = new BufferShape(2, input.h, input.w, 1, 1);
+                    if (HasStrictPack4LinearMatStorage(inputs[0], input)
+                        || HasStrictScalar2DPack4Storage(inputs[0], input))
+                    {
+                        return AcceptStrictCommandBufferPack4Node(
+                            layer,
+                            output,
+                            new BufferShape(3, output.w, output.h, 1, 1),
+                            request,
+                            "command-buffer-pack4:permute-pack4-scalar-2d");
+                    }
+                    if (!HasStrictLinearMatStorage(inputs[0], input))
+                        return RejectStrictCommandBufferPack4Node("The 2D Permute input lacks a verified LinearMat or Pack4-Linear storage descriptor.");
+                    return AcceptStrictCommandBufferPack4Node(
+                        layer,
+                        output,
+                        ResolveLinearMatStorageShape(output),
+                        request,
+                        "command-buffer-pack4:permute-linear-mat-2d");
+                }
+
+                if (input.dims == 3 && input.d == 1)
+                {
+                    if (orderType == 0)
+                        return RejectStrictCommandBufferPack4Node("Identity Permute must be represented by descriptor alias evidence, not a computation profile.");
+                    output = ResolvePermuteShape(input, 3, ResolvePermuteAxes(3, orderType, layer.name));
+                    return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:permute-pack4");
+                }
+
+                if (input.dims == 4)
+                {
+                    if (orderType == 0)
+                        return RejectStrictCommandBufferPack4Node("Identity Permute must be represented by descriptor alias evidence, not a computation profile.");
+                    output = ResolvePermuteShape(input, 4, ResolvePermuteAxes(4, orderType, layer.name));
+                    return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:permute-pack4-cdhw");
+                }
+            }
+            catch (Exception exception)
+            {
+                return RejectStrictCommandBufferPack4Node("Permute profile resolution failed: " + exception.Message);
+            }
+
+            return RejectStrictCommandBufferPack4Node("No loaded CommandBuffer Pack4 permute transform matches this logical/storage profile.");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferGemm(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_gemm.TryGetValue(layer.name, out var gemm) || gemm == null || gemm.bData == null)
+                return RejectStrictCommandBufferPack4Node("The loaded Gemm constant-B weights are unavailable.");
+            if (input.dims != 2 || gemm.transA || !gemm.constantB || gemm.constantK <= 0 || gemm.constantN <= 0)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Gemm profile requires a 2D non-transposed A with loaded constant B, K, and N.");
+            if (input.w != gemm.constantK)
+                return RejectStrictCommandBufferPack4Node("Gemm K does not match the descriptor-backed LinearMat width.");
+
+            var bRows = gemm.transB ? gemm.constantN : gemm.constantK;
+            var bColumns = gemm.transB ? gemm.constantK : gemm.constantN;
+            var kFromB = gemm.transB ? bColumns : bRows;
+            var outputColumns = gemm.transB ? bRows : bColumns;
+            if (kFromB != input.w || outputColumns <= 0)
+                return RejectStrictCommandBufferPack4Node("The loaded Gemm B matrix does not match its K/N profile.");
+            if (gemm.constantC && gemm.broadcastTypeC != -1 && gemm.cData == null)
+                return RejectStrictCommandBufferPack4Node("The loaded Gemm bias matrix is unavailable.");
+
+            var output = new BufferShape(2, outputColumns, input.h, 1, 1);
+            var storage = outputColumns % 4 == 0
+                ? ResolvePack4LinearMatStorageShape(output)
+                : ResolveLinearMatStorageShape(output);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                storage,
+                request,
+                outputColumns % 4 == 0
+                    ? "command-buffer-pack4:gemm-linear-to-pack4-linear"
+                    : "command-buffer-pack4:gemm-linear-mat");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferSlice(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (layer?.topNames == null || layer.topNames.Length == 0)
+                return RejectStrictCommandBufferPack4Node("Slice has no output blobs.");
+            if (input.dims < 3 || input.dims > 4)
+                return RejectStrictCommandBufferPack4Node("The verified Slice profile requires a Pack4 3D or 4D texture.");
+
+            var ncnnAxis = layer.GetInt(1, 0);
+            if (ncnnAxis < 0)
+                ncnnAxis += input.dims;
+            if (ncnnAxis < 0 || ncnnAxis >= input.dims)
+                return RejectStrictCommandBufferPack4Node("Slice axis is outside the input rank.");
+
+            var axis = MapNcnnAxisToTensorAxis(input.dims, ncnnAxis);
+            var axisSize = GetAxisSize(input.dims, input.w, input.h, input.d, input.c, axis);
+            var sliceParams = layer.GetInts(-23300, null);
+            var indices = layer.GetInts(-23302, null);
+            if ((sliceParams == null || sliceParams.Length == 0) && (indices == null || indices.Length == 0))
+                return RejectStrictCommandBufferPack4Node("Slice requires static split sizes or indices.");
+
+            var outputs = new NcnnTexturePlanTensorDescriptor[layer.topNames.Length];
+            var begin = 0;
+            for (var index = 0; index < layer.topNames.Length; index++)
+            {
+                var size = ResolveStrictSliceSize(sliceParams, indices, index, layer.topNames.Length, axisSize, begin);
+                if (size <= 0 || begin + size > axisSize)
+                    return RejectStrictCommandBufferPack4Node("Slice output size is invalid for the descriptor-backed input axis.");
+
+                var outputW = axis == 0 ? size : input.w;
+                var outputH = axis == 1 ? size : input.h;
+                var outputD = axis == 2 && input.dims == 4 ? size : input.d;
+                var outputC = (axis == 2 && input.dims != 4) || axis == 3 ? size : input.c;
+                var output = new BufferShape(input.dims, outputW, outputH, outputD, outputC);
+
+                outputs[index] = new NcnnTexturePlanTensorDescriptor
+                {
+                    blob = layer.topNames[index],
+                    logicalShape = new[] { output.dims, output.w, output.h, output.d, output.c },
+                    storageShape = new[] { output.dims, output.w, output.h, output.d, output.c },
+                    layout = request.targetLayout,
+                    dtype = request.targetDtype,
+                    aliasGroup = "computed:" + (layer.name ?? layer.typeName ?? "slice") + ":" + index,
+                    textureBacked = true
+                };
+                begin += size;
+            }
+
+            if (begin != axisSize)
+                return RejectStrictCommandBufferPack4Node("Slice sizes do not cover the descriptor-backed input axis.");
+
+            return new NcnnTextureExecutionPlanNodeVerification
+            {
+                accepted = true,
+                executionPath = input.dims == 4
+                    ? "command-buffer-pack4:slice-pack4-cdhw"
+                    : "command-buffer-pack4:slice-pack4",
+                outputs = outputs
+            };
+        }
+
+        private static int ResolveStrictSliceSize(
+            int[] sliceParams,
+            int[] indices,
+            int outputIndex,
+            int outputCount,
+            int axisSize,
+            int begin)
+        {
+            if (indices != null && indices.Length > 0)
+            {
+                if (outputIndex == outputCount - 1)
+                    return axisSize - begin;
+                var end = indices[Mathf.Min(outputIndex, indices.Length - 1)];
+                if (end < 0)
+                    end += axisSize;
+                return end - begin;
+            }
+
+            var size = sliceParams[Mathf.Min(outputIndex, sliceParams.Length - 1)];
+            return size == -233 ? (axisSize - begin) / Mathf.Max(1, outputCount - outputIndex) : size;
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMatMul(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!EnableAttentionMatMulPack4Specializations)
+                return RejectStrictCommandBufferPack4Node("CommandBuffer MatMul Pack4 specializations are not enabled for this runtime profile.");
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (shapes.Length != 2)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer MatMul profile requires exactly two inputs.");
+            if (!IsStrictAttentionMatMulInput(inputs[0], shapes[0]) || !IsStrictAttentionMatMulInput(inputs[1], shapes[1]))
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer MatMul profile requires Pack4 3D or 4D texture descriptors.");
+
+            var aRows = shapes[0].h;
+            var aColumns = shapes[0].w;
+            var bRows = shapes[1].h;
+            var bColumns = shapes[1].w;
+            var transposeB = layer.GetInt(0, 0) != 0;
+            var kFromB = transposeB ? bColumns : bRows;
+            var outputColumns = transposeB ? bRows : bColumns;
+            if (aRows <= 0 || aColumns <= 0 || outputColumns <= 0 || aColumns != kFromB)
+                return RejectStrictCommandBufferPack4Node("MatMul dimensions do not match the verified Pack4 attention matrix profile.");
+
+            var outputDepth = Mathf.Max(shapes[0].d, shapes[1].d);
+            var outputChannels = Mathf.Max(shapes[0].c, shapes[1].c);
+            if ((shapes[0].d != 1 && shapes[0].d != outputDepth)
+                || (shapes[1].d != 1 && shapes[1].d != outputDepth)
+                || (shapes[0].c != 1 && shapes[0].c != outputChannels)
+                || (shapes[1].c != 1 && shapes[1].c != outputChannels))
+            {
+                return RejectStrictCommandBufferPack4Node("MatMul batch dimensions are outside the verified Pack4 attention broadcast profile.");
+            }
+
+            var output = outputDepth == 1 && outputChannels == 1
+                ? new BufferShape(2, outputColumns, aRows, 1, 1)
+                : Mathf.Max(shapes[0].dims, shapes[1].dims) >= 4 || outputDepth > 1
+                    ? new BufferShape(4, outputColumns, aRows, outputDepth, outputChannels)
+                    : new BufferShape(3, outputColumns, aRows, 1, outputChannels);
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:matmul-attention");
+        }
+
+        private static bool IsStrictAttentionMatMulInput(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            BufferShape shape)
+        {
+            return (shape.dims == 3 || shape.dims == 4)
+                && shape.w > 0
+                && shape.h > 0
+                && shape.d > 0
+                && shape.c > 0
+                && (shape.dims != 3 || shape.d == 1)
+                && descriptor?.storageShape != null
+                && descriptor.storageShape.Length == 5
+                && descriptor.storageShape[0] == shape.dims
+                && descriptor.storageShape[1] == shape.w
+                && descriptor.storageShape[2] == shape.h
+                && descriptor.storageShape[3] == shape.d
+                && descriptor.storageShape[4] == shape.c;
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferSoftmax(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 && input.dims != 4)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Softmax profile requires a Pack4 3D or 4D texture.");
+            if (input.dims == 3 && input.d != 1)
+                return RejectStrictCommandBufferPack4Node("The verified 3D CommandBuffer Softmax profile requires a unit depth dimension.");
+            if (!IsStrictAttentionMatMulInput(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("Softmax input storage does not prove the required Pack4 physical mapping.");
+
+            var ncnnAxis = layer.GetInt(0, 0);
+            if (ncnnAxis < 0)
+                ncnnAxis += input.dims;
+            if (ncnnAxis < 0 || ncnnAxis >= input.dims || MapNcnnAxisToTensorAxis(input.dims, ncnnAxis) != 0)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Softmax profile supports only the tensor width axis.");
+
+            return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:softmax-width");
+        }
+
+        private static bool TryGetSingleStrictPlanShape(
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            out BufferShape shape,
+            out string reason)
+        {
+            shape = default;
+            reason = null;
+            if (inputs == null || inputs.Count != 1)
+            {
+                reason = "This CommandBuffer Pack4 path requires exactly one descriptor-backed input.";
+                return false;
+            }
+            return TryGetStrictPlanShape(inputs[0], out shape, out reason);
+        }
+
+        private static bool TryGetStrictPlanShapes(
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            out BufferShape[] shapes,
+            out string reason)
+        {
+            shapes = Array.Empty<BufferShape>();
+            reason = null;
+            if (inputs == null || inputs.Count == 0)
+            {
+                reason = "This CommandBuffer Pack4 path requires descriptor-backed inputs.";
+                return false;
+            }
+
+            shapes = new BufferShape[inputs.Count];
+            for (var index = 0; index < inputs.Count; index++)
+            {
+                if (!TryGetStrictPlanShape(inputs[index], out shapes[index], out reason))
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool TryGetStrictPlanShape(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            out BufferShape shape,
+            out string reason)
+        {
+            shape = default;
+            reason = null;
+            var logical = descriptor?.logicalShape;
+            var storage = descriptor?.storageShape;
+            if (descriptor == null || !descriptor.textureBacked || logical == null || storage == null
+                || logical.Length != 5 || storage.Length != 5
+                || logical[0] < 1 || logical[0] > 4
+                || logical[1] <= 0 || logical[2] <= 0 || logical[3] <= 0 || logical[4] <= 0
+                || storage[1] <= 0 || storage[2] <= 0 || storage[3] <= 0 || storage[4] <= 0)
+            {
+                reason = "The input lacks a valid texture-backed logical/storage descriptor.";
+                return false;
+            }
+
+            shape = new BufferShape(logical[0], logical[1], logical[2], logical[3], logical[4]);
+            return true;
+        }
+
+        private static bool StrictPlanShapesEqual(BufferShape left, BufferShape right)
+        {
+            return left.dims == right.dims
+                && left.w == right.w
+                && left.h == right.h
+                && left.d == right.d
+                && left.c == right.c;
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification AcceptStrictCommandBufferPack4Node(
+            NcnnParamModel.Layer layer,
+            BufferShape outputShape,
+            NcnnTextureExecutionPlanRequest request,
+            string executionPath)
+        {
+            return AcceptStrictCommandBufferPack4Node(layer, outputShape, outputShape, request, executionPath);
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification AcceptStrictCommandBufferPack4Node(
+            NcnnParamModel.Layer layer,
+            BufferShape logicalShape,
+            BufferShape storageShape,
+            NcnnTextureExecutionPlanRequest request,
+            string executionPath)
+        {
+            var outputNames = layer?.topNames ?? Array.Empty<string>();
+            var logical = new[] { logicalShape.dims, logicalShape.w, logicalShape.h, logicalShape.d, logicalShape.c };
+            var storage = new[] { storageShape.dims, storageShape.w, storageShape.h, storageShape.d, storageShape.c };
+            return new NcnnTextureExecutionPlanNodeVerification
+            {
+                accepted = outputNames.Length > 0,
+                executionPath = executionPath,
+                reason = outputNames.Length > 0 ? null : "The node has no output blobs.",
+                outputs = outputNames.Select((name, index) => new NcnnTexturePlanTensorDescriptor
+                {
+                    blob = name,
+                    logicalShape = (int[])logical.Clone(),
+                    storageShape = (int[])storage.Clone(),
+                    layout = request.targetLayout,
+                    dtype = request.targetDtype,
+                    aliasGroup = "computed:" + (layer?.name ?? layer?.typeName ?? "layer") + ":" + index,
+                    textureBacked = true
+                }).ToArray()
+            };
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification RejectStrictCommandBufferPack4Node(string reason)
+        {
+            return new NcnnTextureExecutionPlanNodeVerification
+            {
+                accepted = false,
+                reason = reason ?? "The loaded runtime profile rejected this CommandBuffer Pack4 node."
+            };
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification AcceptStrictCommandBufferPack4NoopAlias(
+            NcnnParamModel.Layer layer,
+            NcnnTexturePlanTensorDescriptor source,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            var outputNames = layer?.topNames ?? Array.Empty<string>();
+            return new NcnnTextureExecutionPlanNodeVerification
+            {
+                accepted = outputNames.Length > 0,
+                usesDescriptorAlias = outputNames.Length > 0,
+                executionPath = "descriptor-alias",
+                reason = outputNames.Length > 0 ? null : "The node has no output blobs.",
+                outputs = outputNames.Select(name => new NcnnTexturePlanTensorDescriptor
+                {
+                    blob = name,
+                    logicalShape = source.logicalShape == null ? Array.Empty<int>() : (int[])source.logicalShape.Clone(),
+                    storageShape = source.storageShape == null ? Array.Empty<int>() : (int[])source.storageShape.Clone(),
+                    layout = request.targetLayout,
+                    dtype = request.targetDtype,
+                    aliasGroup = source.aliasGroup,
+                    textureBacked = source.textureBacked
+                }).ToArray()
+            };
+        }
 
         private bool HasDebugOracleIntent()
         {
@@ -1400,6 +2569,21 @@ namespace NcnnCompute
                 || (DebugCompareTextureLayers != null && DebugCompareTextureLayers.Count > 0)
                 || (DebugCompareTextureConvLayers != null && DebugCompareTextureConvLayers.Count > 0)
                 || (DebugCompareMaxPoolingLayers != null && DebugCompareMaxPoolingLayers.Count > 0);
+        }
+
+        private static string ResolveTexturePlanDtype(RenderTextureFormat format)
+        {
+            switch (ResolveInferenceTensorDataType(format))
+            {
+                case InferenceTensorDataType.Float16:
+                    return "FP16";
+                case InferenceTensorDataType.Float32:
+                    return "FP32";
+                case InferenceTensorDataType.Int8:
+                    return "INT8";
+                default:
+                    return "Unknown";
+            }
         }
 
         internal void SetCurrentBufferExecutionContext(NcnnLayerBufferContext context)

@@ -163,6 +163,11 @@ namespace NcnnCompute
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var orderType = layer.GetInt(0, 0);
+            if (TryExecuteCommandBufferPack4Linear2DTranspose(owner, layer, src, srcShape, orderType, blobs, shapes, cmd))
+            {
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
             var canUseLinearMat = CanUseLinearMatPermute(src, srcShape, orderType, out var axes, out var outShape);
             var canUsePack4 = !canUseLinearMat && CanUsePack4Permute(src, srcShape, orderType, out axes, out outShape);
             if (canUseLinearMat || canUsePack4)
@@ -247,6 +252,72 @@ namespace NcnnCompute
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteCommandBufferPack4Linear2DTranspose(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            int orderType,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null
+                || orderType != 1
+                || !NcnnRepro.IsPack4LinearMatTexture(src, srcShape))
+            {
+                return false;
+            }
+
+            var unpacked = owner.RentTempArray(cmd, srcShape.w, srcShape.h, 1, src.texture.format);
+            try
+            {
+                owner.Ops.ReshapePack4ToPack4(
+                    cmd,
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    srcShape.d,
+                    srcShape.c,
+                    srcShape.dims,
+                    srcShape.w,
+                    srcShape.h,
+                    1,
+                    1,
+                    2,
+                    unpacked,
+                    inputPack4Linear: true);
+
+                var outputShape = new NcnnRepro.BufferShape(2, srcShape.h, srcShape.w, 1, 1);
+                var output = owner.RentTempArray(cmd, outputShape.w, outputShape.h, 1, src.texture.format);
+                owner.Ops.PermutePack4(
+                    cmd,
+                    unpacked,
+                    srcShape.w,
+                    srcShape.h,
+                    1,
+                    new Vector4Int(1, 0, 2, 0),
+                    outputShape.w,
+                    outputShape.h,
+                    1,
+                    output);
+                var storageShape = new NcnnRepro.BufferShape(3, outputShape.w, outputShape.h, 1, 1);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, outputShape, storageShape, owned: true);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outputShape;
+                owner.DebugLog?.Invoke(
+                    "[CmdTexture][PermutePack4Linear2DTranspose]"
+                    + " | layer=" + layer.name
+                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h
+                    + " | dst=d" + outputShape.dims + ":" + outputShape.w + "x" + outputShape.h);
+                return true;
+            }
+            finally
+            {
+                owner.ReturnTempArray(cmd, unpacked);
+            }
         }
 
         private static bool TryGetPermuteTextureInput(
