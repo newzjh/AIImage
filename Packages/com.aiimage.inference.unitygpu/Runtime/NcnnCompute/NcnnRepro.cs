@@ -1376,11 +1376,15 @@ namespace NcnnCompute
             NcnnTextureExecutionPlanRequest request)
         {
             if (!string.Equals(request?.targetBackend, NcnnOperatorCapabilityBackend.CommandBuffer, StringComparison.Ordinal)
-                || !string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                || (!string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(request?.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase))
                 || !string.Equals(request?.targetLayout, NcnnTexturePlanLayout.Packed4, StringComparison.OrdinalIgnoreCase))
             {
-                return RejectStrictCommandBufferPack4Node("The loaded runtime profile only proves the FP16 Packed4 CommandBuffer branch.");
+                return RejectStrictCommandBufferPack4Node("The loaded runtime profile supports only FP16/FP32 Packed4 CommandBuffer branches.");
             }
+            if (string.Equals(request.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                && TensorTextureFormat != RenderTextureFormat.ARGBFloat)
+                return RejectStrictCommandBufferPack4Node("FP32 Pack4 requires TensorTextureFormat=ARGBFloat for texture-native intermediate/output storage.");
 
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
             switch (operatorName)
@@ -1389,6 +1393,10 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferConvolution(layer, inputs, request);
                 case "ConvolutionDepthWise":
                     return VerifyStrictCommandBufferDepthWiseConvolution(layer, inputs, request);
+                case "Deconvolution":
+                    return VerifyStrictCommandBufferDeconvolution(layer, inputs, request, depthWiseLayer: false);
+                case "DeconvolutionDepthWise":
+                    return VerifyStrictCommandBufferDeconvolution(layer, inputs, request, depthWiseLayer: true);
                 case "Eltwise":
                     return VerifyStrictCommandBufferEltwise(layer, inputs, request);
                 case "Concat":
@@ -1443,29 +1451,8 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("Packed convolution weights were not loaded for this layer.");
             if (input.c != conv.inC)
                 return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded convolution profile.");
-            if (conv.isDepthWise || conv.group != 1)
-                return RejectStrictCommandBufferPack4Node("The CommandBuffer convolution path does not prove this depthwise/group configuration.");
-            if (conv.packedWeight4 == null || conv.packedBias4 == null)
-                return RejectStrictCommandBufferPack4Node("The required Pack4 convolution weights or bias are unavailable.");
-
-            var hasConv1x1Path = conv.kernelW == 1
-                && conv.kernelH == 1
-                && EnableConv1x1TextureConvolution;
-            var hasSpecialized3x3Path = conv.kernelW == 3
-                && conv.kernelH == 3
-                && conv.strideW == 1
-                && conv.strideH == 1
-                && conv.padLeft == conv.padRight
-                && conv.padLeft == conv.padTop
-                && conv.padTop == conv.padBottom
-                && (conv.inC & 3) == 0
-                && (conv.outC & 3) == 0;
-            var hasGeneralPath = EnableGeneralTextureConvolution
-                && conv.kernelW > 0
-                && conv.kernelH == conv.kernelW
-                && !(conv.kernelW == 1 && !EnableConv1x1TextureConvolution);
-            if (!hasConv1x1Path && !hasSpecialized3x3Path && !hasGeneralPath)
-                return RejectStrictCommandBufferPack4Node("No loaded CommandBuffer Pack4 convolution branch matches this kernel profile.");
+            if (!TryValidateCommandBuffer2dConvProfile(conv, out var profileReason))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer convolution profile rejected: " + profileReason);
 
             var output = new BufferShape(
                 3,
@@ -1489,17 +1476,10 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("Packed depthwise convolution weights were not loaded for this layer.");
             if (input.c != conv.inC)
                 return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded depthwise convolution profile.");
-            if (!EnableDepthWiseTextureConvolution
-                || !conv.isDepthWise
-                || conv.group <= 0
-                || conv.group != conv.inC
-                || conv.outC <= 0
-                || conv.outC % conv.group != 0
-                || conv.packedDepthWiseWeight4 == null
-                || conv.packedBias4 == null)
-            {
-                return RejectStrictCommandBufferPack4Node("No loaded CommandBuffer Pack4 depthwise convolution branch matches this profile.");
-            }
+            if (!conv.isDepthWise)
+                return RejectStrictCommandBufferPack4Node("The loaded profile is not ConvolutionDepthWise.");
+            if (!TryValidateCommandBuffer2dConvProfile(conv, out var profileReason))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer depthwise convolution profile rejected: " + profileReason);
 
             var output = new BufferShape(
                 3,
@@ -1508,6 +1488,77 @@ namespace NcnnCompute
                 1,
                 conv.outC);
             return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:convolution-depthwise");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDeconvolution(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request,
+            bool depthWiseLayer)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("CommandBuffer deconvolution requires a 2D Pack4 activation.");
+            if (!_deconv.TryGetValue(layer.name, out var deconv) || deconv == null)
+                return RejectStrictCommandBufferPack4Node("Immutable deconvolution weights were not loaded for this layer.");
+            if (input.c != deconv.inC)
+                return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded deconvolution profile.");
+            if (!TryValidateCommandBuffer2dDeconvProfile(deconv, out var profileReason))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer deconvolution profile rejected: " + profileReason);
+
+            var output = new BufferShape(
+                3,
+                ComputeDeconvOut(input.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight),
+                ComputeDeconvOut(input.h, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom),
+                1,
+                deconv.outC);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                request,
+                depthWiseLayer ? "command-buffer-pack4:deconvolution-depthwise" : "command-buffer-pack4:deconvolution");
+        }
+
+        private static bool TryValidateCommandBuffer2dConvProfile(ConvPack conv, out string reason)
+        {
+            reason = null;
+            if (conv == null || conv.rawWeight == null || conv.rawBias == null)
+                reason = "immutable scalar weights/bias are unavailable";
+            else if (conv.inC <= 0 || conv.outC <= 0 || conv.group <= 0 || conv.inC % conv.group != 0 || conv.outC % conv.group != 0)
+                reason = "group must divide positive input/output channels";
+            else if (conv.kernelW <= 0 || conv.kernelH <= 0 || conv.strideW <= 0 || conv.strideH <= 0 || conv.dilationW <= 0 || conv.dilationH <= 0)
+                reason = "kernel/stride/dilation must be positive";
+            else if (conv.padLeft < 0 || conv.padRight < 0 || conv.padTop < 0 || conv.padBottom < 0)
+                reason = "negative/auto padding is unsupported";
+            else if (!IsCommandBufferConvActivationSupported(conv.activationType))
+                reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
+            else if (conv.weightSize != conv.outC * (conv.inC / conv.group) * conv.kernelW * conv.kernelH)
+                reason = "weight_data_size does not match grouped OIHW";
+            return reason == null;
+        }
+
+        private static bool TryValidateCommandBuffer2dDeconvProfile(DeconvPack deconv, out string reason)
+        {
+            reason = null;
+            if (deconv == null || deconv.rawWeight == null || deconv.rawBias == null)
+                reason = "immutable scalar weights/bias are unavailable";
+            else if (deconv.inC <= 0 || deconv.outC <= 0 || deconv.group <= 0 || deconv.inC % deconv.group != 0 || deconv.outC % deconv.group != 0)
+                reason = "group must divide positive input/output channels";
+            else if (deconv.kernelW <= 0 || deconv.kernelH <= 0 || deconv.strideW <= 0 || deconv.strideH <= 0 || deconv.dilationW <= 0 || deconv.dilationH <= 0)
+                reason = "kernel/stride/dilation must be positive";
+            else if (deconv.padLeft < 0 || deconv.padRight < 0 || deconv.padTop < 0 || deconv.padBottom < 0 || deconv.outputPadRight < 0 || deconv.outputPadBottom < 0)
+                reason = "negative/auto padding or output padding is unsupported";
+            else if (!IsCommandBufferConvActivationSupported(deconv.activationType))
+                reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
+            else if (deconv.weightSize != deconv.outC * (deconv.inC / deconv.group) * deconv.kernelW * deconv.kernelH)
+                reason = "weight_data_size does not match grouped OIHW";
+            return reason == null;
+        }
+
+        private static bool IsCommandBufferConvActivationSupported(int activationType)
+        {
+            return activationType == 0 || activationType == 1 || activationType == 2 || activationType == 4;
         }
 
         private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPooling(
@@ -3108,7 +3159,7 @@ namespace NcnnCompute
                 }
                 else
                 {
-                    pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * kernelArea));
+                    pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
                     pack.useBufferPath = pack.strideW != 1
                                          || pack.strideH != 1
                                          || pack.kernelW != 1 && pack.kernelW != 3
@@ -3145,13 +3196,12 @@ namespace NcnnCompute
                                                && pack.dilationW > 0
                                                && pack.dilationH > 0;
 
-                if (ShouldKeepRawConvWeightsForTexturePath(layer.name, pack, needGeneralTexturePack, needDepthWiseTexturePack))
-                {
-                    phaseSw.Restart();
-                    UploadRawConvWeights(pack, w, b);
-                    phaseSw.Stop();
-                    uploadMs += phaseSw.ElapsedMilliseconds;
-                }
+                // Legacy ForwardPack4 and layer-repro Cmd paths share immutable scalar
+                // OIHW uploads for group/tail-safe Pack4 convolution dispatch.
+                phaseSw.Restart();
+                UploadRawConvWeights(pack, w, b);
+                phaseSw.Stop();
+                uploadMs += phaseSw.ElapsedMilliseconds;
 
                 if (needGeneralTexturePack)
                 {
@@ -3803,42 +3853,41 @@ namespace NcnnCompute
                         throw new InvalidOperationException("Convolution not found: " + l.name);
                     if (src.packs != conv.inPacks)
                         throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + conv.inPacks);
-                    if (conv.isDepthWise || conv.group != 1)
-                        throw new InvalidOperationException("CommandBuffer convolution does not support depthwise/group conv: " + l.name);
-                    if (conv.strideW != 1 || conv.strideH != 1 || conv.dilationW != 1 || conv.dilationH != 1)
-                        throw new InvalidOperationException("CommandBuffer convolution only supports stride=1 dilation=1: " + l.name);
+                    if (!TryValidateCommandBuffer2dConvProfile(conv, out var profileReason))
+                        throw new InvalidOperationException("CommandBuffer convolution profile rejected: " + l.name + " | " + profileReason);
 
                     var outW = ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
                     var outH = ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
                     var outArr = RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
-
-                    if (conv.kernelW == 1 && conv.kernelH == 1)
-                    {
-                        _ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outArr);
-                    }
-                    else if (conv.kernelW == 3 && conv.kernelH == 3 && conv.padLeft == conv.padRight && conv.padLeft == conv.padTop && conv.padTop == conv.padBottom)
-                    {
-                        var useWinograd = EnableWinograd23
-                            && conv.packedWeightTm23 != null
-                            && conv.strideW == 1
-                            && conv.strideH == 1
-                            && conv.padLeft == 1
-                            && conv.padTop == 1;
-                        if (useWinograd)
-                        {
-                            _ops.Conv3x3Pack4Winograd23(cmd, src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outArr);
-                        }
-                        else
-                        {
-                            _ops.Conv3x3Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outArr);
-                        }
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException("CommandBuffer convolution only supports 1x1/3x3 symmetric conv: " + l.name);
-                    }
+                    _ops.Conv2dGroupPack4(
+                        cmd, src.texture, conv.rawWeight, conv.rawBias, conv.inC, conv.outC, conv.group,
+                        conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop,
+                        conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outArr);
 
                     blobs[l.topNames[0]] = new CmdTensorRef { texture = outArr, width = outW, height = outH, packs = conv.outPacks, refs = 1, owned = true };
+                    ConsumeCmd(cmd, blobs, remaining, l.bottomNames, pinnedNames);
+                    continue;
+                }
+
+                if (l.type == NcnnLayerTypes.Deconvolution || l.type == NcnnLayerTypes.DeconvolutionDepthWise)
+                {
+                    var src = GetCmdTensor(blobs, l.bottomNames[0]);
+                    if (!_deconv.TryGetValue(l.name, out var deconv))
+                        throw new InvalidOperationException("Deconvolution not found: " + l.name);
+                    if (src.packs != deconv.inPacks)
+                        throw new InvalidOperationException("unexpected in packs for " + l.name + ": " + src.packs + " vs " + deconv.inPacks);
+                    if (!TryValidateCommandBuffer2dDeconvProfile(deconv, out var profileReason))
+                        throw new InvalidOperationException("CommandBuffer deconvolution profile rejected: " + l.name + " | " + profileReason);
+
+                    var outW = ComputeDeconvOut(src.width, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight);
+                    var outH = ComputeDeconvOut(src.height, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom);
+                    var outArr = RentTempArray(cmd, outW, outH, deconv.outPacks, RenderTextureFormat.ARGBHalf);
+                    _ops.Deconvolution2dGroupPack4(
+                        cmd, src.texture, deconv.rawWeight, deconv.rawBias, deconv.inC, deconv.outC, deconv.group,
+                        deconv.kernelW, deconv.kernelH, deconv.strideW, deconv.strideH, deconv.padLeft, deconv.padTop,
+                        deconv.dilationW, deconv.dilationH, deconv.activationType, deconv.activationSlope, outArr);
+
+                    blobs[l.topNames[0]] = new CmdTensorRef { texture = outArr, width = outW, height = outH, packs = deconv.outPacks, refs = 1, owned = true };
                     ConsumeCmd(cmd, blobs, remaining, l.bottomNames, pinnedNames);
                     continue;
                 }

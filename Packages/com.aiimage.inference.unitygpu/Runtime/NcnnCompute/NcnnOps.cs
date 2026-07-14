@@ -298,6 +298,8 @@ namespace NcnnCompute
         private readonly int _kConv3x3Pack4;
         private readonly int _kConvPack4General;
         private readonly int _kDeconvolutionPack4General;
+        private readonly int _kConv2dGroupPack4;
+        private readonly int _kDeconvolution2dGroupPack4;
         private readonly int _kDeconvolutionDepthWisePack4;
         private readonly int _kConvDepthWisePack4;
         private readonly int _kWinograd23TransformInput;
@@ -599,6 +601,8 @@ namespace NcnnCompute
             _kConv3x3Pack4 = _cs.FindKernel("NcnnConv3x3Pack4");
             _kConvPack4General = _cs.FindKernel("NcnnConvPack4General");
             _kDeconvolutionPack4General = _cs.FindKernel("NcnnDeconvolutionPack4General");
+            _kConv2dGroupPack4 = _cs.FindKernel("NcnnConv2dGroupPack4");
+            _kDeconvolution2dGroupPack4 = _cs.FindKernel("NcnnDeconvolution2dGroupPack4");
             _kDeconvolutionDepthWisePack4 = _cs.FindKernel("NcnnDeconvolutionDepthWisePack4");
             _kConvDepthWisePack4 = _cs.FindKernel("NcnnConvDepthWisePack4");
             _kWinograd23TransformInput = _cs.FindKernel("NcnnWinograd23TransformInputPack4");
@@ -4575,6 +4579,150 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvOutArr", dstPack4.nameID);
             Dispatch3D(cmd, _kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
+        }
+
+        // Generic 2D/grouped Pack4 path. Weights and bias are immutable scalar uploads;
+        // every activation and result is a Texture2DArray command-buffer resource.
+        public void Conv2dGroupPack4(
+            CommandBuffer cmd,
+            ComputeTexture srcPack4,
+            ComputeBuffer weights,
+            ComputeBuffer bias,
+            int inputChannels,
+            int outputChannels,
+            int group,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            int dilationW,
+            int dilationH,
+            int activationType,
+            float activationParam,
+            ComputeTexture dstPack4)
+        {
+            DispatchConv2dGroupPack4(
+                cmd,
+                _kConv2dGroupPack4,
+                srcPack4,
+                weights,
+                bias,
+                inputChannels,
+                outputChannels,
+                group,
+                kernelW,
+                kernelH,
+                strideW,
+                strideH,
+                padLeft,
+                padTop,
+                dilationW,
+                dilationH,
+                activationType,
+                activationParam,
+                dstPack4);
+        }
+
+        public void Deconvolution2dGroupPack4(
+            CommandBuffer cmd,
+            ComputeTexture srcPack4,
+            ComputeBuffer weights,
+            ComputeBuffer bias,
+            int inputChannels,
+            int outputChannels,
+            int group,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            int dilationW,
+            int dilationH,
+            int activationType,
+            float activationParam,
+            ComputeTexture dstPack4)
+        {
+            DispatchConv2dGroupPack4(
+                cmd,
+                _kDeconvolution2dGroupPack4,
+                srcPack4,
+                weights,
+                bias,
+                inputChannels,
+                outputChannels,
+                group,
+                kernelW,
+                kernelH,
+                strideW,
+                strideH,
+                padLeft,
+                padTop,
+                dilationW,
+                dilationH,
+                activationType,
+                activationParam,
+                dstPack4);
+        }
+
+        private void DispatchConv2dGroupPack4(
+            CommandBuffer cmd,
+            int kernel,
+            ComputeTexture srcPack4,
+            ComputeBuffer weights,
+            ComputeBuffer bias,
+            int inputChannels,
+            int outputChannels,
+            int group,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            int dilationW,
+            int dilationH,
+            int activationType,
+            float activationParam,
+            ComputeTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (bias == null) throw new ArgumentNullException(nameof(bias));
+            if (inputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(inputChannels));
+            if (outputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (group <= 0 || inputChannels % group != 0 || outputChannels % group != 0)
+                throw new ArgumentOutOfRangeException(nameof(group), "Group must divide input and output channels.");
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+            if (strideW <= 0 || strideH <= 0) throw new ArgumentOutOfRangeException(nameof(strideW));
+            if (dilationW <= 0 || dilationH <= 0) throw new ArgumentOutOfRangeException(nameof(dilationW));
+
+            cmd.SetComputeIntParam(_cs, "_InW", srcPack4.width);
+            cmd.SetComputeIntParam(_cs, "_InH", srcPack4.height);
+            cmd.SetComputeIntParam(_cs, "_InC", inputChannels);
+            cmd.SetComputeIntParam(_cs, "_OutC", outputChannels);
+            cmd.SetComputeIntParam(_cs, "_OutW", dstPack4.width);
+            cmd.SetComputeIntParam(_cs, "_OutH", dstPack4.height);
+            cmd.SetComputeIntParam(_cs, "_ConvGroup", group);
+            cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
+            cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
+            cmd.SetComputeIntParam(_cs, "_StrideWVar", strideW);
+            cmd.SetComputeIntParam(_cs, "_StrideHVar", strideH);
+            cmd.SetComputeIntParam(_cs, "_PadLeftVar", padLeft);
+            cmd.SetComputeIntParam(_cs, "_PadTopVar", padTop);
+            cmd.SetComputeIntParam(_cs, "_DilationWVar", dilationW);
+            cmd.SetComputeIntParam(_cs, "_DilationHVar", dilationH);
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvW", weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvB", bias);
+            cmd.SetComputeTextureParam(_cs, kernel, "_ConvInArr", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_ConvOutArr", dstPack4.nameID);
+            Dispatch3D(cmd, kernel, dstPack4.width, dstPack4.height, dstPack4.depth, 8, 8);
         }
 
         public void ConvPack4General(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)

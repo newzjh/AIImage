@@ -218,7 +218,10 @@ namespace NcnnCompute
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
             if (!owner._deconv.TryGetValue(layer.name, out var deconv))
                 throw new InvalidOperationException("DeconvolutionDepthWise not found: " + layer.name);
-            ValidatePack4DepthWiseTexture(layer.name, deconv, src, srcShape, isCommandBuffer: true);
+            if (!SupportsCommandBufferPack4(deconv, out var reason))
+                throw new InvalidOperationException(BuildCmdUnsupportedMessage(layer, src, srcShape, reason));
+            if (!MatchesCommandBufferPack4Source(src, srcShape, deconv))
+                throw new InvalidOperationException(BuildCmdUnsupportedMessage(layer, src, srcShape, "source is not a matching Pack4 texture-array"));
 
             var outW = NcnnRepro.ComputeDeconvOut(srcShape.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight);
             var outH = NcnnRepro.ComputeDeconvOut(srcShape.h, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom);
@@ -227,26 +230,17 @@ namespace NcnnCompute
             try
             {
                 output = owner.RentTempArray(cmd, outW, outH, deconv.outPacks, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
-                owner.Ops.DeconvolutionDepthWisePack4(
-                    cmd,
-                    src.texture,
-                    deconv.packedWeight4,
-                    deconv.packedBias4,
-                    deconv.inC,
-                    deconv.outC,
-                    deconv.group,
-                    deconv.outPacks,
-                    deconv.kernelW,
-                    deconv.kernelH,
-                    deconv.strideW,
-                    deconv.strideH,
-                    deconv.padLeft,
-                    deconv.padTop,
-                    deconv.dilationW,
-                    deconv.dilationH,
-                    deconv.activationType,
-                    deconv.activationSlope,
-                    output);
+                if (CanUsePack4DepthWiseDeconvolution(deconv) && (deconv.outC & 3) == 0 && deconv.packedWeight4 != null && deconv.packedBias4 != null)
+                {
+                    owner.Ops.DeconvolutionDepthWisePack4(cmd, src.texture, deconv.packedWeight4, deconv.packedBias4, deconv.inC, deconv.outC, deconv.group, deconv.outPacks, deconv.kernelW, deconv.kernelH, deconv.strideW, deconv.strideH, deconv.padLeft, deconv.padTop, deconv.dilationW, deconv.dilationH, deconv.activationType, deconv.activationSlope, output);
+                }
+                else
+                {
+                    owner.Ops.Deconvolution2dGroupPack4(
+                        cmd, src.texture, deconv.rawWeight, deconv.rawBias, deconv.inC, deconv.outC, deconv.group,
+                        deconv.kernelW, deconv.kernelH, deconv.strideW, deconv.strideH, deconv.padLeft, deconv.padTop,
+                        deconv.dilationW, deconv.dilationH, deconv.activationType, deconv.activationSlope, output);
+                }
                 blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, outShape, outShape, owned: true);
                 output = null;
                 if (shapes != null)
@@ -259,6 +253,53 @@ namespace NcnnCompute
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool SupportsCommandBufferPack4(NcnnRepro.DeconvPack deconv, out string reason)
+        {
+            reason = null;
+            if (deconv == null || deconv.rawWeight == null || deconv.rawBias == null)
+                reason = "immutable scalar weights/bias are unavailable";
+            else if (deconv.inC <= 0 || deconv.outC <= 0 || deconv.group <= 0 || deconv.inC % deconv.group != 0 || deconv.outC % deconv.group != 0)
+                reason = "group must divide positive input and output channels";
+            else if (deconv.kernelW <= 0 || deconv.kernelH <= 0 || deconv.strideW <= 0 || deconv.strideH <= 0 || deconv.dilationW <= 0 || deconv.dilationH <= 0)
+                reason = "kernel, stride, and dilation must be positive";
+            else if (deconv.padLeft < 0 || deconv.padRight < 0 || deconv.padTop < 0 || deconv.padBottom < 0 || deconv.outputPadRight < 0 || deconv.outputPadBottom < 0)
+                reason = "negative/auto padding or output padding is not implemented";
+            else if (deconv.activationType != 0 && deconv.activationType != 1 && deconv.activationType != 2 && deconv.activationType != 4)
+                reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
+            else if (deconv.weightSize != deconv.outC * (deconv.inC / deconv.group) * deconv.kernelW * deconv.kernelH)
+                reason = "weight_data_size does not match the grouped OIHW profile";
+            return reason == null;
+        }
+
+        private static bool MatchesCommandBufferPack4Source(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape shape, NcnnRepro.DeconvPack deconv)
+        {
+            return src != null
+                && src.texture != null
+                && src.texture.dimension == TextureDimension.Tex2DArray
+                && !NcnnRepro.IsStrictLinearMatTexture(src)
+                && shape.dims == 3
+                && shape.d == 1
+                && shape.c == deconv.inC
+                && src.width == shape.w
+                && src.height == shape.h
+                && src.packs == deconv.inPacks
+                && NcnnRepro.BufferShapeEquals(shape, NcnnRepro.GetCmdStorageShape(src, shape));
+        }
+
+        private static string BuildCmdUnsupportedMessage(NcnnParamModel.Layer layer, NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape logicalShape, string reason)
+        {
+            var storageShape = src != null ? NcnnRepro.GetCmdStorageShape(src, logicalShape) : default;
+            return "DeconvolutionDepthWise CommandBuffer Pack4 rejected"
+                + " | layer=" + (layer?.name ?? string.Empty)
+                + " | blob=" + (layer?.bottomNames != null && layer.bottomNames.Length > 0 ? layer.bottomNames[0] : string.Empty)
+                + " | logical_shape=" + logicalShape
+                + " | storage_shape=" + storageShape
+                + " | layout=Packed4"
+                + " | dtype=" + (src?.texture != null ? src.texture.format.ToString() : "unknown")
+                + " | reason=" + reason
+                + " | rejected_fallback=Buffer/materialize-from-buffer/placeholder";
         }
 
         private static bool CanUsePack4DepthWiseDeconvolution(NcnnRepro.DeconvPack deconv)

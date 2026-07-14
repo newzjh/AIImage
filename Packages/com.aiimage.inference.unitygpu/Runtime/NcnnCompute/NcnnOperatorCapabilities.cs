@@ -340,6 +340,15 @@ namespace NcnnCompute
                 return "The factory entry exists, but no verified Pack4 RenderTexture and CommandBuffer production contract is recorded.";
             if (status == NcnnOperatorCapabilityStatus.Supported)
                 return "Verified FP16 Pack4 CommandBuffer pointwise dispatch. Other dtype/layout combinations remain unsupported.";
+            if (operatorName == "Convolution" || operatorName == "ConvolutionDepthWise"
+                || operatorName == "Deconvolution" || operatorName == "DeconvolutionDepthWise")
+            {
+                return "A runtime-verified 2D CommandBuffer Pack4 profile supports immutable scalar OIHW weights, "
+                    + "texture-native activations/outputs, positive rectangular kernel/stride/dilation, non-negative explicit padding, "
+                    + "groups dividing input/output channels, optional bias, and activation none/ReLU/LeakyReLU/Sigmoid. "
+                    + "Input/output tails use ceil(channel/4) packs and are zeroed. Auto/negative padding, unsupported activations, "
+                    + "and invalid group/weight profiles fail strict planning; FP16 remains unvalidated by this C1 contract.";
+            }
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
                 return "Only narrow texture specializations exist; generic CommandBuffer execution includes placeholder branches and is not strict-plan eligible.";
             if (operatorName == "LayerNorm" || operatorName == "Softmax" || operatorName == "Reduction"

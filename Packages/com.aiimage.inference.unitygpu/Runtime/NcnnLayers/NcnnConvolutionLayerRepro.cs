@@ -47,7 +47,7 @@ namespace NcnnCompute
                                         }
                                         else
                                         {
-                                            pack.inC = Mathf.Max(1, pack.weightSize / Mathf.Max(1, pack.outC * kernelArea));
+                                            pack.inC = Mathf.Max(1, (pack.weightSize * pack.group) / Mathf.Max(1, pack.outC * kernelArea));
                                             pack.useBufferPath = pack.strideW != 1
                                                                  || pack.strideH != 1
                                                                  || pack.kernelW != 1 && pack.kernelW != 3
@@ -92,13 +92,12 @@ namespace NcnnCompute
                                                                        && pack.padTop == pack.padBottom
                                                                        && pack.padLeft == pack.padTop;
 
-                                        if (owner.ShouldKeepRawConvWeightsForTexturePath(layer.name, pack, needGeneralTexturePack, needDepthWiseTexturePack))
-                                        {
-                                            phaseSw.Restart();
-                                            NcnnRepro.UploadRawConvWeights(pack, w, b);
-                                            phaseSw.Stop();
-                                            uploadMs += phaseSw.ElapsedMilliseconds;
-                                        }
+                                        // Cmd Pack4 group/tail kernels consume this immutable scalar upload.
+                                        // It is never used for activation or intermediate storage.
+                                        phaseSw.Restart();
+                                        NcnnRepro.UploadRawConvWeights(pack, w, b);
+                                        phaseSw.Stop();
+                                        uploadMs += phaseSw.ElapsedMilliseconds;
 
                                         if (needGeneralTexturePack)
                                         {
@@ -361,143 +360,102 @@ namespace NcnnCompute
         }
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-                        var cmd = context.commandBuffer;
-                        var blobs = context.blobs;
-                        var shapes = context.shapes;
-                        var remaining = context.remaining;
-                        var pinnedNames = context.pinnedNames;
+            var cmd = context.commandBuffer;
+            var blobs = context.blobs;
+            var shapes = context.shapes;
+            var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
+            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            if (!owner._conv.TryGetValue(layer.name, out var conv))
+                throw new InvalidOperationException("Convolution not found: " + layer.name);
+            if (!SupportsCommandBufferPack4(conv, out var reason))
+                throw new InvalidOperationException(BuildUnsupportedMessage(layer, src, srcShape, reason));
 
-                        do
-                        {
-                                                var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-                                                var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-                                                if (!owner._conv.TryGetValue(layer.name, out var conv))
-                                                    throw new InvalidOperationException("Convolution not found: " + layer.name);
-                                                var outShape = ResolveCmdOutputShape(srcShape, conv);
-                                                var canUseConv1x1TexturePath = conv.kernelW == 1
-                                                    && conv.kernelH == 1
-                                                    && owner.EnableConv1x1TextureConvolution
-                                                    && conv.packedWeight4 != null
-                                                    && conv.packedBias4 != null;
-                                                var canUseSpecialized3x3TexturePath = conv.kernelW == 3
-                                                    && conv.kernelH == 3
-                                                    && conv.strideW == 1
-                                                    && conv.strideH == 1
-                                                    && conv.padLeft == conv.padRight
-                                                    && conv.padLeft == conv.padTop
-                                                    && conv.padTop == conv.padBottom
-                                                    && conv.packedWeight4 != null
-                                                    && conv.packedBias4 != null
-                                                    && (conv.inC & 3) == 0
-                                                    && (conv.outC & 3) == 0;
-                                                var canUseGeneralTexturePath = owner.EnableGeneralTextureConvolution
-                                                    && conv.packedWeight4 != null
-                                                    && conv.packedBias4 != null
-                                                    && conv.kernelW > 0
-                                                    && conv.kernelH == conv.kernelW
-                                                    && !(conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
-                                                var forceGeneralTexturePath = conv.kernelW == 1
-                                                    && conv.kernelH == 1
-                                                    && owner.ShouldCompareTextureConvLayer(layer.name)
-                                                    && canUseGeneralTexturePath;
-                                                ComputeTexture tempInput = null;
-                                                if (NcnnRepro.IsStrictLinearMatTexture(src)
-                                                    && srcShape.dims == 3
-                                                    && srcShape.d == 1
-                                                    && srcShape.c == conv.inC)
-                                                {
-                                                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
-                                                    tempInput = owner.RentTempArray(cmd, srcShape.w, srcShape.h, conv.inPacks, RenderTextureFormat.ARGBHalf);
-                                                    owner.Ops.ReshapeLinearMatToPack4(
-                                                        cmd,
-                                                        src.texture,
-                                                        storageShape.w,
-                                                        storageShape.h,
-                                                        srcShape.w,
-                                                        srcShape.h,
-                                                        srcShape.d,
-                                                        srcShape.c,
-                                                        srcShape.dims,
-                                                        tempInput);
-                                                    src = NcnnRepro.CreateCmdTensorRef(tempInput, srcShape, srcShape, owned: false);
-                                                }
+            ComputeTexture tempInput = null;
+            ComputeTexture output = null;
+            try
+            {
+                if (NcnnRepro.IsStrictLinearMatTexture(src)
+                    && srcShape.dims == 3
+                    && srcShape.d == 1
+                    && srcShape.c == conv.inC)
+                {
+                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                    tempInput = owner.RentTempArray(cmd, srcShape.w, srcShape.h, conv.inPacks, RenderTextureFormat.ARGBHalf);
+                    owner.Ops.ReshapeLinearMatToPack4(cmd, src.texture, storageShape.w, storageShape.h, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, tempInput);
+                    src = NcnnRepro.CreateCmdTensorRef(tempInput, srcShape, srcShape, owned: false);
+                }
 
-                                                var canUseTextureConv = CanUsePack4CmdPath(src, srcShape, conv)
-                                                                        && !conv.isDepthWise
-                                                                        && conv.group == 1
-                                                                        && (canUseConv1x1TexturePath
-                                                                            || canUseSpecialized3x3TexturePath
-                                                                            || canUseGeneralTexturePath);
+                if (!CanUsePack4CmdPath(src, srcShape, conv))
+                    throw new InvalidOperationException(BuildUnsupportedMessage(layer, src, srcShape, "source is not a matching Pack4 texture-array"));
 
-                                                if (!canUseTextureConv)
-                                                {
-                                                    owner.DebugLog?.Invoke(
-                                                        "[CmdPlaceholder][Convolution]"
-                                                        + " | layer=" + layer.name
-                                                        + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
-                                                        + " | kernel=" + conv.kernelW + "x" + conv.kernelH
-                                                        + " | stride=" + conv.strideW + "x" + conv.strideH
-                                                        + " | dilation=" + conv.dilationW + "x" + conv.dilationH
-                                                        + " | group=" + conv.group
-                                                        + " | isDepthWise=" + conv.isDepthWise
-                                                        + " | can1x1=" + canUseConv1x1TexturePath
-                                                        + " | can3x3=" + canUseSpecialized3x3TexturePath
-                                                        + " | canGeneral=" + canUseGeneralTexturePath);
-                                                    if (tempInput != null)
-                                                        owner.ReturnTempArray(cmd, tempInput);
-                                                    NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
-                                                    owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
-                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                                                    continue;
-                                                }
+                var outShape = ResolveCmdOutputShape(srcShape, conv);
+                output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, RenderTextureFormat.ARGBHalf);
+                if (conv.group == 1
+                    && !conv.isDepthWise
+                    && conv.kernelW == 1
+                    && conv.kernelH == 1
+                    && conv.strideW == 1
+                    && conv.strideH == 1
+                    && conv.dilationW == 1
+                    && conv.dilationH == 1
+                    && conv.padLeft == 0
+                    && conv.padRight == 0
+                    && conv.padTop == 0
+                    && conv.padBottom == 0
+                    && (conv.outC & 3) == 0
+                    && conv.packedWeight4 != null
+                    && conv.packedBias4 != null)
+                {
+                    owner.Ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, output);
+                }
+                else if (conv.group == 1
+                         && !conv.isDepthWise
+                         && conv.kernelW == 3
+                         && conv.kernelH == 3
+                         && conv.strideW == 1
+                         && conv.strideH == 1
+                         && conv.dilationW == 1
+                         && conv.dilationH == 1
+                         && conv.padLeft == conv.padRight
+                         && conv.padLeft == conv.padTop
+                         && conv.padTop == conv.padBottom
+                         && (conv.inC & 3) == 0
+                         && (conv.outC & 3) == 0
+                         && conv.packedWeight4 != null
+                         && conv.packedBias4 != null)
+                {
+                    owner.Ops.Conv3x3Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, output);
+                }
+                else if (conv.group == 1
+                         && !conv.isDepthWise
+                         && conv.kernelW == conv.kernelH
+                         && (conv.outC & 3) == 0
+                         && conv.packedWeight4 != null
+                         && conv.packedBias4 != null)
+                {
+                    owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
+                }
+                else
+                {
+                    owner.Ops.Conv2dGroupPack4(
+                        cmd, src.texture, conv.rawWeight, conv.rawBias, conv.inC, conv.outC, conv.group,
+                        conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop,
+                        conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
+                }
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, outShape, outShape, owned: true);
+                output = null;
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
+            }
+            finally
+            {
+                if (output != null)
+                    owner.ReturnTempArray(cmd, output);
+                if (tempInput != null)
+                    owner.ReturnTempArray(cmd, tempInput);
+            }
 
-                                                var outW = Mathf.Max(1, outShape.w);
-                                                var outH = Mathf.Max(1, outShape.h);
-                                                var outArr = owner.RentTempArray(cmd, outW, outH, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                                                if (canUseConv1x1TexturePath && !forceGeneralTexturePath)
-                                                {
-                                                    owner.Ops.Conv1x1Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outArr);
-                                                }
-                                                else if (canUseSpecialized3x3TexturePath)
-                                                {
-                                                    var useWinograd = NcnnRepro.EnableWinograd23
-                                                        && conv.packedWeightTm23 != null
-                                                        && conv.strideW == 1
-                                                        && conv.strideH == 1
-                                                        && conv.padLeft == 1
-                                                        && conv.padTop == 1;
-                                                    if (useWinograd)
-                                                    {
-                                                        owner.Ops.Conv3x3Pack4Winograd23(cmd, src.texture, conv.inPacks, conv.packedWeightTm23, conv.packedBias4, conv.outPacks, conv.biasTerm, conv.activationType, conv.activationSlope, outArr);
-                                                    }
-                                                    else
-                                                    {
-                                                        owner.Ops.Conv3x3Pack4(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.padLeft, conv.activationType, conv.activationSlope, outArr);
-                                                    }
-                                                }
-                                                else if (canUseGeneralTexturePath)
-                                                {
-                                                    owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outArr);
-                                                }
-                                                    else
-                                                    {
-                                                        owner.ReturnTempArray(cmd, outArr);
-                                                        if (tempInput != null)
-                                                            owner.ReturnTempArray(cmd, tempInput);
-                                                        NcnnRepro.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
-                                                        owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
-                                                        owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                                                        continue;
-                                                    }
-
-                                                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, outShape, outShape, owned: true);
-                                                if (shapes != null)
-                                                    shapes[layer.topNames[0]] = outShape;
-                                                if (tempInput != null)
-                                                    owner.ReturnTempArray(cmd, tempInput);
-                                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                                                continue;
-                        } while (false);
+            owner.ConsumeCmd(cmd, blobs, context.remaining, layer.bottomNames, context.pinnedNames, shapes);
         }
 
         private static bool CanUsePack4CmdPath(NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape srcShape, NcnnRepro.ConvPack conv)
@@ -510,6 +468,38 @@ namespace NcnnCompute
                 && srcShape.c == conv.inC
                 && NcnnRepro.MatchesPack4TextureStorage(src, srcShape)
                 && src.packs == conv.inPacks;
+        }
+
+        private static bool SupportsCommandBufferPack4(NcnnRepro.ConvPack conv, out string reason)
+        {
+            reason = null;
+            if (conv == null || conv.rawWeight == null || conv.rawBias == null)
+                reason = "immutable scalar weights/bias are unavailable";
+            else if (conv.inC <= 0 || conv.outC <= 0 || conv.group <= 0 || conv.inC % conv.group != 0 || conv.outC % conv.group != 0)
+                reason = "group must divide positive input and output channels";
+            else if (conv.kernelW <= 0 || conv.kernelH <= 0 || conv.strideW <= 0 || conv.strideH <= 0 || conv.dilationW <= 0 || conv.dilationH <= 0)
+                reason = "kernel, stride, and dilation must be positive";
+            else if (conv.padLeft < 0 || conv.padRight < 0 || conv.padTop < 0 || conv.padBottom < 0)
+                reason = "negative/auto padding is not implemented";
+            else if (conv.activationType != 0 && conv.activationType != 1 && conv.activationType != 2 && conv.activationType != 4)
+                reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
+            else if (conv.weightSize != conv.outC * (conv.inC / conv.group) * conv.kernelW * conv.kernelH)
+                reason = "weight_data_size does not match the grouped OIHW profile";
+            return reason == null;
+        }
+
+        private static string BuildUnsupportedMessage(NcnnParamModel.Layer layer, NcnnRepro.CmdTensorRef src, NcnnRepro.BufferShape logicalShape, string reason)
+        {
+            var storageShape = src != null ? NcnnRepro.GetCmdStorageShape(src, logicalShape) : default;
+            return "Convolution CommandBuffer Pack4 rejected"
+                + " | layer=" + (layer?.name ?? string.Empty)
+                + " | blob=" + (layer?.bottomNames != null && layer.bottomNames.Length > 0 ? layer.bottomNames[0] : string.Empty)
+                + " | logical_shape=" + logicalShape
+                + " | storage_shape=" + storageShape
+                + " | layout=Packed4"
+                + " | dtype=" + (src?.texture != null ? src.texture.format.ToString() : "unknown")
+                + " | reason=" + reason
+                + " | rejected_fallback=Buffer/materialize-from-buffer/placeholder";
         }
 
         private static bool CanExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context, NcnnRepro.ConvPack conv)

@@ -361,6 +361,127 @@ void NcnnDeconvolutionPack4General_Impl(uint3 id)
     _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
 }
 
+// General 2D Pack4 convolution uses immutable scalar ncnn weights. Activations and
+// results remain Texture2DArray-backed; scalar reads are necessary because group
+// boundaries and channel tails are not required to align to a float4 pack.
+void NcnnConv2dGroupPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int op = (int)id.z;
+    int group = max(1, _ConvGroup);
+    int inchG = _InC / group;
+    int outchG = _OutC / group;
+    int kernelArea = _KernelWVar * _KernelHVar;
+    float4 sum = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int oc = op * 4 + lane;
+        if (oc >= _OutC)
+            continue;
+
+        int g = min(group - 1, oc / outchG);
+        float value = _ConvB[oc];
+        int weightBase = (oc * inchG) * kernelArea;
+        for (int icLocal = 0; icLocal < inchG; icLocal++)
+        {
+            int ic = g * inchG + icLocal;
+            int kernelBase = weightBase + icLocal * kernelArea;
+            for (int ky = 0; ky < _KernelHVar; ky++)
+            {
+                int iy = (int)id.y * _StrideHVar - _PadTopVar + ky * _DilationHVar;
+                if (iy < 0 || iy >= _InH)
+                    continue;
+                for (int kx = 0; kx < _KernelWVar; kx++)
+                {
+                    int ix = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
+                    if (ix < 0 || ix >= _InW)
+                        continue;
+                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * _ConvW[kernelBase + ky * _KernelWVar + kx];
+                }
+            }
+        }
+        NcnnWriteLane(sum, lane, value);
+    }
+
+    sum = NcnnApplyActivation(sum);
+    [unroll]
+    for (int tailLane = 0; tailLane < 4; tailLane++)
+    {
+        if (op * 4 + tailLane >= _OutC)
+            NcnnWriteLane(sum, tailLane, 0.0);
+    }
+    _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+}
+
+void NcnnDeconvolution2dGroupPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _ConvOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int op = (int)id.z;
+    int group = max(1, _ConvGroup);
+    int inchG = _InC / group;
+    int outchG = _OutC / group;
+    int kernelArea = _KernelWVar * _KernelHVar;
+    int borderedX = (int)id.x + _PadLeftVar;
+    int borderedY = (int)id.y + _PadTopVar;
+    float4 sum = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int oc = op * 4 + lane;
+        if (oc >= _OutC)
+            continue;
+
+        int g = min(group - 1, oc / outchG);
+        float value = _ConvB[oc];
+        int weightBase = (oc * inchG) * kernelArea;
+        for (int icLocal = 0; icLocal < inchG; icLocal++)
+        {
+            int ic = g * inchG + icLocal;
+            int kernelBase = weightBase + icLocal * kernelArea;
+            for (int ky = 0; ky < _KernelHVar; ky++)
+            {
+                int iyNumerator = borderedY - ky * _DilationHVar;
+                if (iyNumerator < 0 || (iyNumerator % _StrideHVar) != 0)
+                    continue;
+                int iy = iyNumerator / _StrideHVar;
+                if (iy < 0 || iy >= _InH)
+                    continue;
+                for (int kx = 0; kx < _KernelWVar; kx++)
+                {
+                    int ixNumerator = borderedX - kx * _DilationWVar;
+                    if (ixNumerator < 0 || (ixNumerator % _StrideWVar) != 0)
+                        continue;
+                    int ix = ixNumerator / _StrideWVar;
+                    if (ix < 0 || ix >= _InW)
+                        continue;
+                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * _ConvW[kernelBase + ky * _KernelWVar + kx];
+                }
+            }
+        }
+        NcnnWriteLane(sum, lane, value);
+    }
+
+    sum = NcnnApplyActivation(sum);
+    [unroll]
+    for (int tailLane = 0; tailLane < 4; tailLane++)
+    {
+        if (op * 4 + tailLane >= _OutC)
+            NcnnWriteLane(sum, tailLane, 0.0);
+    }
+    _ConvOutArr[int3((int)id.x, (int)id.y, op)] = sum;
+}
+
 void NcnnDeconvolutionDepthWisePack4_Impl(uint3 id)
 {
     uint ow, oh, od;

@@ -21,6 +21,8 @@
 #pragma kernel NcnnConv3x3Pack4
 #pragma kernel NcnnConvPack4General
 #pragma kernel NcnnDeconvolutionPack4General
+#pragma kernel NcnnConv2dGroupPack4
+#pragma kernel NcnnDeconvolution2dGroupPack4
 #pragma kernel NcnnDeconvolutionDepthWisePack4
 #pragma kernel NcnnConvDepthWisePack4
 #pragma kernel NcnnWinograd23TransformInputPack4
@@ -476,6 +478,8 @@ void NcnnRmsNormBuf_Impl(uint3 id);
 void NcnnUnfoldBuf_Impl(uint3 id);
 void NcnnUnfoldPack4_Impl(uint3 id);
 void NcnnPassthrough_Impl(uint3 id);
+void NcnnConv2dGroupPack4_Impl(uint3 id);
+void NcnnDeconvolution2dGroupPack4_Impl(uint3 id);
 
 [numthreads(256,1,1)]
 void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
@@ -660,6 +664,18 @@ void NcnnConvPack4General(uint3 id : SV_DispatchThreadID)
 void NcnnDeconvolutionPack4General(uint3 id : SV_DispatchThreadID)
 {
     NcnnDeconvolutionPack4General_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnConv2dGroupPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnConv2dGroupPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnDeconvolution2dGroupPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnDeconvolution2dGroupPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
