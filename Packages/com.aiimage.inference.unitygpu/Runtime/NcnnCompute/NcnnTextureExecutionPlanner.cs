@@ -229,7 +229,7 @@ namespace NcnnCompute
                         continue;
                     }
 
-                    if (!string.Equals(operatorName, "Reshape", StringComparison.Ordinal))
+                    if (!CanUseTextureTransform(operatorName))
                     {
                         diagnostics.Add(CreateDiagnostic(request, index, layer, capability, operatorName, "missing-descriptor-alias-evidence", viewReason, inputs, true, "Use an alias-compatible view or implement a real Pack4 texture transform."));
                         nodes.Add(node);
@@ -392,7 +392,24 @@ namespace NcnnCompute
         {
             return string.Equals(operatorName, "Noop", StringComparison.Ordinal)
                 || string.Equals(operatorName, "Split", StringComparison.Ordinal)
-                || string.Equals(operatorName, "Reshape", StringComparison.Ordinal);
+                || string.Equals(operatorName, "Reshape", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Flatten", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Squeeze", StringComparison.Ordinal)
+                || string.Equals(operatorName, "ExpandDims", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Permute", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Tile", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Packing", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Cast", StringComparison.Ordinal);
+        }
+
+        private static bool CanUseTextureTransform(string operatorName)
+        {
+            return string.Equals(operatorName, "Reshape", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Flatten", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Permute", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Tile", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Packing", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Cast", StringComparison.Ordinal);
         }
 
         private static bool TryPlanViewAlias(
@@ -418,13 +435,77 @@ namespace NcnnCompute
             }
 
             var outputLogicalShape = source.logicalShape;
-            if (string.Equals(layer.typeName, "Reshape", StringComparison.Ordinal) || layer.type == NcnnLayerTypes.Reshape)
+            var operatorName = string.IsNullOrWhiteSpace(layer.typeName) ? layer.type.ToString() : layer.typeName;
+            if (string.Equals(operatorName, "Reshape", StringComparison.Ordinal))
             {
                 if (!TryResolveReshape(source.logicalShape, layer, out outputLogicalShape, out reason))
                     return false;
             }
+            else if (string.Equals(operatorName, "Flatten", StringComparison.Ordinal))
+            {
+                if (!TryToBufferShape(source.logicalShape, out var input))
+                {
+                    reason = "Flatten source logical shape is missing or invalid.";
+                    return false;
+                }
+                outputLogicalShape = ToShapeArray(new NcnnRepro.BufferShape(1, ElementCount(input), 1, 1, 1));
+            }
+            else if (string.Equals(operatorName, "Squeeze", StringComparison.Ordinal))
+            {
+                if (!TryToBufferShape(source.logicalShape, out var input))
+                {
+                    reason = "Squeeze source logical shape is missing or invalid.";
+                    return false;
+                }
+                try
+                {
+                    outputLogicalShape = ToShapeArray(NcnnRepro.ResolveSqueezeShape(input, layer));
+                }
+                catch (Exception exception)
+                {
+                    reason = "Squeeze shape resolution failed: " + exception.Message;
+                    return false;
+                }
+            }
+            else if (string.Equals(operatorName, "ExpandDims", StringComparison.Ordinal))
+            {
+                if (!TryResolveExpandDims(source.logicalShape, layer, out outputLogicalShape, out reason))
+                    return false;
+            }
+            else if (string.Equals(operatorName, "Permute", StringComparison.Ordinal))
+            {
+                if (layer.GetInt(0, 0) != 0)
+                {
+                    reason = "Non-identity Permute requires a real Pack4 texture transform.";
+                    return false;
+                }
+            }
+            else if (string.Equals(operatorName, "Tile", StringComparison.Ordinal))
+            {
+                if (!HasIdentityTileParameters(layer))
+                {
+                    reason = "Non-identity Tile requires a real Pack4 texture transform.";
+                    return false;
+                }
+            }
+            else if (string.Equals(operatorName, "Packing", StringComparison.Ordinal))
+            {
+                if (layer.GetInt(0, 1) != 4 || (layer.GetInt(3, 0) != 0 && layer.GetInt(2, 0) != layer.GetInt(3, 0)))
+                {
+                    reason = "Non-identity Packing requires a real Pack4 texture transform.";
+                    return false;
+                }
+            }
+            else if (string.Equals(operatorName, "Cast", StringComparison.Ordinal))
+            {
+                if (layer.GetInt(0, 0) != layer.GetInt(1, 0))
+                {
+                    reason = "Non-identity Cast requires a real Pack4 texture transform.";
+                    return false;
+                }
+            }
 
-            if (!HasPack4AliasEvidence(source, outputLogicalShape))
+            if (!HasPack4AliasEvidence(source, outputLogicalShape, operatorName))
             {
                 reason = "Logical/storage descriptor evidence does not prove that this view preserves the Pack4 physical mapping.";
                 return false;
@@ -473,23 +554,28 @@ namespace NcnnCompute
             }
         }
 
-        private static bool HasPack4AliasEvidence(NcnnTexturePlanTensorDescriptor source, int[] outputLogicalShape)
+        private static bool HasPack4AliasEvidence(NcnnTexturePlanTensorDescriptor source, int[] outputLogicalShape, string operatorName)
         {
             if (!source.textureBacked || !TryToBufferShape(source.logicalShape, out var input) || !TryToBufferShape(outputLogicalShape, out var output))
                 return false;
             if (!TryToBufferShape(source.storageShape, out _))
                 return false;
-            if (input.dims > 3 || output.dims > 3)
-                return ShapesEqual(input, output);
-            if (input.dims != output.dims || ElementCount(input) != ElementCount(output))
+            if (ElementCount(input) != ElementCount(output))
                 return false;
+            if (string.Equals(operatorName, "Flatten", StringComparison.Ordinal))
+            {
+                var storage = source.storageShape;
+                return output.dims == 1
+                    && storage[0] == 3
+                    && storage[1] == output.w
+                    && storage[2] == 1
+                    && storage[3] == 1
+                    && storage[4] == 1;
+            }
             if (ShapesEqual(input, output))
                 return true;
-            if ((input.dims == 3 && (input.c % 4) != 0) || (output.dims == 3 && (output.c % 4) != 0))
-                return false;
-            return input.w == output.w
-                && input.h == output.h
-                && Mathf.CeilToInt(input.c / 4f) == Mathf.CeilToInt(output.c / 4f);
+            return string.Equals(operatorName, "Squeeze", StringComparison.Ordinal)
+                || string.Equals(operatorName, "ExpandDims", StringComparison.Ordinal);
         }
 
         private static NcnnTexturePlanTensorDescriptor[] CreateComputedOutputs(
@@ -615,8 +701,73 @@ namespace NcnnCompute
             return verification.outputs.All(output => output != null
                 && string.Equals(output.aliasGroup, source.aliasGroup, StringComparison.Ordinal)
                 && output.textureBacked == source.textureBacked
-                && ShapesEqual(output.logicalShape, source.logicalShape)
+                && TryToBufferShape(output.logicalShape, out var outputShape)
+                && TryToBufferShape(source.logicalShape, out var sourceShape)
+                && ElementCount(outputShape) == ElementCount(sourceShape)
                 && ShapesEqual(output.storageShape, source.storageShape));
+        }
+
+        private static bool TryResolveExpandDims(int[] sourceShape, NcnnParamModel.Layer layer, out int[] outputShape, out string reason)
+        {
+            outputShape = null;
+            reason = null;
+            if (!TryToBufferShape(sourceShape, out var input))
+            {
+                reason = "ExpandDims source logical shape is missing or invalid.";
+                return false;
+            }
+
+            var axes = layer.GetInts(-23303, null);
+            if (axes == null || axes.Length == 0)
+                axes = layer.GetInts(3, Array.Empty<int>());
+            if (axes == null || axes.Length == 0)
+            {
+                reason = "ExpandDims requires static axes metadata.";
+                return false;
+            }
+
+            try
+            {
+                var dims = input.dims;
+                var values = new[] { input.w, input.h, input.dims == 4 ? input.d : input.c, input.dims == 4 ? input.c : 1 };
+                for (var i = 0; i < axes.Length; i++)
+                {
+                    var outDims = dims + 1;
+                    if (outDims > 4)
+                        throw new InvalidOperationException("ExpandDims would exceed rank four.");
+                    var ncnnAxis = axes[i] < 0 ? axes[i] + outDims : axes[i];
+                    if (ncnnAxis < 0 || ncnnAxis >= outDims)
+                        throw new InvalidOperationException("ExpandDims axis is out of range.");
+                    var axis = NcnnRepro.MapNcnnAxisToTensorAxis(outDims, ncnnAxis);
+                    var next = new[] { 1, 1, 1, 1 };
+                    for (var j = 0; j < outDims; j++)
+                        next[j] = j == axis ? 1 : values[j < axis ? j : j - 1];
+                    values = next;
+                    dims = outDims;
+                }
+
+                outputShape = dims == 1
+                    ? new[] { 1, values[0], 1, 1, 1 }
+                    : dims == 2
+                        ? new[] { 2, values[0], values[1], 1, 1 }
+                        : dims == 3
+                            ? new[] { 3, values[0], values[1], 1, values[2] }
+                            : new[] { 4, values[0], values[1], values[2], values[3] };
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "ExpandDims shape resolution failed: " + exception.Message;
+                return false;
+            }
+        }
+
+        private static bool HasIdentityTileParameters(NcnnParamModel.Layer layer)
+        {
+            var repeats = layer.GetInts(-23302, null) ?? layer.GetInts(2, null) ?? layer.GetInts(-23330, null) ?? layer.GetInts(30, null);
+            if (repeats != null && repeats.Length > 0)
+                return repeats.All(value => value == 1);
+            return layer.GetInt(1, 1) == 1;
         }
 
         private static bool IsRealCommandBufferPack4Path(string executionPath)

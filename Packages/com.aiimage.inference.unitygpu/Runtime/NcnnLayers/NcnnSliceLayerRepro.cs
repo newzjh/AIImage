@@ -208,7 +208,8 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var sourceContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = sourceContract.LogicalShape;
             var specs = ResolveSliceSpecs(layer, srcShape);
             var canUseLinearMat = CanUseLinearMatSlice(src, srcShape, specs);
             var canUsePack4LinearMat = CanUsePack4LinearMatSlice(src, srcShape, specs);
@@ -221,9 +222,9 @@ namespace NcnnCompute
                 {
                     if (IsIdentitySlice(srcShape, spec))
                     {
-                        blobs[layer.topNames[i]] = src;
-                        src.refs++;
-                        shapes[layer.topNames[i]] = srcShape;
+                        blobs[layer.topNames[i]] = NcnnRepro.CreateCmdTensorAlias(src, spec.shape, sourceContract.StorageShape);
+                        if (shapes != null)
+                            shapes[layer.topNames[i]] = spec.shape;
                         continue;
                     }
 
@@ -278,33 +279,24 @@ namespace NcnnCompute
                     {
                         owner.Ops.SlicePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.c, spec.axis, spec.begin, spec.shape.w, spec.shape.h, spec.shape.c, outArr);
                     }
-                    blobs[layer.topNames[i]] = new NcnnRepro.CmdTensorRef
-                    {
-                        texture = outArr,
-                        width = spec.shape.w,
-                        height = spec.shape.h,
-                        packs = outPacks,
-                        refs = 1,
-                        owned = true,
-                        hasLogicalShape = true,
-                        logicalShape = spec.shape,
-                        hasStorageShape = true,
-                        storageShape = spec.shape
-                    };
-                    shapes[layer.topNames[i]] = spec.shape;
+                    var directStorageShape = spec.shape.dims <= 2
+                        ? new NcnnRepro.BufferShape(3, spec.shape.w, spec.shape.dims == 2 ? spec.shape.h : 1, 1, 1)
+                        : spec.shape;
+                    blobs[layer.topNames[i]] = NcnnRepro.CreateCmdTensorRef(outArr, spec.shape, directStorageShape, owned: true, blobName: layer.topNames[i]);
+                    if (shapes != null)
+                        shapes[layer.topNames[i]] = spec.shape;
                     continue;
                 }
 
-                owner.DebugLog?.Invoke(
-                    "[CmdPlaceholder][Slice]"
+                throw new InvalidOperationException(
+                    "Slice command-buffer Pack4 profile is unsupported; placeholder publication is prohibited"
                     + " | layer=" + layer.name
                     + " | top=" + layer.topNames[i]
-                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
-                    + " | out=d" + spec.shape.dims + ":" + spec.shape.w + "x" + spec.shape.h + "x" + spec.shape.d + "x" + spec.shape.c
+                    + " | logical=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | storage=d" + sourceContract.StorageShape.dims + ":" + sourceContract.StorageShape.w + "x" + sourceContract.StorageShape.h + "x" + sourceContract.StorageShape.d + "x" + sourceContract.StorageShape.c
+                    + " | layout=" + sourceContract.LayoutKind
                     + " | axis=" + spec.axis
                     + " | begin=" + spec.begin);
-                NcnnRepro.ResolveCmdTextureLayout(spec.shape, out var width, out var height, out var packs);
-                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[i], width, height, packs, blobs, shapes, spec.shape);
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

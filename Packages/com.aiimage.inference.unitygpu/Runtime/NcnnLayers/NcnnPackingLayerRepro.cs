@@ -62,7 +62,8 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Packing pack not found: " + layer.name);
 
             var requiresCast = pack.castTypeTo != 0 && pack.castTypeFrom != pack.castTypeTo;
-            if (!requiresCast)
+            var requiresPackingTransform = RequiresPackingTransform(pack, layer);
+            if (!requiresCast && !requiresPackingTransform)
             {
                 new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
                 return;
@@ -108,7 +109,8 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Packing pack not found: " + layer.name);
 
             var requiresCast = pack.castTypeTo != 0 && pack.castTypeFrom != pack.castTypeTo;
-            if (!requiresCast)
+            var requiresPackingTransform = RequiresPackingTransform(pack, layer);
+            if (!requiresCast && !requiresPackingTransform)
             {
                 new NcnnNoopLayerRepro().ExecuteBuffer(owner, layer, context);
                 return;
@@ -119,7 +121,28 @@ namespace NcnnCompute
                 layer,
                 context,
                 "Packing",
-                (input, shape, output) => owner.Ops.CastPack4(input, shape, pack.castTypeFrom, pack.castTypeTo, output));
+                (input, shape, output) =>
+                {
+                    if (requiresCast)
+                    {
+                        owner.Ops.CastPack4(input, shape, pack.castTypeFrom, pack.castTypeTo, output);
+                        return;
+                    }
+
+                    owner.Ops.ReshapePack4ToPack4(
+                        input,
+                        shape.w,
+                        shape.h,
+                        shape.d,
+                        shape.c,
+                        shape.dims,
+                        shape.w,
+                        shape.h,
+                        shape.d,
+                        shape.c,
+                        shape.dims,
+                        output);
+                });
         }
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
@@ -128,7 +151,8 @@ namespace NcnnCompute
                 throw new InvalidOperationException("Packing pack not found: " + layer.name);
 
             var requiresCast = pack.castTypeTo != 0 && pack.castTypeFrom != pack.castTypeTo;
-            if (!requiresCast)
+            var requiresPackingTransform = RequiresPackingTransform(pack, layer);
+            if (!requiresCast && !requiresPackingTransform)
             {
                 new NcnnNoopLayerRepro().ExecuteCommandBuffer(owner, layer, context);
                 return;
@@ -139,7 +163,43 @@ namespace NcnnCompute
                 layer,
                 context,
                 "Packing",
-                (cmd, input, shape, output) => owner.Ops.CastPack4(cmd, input, shape, pack.castTypeFrom, pack.castTypeTo, output));
+                (cmd, input, shape, output) =>
+                {
+                    if (requiresCast)
+                    {
+                        owner.Ops.CastPack4(cmd, input, shape, pack.castTypeFrom, pack.castTypeTo, output);
+                        return;
+                    }
+
+                    owner.Ops.ReshapePack4ToPack4(
+                        cmd,
+                        input,
+                        shape.w,
+                        shape.h,
+                        shape.d,
+                        shape.c,
+                        shape.dims,
+                        shape.w,
+                        shape.h,
+                        shape.d,
+                        shape.c,
+                        shape.dims,
+                        output);
+                });
+        }
+
+        private static bool RequiresPackingTransform(PackingPack pack, NcnnParamModel.Layer layer)
+        {
+            if (pack.outElemPack != 1 && pack.outElemPack != 4)
+                throw new InvalidOperationException(
+                    "Packing CommandBuffer Pack4 supports only out_elempack=1 or 4"
+                    + " | layer=" + layer.name
+                    + " | out_elempack=" + pack.outElemPack);
+
+            // The texture backend's physical representation is Pack4. Converting to a logical
+            // pack1 view must still rewrite lanes so downstream Pack4 consumers do not inherit a
+            // stale descriptor alias.
+            return pack.outElemPack == 1;
         }
     }
 }

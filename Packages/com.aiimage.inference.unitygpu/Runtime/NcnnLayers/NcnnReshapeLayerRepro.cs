@@ -421,7 +421,8 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var sourceContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = sourceContract.LogicalShape;
             var bottomShapes = BuildCmdBottomShapes(layer, blobs, shapes);
             var initialOutShape = !string.IsNullOrWhiteSpace(layer.GetString(6, null))
                 ? NcnnRepro.EvaluateReshapeShapeExpression(layer.GetString(6, null), bottomShapes, layer)
@@ -511,12 +512,12 @@ namespace NcnnCompute
 
             if (!TryResolveCmdOutputShape(owner, layer, blobs, shapes, src, out var outShape, out var outW, out var outH, out var outPacks))
             {
-                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
-                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
-                if (shapes != null)
-                    shapes[layer.topNames[0]] = srcShape;
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                return;
+                throw new InvalidOperationException(
+                    "Reshape command-buffer Pack4 requires static metadata or a supported texture shape tensor; descriptor alias fallback is prohibited"
+                    + " | layer=" + layer.name
+                    + " | logical=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | storage=d" + sourceContract.StorageShape.dims + ":" + sourceContract.StorageShape.w + "x" + sourceContract.StorageShape.h + "x" + sourceContract.StorageShape.d + "x" + sourceContract.StorageShape.c
+                    + " | layout=" + sourceContract.LayoutKind);
             }
 
             if (CanAliasLinearMatTextureLayout(src, srcShape, outShape))

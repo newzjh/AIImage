@@ -85,9 +85,53 @@ namespace NcnnCompute
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var src, out var srcShape))
                 throw new InvalidOperationException("Flatten render-texture path requires pack4 texture input: " + layer.name);
 
+            var sourceContract = NcnnRepro.GetTextureContract(textureShapes, src, layer.bottomNames[0]);
             var outShape = new NcnnRepro.BufferShape(1, srcShape.w * srcShape.h * srcShape.d * srcShape.c, 1, 1, 1);
-            var storageShape = NcnnRepro.GetTextureStorageShape(src, srcShape);
-            textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, storageShape);
+            var outStorageShape = ResolveFlattenStorageShape(outShape);
+            if (CanAliasFlatten(sourceContract, outShape, outStorageShape))
+            {
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(src, outShape, outStorageShape);
+            }
+            else
+            {
+                var output = owner.RentTempArray(
+                    outStorageShape.w,
+                    outStorageShape.h,
+                    1,
+                    NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                if (NcnnRepro.IsStrictLinearMatTexture(src))
+                {
+                    var storage = sourceContract.StorageShape;
+                    owner.Ops.ReshapeLinearMatToPack4(
+                        src.texture,
+                        storage.w,
+                        storage.h,
+                        outShape.w,
+                        outShape.h,
+                        outShape.d,
+                        outShape.c,
+                        outShape.dims,
+                        output);
+                }
+                else
+                {
+                    owner.Ops.ReshapePack4ToPack4(
+                        src.texture,
+                        srcShape.w,
+                        srcShape.h,
+                        srcShape.d,
+                        srcShape.c,
+                        srcShape.dims,
+                        outShape.w,
+                        outShape.h,
+                        outShape.d,
+                        outShape.c,
+                        outShape.dims,
+                        output);
+                }
+
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], output, outShape, outStorageShape);
+            }
             if (textureShapes != null)
                 textureShapes[layer.topNames[0]] = outShape;
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -102,13 +146,74 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var sourceContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = sourceContract.LogicalShape;
             var outShape = new NcnnRepro.BufferShape(1, srcShape.w * srcShape.h * srcShape.d * srcShape.c, 1, 1, 1);
-            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
-            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, storageShape);
+            var outStorageShape = ResolveFlattenStorageShape(outShape);
+            if (CanAliasFlatten(sourceContract, outShape, outStorageShape))
+            {
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, outStorageShape);
+            }
+            else
+            {
+                var output = owner.RentTempArray(
+                    cmd,
+                    outStorageShape.w,
+                    outStorageShape.h,
+                    1,
+                    NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                if (NcnnRepro.IsStrictLinearMatTexture(src))
+                {
+                    var storage = sourceContract.StorageShape;
+                    owner.Ops.ReshapeLinearMatToPack4(
+                        cmd,
+                        src.texture,
+                        storage.w,
+                        storage.h,
+                        outShape.w,
+                        outShape.h,
+                        outShape.d,
+                        outShape.c,
+                        outShape.dims,
+                        output);
+                }
+                else
+                {
+                    owner.Ops.ReshapePack4ToPack4(
+                        cmd,
+                        src.texture,
+                        srcShape.w,
+                        srcShape.h,
+                        srcShape.d,
+                        srcShape.c,
+                        srcShape.dims,
+                        outShape.w,
+                        outShape.h,
+                        outShape.d,
+                        outShape.c,
+                        outShape.dims,
+                        output);
+                }
+
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, outShape, outStorageShape, owned: true, blobName: layer.topNames[0]);
+            }
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static NcnnRepro.BufferShape ResolveFlattenStorageShape(NcnnRepro.BufferShape shape)
+        {
+            return new NcnnRepro.BufferShape(3, shape.w, 1, 1, 1);
+        }
+
+        private static bool CanAliasFlatten(
+            NcnnRepro.RepoVkTensorContract source,
+            NcnnRepro.BufferShape outShape,
+            NcnnRepro.BufferShape outStorageShape)
+        {
+            return NcnnRepro.BufferShapeEquals(source.LogicalShape, outShape)
+                && NcnnRepro.BufferShapeEquals(source.StorageShape, outStorageShape);
         }
 
         private static bool TryAliasExistingBuffer(

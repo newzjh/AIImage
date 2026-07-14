@@ -110,7 +110,7 @@ namespace NcnnCompute
 
         private static bool IsTextureNoopCast(int typeFrom, int typeTo)
         {
-            return typeFrom == typeTo || (typeFrom == 2 && typeTo == 1);
+            return typeFrom == typeTo;
         }
     }
 }

@@ -1430,6 +1430,12 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferBatchNorm(layer, inputs, request);
                 case "Reshape":
                     return VerifyStrictCommandBufferReshape(layer, inputs, request);
+                case "Flatten":
+                    return VerifyStrictCommandBufferFlatten(layer, inputs, request);
+                case "Squeeze":
+                    return VerifyStrictCommandBufferSqueeze(layer, inputs, request);
+                case "ExpandDims":
+                    return VerifyStrictCommandBufferExpandDims(layer, inputs, request);
                 case "Permute":
                     return VerifyStrictCommandBufferPermute(layer, inputs, request);
                 case "Gemm":
@@ -1438,6 +1444,12 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferLayerNorm(layer, inputs, request);
                 case "Slice":
                     return VerifyStrictCommandBufferSlice(layer, inputs, request);
+                case "Tile":
+                    return VerifyStrictCommandBufferTile(layer, inputs, request);
+                case "Packing":
+                    return VerifyStrictCommandBufferPacking(layer, inputs, request);
+                case "Cast":
+                    return VerifyStrictCommandBufferCast(layer, inputs, request);
                 case "MatMul":
                     return VerifyStrictCommandBufferMatMul(layer, inputs, request);
                 case "Softmax":
@@ -2330,6 +2342,284 @@ namespace NcnnCompute
             return RejectStrictCommandBufferPack4Node("No loaded CommandBuffer Pack4 reshape transform matches this logical/storage profile.");
         }
 
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferFlatten(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            var total = GetStrictPlanElementCount(input);
+            if (total > int.MaxValue)
+                return RejectStrictCommandBufferPack4Node("Flatten output exceeds the supported Pack4 texture extent.");
+
+            var output = new BufferShape(1, (int)total, 1, 1, 1);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                new BufferShape(3, output.w, 1, 1, 1),
+                request,
+                "command-buffer-pack4:flatten-pack4");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferSqueeze(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            try
+            {
+                var output = ResolveSqueezeShape(input, layer);
+                return AcceptStrictCommandBufferPack4Alias(layer, inputs[0], output, request);
+            }
+            catch (Exception exception)
+            {
+                return RejectStrictCommandBufferPack4Node("Squeeze shape resolution failed: " + exception.Message);
+            }
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferExpandDims(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!TryResolveStrictExpandDimsShape(layer, input, out var output, out reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            return AcceptStrictCommandBufferPack4Alias(layer, inputs[0], output, request);
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferTile(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!TryResolveStrictTileShape(layer, input, out var output, out var identity, out reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (identity)
+                return AcceptStrictCommandBufferPack4Alias(layer, inputs[0], output, request);
+
+            var storage = input.dims <= 2 && HasStrictLinearMatStorage(inputs[0], input)
+                ? ResolveLinearMatStorageShape(output)
+                : output.dims <= 2
+                    ? new BufferShape(3, output.w, output.dims == 2 ? output.h : 1, 1, 1)
+                    : output;
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                storage,
+                request,
+                input.dims <= 2 && HasStrictLinearMatStorage(inputs[0], input)
+                    ? "command-buffer-pack4:tile-linear-mat"
+                    : "command-buffer-pack4:tile-pack4");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPacking(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            var outElemPack = layer.GetInt(0, 1);
+            var castFrom = layer.GetInt(2, 0);
+            var castTo = layer.GetInt(3, 0);
+            if (outElemPack != 1 && outElemPack != 4)
+                return RejectStrictCommandBufferPack4Node("Packing supports only out_elempack=1 or 4 on the CommandBuffer Pack4 backend.");
+            if (outElemPack == 4 && (castTo == 0 || castFrom == castTo))
+                return AcceptStrictCommandBufferPack4Alias(layer, inputs[0], input, request);
+
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                input,
+                CopyStrictStorage(inputs[0]),
+                request,
+                castTo != 0 && castFrom != castTo
+                    ? "command-buffer-pack4:packing-cast"
+                    : "command-buffer-pack4:packing-repack");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferCast(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            var typeFrom = layer.GetInt(0, 0);
+            var typeTo = layer.GetInt(1, 0);
+            if (typeFrom == typeTo)
+                return AcceptStrictCommandBufferPack4Alias(layer, inputs[0], input, request);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                input,
+                CopyStrictStorage(inputs[0]),
+                request,
+                "command-buffer-pack4:cast-pack4");
+        }
+
+        private static BufferShape CopyStrictStorage(NcnnTexturePlanTensorDescriptor descriptor)
+        {
+            var storage = descriptor?.storageShape;
+            return new BufferShape(storage[0], storage[1], storage[2], storage[3], storage[4]);
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification AcceptStrictCommandBufferPack4Alias(
+            NcnnParamModel.Layer layer,
+            NcnnTexturePlanTensorDescriptor source,
+            BufferShape logicalShape,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (source == null || source.storageShape == null || source.storageShape.Length != 5)
+                return RejectStrictCommandBufferPack4Node("Descriptor alias requires a source logical/storage contract.");
+
+            var outputNames = layer?.topNames ?? Array.Empty<string>();
+            var storage = (int[])source.storageShape.Clone();
+            var logical = new[] { logicalShape.dims, logicalShape.w, logicalShape.h, logicalShape.d, logicalShape.c };
+            return new NcnnTextureExecutionPlanNodeVerification
+            {
+                accepted = outputNames.Length > 0,
+                usesDescriptorAlias = outputNames.Length > 0,
+                executionPath = "descriptor-alias",
+                reason = outputNames.Length > 0 ? null : "The node has no output blobs.",
+                outputs = outputNames.Select(name => new NcnnTexturePlanTensorDescriptor
+                {
+                    blob = name,
+                    logicalShape = (int[])logical.Clone(),
+                    storageShape = (int[])storage.Clone(),
+                    layout = request.targetLayout,
+                    dtype = request.targetDtype,
+                    aliasGroup = source.aliasGroup,
+                    textureBacked = source.textureBacked
+                }).ToArray()
+            };
+        }
+
+        private static bool TryResolveStrictExpandDimsShape(
+            NcnnParamModel.Layer layer,
+            BufferShape input,
+            out BufferShape output,
+            out string reason)
+        {
+            output = default;
+            reason = null;
+            var axes = layer.GetInts(-23303, null);
+            if (axes == null || axes.Length == 0)
+                axes = layer.GetInts(3, Array.Empty<int>());
+            if (axes == null || axes.Length == 0)
+            {
+                reason = "ExpandDims requires static axes metadata.";
+                return false;
+            }
+
+            try
+            {
+                var dims = input.dims;
+                var values = new[] { input.w, input.h, input.dims == 4 ? input.d : input.c, input.dims == 4 ? input.c : 1 };
+                for (var index = 0; index < axes.Length; index++)
+                {
+                    var outDims = dims + 1;
+                    if (outDims > 4)
+                        throw new InvalidOperationException("ExpandDims would exceed rank four.");
+                    var ncnnAxis = axes[index] < 0 ? axes[index] + outDims : axes[index];
+                    if (ncnnAxis < 0 || ncnnAxis >= outDims)
+                        throw new InvalidOperationException("ExpandDims axis is outside the target rank.");
+                    var axis = MapNcnnAxisToTensorAxis(outDims, ncnnAxis);
+                    var next = new[] { 1, 1, 1, 1 };
+                    for (var i = 0; i < outDims; i++)
+                        next[i] = i == axis ? 1 : values[i < axis ? i : i - 1];
+                    values = next;
+                    dims = outDims;
+                }
+
+                output = dims == 1
+                    ? new BufferShape(1, values[0], 1, 1, 1)
+                    : dims == 2
+                        ? new BufferShape(2, values[0], values[1], 1, 1)
+                        : dims == 3
+                            ? new BufferShape(3, values[0], values[1], 1, values[2])
+                            : new BufferShape(4, values[0], values[1], values[2], values[3]);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "ExpandDims shape resolution failed: " + exception.Message;
+                return false;
+            }
+        }
+
+        private static bool TryResolveStrictTileShape(
+            NcnnParamModel.Layer layer,
+            BufferShape input,
+            out BufferShape output,
+            out bool identity,
+            out string reason)
+        {
+            output = default;
+            identity = false;
+            reason = null;
+            var repeats = layer.GetInts(-23302, null) ?? layer.GetInts(2, null) ?? layer.GetInts(-23330, null) ?? layer.GetInts(30, null);
+            var repeatW = 1;
+            var repeatH = 1;
+            var repeatD = 1;
+            var repeatC = 1;
+            var repeatCount = repeats?.Length ?? 0;
+            if (repeatCount == 0)
+            {
+                var axis = layer.GetInt(0, 0);
+                var tiles = layer.GetInt(1, 1);
+                if (tiles <= 0)
+                {
+                    reason = "Tile count must be static and positive.";
+                    return false;
+                }
+                if (axis < 0)
+                    axis += input.dims;
+                if (axis < 0 || axis >= input.dims)
+                {
+                    reason = "Tile axis is outside the descriptor-backed input rank.";
+                    return false;
+                }
+                if (input.dims == 1) repeatW = tiles;
+                else if (input.dims == 2) { if (axis == 0) repeatH = tiles; else repeatW = tiles; }
+                else if (input.dims == 3) { if (axis == 0) repeatC = tiles; else if (axis == 1) repeatH = tiles; else repeatW = tiles; }
+                else { if (axis == 0) repeatC = tiles; else if (axis == 1) repeatD = tiles; else if (axis == 2) repeatH = tiles; else repeatW = tiles; }
+            }
+            else if (repeatCount <= 4 && repeats.All(value => value > 0))
+            {
+                if (repeatCount == 1) repeatW = repeats[0];
+                else if (repeatCount == 2) { repeatH = repeats[0]; repeatW = repeats[1]; }
+                else if (repeatCount == 3 && input.dims == 4) { repeatD = repeats[0]; repeatH = repeats[1]; repeatW = repeats[2]; }
+                else if (repeatCount == 3) { repeatC = repeats[0]; repeatH = repeats[1]; repeatW = repeats[2]; }
+                else { repeatC = repeats[0]; repeatD = repeats[1]; repeatH = repeats[2]; repeatW = repeats[3]; }
+            }
+            else
+            {
+                reason = "Tile repeats must be static positive metadata with rank one through four.";
+                return false;
+            }
+
+            var dims = Mathf.Max(input.dims, repeatCount);
+            output = dims == 1
+                ? new BufferShape(1, input.w * repeatW, 1, 1, 1)
+                : dims == 2
+                    ? new BufferShape(2, input.w * repeatW, input.h * repeatH, 1, 1)
+                    : dims == 3
+                        ? new BufferShape(3, input.w * repeatW, input.h * repeatH, 1, input.c * repeatC)
+                        : new BufferShape(4, input.w * repeatW, input.h * repeatH, input.d * repeatD, input.c * repeatC);
+            identity = repeatW == 1 && repeatH == 1 && repeatD == 1 && repeatC == 1 && StrictPlanShapesEqual(input, output);
+            return true;
+        }
+
         private static bool HasStrictPack4LinearMatStorage(
             NcnnTexturePlanTensorDescriptor descriptor,
             BufferShape logicalShape)
@@ -2546,8 +2836,16 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node(reason);
             if (layer?.topNames == null || layer.topNames.Length == 0)
                 return RejectStrictCommandBufferPack4Node("Slice has no output blobs.");
-            if (input.dims < 3 || input.dims > 4)
-                return RejectStrictCommandBufferPack4Node("The verified Slice profile requires a Pack4 3D or 4D texture.");
+            if (input.dims < 1 || input.dims > 4)
+                return RejectStrictCommandBufferPack4Node("Slice supports only descriptor-backed rank-one through rank-four tensors.");
+            var linearMatInput = input.dims <= 2 && HasStrictLinearMatStorage(inputs[0], input);
+            var pack4LinearInput = input.dims == 2 && HasStrictPack4LinearMatStorage(inputs[0], input);
+            if (input.dims <= 2 && !linearMatInput && !pack4LinearInput)
+                return RejectStrictCommandBufferPack4Node("Rank-one/rank-two Slice requires verified LinearMat or Pack4-Linear descriptor storage.");
+            if (input.dims >= 3 && input.dims != 4 && !IsStrictAttentionMatMulInput(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("Rank-three Slice requires exact Pack4 logical/storage descriptor mapping.");
+            if (input.dims == 4 && !HasStrictCdhwPack4Storage(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("Rank-four Slice requires exact CDHW Pack4 descriptor storage.");
 
             var ncnnAxis = layer.GetInt(1, 0);
             if (ncnnAxis < 0)
@@ -2563,6 +2861,7 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("Slice requires static split sizes or indices.");
 
             var outputs = new NcnnTexturePlanTensorDescriptor[layer.topNames.Length];
+            var identity = layer.topNames.Length == 1;
             var begin = 0;
             for (var index = 0; index < layer.topNames.Length; index++)
             {
@@ -2575,12 +2874,18 @@ namespace NcnnCompute
                 var outputD = axis == 2 && input.dims == 4 ? size : input.d;
                 var outputC = (axis == 2 && input.dims != 4) || axis == 3 ? size : input.c;
                 var output = new BufferShape(input.dims, outputW, outputH, outputD, outputC);
+                identity &= begin == 0 && StrictPlanShapesEqual(input, output);
+                var storage = input.dims <= 2
+                    ? linearMatInput
+                        ? ResolveLinearMatStorageShape(output)
+                        : ResolvePack4LinearMatStorageShape(output)
+                    : output;
 
                 outputs[index] = new NcnnTexturePlanTensorDescriptor
                 {
                     blob = layer.topNames[index],
                     logicalShape = new[] { output.dims, output.w, output.h, output.d, output.c },
-                    storageShape = new[] { output.dims, output.w, output.h, output.d, output.c },
+                    storageShape = new[] { storage.dims, storage.w, storage.h, storage.d, storage.c },
                     layout = request.targetLayout,
                     dtype = request.targetDtype,
                     aliasGroup = "computed:" + (layer.name ?? layer.typeName ?? "slice") + ":" + index,
@@ -2592,12 +2897,19 @@ namespace NcnnCompute
             if (begin != axisSize)
                 return RejectStrictCommandBufferPack4Node("Slice sizes do not cover the descriptor-backed input axis.");
 
+            if (identity)
+                return AcceptStrictCommandBufferPack4Alias(layer, inputs[0], input, request);
+
             return new NcnnTextureExecutionPlanNodeVerification
             {
                 accepted = true,
-                executionPath = input.dims == 4
-                    ? "command-buffer-pack4:slice-pack4-cdhw"
-                    : "command-buffer-pack4:slice-pack4",
+                executionPath = input.dims <= 2
+                    ? linearMatInput
+                        ? "command-buffer-pack4:slice-linear-mat"
+                        : "command-buffer-pack4:slice-pack4-linear"
+                    : input.dims == 4
+                        ? "command-buffer-pack4:slice-pack4-cdhw"
+                        : "command-buffer-pack4:slice-pack4",
                 outputs = outputs
             };
         }

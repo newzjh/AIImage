@@ -140,6 +140,96 @@ void NcnnCropPack4_Impl(uint3 id)
     _CropPack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
+int NcnnTileLinearIndex(int x, int y, int z, int c, int w, int h, int d)
+{
+    return (((c * max(1, d) + z) * max(1, h) + y) * max(1, w)) + x;
+}
+
+float NcnnTileReadPack4Scalar(int x, int y, int z, int c)
+{
+    float value = 0.0;
+    if (_TileDims <= 1)
+        value = NcnnReadPack4Channel(_TexIn0Arr, x, 0, 0);
+    else if (_TileDims == 2)
+        value = NcnnReadPack4Channel(_TexIn0Arr, x, y, 0);
+    else if (_TileDims == 3)
+        value = NcnnReadPack4Channel(_TexIn0Arr, x, y, c);
+    else
+        value = NcnnReadPack4ChannelCDHW(_TexIn0Arr, x, y, z, c, _TileInC);
+    return value;
+}
+
+void NcnnTilePack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _TexOut0Arr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int outSlice = (int)id.z;
+    int outPackCount = max(1, (_TileOutC + 3) / 4);
+    int outZ = _TileOutDims == 4 ? outSlice / outPackCount : 0;
+    int outPack = _TileOutDims == 4 ? outSlice - outZ * outPackCount : outSlice;
+    if (outZ >= max(1, _TileOutD))
+    {
+        _TexOut0Arr[int3(outX, outY, outSlice)] = 0.0;
+        return;
+    }
+
+    int ix = outX % max(1, _TileInW);
+    int iy = outY % max(1, _TileInH);
+    int iz = outZ % max(1, _TileInD);
+    float4 o = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int oc = outPack * 4 + lane;
+        if (oc >= _TileOutC)
+            continue;
+
+        int ic = oc % max(1, _TileInC);
+        NcnnWriteLane(o, lane, NcnnTileReadPack4Scalar(ix, iy, iz, ic));
+    }
+
+    _TexOut0Arr[int3(outX, outY, outSlice)] = o;
+}
+
+void NcnnTileLinearMat_Impl(uint3 id)
+{
+    uint sw, sh;
+    _LinearOut0.GetDimensions(sw, sh);
+    if (id.x >= sw || id.y >= sh)
+        return;
+
+    int outStorageW = max(1, _TileOutStorageW);
+    int outStorageH = max(1, _TileOutStorageH);
+    int outLinear = (int)id.y * outStorageW + (int)id.x;
+    int outTotal = max(1, _TileOutW) * max(1, _TileOutH) * max(1, _TileOutD) * max(1, _TileOutC);
+    if (outLinear >= outTotal || (int)id.y >= outStorageH)
+        return;
+
+    int outX = outLinear % max(1, _TileOutW);
+    int rem = outLinear / max(1, _TileOutW);
+    int outY = rem % max(1, _TileOutH);
+    rem /= max(1, _TileOutH);
+    int outZ = rem % max(1, _TileOutD);
+    int outC = rem / max(1, _TileOutD);
+
+    int ix = outX % max(1, _TileInW);
+    int iy = outY % max(1, _TileInH);
+    int iz = outZ % max(1, _TileInD);
+    int ic = outC % max(1, _TileInC);
+
+    int inLinear = NcnnTileLinearIndex(ix, iy, iz, ic, _TileInW, _TileInH, _TileInD);
+    int inStorageW = max(1, _TileInStorageW);
+    int inX = inLinear % inStorageW;
+    int inY = inLinear / inStorageW;
+    _LinearOut0[int2((int)id.x, (int)id.y)] = _LinearIn0[int2(inX, inY)];
+}
+
 void NcnnSlicePack4_Impl(uint3 id)
 {
     uint w, h, d;

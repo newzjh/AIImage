@@ -161,7 +161,8 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var sourceContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = sourceContract.LogicalShape;
             var orderType = layer.GetInt(0, 0);
             if (TryExecuteCommandBufferPack4Linear2DTranspose(owner, layer, src, srcShape, orderType, blobs, shapes, cmd))
             {
@@ -180,9 +181,9 @@ namespace NcnnCompute
 
                 if (orderType == 0)
                 {
-                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
-                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
-                    shapes[layer.topNames[0]] = srcShape;
+                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, sourceContract.StorageShape);
+                    if (shapes != null)
+                        shapes[layer.topNames[0]] = srcShape;
                 }
                 else
                 {
@@ -223,32 +224,21 @@ namespace NcnnCompute
                         var storageShape = srcShape.dims == 2
                             ? new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
                             : outShape;
-                        blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-                        {
-                            texture = outArr,
-                            width = outShape.w,
-                            height = outShape.h,
-                            packs = outPacks,
-                            refs = 1,
-                            owned = true,
-                            hasLogicalShape = true,
-                            logicalShape = outShape,
-                            hasStorageShape = true,
-                            storageShape = storageShape
-                        };
+                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, outShape, storageShape, owned: true, blobName: layer.topNames[0]);
                     }
-                    shapes[layer.topNames[0]] = outShape;
+                    if (shapes != null)
+                        shapes[layer.topNames[0]] = outShape;
                 }
             }
             else
             {
-                owner.DebugLog?.Invoke(
-                    "[CmdPlaceholder][Permute]"
+                throw new InvalidOperationException(
+                    "Permute command-buffer Pack4 profile is unsupported; placeholder publication is prohibited"
                     + " | layer=" + layer.name
-                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | logical=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | storage=d" + sourceContract.StorageShape.dims + ":" + sourceContract.StorageShape.w + "x" + sourceContract.StorageShape.h + "x" + sourceContract.StorageShape.d + "x" + sourceContract.StorageShape.c
+                    + " | layout=" + sourceContract.LayoutKind
                     + " | orderType=" + orderType);
-                NcnnRepro.ResolveCmdTextureLayout(srcShape, out var width, out var height, out var packs);
-                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, srcShape);
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

@@ -153,11 +153,16 @@ namespace NcnnCompute
             "Scatter", "ScatterElements", "ScatterND"
         };
 
+        private static readonly HashSet<string> Pack4LayoutOperators = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Reshape", "Flatten", "Squeeze", "ExpandDims", "Permute", "Slice", "Tile", "Packing", "Cast"
+        };
+
         private static readonly HashSet<string> TextureAndCommandBufferOperators = new HashSet<string>(StringComparer.Ordinal)
         {
             "AbsVal", "AtenTo", "BatchNorm", "BinaryOp", "Cast", "Clip", "Concat", "Convolution",
             "Convolution1D", "Convolution3D", "ConvolutionDepthWise", "Crop", "Deconvolution",
-            "Deconvolution3D", "DeconvolutionDepthWise", "Eltwise", "ExpandDims", "Flatten", "GELU",
+            "Deconvolution3D", "DeconvolutionDepthWise", "Eltwise", "ExpandDims", "Flatten", "GELU", "Squeeze",
             "Gemm", "GroupNorm", "InnerProduct", "Interp", "LayerNorm", "MatMul", "Packing", "Padding",
             "Permute", "PixelShuffle", "Pooling", "Pooling3D", "PReLU", "Quantize", "Dequantize",
             "Requantize", "Reduction", "ReLU", "Reorg", "Reshape", "Scale", "Sigmoid", "Slice", "Softmax",
@@ -283,7 +288,7 @@ namespace NcnnCompute
                 importFormats = isSentis ? new[] { "ncnn", "Sentis/ONNX" } : new[] { "ncnn" },
                 importSupported = true,
                 // The current runtime resolves most shapes while executing. There is no complete static shape engine yet.
-                shapeInference = isAliasOnly,
+                shapeInference = isAliasOnly || Pack4LayoutOperators.Contains(operatorName),
                 renderTexture = hasTexturePath && !isUnsupported,
                 commandBuffer = hasTexturePath && !isUnsupported,
                 fp32 = hasTexturePath && !isUnsupported,
@@ -378,14 +383,107 @@ namespace NcnnCompute
                 return "Partial until the loaded node proves max/average global, adaptive, or explicit/full/SAME W/H/D pooling with TensorDescriptor CDHW Pack4 storage. Strict planning rejects invalid padding and all unlisted modes.";
             if (operatorName == "Interp")
                 return "2D paths remain partial. The CDHW runtime profile is static nearest (1) or trilinear (2) resize with align_corners explicitly recorded, TensorDescriptor Pack4 storage, and no dynamic size expression; strict planning rejects other CDHW modes.";
+            if (Pack4LayoutOperators.Contains(operatorName))
+                return "Partial CommandBuffer Pack4 layout profile: every branch validates logicalShape, storageShape, and layout. "
+                    + "Only descriptor-proven identity/view branches alias; Permute, non-identity Slice/Tile/Packing/Cast, and storage-changing Reshape/Flatten dispatch a real texture transform. "
+                    + "Dynamic data-dependent lengths and unsupported rank/axis/dtype profiles fail strict planning. Placeholder publication is not a production path.";
+            if (operatorName == "RotaryEmbed")
+                return "RotaryEmbed has no verified CommandBuffer Pack4 production profile and remains unavailable to strict plans; it must not be reported as a production placeholder.";
             return "A texture branch may exist for selected shapes, but this entry has not passed full Pack4 CommandBuffer model validation. Strict planning rejects partial capability.";
         }
 
         private static NcnnOperatorCapabilityProfile[] ResolveProfiles(string operatorName)
         {
             const string CdhwShape = "logical [dims=4,w,h,d,c]; storage [dims=4,w,h,d,c]; Texture2DArray slices=d*ceil(c/4)";
+            const string LayoutShape = "logical [dims,w,h,d,c]; storage explicitly records LinearMat or Pack4 Texture2DArray physical mapping; descriptor alias requires unchanged storage/layout/dtype";
             switch (operatorName)
             {
+                case "Reshape":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            shapeProfile = LayoutShape,
+                            supportedParameters = new[] { "static shape metadata", "supported texture shape tensor", "equal element count", "descriptor alias only when physical mapping is unchanged" },
+                            rejectedParameters = new[] { "data-dependent output length", "element-count change", "unproven alias mapping" }
+                        }
+                    };
+                case "Flatten":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            shapeProfile = LayoutShape,
+                            supportedParameters = new[] { "rank=1..4", "descriptor alias only for already-flat matching storage", "otherwise reshape Pack4 texture kernel" },
+                            rejectedParameters = new[] { "buffer materialization", "placeholder output" }
+                        }
+                    };
+                case "Squeeze":
+                case "ExpandDims":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            shapeProfile = LayoutShape,
+                            supportedParameters = new[] { "static axes", "singleton-axis view", "rank remains within 1..4" },
+                            rejectedParameters = new[] { "missing axes", "non-singleton squeeze axis", "rank outside 1..4" }
+                        }
+                    };
+                case "Permute":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            shapeProfile = LayoutShape,
+                            supportedParameters = new[] { "rank=2..4", "order=0 descriptor alias", "non-identity Pack4/LinearMat texture transpose" },
+                            rejectedParameters = new[] { "unsupported order", "unproven storage mapping", "placeholder output" }
+                        }
+                    };
+                case "Slice":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            shapeProfile = LayoutShape,
+                            supportedParameters = new[] { "static split sizes or indices", "rank=1..4", "identity alias", "Pack4/CDHW/LinearMat texture copy" },
+                            rejectedParameters = new[] { "data-dependent split length", "invalid axis or empty output", "placeholder output" }
+                        }
+                    };
+                case "Tile":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            shapeProfile = LayoutShape,
+                            supportedParameters = new[] { "static repeats", "all repeats=1 descriptor alias", "Pack4/LinearMat texture tile" },
+                            rejectedParameters = new[] { "data-dependent repeats", "rank outside 1..4", "placeholder output" }
+                        }
+                    };
+                case "Packing":
+                case "Cast":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            shapeProfile = LayoutShape,
+                            supportedParameters = new[] { "identity descriptor alias", "non-identity Pack4 texture repack/cast" },
+                            rejectedParameters = new[] { "unsupported elempack/dtype", "buffer materialization", "placeholder output" }
+                        }
+                    };
                 case "Convolution3D":
                     return new[]
                     {

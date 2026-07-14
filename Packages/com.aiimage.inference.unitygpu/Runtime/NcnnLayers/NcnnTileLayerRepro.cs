@@ -167,13 +167,13 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var sourceContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = sourceContract.LogicalShape;
             if (!TryResolveTileSpec(layer, srcShape, out var spec))
                 throw new InvalidOperationException("Tile parameters are unsupported: " + layer.name);
             if (spec.isPassthrough)
             {
-                var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
-                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, spec.outShape, storageShape);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, spec.outShape, sourceContract.StorageShape);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = spec.outShape;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
@@ -186,7 +186,7 @@ namespace NcnnCompute
                 var outStorageShape = NcnnRepro.ResolveLinearMatStorageShape(spec.outShape);
                 var output = owner.RentTempMat(cmd, outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
                 owner.Ops.TileLinearMat(cmd, src.texture, srcShape, srcStorageShape, spec.outShape, outStorageShape, spec.repeats, output);
-                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, spec.outShape, outStorageShape, owned: true);
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, spec.outShape, outStorageShape, owned: true, blobName: layer.topNames[0]);
             }
             else
             {
@@ -204,7 +204,10 @@ namespace NcnnCompute
                     ResolveTileArrayDepth(spec.outShape),
                     NcnnRepro.ResolveTensorTextureFormat(spec.outShape.dims));
                 owner.Ops.TilePack4(cmd, src.texture, srcShape, spec.outShape, spec.repeats, output);
-                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, spec.outShape, spec.outShape, owned: true);
+                var outputStorageShape = spec.outShape.dims <= 2
+                    ? new NcnnRepro.BufferShape(3, spec.outShape.w, spec.outShape.dims == 2 ? spec.outShape.h : 1, 1, 1)
+                    : spec.outShape;
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, spec.outShape, outputStorageShape, owned: true, blobName: layer.topNames[0]);
             }
 
             if (shapes != null)

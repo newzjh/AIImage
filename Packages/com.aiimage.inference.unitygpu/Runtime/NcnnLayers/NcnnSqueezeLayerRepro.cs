@@ -68,10 +68,10 @@ namespace NcnnCompute
 
             if (hasTexture)
             {
-                var srcShape = NcnnRepro.GetTextureShape(textureShapes, srcTex, layer.bottomNames[0]);
+                var sourceContract = NcnnRepro.GetTextureContract(textureShapes, srcTex, layer.bottomNames[0]);
+                var srcShape = sourceContract.LogicalShape;
                 var outShape = NcnnRepro.ResolveSqueezeShape(srcShape, layer);
-                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
-                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(srcTex, outShape, storageShape);
+                textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(srcTex, outShape, sourceContract.StorageShape);
                 if (textureShapes != null)
                     textureShapes[layer.topNames[0]] = outShape;
             }
@@ -107,10 +107,10 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var sourceContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = sourceContract.LogicalShape;
             var outShape = NcnnRepro.ResolveSqueezeShape(srcShape, layer);
-            var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
-            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, storageShape);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, outShape, sourceContract.StorageShape);
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
