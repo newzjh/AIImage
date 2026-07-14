@@ -137,6 +137,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     public string stableDiffusionRootRelativePath = "StableDiffusion";
     public string inpaintingModelRootRelativePath = "sdinpainting";
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public bool useReferenceAssetFallback = true;
     public bool keepRawConvWeightsForTexturePath = false;
     public RenderTextureFormat tensorTextureFormat = RenderTextureFormat.ARGBHalf;
@@ -186,6 +187,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private ResolvedPaths? _resolvedPaths;
     private string _loadedModelKey;
     private string _lastDumpDir;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private float[] _alphasCumprod;
     private float _finalAlphaCumprod;
     private bool _unetDebugDumped;
@@ -1083,12 +1086,21 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        if ((_textRepro != null || _unetRepro != null || _vaeRepro != null || _vaeEncoderRepro != null)
+            && _hasAppliedPrecisionMode
+            && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] SD Inpainting recreating sessions | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         ApplyEditorLowVramGuardIfNeeded();
         _ops ??= new NcnnOps();
-        _textRepro ??= NcnnInferenceSessionFactory.Create(_ops);
-        _unetRepro ??= NcnnInferenceSessionFactory.Create(_ops);
-        _vaeRepro ??= NcnnInferenceSessionFactory.Create(_ops);
-        _vaeEncoderRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _textRepro ??= CreateSession();
+        _unetRepro ??= CreateSession();
+        _vaeRepro ??= CreateSession();
+        _vaeEncoderRepro ??= CreateSession();
+        _appliedPrecisionMode = precisionMode;
+        _hasAppliedPrecisionMode = true;
     }
 
     private void ApplyEditorLowVramGuardIfNeeded()
@@ -1343,7 +1355,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (_textRepro?.Model != null)
             return;
 
-        _textRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _textRepro ??= CreateSession();
         ApplyCommonOptions(_textRepro);
         ApplySpatialModelOptions(_textRepro);
         AttachDebugLog(_textRepro, "text_encoder");
@@ -1363,7 +1375,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
         }
 
-        _vaeEncoderRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _vaeEncoderRepro ??= CreateSession();
         ApplyCommonOptions(_vaeEncoderRepro);
         ApplySpatialModelOptions(_vaeEncoderRepro);
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
@@ -1383,7 +1395,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
         }
 
-        _unetRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _unetRepro ??= CreateSession();
         ApplyCommonOptions(_unetRepro);
         ApplySpatialModelOptions(_unetRepro);
         AttachDebugLog(_unetRepro, "unet");
@@ -1397,7 +1409,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (_vaeRepro?.Model != null)
             return;
 
-        _vaeRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _vaeRepro ??= CreateSession();
         ApplyCommonOptions(_vaeRepro);
         ApplySpatialModelOptions(_vaeRepro);
         _vaeRepro.TensorTextureFormat = decoderTensorTextureFormat;
@@ -6152,6 +6164,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 #endif
     }
 
+    private NcnnRepro CreateSession()
+    {
+        return NcnnInferenceSessionFactory.Create(_ops, "sd-inpainting", precisionMode);
+    }
+
     private void DumpVaeEncoderStopBlobDebugSafe(RenderTexture inputPack4, string stopAfterTopName, string blobName, string pathStem)
     {
         if (_vaeEncoderRepro == null
@@ -6657,6 +6674,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         _tokenizer = null;
         _loadedModelKey = null;
         _ops = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     public void ReleaseRuntimeResources()

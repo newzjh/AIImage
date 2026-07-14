@@ -153,6 +153,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public string yolo8BinRelativePath = "Yolo/yolov8n_seg.ncnn.bin";
     public string yolo11ParamRelativePath = "Yolo/yolo11n_seg.ncnn.param";
     public string yolo11BinRelativePath = "Yolo/yolo11n_seg.ncnn.bin";
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public int targetSize = 640;
     public int maxStride = 32;
     public float probThreshold = 0.25f;
@@ -187,6 +188,8 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     private NcnnOps _ops;
     private NcnnRepro _repro;
     private string _loadedModelKey;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private string _lastDumpDir;
     private string _lastSummaryText;
     private List<string> _lastLayerPathDebugLines;
@@ -507,8 +510,18 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] YOLO Seg recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         _ops ??= new NcnnOps();
-        _repro ??= NcnnInferenceSessionFactory.Create(_ops);
+        if (_repro == null)
+        {
+            _repro = NcnnInferenceSessionFactory.Create(_ops, "yolo-seg", precisionMode);
+            _appliedPrecisionMode = precisionMode;
+            _hasAppliedPrecisionMode = true;
+        }
         _imageProcessingCs ??= Resources.Load<ComputeShader>("ImageProcessing");
     }
 
@@ -642,6 +655,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         _lastDumpDir = null;
         _lastSummaryText = null;
         _lastLayerPathDebugLines = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     public void ReleaseRuntimeResources()

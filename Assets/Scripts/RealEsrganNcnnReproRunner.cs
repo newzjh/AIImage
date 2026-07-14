@@ -14,6 +14,7 @@ using UnityEngine.Rendering;
 public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 {
     public string modelName = "realesrgan-x4plus";
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public int tileSize = 128;
     public int tilePad = 10;
     public int maxInputLongSide = 2048;
@@ -32,6 +33,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     private NcnnRepro _repro;
     private bool _loaded;
     private string _loadedModelName;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private bool _useCmdThisRun;
     private string _lastLayerRuntimeProfileText;
     private readonly Dictionary<string, GpuLayerProfileStat> _gpuLayerProfileStats = new Dictionary<string, GpuLayerProfileStat>(StringComparer.Ordinal);
@@ -164,10 +167,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private void OnDestroy()
     {
-        _repro?.Release();
-        _loaded = false;
-        try { _repro?.Dispose(); } catch { }
-        _repro = null;
+        ReleaseRuntime();
     }
 
     #region debug-point C:gpu-layer-profile-helpers
@@ -1227,10 +1227,21 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] RealESRGAN recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            ReleaseRuntime();
+        }
         if (_repro == null)
         {
-            _repro = NcnnInferenceSessionFactory.Create(new NcnnOps());
+            var ops = new NcnnOps();
+            _repro = NcnnInferenceSessionFactory.Create(
+                ops,
+                string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim(),
+                precisionMode);
             _repro.OnConvComplete += OnConvCompleteHandler;
+            _appliedPrecisionMode = precisionMode;
+            _hasAppliedPrecisionMode = true;
         }
 
         _repro.ForceBufferConvolution = false;
@@ -1258,6 +1269,16 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 UnityEngine.Debug.Log(line);
             }
         };
+    }
+
+    private void ReleaseRuntime()
+    {
+        try { _repro?.Release(); } catch { }
+        try { _repro?.Dispose(); } catch { }
+        _repro = null;
+        _loaded = false;
+        _loadedModelName = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     private static int InferModelFactor(string model)

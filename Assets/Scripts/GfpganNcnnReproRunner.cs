@@ -14,6 +14,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public string paramRelativePath = "GFPGAN/models/encoder.param";
     public string binRelativePath = "GFPGAN/models/encoder.bin";
     public string styleRelativePath = "GFPGAN/models/style.bin";
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public int maxInputLongSide = 2048;
     public float faceMaskThreshold = 0.2f;
     public float faceBoxExpand = 0.35f;
@@ -73,6 +74,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     private readonly Dictionary<int, ComputeBuffer> _noiseBuf = new Dictionary<int, ComputeBuffer>();
     private NcnnOps _ops;
     private bool _loaded;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
 
     private void Awake()
     {
@@ -80,6 +83,11 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     }
 
     private void OnDestroy()
+    {
+        Release();
+    }
+
+    private void Release()
     {
         if (_styleConv != null)
         {
@@ -115,6 +123,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _repro = null;
         try { _ops?.Dispose(); } catch { }
         _ops = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     public async UniTask<GfpganResult> ProcessAsync(Texture2D src, CancellationToken ct)
@@ -911,8 +920,18 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] GFPGAN recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         _ops ??= new NcnnOps();
-        _repro ??= NcnnInferenceSessionFactory.Create(_ops);
+        if (_repro == null)
+        {
+            _repro = NcnnInferenceSessionFactory.Create(_ops, "gfpgan", precisionMode);
+            _appliedPrecisionMode = precisionMode;
+            _hasAppliedPrecisionMode = true;
+        }
         // The encoder contains standard 3x3/1x1 convolutions. Enable the existing
         // Pack4 kernels before model loading so it cannot select the legacy buffer path.
         _repro.EnableGeneralTextureConvolution = true;

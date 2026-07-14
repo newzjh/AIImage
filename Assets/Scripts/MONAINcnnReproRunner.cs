@@ -181,6 +181,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public string bundleManifestRelativePath = DefaultBundleManifestRelativePath;
     public string defaultBaselineManifestRelativePath = DefaultBaselineManifestRelativePath;
     public string defaultInputVolumePaths = DefaultVolumeInputPath;
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public string inputBlobName = DefaultInputBlobName;
     public string outputBlobName = DefaultOutputBlobName;
     public MonaiPostprocessKind defaultPostprocessKind = MonaiPostprocessKind.BratsTumorSubregions;
@@ -227,6 +228,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private NcnnOps _ops;
     private NcnnRepro _repro;
     private string _loadedModelKey;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private string _lastDumpDir;
     private string _lastSummaryText;
     private readonly List<string> _debugLines = new List<string>();
@@ -639,8 +642,18 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] MONAI recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         _ops ??= new NcnnOps();
-        _repro ??= NcnnInferenceSessionFactory.Create(_ops);
+        if (_repro == null)
+        {
+            _repro = NcnnInferenceSessionFactory.Create(_ops, "monai", precisionMode);
+            _appliedPrecisionMode = precisionMode;
+            _hasAppliedPrecisionMode = true;
+        }
     }
 
     private void ApplyReproOptions()
@@ -6984,6 +6997,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         try { _ops?.Dispose(); } catch { }
         _repro = null;
         _ops = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     private void ReportProgress(float progress01, string text)

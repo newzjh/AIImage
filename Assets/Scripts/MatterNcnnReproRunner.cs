@@ -8,6 +8,7 @@ using System.Threading;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 public struct MattingResult
 {
@@ -24,8 +25,11 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public string modelParamRelativePath = "Matting/matting.param";
     public string modelBinRelativePath = "Matting/matting.bin";
     public int refSize = 512;
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public bool preserveAspectRatioInput = false;
     public bool useArgbFloatTensor = true;
+    public bool useCommandBuffer = false;
+    public bool useAsyncComputeCommandBuffer = false;
     public bool forceBufferConvolution = false;
     public bool useTextureMaxPoolingInd = true;
     public bool disallowBufferAccess = false;
@@ -61,6 +65,8 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     private NcnnOps _ops;
     private NcnnRepro _repro;
     private bool _loaded;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private string _lastDumpDir;
     public string LastDumpDir => _lastDumpDir;
 
@@ -114,8 +120,11 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             if (resizedInput == null)
                 return Finish(new MattingResult { error = "Resize input failed" });
 
-            inputPack4 = _repro.RentTempArray(inputW, inputH, 1, RenderTextureFormat.ARGBHalf);
-            _ops.PackRgbToPack4Gfpgan(resizedInput, 0, 0, 1f, 1f, inputPack4, false);
+            if (!useCommandBuffer)
+            {
+                inputPack4 = _repro.RentTempArray(inputW, inputH, 1, RenderTextureFormat.ARGBHalf);
+                _ops.PackRgbToPack4Gfpgan(resizedInput, 0, 0, 1f, 1f, inputPack4, false);
+            }
 
             ReportProgress(0.30f, "Run matting");
             await UniTask.Yield();
@@ -132,7 +141,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _lastDumpDir = CreateDumpDir();
             }
 
-            if (enableTextureConvCompare && !forceBufferConvolution)
+            if (enableTextureConvCompare && !forceBufferConvolution && !useCommandBuffer)
             {
                 textureConvCompareLines = new List<string>();
                 _repro.DebugCompareTextureConvLayers = new HashSet<string>(debugCompareTextureConvLayers ?? Array.Empty<string>(), StringComparer.Ordinal);
@@ -148,7 +157,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _repro.DebugLog = null;
             }
 
-            if (enableMaxPoolingCompare)
+            if (enableMaxPoolingCompare && !useCommandBuffer)
             {
                 _repro.DebugCompareMaxPoolingLayers = new HashSet<string>(debugCompareMaxPoolingLayers ?? Array.Empty<string>(), StringComparer.Ordinal);
                 if (_repro.DebugLog == null)
@@ -166,8 +175,13 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _repro.DebugCompareMaxPoolingLayers = null;
             }
 
-            using (var infer = _repro.Infer(inputPack4, 1, "input", pinned))
+            if (useCommandBuffer)
             {
+                mattePack4 = await ForwardMattingWithCommandBufferAsync(resizedInput, inputW, inputH, ct);
+            }
+            else
+            {
+                using var infer = _repro.Infer(inputPack4, 1, "input", pinned);
                 if (enableDebugDump && pinned != null && pinned.Count > 0)
                 {
                     DumpPinnedBlobStats(infer, _lastDumpDir, pinned);
@@ -248,12 +262,86 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         }
     }
 
+    private UniTask<RenderTexture> ForwardMattingWithCommandBufferAsync(Texture resizedInput, int width, int height, CancellationToken ct)
+    {
+        if (resizedInput == null)
+            throw new ArgumentNullException(nameof(resizedInput));
+        if (_repro == null || _ops == null)
+            throw new InvalidOperationException("Matting CommandBuffer path is not initialized.");
+
+        ct.ThrowIfCancellationRequested();
+        using var cmd = new CommandBuffer { name = "MattingPack4" };
+        if (useAsyncComputeCommandBuffer)
+            cmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
+
+        var inputCmd = _repro.RentTempArray(cmd, width, height, 1, RenderTextureFormat.ARGBHalf);
+        ComputeTexture outputCmd = null;
+        RenderTexture output = null;
+        try
+        {
+            _ops.PackRgbToPack4Gfpgan(cmd, resizedInput, 0, 0, 1f, 1f, inputCmd, false);
+            outputCmd = _repro.ForwardPack4(
+                cmd,
+                inputCmd,
+                new NcnnRepro.BufferShape(3, width, height, 1, 3),
+                out _,
+                "input");
+            if (outputCmd == null)
+                throw new InvalidOperationException("Matting CommandBuffer path produced no output texture.");
+
+            output = outputCmd.dimension == TextureDimension.Tex2D
+                ? _repro.RentTempMat(outputCmd.width, outputCmd.height, outputCmd.format)
+                : _repro.RentTempArray(outputCmd.width, outputCmd.height, outputCmd.depth, outputCmd.format);
+            var outputDepth = outputCmd.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, outputCmd.depth);
+            for (var slice = 0; slice < outputDepth; slice++)
+                cmd.CopyTexture(outputCmd.nameID, slice, 0, output, slice, 0);
+
+            _repro.ReturnTempArray(cmd, outputCmd);
+            outputCmd = null;
+            _repro.ReturnTempArray(cmd, inputCmd);
+            inputCmd = null;
+
+            if (useAsyncComputeCommandBuffer)
+                Graphics.ExecuteCommandBufferAsync(cmd, ComputeQueueType.Default);
+            else
+                Graphics.ExecuteCommandBuffer(cmd);
+            _ops.DebugSyncGpu();
+            ct.ThrowIfCancellationRequested();
+            return UniTask.FromResult(output);
+        }
+        catch
+        {
+            if (output != null)
+            {
+                _repro.ReturnTempArray(output);
+                output = null;
+            }
+            throw;
+        }
+        finally
+        {
+            if (outputCmd != null)
+                _repro.ReturnTempArray(cmd, outputCmd);
+            if (inputCmd != null)
+                _repro.ReturnTempArray(cmd, inputCmd);
+        }
+    }
+
     private void EnsureRuntimeObjects()
     {
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] Matting recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         if (_ops == null)
             _ops = new NcnnOps();
         if (_repro == null)
-            _repro = NcnnInferenceSessionFactory.Create(_ops);
+        {
+            _repro = NcnnInferenceSessionFactory.Create(_ops, "matting.ncnn", precisionMode);
+            _appliedPrecisionMode = precisionMode;
+            _hasAppliedPrecisionMode = true;
+        }
     }
 
     private void ApplyReproOptions()
@@ -300,6 +388,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         try { _ops?.Dispose(); } catch { }
         _repro = null;
         _ops = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     private static (int width, int height) ComputeModelInputSize(int srcW, int srcH, int refSize, bool preserveAspectRatio)

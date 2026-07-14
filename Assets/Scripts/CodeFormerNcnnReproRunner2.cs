@@ -105,6 +105,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     public string encoderBinRelativePath = "CodeFormer/models/encoder.bin";
     public string generatorParamRelativePath = "CodeFormer/models/generator.param";
     public string generatorBinRelativePath = "CodeFormer/models/generator.bin";
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public int maxInputLongSide = 2048;
     public float faceMaskThreshold = 0.2f;
     public float faceBoxExpand = 0.35f;
@@ -123,6 +124,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     private bool _encoderLoaded;
     private bool _generatorLoaded;
     private bool _loaded;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private string _lastDumpDir;
     private bool _useGeneratorCommandBufferThisRun;
     private bool _useGeneratorAsyncCommandBufferThisRun;
@@ -1784,16 +1787,26 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _encoderLoaded = false;
         _generatorLoaded = false;
         _ops = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     private void EnsureRuntimeObjects()
     {
+        if ((_encoderRepro != null || _generatorRepro != null)
+            && _hasAppliedPrecisionMode
+            && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] CodeFormer recreating sessions | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         if (_ops == null)
             _ops = new NcnnOps();
         if (_encoderRepro == null)
-            _encoderRepro = NcnnInferenceSessionFactory.Create(_ops);
+            _encoderRepro = NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
         if (_generatorRepro == null)
-            _generatorRepro = NcnnInferenceSessionFactory.Create(_ops);
+            _generatorRepro = NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
+        _appliedPrecisionMode = precisionMode;
+        _hasAppliedPrecisionMode = true;
         ApplyReproOptions();
     }
 

@@ -122,6 +122,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public bool preferTexturePathForFaceDetector = true;
     public string paramRelativePath = "CodeFormer/models/yolov7-lite-e.param";
     public string binRelativePath = "CodeFormer/models/yolov7-lite-e.bin";
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public int inputSize = 640;
     public float probThreshold = 0.5f;
     public float nmsThreshold = 0.65f;
@@ -141,6 +142,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     private NcnnOps _ops;
     private NcnnRepro _repro;
     private bool _loaded;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
 
     private void Awake()
     {
@@ -149,11 +152,17 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
     private void OnDestroy()
     {
+        Release();
+    }
+
+    private void Release()
+    {
         try { _repro?.Dispose(); } catch { }
         try { _ops?.Dispose(); } catch { }
         _repro = null;
         _ops = null;
         _loaded = false;
+        _hasAppliedPrecisionMode = false;
     }
 
     public async UniTask<FaceRegionResult> GenerateAsync(Texture2D src, bool dumpDebug, CancellationToken ct)
@@ -865,10 +874,19 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] FaceRegion recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         if (_ops == null)
             _ops = new NcnnOps();
         if (_repro == null)
-            _repro = NcnnInferenceSessionFactory.Create(_ops);
+        {
+            _repro = NcnnInferenceSessionFactory.Create(_ops, "face-region", precisionMode);
+            _appliedPrecisionMode = precisionMode;
+            _hasAppliedPrecisionMode = true;
+        }
         _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;
         _repro.EnableGeneralTextureConvolution = preferTexturePathForFaceDetector || disallowBufferAccess;
         _repro.EnableConv1x1TextureConvolution = true;

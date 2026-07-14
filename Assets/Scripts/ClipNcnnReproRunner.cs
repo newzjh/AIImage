@@ -73,9 +73,15 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     public ClipModelLevel modelLevel = ClipModelLevel.S0;
     public string clipRootRelativePath = "Clip";
     public bool enableDebugDump = false;
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public bool forceFullRenderTexturePath = true;
     public bool useCommandBuffer = false;
     public bool useAsyncComputeCommandBuffer = true;
+    // Diagnostic-only parity check. Production command-buffer inference never executes
+    // the immediate path unless this switch is explicitly enabled by the batch runner.
+    public bool verifyCommandBufferParity = false;
+    [Min(0f)] public float commandBufferParityTolerance = 1e-5f;
+    public string commandBufferParityProbeBlob;
     public bool enableGeneralTextureConvolution = true;
     public bool enableAttentionMatMulPack4Specializations = true;
     public bool disallowBufferAccess = false;
@@ -111,6 +117,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     private string _lastTextEmbeddingSource;
     private ClipLabelScore[] _cachedTextScores;
     private float[][] _cachedTextEmbeddings;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private string _lastDumpDir;
     private string _lastLayerRuntimeProfileText;
     private List<string> _imageCompareLines;
@@ -179,6 +187,13 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (useCommandBuffer)
             {
                 imageEmbedding = await EncodeImageWithCommandBufferAsync(resized, targetSize, ct);
+                if (verifyCommandBufferParity)
+                {
+                    var immediateEmbedding = await EncodeImageWithImmediateTextureAsync(resized, targetSize, ct);
+                    if (!string.IsNullOrWhiteSpace(commandBufferParityProbeBlob))
+                        await VerifyCommandBufferProbeBlobParityAsync(resized, targetSize, commandBufferParityProbeBlob.Trim(), ct);
+                    VerifyCommandBufferEmbeddingParity(imageEmbedding, immediateEmbedding);
+                }
             }
             else
             {
@@ -302,15 +317,42 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        ResetRuntimeForPrecisionChange();
         _ops ??= new NcnnOps();
-        _imageRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        if (_imageRepro == null)
+        {
+            _imageRepro = NcnnInferenceSessionFactory.Create(_ops, ResolvePrecisionModelId(), precisionMode);
+            MarkPrecisionModeApplied();
+        }
     }
 
     private void EnsureTextRuntimeObjects()
     {
-        _ops ??= new NcnnOps();
-        _textRepro ??= NcnnInferenceSessionFactory.Create(_ops);
-        _projectionRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        EnsureRuntimeObjects();
+        _textRepro ??= NcnnInferenceSessionFactory.Create(_ops, ResolvePrecisionModelId(), precisionMode);
+        _projectionRepro ??= NcnnInferenceSessionFactory.Create(_ops, ResolvePrecisionModelId(), precisionMode);
+    }
+
+    private void ResetRuntimeForPrecisionChange()
+    {
+        if (!_hasAppliedPrecisionMode || _appliedPrecisionMode == precisionMode)
+            return;
+
+        UnityEngine.Debug.Log("[NcnnPrecision] CLIP recreating sessions | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+        Release();
+    }
+
+    private void MarkPrecisionModeApplied()
+    {
+        _appliedPrecisionMode = precisionMode;
+        _hasAppliedPrecisionMode = true;
+    }
+
+    private string ResolvePrecisionModelId()
+    {
+        return modelLevel == ClipModelLevel.S0
+            ? "mobileclip_s0_export"
+            : "mobileclip_" + modelLevel.ToString().ToLowerInvariant();
     }
 
     private void EnsureTokenizer(string clipRoot)
@@ -677,6 +719,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         _cachedTextScores = null;
         _loadedModelKey = null;
         _lastTextEmbeddingSource = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     private string ResolveModelKey()
@@ -1308,14 +1351,21 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         try
         {
             _ops.PackRgbToPack4(cmd, resizedInput, 0, 0, 1f, 1f, inputCmd, true);
-            outputCmd = _imageRepro.ForwardPack4(cmd, inputCmd, 1, InputBlobName);
+            outputCmd = _imageRepro.ForwardPack4(
+                cmd,
+                inputCmd,
+                new NcnnRepro.BufferShape(3, targetSize, targetSize, 1, 3),
+                out _,
+                InputBlobName);
             if (outputCmd == null)
                 throw new InvalidOperationException("CLIP command-buffer image encoder produced no output texture.");
 
             outputReadbackRt = outputCmd.dimension == TextureDimension.Tex2D
                 ? _imageRepro.RentTempMat(outputCmd.width, outputCmd.height, outputCmd.format)
                 : _imageRepro.RentTempArray(outputCmd.width, outputCmd.height, outputCmd.depth, outputCmd.format);
-            cmd.CopyTexture(outputCmd.nameID, 0, 0, outputReadbackRt, 0, 0);
+            var outputDepth = outputCmd.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, outputCmd.depth);
+            for (var slice = 0; slice < outputDepth; slice++)
+                cmd.CopyTexture(outputCmd.nameID, slice, 0, outputReadbackRt, slice, 0);
 
             _imageRepro.ReturnTempArray(cmd, outputCmd);
             outputCmd = null;
@@ -1343,6 +1393,308 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 _imageRepro?.ReturnTempArray(cmd, inputCmd);
             if (outputReadbackRt != null)
                 _imageRepro?.ReturnTempArray(outputReadbackRt);
+        }
+    }
+
+    private async UniTask<float[]> EncodeImageWithImmediateTextureAsync(Texture resizedInput, int targetSize, CancellationToken ct)
+    {
+        var inputPack4 = _imageRepro.RentTempArray(targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
+        try
+        {
+            _ops.PackRgbToPack4(resizedInput, 0, 0, 1f, 1f, inputPack4, true);
+            using var infer = _imageRepro.Infer(inputPack4, 1, InputBlobName);
+            if (ShouldUseTextureReadbackForImageOutput(infer))
+                _imageRepro?.Ops?.DebugSyncGpu();
+            return await ReadImageEmbeddingAsync(infer, ct);
+        }
+        finally
+        {
+            _imageRepro?.ReturnTempArray(inputPack4);
+        }
+    }
+
+    private void VerifyCommandBufferEmbeddingParity(float[] commandBufferEmbedding, float[] immediateEmbedding)
+    {
+        if (commandBufferEmbedding == null || immediateEmbedding == null
+            || commandBufferEmbedding.Length != immediateEmbedding.Length)
+        {
+            throw new InvalidOperationException("CLIP command-buffer parity check received incompatible embedding lengths.");
+        }
+
+        double sumAbs = 0d;
+        var maxAbs = 0f;
+        for (var i = 0; i < commandBufferEmbedding.Length; i++)
+        {
+            var abs = Mathf.Abs(commandBufferEmbedding[i] - immediateEmbedding[i]);
+            sumAbs += abs;
+            maxAbs = Mathf.Max(maxAbs, abs);
+        }
+
+        var meanAbs = commandBufferEmbedding.Length > 0
+            ? (float)(sumAbs / commandBufferEmbedding.Length)
+            : 0f;
+        UnityEngine.Debug.Log("[CLIP] command-buffer parity | embedding_mae="
+            + meanAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+            + " | embedding_max_abs=" + maxAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+            + " | tolerance=" + commandBufferParityTolerance.ToString("0.00000000", CultureInfo.InvariantCulture));
+
+        if (maxAbs > commandBufferParityTolerance)
+        {
+            throw new InvalidOperationException("CLIP command-buffer embedding differs from Pack4 RT"
+                + " | mae=" + meanAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+                + " | max_abs=" + maxAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+                + " | tolerance=" + commandBufferParityTolerance.ToString("0.00000000", CultureInfo.InvariantCulture));
+        }
+    }
+
+    private async UniTask VerifyCommandBufferProbeBlobParityAsync(
+        Texture resizedInput,
+        int targetSize,
+        string probeBlob,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(probeBlob))
+            return;
+
+        RenderTexture immediateInput = null;
+        ComputeTexture commandInput = null;
+        ComputeTexture commandOutput = null;
+        RenderTexture commandReadback = null;
+        CommandBuffer commandBuffer = null;
+        try
+        {
+            immediateInput = _imageRepro.RentTempArray(targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
+            _ops.PackRgbToPack4(resizedInput, 0, 0, 1f, 1f, immediateInput, true);
+            using (var infer = _imageRepro.InferWithMultiInputs(
+                new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { [InputBlobName] = immediateInput },
+                null,
+                null,
+                new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                {
+                    [InputBlobName] = new NcnnRepro.BufferShape(3, targetSize, targetSize, 1, 3)
+                },
+                probeBlob))
+            {
+                _imageRepro.Ops.DebugSyncGpu();
+                if (!infer.TryGetExistingTextureData(probeBlob, out var immediateValues) || immediateValues == null)
+                    throw new InvalidOperationException("CLIP Pack4 RT probe output is missing: " + probeBlob);
+
+                commandBuffer = new CommandBuffer { name = "ClipParityProbe_" + probeBlob };
+                commandInput = _imageRepro.RentTempArray(commandBuffer, targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
+                _ops.PackRgbToPack4(commandBuffer, resizedInput, 0, 0, 1f, 1f, commandInput, true);
+                commandOutput = _imageRepro.ForwardPack4(
+                    commandBuffer,
+                    commandInput,
+                    new NcnnRepro.BufferShape(3, targetSize, targetSize, 1, 3),
+                    out var commandShape,
+                    InputBlobName,
+                    null,
+                    probeBlob);
+                if (commandOutput == null)
+                    throw new InvalidOperationException("CLIP command-buffer probe output is missing: " + probeBlob);
+
+                commandReadback = commandOutput.dimension == TextureDimension.Tex2D
+                    ? _imageRepro.RentTempMat(commandOutput.width, commandOutput.height, commandOutput.format)
+                    : _imageRepro.RentTempArray(commandOutput.width, commandOutput.height, commandOutput.depth, commandOutput.format);
+                var depth = commandOutput.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, commandOutput.depth);
+                for (var slice = 0; slice < depth; slice++)
+                    commandBuffer.CopyTexture(commandOutput.nameID, slice, 0, commandReadback, slice, 0);
+
+                _imageRepro.ReturnTempArray(commandBuffer, commandOutput);
+                commandOutput = null;
+                _imageRepro.ReturnTempArray(commandBuffer, commandInput);
+                commandInput = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+                _imageRepro.Ops.DebugSyncGpu();
+                var commandValues = ReadCommandBufferProbeValues(commandReadback, commandShape, ct);
+                VerifyCommandBufferProbeValues(probeBlob, immediateValues, commandValues);
+            }
+        }
+        finally
+        {
+            if (commandOutput != null)
+                _imageRepro?.ReturnTempArray(commandBuffer, commandOutput);
+            if (commandInput != null)
+                _imageRepro?.ReturnTempArray(commandBuffer, commandInput);
+            if (commandReadback != null)
+                _imageRepro?.ReturnTempArray(commandReadback);
+            if (immediateInput != null)
+                _imageRepro?.ReturnTempArray(immediateInput);
+            commandBuffer?.Release();
+        }
+    }
+
+    private void VerifyCommandBufferProbeValues(string probeBlob, float[] immediateValues, float[] commandValues)
+    {
+        if (immediateValues == null || commandValues == null || immediateValues.Length != commandValues.Length)
+        {
+            throw new InvalidOperationException("CLIP command-buffer probe has incompatible logical tensor storage"
+                + " | blob=" + probeBlob
+                + " | pack4_rt_values=" + (immediateValues == null ? 0 : immediateValues.Length)
+                + " | command_buffer_values=" + (commandValues == null ? 0 : commandValues.Length));
+        }
+
+        double sumAbs = 0d;
+        var maxAbs = 0f;
+        var firstMismatch = -1;
+        for (var i = 0; i < immediateValues.Length; i++)
+        {
+            var abs = Mathf.Abs(immediateValues[i] - commandValues[i]);
+            sumAbs += abs;
+            maxAbs = Mathf.Max(maxAbs, abs);
+            if (firstMismatch < 0 && abs > commandBufferParityTolerance)
+                firstMismatch = i;
+        }
+
+        var meanAbs = immediateValues.Length > 0 ? (float)(sumAbs / immediateValues.Length) : 0f;
+        UnityEngine.Debug.Log("[CLIP] command-buffer probe parity | blob=" + probeBlob
+            + " | values=" + immediateValues.Length
+            + " | mae=" + meanAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+            + " | max_abs=" + maxAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+            + " | first_mismatch=" + firstMismatch
+            + (firstMismatch >= 0
+                ? " | pack4_rt=" + immediateValues[firstMismatch].ToString("0.00000000", CultureInfo.InvariantCulture)
+                    + " | command_buffer=" + commandValues[firstMismatch].ToString("0.00000000", CultureInfo.InvariantCulture)
+                : string.Empty));
+        if (maxAbs > commandBufferParityTolerance)
+        {
+            throw new InvalidOperationException("CLIP command-buffer probe differs from Pack4 RT"
+                + " | blob=" + probeBlob
+                + " | mae=" + meanAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+                + " | max_abs=" + maxAbs.ToString("0.00000000", CultureInfo.InvariantCulture)
+                + " | tolerance=" + commandBufferParityTolerance.ToString("0.00000000", CultureInfo.InvariantCulture));
+        }
+    }
+
+    private static float[] ReadCommandBufferProbeValues(RenderTexture texture, NcnnRepro.BufferShape logicalShape, CancellationToken ct)
+    {
+        if (texture == null)
+            return null;
+
+        var physicalValues = ReadTexturePhysicalValues(texture, ct);
+        if (physicalValues == null)
+            return null;
+
+        var count = checked(Mathf.Max(1, logicalShape.w)
+            * Mathf.Max(1, logicalShape.h)
+            * Mathf.Max(1, logicalShape.d)
+            * Mathf.Max(1, logicalShape.c));
+        var values = new float[count];
+        var componentCount = texture.format == RenderTextureFormat.RFloat || texture.format == RenderTextureFormat.RHalf ? 1 : 4;
+        var width = Mathf.Max(1, texture.width);
+        var height = Mathf.Max(1, texture.height);
+        var depth = texture.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, texture.volumeDepth);
+        var index = 0;
+
+        for (var c = 0; c < Mathf.Max(1, logicalShape.c); c++)
+        {
+            var pack = c >> 2;
+            var lane = c & 3;
+            for (var z = 0; z < Mathf.Max(1, logicalShape.d); z++)
+            {
+                for (var y = 0; y < Mathf.Max(1, logicalShape.h); y++)
+                {
+                    for (var x = 0; x < Mathf.Max(1, logicalShape.w); x++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        int physicalX;
+                        int physicalY;
+                        int physicalSlice;
+                        int physicalLane;
+                        if (logicalShape.dims <= 2 && texture.dimension != TextureDimension.Tex2D && width == Mathf.CeilToInt(logicalShape.w / 4f))
+                        {
+                            physicalX = x >> 2;
+                            physicalY = y;
+                            physicalSlice = 0;
+                            physicalLane = x & 3;
+                        }
+                        else if (logicalShape.dims <= 2)
+                        {
+                            physicalX = x;
+                            physicalY = y;
+                            physicalSlice = 0;
+                            physicalLane = 0;
+                        }
+                        else
+                        {
+                            physicalX = x;
+                            physicalY = y;
+                            physicalSlice = logicalShape.dims >= 4
+                                ? z * Mathf.CeilToInt(logicalShape.c / 4f) + pack
+                                : pack;
+                            physicalLane = lane;
+                        }
+
+                        if (physicalX < 0 || physicalX >= width
+                            || physicalY < 0 || physicalY >= height
+                            || physicalSlice < 0 || physicalSlice >= depth)
+                        {
+                            throw new InvalidOperationException("CLIP command-buffer probe logical index exceeds physical storage"
+                                + " | logical=d" + logicalShape.dims + ":" + logicalShape.w + "x" + logicalShape.h + "x" + logicalShape.d + "x" + logicalShape.c
+                                + " | physical=" + width + "x" + height + "x" + depth
+                                + " | x=" + x + " | y=" + y + " | z=" + z + " | c=" + c);
+                        }
+
+                        var physicalIndex = (((physicalSlice * height + physicalY) * width + physicalX) * componentCount) + physicalLane;
+                        values[index++] = physicalValues[physicalIndex];
+                    }
+                }
+            }
+        }
+
+        return values;
+    }
+
+    private static float[] ReadTexturePhysicalValues(RenderTexture texture, CancellationToken ct)
+    {
+        if (texture == null)
+            return null;
+
+        var componentCount = texture.format == RenderTextureFormat.RFloat || texture.format == RenderTextureFormat.RHalf ? 1 : 4;
+        var readbackFormat = texture.format switch
+        {
+            RenderTextureFormat.RFloat => TextureFormat.RFloat,
+            RenderTextureFormat.RHalf => TextureFormat.RHalf,
+            RenderTextureFormat.ARGBFloat => TextureFormat.RGBAFloat,
+            _ => TextureFormat.RGBAHalf
+        };
+        var sliceCount = texture.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, texture.volumeDepth);
+        var values = new float[texture.width * texture.height * sliceCount * componentCount];
+        var previousActive = RenderTexture.active;
+        Texture2D readback = null;
+        try
+        {
+            readback = new Texture2D(texture.width, texture.height, readbackFormat, false, true);
+            var offset = 0;
+            for (var slice = 0; slice < sliceCount; slice++)
+            {
+                ct.ThrowIfCancellationRequested();
+                Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, slice);
+                readback.ReadPixels(new Rect(0, 0, texture.width, texture.height), 0, 0, false);
+                readback.Apply(false, false);
+
+                if (readbackFormat == TextureFormat.RFloat || readbackFormat == TextureFormat.RGBAFloat)
+                {
+                    var raw = readback.GetRawTextureData<float>();
+                    for (var i = 0; i < raw.Length; i++)
+                        values[offset + i] = raw[i];
+                    offset += raw.Length;
+                }
+                else
+                {
+                    var raw = readback.GetRawTextureData<ushort>();
+                    for (var i = 0; i < raw.Length; i++)
+                        values[offset + i] = HalfBitsToFloat(raw[i]);
+                    offset += raw.Length;
+                }
+            }
+            return values;
+        }
+        finally
+        {
+            RenderTexture.active = previousActive;
+            if (readback != null)
+                UnityEngine.Object.DestroyImmediate(readback);
         }
     }
 

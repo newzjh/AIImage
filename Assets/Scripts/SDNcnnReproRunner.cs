@@ -336,6 +336,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     }
 
     public string stableDiffusionRootRelativePath = "StableDiffusion";
+    public NcnnPrecisionMode precisionMode = NcnnPrecisionMode.Auto;
     public bool useReferenceAssetFallback = true;
     public bool preferOptimizedParams = true;
     public bool deterministicAncestralNoise = true;
@@ -371,6 +372,8 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     private string _loadedClipKey;
     private string _loadedSpatialKey;
     private string _lastDumpDir;
+    private bool _hasAppliedPrecisionMode;
+    private NcnnPrecisionMode _appliedPrecisionMode;
     private bool _clipDebugDumped;
     private bool _unetDebugDumped;
     private bool _unetUncondDebugDumped;
@@ -980,7 +983,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         {
             UnityEngine.Debug.Log("[SD] Load CLIP | param=" + paths.clipParamPath + " | bin=" + paths.clipBinPath);
             _clipRepro?.Dispose();
-            _clipRepro = NcnnInferenceSessionFactory.Create(_ops);
+            _clipRepro = CreateSession();
             ApplyCommonOptions(_clipRepro);
             _clipDebugDumped = false;
             var clipParamText = File.ReadAllText(paths.clipParamPath);
@@ -1005,9 +1008,9 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         _unetRepro?.Dispose();
         _decoderRepro?.Dispose();
         _encoderRepro?.Dispose();
-        _unetRepro = NcnnInferenceSessionFactory.Create(_ops);
-        _decoderRepro = NcnnInferenceSessionFactory.Create(_ops);
-        _encoderRepro = needEncoder ? NcnnInferenceSessionFactory.Create(_ops) : null;
+        _unetRepro = CreateSession();
+        _decoderRepro = CreateSession();
+        _encoderRepro = needEncoder ? CreateSession() : null;
         _unetDebugDumped = false;
         _unetUncondDebugDumped = false;
         ApplyCommonOptions(_unetRepro);
@@ -1776,10 +1779,24 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
+        if ((_clipRepro != null || _unetRepro != null || _decoderRepro != null || _encoderRepro != null)
+            && _hasAppliedPrecisionMode
+            && _appliedPrecisionMode != precisionMode)
+        {
+            UnityEngine.Debug.Log("[NcnnPrecision] Stable Diffusion recreating sessions | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            Release();
+        }
         _ops ??= new NcnnOps();
-        _clipRepro ??= NcnnInferenceSessionFactory.Create(_ops);
-        _unetRepro ??= NcnnInferenceSessionFactory.Create(_ops);
-        _decoderRepro ??= NcnnInferenceSessionFactory.Create(_ops);
+        _clipRepro ??= CreateSession();
+        _unetRepro ??= CreateSession();
+        _decoderRepro ??= CreateSession();
+        _appliedPrecisionMode = precisionMode;
+        _hasAppliedPrecisionMode = true;
+    }
+
+    private NcnnRepro CreateSession()
+    {
+        return NcnnInferenceSessionFactory.Create(_ops, "stable-diffusion", precisionMode);
     }
 
     private void ApplyCommonOptions(NcnnRepro repro)
@@ -1857,6 +1874,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         _logSigmas = null;
         _resolvedPaths = null;
         _ops = null;
+        _hasAppliedPrecisionMode = false;
     }
 
     private ResolvedPaths ResolvePaths()
