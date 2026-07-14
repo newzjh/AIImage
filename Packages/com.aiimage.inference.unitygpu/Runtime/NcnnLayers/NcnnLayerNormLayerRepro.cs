@@ -433,7 +433,8 @@ namespace NcnnCompute
                 + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
                 + " | packs=" + (src != null ? src.packs.ToString(CultureInfo.InvariantCulture) : "null")
                 + " | affine=" + (lp != null && lp.affine ? "1" : "0")
-                + " | affineSize=" + (lp != null ? lp.affineSize.ToString(CultureInfo.InvariantCulture) : "null");
+                + " | affineSize=" + (lp != null ? lp.affineSize.ToString(CultureInfo.InvariantCulture) : "null")
+                + " | rejectedFallback=placeholder-or-buffer-materialization";
         }
 
         private static bool CanUsePack4WidthPath(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, NcnnRepro.LayerNormPack lp)

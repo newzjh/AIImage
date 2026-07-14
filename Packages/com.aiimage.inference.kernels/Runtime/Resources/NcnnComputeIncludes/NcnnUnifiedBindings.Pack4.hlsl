@@ -111,6 +111,7 @@ RWTexture2D<float> _LinearOut1;
 #define _SdpaQArr _TexIn0Arr
 #define _SdpaKArr _TexIn1Arr
 #define _SdpaVArr _TexIn2Arr
+#define _SdpaMaskArr _TexIn3Arr
 #define _SdpaOutArr _TexOut0Arr
 #define _GnTexInArr _TexIn0Arr
 #define _GnTexOutArr _TexOut0Arr

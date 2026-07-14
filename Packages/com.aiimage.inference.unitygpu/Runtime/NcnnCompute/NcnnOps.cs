@@ -3209,7 +3209,7 @@ namespace NcnnCompute
             Dispatch3D(_kSoftmaxChannelPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void SoftmaxPack4Cdhw(RenderTexture input, int w, int h, int d, int c, RenderTexture output)
+        public void SoftmaxPack4Cdhw(RenderTexture input, int w, int h, int d, int c, RenderTexture output, int axis = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -3217,12 +3217,13 @@ namespace NcnnCompute
             _cs.SetInt("_SoftmaxPack4CDHWH", h);
             _cs.SetInt("_SoftmaxPack4CDHWD", d);
             _cs.SetInt("_SoftmaxPack4CDHWC", c);
+            _cs.SetInt("_SoftmaxAxis", axis);
             _cs.SetTexture(_kSoftmaxPack4Cdhw, "_TexIn0Arr", input);
             _cs.SetTexture(_kSoftmaxPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kSoftmaxPack4Cdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(c / 4f))), 8, 8);
         }
 
-        public void SoftmaxPack4Cdhw(CommandBuffer cmd, ComputeTexture input, int w, int h, int d, int c, ComputeTexture output)
+        public void SoftmaxPack4Cdhw(CommandBuffer cmd, ComputeTexture input, int w, int h, int d, int c, ComputeTexture output, int axis = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -3231,29 +3232,32 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWH", h);
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWD", d);
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWC", c);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxAxis", axis);
             cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kSoftmaxPack4Cdhw, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, d * Mathf.CeilToInt(c / 4f))), 8, 8);
         }
 
-        public void SoftmaxLinearMat2D(RenderTexture input, int w, int h, RenderTexture output)
+        public void SoftmaxLinearMat2D(RenderTexture input, int w, int h, RenderTexture output, int axis = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetInt("_SoftmaxPack4CDHWW", w);
             _cs.SetInt("_SoftmaxPack4CDHWH", h);
+            _cs.SetInt("_SoftmaxAxis", axis);
             _cs.SetTexture(_kSoftmaxLinearMat2D, "_LinearIn0", input);
             _cs.SetTexture(_kSoftmaxLinearMat2D, "_LinearOut0", output);
             Dispatch2D(_kSoftmaxLinearMat2D, output.width, output.height, 8, 8);
         }
 
-        public void SoftmaxLinearMat2D(CommandBuffer cmd, ComputeTexture input, int w, int h, ComputeTexture output)
+        public void SoftmaxLinearMat2D(CommandBuffer cmd, ComputeTexture input, int w, int h, ComputeTexture output, int axis = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWW", w);
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWH", h);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxAxis", axis);
             cmd.SetComputeTextureParam(_cs, _kSoftmaxLinearMat2D, "_LinearIn0", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kSoftmaxLinearMat2D, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kSoftmaxLinearMat2D, output.width, output.height, 8, 8);
@@ -7061,7 +7065,9 @@ namespace NcnnCompute
             int numHeads,
             int numGroups,
             float scale,
-            RenderTexture output)
+            RenderTexture output,
+            RenderTexture mask = null,
+            bool causal = false)
         {
             if (query == null) throw new ArgumentNullException(nameof(query));
             if (key == null) throw new ArgumentNullException(nameof(key));
@@ -7092,7 +7098,9 @@ namespace NcnnCompute
                 numHeads,
                 numGroups,
                 scale,
-                output);
+                output,
+                mask,
+                causal);
 
             var headPacks = Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f));
             var outChunks = Mathf.Max(1, Mathf.CeilToInt(outEmbedDim / 64f));
@@ -7111,7 +7119,9 @@ namespace NcnnCompute
             int numHeads,
             int numGroups,
             float scale,
-            ComputeTexture output)
+            ComputeTexture output,
+            ComputeTexture mask = null,
+            bool causal = false)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (query == null) throw new ArgumentNullException(nameof(query));
@@ -7144,7 +7154,9 @@ namespace NcnnCompute
                 numHeads,
                 numGroups,
                 scale,
-                output);
+                output,
+                mask,
+                causal);
 
             var headPacks = Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f));
             var outChunks = Mathf.Max(1, Mathf.CeilToInt(outEmbedDim / 64f));
@@ -7163,7 +7175,9 @@ namespace NcnnCompute
             int numHeads,
             int numGroups,
             float scale,
-            RenderTexture output)
+            RenderTexture output,
+            RenderTexture mask,
+            bool causal)
         {
             _cs.SetInt("_SdpaSrcLen", srcLen);
             _cs.SetInt("_SdpaDstLen", dstLen);
@@ -7172,10 +7186,15 @@ namespace NcnnCompute
             _cs.SetInt("_SdpaNumHeads", numHeads);
             _cs.SetInt("_SdpaNumGroups", numGroups);
             _cs.SetInt("_SdpaNumHeadsPerGroup", Mathf.Max(1, numHeads / numGroups));
+            _cs.SetInt("_SdpaHasTextureMask", mask != null ? 1 : 0);
+            _cs.SetInt("_SdpaTextureMaskW", mask != null ? mask.width : 0);
+            _cs.SetInt("_SdpaTextureMaskH", mask != null ? mask.height : 0);
+            _cs.SetInt("_SdpaCausal", causal ? 1 : 0);
             _cs.SetFloat("_SdpaScale", scale);
             _cs.SetTexture(kernel, "_TexIn0Arr", query);
             _cs.SetTexture(kernel, "_TexIn1Arr", key);
             _cs.SetTexture(kernel, "_TexIn2Arr", value);
+            _cs.SetTexture(kernel, "_TexIn3Arr", mask ?? query);
             _cs.SetTexture(kernel, "_TexOut0Arr", output);
         }
 
@@ -7192,7 +7211,9 @@ namespace NcnnCompute
             int numHeads,
             int numGroups,
             float scale,
-            ComputeTexture output)
+            ComputeTexture output,
+            ComputeTexture mask,
+            bool causal)
         {
             cmd.SetComputeIntParam(_cs, "_SdpaSrcLen", srcLen);
             cmd.SetComputeIntParam(_cs, "_SdpaDstLen", dstLen);
@@ -7201,10 +7222,15 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_SdpaNumHeads", numHeads);
             cmd.SetComputeIntParam(_cs, "_SdpaNumGroups", numGroups);
             cmd.SetComputeIntParam(_cs, "_SdpaNumHeadsPerGroup", Mathf.Max(1, numHeads / numGroups));
+            cmd.SetComputeIntParam(_cs, "_SdpaHasTextureMask", mask != null ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_SdpaTextureMaskW", mask != null ? mask.width : 0);
+            cmd.SetComputeIntParam(_cs, "_SdpaTextureMaskH", mask != null ? mask.height : 0);
+            cmd.SetComputeIntParam(_cs, "_SdpaCausal", causal ? 1 : 0);
             cmd.SetComputeFloatParam(_cs, "_SdpaScale", scale);
             cmd.SetComputeTextureParam(_cs, kernel, "_TexIn0Arr", query.nameID);
             cmd.SetComputeTextureParam(_cs, kernel, "_TexIn1Arr", key.nameID);
             cmd.SetComputeTextureParam(_cs, kernel, "_TexIn2Arr", value.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_TexIn3Arr", (mask ?? query).nameID);
             cmd.SetComputeTextureParam(_cs, kernel, "_TexOut0Arr", output.nameID);
         }
 

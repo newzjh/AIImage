@@ -209,57 +209,17 @@ namespace NcnnCompute
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 
-            var cmd = context.commandBuffer;
-            var blobs = context.blobs;
-            var shapes = context.shapes;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-
             if (!owner._gemm.TryGetValue(layer.name, out var gp))
                 throw new InvalidOperationException("Gemm not found: " + layer.name);
 
-            var aShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var aRows = aShape.dims == 1 ? 1 : aShape.h;
-            var aCols = aShape.w;
-            var m = aShape.dims == 1 ? 1 : aRows;
-            var k = aCols;
-            var bRows = 0;
-            var bCols = 0;
-
-            if (gp.constantB)
-            {
-                bRows = gp.transB ? gp.constantN : gp.constantK;
-                bCols = gp.transB ? gp.constantK : gp.constantN;
-            }
-            else
-            {
-                if (layer.bottomNames.Length < 2)
-                    throw new InvalidOperationException("Gemm B input missing: " + layer.name);
-                var bShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
-                bRows = bShape.dims == 1 ? 1 : bShape.h;
-                bCols = bShape.w;
-            }
-
-            var kFromB = gp.transB ? bCols : bRows;
-            var n = gp.transB ? bRows : bCols;
-            if (gp.constantK > 0)
-                k = gp.constantK;
-            if (kFromB > 0)
-                k = Mathf.Min(k, kFromB) == 0 ? kFromB : k;
-
-            var outShape = m == 1 && aShape.dims == 1
-                ? new NcnnRepro.BufferShape(1, Mathf.Max(1, n), 1, 1, 1)
-                : new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
-            owner.DebugLog?.Invoke(
-                "[CmdPlaceholder][Gemm]"
+            var aShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            throw new NotSupportedException("CommandBuffer Gemm requires non-transposed A and a verified texture-native constant-B profile"
                 + " | layer=" + layer.name
-                + " | src=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                + " | input=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
                 + " | constantB=" + (gp.constantB ? "1" : "0")
                 + " | transA=" + (gp.transA ? "1" : "0")
                 + " | transB=" + (gp.transB ? "1" : "0")
-                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                + " | rejectedFallback=placeholder-or-buffer-materialization");
         }
 
         private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

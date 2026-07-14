@@ -188,21 +188,18 @@ namespace NcnnCompute
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 
-            var cmd = context.commandBuffer;
-            var blobs = context.blobs;
-            var shapes = context.shapes;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-
             if (!owner._multiHeadAttention.TryGetValue(layer.name, out var mp))
                 throw new InvalidOperationException("MultiHeadAttention not found: " + layer.name);
 
-            var qShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var totalElems = Mathf.Max(1, qShape.w * qShape.h * qShape.d * qShape.c);
-            var srcLen = mp.qdim > 0 ? Mathf.Max(1, totalElems / mp.qdim) : Mathf.Max(1, qShape.h);
-            var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, mp.qdim), srcLen, 1, 1);
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+            var qShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (mp.kvCache)
+                throw new NotSupportedException("CommandBuffer MultiHeadAttention kv-cache is not implemented"
+                    + " | layer=" + layer.name
+                    + " | rejectedFallback=buffer-materialization");
+            throw new NotSupportedException("CommandBuffer MultiHeadAttention requires verified LinearMat Q/K/V and an optional Pack4 scalar mask"
+                + " | layer=" + layer.name
+                + " | query=d" + qShape.dims + ":" + qShape.w + "x" + qShape.h + "x" + qShape.d + "x" + qShape.c
+                + " | rejectedFallback=placeholder-or-buffer-materialization");
         }
 
         private static void ResolveBottomBlobIndices(int bottomBlobCount, bool attnMask, bool kvCache, out int qBlobIndex, out int kBlobIndex, out int vBlobIndex, out int attnMaskIndex)
@@ -257,8 +254,6 @@ namespace NcnnCompute
         private static bool TryExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             if (owner == null || layer == null || context == null)
-                return false;
-            if (!owner.EnableAttentionMatMulPack4Specializations)
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
@@ -340,8 +335,6 @@ namespace NcnnCompute
         private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
             if (owner == null || layer == null || context == null)
-                return false;
-            if (!owner.EnableAttentionMatMulPack4Specializations)
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;

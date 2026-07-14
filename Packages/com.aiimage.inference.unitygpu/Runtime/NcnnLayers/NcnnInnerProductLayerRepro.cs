@@ -114,22 +114,15 @@ namespace NcnnCompute
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 
-            var cmd = context.commandBuffer;
-            var blobs = context.blobs;
-            var shapes = context.shapes;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-
             if (!owner._innerProduct.TryGetValue(layer.name, out var ip))
                 throw new InvalidOperationException("InnerProduct not found: " + layer.name);
 
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var rows = srcShape.dims == 2 && srcShape.w == ip.inFeatures ? srcShape.h : 1;
-            var outShape = rows > 1
-                ? new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), rows, 1, 1)
-                : new NcnnRepro.BufferShape(1, Mathf.Max(1, ip.outFeatures), 1, 1, 1);
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+            var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            throw new NotSupportedException("CommandBuffer InnerProduct requires a LinearMat vector/matrix or a verified Pack4 attention output"
+                + " | layer=" + layer.name
+                + " | input=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | inFeatures=" + ip.inFeatures
+                + " | rejectedFallback=placeholder-or-buffer-materialization");
         }
 
         private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

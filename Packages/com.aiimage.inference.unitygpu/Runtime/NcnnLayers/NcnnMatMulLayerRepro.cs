@@ -76,35 +76,20 @@ namespace NcnnCompute
         {
             if (TryExecutePack4AttentionMatMulPath(owner, layer, context))
                 return;
-
-            var cmd = context.commandBuffer;
-            var blobs = context.blobs;
-            var shapes = context.shapes;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-
-            var aShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var bShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
-            GetMatrixShape(aShape, out var aRows, out var aCols);
-            GetMatrixShape(bShape, out var bRows, out var bCols);
-
-            var transB = layer.GetInt(0, 0) != 0;
-            var n = transB ? bRows : bCols;
-            var batchA = aShape.dims == 3 ? aShape.c : 1;
-            var batchB = bShape.dims == 3 ? bShape.c : 1;
-            var batch = Mathf.Max(batchA, batchB);
-            var outShape = batch > 1
-                ? new NcnnRepro.BufferShape(3, Mathf.Max(1, n), Mathf.Max(1, aRows), 1, batch)
-                : new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, aRows), 1, 1);
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+            var aShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            var bShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[1]);
+            throw new NotSupportedException(
+                "CommandBuffer Pack4 MatMul requires Pack4 rank-3/rank-4 textures with compatible K and broadcast batch dimensions"
+                + " | layer=" + layer.name
+                + " | a=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
+                + " | transB=" + (layer.GetInt(0, 0) != 0 ? "1" : "0")
+                + " | rejectedFallback=placeholder-or-buffer-materialization");
         }
 
         private static bool TryExecutePack4AttentionMatMulPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             if (owner == null || layer == null || context == null)
-                return false;
-            if (!owner.EnableAttentionMatMulPack4Specializations)
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
@@ -206,8 +191,6 @@ namespace NcnnCompute
         private static bool TryExecutePack4AttentionMatMulPath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
             if (owner == null || layer == null || context == null)
-                return false;
-            if (!owner.EnableAttentionMatMulPack4Specializations)
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;

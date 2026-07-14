@@ -883,6 +883,10 @@ int _SdpaMaskDims;
 int _SdpaMaskW;
 int _SdpaMaskH;
 int _SdpaMaskC;
+int _SdpaHasTextureMask;
+int _SdpaTextureMaskW;
+int _SdpaTextureMaskH;
+int _SdpaCausal;
 float _SdpaScale;
 groupshared float _SdpaReduce[64];
 groupshared float _SdpaScoresFast[4096];
@@ -1821,6 +1825,7 @@ int _SoftmaxPack4CDHWW;
 int _SoftmaxPack4CDHWH;
 int _SoftmaxPack4CDHWD;
 int _SoftmaxPack4CDHWC;
+int _SoftmaxAxis;
 
 StructuredBuffer<int> _EmbedIdx;
 StructuredBuffer<float> _EmbedW;

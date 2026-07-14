@@ -629,6 +629,7 @@ namespace NcnnCompute
             public bool attnMask;
             public float scale;
             public bool kvCache;
+            public bool causal;
             public bool int8ScaleTerm;
 
             public void Dispose()
@@ -1433,12 +1434,18 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferPermute(layer, inputs, request);
                 case "Gemm":
                     return VerifyStrictCommandBufferGemm(layer, inputs, request);
+                case "LayerNorm":
+                    return VerifyStrictCommandBufferLayerNorm(layer, inputs, request);
                 case "Slice":
                     return VerifyStrictCommandBufferSlice(layer, inputs, request);
                 case "MatMul":
                     return VerifyStrictCommandBufferMatMul(layer, inputs, request);
                 case "Softmax":
                     return VerifyStrictCommandBufferSoftmax(layer, inputs, request);
+                case "SDPA":
+                    return VerifyStrictCommandBufferSdpa(layer, inputs, request);
+                case "MultiHeadAttention":
+                    return VerifyStrictCommandBufferMultiHeadAttention(layer, inputs, request);
                 default:
                     return RejectStrictCommandBufferPack4Node("No loaded-runtime Pack4 proof exists for operator " + (operatorName ?? string.Empty) + ".");
             }
@@ -2495,6 +2502,41 @@ namespace NcnnCompute
                     : "command-buffer-pack4:gemm-linear-mat");
         }
 
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferLayerNorm(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_layerNorm.TryGetValue(layer.name, out var pack)
+                || pack == null
+                || !pack.affine
+                || pack.affineSize != input.w
+                || pack.gamma == null
+                || pack.beta == null)
+            {
+                return RejectStrictCommandBufferPack4Node("LayerNorm requires loaded affine FP32 parameters over the logical width axis.");
+            }
+            if (input.dims < 2 || input.dims > 4)
+                return RejectStrictCommandBufferPack4Node("LayerNorm has no verified CommandBuffer Pack4 path for this rank.");
+
+            var descriptor = inputs[0];
+            var verifiedStorage = input.dims == 2
+                ? HasStrictLinearMatStorage(descriptor, input) || HasStrictPack4LinearMatStorage(descriptor, input)
+                : IsStrictAttentionMatMulInput(descriptor, input);
+            if (!verifiedStorage)
+                return RejectStrictCommandBufferPack4Node("LayerNorm input storage does not prove a LinearMat or Pack4 texture mapping.");
+
+            var storage = descriptor.storageShape;
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                input,
+                new BufferShape(storage[0], storage[1], storage[2], storage[3], storage[4]),
+                request,
+                "command-buffer-pack4:layernorm-width-fp32-accumulate");
+        }
+
         private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferSlice(
             NcnnParamModel.Layer layer,
             IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
@@ -2587,8 +2629,6 @@ namespace NcnnCompute
             IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
             NcnnTextureExecutionPlanRequest request)
         {
-            if (!EnableAttentionMatMulPack4Specializations)
-                return RejectStrictCommandBufferPack4Node("CommandBuffer MatMul Pack4 specializations are not enabled for this runtime profile.");
             if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
                 return RejectStrictCommandBufferPack4Node(reason);
             if (shapes.Length != 2)
@@ -2650,20 +2690,82 @@ namespace NcnnCompute
         {
             if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
                 return RejectStrictCommandBufferPack4Node(reason);
-            if (input.dims != 3 && input.dims != 4)
-                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Softmax profile requires a Pack4 3D or 4D texture.");
-            if (input.dims == 3 && input.d != 1)
-                return RejectStrictCommandBufferPack4Node("The verified 3D CommandBuffer Softmax profile requires a unit depth dimension.");
-            if (!IsStrictAttentionMatMulInput(inputs[0], input))
-                return RejectStrictCommandBufferPack4Node("Softmax input storage does not prove the required Pack4 physical mapping.");
+            if (input.dims < 2 || input.dims > 4)
+                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Softmax profile requires a rank-2 through rank-4 texture.");
+            var inputStorage = input.dims == 2
+                ? HasStrictLinearMatStorage(inputs[0], input) || HasStrictScalar2DPack4Storage(inputs[0], input)
+                : IsStrictAttentionMatMulInput(inputs[0], input);
+            if (!inputStorage)
+                return RejectStrictCommandBufferPack4Node("Softmax input storage does not prove the required LinearMat or Pack4 physical mapping.");
 
             var ncnnAxis = layer.GetInt(0, 0);
             if (ncnnAxis < 0)
                 ncnnAxis += input.dims;
-            if (ncnnAxis < 0 || ncnnAxis >= input.dims || MapNcnnAxisToTensorAxis(input.dims, ncnnAxis) != 0)
-                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Softmax profile supports only the tensor width axis.");
+            if (ncnnAxis < 0 || ncnnAxis >= input.dims)
+                return RejectStrictCommandBufferPack4Node("The Softmax axis is outside the descriptor-backed input rank.");
 
-            return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:softmax-width");
+            return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:softmax-axis-fp32-accumulate");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferSdpa(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_extraPacks.TryGetValue(layer.name, out var extra) || extra is not SdpaPack pack)
+                return RejectStrictCommandBufferPack4Node("SDPA parameters were not loaded for this node.");
+            if (pack.kvCache)
+                return RejectStrictCommandBufferPack4Node("SDPA kv-cache is not implemented for CommandBuffer Pack4 execution.");
+            if (pack.int8ScaleTerm || shapes.Length != (pack.attnMask ? 4 : 3))
+                return RejectStrictCommandBufferPack4Node("SDPA input count or int8 scale mode is outside the verified Pack4 profile.");
+            if (!IsStrictAttentionMatMulInput(inputs[0], shapes[0])
+                || !IsStrictAttentionMatMulInput(inputs[1], shapes[1])
+                || !IsStrictAttentionMatMulInput(inputs[2], shapes[2]))
+            {
+                return RejectStrictCommandBufferPack4Node("SDPA Q/K/V require exact rank-3 Pack4 texture descriptors.");
+            }
+            if (shapes[0].dims != 3 || shapes[1].dims != 3 || shapes[2].dims != 3
+                || shapes[0].w != shapes[1].w || shapes[1].h != shapes[2].h
+                || shapes[0].c != shapes[2].c || shapes[0].c % shapes[1].c != 0 || shapes[1].h > 4096)
+            {
+                return RejectStrictCommandBufferPack4Node("SDPA Q/K/V dimensions are outside the verified no-cache broadcast profile.");
+            }
+            if (pack.attnMask
+                && (shapes[3].dims != 2 || shapes[3].w != shapes[1].h || shapes[3].h != shapes[0].h
+                    || !HasStrictScalar2DPack4Storage(inputs[3], shapes[3])))
+            {
+                return RejectStrictCommandBufferPack4Node("SDPA mask requires an exact Pack4 scalar [keyLength,queryLength] texture.");
+            }
+
+            var output = new BufferShape(3, shapes[2].w, shapes[0].h, 1, shapes[0].c);
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:sdpa-mask-causal-no-kv-cache");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMultiHeadAttention(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_multiHeadAttention.TryGetValue(layer.name, out var pack) || pack == null)
+                return RejectStrictCommandBufferPack4Node("MultiHeadAttention parameters were not loaded for this node.");
+            if (pack.kvCache)
+                return RejectStrictCommandBufferPack4Node("MultiHeadAttention kv-cache is not implemented for CommandBuffer Pack4 execution.");
+            if (shapes.Length < 1 || shapes.Length > 4 || shapes[0].dims != 2 || !HasStrictLinearMatStorage(inputs[0], shapes[0]))
+                return RejectStrictCommandBufferPack4Node("MultiHeadAttention query requires a descriptor-backed LinearMat rank-2 texture.");
+            if (shapes[0].w != pack.qdim || pack.embedDim <= 0 || pack.numHeads <= 0 || pack.embedDim % pack.numHeads != 0)
+                return RejectStrictCommandBufferPack4Node("MultiHeadAttention query or head dimensions are outside the verified profile.");
+
+            var output = new BufferShape(2, pack.qdim, shapes[0].h, 1, 1);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                new BufferShape(3, output.w, output.h, 1, 1),
+                request,
+                "command-buffer-pack4:mha-mask-no-kv-cache");
         }
 
         private static bool TryGetSingleStrictCdhwPlanShape(

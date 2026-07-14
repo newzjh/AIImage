@@ -20,6 +20,7 @@ namespace NcnnCompute
                 attnMask = layer.GetInt(5, 0) != 0,
                 scale = layer.GetFloat(6, 0f),
                 kvCache = layer.GetInt(7, 0) != 0,
+                causal = layer.GetInt(8, 0) != 0,
                 int8ScaleTerm = layer.GetInt(18, 0) != 0
             };
             return default;
@@ -207,6 +208,11 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.SdpaPack sp)
                 throw new InvalidOperationException("SDPA pack not found: " + layer.name);
 
+            if (sp.kvCache)
+                throw new NotSupportedException("CommandBuffer SDPA kv-cache is not implemented"
+                    + " | layer=" + layer.name
+                    + " | rejectedFallback=buffer-materialization");
+
             var queryShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var keyShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[1]);
             var valueShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[2]);
@@ -222,23 +228,12 @@ namespace NcnnCompute
             }
 
             var outShape = new NcnnRepro.BufferShape(3, valueShape.w, queryShape.h, 1, queryShape.c);
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
-            if (sp.kvCache && layer.topNames.Length >= 3)
-            {
-                owner.PublishCmdPlaceholder(
-                    cmd,
-                    layer.topNames[1],
-                    new NcnnRepro.BufferShape(3, keyShape.w, dstSeqLen, 1, keyShape.c),
-                    blobs,
-                    shapes);
-                owner.PublishCmdPlaceholder(
-                    cmd,
-                    layer.topNames[2],
-                    new NcnnRepro.BufferShape(3, valueShape.w, dstSeqLen, 1, valueShape.c),
-                    blobs,
-                    shapes);
-            }
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+            throw new NotSupportedException("CommandBuffer SDPA requires Pack4 Q/K/V, an optional Pack4 scalar mask, and no kv-cache"
+                + " | layer=" + layer.name
+                + " | q=d" + queryShape.dims + ":" + queryShape.w + "x" + queryShape.h + "x" + queryShape.d + "x" + queryShape.c
+                + " | k=d" + keyShape.dims + ":" + keyShape.w + "x" + keyShape.h + "x" + keyShape.d + "x" + keyShape.c
+                + " | v=d" + valueShape.dims + ":" + valueShape.w + "x" + valueShape.h + "x" + valueShape.d + "x" + valueShape.c
+                + " | rejectedFallback=placeholder-or-buffer-materialization");
         }
 
         private static void PublishTensor(
@@ -267,8 +262,6 @@ namespace NcnnCompute
         {
             if (owner == null || layer == null || context == null)
                 return false;
-            if (!owner.EnableAttentionMatMulPack4Specializations)
-                return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
             if (!TryResolveRtPlan(owner, layer, context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out var plan))
@@ -289,7 +282,7 @@ namespace NcnnCompute
 
             try
             {
-                if (ResolveSdpaFastPathEnabled())
+                if (ResolveSdpaFastPathEnabled() || plan.hasAttnMask || plan.causal)
                 {
                     output = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
                     owner.Ops.SdpaAttentionPack4Cdhw(
@@ -303,7 +296,9 @@ namespace NcnnCompute
                         plan.queryShape.c,
                         plan.keyShape.c,
                         plan.scale,
-                        output);
+                        output,
+                        plan.attnMask != null ? plan.attnMask.texture : null,
+                        plan.causal);
 
                     NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
                     output = null;
@@ -406,8 +401,6 @@ namespace NcnnCompute
         {
             if (owner == null || layer == null || context == null)
                 return false;
-            if (!owner.EnableAttentionMatMulPack4Specializations)
-                return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
             if (!TryResolveCmdRtPlan(owner, layer, context.blobs, context.shapes, out var plan))
@@ -422,7 +415,7 @@ namespace NcnnCompute
 
             try
             {
-                if (ResolveSdpaFastPathEnabled())
+                if (ResolveSdpaFastPathEnabled() || plan.hasAttnMask || plan.causal)
                 {
                     output = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
                     owner.Ops.SdpaAttentionPack4Cdhw(
@@ -437,7 +430,9 @@ namespace NcnnCompute
                         plan.queryShape.c,
                         plan.keyShape.c,
                         plan.scale,
-                        output);
+                        output,
+                        plan.attnMask != null ? plan.attnMask.texture : null,
+                        plan.causal);
 
                     context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                     {
@@ -567,7 +562,7 @@ namespace NcnnCompute
             plan = default;
             if (!TryResolveCommonPlan(owner, layer, out var common))
                 return false;
-            if (common.sp.attnMask || common.sp.kvCache || common.sp.int8ScaleTerm)
+            if (common.sp.kvCache || common.sp.int8ScaleTerm)
                 return false;
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var query, out var queryShape)
                 || !owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var key, out var keyShape)
@@ -579,14 +574,30 @@ namespace NcnnCompute
             if (!TryValidateTextureInputs(query, queryShape, key, keyShape, value, valueShape, common, out var outputShape, out var outputStorageShape))
                 return false;
 
+            NcnnRepro.TensorRef attnMask = null;
+            NcnnRepro.BufferShape attnMaskShape = default;
+            if (common.sp.attnMask)
+            {
+                if (layer.bottomNames.Length <= 3
+                    || !owner.TryGetPack4Texture(layer.bottomNames[3], textureBlobs, textureShapes, bufferBlobs, bufferViews, out attnMask, out attnMaskShape)
+                    || attnMaskShape.dims != 2
+                    || attnMaskShape.w != keyShape.h
+                    || attnMaskShape.h != queryShape.h
+                    || attnMask.packs != 1
+                    || NcnnRepro.IsStrictLinearMatTexture(attnMask))
+                    return false;
+            }
+
             plan = new SdpaRtPlan(
                 common.scale,
+                common.sp.causal,
                 query,
                 queryShape,
                 key,
                 keyShape,
                 value,
                 valueShape,
+                attnMask,
                 outputShape,
                 outputStorageShape);
             return true;
@@ -602,7 +613,7 @@ namespace NcnnCompute
             plan = default;
             if (!TryResolveCommonPlan(owner, layer, out var common))
                 return false;
-            if (common.sp.attnMask || common.sp.kvCache || common.sp.int8ScaleTerm)
+            if (common.sp.kvCache || common.sp.int8ScaleTerm)
                 return false;
             if (!TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[0], out var query, out var queryShape)
                 || !TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[1], out var key, out var keyShape)
@@ -614,14 +625,30 @@ namespace NcnnCompute
             if (!TryValidateTextureInputs(query, queryShape, key, keyShape, value, valueShape, common, out var outputShape, out var outputStorageShape))
                 return false;
 
+            NcnnRepro.CmdTensorRef attnMask = null;
+            NcnnRepro.BufferShape attnMaskShape = default;
+            if (common.sp.attnMask)
+            {
+                if (layer.bottomNames.Length <= 3
+                    || !TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[3], out attnMask, out attnMaskShape)
+                    || attnMaskShape.dims != 2
+                    || attnMaskShape.w != keyShape.h
+                    || attnMaskShape.h != queryShape.h
+                    || attnMask.packs != 1
+                    || NcnnRepro.IsStrictLinearMatTexture(attnMask))
+                    return false;
+            }
+
             plan = new SdpaCmdRtPlan(
                 common.scale,
+                common.sp.causal,
                 query,
                 queryShape,
                 key,
                 keyShape,
                 value,
                 valueShape,
+                attnMask,
                 outputShape,
                 outputStorageShape);
             return true;
@@ -730,6 +757,7 @@ namespace NcnnCompute
         private readonly struct SdpaRtPlan
         {
             public readonly float scale;
+            public readonly bool causal;
             public readonly NcnnRepro.TensorRef query;
             public readonly NcnnRepro.BufferShape queryShape;
             public readonly NcnnRepro.BufferShape queryStorageShape;
@@ -738,6 +766,8 @@ namespace NcnnCompute
             public readonly NcnnRepro.BufferShape keyShape;
             public readonly NcnnRepro.TensorRef value;
             public readonly NcnnRepro.BufferShape valueShape;
+            public readonly NcnnRepro.TensorRef attnMask;
+            public readonly bool hasAttnMask;
             public readonly NcnnRepro.BufferShape keyTransposedShape;
             public readonly NcnnRepro.BufferShape keyTransposedStorageShape;
             public readonly int keyTransposedSlices;
@@ -752,16 +782,19 @@ namespace NcnnCompute
 
             public SdpaRtPlan(
                 float scale,
+                bool causal,
                 NcnnRepro.TensorRef query,
                 NcnnRepro.BufferShape queryShape,
                 NcnnRepro.TensorRef key,
                 NcnnRepro.BufferShape keyShape,
                 NcnnRepro.TensorRef value,
                 NcnnRepro.BufferShape valueShape,
+                NcnnRepro.TensorRef attnMask,
                 NcnnRepro.BufferShape outputShape,
                 NcnnRepro.BufferShape outputStorageShape)
             {
                 this.scale = Mathf.Approximately(scale, 0f) ? 1f / Mathf.Sqrt(Mathf.Max(1, queryShape.w)) : scale;
+                this.causal = causal;
                 this.query = query;
                 this.queryShape = queryShape;
                 queryStorageShape = queryShape;
@@ -770,6 +803,8 @@ namespace NcnnCompute
                 this.keyShape = keyShape;
                 this.value = value;
                 this.valueShape = valueShape;
+                this.attnMask = attnMask;
+                hasAttnMask = attnMask != null && attnMask.texture != null;
                 keyTransposedShape = new NcnnRepro.BufferShape(4, keyShape.h, keyShape.w, Mathf.Max(1, keyShape.d), keyShape.c);
                 keyTransposedStorageShape = keyTransposedShape;
                 keyTransposedSlices = Mathf.Max(1, keyTransposedShape.d * Mathf.CeilToInt(keyTransposedShape.c / 4f));
@@ -787,6 +822,7 @@ namespace NcnnCompute
         private readonly struct SdpaCmdRtPlan
         {
             public readonly float scale;
+            public readonly bool causal;
             public readonly NcnnRepro.CmdTensorRef query;
             public readonly NcnnRepro.BufferShape queryShape;
             public readonly NcnnRepro.BufferShape queryStorageShape;
@@ -795,6 +831,8 @@ namespace NcnnCompute
             public readonly NcnnRepro.BufferShape keyShape;
             public readonly NcnnRepro.CmdTensorRef value;
             public readonly NcnnRepro.BufferShape valueShape;
+            public readonly NcnnRepro.CmdTensorRef attnMask;
+            public readonly bool hasAttnMask;
             public readonly NcnnRepro.BufferShape keyTransposedShape;
             public readonly NcnnRepro.BufferShape keyTransposedStorageShape;
             public readonly int keyTransposedSlices;
@@ -809,16 +847,19 @@ namespace NcnnCompute
 
             public SdpaCmdRtPlan(
                 float scale,
+                bool causal,
                 NcnnRepro.CmdTensorRef query,
                 NcnnRepro.BufferShape queryShape,
                 NcnnRepro.CmdTensorRef key,
                 NcnnRepro.BufferShape keyShape,
                 NcnnRepro.CmdTensorRef value,
                 NcnnRepro.BufferShape valueShape,
+                NcnnRepro.CmdTensorRef attnMask,
                 NcnnRepro.BufferShape outputShape,
                 NcnnRepro.BufferShape outputStorageShape)
             {
                 this.scale = Mathf.Approximately(scale, 0f) ? 1f / Mathf.Sqrt(Mathf.Max(1, queryShape.w)) : scale;
+                this.causal = causal;
                 this.query = query;
                 this.queryShape = queryShape;
                 queryStorageShape = queryShape;
@@ -827,6 +868,8 @@ namespace NcnnCompute
                 this.keyShape = keyShape;
                 this.value = value;
                 this.valueShape = valueShape;
+                this.attnMask = attnMask;
+                hasAttnMask = attnMask != null && attnMask.texture != null;
                 keyTransposedShape = new NcnnRepro.BufferShape(4, keyShape.h, keyShape.w, Mathf.Max(1, keyShape.d), keyShape.c);
                 keyTransposedStorageShape = keyTransposedShape;
                 keyTransposedSlices = Mathf.Max(1, keyTransposedShape.d * Mathf.CeilToInt(keyTransposedShape.c / 4f));

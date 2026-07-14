@@ -359,6 +359,12 @@ void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
                     s += q * k;
                 }
                 s *= _SdpaScale;
+                if (_SdpaCausal != 0 && colScore > row)
+                    s = -1.0e20;
+                else if (_SdpaHasTextureMask != 0
+                    && colScore < _SdpaTextureMaskW
+                    && row < _SdpaTextureMaskH)
+                    s += NcnnReadPack4ChannelCDHW(_SdpaMaskArr, colScore, row, 0, 0, 1);
             }
             _SdpaScoresFast[colScore] = s;
         }
@@ -1319,17 +1325,33 @@ void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
         if (c >= _SoftmaxPack4CDHWC)
             continue;
 
+        int axis = _SoftmaxAxis;
+        int axisLength = axis == 0 ? _SoftmaxPack4CDHWW
+            : axis == 1 ? _SoftmaxPack4CDHWH
+            : axis == 2 ? _SoftmaxPack4CDHWD
+            : _SoftmaxPack4CDHWC;
+        if (axis < 0 || axis > 3 || axisLength <= 0)
+            continue;
+
         float maxv = -3.402823466e+38;
-        for (int xx = 0; xx < _SoftmaxPack4CDHWW; xx++)
+        for (int i = 0; i < axisLength; i++)
         {
-            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, xx, outY, outZ, c, _SoftmaxPack4CDHWC);
+            int x = axis == 0 ? i : outX;
+            int y = axis == 1 ? i : outY;
+            int z = axis == 2 ? i : outZ;
+            int channel = axis == 3 ? i : c;
+            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, x, y, z, channel, _SoftmaxPack4CDHWC);
             maxv = max(maxv, v);
         }
 
         float sum = 0.0;
-        for (int xx = 0; xx < _SoftmaxPack4CDHWW; xx++)
+        for (int i = 0; i < axisLength; i++)
         {
-            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, xx, outY, outZ, c, _SoftmaxPack4CDHWC);
+            int x = axis == 0 ? i : outX;
+            int y = axis == 1 ? i : outY;
+            int z = axis == 2 ? i : outZ;
+            int channel = axis == 3 ? i : c;
+            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, x, y, z, channel, _SoftmaxPack4CDHWC);
             sum += exp(v - maxv);
         }
 
@@ -1358,13 +1380,26 @@ void NcnnSoftmaxLinearMat2D_Impl(uint3 id)
         return;
     }
 
-    float maxv = _LinearIn0[int2(0, row)];
-    for (int i = 1; i < inW; i++)
-        maxv = max(maxv, _LinearIn0[int2(i, row)]);
+    int axis = _SoftmaxAxis;
+    if (axis < 0 || axis > 1)
+    {
+        _LinearOut0[int2(x, row)] = 0.0;
+        return;
+    }
+    int axisLength = axis == 0 ? inW : inH;
+    float maxv = axis == 0 ? _LinearIn0[int2(0, row)] : _LinearIn0[int2(x, 0)];
+    for (int i = 1; i < axisLength; i++)
+    {
+        float value = axis == 0 ? _LinearIn0[int2(i, row)] : _LinearIn0[int2(x, i)];
+        maxv = max(maxv, value);
+    }
 
     float sum = 0.0;
-    for (int i = 0; i < inW; i++)
-        sum += exp(_LinearIn0[int2(i, row)] - maxv);
+    for (int i = 0; i < axisLength; i++)
+    {
+        float value = axis == 0 ? _LinearIn0[int2(i, row)] : _LinearIn0[int2(x, i)];
+        sum += exp(value - maxv);
+    }
 
     float current = _LinearIn0[int2(x, row)];
     _LinearOut0[int2(x, row)] = sum > 0.0 ? exp(current - maxv) / sum : 0.0;

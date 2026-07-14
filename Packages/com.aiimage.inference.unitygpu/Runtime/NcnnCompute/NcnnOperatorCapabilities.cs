@@ -366,10 +366,10 @@ namespace NcnnCompute
                     + "and invalid group/weight profiles fail strict planning; FP16 remains unvalidated by this C1 contract.";
             }
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
-                return "Only narrow texture specializations exist; generic CommandBuffer execution includes placeholder branches and is not strict-plan eligible.";
+                return "Partial CommandBuffer Pack4 support: Gemm/InnerProduct require loaded immutable FP32 weights and verified LinearMat or attention Pack4 storage; MatMul supports Pack4 rank-3/rank-4 matrices with transB and broadcast batch dimensions. Unsupported profiles fail strict planning without Buffer materialization.";
             if (operatorName == "LayerNorm" || operatorName == "Softmax" || operatorName == "Reduction"
                 || operatorName == "MultiHeadAttention" || operatorName == "SDPA")
-                return "Texture branches are shape-specific and/or have placeholder or legacy buffer branches; no full strict CommandBuffer contract is recorded.";
+                return "Partial CommandBuffer Pack4 support: LayerNorm/Softmax use FP32 accumulation; Reduction covers scalar rank-2 and Pack4 spatial SUM/MEAN; SDPA/MHA support texture-native masks where their descriptor profiles prove it. KV-cache, unlisted axes/ranks, and unsupported dtype/layout profiles fail strict planning.";
             if (operatorName == "Convolution3D")
                 return "Partial until the loaded node proves the group=1 OIDHW profile, explicit non-negative W/H/D padding, positive kernel/stride/dilation, supported activation, and TensorDescriptor CDHW Pack4 storage. Strict planning rejects every other branch.";
             if (operatorName == "Deconvolution3D")
