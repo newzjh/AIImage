@@ -16,6 +16,30 @@ using Debug = UnityEngine.Debug;
 
 public static class NcnnDebugRunner
 {
+    [Serializable]
+    private sealed class D1RuntimeBenchmarkReport
+    {
+        public string schemaVersion = "aiimage.inference.runtime-benchmark/v1";
+        public string runner;
+        public string modelId;
+        public string manifestPath;
+        public string activationDtype;
+        public string weightDtype;
+        public bool strictTexturePlan;
+        public string status;
+        public string error;
+        public long elapsedMs;
+        public long peakTemporaryTextureBytes;
+        public long peakTextureBytes;
+        public long peakBufferBytes;
+        public long peakTotalBytes;
+        public string taskMetricName;
+        public string taskMetricValue;
+        public string taskMetricDetail;
+        public string debugDumpPath;
+        public string graphicsDevice;
+    }
+
     private const string DebugInputEnvVar = "AIIMAGE_DEBUG_INPUT";
     private const string FaceBufferPathEnvVar = "AIIMAGE_FACE_BUFFER_PATH";
     private const string FaceProbThresholdEnvVar = "AIIMAGE_FACE_PROB_THRESHOLD";
@@ -61,6 +85,7 @@ public static class NcnnDebugRunner
     private const string YoloPack4OnlyGuardEnvVar = "AIIMAGE_YOLOSEG_PACK4_ONLY_GUARD";
     private const string FacePack4OnlyGuardEnvVar = "AIIMAGE_FACE_PACK4_ONLY_GUARD";
     private const string MattingPack4OnlyGuardEnvVar = "AIIMAGE_MATTING_PACK4_ONLY_GUARD";
+    private const string MattingFp32ReferenceEnvVar = "AIIMAGE_MATTING_FP32_REFERENCE";
     private const string GfpganPack4OnlyGuardEnvVar = "AIIMAGE_GFPGAN_PACK4_ONLY_GUARD";
     private const string SdWidthEnvVar = "AIIMAGE_SD_WIDTH";
     private const string SdHeightEnvVar = "AIIMAGE_SD_HEIGHT";
@@ -413,12 +438,22 @@ public static class NcnnDebugRunner
         var go = new GameObject("ClipDebugRunner");
         try
         {
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+            NcnnCompute.NcnnGpuResourceTracker.Reset("D1.Clip");
             var runner = go.AddComponent<ClipNcnnReproRunner>();
             runner.modelLevel = ResolveClipModelLevel();
             ConfigureClipRunnerFromEnv(runner, defaultEnableDebugDump: true);
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[CLIP-DEBUG] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            WriteD1RuntimeBenchmark(
+                "clip",
+                result.elapsedMs,
+                result.error,
+                runner.LastDumpDir,
+                "top1_probability",
+                result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture),
+                result.bestLabel ?? string.Empty);
             Debug.Log("CLIP Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | best=" + (result.bestLabel ?? "") + " | prob=" + result.bestProbability.ToString("0.000000", CultureInfo.InvariantCulture) + " | dump=" + (runner.LastDumpDir ?? ""));
         }
         finally
@@ -543,6 +578,8 @@ public static class NcnnDebugRunner
         var go = new GameObject("MattingDebugRunner");
         try
         {
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+            NcnnCompute.NcnnGpuResourceTracker.Reset("D1.Matting");
             var runner = go.AddComponent<MatterNcnnReproRunner>();
             runner.enableDebugDump = true;
             runner.forceBufferConvolution = false;
@@ -551,6 +588,37 @@ public static class NcnnDebugRunner
             runner.disallowBufferOutputs = mattingPack4OnlyGuard;
             runner.disallowBufferToTextureMaterialization = mattingPack4OnlyGuard;
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            var matteMetricDetail = result.matte != null
+                ? result.matte.width.ToString(CultureInfo.InvariantCulture) + "x" + result.matte.height.ToString(CultureInfo.InvariantCulture)
+                : string.Empty;
+            var fp32MatteReference = ResolveStringEnv(MattingFp32ReferenceEnvVar, null);
+            if (result.matte != null && !string.IsNullOrWhiteSpace(fp32MatteReference) && File.Exists(fp32MatteReference))
+            {
+                var referenceMatte = LoadTexture(fp32MatteReference);
+                if (referenceMatte != null)
+                {
+                    try
+                    {
+                        ComputeTextureDiff(result.matte, referenceMatte, out var meanAbsU8, out var maxAbsU8);
+                        var foregroundIou = ComputeMatteForegroundIou(result.matte, referenceMatte);
+                        matteMetricDetail += " | fp32_mean_abs_u8=" + meanAbsU8.ToString("0.000000", CultureInfo.InvariantCulture)
+                            + " | fp32_max_abs_u8=" + maxAbsU8.ToString(CultureInfo.InvariantCulture)
+                            + " | fp32_foreground_iou_128=" + foregroundIou.ToString("0.000000", CultureInfo.InvariantCulture);
+                    }
+                    finally
+                    {
+                        UnityEngine.Object.DestroyImmediate(referenceMatte);
+                    }
+                }
+            }
+            WriteD1RuntimeBenchmark(
+                "matting",
+                result.elapsedMs,
+                result.error,
+                runner.LastDumpDir,
+                "matte_mean_alpha",
+                ComputeMatteMeanAlpha(result.matte).ToString("0.000000", CultureInfo.InvariantCulture),
+                matteMetricDetail);
             Debug.Log("Matting Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs + " | dump=" + (runner.LastDumpDir ?? ""));
             if (!string.IsNullOrWhiteSpace(result.error))
                 return;
@@ -801,6 +869,14 @@ public static class NcnnDebugRunner
             };
 
             var result = await runner.ProcessAsync(request, CancellationToken.None);
+            WriteD1RuntimeBenchmark(
+                "monai-probe",
+                result.elapsedMs,
+                result.error,
+                result.outputDir,
+                "probe_completed",
+                string.IsNullOrWhiteSpace(result.error) ? "1" : "0",
+                result.caseName ?? string.Empty);
             Debug.Log(
                 "MONAI Debug result | error=" + (result.error ?? "")
                 + " | elapsedMs=" + result.elapsedMs
@@ -3737,6 +3813,72 @@ public static class NcnnDebugRunner
         }
     }
 
+    private static float ComputeMatteMeanAlpha(Texture2D matte)
+    {
+        if (matte == null)
+            return 0f;
+        var pixels = matte.GetPixels32();
+        if (pixels == null || pixels.Length == 0)
+            return 0f;
+        double sum = 0d;
+        for (var i = 0; i < pixels.Length; i++)
+            sum += pixels[i].r / 255d;
+        return (float)(sum / pixels.Length);
+    }
+
+    private static void WriteD1RuntimeBenchmark(
+        string runner,
+        long elapsedMs,
+        string error,
+        string debugDumpPath,
+        string taskMetricName,
+        string taskMetricValue,
+        string taskMetricDetail)
+    {
+        var manifestPath = Environment.GetEnvironmentVariable(NcnnCompute.NcnnModelManifestLoader.ManifestEnvironmentVariable);
+        AIImage.Inference.Core.ModelManifest manifest = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(manifestPath))
+                manifest = NcnnCompute.NcnnModelManifestLoader.LoadFromFile(manifestPath);
+        }
+        catch (Exception e)
+        {
+            error = string.IsNullOrWhiteSpace(error) ? "Benchmark manifest read failed: " + e.Message : error;
+        }
+
+        var stats = NcnnCompute.NcnnGpuResourceTracker.GetStatsSnapshot();
+        var report = new D1RuntimeBenchmarkReport
+        {
+            runner = runner ?? string.Empty,
+            modelId = manifest?.modelId ?? string.Empty,
+            manifestPath = manifestPath ?? string.Empty,
+            activationDtype = manifest?.precision?.activationDataType.ToString() ?? string.Empty,
+            weightDtype = manifest?.precision?.weightDataType.ToString() ?? string.Empty,
+            strictTexturePlan = manifest?.precision?.requireStrictTexturePlan ?? false,
+            status = string.IsNullOrWhiteSpace(error) ? "passed" : "failed",
+            error = error ?? string.Empty,
+            elapsedMs = elapsedMs,
+            peakTemporaryTextureBytes = stats.peakTemporaryTextureBytes,
+            peakTextureBytes = stats.peakTextureBytes,
+            peakBufferBytes = stats.peakBufferBytes,
+            peakTotalBytes = stats.peakTotalBytes,
+            taskMetricName = taskMetricName ?? string.Empty,
+            taskMetricValue = taskMetricValue ?? string.Empty,
+            taskMetricDetail = taskMetricDetail ?? string.Empty,
+            debugDumpPath = debugDumpPath ?? string.Empty,
+            graphicsDevice = SystemInfo.graphicsDeviceType + ": " + SystemInfo.graphicsDeviceName
+        };
+
+        var outputDir = Path.Combine(Application.dataPath, "..", "Logs", "D1PrecisionBenchmarks");
+        Directory.CreateDirectory(outputDir);
+        var dtype = string.IsNullOrWhiteSpace(report.activationDtype) ? "unknown" : report.activationDtype;
+        var fileName = (runner ?? "runner") + "-" + dtype + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".json";
+        var path = Path.Combine(outputDir, fileName);
+        File.WriteAllText(path, JsonUtility.ToJson(report, true));
+        Debug.Log("D1 runtime benchmark | path=" + path + " | status=" + report.status + " | peak_temp_rt_bytes=" + report.peakTemporaryTextureBytes + " | peak_total_bytes=" + report.peakTotalBytes);
+    }
+
     private static void ComputeTextureDiff(Texture2D a, Texture2D b, out float meanAbsRgb, out int maxAbsRgb)
     {
         meanAbsRgb = 0f;
@@ -3759,6 +3901,26 @@ public static class NcnnDebugRunner
 
         meanAbsRgb = pa.Length > 0 ? (float)(sumAbs / (pa.Length * 3d)) : 0f;
         maxAbsRgb = maxAbs;
+    }
+
+    private static float ComputeMatteForegroundIou(Texture2D a, Texture2D b)
+    {
+        if (a == null || b == null || a.width != b.width || a.height != b.height)
+            return 0f;
+        var pa = a.GetPixels32();
+        var pb = b.GetPixels32();
+        var intersection = 0;
+        var union = 0;
+        for (var i = 0; i < pa.Length; i++)
+        {
+            var aForeground = pa[i].r >= 128;
+            var bForeground = pb[i].r >= 128;
+            if (aForeground && bForeground)
+                intersection++;
+            if (aForeground || bForeground)
+                union++;
+        }
+        return union == 0 ? 1f : (float)intersection / union;
     }
 
     private static Texture2D BuildAbsDiffTexture(Texture2D a, Texture2D b)
