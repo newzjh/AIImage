@@ -383,6 +383,7 @@ namespace NcnnCompute
         private readonly int _kPermutePack4;
         private readonly int _kPermutePack4Cdhw;
         private readonly int _kPermuteLinearMat2D;
+        private readonly int _kPermutePack4LinearMat2D;
         private readonly int _kWindowPartitionPack4;
         private readonly int _kWindowUnpartitionPack4;
         private readonly int _kReshapePack4ToScalar2D;
@@ -741,6 +742,7 @@ namespace NcnnCompute
             _kPermutePack4 = _cs.FindKernel("NcnnPermutePack4");
             _kPermutePack4Cdhw = _cs.FindKernel("NcnnPermutePack4CDHW");
             _kPermuteLinearMat2D = _cs.FindKernel("NcnnPermuteLinearMat2D");
+            _kPermutePack4LinearMat2D = _cs.FindKernel("NcnnPermutePack4LinearMat2D");
             _kWindowPartitionPack4 = _cs.FindKernel("NcnnWindowPartitionPack4");
             _kWindowUnpartitionPack4 = _cs.FindKernel("NcnnWindowUnpartitionPack4");
             _kReshapePack4ToScalar2D = _cs.FindKernel("NcnnReshapePack4ToScalar2D");
@@ -986,6 +988,21 @@ namespace NcnnCompute
             _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnIn", src);
             _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnOutArr", dstPack4);
             Dispatch2D(_kPackRgbToPack4Gfpgan, dstPack4.width, dstPack4.height, 32, 32);
+        }
+
+        public void PackRgbToPack4Gfpgan(CommandBuffer cmd, Texture src, int offsetX, int offsetY, float sx, float sy, ComputeTexture dstPack4, bool flipY = false)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            cmd.SetComputeIntParam(_cs, "_OffsetX", offsetX);
+            cmd.SetComputeIntParam(_cs, "_OffsetY", offsetY);
+            cmd.SetComputeFloatParam(_cs, "_ScaleX", sx);
+            cmd.SetComputeFloatParam(_cs, "_ScaleY", sy);
+            cmd.SetComputeIntParam(_cs, "_FlipY", flipY ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_NcnnIn", src);
+            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_NcnnOutArr", dstPack4.nameID);
+            Dispatch2D(cmd, _cs, _kPackRgbToPack4Gfpgan, dstPack4.width, dstPack4.height, 32, 32);
         }
 
         public void FillPack4FromBufferCHW(ComputeBuffer input, int w, int h, int c, RenderTexture outputPack4)
@@ -2030,6 +2047,37 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kPermuteLinearMat2D, "_LinearIn0", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kPermuteLinearMat2D, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kPermuteLinearMat2D, output.width, output.height, 8, 8);
+        }
+
+        public void PermutePack4LinearMat2D(CommandBuffer cmd, ComputeTexture input, int inW, int inH, Vector4Int axes, int outW, int outH, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_PermutePack4InW", inW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4InH", inH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4Axis0", axes.x);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4Axis1", axes.y);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4LinearMat2D, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4LinearMat2D, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kPermutePack4LinearMat2D, output.width, output.height, 1, 8, 8);
+        }
+
+        public void PermutePack4LinearMat2D(RenderTexture input, int inW, int inH, Vector4Int axes, int outW, int outH, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PermutePack4InW", inW);
+            _cs.SetInt("_PermutePack4InH", inH);
+            _cs.SetInt("_PermutePack4OutW", outW);
+            _cs.SetInt("_PermutePack4OutH", outH);
+            _cs.SetInt("_PermutePack4Axis0", axes.x);
+            _cs.SetInt("_PermutePack4Axis1", axes.y);
+            _cs.SetTexture(_kPermutePack4LinearMat2D, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPermutePack4LinearMat2D, "_TexOut0Arr", output);
+            Dispatch3D(_kPermutePack4LinearMat2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void WindowPartitionPack4(RenderTexture input, int inW, int inH, int inD, int inC, int outW, int outH, int outC, int groupsA, int groupsB, int groupsC, int tokensA, int tokensB, int tokensC, RenderTexture output)
@@ -4466,6 +4514,21 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_CopyOutOffset", dstPackOffset);
             cmd.SetComputeIntParam(_cs, "_CopyPacks", packs);
             cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_TexIn0Arr", src.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_TexOut0Arr", dst.nameID);
+            Dispatch3D(cmd, _kCopyPack4, dst.width, dst.height, packs, 8, 8);
+        }
+
+        public void CopyPack4(CommandBuffer cmd, RenderTexture src, int srcPackOffset, ComputeTexture dst, int dstPackOffset, int packs)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dst == null) throw new ArgumentNullException(nameof(dst));
+            if (packs <= 0) return;
+
+            cmd.SetComputeIntParam(_cs, "_CopyInOffset", srcPackOffset);
+            cmd.SetComputeIntParam(_cs, "_CopyOutOffset", dstPackOffset);
+            cmd.SetComputeIntParam(_cs, "_CopyPacks", packs);
+            cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_TexIn0Arr", src);
             cmd.SetComputeTextureParam(_cs, _kCopyPack4, "_TexOut0Arr", dst.nameID);
             Dispatch3D(cmd, _kCopyPack4, dst.width, dst.height, packs, 8, 8);
         }

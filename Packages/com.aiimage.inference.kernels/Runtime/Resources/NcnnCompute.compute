@@ -98,6 +98,7 @@
 #pragma kernel NcnnPermutePack4
 #pragma kernel NcnnPermutePack4CDHW
 #pragma kernel NcnnPermuteLinearMat2D
+#pragma kernel NcnnPermutePack4LinearMat2D
 #pragma kernel NcnnWindowPartitionPack4
 #pragma kernel NcnnWindowUnpartitionPack4
 #pragma kernel NcnnReshapePack4ToScalar2D
@@ -389,6 +390,7 @@ void NcnnSliceLinearMat2D_Impl(uint3 id);
 void NcnnPermutePack4_Impl(uint3 id);
 void NcnnPermutePack4CDHW_Impl(uint3 id);
 void NcnnPermuteLinearMat2D_Impl(uint3 id);
+void NcnnPermutePack4LinearMat2D_Impl(uint3 id);
 void NcnnWindowPartitionPack4_Impl(uint3 id);
 void NcnnWindowUnpartitionPack4_Impl(uint3 id);
 void NcnnSwishPack4_Impl(uint3 id);
@@ -2162,6 +2164,12 @@ void NcnnWindowUnpartitionPack4(uint3 id : SV_DispatchThreadID)
 void NcnnPermuteLinearMat2D(uint3 id : SV_DispatchThreadID)
 {
     NcnnPermuteLinearMat2D_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPermutePack4LinearMat2D(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPermutePack4LinearMat2D_Impl(id);
 }
 
 [numthreads(8,8,1)]

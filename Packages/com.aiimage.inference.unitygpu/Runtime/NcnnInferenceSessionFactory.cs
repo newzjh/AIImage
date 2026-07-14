@@ -1,5 +1,6 @@
 using System;
 using AIImage.Inference.Core;
+using UnityEngine;
 
 namespace NcnnCompute
 {
@@ -18,6 +19,21 @@ namespace NcnnCompute
             var session = new NcnnRepro(ops);
             if (manifest != null)
                 session.ApplyModelManifest(manifest);
+            return session;
+        }
+
+        public static NcnnRepro Create(NcnnOps ops, string modelId, NcnnPrecisionMode precisionMode)
+        {
+            var manifest = NcnnModelManifestLoader.ResolveRunnerManifest(modelId, precisionMode);
+            var appliedMode = NcnnModelManifestLoader.ResolveAppliedPrecision(modelId, precisionMode, manifest);
+            var session = Create(ops, manifest);
+            session.SetAppliedPrecisionMode(appliedMode);
+            Debug.Log("[NcnnPrecision] model=" + (modelId ?? string.Empty)
+                + " | requested=" + precisionMode
+                + " | applied=" + appliedMode
+                + " | manifest=" + (manifest?.modelId ?? "legacy-fp32")
+                + " | activation=" + session.ResolveActivationTextureFormat(4)
+                + " | weights=" + (manifest?.precision?.weightDataType.ToString() ?? "Float32"));
             return session;
         }
     }

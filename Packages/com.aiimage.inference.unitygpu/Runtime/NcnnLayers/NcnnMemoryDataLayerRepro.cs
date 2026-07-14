@@ -212,19 +212,123 @@ namespace NcnnCompute
                 return false;
             }
 
-            var vector = owner.RentTempArray(cmd, memoryPack.c, 1, 1, RenderTextureFormat.ARGBHalf);
-            cmd.CopyTexture(memoryPack.channelVectorTexture, 0, 0, vector.nameID, 0, 0);
-            var logicalShape = new NcnnRepro.BufferShape(1, memoryPack.c, 1, 1, 1);
-            var storageShape = new NcnnRepro.BufferShape(3, memoryPack.c, 1, 1, 1);
+            var packs = Mathf.Max(1, Mathf.CeilToInt(memoryPack.c / 4f));
+            if (!TryGetOrCreateChannelVectorPack4Rt(memoryPack, out var packedVector) || packedVector == null)
+                return false;
+
+            // Match the Pack4 RT representation exactly: a channel vector occupies
+            // one texel across ceil(C/4) array slices, rather than C scalar texels.
+            var vector = owner.RentTempArray(cmd, 1, 1, packs, RenderTextureFormat.ARGBHalf);
+            owner.Ops.CopyPack4(cmd, packedVector, 0, vector, 0, packs);
+            var logicalShape = new NcnnRepro.BufferShape(3, 1, 1, 1, memoryPack.c);
+            var storageShape = logicalShape;
             blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(vector, logicalShape, storageShape, owned: true, blobName: layer.topNames[0]);
             if (shapes != null)
                 shapes[layer.topNames[0]] = logicalShape;
             owner.DebugLog?.Invoke(
-                "[MemoryDataChannelVector][cmd] texture copy"
+                "[MemoryDataChannelVector][cmd] pack4 texture copy"
                 + " | layer=" + layer.name
                 + " | top=" + layer.topNames[0]
-                + " | channels=" + memoryPack.c.ToString(CultureInfo.InvariantCulture));
+                + " | channels=" + memoryPack.c.ToString(CultureInfo.InvariantCulture)
+                + " | packs=" + packs.ToString(CultureInfo.InvariantCulture));
             return true;
+        }
+
+        private static bool TryGetOrCreateChannelVectorPack4Rt(NcnnRepro.MemoryDataPack memoryPack, out RenderTexture packedVector)
+        {
+            packedVector = null;
+            if (memoryPack == null
+                || memoryPack.dims != 3
+                || memoryPack.w != 1
+                || memoryPack.h != 1
+                || memoryPack.d != 1
+                || memoryPack.c <= 0
+                || memoryPack.cpuData == null
+                || memoryPack.cpuData.Length < memoryPack.c)
+            {
+                return false;
+            }
+
+            var channels = memoryPack.c;
+            var packs = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            if (memoryPack.pack4Rt != null
+                && memoryPack.pack4RtChannels == channels
+                && memoryPack.pack4RtDepth == packs
+                && memoryPack.pack4Rt.IsCreated())
+            {
+                packedVector = memoryPack.pack4Rt;
+                return true;
+            }
+
+            try
+            {
+                if (memoryPack.pack4Rt != null)
+                {
+                    NcnnGpuResourceTracker.ReleaseTexture(memoryPack.pack4Rt, "NcnnMemoryDataChannelVector.recreate");
+                    memoryPack.pack4Rt.Release();
+                    UnityEngine.Object.DestroyImmediate(memoryPack.pack4Rt);
+                    memoryPack.pack4Rt = null;
+                }
+
+                var descriptor = new RenderTextureDescriptor(1, 1, RenderTextureFormat.ARGBFloat, 0)
+                {
+                    dimension = TextureDimension.Tex2DArray,
+                    volumeDepth = packs,
+                    enableRandomWrite = false,
+                    msaaSamples = 1
+                };
+                var texture = new RenderTexture(descriptor)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    name = "NcnnMemoryDataChannelVectorPack4"
+                };
+                texture.Create();
+                NcnnGpuResourceTracker.RegisterTexture(texture, "NcnnMemoryDataChannelVectorPack4");
+
+                var upload = new Texture2DArray(1, 1, packs, TextureFormat.RGBAFloat, false, true)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    anisoLevel = 0,
+                    name = "NcnnMemoryDataChannelVectorPack4Upload"
+                };
+                try
+                {
+                    for (var pack = 0; pack < packs; pack++)
+                    {
+                        var baseIndex = pack * 4;
+                        var x = baseIndex < channels ? memoryPack.cpuData[baseIndex] : 0f;
+                        var y = baseIndex + 1 < channels ? memoryPack.cpuData[baseIndex + 1] : 0f;
+                        var z = baseIndex + 2 < channels ? memoryPack.cpuData[baseIndex + 2] : 0f;
+                        var w = baseIndex + 3 < channels ? memoryPack.cpuData[baseIndex + 3] : 0f;
+                        upload.SetPixels(new[] { new Color(x, y, z, w) }, pack, 0);
+                    }
+                    upload.Apply(false, true);
+                    for (var pack = 0; pack < packs; pack++)
+                        Graphics.CopyTexture(upload, pack, 0, texture, pack, 0);
+                }
+                finally
+                {
+                    UnityEngine.Object.DestroyImmediate(upload);
+                }
+
+                memoryPack.pack4Rt = texture;
+                memoryPack.pack4RtChannels = channels;
+                memoryPack.pack4RtDepth = packs;
+                packedVector = texture;
+                return true;
+            }
+            catch
+            {
+                if (memoryPack.pack4Rt != null)
+                {
+                    try { memoryPack.pack4Rt.Release(); } catch { }
+                    UnityEngine.Object.DestroyImmediate(memoryPack.pack4Rt);
+                    memoryPack.pack4Rt = null;
+                }
+                return false;
+            }
         }
 
         private static bool ShouldUseVistaPromptPack4RtOnly(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnRepro.MemoryDataPack memoryPack)

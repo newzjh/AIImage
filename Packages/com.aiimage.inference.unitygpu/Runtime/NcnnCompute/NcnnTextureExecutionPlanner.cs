@@ -18,6 +18,9 @@ namespace NcnnCompute
         // Shape encoding is [dims, w, h, d, c], matching NcnnRepro.BufferShape.
         public int[] logicalShape;
         public int[] storageShape;
+        // MaxPoolingInd indices retain the source activation shape so MaxUnPooling can
+        // reconstruct its exact output dimensions without a CPU-side readback.
+        public int[] sourceLogicalShape;
         public string layout = NcnnTexturePlanLayout.Packed4;
         public string dtype = "FP16";
         public string aliasGroup;
@@ -237,7 +240,8 @@ namespace NcnnCompute
                     }
                 }
 
-                var inputsMatchTarget = inputs.All(input => MatchesTarget(input, request));
+                var inputsMatchTarget = inputs.Select((input, inputIndex) =>
+                    MatchesTarget(input, request) || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)).All(value => value);
                 var strictCapability = NcnnOperatorCapabilities.IsStrictlySupported(
                     capability,
                     request.targetBackend,
@@ -672,7 +676,9 @@ namespace NcnnCompute
             for (var index = 0; index < verification.outputs.Length; index++)
             {
                 var output = verification.outputs[index];
-                if (output == null || !MatchesTarget(output, request) || !string.Equals(output.blob, topNames[index], StringComparison.Ordinal))
+                if (output == null
+                    || (!MatchesTarget(output, request) && !IsMaxPoolingIndexOutput(layer, index, output, request))
+                    || !string.Equals(output.blob, topNames[index], StringComparison.Ordinal))
                 {
                     reason = "The loaded-runtime verifier produced an output descriptor outside the requested target contract.";
                     return false;
@@ -805,6 +811,40 @@ namespace NcnnCompute
                 && TryToBufferShape(descriptor.storageShape, out _);
         }
 
+        private static bool IsMaxPoolingIndexInput(
+            string operatorName,
+            int inputIndex,
+            NcnnTexturePlanTensorDescriptor descriptor,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            return string.Equals(operatorName, "MaxUnPooling", StringComparison.Ordinal)
+                && inputIndex == 1
+                && descriptor != null
+                && descriptor.textureBacked
+                && string.Equals(descriptor.layout, request.targetLayout, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(descriptor.dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                && TryToBufferShape(descriptor.logicalShape, out _)
+                && TryToBufferShape(descriptor.storageShape, out _)
+                && TryToBufferShape(descriptor.sourceLogicalShape, out _);
+        }
+
+        private static bool IsMaxPoolingIndexOutput(
+            NcnnParamModel.Layer layer,
+            int outputIndex,
+            NcnnTexturePlanTensorDescriptor descriptor,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            return string.Equals(layer?.typeName, "MaxPoolingInd", StringComparison.Ordinal)
+                && outputIndex == 1
+                && descriptor != null
+                && descriptor.textureBacked
+                && string.Equals(descriptor.layout, request.targetLayout, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(descriptor.dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                && TryToBufferShape(descriptor.logicalShape, out _)
+                && TryToBufferShape(descriptor.storageShape, out _)
+                && TryToBufferShape(descriptor.sourceLogicalShape, out _);
+        }
+
         private static NcnnTextureExecutionPlanDiagnostic CreateDiagnostic(
             NcnnTextureExecutionPlanRequest request,
             int layerIndex,
@@ -843,6 +883,7 @@ namespace NcnnCompute
                 blob = blob ?? descriptor?.blob ?? string.Empty,
                 logicalShape = CopyShape(descriptor?.logicalShape),
                 storageShape = CopyShape(descriptor?.storageShape),
+                sourceLogicalShape = CopyShape(descriptor?.sourceLogicalShape),
                 layout = descriptor?.layout ?? string.Empty,
                 dtype = descriptor?.dtype ?? string.Empty,
                 aliasGroup = descriptor?.aliasGroup ?? string.Empty,

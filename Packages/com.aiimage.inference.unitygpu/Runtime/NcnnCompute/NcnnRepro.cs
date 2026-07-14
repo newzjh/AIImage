@@ -1269,8 +1269,23 @@ namespace NcnnCompute
         public bool EnableMhaQkvFusion { get; set; }
         public bool EnableAttentionMatMulPack4Specializations { get; set; }
         public bool EnableVistaTailPack4Specializations { get; set; }
-        public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        private RenderTextureFormat _tensorTextureFormat = RenderTextureFormat.ARGBHalf;
+        public RenderTextureFormat TensorTextureFormat
+        {
+            get
+            {
+                if (ModelManifest != null)
+                    return UsesFp16ActivationStorage ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGBFloat;
+                return AppliedPrecisionMode == NcnnPrecisionMode.FP16
+                    ? RenderTextureFormat.ARGBHalf
+                    : AppliedPrecisionMode == NcnnPrecisionMode.FP32
+                        ? RenderTextureFormat.ARGBFloat
+                        : _tensorTextureFormat;
+            }
+            set => _tensorTextureFormat = value;
+        }
         public ModelManifest ModelManifest { get; private set; }
+        public NcnnPrecisionMode AppliedPrecisionMode { get; private set; } = NcnnPrecisionMode.Auto;
         public bool UsesFp16WeightStorage => ModelManifest?.precision?.weightDataType == TensorDataType.Float16;
         public bool UsesFp16ActivationStorage => ModelManifest?.precision?.activationDataType == TensorDataType.Float16;
         public long TemporaryTextureBudgetBytes { get; set; }
@@ -1339,10 +1354,26 @@ namespace NcnnCompute
             StrictTextureTargetLayout = NcnnTexturePlanLayout.Packed4;
         }
 
+        public void SetAppliedPrecisionMode(NcnnPrecisionMode precisionMode)
+        {
+            AppliedPrecisionMode = precisionMode;
+            if (ModelManifest == null)
+            {
+                _tensorTextureFormat = precisionMode == NcnnPrecisionMode.FP16
+                    ? RenderTextureFormat.ARGBHalf
+                    : precisionMode == NcnnPrecisionMode.FP32
+                        ? RenderTextureFormat.ARGBFloat
+                        : _tensorTextureFormat;
+                StrictTextureTargetDtype = precisionMode == NcnnPrecisionMode.FP32 ? "FP32" : "FP16";
+            }
+        }
+
         public RenderTextureFormat ResolveActivationTextureFormat(int dims)
         {
             if (ModelManifest == null)
-                return ResolveTensorTextureFormat(dims);
+                return AppliedPrecisionMode == NcnnPrecisionMode.Auto
+                    ? ResolveTensorTextureFormat(dims)
+                    : TensorTextureFormat;
             return UsesFp16ActivationStorage ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGBFloat;
         }
 
@@ -1486,6 +1517,10 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferInnerProduct(layer, inputs, request);
                 case "Pooling":
                     return VerifyStrictCommandBufferPooling(layer, inputs, request);
+                case "MaxPoolingInd":
+                    return VerifyStrictCommandBufferMaxPoolingInd(layer, inputs, request);
+                case "MaxUnPooling":
+                    return VerifyStrictCommandBufferMaxUnPooling(layer, inputs, request);
                 case "Pooling3D":
                     return VerifyStrictCommandBufferPooling3D(layer, inputs, request);
                 case "Reduction":
@@ -1835,18 +1870,128 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node(reason);
             if (input.dims != 3 || input.d != 1)
                 return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Pooling profile requires a 2D Pack4 activation.");
-            if (layer.GetInt(4, 0) != 1)
-                return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Pooling profile supports global pooling only.");
             if (layer.GetInt(7, 0) != 0)
                 return RejectStrictCommandBufferPack4Node("Adaptive pooling does not have a verified CommandBuffer Pack4 path.");
-            if (layer.GetInt(0, 0) != 1)
-                return RejectStrictCommandBufferPack4Node("The verified global Pooling profile supports average pooling only.");
+            var poolingType = layer.GetInt(0, 0);
+            if (poolingType != 0 && poolingType != 1)
+                return RejectStrictCommandBufferPack4Node("Pooling type must be max (0) or average (1).");
+            var globalPooling = layer.GetInt(4, 0) != 0;
+            if (globalPooling)
+            {
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    new BufferShape(3, 1, 1, 1, input.c),
+                    request,
+                    "command-buffer-pack4:pooling-global");
+            }
+
+            var kernelW = layer.GetInt(1, 0);
+            var kernelH = layer.GetInt(11, kernelW);
+            var strideW = layer.GetInt(2, 1);
+            var strideH = layer.GetInt(12, strideW);
+            var padLeft = layer.GetInt(3, 0);
+            var padRight = layer.GetInt(14, padLeft);
+            var padTop = layer.GetInt(13, padLeft);
+            var padBottom = layer.GetInt(15, padTop);
+            if (kernelW <= 0 || kernelH <= 0 || strideW <= 0 || strideH <= 0
+                || padLeft < 0 || padRight < 0 || padTop < 0 || padBottom < 0)
+            {
+                return RejectStrictCommandBufferPack4Node("Pooling requires positive kernel/stride and explicit non-negative padding.");
+            }
+            var outW = ComputeConvOut(input.w, kernelW, 1, strideW, padLeft, padRight);
+            var outH = ComputeConvOut(input.h, kernelH, 1, strideH, padTop, padBottom);
+            if (outW <= 0 || outH <= 0)
+                return RejectStrictCommandBufferPack4Node("Pooling produces a non-positive output shape.");
 
             return AcceptStrictCommandBufferPack4Node(
                 layer,
-                new BufferShape(3, 1, 1, 1, input.c),
+                new BufferShape(3, outW, outH, 1, input.c),
                 request,
-                "command-buffer-pack4:pooling-global");
+                "command-buffer-pack4:pooling");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMaxPoolingInd(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 3 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("MaxPoolingInd CommandBuffer Pack4 requires a rank-3 2D activation.");
+            if (layer?.topNames == null || layer.topNames.Length != 2)
+                return RejectStrictCommandBufferPack4Node("MaxPoolingInd CommandBuffer Pack4 requires value and index output blobs.");
+
+            var kernelW = layer.GetInt(1, 0);
+            var kernelH = layer.GetInt(11, kernelW);
+            var strideW = layer.GetInt(2, 1);
+            var strideH = layer.GetInt(12, strideW);
+            var padLeft = layer.GetInt(3, 0);
+            var padRight = layer.GetInt(14, padLeft);
+            var padTop = layer.GetInt(13, padLeft);
+            var padBottom = layer.GetInt(15, padTop);
+            if (kernelW <= 0 || kernelH <= 0 || strideW <= 0 || strideH <= 0
+                || padLeft < 0 || padRight < 0 || padTop < 0 || padBottom < 0)
+            {
+                return RejectStrictCommandBufferPack4Node("MaxPoolingInd requires positive kernel/stride and explicit non-negative padding.");
+            }
+
+            var outW = (input.w + padLeft + padRight - kernelW) / strideW + 1;
+            var outH = (input.h + padTop + padBottom - kernelH) / strideH + 1;
+            if (outW <= 0 || outH <= 0)
+                return RejectStrictCommandBufferPack4Node("MaxPoolingInd produces a non-positive output shape.");
+
+            var outputShape = new[] { 3, outW, outH, 1, input.c };
+            var sourceShape = new[] { input.dims, input.w, input.h, input.d, input.c };
+            return new NcnnTextureExecutionPlanNodeVerification
+            {
+                accepted = true,
+                executionPath = "command-buffer-pack4:max-pooling-indices",
+                outputs = new[]
+                {
+                    new NcnnTexturePlanTensorDescriptor
+                    {
+                        blob = layer.topNames[0],
+                        logicalShape = outputShape,
+                        storageShape = (int[])outputShape.Clone(),
+                        layout = request.targetLayout,
+                        dtype = request.targetDtype,
+                        aliasGroup = "computed:" + layer.name + ":value",
+                        textureBacked = true
+                    },
+                    new NcnnTexturePlanTensorDescriptor
+                    {
+                        blob = layer.topNames[1],
+                        logicalShape = (int[])outputShape.Clone(),
+                        storageShape = (int[])outputShape.Clone(),
+                        sourceLogicalShape = sourceShape,
+                        layout = request.targetLayout,
+                        dtype = "FP32",
+                        aliasGroup = "computed:" + layer.name + ":indices",
+                        textureBacked = true
+                    }
+                }
+            };
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMaxUnPooling(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (inputs == null || inputs.Count != 2)
+                return RejectStrictCommandBufferPack4Node("MaxUnPooling requires value and index texture descriptors.");
+            if (!TryGetStrictPlanShape(inputs[0], out var values, out var reason)
+                || !TryGetStrictPlanShape(inputs[1], out var indices, out reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (values.dims != 3 || values.d != 1 || !StrictPlanShapesEqual(values, indices))
+                return RejectStrictCommandBufferPack4Node("MaxUnPooling value and index tensors must be matching rank-3 Pack4 activations.");
+            if (!TryGetSourceShape(inputs[1], out var source))
+                return RejectStrictCommandBufferPack4Node("MaxUnPooling index descriptor lacks its originating pre-pool activation shape.");
+            if (source.dims != 3 || source.d != 1 || source.c != values.c)
+                return RejectStrictCommandBufferPack4Node("MaxUnPooling index source contract does not match the pooled activation channels.");
+
+            return AcceptStrictCommandBufferPack4Node(layer, source, request, "command-buffer-pack4:max-unpooling-indices");
         }
 
         private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferEltwise(
@@ -2203,7 +2348,7 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("Dynamic Interp size expressions are not proven by the static CommandBuffer Pack4 profile.");
 
             var resizeType = layer.GetInt(0, 0);
-            if (resizeType != 0 && resizeType != 1 && resizeType != 3)
+            if (resizeType != 0 && resizeType != 1 && resizeType != 2 && resizeType != 3)
                 return RejectStrictCommandBufferPack4Node("The Interp mode is outside the verified CommandBuffer Pack4 subset.");
             var scaleX = layer.GetFloat(2, 1f);
             var scaleY = layer.GetFloat(1, 1f);
@@ -2285,14 +2430,14 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("Only loaded 1x1 channel-vector MemoryData has a texture-native CommandBuffer path.");
             }
 
-            var logicalShape = new BufferShape(1, memory.c, 1, 1, 1);
-            var storageShape = new BufferShape(3, memory.c, 1, 1, 1);
+            var logicalShape = new BufferShape(3, 1, 1, 1, memory.c);
+            var storageShape = logicalShape;
             return AcceptStrictCommandBufferPack4Node(
                 layer,
                 logicalShape,
                 storageShape,
                 request,
-                "command-buffer-pack4:memory-data-channel-vector");
+                "command-buffer-pack4:memory-data-channel-vector-pack4");
         }
 
         private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferInnerProduct(
@@ -2846,8 +2991,16 @@ namespace NcnnCompute
                     if (orderType != 1)
                         return RejectStrictCommandBufferPack4Node("The verified LinearMat CommandBuffer permute profile requires a 2D transpose (order=1).");
                     output = new BufferShape(2, input.h, input.w, 1, 1);
-                    if (HasStrictPack4LinearMatStorage(inputs[0], input)
-                        || HasStrictScalar2DPack4Storage(inputs[0], input))
+                    if (HasStrictPack4LinearMatStorage(inputs[0], input))
+                    {
+                        return AcceptStrictCommandBufferPack4Node(
+                            layer,
+                            output,
+                            ResolvePack4LinearMatStorageShape(output),
+                            request,
+                            "command-buffer-pack4:permute-pack4-linear-2d");
+                    }
+                    if (HasStrictScalar2DPack4Storage(inputs[0], input))
                     {
                         return AcceptStrictCommandBufferPack4Node(
                             layer,
@@ -3310,6 +3463,20 @@ namespace NcnnCompute
             }
 
             shape = new BufferShape(logical[0], logical[1], logical[2], logical[3], logical[4]);
+            return true;
+        }
+
+        private static bool TryGetSourceShape(NcnnTexturePlanTensorDescriptor descriptor, out BufferShape shape)
+        {
+            shape = default;
+            var source = descriptor?.sourceLogicalShape;
+            if (source == null || source.Length != 5
+                || source[0] < 1 || source[0] > 4
+                || source[1] <= 0 || source[2] <= 0 || source[3] <= 0 || source[4] <= 0)
+            {
+                return false;
+            }
+            shape = new BufferShape(source[0], source[1], source[2], source[3], source[4]);
             return true;
         }
 
