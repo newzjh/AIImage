@@ -203,13 +203,38 @@ namespace NcnnCompute
                 return false;
 
             var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
-            var outStorageShape = useStrictLinearMat
-                ? NcnnRepro.ResolveLinearMatStorageShape(outLogicalShape)
-                : new NcnnRepro.BufferShape(3, Mathf.Max(1, outLogicalShape.w), Mathf.Max(1, outLogicalShape.h), 1, 1);
-            var outRt = useStrictLinearMat
-                ? owner.RentTempMat(context.commandBuffer, outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat())
-                : owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, RenderTextureFormat.ARGBHalf);
-            if (useStrictLinearMat)
+            var usePack4LinearMat = useStrictLinearMat
+                && (ip.outFeatures & 3) == 0
+                && !owner.RequiresFp32SensitiveOutputStorage(layer);
+            var outStorageShape = usePack4LinearMat
+                ? NcnnRepro.ResolvePack4LinearMatStorageShape(outLogicalShape)
+                : useStrictLinearMat
+                    ? NcnnRepro.ResolveLinearMatStorageShape(outLogicalShape)
+                    : new NcnnRepro.BufferShape(3, Mathf.Max(1, outLogicalShape.w), Mathf.Max(1, outLogicalShape.h), 1, 1);
+            var outRt = usePack4LinearMat
+                ? owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, RenderTextureFormat.ARGBHalf)
+                : useStrictLinearMat
+                    ? owner.RentTempMat(context.commandBuffer, outStorageShape.w, outStorageShape.h, NcnnRepro.ResolveLinearMatTextureFormat())
+                    : owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, RenderTextureFormat.ARGBHalf);
+            if (usePack4LinearMat)
+            {
+                owner.Ops.Gemm2DPack4LinearTextureA(
+                    context.commandBuffer,
+                    srcTex.texture,
+                    false,
+                    ip.w,
+                    ip.b,
+                    rows,
+                    ip.outFeatures,
+                    ip.inFeatures,
+                    transB: true,
+                    alpha: 1f,
+                    beta: 1f,
+                    useC: true,
+                    broadcastTypeC: 4,
+                    output: outRt);
+            }
+            else if (useStrictLinearMat)
             {
                 owner.Ops.Gemm2DLinearTextureA(
                     context.commandBuffer,
@@ -346,13 +371,37 @@ namespace NcnnCompute
                 return false;
 
             var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
-            var storageShape = useStrictLinearMat
-                ? NcnnRepro.ResolveLinearMatStorageShape(logicalShape)
-                : new NcnnRepro.BufferShape(3, Mathf.Max(1, logicalShape.w), Mathf.Max(1, logicalShape.h), 1, 1);
-            var outRt = useStrictLinearMat
-                ? owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat())
-                : owner.RentTempArray(storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf);
-            if (useStrictLinearMat)
+            var usePack4LinearMat = useStrictLinearMat
+                && (ip.outFeatures & 3) == 0
+                && !owner.RequiresFp32SensitiveOutputStorage(layer);
+            var storageShape = usePack4LinearMat
+                ? NcnnRepro.ResolvePack4LinearMatStorageShape(logicalShape)
+                : useStrictLinearMat
+                    ? NcnnRepro.ResolveLinearMatStorageShape(logicalShape)
+                    : new NcnnRepro.BufferShape(3, Mathf.Max(1, logicalShape.w), Mathf.Max(1, logicalShape.h), 1, 1);
+            var outRt = usePack4LinearMat
+                ? owner.RentTempArray(storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf)
+                : useStrictLinearMat
+                    ? owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat())
+                    : owner.RentTempArray(storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf);
+            if (usePack4LinearMat)
+            {
+                owner.Ops.Gemm2DPack4LinearTextureA(
+                    srcTex.texture,
+                    false,
+                    ip.w,
+                    ip.b,
+                    rows,
+                    ip.outFeatures,
+                    ip.inFeatures,
+                    transB: true,
+                    alpha: 1f,
+                    beta: 1f,
+                    useC: true,
+                    broadcastTypeC: 4,
+                    output: outRt);
+            }
+            else if (useStrictLinearMat)
             {
                 owner.Ops.Gemm2DLinearTextureA(
                     srcTex.texture,

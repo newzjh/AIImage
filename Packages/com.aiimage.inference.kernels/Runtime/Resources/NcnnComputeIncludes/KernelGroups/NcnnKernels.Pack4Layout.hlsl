@@ -411,53 +411,6 @@ void NcnnPermuteLinearMat2D_Impl(uint3 id)
     _LinearOut0[int2(outX, outY)] = value;
 }
 
-// Transpose a logical 2D matrix while preserving the Pack4-linear physical layout.
-// Each texture texel stores four adjacent matrix columns, so the result can feed
-// Pack4-linear reshape/Gemm consumers without an intermediate scalar texture.
-void NcnnPermutePack4LinearMat2D_Impl(uint3 id)
-{
-    uint outPackedWidth, outHeight, outDepth;
-    _TexOut0Arr.GetDimensions(outPackedWidth, outHeight, outDepth);
-    if (id.x >= outPackedWidth || id.y >= outHeight || id.z >= outDepth)
-        return;
-
-    int packedColumn = (int)id.x;
-    int outRow = (int)id.y;
-    int4 outColumn4 = packedColumn * 4 + int4(0, 1, 2, 3);
-    float4 value = 0.0;
-
-    if (outColumn4.x < _PermutePack4OutW)
-    {
-        int srcX = _PermutePack4Axis0 == 0 ? outColumn4.x : outRow;
-        int srcY = _PermutePack4Axis0 == 1 ? outColumn4.x : outRow;
-        if (srcX >= 0 && srcX < _PermutePack4InW && srcY >= 0 && srcY < _PermutePack4InH)
-            value.x = NcnnReadLane(_TexIn0Arr[int3(srcX >> 2, srcY, 0)], srcX & 3);
-    }
-    if (outColumn4.y < _PermutePack4OutW)
-    {
-        int srcX = _PermutePack4Axis0 == 0 ? outColumn4.y : outRow;
-        int srcY = _PermutePack4Axis0 == 1 ? outColumn4.y : outRow;
-        if (srcX >= 0 && srcX < _PermutePack4InW && srcY >= 0 && srcY < _PermutePack4InH)
-            value.y = NcnnReadLane(_TexIn0Arr[int3(srcX >> 2, srcY, 0)], srcX & 3);
-    }
-    if (outColumn4.z < _PermutePack4OutW)
-    {
-        int srcX = _PermutePack4Axis0 == 0 ? outColumn4.z : outRow;
-        int srcY = _PermutePack4Axis0 == 1 ? outColumn4.z : outRow;
-        if (srcX >= 0 && srcX < _PermutePack4InW && srcY >= 0 && srcY < _PermutePack4InH)
-            value.z = NcnnReadLane(_TexIn0Arr[int3(srcX >> 2, srcY, 0)], srcX & 3);
-    }
-    if (outColumn4.w < _PermutePack4OutW)
-    {
-        int srcX = _PermutePack4Axis0 == 0 ? outColumn4.w : outRow;
-        int srcY = _PermutePack4Axis0 == 1 ? outColumn4.w : outRow;
-        if (srcX >= 0 && srcX < _PermutePack4InW && srcY >= 0 && srcY < _PermutePack4InH)
-            value.w = NcnnReadLane(_TexIn0Arr[int3(srcX >> 2, srcY, 0)], srcX & 3);
-    }
-
-    _TexOut0Arr[int3(packedColumn, outRow, (int)id.z)] = value;
-}
-
 void NcnnWindowPartitionPack4_Impl(uint3 id)
 {
     uint w, h, d;

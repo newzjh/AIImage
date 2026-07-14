@@ -383,7 +383,6 @@ namespace NcnnCompute
         private readonly int _kPermutePack4;
         private readonly int _kPermutePack4Cdhw;
         private readonly int _kPermuteLinearMat2D;
-        private readonly int _kPermutePack4LinearMat2D;
         private readonly int _kWindowPartitionPack4;
         private readonly int _kWindowUnpartitionPack4;
         private readonly int _kReshapePack4ToScalar2D;
@@ -742,7 +741,6 @@ namespace NcnnCompute
             _kPermutePack4 = _cs.FindKernel("NcnnPermutePack4");
             _kPermutePack4Cdhw = _cs.FindKernel("NcnnPermutePack4CDHW");
             _kPermuteLinearMat2D = _cs.FindKernel("NcnnPermuteLinearMat2D");
-            _kPermutePack4LinearMat2D = _cs.FindKernel("NcnnPermutePack4LinearMat2D");
             _kWindowPartitionPack4 = _cs.FindKernel("NcnnWindowPartitionPack4");
             _kWindowUnpartitionPack4 = _cs.FindKernel("NcnnWindowUnpartitionPack4");
             _kReshapePack4ToScalar2D = _cs.FindKernel("NcnnReshapePack4ToScalar2D");
@@ -2047,37 +2045,6 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kPermuteLinearMat2D, "_LinearIn0", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kPermuteLinearMat2D, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kPermuteLinearMat2D, output.width, output.height, 8, 8);
-        }
-
-        public void PermutePack4LinearMat2D(CommandBuffer cmd, ComputeTexture input, int inW, int inH, Vector4Int axes, int outW, int outH, ComputeTexture output)
-        {
-            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
-            if (input == null) throw new ArgumentNullException(nameof(input));
-            if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeIntParam(_cs, "_PermutePack4InW", inW);
-            cmd.SetComputeIntParam(_cs, "_PermutePack4InH", inH);
-            cmd.SetComputeIntParam(_cs, "_PermutePack4OutW", outW);
-            cmd.SetComputeIntParam(_cs, "_PermutePack4OutH", outH);
-            cmd.SetComputeIntParam(_cs, "_PermutePack4Axis0", axes.x);
-            cmd.SetComputeIntParam(_cs, "_PermutePack4Axis1", axes.y);
-            cmd.SetComputeTextureParam(_cs, _kPermutePack4LinearMat2D, "_TexIn0Arr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kPermutePack4LinearMat2D, "_TexOut0Arr", output.nameID);
-            Dispatch3D(cmd, _kPermutePack4LinearMat2D, output.width, output.height, 1, 8, 8);
-        }
-
-        public void PermutePack4LinearMat2D(RenderTexture input, int inW, int inH, Vector4Int axes, int outW, int outH, RenderTexture output)
-        {
-            if (input == null) throw new ArgumentNullException(nameof(input));
-            if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetInt("_PermutePack4InW", inW);
-            _cs.SetInt("_PermutePack4InH", inH);
-            _cs.SetInt("_PermutePack4OutW", outW);
-            _cs.SetInt("_PermutePack4OutH", outH);
-            _cs.SetInt("_PermutePack4Axis0", axes.x);
-            _cs.SetInt("_PermutePack4Axis1", axes.y);
-            _cs.SetTexture(_kPermutePack4LinearMat2D, "_TexIn0Arr", input);
-            _cs.SetTexture(_kPermutePack4LinearMat2D, "_TexOut0Arr", output);
-            Dispatch3D(_kPermutePack4LinearMat2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void WindowPartitionPack4(RenderTexture input, int inW, int inH, int inD, int inC, int outW, int outH, int outC, int groupsA, int groupsB, int groupsC, int tokensA, int tokensB, int tokensC, RenderTexture output)

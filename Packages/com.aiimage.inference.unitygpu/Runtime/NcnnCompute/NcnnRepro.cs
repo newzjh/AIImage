@@ -1386,6 +1386,22 @@ namespace NcnnCompute
                 : RenderTextureFormat.ARGBFloat;
         }
 
+        internal bool RequiresFp32SensitiveOutputStorage(NcnnParamModel.Layer layer)
+        {
+            if (layer == null
+                || ModelManifest?.precision?.sensitiveOutputDataType != TensorDataType.Float32
+                || layer.topNames == null)
+                return false;
+
+            var outputBlobName = ResolveDefaultOutputBlobName();
+            for (var i = 0; i < layer.topNames.Length; i++)
+            {
+                if (string.Equals(layer.topNames[i], outputBlobName, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
+        }
+
         public static bool IsDebugOracleBuild
         {
             get
