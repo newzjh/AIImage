@@ -23,6 +23,16 @@ namespace NcnnCompute
     }
 
     [Serializable]
+    public sealed class NcnnOperatorCapabilityProfile
+    {
+        public string backend;
+        public string[] layouts;
+        public string shapeProfile;
+        public string[] supportedParameters;
+        public string[] rejectedParameters;
+    }
+
+    [Serializable]
     public sealed class NcnnOperatorCapability
     {
         public string operatorName;
@@ -41,6 +51,7 @@ namespace NcnnCompute
         public string status;
         public string limitations;
         public string[] requiredParameters;
+        public NcnnOperatorCapabilityProfile[] profiles;
     }
 
     [Serializable]
@@ -121,8 +132,8 @@ namespace NcnnCompute
     // This is intentionally metadata-only. It never creates a layer, NcnnRepro, texture, or buffer.
     public static class NcnnOperatorCapabilities
     {
-        public const int SchemaVersion = 1;
-        public const string Contract = "aiimage.operator-capabilities/v1";
+        public const int SchemaVersion = 2;
+        public const string Contract = "aiimage.operator-capabilities/v2";
         public const string PreflightContract = "aiimage.model-preflight/v1";
 
         private static readonly HashSet<string> UnsupportedOperators = new HashSet<string>(StringComparer.Ordinal)
@@ -163,6 +174,8 @@ namespace NcnnCompute
             { "Deconvolution", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
             { "DeconvolutionDepthWise", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
             { "Deconvolution3D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
+            { "Pooling3D", new[] { "0:pooling_type", "1:kernel_w" } },
+            { "Interp", new[] { "0:resize_type" } },
             { "InnerProduct", new[] { "0:num_output", "1:bias_term", "2:weight_data_size" } },
         };
 
@@ -283,7 +296,8 @@ namespace NcnnCompute
                     : Array.Empty<string>(),
                 status = status,
                 limitations = ResolveLimitations(operatorName, status),
-                requiredParameters = RequiredParameters.TryGetValue(operatorName, out var parameters) ? parameters : Array.Empty<string>()
+                requiredParameters = RequiredParameters.TryGetValue(operatorName, out var parameters) ? parameters : Array.Empty<string>(),
+                profiles = ResolveProfiles(operatorName)
             };
         }
 
@@ -312,6 +326,8 @@ namespace NcnnCompute
         {
             if (operatorName == "Convolution3D" || operatorName == "Deconvolution3D" || operatorName == "Pooling3D")
                 return new[] { "CDHW", "Packed4" };
+            if (operatorName == "Interp")
+                return new[] { "NCHW", "CDHW", "Packed4" };
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
                 return new[] { "Linear", "Packed4" };
             if (SentisOperators.Contains(operatorName))
@@ -354,9 +370,73 @@ namespace NcnnCompute
             if (operatorName == "LayerNorm" || operatorName == "Softmax" || operatorName == "Reduction"
                 || operatorName == "MultiHeadAttention" || operatorName == "SDPA")
                 return "Texture branches are shape-specific and/or have placeholder or legacy buffer branches; no full strict CommandBuffer contract is recorded.";
-            if (operatorName == "Convolution3D" || operatorName == "Deconvolution3D" || operatorName == "Pooling3D")
-                return "3D CDHW paths are not yet marked as fully verified Pack4 CommandBuffer production support.";
+            if (operatorName == "Convolution3D")
+                return "Partial until the loaded node proves the group=1 OIDHW profile, explicit non-negative W/H/D padding, positive kernel/stride/dilation, supported activation, and TensorDescriptor CDHW Pack4 storage. Strict planning rejects every other branch.";
+            if (operatorName == "Deconvolution3D")
+                return "Partial until the loaded node proves the group=1 OIDHW profile, explicit non-negative W/H/D padding, zero output padding, positive kernel/stride/dilation, supported activation, and TensorDescriptor CDHW Pack4 storage. Strict planning rejects every other branch.";
+            if (operatorName == "Pooling3D")
+                return "Partial until the loaded node proves max/average global, adaptive, or explicit/full/SAME W/H/D pooling with TensorDescriptor CDHW Pack4 storage. Strict planning rejects invalid padding and all unlisted modes.";
+            if (operatorName == "Interp")
+                return "2D paths remain partial. The CDHW runtime profile is static nearest (1) or trilinear (2) resize with align_corners explicitly recorded, TensorDescriptor Pack4 storage, and no dynamic size expression; strict planning rejects other CDHW modes.";
             return "A texture branch may exist for selected shapes, but this entry has not passed full Pack4 CommandBuffer model validation. Strict planning rejects partial capability.";
+        }
+
+        private static NcnnOperatorCapabilityProfile[] ResolveProfiles(string operatorName)
+        {
+            const string CdhwShape = "logical [dims=4,w,h,d,c]; storage [dims=4,w,h,d,c]; Texture2DArray slices=d*ceil(c/4)";
+            switch (operatorName)
+            {
+                case "Convolution3D":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "CDHW", "Packed4" },
+                            shapeProfile = CdhwShape,
+                            supportedParameters = new[] { "group=1", "kernel_w/kernel_h/kernel_d>0", "stride_w/stride_h/stride_d>0", "dilation_w/dilation_h/dilation_d>0", "explicit pad_left/right/top/bottom/front/behind>=0", "bias optional", "activation none/ReLU/LeakyReLU/Sigmoid" },
+                            rejectedParameters = new[] { "group!=1", "negative/auto padding", "unsupported activation", "weight profile mismatch" }
+                        }
+                    };
+                case "Deconvolution3D":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "CDHW", "Packed4" },
+                            shapeProfile = CdhwShape,
+                            supportedParameters = new[] { "group=1", "kernel_w/kernel_h/kernel_d>0", "stride_w/stride_h/stride_d>0", "dilation_w/dilation_h/dilation_d>0", "explicit pad_left/right/top/bottom/front/behind>=0", "output_padding=0", "bias optional", "activation none/ReLU/LeakyReLU/Sigmoid" },
+                            rejectedParameters = new[] { "group!=1", "non-zero output padding", "negative/auto padding", "unsupported activation", "weight profile mismatch" }
+                        }
+                    };
+                case "Pooling3D":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "CDHW", "Packed4" },
+                            shapeProfile = CdhwShape,
+                            supportedParameters = new[] { "pooling_type=max|average", "global or adaptive or explicit/full/SAME_UPPER/SAME_LOWER W/H/D kernel/stride/pad", "include_pad for average" },
+                            rejectedParameters = new[] { "invalid pad mode", "negative padding", "kernel larger than padded input" }
+                        }
+                    };
+                case "Interp":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "CDHW", "Packed4" },
+                            shapeProfile = CdhwShape,
+                            supportedParameters = new[] { "resize_type=1 nearest|2 trilinear", "static output W/H/D or positive scale W/H/D", "align_corners=0|1" },
+                            rejectedParameters = new[] { "dynamic_target_size", "size_expr", "bicubic/other resize modes" }
+                        }
+                    };
+                default:
+                    return Array.Empty<NcnnOperatorCapabilityProfile>();
+            }
         }
     }
 

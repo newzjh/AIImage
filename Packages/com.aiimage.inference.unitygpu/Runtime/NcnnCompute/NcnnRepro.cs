@@ -1393,10 +1393,14 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferConvolution(layer, inputs, request);
                 case "ConvolutionDepthWise":
                     return VerifyStrictCommandBufferDepthWiseConvolution(layer, inputs, request);
+                case "Convolution3D":
+                    return VerifyStrictCommandBufferConvolution3D(layer, inputs, request);
                 case "Deconvolution":
                     return VerifyStrictCommandBufferDeconvolution(layer, inputs, request, depthWiseLayer: false);
                 case "DeconvolutionDepthWise":
                     return VerifyStrictCommandBufferDeconvolution(layer, inputs, request, depthWiseLayer: true);
+                case "Deconvolution3D":
+                    return VerifyStrictCommandBufferDeconvolution3D(layer, inputs, request);
                 case "Eltwise":
                     return VerifyStrictCommandBufferEltwise(layer, inputs, request);
                 case "Concat":
@@ -1404,7 +1408,7 @@ namespace NcnnCompute
                 case "BinaryOp":
                     return VerifyStrictCommandBufferBinaryOp(layer, inputs, request);
                 case "Interp":
-                    return VerifyStrictCommandBufferInterp(layer, inputs, request);
+                    return VerifyStrictCommandBufferInterp3DOr2D(layer, inputs, request);
                 case "PixelShuffle":
                     return VerifyStrictCommandBufferPixelShuffle(layer, inputs, request);
                 case "UnaryOp":
@@ -1417,6 +1421,8 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferInnerProduct(layer, inputs, request);
                 case "Pooling":
                     return VerifyStrictCommandBufferPooling(layer, inputs, request);
+                case "Pooling3D":
+                    return VerifyStrictCommandBufferPooling3D(layer, inputs, request);
                 case "Reduction":
                     return VerifyStrictCommandBufferReduction(layer, inputs, request);
                 case "BatchNorm":
@@ -1436,6 +1442,114 @@ namespace NcnnCompute
                 default:
                     return RejectStrictCommandBufferPack4Node("No loaded-runtime Pack4 proof exists for operator " + (operatorName ?? string.Empty) + ".");
             }
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferConvolution3D(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictCdhwPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_conv.TryGetValue(layer.name, out var conv) || conv == null)
+                return RejectStrictCommandBufferPack4Node("Packed 3D convolution weights were not loaded for this layer.");
+            if (input.c != conv.inC)
+                return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded 3D convolution profile.");
+            if (!TryValidateCommandBuffer3dConvProfile(conv, out var profileReason))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer 3D convolution profile rejected: " + profileReason);
+
+            var output = new BufferShape(
+                4,
+                ComputeConvOut(input.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight),
+                ComputeConvOut(input.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom),
+                ComputeConvOut(input.d, conv.kernelD, conv.dilationD, conv.strideD, conv.padFront, conv.padBehind),
+                conv.outC);
+            if (output.w <= 0 || output.h <= 0 || output.d <= 0)
+                return RejectStrictCommandBufferPack4Node("The 3D convolution profile resolves a non-positive CDHW output extent.");
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:convolution3d-cdhw");
+        }
+
+        private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDeconvolution3D(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictCdhwPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_deconv.TryGetValue(layer.name, out var deconv) || deconv == null)
+                return RejectStrictCommandBufferPack4Node("Packed 3D deconvolution weights were not loaded for this layer.");
+            if (input.c != deconv.inC)
+                return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded 3D deconvolution profile.");
+            if (!TryValidateCommandBuffer3dDeconvProfile(deconv, out var profileReason))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer 3D deconvolution profile rejected: " + profileReason);
+
+            var output = new BufferShape(
+                4,
+                ComputeDeconvOut(input.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight),
+                ComputeDeconvOut(input.h, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom),
+                ComputeDeconvOut(input.d, deconv.kernelD, deconv.dilationD, deconv.strideD, deconv.padFront, deconv.padBehind, deconv.outputPadBehind),
+                deconv.outC);
+            if (output.w <= 0 || output.h <= 0 || output.d <= 0)
+                return RejectStrictCommandBufferPack4Node("The 3D deconvolution profile resolves a non-positive CDHW output extent.");
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:deconvolution3d-cdhw");
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPooling3D(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictCdhwPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!TryResolveStrictCommandBufferPooling3dOutput(layer, input, out var output, out var profileReason))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer 3D pooling profile rejected: " + profileReason);
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:pooling3d-cdhw");
+        }
+
+        private static bool TryValidateCommandBuffer3dConvProfile(ConvPack conv, out string reason)
+        {
+            reason = null;
+            if (conv == null || conv.packedWeight4 == null || conv.packedBias4 == null)
+                reason = "immutable Pack4 O4I4K3 weights/bias are unavailable";
+            else if (conv.group != 1)
+                reason = "only group=1 is implemented by the CDHW Pack4 kernel";
+            else if (conv.inC <= 0 || conv.outC <= 0)
+                reason = "input and output channels must be positive";
+            else if (conv.kernelW <= 0 || conv.kernelH <= 0 || conv.kernelD <= 0
+                || conv.strideW <= 0 || conv.strideH <= 0 || conv.strideD <= 0
+                || conv.dilationW <= 0 || conv.dilationH <= 0 || conv.dilationD <= 0)
+                reason = "kernel, stride, and dilation must be positive on W/H/D";
+            else if (conv.padLeft < 0 || conv.padRight < 0 || conv.padTop < 0 || conv.padBottom < 0 || conv.padFront < 0 || conv.padBehind < 0)
+                reason = "negative or auto padding is unsupported";
+            else if (!IsCommandBufferConvActivationSupported(conv.activationType))
+                reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
+            else if (conv.weightSize != conv.outC * conv.inC * conv.kernelW * conv.kernelH * conv.kernelD)
+                reason = "weight_data_size does not match the group=1 OIDHW profile";
+            return reason == null;
+        }
+
+        private static bool TryValidateCommandBuffer3dDeconvProfile(DeconvPack deconv, out string reason)
+        {
+            reason = null;
+            if (deconv == null || deconv.packedWeight4 == null || deconv.packedBias4 == null)
+                reason = "immutable Pack4 O4I4K3 weights/bias are unavailable";
+            else if (deconv.group != 1)
+                reason = "only group=1 is implemented by the CDHW Pack4 kernel";
+            else if (deconv.inC <= 0 || deconv.outC <= 0)
+                reason = "input and output channels must be positive";
+            else if (deconv.kernelW <= 0 || deconv.kernelH <= 0 || deconv.kernelD <= 0
+                || deconv.strideW <= 0 || deconv.strideH <= 0 || deconv.strideD <= 0
+                || deconv.dilationW <= 0 || deconv.dilationH <= 0 || deconv.dilationD <= 0)
+                reason = "kernel, stride, and dilation must be positive on W/H/D";
+            else if (deconv.padLeft < 0 || deconv.padRight < 0 || deconv.padTop < 0 || deconv.padBottom < 0 || deconv.padFront < 0 || deconv.padBehind < 0)
+                reason = "negative or auto padding is unsupported";
+            else if (deconv.outputPadRight != 0 || deconv.outputPadBottom != 0 || deconv.outputPadBehind != 0)
+                reason = "non-zero output padding has no verified CDHW Pack4 kernel profile";
+            else if (!IsCommandBufferConvActivationSupported(deconv.activationType))
+                reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
+            else if (deconv.weightSize != deconv.outC * deconv.inC * deconv.kernelW * deconv.kernelH * deconv.kernelD)
+                reason = "weight_data_size does not match the group=1 OIDHW profile";
+            return reason == null;
         }
 
         private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferConvolution(
@@ -1755,6 +1869,174 @@ namespace NcnnCompute
                 && storage[2] == 1
                 && storage[3] == 1
                 && storage[4] == 1;
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferInterp3DOr2D(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            return input.dims == 4
+                ? VerifyStrictCommandBufferInterp3D(layer, inputs, input, request)
+                : VerifyStrictCommandBufferInterp(layer, inputs, request);
+        }
+
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferInterp3D(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            BufferShape input,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!HasStrictCdhwPack4Storage(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer Interp requires a TensorDescriptor-backed CDHW Pack4 Texture2DArray input.");
+            if (!string.IsNullOrWhiteSpace(layer.GetString(9, null)) || layer.GetInt(5, 0) != 0)
+                return RejectStrictCommandBufferPack4Node("Dynamic Interp size expressions are not proven by the static CDHW CommandBuffer Pack4 profile.");
+
+            var resizeType = layer.GetInt(0, 0);
+            if (resizeType != 1 && resizeType != 2)
+                return RejectStrictCommandBufferPack4Node("The CDHW Interp profile supports only nearest (1) and trilinear (2) modes.");
+
+            var outputWidth = layer.GetInt(4, 0);
+            var outputHeight = layer.GetInt(3, 0);
+            var outputDepth = layer.GetInt(8, 0);
+            var scaleX = layer.GetFloat(2, 1f);
+            var scaleY = layer.GetFloat(1, 1f);
+            var scaleZ = layer.GetFloat(7, 0f);
+            if (scaleZ <= 0f)
+                scaleZ = scaleY;
+            if (outputWidth == 0 && scaleX <= 0f || outputHeight == 0 && scaleY <= 0f || outputDepth == 0 && scaleZ <= 0f)
+                return RejectStrictCommandBufferPack4Node("The CDHW Interp profile requires positive static sizes or scale factors on W/H/D.");
+            if (outputWidth == 0)
+                outputWidth = Mathf.Max(1, (int)(input.w * scaleX));
+            if (outputHeight == 0)
+                outputHeight = Mathf.Max(1, (int)(input.h * scaleY));
+            if (outputDepth == 0)
+                outputDepth = Mathf.Max(1, (int)(input.d * scaleZ));
+            if (outputWidth <= 0 || outputHeight <= 0 || outputDepth <= 0)
+                return RejectStrictCommandBufferPack4Node("Interp resolved a non-positive CDHW output extent.");
+
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(4, outputWidth, outputHeight, outputDepth, input.c),
+                request,
+                "command-buffer-pack4:interp-cdhw");
+        }
+
+        private static bool TryResolveStrictCommandBufferPooling3dOutput(
+            NcnnParamModel.Layer layer,
+            BufferShape input,
+            out BufferShape output,
+            out string reason)
+        {
+            output = default;
+            reason = null;
+            var poolType = layer.GetInt(0, 0);
+            if (poolType != 0 && poolType != 1)
+            {
+                reason = "pooling supports only max (0) and average (1)";
+                return false;
+            }
+
+            var global = layer.GetInt(4, 0) != 0;
+            var adaptive = layer.GetInt(7, 0) != 0;
+            if (global && adaptive)
+            {
+                reason = "global and adaptive pooling cannot be combined";
+                return false;
+            }
+            if (global)
+            {
+                output = new BufferShape(4, 1, 1, 1, input.c);
+                return true;
+            }
+
+            var kernelW = Mathf.Max(1, layer.GetInt(1, 0));
+            var kernelH = Mathf.Max(1, layer.GetInt(11, kernelW));
+            var kernelD = Mathf.Max(1, layer.GetInt(21, kernelW));
+            var strideW = Mathf.Max(1, layer.GetInt(2, 1));
+            var strideH = Mathf.Max(1, layer.GetInt(12, strideW));
+            var strideD = Mathf.Max(1, layer.GetInt(22, strideW));
+            var padLeft = layer.GetInt(3, 0);
+            var padRight = layer.GetInt(14, padLeft);
+            var padTop = layer.GetInt(13, padLeft);
+            var padBottom = layer.GetInt(15, padTop);
+            var padFront = layer.GetInt(23, padLeft);
+            var padBehind = layer.GetInt(16, padFront);
+            var padMode = layer.GetInt(5, 0);
+            if (padLeft < 0 || padRight < 0 || padTop < 0 || padBottom < 0 || padFront < 0 || padBehind < 0)
+            {
+                reason = "negative or auto padding is unsupported";
+                return false;
+            }
+            if (padMode < 0 || padMode > 3)
+            {
+                reason = "pad mode is outside the explicit/full/SAME_UPPER/SAME_LOWER CDHW subset";
+                return false;
+            }
+
+            if (adaptive)
+            {
+                var outW = layer.GetInt(8, 0);
+                var outH = layer.GetInt(18, outW);
+                var outD = layer.GetInt(28, outW);
+                output = new BufferShape(
+                    4,
+                    outW == -233 || outW <= 0 ? input.w : outW,
+                    outH == -233 || outH <= 0 ? input.h : outH,
+                    outD == -233 || outD <= 0 ? input.d : outD,
+                    input.c);
+                return true;
+            }
+
+            if (input.w + padLeft + padRight < kernelW || input.h + padTop + padBottom < kernelH || input.d + padFront + padBehind < kernelD)
+            {
+                reason = "kernel exceeds the padded CDHW input extent";
+                return false;
+            }
+
+            var totalPadLeft = padLeft;
+            var totalPadRight = padRight;
+            var totalPadTop = padTop;
+            var totalPadBottom = padBottom;
+            var totalPadFront = padFront;
+            var totalPadBehind = padBehind;
+            if (padMode == 0)
+            {
+                var wtail = (input.w + padLeft + padRight - kernelW) % strideW;
+                var htail = (input.h + padTop + padBottom - kernelH) % strideH;
+                var dtail = (input.d + padFront + padBehind - kernelD) % strideD;
+                if (wtail != 0) totalPadRight += strideW - wtail;
+                if (htail != 0) totalPadBottom += strideH - htail;
+                if (dtail != 0) totalPadBehind += strideD - dtail;
+            }
+            else if (padMode == 2 || padMode == 3)
+            {
+                var wpad = kernelW + (input.w - 1) / strideW * strideW - input.w;
+                var hpad = kernelH + (input.h - 1) / strideH * strideH - input.h;
+                var dpad = kernelD + (input.d - 1) / strideD * strideD - input.d;
+                if (padMode == 2)
+                {
+                    totalPadLeft = wpad / 2; totalPadRight = wpad - totalPadLeft;
+                    totalPadTop = hpad / 2; totalPadBottom = hpad - totalPadTop;
+                    totalPadFront = dpad / 2; totalPadBehind = dpad - totalPadFront;
+                }
+                else
+                {
+                    totalPadLeft = wpad - wpad / 2; totalPadRight = wpad / 2;
+                    totalPadTop = hpad - hpad / 2; totalPadBottom = hpad / 2;
+                    totalPadFront = dpad - dpad / 2; totalPadBehind = dpad / 2;
+                }
+            }
+
+            output = new BufferShape(
+                4,
+                Mathf.Max(1, (input.w + totalPadLeft + totalPadRight - kernelW) / strideW + 1),
+                Mathf.Max(1, (input.h + totalPadTop + totalPadBottom - kernelH) / strideH + 1),
+                Mathf.Max(1, (input.d + totalPadFront + totalPadBehind - kernelD) / strideD + 1),
+                input.c);
+            return true;
         }
 
         private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferInterp(
@@ -2382,6 +2664,44 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("The verified CommandBuffer Softmax profile supports only the tensor width axis.");
 
             return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:softmax-width");
+        }
+
+        private static bool TryGetSingleStrictCdhwPlanShape(
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            out BufferShape shape,
+            out string reason)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out shape, out reason))
+                return false;
+            if (shape.dims != 4)
+            {
+                reason = "This CommandBuffer Pack4 path requires a CDHW logical tensor (dims=4).";
+                return false;
+            }
+            if (!HasStrictCdhwPack4Storage(inputs[0], shape))
+            {
+                reason = "The CDHW TensorDescriptor must map logical [dims,w,h,d,c] to an exact Pack4 Texture2DArray storage profile.";
+                return false;
+            }
+            return true;
+        }
+
+        private static bool HasStrictCdhwPack4Storage(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            BufferShape logicalShape)
+        {
+            var storage = descriptor?.storageShape;
+            return descriptor != null
+                && descriptor.textureBacked
+                && string.Equals(descriptor.layout, NcnnTexturePlanLayout.Packed4, StringComparison.OrdinalIgnoreCase)
+                && logicalShape.dims == 4
+                && storage != null
+                && storage.Length == 5
+                && storage[0] == 4
+                && storage[1] == logicalShape.w
+                && storage[2] == logicalShape.h
+                && storage[3] == logicalShape.d
+                && storage[4] == logicalShape.c;
         }
 
         private static bool TryGetSingleStrictPlanShape(

@@ -4449,6 +4449,41 @@ namespace NcnnCompute
             int resizeType,
             RenderTexture output)
         {
+            InterpPack4CDHW(
+                input,
+                inW,
+                inH,
+                inD,
+                inPacks,
+                outW,
+                outH,
+                outD,
+                outPacks,
+                scaleX,
+                scaleY,
+                scaleZ,
+                resizeType,
+                alignCorners: false,
+                output);
+        }
+
+        public void InterpPack4CDHW(
+            RenderTexture input,
+            int inW,
+            int inH,
+            int inD,
+            int inPacks,
+            int outW,
+            int outH,
+            int outD,
+            int outPacks,
+            float scaleX,
+            float scaleY,
+            float scaleZ,
+            int resizeType,
+            bool alignCorners,
+            RenderTexture output)
+        {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             if (inW <= 0 || inH <= 0 || inD <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
@@ -4467,9 +4502,53 @@ namespace NcnnCompute
             _cs.SetFloat("_InterpScaleFactorY", scaleY);
             _cs.SetFloat("_InterpScaleFactorZ", scaleZ);
             _cs.SetInt("_InterpResizeType", resizeType);
+            _cs.SetInt("_InterpAlignCorners", alignCorners ? 1 : 0);
             _cs.SetTexture(_kInterpPack4Cdhw, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterpPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kInterpPack4Cdhw, outW, outH, ResolveRenderTextureDispatchDepth(output, outD * outPacks), 8, 8);
+        }
+
+        public void InterpPack4CDHW(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            int inW,
+            int inH,
+            int inD,
+            int inPacks,
+            int outW,
+            int outH,
+            int outD,
+            int outPacks,
+            float scaleX,
+            float scaleY,
+            float scaleZ,
+            int resizeType,
+            bool alignCorners,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0 || inH <= 0 || inD <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0 || outD <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+            if (inPacks <= 0 || outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
+
+            cmd.SetComputeIntParam(_cs, "_InW", inW);
+            cmd.SetComputeIntParam(_cs, "_InH", inH);
+            cmd.SetComputeIntParam(_cs, "_InD", inD);
+            cmd.SetComputeIntParam(_cs, "_OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_OutD", outD);
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorX", scaleX);
+            cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorY", scaleY);
+            cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorZ", scaleZ);
+            cmd.SetComputeIntParam(_cs, "_InterpResizeType", resizeType);
+            cmd.SetComputeIntParam(_cs, "_InterpAlignCorners", alignCorners ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4Cdhw, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInterpPack4Cdhw, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kInterpPack4Cdhw, outW, outH, ResolveComputeTextureDispatchDepth(output, outD * outPacks), 8, 8);
         }
 
         public void InterpPack4(CommandBuffer cmd, ComputeTexture input, int packs, float scaleX, float scaleY, ComputeTexture output)

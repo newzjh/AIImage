@@ -158,6 +158,7 @@ namespace NcnnCompute
                 var scaleX = outW / (float)Mathf.Max(1, srcShape.w);
                 var scaleY = outH / (float)Mathf.Max(1, srcShape.h);
                 var scaleZ = outD / (float)Mathf.Max(1, srcShape.d);
+                var alignCorners = layer.GetInt(6, 0) != 0;
                 var outRt4 = owner.RentTempArray(outW, outH, outD * srcTex.packs, NcnnRepro.ResolveTensorTextureFormat(4));
                 owner.Ops.InterpPack4CDHW(
                     srcTex.texture,
@@ -173,6 +174,7 @@ namespace NcnnCompute
                     scaleY,
                     scaleZ,
                     resizeType,
+                    alignCorners,
                     outRt4);
 
                 NcnnRepro.SetTextureBlob(
@@ -249,7 +251,8 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var srcContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = srcContract.LogicalShape;
             var resizeType = layer.GetInt(0, 0);
             var sy = layer.GetFloat(1, 1f);
             var sx = layer.GetFloat(2, 1f);
@@ -263,6 +266,47 @@ namespace NcnnCompute
                 blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorAlias(src, srcShape, storageShape);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
+
+            if (srcShape.dims == 4)
+            {
+                if (!srcContract.IsPack4Image || !CanUsePack4Interp(src, srcShape))
+                    throw new InvalidOperationException("Interp command-buffer CDHW path requires a TensorDescriptor-backed Pack4 Texture2DArray: " + layer.name);
+                if (resizeType != 1 && resizeType != 2)
+                    throw new NotSupportedException("Interp command-buffer CDHW path supports only nearest (1) and trilinear (2) modes: " + layer.name);
+                if (!string.IsNullOrWhiteSpace(layer.GetString(9, null)) || layer.GetInt(5, 0) != 0)
+                    throw new NotSupportedException("Interp command-buffer CDHW path requires a static output size or scale profile: " + layer.name);
+
+                var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+                var outRt4 = owner.RentTempArray(cmd, outShape.w, outShape.h, outShape.d * outPacks, NcnnRepro.ResolveTensorTextureFormat(4));
+                owner.Ops.InterpPack4CDHW(
+                    cmd,
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    srcShape.d,
+                    srcContract.Packs,
+                    outShape.w,
+                    outShape.h,
+                    outShape.d,
+                    outPacks,
+                    outShape.w / (float)Mathf.Max(1, srcShape.w),
+                    outShape.h / (float)Mathf.Max(1, srcShape.h),
+                    outShape.d / (float)Mathf.Max(1, srcShape.d),
+                    resizeType,
+                    layer.GetInt(6, 0) != 0,
+                    outRt4);
+
+                blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(
+                    outRt4,
+                    outShape,
+                    outShape,
+                    owned: true,
+                    blobName: layer.topNames[0]);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = outShape;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
@@ -428,9 +472,10 @@ namespace NcnnCompute
         {
             return src != null
                 && src.texture != null
-                && srcShape.dims == 3
-                && srcShape.d == 1
                 && srcShape.c > 0
+                && (srcShape.dims == 3
+                    ? srcShape.d == 1
+                    : srcShape.dims == 4)
                 && NcnnRepro.MatchesPack4TextureStorage(src, srcShape);
         }
 

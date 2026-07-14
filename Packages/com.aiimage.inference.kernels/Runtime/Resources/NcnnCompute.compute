@@ -532,6 +532,7 @@ float _InterpScaleFactorX;
 float _InterpScaleFactorY;
 float _InterpScaleFactorZ;
 int _InterpResizeType;
+int _InterpAlignCorners;
 int _FlipY;
 Texture2DArray<float4> _ArgmaxPack4InArr;
 RWTexture2DArray<float4> _ArgmaxBestValueArr;

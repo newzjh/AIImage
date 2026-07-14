@@ -340,11 +340,12 @@ namespace NcnnCompute
             var pinnedNames = context.pinnedNames;
 
             var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
-            var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            var srcContract = NcnnRepro.GetCmdTensorContract(src);
+            var srcShape = srcContract.LogicalShape;
             if (srcShape.dims != 4)
                 throw new InvalidOperationException("Pooling3D command-buffer path expects dims=4 input: " + layer.name);
-            if (!NcnnRepro.MatchesPack4TextureStorage(src, srcShape))
-                throw new InvalidOperationException("Pooling3D command-buffer path requires exact pack4 storage: " + layer.name);
+            if (!srcContract.IsPack4Image || !NcnnRepro.MatchesPack4TextureStorage(src, srcShape))
+                throw new InvalidOperationException("Pooling3D command-buffer path requires a TensorDescriptor-backed CDHW Pack4 Texture2DArray: " + layer.name);
 
             var poolType = layer.GetInt(0, 0);
             var kernelW = Mathf.Max(1, layer.GetInt(1, 0));
@@ -422,19 +423,12 @@ namespace NcnnCompute
                 srcShape.c,
                 outRt);
 
-            blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
-            {
-                texture = outRt,
-                width = outW,
-                height = outH,
-                packs = src.packs,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = outShape,
-                hasStorageShape = true,
-                storageShape = outShape
-            };
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(
+                outRt,
+                outShape,
+                outShape,
+                owned: true,
+                blobName: layer.topNames[0]);
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

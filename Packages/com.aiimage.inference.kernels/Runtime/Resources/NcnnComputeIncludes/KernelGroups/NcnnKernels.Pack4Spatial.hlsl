@@ -116,9 +116,15 @@ void NcnnInterpPack4CDHW_Impl(uint3 id)
         return;
     }
 
-    float fx = ((float)id.x + 0.5) / max(scaleX, 1e-6) - 0.5;
-    float fy = ((float)id.y + 0.5) / max(scaleY, 1e-6) - 0.5;
-    float fz = ((float)oz + 0.5) / max(scaleZ, 1e-6) - 0.5;
+    float fx = _InterpAlignCorners != 0 && _OutW > 1 && _InW > 1
+        ? (float)id.x * ((float)(_InW - 1) / (float)(_OutW - 1))
+        : ((float)id.x + 0.5) / max(scaleX, 1e-6) - 0.5;
+    float fy = _InterpAlignCorners != 0 && _OutH > 1 && _InH > 1
+        ? (float)id.y * ((float)(_InH - 1) / (float)(_OutH - 1))
+        : ((float)id.y + 0.5) / max(scaleY, 1e-6) - 0.5;
+    float fz = _InterpAlignCorners != 0 && _OutD > 1 && _InD > 1
+        ? (float)oz * ((float)(_InD - 1) / (float)(_OutD - 1))
+        : ((float)oz + 0.5) / max(scaleZ, 1e-6) - 0.5;
 
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
