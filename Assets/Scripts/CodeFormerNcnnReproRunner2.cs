@@ -108,8 +108,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     public int maxInputLongSide = 2048;
     public float faceMaskThreshold = 0.2f;
     public float faceBoxExpand = 0.35f;
-    public bool enableTempPool = true;
-    public int maxPooledPerShape = 2;
     public bool enableDebugDump = false;
     public bool enableFaceRegionDebugDump = false;
     [Range(0f, 1f)] public float codeFormerSftMulScale = 1f;
@@ -212,8 +210,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 faceRegion = GetComponent<NcnnFaceRegionGenerator>();
                 if (faceRegion == null)
                     faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
-                faceRegion.enableTempPool = enableTempPool;
-                faceRegion.maxPooledPerShape = maxPooledPerShape;
                 var facePack4Only = ParseEnvBool(Pack4OnlyEnvVar) ?? true;
                 faceRegion.disallowBufferAccess = facePack4Only;
                 faceRegion.disallowBufferOutputs = facePack4Only;
@@ -315,8 +311,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 DestroyObjectSafe(workingTex);
                 if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                     NcnnGpuResourceTracker.WriteReport(_lastDumpDir, "codeformer_gpu_resources.txt");
-                _encoderRepro?.ClearTempPool();
-                _generatorRepro?.ClearTempPool();
             }
         }
         catch (Exception e)
@@ -1577,10 +1571,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         var encoderPack4Only = ParseEnvBool(EncoderPack4OnlyEnvVar) ?? globalPack4Only ?? true;
         var generatorPack4Only = ParseEnvBool(GeneratorPack4OnlyEnvVar) ?? globalPack4Only ?? true;
 
-        _encoderRepro.EnableTempPool = enableTempPool;
-        _generatorRepro.EnableTempPool = enableTempPool;
-        _encoderRepro.MaxPooledPerShape = maxPooledPerShape;
-        _generatorRepro.MaxPooledPerShape = maxPooledPerShape;
         _encoderRepro.EnableGeneralTextureConvolution = true;
         _generatorRepro.EnableGeneralTextureConvolution = true;
         _encoderRepro.EnableGroupNormTexturePath = true;

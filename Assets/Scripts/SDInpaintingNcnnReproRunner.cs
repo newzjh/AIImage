@@ -138,8 +138,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public string stableDiffusionRootRelativePath = "StableDiffusion";
     public string inpaintingModelRootRelativePath = "sdinpainting";
     public bool useReferenceAssetFallback = true;
-    public bool enableTempPool = false;
-    public int maxPooledPerShape = 0;
     public bool keepRawConvWeightsForTexturePath = false;
     public RenderTextureFormat tensorTextureFormat = RenderTextureFormat.ARGBHalf;
     public RenderTextureFormat encoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;
@@ -1123,18 +1121,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             changed = true;
         }
 
-        if (enableTempPool)
-        {
-            enableTempPool = false;
-            changed = true;
-        }
-
-        if (maxPooledPerShape != 0)
-        {
-            maxPooledPerShape = 0;
-            changed = true;
-        }
-
         if (keepRawConvWeightsForTexturePath)
         {
             keepRawConvWeightsForTexturePath = false;
@@ -1149,8 +1135,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 + " | tensor=" + tensorTextureFormat
                 + " | encoder=" + encoderTensorTextureFormat
                 + " | decoder=" + decoderTensorTextureFormat
-                + " | tempPool=" + BoolText(enableTempPool)
-                + " | maxPooledPerShape=" + maxPooledPerShape.ToString(CultureInfo.InvariantCulture)
                 + " | keepRawConvWeights=" + BoolText(keepRawConvWeightsForTexturePath)
                 + " | allowFloatTensor=" + BoolText(allowFloatTensor)
                 + " | changed=" + BoolText(changed));
@@ -1162,8 +1146,6 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (repro == null)
             return;
 
-        repro.EnableTempPool = enableTempPool;
-        repro.MaxPooledPerShape = maxPooledPerShape;
         repro.KeepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
         repro.ForceBufferConvolutionAll = false;
         repro.ForceBufferBinaryOpAll = false;

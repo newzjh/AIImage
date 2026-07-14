@@ -338,8 +338,6 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     public string stableDiffusionRootRelativePath = "StableDiffusion";
     public bool useReferenceAssetFallback = true;
     public bool preferOptimizedParams = true;
-    public bool enableTempPool = false;
-    public int maxPooledPerShape = 0;
     public bool deterministicAncestralNoise = true;
     public bool enableDebugDump = false;
     public RenderTextureFormat tensorTextureFormat = RenderTextureFormat.ARGBFloat;
@@ -461,8 +459,6 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             runner.stableDiffusionRootRelativePath = stableDiffusionRootRelativePath;
             runner.useReferenceAssetFallback = useReferenceAssetFallback;
             runner.enableDebugDump = enableDebugDump;
-            runner.enableTempPool = enableTempPool;
-            runner.maxPooledPerShape = maxPooledPerShape;
             runner.keepRawConvWeightsForTexturePath = keepRawConvWeightsForTexturePath;
             runner.tensorTextureFormat = tensorTextureFormat;
             runner.encoderTensorTextureFormat = encoderTensorTextureFormat;
@@ -1790,8 +1786,6 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     {
         if (repro == null)
             return;
-        repro.EnableTempPool = enableTempPool;
-        repro.MaxPooledPerShape = maxPooledPerShape;
         repro.ForceBufferConvolutionAll = false;
         repro.ForceBufferBinaryOpAll = false;
         repro.ForceBufferGeluAll = false;

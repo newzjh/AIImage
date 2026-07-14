@@ -161,8 +161,6 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public bool agnosticNms = false;
     public bool targetPersonOnly = true;
     public bool flipYInput = true;
-    public bool enableTempPool = true;
-    public int maxPooledPerShape = 4;
     public bool forceBufferConvolution = false;
     public bool forceBufferBinaryOp = false;
     public bool useArgbFloatTensor = false;
@@ -500,7 +498,6 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 _repro?.ReturnTempArray(corePack4);
             if (inputPack4 != null)
                 _repro?.ReturnTempArray(inputPack4);
-            _repro?.ClearTempPool();
             if (readableSrc != null && readableSrc != src)
                 Destroy(readableSrc);
             LogResourceSnapshot("process_finally_end");
@@ -520,8 +517,6 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         if (_repro == null)
             return;
 
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.ForceBufferConvolutionAll = forceBufferConvolution;
         _repro.ForceBufferBinaryOpAll = forceBufferBinaryOp;
         _repro.ForceBufferGeluAll = false;

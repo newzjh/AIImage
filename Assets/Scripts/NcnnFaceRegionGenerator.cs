@@ -128,8 +128,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public float maskRectExpand = 0.18f;
     public float maskSoftness = 0.10f;
     public float faceRectThreshold = 0.18f;
-    public bool enableTempPool = true;
-    public int maxPooledPerShape = 2;
     public bool disallowBufferAccess = false;
     public bool disallowBufferOutputs = false;
     public bool disallowBufferToTextureMaterialization = false;
@@ -503,7 +501,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 DestroyObjectSafe(letterbox);
             if (inputPack4 != null)
                 _repro?.ReturnTempArray(inputPack4);
-            _repro?.ClearTempPool();
         }
     }
 
@@ -872,8 +869,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             _ops = new NcnnOps();
         if (_repro == null)
             _repro = NcnnInferenceSessionFactory.Create(_ops);
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;
         _repro.EnableGeneralTextureConvolution = preferTexturePathForFaceDetector || disallowBufferAccess;
         _repro.EnableConv1x1TextureConvolution = true;

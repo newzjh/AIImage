@@ -28,8 +28,6 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public bool useArgbFloatTensor = true;
     public bool forceBufferConvolution = false;
     public bool useTextureMaxPoolingInd = true;
-    public bool enableTempPool = true;
-    public int maxPooledPerShape = 4;
     public bool disallowBufferAccess = false;
     public bool disallowBufferOutputs = false;
     public bool disallowBufferToTextureMaterialization = false;
@@ -245,7 +243,6 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _repro.DebugCompareTextureConvLayers = null;
                 _repro.DebugCompareMaxPoolingLayers = null;
                 _repro.DebugLog = null;
-                _repro.ClearTempPool();
             }
             ReportProgress(1f, string.Empty);
         }
@@ -263,8 +260,6 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     {
         if (_repro == null)
             return;
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.ForceBufferConvolution = forceBufferConvolution;
         _repro.UseTextureMaxPoolingInd = useTextureMaxPoolingInd;
         _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;

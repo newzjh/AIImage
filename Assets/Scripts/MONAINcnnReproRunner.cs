@@ -190,10 +190,8 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public bool enableDebugDump = true;
     public bool dumpLargeTensorFiles = true;
     public bool enableBaselineCompare = true;
-    public bool enableTempPool = false;
-    public int maxPooledPerShape = 0;
-    public bool clearTempPoolAfterEachSlidingWindowPatch = true;
-    public int slidingWindowTempPoolClearInterval = 1;
+    public bool releaseTransientResourcesAfterEachSlidingWindowPatch = true;
+    public int slidingWindowTransientReleaseInterval = 1;
     public int slidingWindowYieldInterval = 1;
     public int slidingWindowManagedCleanupInterval = 1;
     public int slidingWindowResourceSnapshotInterval = 1;
@@ -633,7 +631,6 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             if (_repro != null)
             {
                 _repro.DebugLog = null;
-                _repro.ClearTempPool();
             }
             FlushDebugLog();
             ReportProgress(1f, string.Empty);
@@ -656,8 +653,6 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             _ops.EnableConv3dTile3x3Pack4FastPath = enableConv3dTile3x3Pack4FastPath;
         }
 
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
         _repro.EnableGroupNormTexturePath = true;
         _repro.UseNcnnStyleGroupNorm = true;
         _repro.ForceBufferConvolution = forceBufferConvolution;
@@ -2592,12 +2587,14 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         string progressPrefix,
         CancellationToken ct)
     {
-        if (clearTempPoolAfterEachSlidingWindowPatch
+        if (releaseTransientResourcesAfterEachSlidingWindowPatch
             && _repro != null
-            && slidingWindowTempPoolClearInterval > 0
-            && (patchIndex % slidingWindowTempPoolClearInterval) == 0)
+            && slidingWindowTransientReleaseInterval > 0
+            && (patchIndex % slidingWindowTransientReleaseInterval) == 0)
         {
-            _repro.ClearTempPool();
+            var unreleased = NcnnGpuResourceTracker.GetUnreleasedTemporaryTextureDiagnostics();
+            if (unreleased.Length > 0)
+                throw new InvalidOperationException("MONAI transient RT leak after patch " + patchIndex + ": " + string.Join(" | ", unreleased));
         }
 
         ReportProgress(

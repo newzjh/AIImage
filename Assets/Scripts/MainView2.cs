@@ -1015,8 +1015,6 @@ public sealed class MainView2 : BasePageView
             LogYoloInpaintResourceSnapshot("after_yolo_release");
 
             Host.SDInpaintingRunner.useOfficialUnetCache = false;
-            Host.SDInpaintingRunner.enableTempPool = false;
-            Host.SDInpaintingRunner.maxPooledPerShape = 0;
             Host.SDInpaintingRunner.keepRawConvWeightsForTexturePath = false;
             Host.SDInpaintingRunner.tensorTextureFormat = RenderTextureFormat.ARGBHalf;
             Host.SDInpaintingRunner.encoderTensorTextureFormat = RenderTextureFormat.ARGBHalf;

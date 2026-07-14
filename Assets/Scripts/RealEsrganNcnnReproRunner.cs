@@ -17,8 +17,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     public int tileSize = 128;
     public int tilePad = 10;
     public int maxInputLongSide = 2048;
-    public bool enableTempPool = true;
-    public int maxPooledPerShape = 4;
     public bool enableTileProbe = false;
     public bool enableSeamProbe = false;
     public bool useCommandBuffer = false;
@@ -585,10 +583,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         EnsureRuntimeObjects();
         var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
         _useCmdThisRun = useCommandBuffer && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
-        var effectiveEnableTempPool = enableTempPool && !Application.isBatchMode;
-        var effectiveMaxPooledPerShape = effectiveEnableTempPool ? maxPooledPerShape : 0;
-        _repro.EnableTempPool = effectiveEnableTempPool;
-        _repro.MaxPooledPerShape = effectiveMaxPooledPerShape;
         _repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
         _repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfile;
         _repro.LayerRuntimeProfilePathKindOverride = _useCmdThisRun ? "cmd" : "pack4_rt";
@@ -941,7 +935,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 }
 
                 _repro?.Ops?.DebugSyncGpu();
-                _repro?.ClearTempPool();
                 await YieldForGpuProgressAsync();
 
                 try
@@ -1112,7 +1105,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 outRt.Release();
                 DestroyObjectSafe(outRt);
             }
-            _repro?.ClearTempPool();
             try { probeBuf?.Dispose(); } catch { }
             try { probeInBuf?.Dispose(); } catch { }
         }
@@ -1241,10 +1233,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             _repro.OnConvComplete += OnConvCompleteHandler;
         }
 
-        var effectiveEnableTempPool = enableTempPool && !Application.isBatchMode;
-        var effectiveMaxPooledPerShape = effectiveEnableTempPool ? maxPooledPerShape : 0;
-        _repro.EnableTempPool = effectiveEnableTempPool;
-        _repro.MaxPooledPerShape = effectiveMaxPooledPerShape;
         _repro.ForceBufferConvolution = false;
         _repro.ForceBufferConvolutionAll = false;
         _repro.ForceBufferBinaryOpAll = false;

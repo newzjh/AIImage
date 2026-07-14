@@ -72,8 +72,6 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
     public ClipModelLevel modelLevel = ClipModelLevel.S0;
     public string clipRootRelativePath = "Clip";
-    public bool enableTempPool = true;
-    public int maxPooledPerShape = 4;
     public bool enableDebugDump = false;
     public bool forceFullRenderTexturePath = true;
     public bool useCommandBuffer = false;
@@ -373,8 +371,6 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     {
         if (repro == null)
             return;
-        repro.EnableTempPool = enableTempPool;
-        repro.MaxPooledPerShape = maxPooledPerShape;
         repro.ForceBufferConvolutionAll = false;
         repro.DisallowBufferAccess = disallowBufferAccess;
         repro.DisallowBufferOutputs = disallowBufferOutputs;

@@ -177,9 +177,6 @@ public sealed class NcnnRunnerBatchValidationTests
         var go = new GameObject("ClipRunnerTest");
         var runner = go.AddComponent<ClipNcnnReproRunner>();
         runner.enableDebugDump = false;
-        runner.enableTempPool = false;
-        runner.maxPooledPerShape = 0;
-
         var task = runner.ProcessAsync(input, CancellationToken.None).AsTask();
         yield return WaitForTask(task);
 

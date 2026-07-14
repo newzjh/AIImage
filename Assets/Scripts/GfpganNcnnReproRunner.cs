@@ -17,8 +17,6 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public int maxInputLongSide = 2048;
     public float faceMaskThreshold = 0.2f;
     public float faceBoxExpand = 0.35f;
-    public bool enableTempPool = true;
-    public int maxPooledPerShape = 2;
     public bool enableFaceRegionDebugDump = false;
     public bool disallowBufferAccess = false;
     public bool disallowBufferOutputs = false;
@@ -125,8 +123,6 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             return default;
 
         EnsureRuntimeObjects();
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
         var totalSw = Stopwatch.StartNew();
         var originalW0 = src.width;
         var originalH0 = src.height;
@@ -187,8 +183,6 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             faceRegion = GetComponent<NcnnFaceRegionGenerator>();
             if (faceRegion == null)
                 faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
-            faceRegion.enableTempPool = enableTempPool;
-            faceRegion.maxPooledPerShape = maxPooledPerShape;
             faceRegion.disallowBufferAccess = disallowBufferAccess;
             faceRegion.disallowBufferOutputs = disallowBufferOutputs;
             faceRegion.disallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
@@ -280,7 +274,6 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             if (restored512 != null) DestroyObjectSafe(restored512);
             if (restoredCrop != null) DestroyObjectSafe(restoredCrop);
             if (restoredCropTex != null) DestroyObjectSafe(restoredCropTex);
-            _repro.ClearTempPool();
         }
     }
 
@@ -920,8 +913,6 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     {
         _ops ??= new NcnnOps();
         _repro ??= NcnnInferenceSessionFactory.Create(_ops);
-        _repro.EnableTempPool = enableTempPool;
-        _repro.MaxPooledPerShape = maxPooledPerShape;
         // The encoder contains standard 3x3/1x1 convolutions. Enable the existing
         // Pack4 kernels before model loading so it cannot select the legacy buffer path.
         _repro.EnableGeneralTextureConvolution = true;

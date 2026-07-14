@@ -62,7 +62,6 @@ public static class NcnnDebugRunner
     private const string FacePack4OnlyGuardEnvVar = "AIIMAGE_FACE_PACK4_ONLY_GUARD";
     private const string MattingPack4OnlyGuardEnvVar = "AIIMAGE_MATTING_PACK4_ONLY_GUARD";
     private const string GfpganPack4OnlyGuardEnvVar = "AIIMAGE_GFPGAN_PACK4_ONLY_GUARD";
-    private const string ReproTempPoolEnvVar = "AIIMAGE_REPRO_TEMP_POOL";
     private const string SdWidthEnvVar = "AIIMAGE_SD_WIDTH";
     private const string SdHeightEnvVar = "AIIMAGE_SD_HEIGHT";
     private const string SdStepsEnvVar = "AIIMAGE_SD_STEPS";
@@ -415,8 +414,6 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<ClipNcnnReproRunner>();
-            runner.enableTempPool = false;
-            runner.maxPooledPerShape = 0;
             runner.modelLevel = ResolveClipModelLevel();
             ConfigureClipRunnerFromEnv(runner, defaultEnableDebugDump: true);
             runner.ProgressChanged += (value, message) =>
@@ -746,10 +743,8 @@ public static class NcnnDebugRunner
             runner.keepRawConvWeightsForTexturePath = keepRawConv;
             runner.tensorTextureFormat = tensorTextureFormat;
             runner.debugPinnedBlobNamesCsv = debugPinnedBlobsCsv;
-            runner.enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, false);
-            runner.maxPooledPerShape = runner.enableTempPool ? 1 : 0;
-            runner.clearTempPoolAfterEachSlidingWindowPatch = ResolveBoolEnv(MonaiClearTempPoolEachPatchEnvVar, true);
-            runner.slidingWindowTempPoolClearInterval = ResolvePositiveIntEnvAllowZero(MonaiTempPoolClearIntervalEnvVar, 1);
+            runner.releaseTransientResourcesAfterEachSlidingWindowPatch = ResolveBoolEnv(MonaiClearTempPoolEachPatchEnvVar, true);
+            runner.slidingWindowTransientReleaseInterval = ResolvePositiveIntEnvAllowZero(MonaiTempPoolClearIntervalEnvVar, 1);
             runner.slidingWindowYieldInterval = ResolvePositiveIntEnvAllowZero(MonaiYieldIntervalEnvVar, 1);
             runner.slidingWindowManagedCleanupInterval = ResolvePositiveIntEnvAllowZero(MonaiManagedCleanupIntervalEnvVar, 1);
             runner.slidingWindowResourceSnapshotInterval = ResolvePositiveIntEnvAllowZero(MonaiResourceSnapshotIntervalEnvVar, 1);
@@ -1091,10 +1086,8 @@ public static class NcnnDebugRunner
         {
             var runner = go.AddComponent<MONAINcnnReproRunner>();
             runner.enableDebugDump = true;
-            runner.enableTempPool = false;
-            runner.maxPooledPerShape = 0;
-            runner.clearTempPoolAfterEachSlidingWindowPatch = true;
-            runner.slidingWindowTempPoolClearInterval = 1;
+            runner.releaseTransientResourcesAfterEachSlidingWindowPatch = true;
+            runner.slidingWindowTransientReleaseInterval = 1;
             runner.slidingWindowYieldInterval = 1;
             runner.slidingWindowManagedCleanupInterval = 1;
             runner.slidingWindowResourceSnapshotInterval = 1;
@@ -1156,8 +1149,6 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<SDNcnnReproRunner>();
             var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, true);
-            runner.enableTempPool = false;
-            runner.maxPooledPerShape = 0;
             runner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, runner.tensorTextureFormat);
             runner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, runner.decoderTensorTextureFormat);
             runner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, runner.encoderTensorTextureFormat);
@@ -1249,8 +1240,6 @@ public static class NcnnDebugRunner
         {
             var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = enableDump;
-            runner.enableTempPool = false;
-            runner.maxPooledPerShape = 0;
             runner.useOfficialUnetCache = false;
             runner.tensorTextureFormat = tensorFormat;
             runner.decoderTensorTextureFormat = decoderTensorFormat;
@@ -1397,8 +1386,6 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
             var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, true);
-            runner.enableTempPool = false;
-            runner.maxPooledPerShape = 0;
             runner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, runner.tensorTextureFormat);
             runner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, runner.decoderTensorTextureFormat);
             runner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, runner.encoderTensorTextureFormat);
@@ -1491,8 +1478,6 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
             var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = true;
-            runner.enableTempPool = false;
-            runner.maxPooledPerShape = 0;
             runner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, runner.tensorTextureFormat);
             runner.keepRawConvWeightsForTexturePath = ResolveBoolEnv(SdKeepRawConvWeightsEnvVar, runner.keepRawConvWeightsForTexturePath);
             runner.enableAttentionMatMulPack4Specializations = true;
@@ -1757,8 +1742,6 @@ public static class NcnnDebugRunner
             inpaintRunner.enableDebugDump = enableDump;
             inpaintRunner.ApplyPeopleRemovalPreset();
             inpaintRunner.useOfficialUnetCache = ResolveBoolEnv("AIIMAGE_SD_USE_OFFICIAL_UNET_CACHE", inpaintRunner.useOfficialUnetCache);
-            inpaintRunner.enableTempPool = false;
-            inpaintRunner.maxPooledPerShape = 0;
             inpaintRunner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, inpaintRunner.tensorTextureFormat);
             inpaintRunner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, inpaintRunner.decoderTensorTextureFormat);
             inpaintRunner.encoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdEncoderTensorFormatEnvVar, inpaintRunner.encoderTensorTextureFormat);
@@ -2110,8 +2093,6 @@ public static class NcnnDebugRunner
         try
         {
             var runner = go.AddComponent<ClipNcnnReproRunner>();
-            runner.enableTempPool = false;
-            runner.maxPooledPerShape = 0;
             runner.modelLevel = ResolveClipModelLevel();
             ConfigureClipRunnerFromEnv(runner, defaultEnableDebugDump: false);
             runner.ProgressChanged += (value, message) =>
@@ -2370,14 +2351,12 @@ public static class NcnnDebugRunner
             throw new InvalidOperationException("Failed to load repro stress input: " + inputPath);
 
         var iterations = ResolvePositiveIntEnv(StressCountEnvVar, 5);
-        var enableTempPool = ResolveBoolEnv(ReproTempPoolEnvVar, true);
         var dumpDir = CreateGenericDumpDir("AIImage_ReproSuiteStress");
         var summaryPath = Path.Combine(dumpDir, "suite_summary.txt");
         var lines = new List<string>(256)
         {
             "input=" + inputPath,
             "iterations=" + iterations.ToString(CultureInfo.InvariantCulture),
-            "enable_temp_pool=" + enableTempPool,
             "started_at=" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
             string.Empty
         };
@@ -2386,11 +2365,11 @@ public static class NcnnDebugRunner
         NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
         try
         {
-            await RunRealEsrganStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
-            await RunYoloSegStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
-            await RunMattingStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
-            await RunGfpganStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
-            await RunCodeFormerStressAsync(tex, iterations, enableTempPool, dumpDir, lines, failures);
+            await RunRealEsrganStressAsync(tex, iterations, dumpDir, lines, failures);
+            await RunYoloSegStressAsync(tex, iterations, dumpDir, lines, failures);
+            await RunMattingStressAsync(tex, iterations, dumpDir, lines, failures);
+            await RunGfpganStressAsync(tex, iterations, dumpDir, lines, failures);
+            await RunCodeFormerStressAsync(tex, iterations, dumpDir, lines, failures);
         }
         finally
         {
@@ -2698,8 +2677,6 @@ public static class NcnnDebugRunner
             return;
 
         runner.enableGpuLayerProfiling = false;
-        runner.enableTempPool = true;
-        runner.maxPooledPerShape = 4;
         runner.enableLayerRuntimeProfile = Application.isBatchMode && (options == null || !options.useCommandBuffer);
         runner.syncLayerRuntimeProfile = false;
 
@@ -2762,7 +2739,7 @@ public static class NcnnDebugRunner
         return modelSafe + "_" + inputSafe + "_" + modeSuffix + ".png";
     }
 
-    private static async UniTask RunRealEsrganStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    private static async UniTask RunRealEsrganStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "ESRGAN";
         NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
@@ -2771,8 +2748,6 @@ public static class NcnnDebugRunner
         try
         {
             runner = go.AddComponent<RealEsrganNcnnReproRunner>();
-            runner.enableTempPool = enableTempPool;
-            runner.maxPooledPerShape = enableTempPool ? 4 : 0;
             runner.enableGpuLayerProfiling = false;
             runner.useCommandBuffer = false;
 
@@ -2799,7 +2774,7 @@ public static class NcnnDebugRunner
         }
     }
 
-    private static async UniTask RunYoloSegStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    private static async UniTask RunYoloSegStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "YoloSeg";
         NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
@@ -2809,8 +2784,6 @@ public static class NcnnDebugRunner
         {
             runner = go.AddComponent<YoloSegNcnnReproRunner>();
             runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
-            runner.enableTempPool = enableTempPool;
-            runner.maxPooledPerShape = enableTempPool ? 4 : 0;
             runner.enableDebugDump = false;
             runner.targetPersonOnly = true;
             runner.enableMaskClose = true;
@@ -2845,7 +2818,7 @@ public static class NcnnDebugRunner
         }
     }
 
-    private static async UniTask RunMattingStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    private static async UniTask RunMattingStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "Matting";
         NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
@@ -2854,8 +2827,6 @@ public static class NcnnDebugRunner
         try
         {
             runner = go.AddComponent<MatterNcnnReproRunner>();
-            runner.enableTempPool = enableTempPool;
-            runner.maxPooledPerShape = enableTempPool ? 4 : 0;
             runner.enableDebugDump = false;
             runner.forceBufferConvolution = false;
 
@@ -2884,7 +2855,7 @@ public static class NcnnDebugRunner
         }
     }
 
-    private static async UniTask RunGfpganStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    private static async UniTask RunGfpganStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "GFPGAN";
         NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
@@ -2893,8 +2864,6 @@ public static class NcnnDebugRunner
         try
         {
             runner = go.AddComponent<GfpganNcnnReproRunner>();
-            runner.enableTempPool = enableTempPool;
-            runner.maxPooledPerShape = enableTempPool ? 2 : 0;
             runner.enableFaceRegionDebugDump = false;
 
             for (var i = 0; i < iterations; i++)
@@ -2920,7 +2889,7 @@ public static class NcnnDebugRunner
         }
     }
 
-    private static async UniTask RunCodeFormerStressAsync(Texture2D tex, int iterations, bool enableTempPool, string dumpDir, List<string> lines, List<string> failures)
+    private static async UniTask RunCodeFormerStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "CodeFormer";
         NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
@@ -2929,8 +2898,6 @@ public static class NcnnDebugRunner
         try
         {
             runner = go.AddComponent<CodeFormerNcnnReproRunner2>();
-            runner.enableTempPool = enableTempPool;
-            runner.maxPooledPerShape = enableTempPool ? 2 : 0;
             runner.enableDebugDump = false;
             runner.enableFaceRegionDebugDump = false;
 
