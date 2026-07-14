@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "aiimage.model-manifest/v1",
+  "modelId": "mobileclip_s0_export",
+  "precision": {
+    "activationDtype": "FP16",
+    "weightDtype": "FP16",
+    "sensitiveOutputDtype": "FP16",
+    "requireStrictTexturePlan": true
+  }
+}
