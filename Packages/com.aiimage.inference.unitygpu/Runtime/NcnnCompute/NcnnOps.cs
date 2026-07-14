@@ -490,6 +490,68 @@ namespace NcnnCompute
         private readonly int _gemmTextureOutsPerThread;
         private readonly int _gemmPack4LinearOutPacksPerThread;
         private ComputeBuffer _fallbackFloatBuffer;
+        private ComputeBuffer _fp16ConvWeights;
+        private ComputeBuffer _fp16DepthWiseWeights;
+        private ComputeBuffer _fp16GemmWeights;
+
+        // These immutable uploads are selected only by manifest-driven FP16 sessions.
+        // Activations always remain texture resources; no texture-to-buffer path is used.
+        public void SetFp16ConvWeights(ComputeBuffer weights)
+        {
+            _fp16ConvWeights = weights;
+        }
+
+        public void SetFp16DepthWiseWeights(ComputeBuffer weights)
+        {
+            _fp16DepthWiseWeights = weights;
+        }
+
+        public void SetFp16GemmWeights(ComputeBuffer weights)
+        {
+            _fp16GemmWeights = weights;
+        }
+
+        private void SetConvPack4Weights(int kernel, ComputeBuffer fp32Weights)
+        {
+            _cs.SetBuffer(kernel, "_ConvW4", fp32Weights);
+            _cs.SetBuffer(kernel, "_ConvW4Fp16", _fp16ConvWeights ?? fp32Weights);
+            _cs.SetInt("_UseFp16ConvWeights", _fp16ConvWeights != null ? 1 : 0);
+        }
+
+        private void SetConvPack4Weights(CommandBuffer cmd, int kernel, ComputeBuffer fp32Weights)
+        {
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvW4", fp32Weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvW4Fp16", _fp16ConvWeights ?? fp32Weights);
+            cmd.SetComputeIntParam(_cs, "_UseFp16ConvWeights", _fp16ConvWeights != null ? 1 : 0);
+        }
+
+        private void SetDepthWisePack4Weights(int kernel, ComputeBuffer fp32Weights)
+        {
+            _cs.SetBuffer(kernel, "_DwConvW4", fp32Weights);
+            _cs.SetBuffer(kernel, "_DwConvW4Fp16", _fp16DepthWiseWeights ?? fp32Weights);
+            _cs.SetInt("_UseFp16DepthWiseWeights", _fp16DepthWiseWeights != null ? 1 : 0);
+        }
+
+        private void SetDepthWisePack4Weights(CommandBuffer cmd, int kernel, ComputeBuffer fp32Weights)
+        {
+            cmd.SetComputeBufferParam(_cs, kernel, "_DwConvW4", fp32Weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_DwConvW4Fp16", _fp16DepthWiseWeights ?? fp32Weights);
+            cmd.SetComputeIntParam(_cs, "_UseFp16DepthWiseWeights", _fp16DepthWiseWeights != null ? 1 : 0);
+        }
+
+        private void SetTextureGemmWeights(int kernel, ComputeBuffer fp32Weights)
+        {
+            _cs.SetBuffer(kernel, "_MatB", fp32Weights);
+            _cs.SetBuffer(kernel, "_MatBFp16", _fp16GemmWeights ?? fp32Weights);
+            _cs.SetInt("_UseFp16GemmWeights", _fp16GemmWeights != null ? 1 : 0);
+        }
+
+        private void SetTextureGemmWeights(CommandBuffer cmd, int kernel, ComputeBuffer fp32Weights)
+        {
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatB", fp32Weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatBFp16", _fp16GemmWeights ?? fp32Weights);
+            cmd.SetComputeIntParam(_cs, "_UseFp16GemmWeights", _fp16GemmWeights != null ? 1 : 0);
+        }
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
         {
@@ -1612,7 +1674,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_OutPacks", packs);
             cmd.SetComputeIntParam(_cs, "_ActType", activationType);
             cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
-            cmd.SetComputeBufferParam(_cs, _kConvDepthWisePack4, "_DwConvW4", w4);
+            SetDepthWisePack4Weights(cmd, _kConvDepthWisePack4, w4);
             cmd.SetComputeBufferParam(_cs, _kConvDepthWisePack4, "_DwConvB4", b4);
             cmd.SetComputeTextureParam(_cs, _kConvDepthWisePack4, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConvDepthWisePack4, "_ConvOutArr", dstPack4.nameID);
@@ -2317,7 +2379,7 @@ namespace NcnnCompute
             _cs.SetInt("_GemmTexAInH", m);
             _cs.SetInt("_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             _cs.SetTexture(_kGemm2DTextureA, "_TexIn0Arr", a);
-            _cs.SetBuffer(_kGemm2DTextureA, "_MatB", b);
+            SetTextureGemmWeights(_kGemm2DTextureA, b);
             _cs.SetBuffer(_kGemm2DTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DTextureA, "_TexOut0Arr", output);
             Dispatch3D(_kGemm2DTextureA, ResolveGemmTextureDispatchColumns(n), m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
@@ -2352,7 +2414,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
             cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_TexIn0Arr", a.nameID);
-            cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatB", b);
+            SetTextureGemmWeights(cmd, _kGemm2DTextureA, b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DTextureA, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kGemm2DTextureA, ResolveGemmTextureDispatchColumns(n), m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
@@ -2386,7 +2448,7 @@ namespace NcnnCompute
             _cs.SetInt("_GemmTexAInH", m);
             _cs.SetInt("_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             _cs.SetTexture(_kGemm2DLinearTextureA, "_LinearIn0", a);
-            _cs.SetBuffer(_kGemm2DLinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(_kGemm2DLinearTextureA, b);
             _cs.SetBuffer(_kGemm2DLinearTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DLinearTextureA, "_LinearOut0", output);
             Dispatch2D(_kGemm2DLinearTextureA, ResolveGemmTextureDispatchColumns(n), m, 8, 8);
@@ -2421,7 +2483,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
             cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmTextureOutsPerThread);
             cmd.SetComputeTextureParam(_cs, _kGemm2DLinearTextureA, "_LinearIn0", a.nameID);
-            cmd.SetComputeBufferParam(_cs, _kGemm2DLinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(cmd, _kGemm2DLinearTextureA, b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DLinearTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DLinearTextureA, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kGemm2DLinearTextureA, ResolveGemmTextureDispatchColumns(n), m, 8, 8);
@@ -2456,7 +2518,7 @@ namespace NcnnCompute
             _cs.SetInt("_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
             var kernel = inputPacked ? _kGemm2DPack4LinearTextureAFromPack4 : _kGemm2DPack4LinearTextureAFromLinear;
             _cs.SetTexture(kernel, inputPacked ? "_TexIn0Arr" : "_LinearIn0", a);
-            _cs.SetBuffer(kernel, "_MatB", b);
+            SetTextureGemmWeights(kernel, b);
             _cs.SetBuffer(kernel, "_MatC", useC ? c : b);
             _cs.SetTexture(kernel, "_TexOut0Arr", output);
             var dispatchWidth = ResolveGemmPack4LinearTextureDispatchColumns(output.width);
@@ -2493,7 +2555,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
             var kernel = inputPacked ? _kGemm2DPack4LinearTextureAFromPack4 : _kGemm2DPack4LinearTextureAFromLinear;
             cmd.SetComputeTextureParam(_cs, kernel, inputPacked ? "_TexIn0Arr" : "_LinearIn0", a.nameID);
-            cmd.SetComputeBufferParam(_cs, kernel, "_MatB", b);
+            SetTextureGemmWeights(cmd, kernel, b);
             cmd.SetComputeBufferParam(_cs, kernel, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, kernel, "_TexOut0Arr", output.nameID);
             var dispatchWidth = ResolveGemmPack4LinearTextureDispatchColumns(output.width);
@@ -2531,7 +2593,7 @@ namespace NcnnCompute
             _cs.SetInt("_GemmTexAInW", k);
             _cs.SetInt("_GemmTexAInH", m);
             _cs.SetTexture(_kGemm2DAttentionQkvTextureA, "_TexIn0Arr", a);
-            _cs.SetBuffer(_kGemm2DAttentionQkvTextureA, "_MatB", b);
+            SetTextureGemmWeights(_kGemm2DAttentionQkvTextureA, b);
             _cs.SetBuffer(_kGemm2DAttentionQkvTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DAttentionQkvTextureA, "_TexOut0Arr", output);
             Dispatch3D(_kGemm2DAttentionQkvTextureA, headDim, m, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
@@ -2569,7 +2631,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvTextureA, "_TexIn0Arr", a.nameID);
-            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvTextureA, "_MatB", b);
+            SetTextureGemmWeights(cmd, _kGemm2DAttentionQkvTextureA, b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvTextureA, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kGemm2DAttentionQkvTextureA, headDim, m, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
@@ -2606,7 +2668,7 @@ namespace NcnnCompute
             _cs.SetInt("_GemmTexAInW", k);
             _cs.SetInt("_GemmTexAInH", m);
             _cs.SetTexture(_kGemm2DAttentionQkvLinearTextureA, "_LinearIn0", a);
-            _cs.SetBuffer(_kGemm2DAttentionQkvLinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(_kGemm2DAttentionQkvLinearTextureA, b);
             _cs.SetBuffer(_kGemm2DAttentionQkvLinearTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DAttentionQkvLinearTextureA, "_TexOut0Arr", output);
             Dispatch3D(_kGemm2DAttentionQkvLinearTextureA, headDim, m, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
@@ -2644,7 +2706,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_GemmTexAInW", k);
             cmd.SetComputeIntParam(_cs, "_GemmTexAInH", m);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_LinearIn0", a.nameID);
-            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(cmd, _kGemm2DAttentionQkvLinearTextureA, b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvLinearTextureA, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kGemm2DAttentionQkvLinearTextureA, headDim, m, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
@@ -2679,7 +2741,7 @@ namespace NcnnCompute
             _cs.SetInt("_AttentionGemmHeadDim", headDim);
             _cs.SetInt("_AttentionGemmNumHeads", numHeads);
             _cs.SetTexture(_kGemm2DAttentionQkvPack4LinearTextureA, "_TexIn0Arr", a);
-            _cs.SetBuffer(_kGemm2DAttentionQkvPack4LinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(_kGemm2DAttentionQkvPack4LinearTextureA, b);
             _cs.SetBuffer(_kGemm2DAttentionQkvPack4LinearTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DAttentionQkvPack4LinearTextureA, "_TexOut0Arr", output);
             Dispatch3D(_kGemm2DAttentionQkvPack4LinearTextureA, headDim, m, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
@@ -2715,7 +2777,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_AttentionGemmHeadDim", headDim);
             cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_TexIn0Arr", a.nameID);
-            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(cmd, _kGemm2DAttentionQkvPack4LinearTextureA, b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionQkvPack4LinearTextureA, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kGemm2DAttentionQkvPack4LinearTextureA, headDim, m, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f))), 8, 8);
@@ -2750,7 +2812,7 @@ namespace NcnnCompute
             _cs.SetInt("_AttentionGemmHeadDim", headDim);
             _cs.SetInt("_AttentionGemmNumHeads", numHeads);
             _cs.SetTexture(_kGemm2DAttentionPack4ToLinearTextureA, "_TexIn0Arr", a);
-            _cs.SetBuffer(_kGemm2DAttentionPack4ToLinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(_kGemm2DAttentionPack4ToLinearTextureA, b);
             _cs.SetBuffer(_kGemm2DAttentionPack4ToLinearTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DAttentionPack4ToLinearTextureA, "_LinearOut0", output);
             Dispatch2D(_kGemm2DAttentionPack4ToLinearTextureA, n, m, 8, 8);
@@ -2786,7 +2848,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_AttentionGemmHeadDim", headDim);
             cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_TexIn0Arr", a.nameID);
-            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(cmd, _kGemm2DAttentionPack4ToLinearTextureA, b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToLinearTextureA, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kGemm2DAttentionPack4ToLinearTextureA, n, m, 8, 8);
@@ -2822,7 +2884,7 @@ namespace NcnnCompute
             _cs.SetInt("_AttentionGemmNumHeads", numHeads);
             _cs.SetInt("_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
             _cs.SetTexture(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexIn0Arr", a);
-            _cs.SetBuffer(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(_kGemm2DAttentionPack4ToPack4LinearTextureA, b);
             _cs.SetBuffer(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatC", useC ? c : b);
             _cs.SetTexture(_kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexOut0Arr", output);
             Dispatch3D(_kGemm2DAttentionPack4ToPack4LinearTextureA, ResolveGemmPack4LinearTextureDispatchColumns(output.width), m, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
@@ -2859,7 +2921,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_AttentionGemmNumHeads", numHeads);
             cmd.SetComputeIntParam(_cs, "_GemmTexOutsPerThread", _gemmPack4LinearOutPacksPerThread);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexIn0Arr", a.nameID);
-            cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatB", b);
+            SetTextureGemmWeights(cmd, _kGemm2DAttentionPack4ToPack4LinearTextureA, b);
             cmd.SetComputeBufferParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_MatC", useC ? c : b);
             cmd.SetComputeTextureParam(_cs, _kGemm2DAttentionPack4ToPack4LinearTextureA, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kGemm2DAttentionPack4ToPack4LinearTextureA, ResolveGemmPack4LinearTextureDispatchColumns(output.width), m, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
@@ -3834,7 +3896,7 @@ namespace NcnnCompute
             Dispatch3D(_kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
         }
 
-        public void ConvPack4General(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
+        public void ConvPack4General(RenderTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int outputChannels, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, RenderTexture dstPack4)
         {
             if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
             if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
@@ -3842,6 +3904,7 @@ namespace NcnnCompute
             if (b4 == null) throw new ArgumentNullException(nameof(b4));
             if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
             if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+            if (outputChannels <= 0 || outputChannels > outPacks * 4) throw new ArgumentOutOfRangeException(nameof(outputChannels));
             if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
 
             _cs.SetInt("_InW", srcPack4.width);
@@ -3850,6 +3913,7 @@ namespace NcnnCompute
             _cs.SetInt("_OutH", dstPack4.height);
             _cs.SetInt("_InPacks", inPacks);
             _cs.SetInt("_OutPacks", outPacks);
+            _cs.SetInt("_OutC", outputChannels);
             _cs.SetInt("_KernelWVar", kernelW);
             _cs.SetInt("_KernelHVar", kernelH);
             _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
@@ -3860,7 +3924,7 @@ namespace NcnnCompute
             _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
             _cs.SetInt("_ActType", activationType);
             _cs.SetFloat("_ActParam", activationParam);
-            _cs.SetBuffer(_kConvPack4General, "_ConvW4", w4);
+            SetConvPack4Weights(_kConvPack4General, w4);
             _cs.SetBuffer(_kConvPack4General, "_ConvB4", b4);
             _cs.SetTexture(_kConvPack4General, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConvPack4General, "_ConvOutArr", dstPack4);
@@ -3966,7 +4030,7 @@ namespace NcnnCompute
             _cs.SetInt("_OutPacks", packs);
             _cs.SetInt("_ActType", activationType);
             _cs.SetFloat("_ActParam", activationParam);
-            _cs.SetBuffer(_kConvDepthWisePack4, "_DwConvW4", w4);
+            SetDepthWisePack4Weights(_kConvDepthWisePack4, w4);
             _cs.SetBuffer(_kConvDepthWisePack4, "_DwConvB4", b4);
             _cs.SetTexture(_kConvDepthWisePack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConvDepthWisePack4, "_ConvOutArr", dstPack4);
@@ -4808,7 +4872,7 @@ namespace NcnnCompute
             Dispatch3D(cmd, kernel, dstPack4.width, dstPack4.height, dstPack4.depth, 8, 8);
         }
 
-        public void ConvPack4General(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)
+        public void ConvPack4General(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeBuffer w4, ComputeBuffer b4, int outPacks, int outputChannels, int kernelW, int kernelH, int strideW, int strideH, int padLeft, int padTop, int dilationW, int dilationH, int activationType, float activationParam, ComputeTexture dstPack4)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
@@ -4817,6 +4881,7 @@ namespace NcnnCompute
             if (b4 == null) throw new ArgumentNullException(nameof(b4));
             if (inPacks <= 0) throw new ArgumentOutOfRangeException(nameof(inPacks));
             if (outPacks <= 0) throw new ArgumentOutOfRangeException(nameof(outPacks));
+            if (outputChannels <= 0 || outputChannels > outPacks * 4) throw new ArgumentOutOfRangeException(nameof(outputChannels));
             if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
 
             cmd.SetComputeIntParam(_cs, "_InW", srcPack4.width);
@@ -4825,6 +4890,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_OutH", dstPack4.height);
             cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
             cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_OutC", outputChannels);
             cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
             cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
             cmd.SetComputeIntParam(_cs, "_StrideWVar", Mathf.Max(1, strideW));
@@ -4835,7 +4901,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_DilationHVar", Mathf.Max(1, dilationH));
             cmd.SetComputeIntParam(_cs, "_ActType", activationType);
             cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
-            cmd.SetComputeBufferParam(_cs, _kConvPack4General, "_ConvW4", w4);
+            SetConvPack4Weights(cmd, _kConvPack4General, w4);
             cmd.SetComputeBufferParam(_cs, _kConvPack4General, "_ConvB4", b4);
             cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConvPack4General, "_ConvOutArr", dstPack4.nameID);

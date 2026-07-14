@@ -127,6 +127,8 @@ namespace NcnnCompute
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedDepthWiseWeight4.SetData(w4);
                                             pack.packedBias4.SetData(b4);
+                                            if (owner.UsesFp16WeightStorage)
+                                                pack.packedDepthWiseWeight4Fp16 = NcnnRepro.NewFp16Vector4Buffer(w4, "NcnnRepro.ConvPackedDepthWiseWeight4Fp16:" + layer.name);
                                             phaseSw.Stop();
                                             packMs += phaseSw.ElapsedMilliseconds;
                                         }
@@ -262,6 +264,7 @@ namespace NcnnCompute
             }
             else if (canUseDepthWiseTexturePath)
             {
+                owner.Ops.SetFp16DepthWiseWeights(owner.UsesFp16WeightStorage ? conv.packedDepthWiseWeight4Fp16 : null);
                 owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
@@ -321,6 +324,7 @@ namespace NcnnCompute
                 output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, RenderTextureFormat.ARGBHalf);
                 if (SupportsDepthWiseTexturePath(conv) && (conv.outC & 3) == 0 && conv.packedDepthWiseWeight4 != null && conv.packedBias4 != null)
                 {
+                    owner.Ops.SetFp16DepthWiseWeights(owner.UsesFp16WeightStorage ? conv.packedDepthWiseWeight4Fp16 : null);
                     owner.Ops.ConvDepthWisePack4(cmd, src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
                 }
                 else

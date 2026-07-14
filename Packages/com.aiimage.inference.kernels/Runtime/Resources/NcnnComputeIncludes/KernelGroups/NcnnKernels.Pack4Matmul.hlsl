@@ -547,9 +547,14 @@ float NcnnResolveGemm2DBias(int row, int col)
 
 float NcnnGemm2DReadB(int col, int kk)
 {
-    return _MatTransB != 0
-        ? _MatB[col * _MatK + kk]
-        : _MatB[kk * _MatN + col];
+    int index = _MatTransB != 0
+        ? col * _MatK + kk
+        : kk * _MatN + col;
+    if (_UseFp16GemmWeights == 0)
+        return _MatB[index];
+
+    uint packed = _MatBFp16[index >> 1];
+    return f16tof32((index & 1) == 0 ? (packed & 0xffffu) : (packed >> 16));
 }
 
 int NcnnGemmPack4LinearOutPacksPerThread()

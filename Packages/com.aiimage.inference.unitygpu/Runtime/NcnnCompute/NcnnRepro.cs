@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using System.Diagnostics;
 using System.Linq;
@@ -23,6 +24,13 @@ namespace NcnnCompute
 
     public partial class NcnnRepro : IInferenceSession
     {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PackedFp16x4
+        {
+            public uint xy;
+            public uint zw;
+        }
+
         internal static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
         {
             "Mul_581",
@@ -258,18 +266,22 @@ namespace NcnnCompute
             public bool useWinograd23;
             public bool isDepthWise;
             public ComputeBuffer packedWeight4;
+            public ComputeBuffer packedWeight4Fp16;
             public ComputeBuffer packedBias4;
             public ComputeBuffer packedWeightTm23;
             public ComputeBuffer packedDepthWiseWeight4;
+            public ComputeBuffer packedDepthWiseWeight4Fp16;
             public ComputeBuffer rawWeight;
             public ComputeBuffer rawBias;
 
             public void Dispose()
             {
                 try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeight4, "NcnnRepro.ConvPack.Dispose"); packedWeight4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeight4Fp16, "NcnnRepro.ConvPack.Dispose"); packedWeight4Fp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(packedBias4, "NcnnRepro.ConvPack.Dispose"); packedBias4?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeightTm23, "NcnnRepro.ConvPack.Dispose"); packedWeightTm23?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(packedDepthWiseWeight4, "NcnnRepro.ConvPack.Dispose"); packedDepthWiseWeight4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedDepthWiseWeight4Fp16, "NcnnRepro.ConvPack.Dispose"); packedDepthWiseWeight4Fp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeight, "NcnnRepro.ConvPack.Dispose"); rawWeight?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawBias, "NcnnRepro.ConvPack.Dispose"); rawBias?.Dispose(); } catch { }
             }
@@ -282,11 +294,13 @@ namespace NcnnCompute
             public int biasTerm;
             public int weightSize;
             public ComputeBuffer w;
+            public ComputeBuffer wFp16;
             public ComputeBuffer b;
 
             public void Dispose()
             {
                 try { NcnnGpuResourceTracker.ReleaseBuffer(w, "NcnnRepro.InnerProductPack.Dispose"); w?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(wFp16, "NcnnRepro.InnerProductPack.Dispose"); wFp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(b, "NcnnRepro.InnerProductPack.Dispose"); b?.Dispose(); } catch { }
             }
         }
@@ -348,6 +362,7 @@ namespace NcnnCompute
             public int constantK;
             public int broadcastTypeC;
             public ComputeBuffer bData;
+            public ComputeBuffer bDataFp16;
             public ComputeBuffer cData;
             public float[] bDataCpu;
             public float[] cDataCpu;
@@ -355,6 +370,7 @@ namespace NcnnCompute
             public void Dispose()
             {
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bData, "NcnnRepro.GemmPack.Dispose"); bData?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(bDataFp16, "NcnnRepro.GemmPack.Dispose"); bDataFp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(cData, "NcnnRepro.GemmPack.Dispose"); cData?.Dispose(); } catch { }
             }
         }
@@ -1254,6 +1270,9 @@ namespace NcnnCompute
         public bool EnableAttentionMatMulPack4Specializations { get; set; }
         public bool EnableVistaTailPack4Specializations { get; set; }
         public RenderTextureFormat TensorTextureFormat { get; set; } = RenderTextureFormat.ARGBHalf;
+        public ModelManifest ModelManifest { get; private set; }
+        public bool UsesFp16WeightStorage => ModelManifest?.precision?.weightDataType == TensorDataType.Float16;
+        public bool UsesFp16ActivationStorage => ModelManifest?.precision?.activationDataType == TensorDataType.Float16;
         public long TemporaryTextureBudgetBytes { get; set; }
         public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
         // Production CommandBuffer execution is always planned strictly. DebugOracle is the
@@ -1298,6 +1317,43 @@ namespace NcnnCompute
         private string _currentExecutingLayerName;
         private string _currentExecutingLayerTypeName;
         private NcnnLayerBufferContext _currentBufferContext;
+
+        public void ApplyModelManifest(ModelManifest manifest)
+        {
+            if (manifest == null)
+                throw new ArgumentNullException(nameof(manifest));
+            manifest.Validate();
+            if (Model != null)
+            {
+                throw new InvalidOperationException(
+                    "Model manifest precision must be applied before model weights are loaded"
+                    + " | model=" + manifest.modelId
+                    + " | rejected_fallback=FP32-weight-reuse");
+            }
+
+            ModelManifest = manifest;
+            TensorTextureFormat = manifest.precision.activationDataType == TensorDataType.Float16
+                ? RenderTextureFormat.ARGBHalf
+                : RenderTextureFormat.ARGBFloat;
+            StrictTextureTargetDtype = manifest.precision.activationDataType == TensorDataType.Float16 ? "FP16" : "FP32";
+            StrictTextureTargetLayout = NcnnTexturePlanLayout.Packed4;
+        }
+
+        public RenderTextureFormat ResolveActivationTextureFormat(int dims)
+        {
+            if (ModelManifest == null)
+                return ResolveTensorTextureFormat(dims);
+            return UsesFp16ActivationStorage ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGBFloat;
+        }
+
+        internal RenderTextureFormat ResolveSensitiveOutputTextureFormat()
+        {
+            if (ModelManifest == null)
+                return TensorTextureFormat;
+            return ModelManifest.precision.sensitiveOutputDataType == TensorDataType.Float16
+                ? RenderTextureFormat.ARGBHalf
+                : RenderTextureFormat.ARGBFloat;
+        }
 
         public static bool IsDebugOracleBuild
         {
@@ -1387,6 +1443,14 @@ namespace NcnnCompute
                 && TensorTextureFormat != RenderTextureFormat.ARGBFloat)
                 return RejectStrictCommandBufferPack4Node("FP32 Pack4 requires TensorTextureFormat=ARGBFloat for texture-native intermediate/output storage.");
 
+            if (ModelManifest != null
+                && string.Equals(request.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                && UsesFp16WeightStorage
+                && !TryVerifyFp16WeightStorage(layer, out var fp16WeightReason))
+            {
+                return RejectStrictCommandBufferPack4Node(fp16WeightReason);
+            }
+
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
             switch (operatorName)
             {
@@ -1461,6 +1525,74 @@ namespace NcnnCompute
                 default:
                     return RejectStrictCommandBufferPack4Node("No loaded-runtime Pack4 proof exists for operator " + (operatorName ?? string.Empty) + ".");
             }
+        }
+
+        private bool TryVerifyFp16WeightStorage(NcnnParamModel.Layer layer, out string reason)
+        {
+            reason = null;
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            if (string.Equals(operatorName, "Convolution", StringComparison.Ordinal))
+            {
+                if (!_conv.TryGetValue(layer.name, out var conv)
+                    || conv.packedWeight4Fp16 == null
+                    || conv.isDepthWise
+                    || conv.group != 1
+                    || conv.kernelW != conv.kernelH)
+                {
+                    reason = "FP16 Conv requires the verified Pack4General half4-weight profile (group=1 and square kernel); packed tail lanes are cleared before storage, and FP32 weight or Buffer fallbacks are prohibited.";
+                    return false;
+                }
+                return true;
+            }
+
+            if (string.Equals(operatorName, "Gemm", StringComparison.Ordinal))
+            {
+                if (!_gemm.TryGetValue(layer.name, out var gemm)
+                    || (gemm.constantB && gemm.bDataFp16 == null))
+                {
+                    reason = "FP16 Gemm requires a loaded packed-half constant-B upload; FP32 constant weights are not a valid FP16 plan substitute.";
+                    return false;
+                }
+                return true;
+            }
+
+            if (string.Equals(operatorName, "ConvolutionDepthWise", StringComparison.Ordinal))
+            {
+                if (!_conv.TryGetValue(layer.name, out var depthWise)
+                    || depthWise.packedDepthWiseWeight4Fp16 == null
+                    || !depthWise.isDepthWise
+                    || depthWise.group != depthWise.inC
+                    || depthWise.outC % depthWise.group != 0
+                    || (depthWise.outC & 3) != 0)
+                {
+                    reason = "FP16 ConvolutionDepthWise requires the verified Pack4 half4-weight profile (group=inC, integral depthwise multiplier, and output channels divisible by four); FP32 weight and Buffer fallbacks are prohibited.";
+                    return false;
+                }
+                return true;
+            }
+
+            if (string.Equals(operatorName, "InnerProduct", StringComparison.Ordinal))
+            {
+                if (!_innerProduct.TryGetValue(layer.name, out var innerProduct)
+                    || innerProduct.wFp16 == null)
+                {
+                    reason = "FP16 InnerProduct requires a loaded packed-half immutable weight upload for its verified texture-native Gemm lowering; FP32 weight and Buffer fallbacks are prohibited.";
+                    return false;
+                }
+                return true;
+            }
+
+            if (string.Equals(operatorName, "Convolution3D", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Deconvolution", StringComparison.Ordinal)
+                || string.Equals(operatorName, "DeconvolutionDepthWise", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Deconvolution3D", StringComparison.Ordinal)
+                )
+            {
+                reason = "This operator has no verified FP16 weight-storage CommandBuffer Pack4 implementation; strict FP16 planning refuses an FP32-weight or Buffer fallback.";
+                return false;
+            }
+
+            return true;
         }
 
         private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferConvolution3D(
@@ -2181,6 +2313,9 @@ namespace NcnnCompute
             {
                 return RejectStrictCommandBufferPack4Node("The loaded InnerProduct weights or bias are unavailable.");
             }
+            if (string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                && innerProduct.wFp16 == null)
+                return RejectStrictCommandBufferPack4Node("FP16 InnerProduct requires a packed-half immutable weight upload.");
             if (input.w != innerProduct.inFeatures)
                 return RejectStrictCommandBufferPack4Node("InnerProduct input width does not match the loaded weight profile.");
 
@@ -3307,6 +3442,33 @@ namespace NcnnCompute
         {
             _currentExecutingLayerName = layer?.name;
             _currentExecutingLayerTypeName = layer?.typeName;
+            if (ModelManifest != null
+                && UsesFp16WeightStorage
+                && !TryVerifyFp16WeightStorage(layer, out var reason))
+            {
+                throw new StrictTextureInferencePlanException(new NcnnTextureExecutionPlan
+                {
+                    targetBackend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                    targetDtype = "FP16",
+                    targetLayout = NcnnTexturePlanLayout.Packed4,
+                    diagnostics = new[]
+                    {
+                        new NcnnTextureExecutionPlanDiagnostic
+                        {
+                            layer = layer?.name ?? string.Empty,
+                            operatorName = layer?.typeName ?? layer?.type.ToString() ?? string.Empty,
+                            capabilityStatus = NcnnOperatorCapabilityStatus.Partial,
+                            code = "fp16-weight-profile-rejected",
+                            reason = reason,
+                            targetBackend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            targetDtype = "FP16",
+                            targetLayout = NcnnTexturePlanLayout.Packed4,
+                            rejectedPaths = new[] { "FP32-weight", "Buffer", "materialize-from-buffer" },
+                            recommendedAction = "Use a verified half4/packed-half kernel profile or select the FP32 manifest."
+                        }
+                    }
+                });
+            }
         }
 
         internal void ClearCurrentExecutingLayer()
@@ -3948,6 +4110,8 @@ namespace NcnnCompute
                     NcnnGpuResourceTracker.RegisterBuffer(pack.packedBias4, b4.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedBias4:" + layer.name);
                     pack.packedWeight4.SetData(w4);
                     pack.packedBias4.SetData(b4);
+                    if (UsesFp16WeightStorage)
+                        pack.packedWeight4Fp16 = NewFp16Vector4Buffer(w4, "NcnnRepro.ConvPackedWeight4Fp16:" + layer.name);
 
                     if (EnableWinograd23
                         && pack.kernelW == 3
@@ -3980,6 +4144,8 @@ namespace NcnnCompute
                     NcnnGpuResourceTracker.RegisterBuffer(pack.packedBias4, b4.Length, sizeof(float) * 4, "NcnnRepro.ConvPackedBias4:" + layer.name);
                     pack.packedDepthWiseWeight4.SetData(w4);
                     pack.packedBias4.SetData(b4);
+                    if (UsesFp16WeightStorage)
+                        pack.packedDepthWiseWeight4Fp16 = NewFp16Vector4Buffer(w4, "NcnnRepro.ConvPackedDepthWiseWeight4Fp16:" + layer.name);
                     phaseSw.Stop();
                     packMs += phaseSw.ElapsedMilliseconds;
                 }
@@ -4050,6 +4216,8 @@ namespace NcnnCompute
                 phaseSw.Restart();
                 ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
                 NcnnGpuResourceTracker.RegisterBuffer(ip.w, w.Length, sizeof(float), "NcnnRepro.InnerProductWeight:" + layer.name);
+                if (UsesFp16WeightStorage)
+                    ip.wFp16 = NewFp16Buffer(w, "NcnnRepro.InnerProductWeightFp16:" + layer.name);
                 ip.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
                 NcnnGpuResourceTracker.RegisterBuffer(ip.b, b.Length, sizeof(float), "NcnnRepro.InnerProductBias:" + layer.name);
                 ip.w.SetData(w);
@@ -4112,6 +4280,8 @@ namespace NcnnCompute
 
                 phaseSw.Restart();
                 gp.bData = NewBuffer(gp.bDataCpu);
+                if (UsesFp16WeightStorage)
+                    gp.bDataFp16 = NewFp16Buffer(gp.bDataCpu, "NcnnRepro.GemmWeightFp16:" + layer.name);
                 if (gp.cDataCpu != null)
                     gp.cData = NewBuffer(gp.cDataCpu);
                 phaseSw.Stop();
@@ -4949,8 +5119,7 @@ namespace NcnnCompute
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
             depth = Mathf.Max(1, depth);
-            if (format == RenderTextureFormat.ARGBHalf)
-                format = TensorTextureFormat;
+            format = ResolvePack4TextureFormat(format);
             if (WouldExceedTextureArraySliceLimit(depth))
             {
                 throw new InvalidOperationException(
@@ -4993,7 +5162,7 @@ namespace NcnnCompute
         {
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
-            format = format == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : format;
+            format = ResolveLinearTextureFormat(format);
             if (WouldExceedTextureSizeLimit(w, h))
             {
                 throw new InvalidOperationException(
@@ -5041,8 +5210,7 @@ namespace NcnnCompute
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
             depth = Mathf.Max(1, depth);
-            if (format == RenderTextureFormat.ARGBHalf)
-                format = TensorTextureFormat;
+            format = ResolvePack4TextureFormat(format);
             if (WouldExceedTextureArraySliceLimit(depth))
             {
                 throw new InvalidOperationException(
@@ -5095,7 +5263,7 @@ namespace NcnnCompute
 
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
-            format = format == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : format;
+            format = ResolveLinearTextureFormat(format);
             if (WouldExceedTextureSizeLimit(w, h))
             {
                 throw new InvalidOperationException(
@@ -5229,6 +5397,44 @@ namespace NcnnCompute
         internal static RenderTextureFormat ResolveTensorTextureFormat(int dims)
         {
             return dims >= 4 ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        }
+
+        private RenderTextureFormat ResolvePack4TextureFormat(RenderTextureFormat requested)
+        {
+            if (ModelManifest == null)
+                return requested == RenderTextureFormat.ARGBHalf ? TensorTextureFormat : requested;
+            if (requested != RenderTextureFormat.ARGBHalf && requested != RenderTextureFormat.ARGBFloat)
+                return requested;
+            if (RequiresFp32AccumulatorOutput(_currentExecutingLayerTypeName))
+                return ResolveSensitiveOutputTextureFormat();
+            return UsesFp16ActivationStorage ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGBFloat;
+        }
+
+        private RenderTextureFormat ResolveLinearTextureFormat(RenderTextureFormat requested)
+        {
+            if (ModelManifest == null)
+                return requested == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : requested;
+            if (requested != RenderTextureFormat.ARGBHalf
+                && requested != RenderTextureFormat.ARGBFloat
+                && requested != RenderTextureFormat.RHalf
+                && requested != RenderTextureFormat.RFloat)
+                return requested;
+            if (RequiresFp32AccumulatorOutput(_currentExecutingLayerTypeName)
+                && ModelManifest.precision.sensitiveOutputDataType == TensorDataType.Float32)
+                return RenderTextureFormat.RFloat;
+            return UsesFp16ActivationStorage ? RenderTextureFormat.RHalf : RenderTextureFormat.RFloat;
+        }
+
+        internal static bool RequiresFp32AccumulatorOutput(string operatorName)
+        {
+            return string.Equals(operatorName, "LayerNorm", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Softmax", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Reduction", StringComparison.Ordinal)
+                || string.Equals(operatorName, "SDPA", StringComparison.Ordinal)
+                || string.Equals(operatorName, "MultiHeadAttention", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Sigmoid", StringComparison.Ordinal)
+                || string.Equals(operatorName, "GELU", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Swish", StringComparison.Ordinal);
         }
 
         internal static RenderTextureFormat ResolveLinearMatTextureFormat()
@@ -6964,6 +7170,70 @@ namespace NcnnCompute
             NcnnGpuResourceTracker.RegisterBuffer(buf, data.Length, sizeof(float), "NcnnRepro.NewBuffer");
             buf.SetData(data);
             return buf;
+        }
+
+        internal static ComputeBuffer NewFp16Buffer(float[] data, string label)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            var packed = new uint[Mathf.Max(1, (data.Length + 1) / 2)];
+            for (var index = 0; index < data.Length; index++)
+            {
+                var bits = FloatToHalfBits(data[index]);
+                var packedIndex = index >> 1;
+                packed[packedIndex] |= (uint)bits << ((index & 1) * 16);
+            }
+
+            var buffer = new ComputeBuffer(packed.Length, sizeof(uint), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, packed.Length, sizeof(uint), label ?? "NcnnRepro.Fp16Weight");
+            buffer.SetData(packed);
+            return buffer;
+        }
+
+        internal static ComputeBuffer NewFp16Vector4Buffer(Vector4[] data, string label)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            var packed = new PackedFp16x4[Mathf.Max(1, data.Length)];
+            for (var index = 0; index < data.Length; index++)
+            {
+                var value = data[index];
+                packed[index].xy = PackHalf2(value.x, value.y);
+                packed[index].zw = PackHalf2(value.z, value.w);
+            }
+
+            var buffer = new ComputeBuffer(Mathf.Max(1, data.Length), sizeof(uint) * 2, ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, Mathf.Max(1, data.Length), sizeof(uint) * 2, label ?? "NcnnRepro.Fp16Weight4");
+            buffer.SetData(packed);
+            return buffer;
+        }
+
+        private static uint PackHalf2(float x, float y)
+        {
+            return (uint)FloatToHalfBits(x) | ((uint)FloatToHalfBits(y) << 16);
+        }
+
+        // This is the IEEE-754 round-to-nearest-even conversion used only while uploading
+        // immutable weights. Activations remain texture-native throughout execution.
+        private static ushort FloatToHalfBits(float value)
+        {
+            var bits = unchecked((uint)BitConverter.ToInt32(BitConverter.GetBytes(value), 0));
+            var sign = (bits >> 16) & 0x8000u;
+            var exponent = (int)((bits >> 23) & 0xff) - 127 + 15;
+            var mantissa = bits & 0x7fffffu;
+            if (exponent <= 0)
+            {
+                if (exponent < -10)
+                    return (ushort)sign;
+                mantissa = (mantissa | 0x800000u) >> (1 - exponent);
+                return (ushort)(sign | ((mantissa + 0x1000u) >> 13));
+            }
+            if (exponent >= 31)
+            {
+                // Preserve infinities and make NaNs quiet in the half representation.
+                return (ushort)(sign | 0x7c00u | (mantissa == 0 ? 0u : 0x0200u));
+            }
+            return (ushort)(sign | ((uint)exponent << 10) | ((mantissa + 0x1000u) >> 13));
         }
 
         internal BufferRef NewBufferRef(ComputeBuffer buffer, bool owned)

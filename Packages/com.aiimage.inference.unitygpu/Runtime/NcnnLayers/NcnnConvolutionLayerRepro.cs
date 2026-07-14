@@ -108,6 +108,8 @@ namespace NcnnCompute
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedWeight4.SetData(w4);
                                             pack.packedBias4.SetData(b4);
+                                            if (owner.UsesFp16WeightStorage)
+                                                pack.packedWeight4Fp16 = NcnnRepro.NewFp16Vector4Buffer(w4, "NcnnRepro.ConvPackedWeight4Fp16:" + layer.name);
 
                                             if (NcnnRepro.EnableWinograd23
                                                 && pack.kernelW == 3
@@ -318,7 +320,16 @@ namespace NcnnCompute
                                           && owner.ShouldCompareTextureConvLayer(layer.name)
                                           && canUseGeneralTexturePath;
 
-            if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution && !forceGeneralTexturePath)
+            if (owner.UsesFp16WeightStorage
+                && conv.packedWeight4Fp16 != null
+                && conv.group == 1
+                && !conv.isDepthWise
+                && conv.kernelW == conv.kernelH)
+            {
+                owner.Ops.SetFp16ConvWeights(conv.packedWeight4Fp16);
+                owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
+            }
+            else if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution && !forceGeneralTexturePath)
             {
                 if (src.width != outWTex || src.height != outHTex)
                     throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
@@ -343,7 +354,8 @@ namespace NcnnCompute
             }
             else if (canUseGeneralTexturePath)
             {
-                owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
+                owner.Ops.SetFp16ConvWeights(null);
+                owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
             }
@@ -390,7 +402,16 @@ namespace NcnnCompute
 
                 var outShape = ResolveCmdOutputShape(srcShape, conv);
                 output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                if (conv.group == 1
+                if (owner.UsesFp16WeightStorage
+                    && conv.packedWeight4Fp16 != null
+                    && conv.group == 1
+                    && !conv.isDepthWise
+                    && conv.kernelW == conv.kernelH)
+                {
+                    owner.Ops.SetFp16ConvWeights(conv.packedWeight4Fp16);
+                    owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
+                }
+                else if (conv.group == 1
                     && !conv.isDepthWise
                     && conv.kernelW == 1
                     && conv.kernelH == 1
@@ -433,7 +454,8 @@ namespace NcnnCompute
                          && conv.packedWeight4 != null
                          && conv.packedBias4 != null)
                 {
-                    owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
+                    owner.Ops.SetFp16ConvWeights(null);
+                    owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
                 }
                 else
                 {

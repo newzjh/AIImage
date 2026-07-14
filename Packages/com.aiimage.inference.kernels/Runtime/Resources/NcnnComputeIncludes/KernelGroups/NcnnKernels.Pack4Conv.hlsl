@@ -1,5 +1,41 @@
 // Auto-generated kernel implementation group: NcnnKernels.Pack4Conv.hlsl
 
+float4 NcnnReadConvWeight4(int index)
+{
+    if (_UseFp16ConvWeights == 0)
+        return _ConvW4[index];
+
+    uint2 packed = _ConvW4Fp16[index];
+    return float4(
+        f16tof32(packed.x & 0xffffu),
+        f16tof32(packed.x >> 16),
+        f16tof32(packed.y & 0xffffu),
+        f16tof32(packed.y >> 16));
+}
+
+float4 NcnnReadDepthWiseConvWeight4(int index)
+{
+    if (_UseFp16DepthWiseWeights == 0)
+        return _DwConvW4[index];
+
+    uint2 packed = _DwConvW4Fp16[index];
+    return float4(
+        f16tof32(packed.x & 0xffffu),
+        f16tof32(packed.x >> 16),
+        f16tof32(packed.y & 0xffffu),
+        f16tof32(packed.y >> 16));
+}
+
+float4 NcnnMaskConvOutputTail(float4 value, int outputPack)
+{
+    int firstChannel = outputPack * 4;
+    if (firstChannel + 0 >= _OutC) value.x = 0.0;
+    if (firstChannel + 1 >= _OutC) value.y = 0.0;
+    if (firstChannel + 2 >= _OutC) value.z = 0.0;
+    if (firstChannel + 3 >= _OutC) value.w = 0.0;
+    return value;
+}
+
 void NcnnPackRgbToPack4_Impl(uint3 id)
 {
     uint w, h, d;
@@ -237,10 +273,10 @@ void NcnnConvPack4General_Impl(uint3 id)
 
                 int kernelIndex = ky * _KernelWVar + kx;
                 int baseIndex0 = weightBase0 + kernelIndex * 4;
-                float4 w00 = _ConvW4[baseIndex0 + 0];
-                float4 w01 = _ConvW4[baseIndex0 + 1];
-                float4 w02 = _ConvW4[baseIndex0 + 2];
-                float4 w03 = _ConvW4[baseIndex0 + 3];
+                float4 w00 = NcnnReadConvWeight4(baseIndex0 + 0);
+                float4 w01 = NcnnReadConvWeight4(baseIndex0 + 1);
+                float4 w02 = NcnnReadConvWeight4(baseIndex0 + 2);
+                float4 w03 = NcnnReadConvWeight4(baseIndex0 + 3);
                 sum00.x += dot(v00, w00);
                 sum00.y += dot(v00, w01);
                 sum00.z += dot(v00, w02);
@@ -261,10 +297,10 @@ void NcnnConvPack4General_Impl(uint3 id)
                 if (hasOp1)
                 {
                     int baseIndex1 = weightBase1 + kernelIndex * 4;
-                    float4 w10 = _ConvW4[baseIndex1 + 0];
-                    float4 w11 = _ConvW4[baseIndex1 + 1];
-                    float4 w12 = _ConvW4[baseIndex1 + 2];
-                    float4 w13 = _ConvW4[baseIndex1 + 3];
+                    float4 w10 = NcnnReadConvWeight4(baseIndex1 + 0);
+                    float4 w11 = NcnnReadConvWeight4(baseIndex1 + 1);
+                    float4 w12 = NcnnReadConvWeight4(baseIndex1 + 2);
+                    float4 w13 = NcnnReadConvWeight4(baseIndex1 + 3);
                     sum20.x += dot(v00, w10);
                     sum20.y += dot(v00, w11);
                     sum20.z += dot(v00, w12);
@@ -290,6 +326,10 @@ void NcnnConvPack4General_Impl(uint3 id)
     if (hasX1) sum01 = NcnnApplyActivation(sum01);
     if (hasY1) sum10 = NcnnApplyActivation(sum10);
     if (hasX1 && hasY1) sum11 = NcnnApplyActivation(sum11);
+    sum00 = NcnnMaskConvOutputTail(sum00, op);
+    if (hasX1) sum01 = NcnnMaskConvOutputTail(sum01, op);
+    if (hasY1) sum10 = NcnnMaskConvOutputTail(sum10, op);
+    if (hasX1 && hasY1) sum11 = NcnnMaskConvOutputTail(sum11, op);
 
     _ConvOutArr[int3(ox, oy, op)] = sum00;
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, op)] = sum01;
@@ -303,6 +343,10 @@ void NcnnConvPack4General_Impl(uint3 id)
     if (hasX1) sum21 = NcnnApplyActivation(sum21);
     if (hasY1) sum30 = NcnnApplyActivation(sum30);
     if (hasX1 && hasY1) sum31 = NcnnApplyActivation(sum31);
+    sum20 = NcnnMaskConvOutputTail(sum20, op1);
+    if (hasX1) sum21 = NcnnMaskConvOutputTail(sum21, op1);
+    if (hasY1) sum30 = NcnnMaskConvOutputTail(sum30, op1);
+    if (hasX1 && hasY1) sum31 = NcnnMaskConvOutputTail(sum31, op1);
 
     _ConvOutArr[int3(ox, oy, op1)] = sum20;
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, op1)] = sum21;
@@ -580,7 +624,7 @@ void NcnnConvDepthWisePack4_Impl(uint3 id)
             bool validX1 = hasX1 && ix1 >= 0 && ix1 < _InW;
             if (!validX0 && !validX1) continue;
 
-            float4 w = _DwConvW4[(pack * _KernelHVar + ky) * _KernelWVar + kx];
+            float4 w = NcnnReadDepthWiseConvWeight4((pack * _KernelHVar + ky) * _KernelWVar + kx);
             if (isOneToOneDepthWise)
             {
                 if (validX0 && validY0) sum00 += _ConvInArr[int3(ix0, iy0, pack)] * w;

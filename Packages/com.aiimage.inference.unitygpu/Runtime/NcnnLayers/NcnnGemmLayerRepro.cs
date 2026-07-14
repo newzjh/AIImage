@@ -68,6 +68,8 @@ namespace NcnnCompute
 
                                             phaseSw.Restart();
                                             gp.bData = NcnnRepro.NewBuffer(gp.bDataCpu);
+                                            if (owner.UsesFp16WeightStorage)
+                                                gp.bDataFp16 = NcnnRepro.NewFp16Buffer(gp.bDataCpu, "NcnnRepro.GemmWeightFp16:" + layer.name);
                                             if (gp.cDataCpu != null)
                                                 gp.cData = NcnnRepro.NewBuffer(gp.cDataCpu);
                                             phaseSw.Stop();
@@ -196,6 +198,7 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
+            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._gemm.TryGetValue(layer.name, out var fp16Gemm) ? fp16Gemm.bDataFp16 : null);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -206,6 +209,7 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
+            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._gemm.TryGetValue(layer.name, out var fp16Gemm) ? fp16Gemm.bDataFp16 : null);
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 

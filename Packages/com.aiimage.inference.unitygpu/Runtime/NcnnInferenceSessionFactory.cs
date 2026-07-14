@@ -1,4 +1,5 @@
 using System;
+using AIImage.Inference.Core;
 
 namespace NcnnCompute
 {
@@ -7,9 +8,17 @@ namespace NcnnCompute
     {
         public static NcnnRepro Create(NcnnOps ops)
         {
+            return Create(ops, NcnnModelManifestLoader.TryLoadFromEnvironment());
+        }
+
+        public static NcnnRepro Create(NcnnOps ops, ModelManifest manifest)
+        {
             if (ops == null)
                 throw new ArgumentNullException(nameof(ops));
-            return new NcnnRepro(ops);
+            var session = new NcnnRepro(ops);
+            if (manifest != null)
+                session.ApplyModelManifest(manifest);
+            return session;
         }
     }
 }
