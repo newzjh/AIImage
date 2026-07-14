@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using NcnnCompute;
 using UnityEditor;
 using UnityEngine;
@@ -57,6 +58,16 @@ public static class NcnnOperatorCapabilityReportTool
             ExportPreflight(modelPath, output, inputs.ToArray());
         }
 
+        var strictPlanModelPath = GetArgument(arguments, "-ncnnStrictTexturePlanModel");
+        if (!string.IsNullOrWhiteSpace(strictPlanModelPath))
+        {
+            var output = GetArgument(arguments, "-ncnnStrictTexturePlanOutput")
+                ?? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(capabilityOutput)) ?? Directory.GetCurrentDirectory(), Path.GetFileNameWithoutExtension(strictPlanModelPath) + "-strict-texture-plan.json");
+            var inputs = ParseInputs(GetArguments(arguments, "-ncnnStrictTexturePlanInput"));
+            var debugOracleRelaxed = ResolveBool(GetArgument(arguments, "-ncnnStrictTexturePlanDebugOracle"));
+            ExportStrictTexturePlan(strictPlanModelPath, output, inputs.ToArray(), debugOracleRelaxed);
+        }
+
         Debug.Log("[OperatorCapabilities] batch report complete | capabilities=" + capabilityOutput + " | model=" + (modelPath ?? "none"));
     }
 
@@ -76,6 +87,40 @@ public static class NcnnOperatorCapabilityReportTool
         });
         NcnnModelPreflight.WriteStableJson(outputPath, report);
         Debug.Log("[OperatorCapabilities] preflight | model=" + report.modelName + " | " + report.summary + " | output=" + outputPath);
+    }
+
+    private static void ExportStrictTexturePlan(
+        string modelPath,
+        string outputPath,
+        NcnnPreflightTensorDescriptor[] inputs,
+        bool debugOracleRelaxed)
+    {
+        if (!File.Exists(modelPath))
+            throw new FileNotFoundException("ncnn strict texture plan model not found", modelPath);
+
+        var model = NcnnParamParser.Parse(File.ReadAllText(modelPath));
+        var plan = NcnnTextureExecutionPlanner.Analyze(model, new NcnnTextureExecutionPlanRequest
+        {
+            modelName = Path.GetFileName(modelPath),
+            targetBackend = NcnnOperatorCapabilityBackend.CommandBuffer,
+            targetDtype = "FP16",
+            targetLayout = NcnnTexturePlanLayout.Packed4,
+            strict = !debugOracleRelaxed,
+            debugOracleRelaxed = debugOracleRelaxed,
+            inputs = (inputs ?? Array.Empty<NcnnPreflightTensorDescriptor>()).Where(input => input != null).Select(input => new NcnnTexturePlanTensorDescriptor
+            {
+                blob = input.blob,
+                logicalShape = input.logicalShape,
+                storageShape = input.storageShape,
+                layout = input.layout,
+                dtype = input.dtype,
+                aliasGroup = "cli:" + input.blob,
+                textureBacked = true
+            }).ToArray()
+        });
+        NcnnTextureExecutionPlanner.WriteStableJson(outputPath, plan);
+        NcnnTextureExecutionPlanner.ThrowIfDispatchRejected(plan);
+        Debug.Log("[OperatorCapabilities] strict texture plan | model=" + plan.modelName + " | " + plan.summary + " | output=" + outputPath);
     }
 
     private static NcnnPreflightTensorDescriptor CreateInput(string blob, int[] logicalShape, int[] storageShape, string layout, string dtype)
@@ -136,5 +181,12 @@ public static class NcnnOperatorCapabilityReportTool
                 values.Add(arguments[++i]);
         }
         return values.ToArray();
+    }
+
+    private static bool ResolveBool(string value)
+    {
+        return string.Equals(value, "1", StringComparison.Ordinal)
+            || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase);
     }
 }
