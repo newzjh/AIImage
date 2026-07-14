@@ -4,7 +4,7 @@
   "precision": {
     "activationDtype": "FP16",
     "weightDtype": "FP16",
-    "sensitiveOutputDtype": "FP16",
+    "sensitiveOutputDtype": "FP32",
     "requireStrictTexturePlan": true
   }
 }

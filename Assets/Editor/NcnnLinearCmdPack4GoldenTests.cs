@@ -15,6 +15,66 @@ public sealed class NcnnLinearCmdPack4GoldenTests
     }
 
     [Test]
+    public void CommandBufferPack4_LinearMatProjectionToPack4MatchesFp32Oracle()
+    {
+        const int rows = 3;
+        const int k = 5;
+        const int n = 8;
+        var input = CreateValues(rows * k, 0.0625f, 11);
+        var weights = CreateValues(n * k, 0.046875f, 13);
+        var bias = CreateValues(n, 0.03125f, 7);
+        var expected = ReferenceLinearProjection(input, weights, bias, rows, k, n);
+        var outputPacks = Mathf.CeilToInt(n / 4f);
+
+        NcnnGpuResourceTracker.Reset("NcnnLinearCmdPack4GoldenTests.linear-projection");
+        using var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var commandBuffer = new CommandBuffer { name = "NcnnLinearCmdPack4Golden:linear-projection" };
+        using var inputBuffer = CreateBuffer(input);
+        using var weightBuffer = CreateBuffer(weights);
+        using var biasBuffer = CreateBuffer(bias);
+        var persistent = CreatePersistentSlices(outputPacks, rows, 1);
+        ComputeTexture source = null;
+        ComputeTexture output = null;
+        try
+        {
+            source = repro.RentTempMat(commandBuffer, k, rows, RenderTextureFormat.RFloat);
+            output = repro.RentTempArray(commandBuffer, outputPacks, rows, 1, RenderTextureFormat.ARGBFloat);
+            repro.Ops.FillLinearMatFromBuffer(commandBuffer, inputBuffer, k, rows, source);
+            repro.Ops.Gemm2DPack4LinearTextureA(
+                commandBuffer,
+                source,
+                false,
+                weightBuffer,
+                biasBuffer,
+                rows,
+                n,
+                k,
+                transB: true,
+                alpha: 1f,
+                beta: 1f,
+                useC: true,
+                broadcastTypeC: 4,
+                output);
+            CopySlices(commandBuffer, output, persistent);
+            repro.ReturnTempArray(commandBuffer, output);
+            repro.ReturnTempArray(commandBuffer, source);
+            output = null;
+            source = null;
+            Graphics.ExecuteCommandBuffer(commandBuffer);
+
+            var actual = ReadPack4LinearProjection(persistent[0], outputPacks, rows, n);
+            var maxError = AssertClose(actual, expected, "linear-projection", 3e-4f);
+            LogReport("linear-projection", "[m=" + rows + ",k=" + k + ",n=" + n + "]", maxError);
+        }
+        finally
+        {
+            Return(repro, commandBuffer, ref output);
+            Return(repro, commandBuffer, ref source);
+            ReleasePersistent(persistent);
+        }
+    }
+
+    [Test]
     public void CommandBufferPack4_SoftmaxMatchesFp32OracleForEveryLogicalAxis()
     {
         for (var axis = 0; axis < 4; axis++)
@@ -142,6 +202,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
     {
         var tests = new NcnnLinearCmdPack4GoldenTests();
         tests.CommandBufferPack4_MatMulMatchesFp32OracleForTailBatchAndTranspose();
+        tests.CommandBufferPack4_LinearMatProjectionToPack4MatchesFp32Oracle();
         tests.CommandBufferPack4_SoftmaxMatchesFp32OracleForEveryLogicalAxis();
         tests.CommandBufferPack4_LayerNormAndReductionMatchFp32Oracle();
         tests.CommandBufferPack4_SdpaMaskAndCausalMatchFp32Oracle();
@@ -342,6 +403,20 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         return values;
     }
 
+    private static float[] ReferenceLinearProjection(float[] input, float[] weights, float[] bias, int rows, int k, int n)
+    {
+        var result = new float[rows * n];
+        for (var row = 0; row < rows; row++)
+        for (var col = 0; col < n; col++)
+        {
+            var sum = bias[col];
+            for (var kk = 0; kk < k; kk++)
+                sum += input[row * k + kk] * weights[col * k + kk];
+            result[row * n + col] = sum;
+        }
+        return result;
+    }
+
     private static ComputeBuffer CreateBuffer(float[] values)
     {
         var buffer = new ComputeBuffer(values.Length, sizeof(float), ComputeBufferType.Structured);
@@ -411,6 +486,26 @@ public sealed class NcnnLinearCmdPack4GoldenTests
                     }
                 }
             }
+        }
+        return result;
+    }
+
+    private static float[] ReadPack4LinearProjection(RenderTexture texture, int packs, int rows, int columns)
+    {
+        var readback = AsyncGPUReadback.Request(texture, 0);
+        readback.WaitForCompletion();
+        Assert.That(readback.hasError, Is.False, "linear-projection readback");
+        var values = readback.GetData<Vector4>();
+        var result = new float[rows * columns];
+        for (var row = 0; row < rows; row++)
+        for (var pack = 0; pack < packs; pack++)
+        {
+            var value = values[row * packs + pack];
+            var baseColumn = pack * 4;
+            if (baseColumn < columns) result[row * columns + baseColumn] = value.x;
+            if (baseColumn + 1 < columns) result[row * columns + baseColumn + 1] = value.y;
+            if (baseColumn + 2 < columns) result[row * columns + baseColumn + 2] = value.z;
+            if (baseColumn + 3 < columns) result[row * columns + baseColumn + 3] = value.w;
         }
         return result;
     }

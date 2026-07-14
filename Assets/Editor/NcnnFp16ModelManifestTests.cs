@@ -19,6 +19,7 @@ public sealed class NcnnFp16ModelManifestTests
         Assert.That(fp32.precision.activationDataType, Is.EqualTo(TensorDataType.Float32));
         Assert.That(fp16.precision.activationDataType, Is.EqualTo(TensorDataType.Float16));
         Assert.That(fp16.precision.weightDataType, Is.EqualTo(TensorDataType.Float16));
+        Assert.That(fp16.precision.sensitiveOutputDataType, Is.EqualTo(TensorDataType.Float32));
 
         var mattingMixed = NcnnModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "matting.fp16-weights.model.json"));
         Assert.That(mattingMixed.modelId, Is.EqualTo("matting.ncnn"));

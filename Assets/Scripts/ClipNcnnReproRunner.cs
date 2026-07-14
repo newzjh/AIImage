@@ -1325,9 +1325,13 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         if (ShouldUseTextureReadbackForImageOutput(infer))
         {
             var texture = infer.GetTexture(OutputBlobName);
-            if (texture != null)
+            if (texture != null
+                && infer.TryGetLogicalShape(OutputBlobName, out var dims, out var w, out var h, out var d, out var c))
             {
-                var values = await ReadWidthVectorTextureAsync(texture, EmbeddingSize, ct);
+                var values = ReadTextureLogicalValues(
+                    texture,
+                    new NcnnRepro.BufferShape(dims, w, h, d, c),
+                    ct);
                 if (values != null && values.Length == EmbeddingSize)
                     return values;
             }
@@ -1347,6 +1351,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
         var inputCmd = _imageRepro.RentTempArray(cmd, targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
         var outputCmd = default(ComputeTexture);
+        var outputLogicalShape = default(NcnnRepro.BufferShape);
         RenderTexture outputReadbackRt = null;
         try
         {
@@ -1355,7 +1360,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 cmd,
                 inputCmd,
                 new NcnnRepro.BufferShape(3, targetSize, targetSize, 1, 3),
-                out _,
+                out outputLogicalShape,
                 InputBlobName);
             if (outputCmd == null)
                 throw new InvalidOperationException("CLIP command-buffer image encoder produced no output texture.");
@@ -1380,7 +1385,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             _imageRepro?.Ops?.DebugSyncGpu();
             ct.ThrowIfCancellationRequested();
 
-            var values = await ReadWidthVectorTextureAsync(outputReadbackRt, EmbeddingSize, ct);
+            var values = ReadTextureLogicalValues(outputReadbackRt, outputLogicalShape, ct);
             if (values == null || values.Length != EmbeddingSize)
                 throw new InvalidOperationException("CLIP command-buffer image encoder readback returned unexpected width: " + (values == null ? 0 : values.Length));
             return values;
@@ -1506,7 +1511,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 commandInput = null;
                 Graphics.ExecuteCommandBuffer(commandBuffer);
                 _imageRepro.Ops.DebugSyncGpu();
-                var commandValues = ReadCommandBufferProbeValues(commandReadback, commandShape, ct);
+                var commandValues = ReadTextureLogicalValues(commandReadback, commandShape, ct);
                 VerifyCommandBufferProbeValues(probeBlob, immediateValues, commandValues);
             }
         }
@@ -1566,7 +1571,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static float[] ReadCommandBufferProbeValues(RenderTexture texture, NcnnRepro.BufferShape logicalShape, CancellationToken ct)
+    // The logical vector can be a scalar LinearMat or width-packed into a single half4 slice.
+    // Always decode through its contract rather than assuming texture.width == logical width.
+    private static float[] ReadTextureLogicalValues(RenderTexture texture, NcnnRepro.BufferShape logicalShape, CancellationToken ct)
     {
         if (texture == null)
             return null;
