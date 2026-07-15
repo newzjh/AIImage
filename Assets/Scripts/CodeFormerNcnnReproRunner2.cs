@@ -759,7 +759,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         var total = width * height;
         using var buffer = new ComputeBuffer(total, sizeof(float), ComputeBufferType.Structured);
-        _ops.Pack4ToBufferCHW(pack4Tex, width, height, 1, buffer);
+        if (pack4Tex.dimension == TextureDimension.Tex2D)
+            _ops.LinearMatToBuffer(pack4Tex, width, height, buffer);
+        else
+            _ops.Pack4ToBufferCHW(pack4Tex, width, height, 1, buffer);
         var data = new float[total];
         buffer.GetData(data);
         return data;
@@ -1576,6 +1579,13 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         _encoderRepro.EnableGeneralTextureConvolution = true;
         _generatorRepro.EnableGeneralTextureConvolution = true;
+        var preserveLegacyFp32 = precisionMode != NcnnPrecisionMode.FP16;
+        _encoderRepro.PreserveLegacyFp32Execution = preserveLegacyFp32;
+        _generatorRepro.PreserveLegacyFp32Execution = preserveLegacyFp32;
+        // The Pack4-linear attention specialization has a different physical layout from
+        // this model's verified encoder/decoder contract, irrespective of data precision.
+        _encoderRepro.UseLegacyPack4AttentionLayout = true;
+        _generatorRepro.UseLegacyPack4AttentionLayout = true;
         // The decoder's residual tensors grow into the tens of thousands. Half storage
         // before GroupNorm loses too much mantissa precision, so keep only this decoder tail FP32.
         _encoderRepro.Fp32ActivationStartLayerName = null;
@@ -1807,10 +1817,17 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
         if (_ops == null)
             _ops = new NcnnOps();
+        // Preserve the original FP32 session contract exactly.  The manifest-backed
+        // session is an FP16 experiment and must not alter Auto/explicit FP32 results.
+        var useLegacyFp32Session = precisionMode != NcnnPrecisionMode.FP16;
         if (_encoderRepro == null)
-            _encoderRepro = NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
+            _encoderRepro = useLegacyFp32Session
+                ? NcnnInferenceSessionFactory.Create(_ops)
+                : NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
         if (_generatorRepro == null)
-            _generatorRepro = NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
+            _generatorRepro = useLegacyFp32Session
+                ? NcnnInferenceSessionFactory.Create(_ops)
+                : NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
         _appliedPrecisionMode = precisionMode;
         _hasAppliedPrecisionMode = true;
         ApplyReproOptions();
