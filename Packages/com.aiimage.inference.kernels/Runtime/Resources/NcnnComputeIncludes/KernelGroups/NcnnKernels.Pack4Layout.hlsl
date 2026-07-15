@@ -560,13 +560,27 @@ void NcnnReshapePack4ToScalar2D_Impl(uint3 id)
         return;
 
     uint linearIndex = id.y * ow + id.x;
-    float scalar = NcnnReadPack4LinearScalar2DInput(
-        linearIndex,
-        _ReshapePack4ToScalar2DInDims,
-        _ReshapePack4ToScalar2DInW,
-        _ReshapePack4ToScalar2DInH,
-        _ReshapePack4ToScalar2DInD,
-        _ReshapePack4ToScalar2DInC);
+    float scalar;
+    if (_ReshapePack4ToLinearMatInputPack4Linear != 0
+        && (_ReshapePack4ToScalar2DInDims == 1 || _ReshapePack4ToScalar2DInDims == 2))
+    {
+        uint inputWidth = (uint)_ReshapePack4ToScalar2DInW;
+        uint row = linearIndex / inputWidth;
+        uint column = linearIndex - row * inputWidth;
+        scalar = row < (uint)_ReshapePack4ToScalar2DInH
+            ? NcnnReadLane(_ReshapePack4ToScalar2DInArr[int3((int)(column >> 2), (int)row, 0)], (int)(column & 3))
+            : 0.0;
+    }
+    else
+    {
+        scalar = NcnnReadPack4LinearScalar2DInput(
+            linearIndex,
+            _ReshapePack4ToScalar2DInDims,
+            _ReshapePack4ToScalar2DInW,
+            _ReshapePack4ToScalar2DInH,
+            _ReshapePack4ToScalar2DInD,
+            _ReshapePack4ToScalar2DInC);
+    }
     _ReshapePack4ToScalar2DOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = float4(scalar, 0.0, 0.0, 0.0);
 }
 

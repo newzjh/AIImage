@@ -1044,10 +1044,10 @@ namespace NcnnCompute
                 out float[] values)
             {
                 values = null;
-                if (logicalShape.dims != 2
+                if ((logicalShape.dims != 1 && logicalShape.dims != 2)
                     || storageShape.dims != 3
                     || storageShape.w != Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f)
-                    || storageShape.h != Mathf.Max(1, logicalShape.h)
+                    || storageShape.h != (logicalShape.dims == 1 ? 1 : Mathf.Max(1, logicalShape.h))
                     || storageShape.d != 1
                     || storageShape.c != 4
                     || texture.dimension != TextureDimension.Tex2DArray
@@ -1058,10 +1058,11 @@ namespace NcnnCompute
                     return false;
                 }
 
-                values = new float[logicalShape.w * logicalShape.h];
+                var logicalHeight = logicalShape.dims == 1 ? 1 : logicalShape.h;
+                values = new float[logicalShape.w * logicalHeight];
                 ReadRenderTextureSlice(texture, readback, 0);
                 var raw = readback.GetRawTextureData<float>();
-                for (var row = 0; row < logicalShape.h; row++)
+                for (var row = 0; row < logicalHeight; row++)
                 {
                     for (var packX = 0; packX < storageShape.w; packX++)
                     {
@@ -5858,9 +5859,9 @@ namespace NcnnCompute
 
         internal static bool IsPack4LinearMatTexture(TensorRef tensor, BufferShape logicalShape)
         {
-            if (tensor == null || tensor.texture == null || logicalShape.dims != 2)
+            if (tensor == null || tensor.texture == null || (logicalShape.dims != 1 && logicalShape.dims != 2))
                 return false;
-            if (tensor.texture.dimension != TextureDimension.Tex2DArray || tensor.packs != 1)
+            if (tensor.texture.dimension != TextureDimension.Tex2DArray)
                 return false;
             var storageShape = GetTextureStorageShape(tensor, logicalShape);
             return storageShape.dims == 3
@@ -5882,9 +5883,9 @@ namespace NcnnCompute
 
         internal static bool IsPack4LinearMatTexture(CmdTensorRef tensor, BufferShape logicalShape)
         {
-            if (tensor == null || tensor.texture == null || logicalShape.dims != 2)
+            if (tensor == null || tensor.texture == null || (logicalShape.dims != 1 && logicalShape.dims != 2))
                 return false;
-            if (tensor.texture.dimension != TextureDimension.Tex2DArray || tensor.packs != 1)
+            if (tensor.texture.dimension != TextureDimension.Tex2DArray)
                 return false;
             var storageShape = GetCmdStorageShape(tensor, logicalShape);
             return storageShape.dims == 3

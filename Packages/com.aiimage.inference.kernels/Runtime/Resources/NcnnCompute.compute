@@ -1731,6 +1731,7 @@ int _ReshapePack4ToScalar2DInH;
 int _ReshapePack4ToScalar2DInD;
 int _ReshapePack4ToScalar2DInC;
 int _ReshapePack4ToScalar2DInDims;
+int _ReshapePack4ToLinearMatInputPack4Linear;
 
 int _Pack4LinearFromScalar2DInW;
 int _Pack4LinearFromScalar2DInH;

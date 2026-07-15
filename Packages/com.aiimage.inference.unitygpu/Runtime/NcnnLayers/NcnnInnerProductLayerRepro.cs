@@ -232,7 +232,11 @@ namespace NcnnCompute
                 return false;
 
             var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
-            var usePack4LinearMat = useStrictLinearMat
+            // Pack4-linear is an FP16 activation optimization. FP32 retains its
+            // RFloat LinearMat contract so legacy outputs remain bit-for-bit stable.
+            var usePack4LinearMat = owner.UsesFp16ActivationStorage
+                && useStrictLinearMat
+                && outLogicalShape.dims == 2
                 && (ip.outFeatures & 3) == 0
                 && !owner.PreserveLegacyFp32Execution
                 && !owner.UseLegacyPack4AttentionLayout
@@ -405,7 +409,10 @@ namespace NcnnCompute
                 return false;
 
             var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
-            var usePack4LinearMat = useStrictLinearMat
+            // See the render-texture path: do not down-convert FP32 LinearMat output.
+            var usePack4LinearMat = owner.UsesFp16ActivationStorage
+                && useStrictLinearMat
+                && logicalShape.dims == 2
                 && (ip.outFeatures & 3) == 0
                 && !owner.PreserveLegacyFp32Execution
                 && !owner.UseLegacyPack4AttentionLayout

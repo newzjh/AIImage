@@ -882,7 +882,8 @@ namespace NcnnCompute
             System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
             UnityEngine.Rendering.CommandBuffer cmd)
         {
-            if (owner == null || layer == null || src == null || src.texture == null)
+            if (owner == null || layer == null || src == null || src.texture == null
+                || NcnnRepro.IsStrictLinearMatTexture(src))
                 return false;
 
             var bottomShapes = BuildCmdBottomShapes(layer, blobs, shapes);
@@ -892,7 +893,16 @@ namespace NcnnCompute
 
             var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
             var outRt = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
-            owner.Ops.ReshapePack4ToLinearMat(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
+            owner.Ops.ReshapePack4ToLinearMat(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                srcShape.dims,
+                outRt,
+                inputPack4Linear: NcnnRepro.IsPack4LinearMatTexture(src, srcShape));
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outRt,
@@ -1561,7 +1571,8 @@ namespace NcnnCompute
             Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
             Dictionary<string, NcnnRepro.BufferShape> textureShapes)
         {
-            if (owner == null || layer == null || src == null || src.texture == null)
+            if (owner == null || layer == null || src == null || src.texture == null
+                || NcnnRepro.IsStrictLinearMatTexture(src))
                 return false;
 
             var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
@@ -1570,7 +1581,16 @@ namespace NcnnCompute
 
             var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
             var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
-            owner.Ops.ReshapePack4ToLinearMat(src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outRt);
+            var inputPack4Linear = NcnnRepro.IsPack4LinearMatTexture(src, srcShape);
+            owner.Ops.ReshapePack4ToLinearMat(
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                srcShape.dims,
+                outRt,
+                inputPack4Linear: inputPack4Linear);
             NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, storageShape);
             owner.DebugLog?.Invoke(
                 "[Texture][ReshapePack4ToLinearMat]"

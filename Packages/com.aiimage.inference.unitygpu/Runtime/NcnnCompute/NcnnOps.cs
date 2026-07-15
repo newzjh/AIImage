@@ -2170,7 +2170,7 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kReshapePack4ToScalar2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
-        public void ReshapePack4ToLinearMat(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, RenderTexture output)
+        public void ReshapePack4ToLinearMat(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, RenderTexture output, bool inputPack4Linear = false)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -2179,12 +2179,13 @@ namespace NcnnCompute
             _cs.SetInt("_ReshapePack4ToScalar2DInD", inD);
             _cs.SetInt("_ReshapePack4ToScalar2DInC", inC);
             _cs.SetInt("_ReshapePack4ToScalar2DInDims", inDims);
+            _cs.SetInt("_ReshapePack4ToLinearMatInputPack4Linear", inputPack4Linear ? 1 : 0);
             _cs.SetTexture(_kReshapePack4ToLinearMat, "_TexIn0Arr", input);
             _cs.SetTexture(_kReshapePack4ToLinearMat, "_LinearOut0", output);
             Dispatch2D(_kReshapePack4ToLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void ReshapePack4ToLinearMat(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, ComputeTexture output)
+        public void ReshapePack4ToLinearMat(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, ComputeTexture output, bool inputPack4Linear = false)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -2194,6 +2195,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInD", inD);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInC", inC);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInDims", inDims);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToLinearMatInputPack4Linear", inputPack4Linear ? 1 : 0);
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToLinearMat, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToLinearMat, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kReshapePack4ToLinearMat, output.width, output.height, 8, 8);
