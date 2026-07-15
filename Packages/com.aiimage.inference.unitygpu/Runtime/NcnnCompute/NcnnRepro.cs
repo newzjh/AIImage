@@ -335,6 +335,7 @@ namespace NcnnCompute
             public int activationType;
             public float activationSlope;
             public ComputeBuffer packedWeight4;
+            public ComputeBuffer packedWeight4Fp16;
             public ComputeBuffer packedBias4;
             public ComputeBuffer rawWeight;
             public ComputeBuffer rawBias;
@@ -342,6 +343,7 @@ namespace NcnnCompute
             public void Dispose()
             {
                 try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeight4, "NcnnRepro.DeconvPack.Dispose"); packedWeight4?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(packedWeight4Fp16, "NcnnRepro.DeconvPack.Dispose"); packedWeight4Fp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(packedBias4, "NcnnRepro.DeconvPack.Dispose"); packedBias4?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeight, "NcnnRepro.DeconvPack.Dispose"); rawWeight?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawBias, "NcnnRepro.DeconvPack.Dispose"); rawBias?.Dispose(); } catch { }
@@ -1642,6 +1644,19 @@ namespace NcnnCompute
                     || (depthWise.outC & 3) != 0)
                 {
                     reason = "FP16 ConvolutionDepthWise requires the verified Pack4 half4-weight profile (group=inC, integral depthwise multiplier, and output channels divisible by four); FP32 weight and Buffer fallbacks are prohibited.";
+                    return false;
+                }
+                return true;
+            }
+
+            if (string.Equals(operatorName, "Deconvolution", StringComparison.Ordinal))
+            {
+                if (!_deconv.TryGetValue(layer.name, out var deconv)
+                    || deconv.packedWeight4Fp16 == null
+                    || deconv.group != 1
+                    || deconv.kernelW != deconv.kernelH)
+                {
+                    reason = "FP16 Deconvolution requires the verified Pack4General half4-weight profile (group=1 and square kernel); FP32 weight or Buffer fallbacks are prohibited.";
                     return false;
                 }
                 return true;

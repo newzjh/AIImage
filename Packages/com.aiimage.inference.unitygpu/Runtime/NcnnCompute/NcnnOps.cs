@@ -4007,7 +4007,7 @@ namespace NcnnCompute
             _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
             _cs.SetInt("_ActType", activationType);
             _cs.SetFloat("_ActParam", activationParam);
-            _cs.SetBuffer(_kDeconvolutionPack4General, "_ConvW4", w4);
+            SetConvPack4Weights(_kDeconvolutionPack4General, w4);
             _cs.SetBuffer(_kDeconvolutionPack4General, "_ConvB4", b4);
             _cs.SetTexture(_kDeconvolutionPack4General, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kDeconvolutionPack4General, "_ConvOutArr", dstPack4);
@@ -5000,7 +5000,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_DilationHVar", Mathf.Max(1, dilationH));
             cmd.SetComputeIntParam(_cs, "_ActType", activationType);
             cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
-            cmd.SetComputeBufferParam(_cs, _kDeconvolutionPack4General, "_ConvW4", w4);
+            SetConvPack4Weights(cmd, _kDeconvolutionPack4General, w4);
             cmd.SetComputeBufferParam(_cs, _kDeconvolutionPack4General, "_ConvB4", b4);
             cmd.SetComputeTextureParam(_cs, _kDeconvolutionPack4General, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kDeconvolutionPack4General, "_ConvOutArr", dstPack4.nameID);

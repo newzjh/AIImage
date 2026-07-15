@@ -389,10 +389,10 @@ void NcnnDeconvolutionPack4General_Impl(uint3 id)
 
                 float4 inV = _ConvInArr[int3(ix, iy, ip0)];
                 int baseIndex = weightBase + (ky * _KernelWVar + kx) * 4;
-                float4 w0 = _ConvW4[baseIndex + 0];
-                float4 w1 = _ConvW4[baseIndex + 1];
-                float4 w2 = _ConvW4[baseIndex + 2];
-                float4 w3 = _ConvW4[baseIndex + 3];
+                float4 w0 = NcnnReadConvWeight4(baseIndex + 0);
+                float4 w1 = NcnnReadConvWeight4(baseIndex + 1);
+                float4 w2 = NcnnReadConvWeight4(baseIndex + 2);
+                float4 w3 = NcnnReadConvWeight4(baseIndex + 3);
                 sum.x += dot(inV, w0);
                 sum.y += dot(inV, w1);
                 sum.z += dot(inV, w2);

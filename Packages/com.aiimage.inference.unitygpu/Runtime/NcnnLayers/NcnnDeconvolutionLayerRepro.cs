@@ -72,6 +72,8 @@ namespace NcnnCompute
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedWeight4.SetData(w4);
                                             pack.packedBias4.SetData(b4);
+                                            if (owner.UsesFp16WeightStorage)
+                                                pack.packedWeight4Fp16 = NcnnRepro.NewFp16Vector4Buffer(w4, "NcnnRepro.DeconvPackedWeight4Fp16:" + layer.name);
                                             phaseSw.Stop();
                                             packMs += phaseSw.ElapsedMilliseconds;
                                         }
@@ -184,6 +186,7 @@ namespace NcnnCompute
             try
             {
                 outRt = owner.RentTempArray(outWTex, outHTex, deconv.outPacks, RenderTextureFormat.ARGBHalf);
+                owner.Ops.SetFp16ConvWeights(owner.UsesFp16WeightStorage ? deconv.packedWeight4Fp16 : null);
                 owner.Ops.DeconvolutionPack4General(
                     srcTex.texture,
                     deconv.inPacks,
@@ -244,10 +247,12 @@ namespace NcnnCompute
                     && deconv.packedWeight4 != null
                     && deconv.packedBias4 != null)
                 {
+                    owner.Ops.SetFp16ConvWeights(owner.UsesFp16WeightStorage ? deconv.packedWeight4Fp16 : null);
                     owner.Ops.DeconvolutionPack4General(cmd, src.texture, deconv.inPacks, deconv.packedWeight4, deconv.packedBias4, deconv.outPacks, deconv.kernelW, deconv.kernelH, deconv.strideW, deconv.strideH, deconv.padLeft, deconv.padTop, deconv.dilationW, deconv.dilationH, deconv.activationType, deconv.activationSlope, outArr);
                 }
                 else
                 {
+                    owner.Ops.SetFp16ConvWeights(null);
                     owner.Ops.Deconvolution2dGroupPack4(
                         cmd, src.texture, deconv.rawWeight, deconv.rawBias, deconv.inC, deconv.outC, deconv.group,
                         deconv.kernelW, deconv.kernelH, deconv.strideW, deconv.strideH, deconv.padLeft, deconv.padTop,
