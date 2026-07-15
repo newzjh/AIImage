@@ -130,6 +130,33 @@ namespace NcnnCompute
                 + " | rejectedFallback=placeholder-or-buffer-materialization");
         }
 
+        private static bool HasDirectSoftmaxConsumer(NcnnRepro owner, NcnnParamModel.Layer layer)
+        {
+            if (owner?.Model?.layers == null || layer?.topNames == null)
+                return false;
+
+            for (var topIndex = 0; topIndex < layer.topNames.Length; topIndex++)
+            {
+                var topName = layer.topNames[topIndex];
+                if (string.IsNullOrWhiteSpace(topName))
+                    continue;
+
+                for (var layerIndex = 0; layerIndex < owner.Model.layers.Count; layerIndex++)
+                {
+                    var consumer = owner.Model.layers[layerIndex];
+                    if (consumer?.type != NcnnLayerTypes.Softmax || consumer.bottomNames == null)
+                        continue;
+                    for (var bottomIndex = 0; bottomIndex < consumer.bottomNames.Length; bottomIndex++)
+                    {
+                        if (string.Equals(consumer.bottomNames[bottomIndex], topName, StringComparison.Ordinal))
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
             if (owner == null || layer == null || context == null)
@@ -145,7 +172,9 @@ namespace NcnnCompute
             var srcShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
             if (srcTex == null || srcTex.texture == null)
                 return false;
-            if (TryResolveAttentionPack4ToLinearInput(srcTex, srcShape, ip, out var attentionStorageShape, out var attentionRows, out var headDim, out var numHeads))
+            if (!owner.PreserveLegacyFp32Execution
+                && !owner.UseLegacyPack4AttentionLayout
+                && TryResolveAttentionPack4ToLinearInput(srcTex, srcShape, ip, out var attentionStorageShape, out var attentionRows, out var headDim, out var numHeads))
             {
                 var attentionOutShape = attentionRows > 1
                     ? new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), attentionRows, 1, 1)
@@ -205,6 +234,9 @@ namespace NcnnCompute
             var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
             var usePack4LinearMat = useStrictLinearMat
                 && (ip.outFeatures & 3) == 0
+                && !owner.PreserveLegacyFp32Execution
+                && !owner.UseLegacyPack4AttentionLayout
+                && !HasDirectSoftmaxConsumer(owner, layer)
                 && !owner.RequiresFp32SensitiveOutputStorage(layer);
             var outStorageShape = usePack4LinearMat
                 ? NcnnRepro.ResolvePack4LinearMatStorageShape(outLogicalShape)
@@ -308,7 +340,9 @@ namespace NcnnCompute
                 return false;
             if (srcTex == null || srcTex.texture == null)
                 return false;
-            if (TryResolveAttentionPack4ToLinearInput(srcTex, srcShape, ip, out var attentionStorageShape, out var attentionRows, out var headDim, out var numHeads))
+            if (!owner.PreserveLegacyFp32Execution
+                && !owner.UseLegacyPack4AttentionLayout
+                && TryResolveAttentionPack4ToLinearInput(srcTex, srcShape, ip, out var attentionStorageShape, out var attentionRows, out var headDim, out var numHeads))
             {
                 var attentionOutShape = attentionRows > 1
                     ? new NcnnRepro.BufferShape(2, Mathf.Max(1, ip.outFeatures), attentionRows, 1, 1)
@@ -373,6 +407,9 @@ namespace NcnnCompute
             var useStrictLinearMat = NcnnRepro.IsStrictLinearMatTexture(srcTex);
             var usePack4LinearMat = useStrictLinearMat
                 && (ip.outFeatures & 3) == 0
+                && !owner.PreserveLegacyFp32Execution
+                && !owner.UseLegacyPack4AttentionLayout
+                && !HasDirectSoftmaxConsumer(owner, layer)
                 && !owner.RequiresFp32SensitiveOutputStorage(layer);
             var storageShape = usePack4LinearMat
                 ? NcnnRepro.ResolvePack4LinearMatStorageShape(logicalShape)

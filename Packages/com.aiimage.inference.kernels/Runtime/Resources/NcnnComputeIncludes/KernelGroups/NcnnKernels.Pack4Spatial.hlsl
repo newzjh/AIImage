@@ -909,12 +909,44 @@ void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id)
         return;
     }
 
-    float bestValue = _CodeFormerSoftOneHot[int2(0, outY)].x;
+    float bestValue = _CodeFormerSoftOneHotArr[int3(0, outY, 0)].x;
     int bestIndex = 0;
     [loop]
     for (int i = 1; i < _CodeFormerCodebookSize; i++)
     {
-        float value = _CodeFormerSoftOneHot[int2(i, outY)].x;
+        float value = _CodeFormerSoftOneHotArr[int3(i, outY, 0)].x;
+        if (value > bestValue)
+        {
+            bestValue = value;
+            bestIndex = i;
+        }
+    }
+
+    float oneHot = outX == bestIndex ? 1.0 : 0.0;
+    _CodeFormerMinEncodingArr[int3(outX, outY, (int)id.z)] = float4(oneHot, 0.0, 0.0, 0.0);
+}
+
+void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _CodeFormerMinEncodingArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    if (outX < 0 || outY < 0 || outX >= _CodeFormerCodebookSize || outY >= _CodeFormerTokenCount)
+    {
+        _CodeFormerMinEncodingArr[int3(outX, outY, (int)id.z)] = 0.0;
+        return;
+    }
+
+    float bestValue = _CodeFormerSoftOneHotLinear[int2(0, outY)];
+    int bestIndex = 0;
+    [loop]
+    for (int i = 1; i < _CodeFormerCodebookSize; i++)
+    {
+        float value = _CodeFormerSoftOneHotLinear[int2(i, outY)];
         if (value > bestValue)
         {
             bestValue = value;

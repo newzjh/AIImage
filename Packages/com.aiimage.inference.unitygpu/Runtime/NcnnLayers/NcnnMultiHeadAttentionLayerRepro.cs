@@ -304,8 +304,16 @@ namespace NcnnCompute
                     ref output,
                     ref outputPacked);
 
-                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outputPacked, plan.outputLogicalShape, plan.outputStorageShape);
-                outputPacked = null;
+                if (owner.UseLegacyPack4AttentionLayout || owner.PreserveLegacyFp32Execution)
+                {
+                    NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputLogicalShape, plan.outputScalarStorageShape);
+                    output = null;
+                }
+                else
+                {
+                    NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outputPacked, plan.outputLogicalShape, plan.outputStorageShape);
+                    outputPacked = null;
+                }
                 owner.Consume(
                     context.textureBlobs,
                     context.bufferBlobs,
@@ -563,21 +571,27 @@ namespace NcnnCompute
                     output);
                 owner.Ops.Pack4LinearFromScalar2D(cmd, output, plan.outputLogicalShape.w, plan.outputLogicalShape.h, outputPacked);
 
+                var useLegacyAttentionLayout = owner.UseLegacyPack4AttentionLayout || owner.PreserveLegacyFp32Execution;
+                var outputTexture = useLegacyAttentionLayout ? output : outputPacked;
+                var outputStorageShape = useLegacyAttentionLayout ? plan.outputScalarStorageShape : plan.outputStorageShape;
                 context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                 {
-                    texture = outputPacked,
-                    width = plan.outputStorageShape.w,
-                    height = plan.outputStorageShape.h,
+                    texture = outputTexture,
+                    width = outputStorageShape.w,
+                    height = outputStorageShape.h,
                     packs = 1,
                     refs = 1,
                     owned = true,
                     hasLogicalShape = true,
                     logicalShape = plan.outputLogicalShape,
                     hasStorageShape = true,
-                    storageShape = plan.outputStorageShape
+                    storageShape = outputStorageShape
                 };
                 context.shapes[layer.topNames[0]] = plan.outputLogicalShape;
-                outputPacked = null;
+                if (useLegacyAttentionLayout)
+                    output = null;
+                else
+                    outputPacked = null;
                 owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
                 return true;
             }

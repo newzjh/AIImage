@@ -91,6 +91,7 @@
 #pragma kernel NcnnBinaryOpPack4ChannelVectorTex
 #pragma kernel NcnnBinaryOpScalarSingleBroadcast
 #pragma kernel NcnnCodeFormerMinEncodingFromSoftOneHot
+#pragma kernel NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat
 #pragma kernel NcnnShuffleChannelPack4
 #pragma kernel NcnnCropPack4
 #pragma kernel NcnnSlicePack4
@@ -260,7 +261,8 @@ int _BinaryPack4ChannelVectorMode;
 int _BinaryPack4ChannelVectorPacks;
 int _BinaryPack4LinearMixedMode;
 int _BinaryScalarSingleBroadcastMode;
-Texture2D<float4> _CodeFormerSoftOneHot;
+Texture2DArray<float4> _CodeFormerSoftOneHotArr;
+Texture2D<float> _CodeFormerSoftOneHotLinear;
 RWTexture2DArray<float4> _CodeFormerMinEncodingArr;
 int _CodeFormerCodebookSize;
 int _CodeFormerTokenCount;
@@ -383,6 +385,7 @@ void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id);
 void NcnnBinaryOpPack4ChannelVectorTex_Impl(uint3 id);
 void NcnnBinaryOpScalarSingleBroadcast_Impl(uint3 id);
 void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id);
+void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id);
 void NcnnShuffleChannelPack4_Impl(uint3 id);
 void NcnnCropPack4_Impl(uint3 id);
 void NcnnSlicePack4_Impl(uint3 id);
@@ -2079,6 +2082,12 @@ void NcnnCodeFormerMinEncodingFromSoftOneHot(uint3 id : SV_DispatchThreadID)
     NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(id);
 }
 
+[numthreads(8,8,1)]
+void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(id);
+}
+
 float NcnnReadLane(float4 v, int lane)
 {
     if (lane <= 0) return v.x;
@@ -2479,16 +2488,14 @@ static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int 
     {
         if (linearIndex >= width)
             return 0.0;
-        float4 packed = _ReshapePack4ToScalar2DInArr[int3((int)(linearIndex >> 2), 0, 0)];
-        return NcnnReadLane(packed, (int)(linearIndex & 3));
+        return NcnnReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)linearIndex, 0, 0);
     }
 
     if (inDims == 2)
     {
         if (index >= (uint)inH)
             return 0.0;
-        float4 packed = _ReshapePack4ToScalar2DInArr[int3((int)(x >> 2), (int)index, 0)];
-        return NcnnReadLane(packed, (int)(x & 3));
+        return _ReshapePack4ToScalar2DInArr[int3((int)x, (int)index, 0)].x;
     }
 
     uint height = (uint)inH;

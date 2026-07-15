@@ -1286,6 +1286,12 @@ namespace NcnnCompute
         public bool EnableMhaQkvFusion { get; set; }
         public bool EnableAttentionMatMulPack4Specializations { get; set; }
         public bool EnableVistaTailPack4Specializations { get; set; }
+        // Preserves a model's verified pre-migration FP32 tensor contract while newer
+        // Pack4-linear specializations remain available to FP16 and other runners.
+        public bool PreserveLegacyFp32Execution { get; set; }
+        // Keeps attention and linear projections in the model's established Pack4 layout
+        // without changing its activation or weight precision.
+        public bool UseLegacyPack4AttentionLayout { get; set; }
         private RenderTextureFormat _tensorTextureFormat = RenderTextureFormat.ARGBHalf;
         public RenderTextureFormat TensorTextureFormat
         {
@@ -5740,7 +5746,8 @@ namespace NcnnCompute
                     var layer = Model.layers[i];
                     if (layer?.bottomNames == null
                         || (layer.type != NcnnLayerTypes.LayerNorm
-                            && layer.type != NcnnLayerTypes.MultiHeadAttention))
+                            && layer.type != NcnnLayerTypes.MultiHeadAttention
+                            && layer.type != NcnnLayerTypes.Softmax))
                     {
                         continue;
                     }

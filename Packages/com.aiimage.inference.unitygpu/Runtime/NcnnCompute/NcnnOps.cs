@@ -375,6 +375,7 @@ namespace NcnnCompute
         private readonly int _kBinaryOpPack4ChannelVectorTex;
         private readonly int _kBinaryOpScalarSingleBroadcast;
         private readonly int _kCodeFormerMinEncodingFromSoftOneHot;
+        private readonly int _kCodeFormerMinEncodingFromSoftOneHotLinearMat;
         private readonly int _kShuffleChannelPack4;
         private readonly int _kCropPack4;
         private readonly int _kSlicePack4;
@@ -734,6 +735,7 @@ namespace NcnnCompute
             _kBinaryOpPack4ChannelVectorTex = _cs.FindKernel("NcnnBinaryOpPack4ChannelVectorTex");
             _kBinaryOpScalarSingleBroadcast = _cs.FindKernel("NcnnBinaryOpScalarSingleBroadcast");
             _kCodeFormerMinEncodingFromSoftOneHot = _cs.FindKernel("NcnnCodeFormerMinEncodingFromSoftOneHot");
+            _kCodeFormerMinEncodingFromSoftOneHotLinearMat = _cs.FindKernel("NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat");
             _kShuffleChannelPack4 = _cs.FindKernel("NcnnShuffleChannelPack4");
             _kCropPack4 = _cs.FindKernel("NcnnCropPack4");
             _kSlicePack4 = _cs.FindKernel("NcnnSlicePack4");
@@ -3778,11 +3780,14 @@ namespace NcnnCompute
             if (codebookSize <= 0) throw new ArgumentOutOfRangeException(nameof(codebookSize));
             if (tokenCount <= 0) throw new ArgumentOutOfRangeException(nameof(tokenCount));
 
+            var kernel = softOneHot.dimension == TextureDimension.Tex2D
+                ? _kCodeFormerMinEncodingFromSoftOneHotLinearMat
+                : _kCodeFormerMinEncodingFromSoftOneHot;
             _cs.SetInt("_CodeFormerCodebookSize", codebookSize);
             _cs.SetInt("_CodeFormerTokenCount", tokenCount);
-            _cs.SetTexture(_kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHot", softOneHot);
-            _cs.SetTexture(_kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerMinEncodingArr", minEncoding);
-            Dispatch3D(_kCodeFormerMinEncodingFromSoftOneHot, codebookSize, tokenCount, ResolveRenderTextureDispatchDepth(minEncoding, 1), 8, 8);
+            _cs.SetTexture(kernel, softOneHot.dimension == TextureDimension.Tex2D ? "_CodeFormerSoftOneHotLinear" : "_CodeFormerSoftOneHotArr", softOneHot);
+            _cs.SetTexture(kernel, "_CodeFormerMinEncodingArr", minEncoding);
+            Dispatch3D(kernel, codebookSize, tokenCount, ResolveRenderTextureDispatchDepth(minEncoding, 1), 8, 8);
         }
 
         public void CodeFormerMinEncodingFromSoftOneHot(CommandBuffer cmd, ComputeTexture softOneHot, int codebookSize, int tokenCount, ComputeTexture minEncoding)
@@ -3793,11 +3798,14 @@ namespace NcnnCompute
             if (codebookSize <= 0) throw new ArgumentOutOfRangeException(nameof(codebookSize));
             if (tokenCount <= 0) throw new ArgumentOutOfRangeException(nameof(tokenCount));
 
+            var kernel = softOneHot.dimension == TextureDimension.Tex2D
+                ? _kCodeFormerMinEncodingFromSoftOneHotLinearMat
+                : _kCodeFormerMinEncodingFromSoftOneHot;
             cmd.SetComputeIntParam(_cs, "_CodeFormerCodebookSize", codebookSize);
             cmd.SetComputeIntParam(_cs, "_CodeFormerTokenCount", tokenCount);
-            cmd.SetComputeTextureParam(_cs, _kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHot", softOneHot.nameID);
-            cmd.SetComputeTextureParam(_cs, _kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerMinEncodingArr", minEncoding.nameID);
-            Dispatch3D(cmd, _kCodeFormerMinEncodingFromSoftOneHot, codebookSize, tokenCount, ResolveComputeTextureDispatchDepth(minEncoding, 1), 8, 8);
+            cmd.SetComputeTextureParam(_cs, kernel, softOneHot.dimension == TextureDimension.Tex2D ? "_CodeFormerSoftOneHotLinear" : "_CodeFormerSoftOneHotArr", softOneHot.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_CodeFormerMinEncodingArr", minEncoding.nameID);
+            Dispatch3D(cmd, kernel, codebookSize, tokenCount, ResolveComputeTextureDispatchDepth(minEncoding, 1), 8, 8);
         }
 
         public void SwishPack4(RenderTexture input, int packs, RenderTexture output)
