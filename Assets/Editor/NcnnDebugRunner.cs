@@ -79,6 +79,7 @@ public static class NcnnDebugRunner
     private const string YoloForceBufferConvEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_CONV";
     private const string YoloForceBufferBinaryEnvVar = "AIIMAGE_YOLOSEG_FORCE_BUFFER_BINARY";
     private const string YoloUseArgbFloatEnvVar = "AIIMAGE_YOLOSEG_USE_ARGB_FLOAT";
+    private const string YoloPrecisionEnvVar = "AIIMAGE_YOLOSEG_PRECISION";
     private const string YoloEnableDepthwiseTexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_DEPTHWISE_TEX";
     private const string YoloEnableConv1x1TexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_CONV1X1_TEX";
     private const string YoloEnableGeneralTexConvEnvVar = "AIIMAGE_YOLOSEG_ENABLE_GENERAL_TEX";
@@ -680,6 +681,10 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<YoloSegNcnnReproRunner>();
             runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
             runner.enableDebugDump = true;
+            var configuredPrecision = ResolveStringEnv(YoloPrecisionEnvVar, "Auto");
+            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+                throw new InvalidOperationException("Invalid " + YoloPrecisionEnvVar + ": " + configuredPrecision);
+            runner.precisionMode = precisionMode;
             runner.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, runner.forceBufferConvolution);
             runner.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, true);
             runner.useArgbFloatTensor = ResolveBoolEnv(YoloUseArgbFloatEnvVar, true);
