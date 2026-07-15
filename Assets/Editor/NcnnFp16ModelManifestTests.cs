@@ -81,11 +81,16 @@ public sealed class NcnnFp16ModelManifestTests
     }
 
     [Test]
-    public void ExplicitFp16_RejectsUnverifiedRunnerInsteadOfFallingBack()
+    public void ExplicitFp16_UsesVerifiedFaceRestorationManifestsWithoutFallingBack()
     {
         using var ops = new NcnnOps();
-        Assert.Throws<InferenceContractException>(() =>
-            NcnnInferenceSessionFactory.Create(ops, "gfpgan", NcnnPrecisionMode.FP16));
+        using var gfpgan = NcnnInferenceSessionFactory.Create(ops, "gfpgan", NcnnPrecisionMode.FP16);
+        using var codeformer = NcnnInferenceSessionFactory.Create(ops, "codeformer", NcnnPrecisionMode.FP16);
+
+        Assert.That(gfpgan.AppliedPrecisionMode, Is.EqualTo(NcnnPrecisionMode.FP16));
+        Assert.That(codeformer.AppliedPrecisionMode, Is.EqualTo(NcnnPrecisionMode.FP16));
+        Assert.That(gfpgan.TensorTextureFormat, Is.EqualTo(RenderTextureFormat.ARGBHalf));
+        Assert.That(codeformer.TensorTextureFormat, Is.EqualTo(RenderTextureFormat.ARGBHalf));
     }
 
     [Test]
@@ -118,6 +123,16 @@ public sealed class NcnnFp16ModelManifestTests
         var reproSource = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute", "NcnnRepro.cs"));
         Assert.That(reproSource, Does.Contain("format = ResolveLinearTextureFormat(format);"));
         Assert.That(reproSource, Does.Not.Contain("format = format == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : format;"));
+        Assert.That(reproSource, Does.Contain("Fp32ActivationStartLayerName"));
+        Assert.That(reproSource, Does.Contain("UsesFp32ActivationIsland"));
+
+        var codeFormerRunner = File.ReadAllText(Path.Combine(root, "Assets", "Scripts", "CodeFormerNcnnReproRunner2.cs"));
+        Assert.That(codeFormerRunner, Does.Contain("Fp32ActivationStartLayerName = _generatorRepro.UsesFp16ActivationStorage"));
+        Assert.That(codeFormerRunner, Does.Contain("\"Resize_512\""));
+
+        var reshapeKernel = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnCompute.compute"));
+        Assert.That(reshapeKernel, Does.Contain("linearIndex >> 2"));
+        Assert.That(reshapeKernel, Does.Contain("linearIndex & 3"));
     }
 
     [Test]
@@ -139,6 +154,9 @@ public sealed class NcnnFp16ModelManifestTests
         var innerProductLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", "NcnnInnerProductLayerRepro.cs"));
         Assert.That(innerProductLayer, Does.Contain("wFp16"));
         Assert.That(innerProductLayer, Does.Contain("SetFp16GemmWeights"));
+
+        var multiHeadAttentionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", "NcnnMultiHeadAttentionLayerRepro.cs"));
+        Assert.That(multiHeadAttentionLayer, Does.Contain("owner.Ops.SetFp16GemmWeights(null);"));
     }
 }
 #endif

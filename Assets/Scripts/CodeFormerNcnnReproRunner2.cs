@@ -1576,6 +1576,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         _encoderRepro.EnableGeneralTextureConvolution = true;
         _generatorRepro.EnableGeneralTextureConvolution = true;
+        // The decoder's residual tensors grow into the tens of thousands. Half storage
+        // before GroupNorm loses too much mantissa precision, so keep only this decoder tail FP32.
+        _encoderRepro.Fp32ActivationStartLayerName = null;
+        _generatorRepro.Fp32ActivationStartLayerName = _generatorRepro.UsesFp16ActivationStorage
+            ? "Resize_512"
+            : null;
         _encoderRepro.EnableGroupNormTexturePath = true;
         _generatorRepro.EnableGroupNormTexturePath = true;
         _encoderRepro.EnableAttentionMatMulPack4Specializations = true;

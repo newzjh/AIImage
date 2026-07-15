@@ -1,9 +1,9 @@
 {
   "schemaVersion": "aiimage.model-manifest/v1",
-  "modelId": "matting.ncnn",
+  "modelId": "codeformer",
   "precision": {
-    "activationDtype": "FP16",
-    "weightDtype": "FP16",
+    "activationDtype": "FP32",
+    "weightDtype": "FP32",
     "sensitiveOutputDtype": "FP32",
     "requireStrictTexturePlan": true
   }

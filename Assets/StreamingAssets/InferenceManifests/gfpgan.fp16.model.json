@@ -1,6 +1,6 @@
 {
   "schemaVersion": "aiimage.model-manifest/v1",
-  "modelId": "matting.ncnn",
+  "modelId": "gfpgan",
   "precision": {
     "activationDtype": "FP16",
     "weightDtype": "FP16",
