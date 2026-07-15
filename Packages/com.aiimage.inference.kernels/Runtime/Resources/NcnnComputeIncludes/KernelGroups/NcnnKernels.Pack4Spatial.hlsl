@@ -909,12 +909,12 @@ void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id)
         return;
     }
 
-    float bestValue = _CodeFormerSoftOneHotArr[int3(0, outY, 0)].x;
+    float bestValue = _CodeFormerSoftOneHot[int2(0, outY)].x;
     int bestIndex = 0;
     [loop]
     for (int i = 1; i < _CodeFormerCodebookSize; i++)
     {
-        float value = _CodeFormerSoftOneHotArr[int3(i, outY, 0)].x;
+        float value = _CodeFormerSoftOneHot[int2(i, outY)].x;
         if (value > bestValue)
         {
             bestValue = value;

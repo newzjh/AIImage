@@ -106,7 +106,8 @@ namespace NcnnCompute
             if (precisionMode == NcnnPrecisionMode.Auto)
             {
                 var configured = TryLoadFromEnvironment();
-                if (configured != null)
+                if (configured != null
+                    && string.Equals(configured.modelId, modelId, StringComparison.OrdinalIgnoreCase))
                     return configured;
             }
 
@@ -158,6 +159,10 @@ namespace NcnnCompute
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "esrgan-realesrgan-x4plus.fp16.model.json" : "esrgan-realesrgan-x4plus.fp32.model.json";
             else if (string.Equals(modelId, "matting.ncnn", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
+            else if (string.Equals(modelId, "codeformer", StringComparison.Ordinal))
+                manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "codeformer.fp16.model.json" : "codeformer.fp32.model.json";
+            else if (string.Equals(modelId, "gfpgan", StringComparison.Ordinal))
+                manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "gfpgan.fp16.model.json" : "gfpgan.fp32.model.json";
             else if (string.Equals(modelId, "wholeBrain probe", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "wholebrain-probe.fp16.model.json" : "wholebrain-probe.fp32.model.json";
             return !string.IsNullOrWhiteSpace(manifestFileName);

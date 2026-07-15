@@ -1232,6 +1232,19 @@ namespace NcnnCompute
         public bool ForceBufferConvolution { get; set; }
         public bool UseTextureMaxPoolingInd { get; set; }
         public bool UseNcnnStyleGroupNorm { get; set; }
+        // Model-scoped activation island. The named layer and all following layers retain FP32
+        // activation storage while an otherwise FP16 manifest remains active.
+        public string Fp32ActivationStartLayerName
+        {
+            get => _fp32ActivationStartLayerName;
+            set
+            {
+                if (string.Equals(_fp32ActivationStartLayerName, value, StringComparison.Ordinal))
+                    return;
+                _fp32ActivationStartLayerName = value;
+                _fp32ActivationIslandLayers = null;
+            }
+        }
 
         internal readonly Dictionary<string, ConvPack> _conv = new Dictionary<string, ConvPack>(StringComparer.Ordinal);
         internal readonly Dictionary<string, DeconvPack> _deconv = new Dictionary<string, DeconvPack>(StringComparer.Ordinal);
@@ -1258,6 +1271,10 @@ namespace NcnnCompute
         private int _tempRtPeakLiveCount;
         private bool _trackInferenceTempResources;
         private bool _isDisposed;
+        private string _fp32ActivationStartLayerName;
+        private HashSet<string> _fp32ActivationIslandLayers;
+        private HashSet<string> _fp32IndexSelectionProducerLayers;
+        private HashSet<string> _fp32SensitiveInputProducerLayers;
 
         private readonly NcnnOps _ops;
 
@@ -1288,6 +1305,7 @@ namespace NcnnCompute
         public NcnnPrecisionMode AppliedPrecisionMode { get; private set; } = NcnnPrecisionMode.Auto;
         public bool UsesFp16WeightStorage => ModelManifest?.precision?.weightDataType == TensorDataType.Float16;
         public bool UsesFp16ActivationStorage => ModelManifest?.precision?.activationDataType == TensorDataType.Float16;
+        internal bool UsesFp16WeightsForCurrentLayer => UsesFp16WeightStorage;
         public long TemporaryTextureBudgetBytes { get; set; }
         public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
         // Production CommandBuffer execution is always planned strictly. DebugOracle is the
@@ -3370,8 +3388,12 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("MultiHeadAttention parameters were not loaded for this node.");
             if (pack.kvCache)
                 return RejectStrictCommandBufferPack4Node("MultiHeadAttention kv-cache is not implemented for CommandBuffer Pack4 execution.");
-            if (shapes.Length < 1 || shapes.Length > 4 || shapes[0].dims != 2 || !HasStrictLinearMatStorage(inputs[0], shapes[0]))
-                return RejectStrictCommandBufferPack4Node("MultiHeadAttention query requires a descriptor-backed LinearMat rank-2 texture.");
+            if (shapes.Length < 1 || shapes.Length > 4 || shapes[0].dims != 2
+                || (!HasStrictLinearMatStorage(inputs[0], shapes[0]) && !HasStrictPack4LinearMatStorage(inputs[0], shapes[0])))
+            {
+                return RejectStrictCommandBufferPack4Node(
+                    "MultiHeadAttention query requires a descriptor-backed scalar or Pack4-Linear rank-2 texture.");
+            }
             if (shapes[0].w != pack.qdim || pack.embedDim <= 0 || pack.numHeads <= 0 || pack.embedDim % pack.numHeads != 0)
                 return RejectStrictCommandBufferPack4Node("MultiHeadAttention query or head dimensions are outside the verified profile.");
 
@@ -3379,7 +3401,7 @@ namespace NcnnCompute
             return AcceptStrictCommandBufferPack4Node(
                 layer,
                 output,
-                new BufferShape(3, output.w, output.h, 1, 1),
+                ResolvePack4LinearMatStorageShape(output),
                 request,
                 "command-buffer-pack4:mha-mask-no-kv-cache");
         }
@@ -4159,6 +4181,9 @@ namespace NcnnCompute
             yield return new LoadProgress("release", 0, 0, null, null, 0.01f);
 
             stageSw.Restart();
+            _fp32IndexSelectionProducerLayers = null;
+            _fp32SensitiveInputProducerLayers = null;
+            _fp32ActivationIslandLayers = null;
             Model = NcnnParamParser.Parse(paramText);
             LayerRepros = NcnnLayerFactoryRepro.CreateModelLayers(Model?.layers);
             stageSw.Stop();
@@ -5567,6 +5592,9 @@ namespace NcnnCompute
             Model = null;
             LayerRepros = null;
             _blobUseCount = null;
+            _fp32ActivationIslandLayers = null;
+            _fp32IndexSelectionProducerLayers = null;
+            _fp32SensitiveInputProducerLayers = null;
         }
 
         public void Dispose()
@@ -5588,6 +5616,10 @@ namespace NcnnCompute
                 return requested == RenderTextureFormat.ARGBHalf ? TensorTextureFormat : requested;
             if (requested != RenderTextureFormat.ARGBHalf && requested != RenderTextureFormat.ARGBFloat)
                 return requested;
+            if (RequiresFp32IndexSelectionInputStorage()
+                || RequiresFp32SensitiveInputStorage()
+                || UsesFp32ActivationIsland())
+                return RenderTextureFormat.ARGBFloat;
             if (RequiresFp32AccumulatorOutput(_currentExecutingLayerTypeName))
                 return ResolveSensitiveOutputTextureFormat();
             return UsesFp16ActivationStorage ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGBFloat;
@@ -5602,10 +5634,164 @@ namespace NcnnCompute
                 && requested != RenderTextureFormat.RHalf
                 && requested != RenderTextureFormat.RFloat)
                 return requested;
+            if (RequiresFp32IndexSelectionInputStorage()
+                || RequiresFp32SensitiveInputStorage()
+                || UsesFp32ActivationIsland())
+                return RenderTextureFormat.RFloat;
             if (RequiresFp32AccumulatorOutput(_currentExecutingLayerTypeName)
                 && ModelManifest.precision.sensitiveOutputDataType == TensorDataType.Float32)
                 return RenderTextureFormat.RFloat;
             return UsesFp16ActivationStorage ? RenderTextureFormat.RHalf : RenderTextureFormat.RFloat;
+        }
+
+        private bool UsesFp32ActivationIsland()
+        {
+            if (!UsesFp16ActivationStorage
+                || string.IsNullOrWhiteSpace(Fp32ActivationStartLayerName)
+                || string.IsNullOrWhiteSpace(_currentExecutingLayerName)
+                || Model?.layers == null)
+            {
+                return false;
+            }
+
+            if (_fp32ActivationIslandLayers == null)
+            {
+                _fp32ActivationIslandLayers = new HashSet<string>(StringComparer.Ordinal);
+                var islandStarted = false;
+                for (var i = 0; i < Model.layers.Count; i++)
+                {
+                    var layer = Model.layers[i];
+                    if (!islandStarted && string.Equals(layer?.name, Fp32ActivationStartLayerName, StringComparison.Ordinal))
+                        islandStarted = true;
+                    if (islandStarted && !string.IsNullOrWhiteSpace(layer?.name))
+                        _fp32ActivationIslandLayers.Add(layer.name);
+                }
+            }
+
+            return _fp32ActivationIslandLayers.Contains(_currentExecutingLayerName);
+        }
+
+        private bool RequiresFp32IndexSelectionInputStorage()
+        {
+            if (!UsesFp16ActivationStorage
+                || string.IsNullOrWhiteSpace(_currentExecutingLayerName)
+                || Model?.layers == null)
+                return false;
+
+            if (_fp32IndexSelectionProducerLayers == null)
+            {
+                var requiredBlobs = new HashSet<string>(StringComparer.Ordinal);
+                for (var i = 0; i < Model.layers.Count; i++)
+                {
+                    var layer = Model.layers[i];
+                    if (layer?.type != NcnnLayerTypes.MaxPoolingInd || layer.bottomNames == null || layer.bottomNames.Length == 0)
+                        continue;
+                    if (!string.IsNullOrWhiteSpace(layer.bottomNames[0]))
+                        requiredBlobs.Add(layer.bottomNames[0]);
+                }
+
+                _fp32IndexSelectionProducerLayers = new HashSet<string>(StringComparer.Ordinal);
+                for (var i = Model.layers.Count - 1; i >= 0; i--)
+                {
+                    var layer = Model.layers[i];
+                    if (layer?.topNames == null || layer.topNames.Length == 0)
+                        continue;
+
+                    var producesSelectionInput = false;
+                    for (var topIndex = 0; topIndex < layer.topNames.Length; topIndex++)
+                    {
+                        if (requiredBlobs.Contains(layer.topNames[topIndex]))
+                        {
+                            producesSelectionInput = true;
+                            break;
+                        }
+                    }
+                    if (!producesSelectionInput)
+                        continue;
+
+                    _fp32IndexSelectionProducerLayers.Add(layer.name);
+                    if (layer.bottomNames == null)
+                        continue;
+                    for (var bottomIndex = 0; bottomIndex < layer.bottomNames.Length; bottomIndex++)
+                    {
+                        if (!string.IsNullOrWhiteSpace(layer.bottomNames[bottomIndex]))
+                            requiredBlobs.Add(layer.bottomNames[bottomIndex]);
+                    }
+                }
+            }
+
+            return _fp32IndexSelectionProducerLayers.Contains(_currentExecutingLayerName);
+        }
+
+        private bool RequiresFp32SensitiveInputStorage()
+        {
+            if (!UsesFp16ActivationStorage
+                || string.IsNullOrWhiteSpace(_currentExecutingLayerName)
+                || Model?.layers == null)
+            {
+                return false;
+            }
+
+            if (_fp32SensitiveInputProducerLayers == null)
+            {
+                var requiredBlobs = new HashSet<string>(StringComparer.Ordinal);
+                for (var i = 0; i < Model.layers.Count; i++)
+                {
+                    var layer = Model.layers[i];
+                    if (layer?.bottomNames == null
+                        || (layer.type != NcnnLayerTypes.LayerNorm
+                            && layer.type != NcnnLayerTypes.MultiHeadAttention))
+                    {
+                        continue;
+                    }
+
+                    for (var bottomIndex = 0; bottomIndex < layer.bottomNames.Length; bottomIndex++)
+                    {
+                        if (!string.IsNullOrWhiteSpace(layer.bottomNames[bottomIndex]))
+                            requiredBlobs.Add(layer.bottomNames[bottomIndex]);
+                    }
+                }
+
+                _fp32SensitiveInputProducerLayers = new HashSet<string>(StringComparer.Ordinal);
+                for (var i = Model.layers.Count - 1; i >= 0; i--)
+                {
+                    var layer = Model.layers[i];
+                    if (layer?.topNames == null || layer.topNames.Length == 0)
+                        continue;
+
+                    var producesSensitiveInput = false;
+                    for (var topIndex = 0; topIndex < layer.topNames.Length; topIndex++)
+                    {
+                        if (requiredBlobs.Contains(layer.topNames[topIndex]))
+                        {
+                            producesSensitiveInput = true;
+                            break;
+                        }
+                    }
+                    if (!producesSensitiveInput)
+                        continue;
+
+                    _fp32SensitiveInputProducerLayers.Add(layer.name);
+                    if (layer.bottomNames == null
+                        || (layer.type != NcnnLayerTypes.Split
+                            && layer.type != NcnnLayerTypes.BinaryOp
+                            && layer.type != NcnnLayerTypes.InnerProduct
+                            && layer.type != NcnnLayerTypes.LayerNorm
+                            && layer.type != NcnnLayerTypes.GELU
+                            && layer.type != NcnnLayerTypes.MultiHeadAttention))
+                    {
+                        continue;
+                    }
+
+                    for (var bottomIndex = 0; bottomIndex < layer.bottomNames.Length; bottomIndex++)
+                    {
+                        if (!string.IsNullOrWhiteSpace(layer.bottomNames[bottomIndex]))
+                            requiredBlobs.Add(layer.bottomNames[bottomIndex]);
+                    }
+                }
+            }
+
+            return _fp32SensitiveInputProducerLayers.Contains(_currentExecutingLayerName);
         }
 
         internal static bool RequiresFp32AccumulatorOutput(string operatorName)

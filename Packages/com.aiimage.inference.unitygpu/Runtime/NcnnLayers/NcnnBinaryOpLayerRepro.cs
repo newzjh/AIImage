@@ -297,7 +297,11 @@ namespace NcnnCompute
                 RenderTexture finalTexture = null;
                 try
                 {
-                    finalTexture = owner.RentTempArray(mixedStorageShape.w, mixedStorageShape.h, 1, mixedPack4Linear.texture.format);
+                    finalTexture = owner.RentTempArray(
+                        mixedStorageShape.w,
+                        mixedStorageShape.h,
+                        1,
+                        owner.ResolveActivationTextureFormat(mixedOutShape.dims));
                     owner.Ops.BinaryOpPack4LinearMixed(mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, finalTexture);
                     NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, mixedOutShape, mixedStorageShape);
                     finalTexture = null;
@@ -342,7 +346,11 @@ namespace NcnnCompute
                     }
 
                     var exactOutDepth = aTexShape.dims == 4 ? aTexShape.d * aTex.packs : aTex.packs;
-                    finalTexture = owner.RentTempArray(aTex.width, aTex.height, exactOutDepth, RenderTextureFormat.ARGBHalf);
+                    finalTexture = owner.RentTempArray(
+                        aTex.width,
+                        aTex.height,
+                        exactOutDepth,
+                        owner.ResolveActivationTextureFormat(aTexShape.dims));
                     if (isCodeFormerSftMul && owner.CodeFormerBypassSftMul)
                     {
                         owner.Ops.CopyPack4(aTex.texture, 0, finalTexture, 0, aTex.packs);
@@ -2008,7 +2016,12 @@ namespace NcnnCompute
                                                         out var mixedStorageShape,
                                                         out var mixedPack4IsA))
                                                     {
-                                                        var outArr = owner.RentTempArray(cmd, mixedStorageShape.w, mixedStorageShape.h, 1, mixedPack4Linear.texture.format);
+                                                        var outArr = owner.RentTempArray(
+                                                            cmd,
+                                                            mixedStorageShape.w,
+                                                            mixedStorageShape.h,
+                                                            1,
+                                                            owner.ResolveActivationTextureFormat(mixedOutShape.dims));
                                                         owner.Ops.BinaryOpPack4LinearMixed(cmd, mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, outArr);
                                                         blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, mixedOutShape, mixedStorageShape, owned: true);
                                                         if (shapes != null)
@@ -2017,7 +2030,12 @@ namespace NcnnCompute
                                                     else if (CanUseExactCmdBinaryPath(a, aShape, b, bShape))
                                                     {
                                                         var outDepth = aShape.dims == 4 ? Mathf.Max(1, aShape.d) * a.packs : a.packs;
-                                                        var outArr = owner.RentTempArray(cmd, a.width, a.height, outDepth, RenderTextureFormat.ARGBHalf);
+                                                        var outArr = owner.RentTempArray(
+                                                            cmd,
+                                                            a.width,
+                                                            a.height,
+                                                            outDepth,
+                                                            owner.ResolveActivationTextureFormat(aShape.dims));
                                                         owner.Ops.BinaryOpPack4(cmd, a.texture, b.texture, a.packs, opType, outArr);
                                                         blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                                                         {

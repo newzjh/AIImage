@@ -2372,7 +2372,7 @@ namespace NcnnCompute
         {
             if (!ShouldAllowGenericPack4ReshapeSpecializations(owner))
                 return false;
-            if (srcShape.dims < 3 || srcShape.dims > 4)
+            if (srcShape.dims < 1 || srcShape.dims > 4)
                 return false;
             if (outShape.dims < 1 || outShape.dims > 2)
                 return false;
@@ -2385,6 +2385,8 @@ namespace NcnnCompute
             var outCount = outShape.w * outShape.h;
             if (srcCount != outCount)
                 return false;
+            if (srcShape.dims == 1)
+                return true;
             if (CanUseWidthPreservingPack4ToScalar2DReshape(srcShape, outShape))
                 return true;
 

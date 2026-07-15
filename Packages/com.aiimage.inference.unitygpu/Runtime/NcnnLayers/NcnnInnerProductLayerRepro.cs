@@ -14,7 +14,7 @@ namespace NcnnCompute
 
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
+            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightsForCurrentLayer && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -104,7 +104,7 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
+            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightsForCurrentLayer && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -115,7 +115,7 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
+            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightsForCurrentLayer && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 

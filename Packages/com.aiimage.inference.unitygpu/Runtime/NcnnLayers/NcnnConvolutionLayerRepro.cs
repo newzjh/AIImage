@@ -320,13 +320,14 @@ namespace NcnnCompute
                                           && owner.ShouldCompareTextureConvLayer(layer.name)
                                           && canUseGeneralTexturePath;
 
-            if (owner.UsesFp16WeightStorage
-                && conv.packedWeight4Fp16 != null
-                && conv.group == 1
-                && !conv.isDepthWise
-                && conv.kernelW == conv.kernelH)
+            var useFp16GeneralWeights = owner.UsesFp16WeightStorage
+                                        && conv.packedWeight4Fp16 != null
+                                        && conv.group == 1
+                                        && !conv.isDepthWise
+                                        && conv.kernelW == conv.kernelH;
+            owner.Ops.SetFp16ConvWeights(useFp16GeneralWeights ? conv.packedWeight4Fp16 : null);
+            if (useFp16GeneralWeights)
             {
-                owner.Ops.SetFp16ConvWeights(conv.packedWeight4Fp16);
                 owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
             }
             else if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution && !forceGeneralTexturePath)
@@ -354,7 +355,6 @@ namespace NcnnCompute
             }
             else if (canUseGeneralTexturePath)
             {
-                owner.Ops.SetFp16ConvWeights(null);
                 owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
@@ -402,13 +402,14 @@ namespace NcnnCompute
 
                 var outShape = ResolveCmdOutputShape(srcShape, conv);
                 output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                if (owner.UsesFp16WeightStorage
-                    && conv.packedWeight4Fp16 != null
-                    && conv.group == 1
-                    && !conv.isDepthWise
-                    && conv.kernelW == conv.kernelH)
+                var useFp16GeneralWeights = owner.UsesFp16WeightStorage
+                                            && conv.packedWeight4Fp16 != null
+                                            && conv.group == 1
+                                            && !conv.isDepthWise
+                                            && conv.kernelW == conv.kernelH;
+                owner.Ops.SetFp16ConvWeights(useFp16GeneralWeights ? conv.packedWeight4Fp16 : null);
+                if (useFp16GeneralWeights)
                 {
-                    owner.Ops.SetFp16ConvWeights(conv.packedWeight4Fp16);
                     owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
                 }
                 else if (conv.group == 1
@@ -454,7 +455,6 @@ namespace NcnnCompute
                          && conv.packedWeight4 != null
                          && conv.packedBias4 != null)
                 {
-                    owner.Ops.SetFp16ConvWeights(null);
                     owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
                 }
                 else

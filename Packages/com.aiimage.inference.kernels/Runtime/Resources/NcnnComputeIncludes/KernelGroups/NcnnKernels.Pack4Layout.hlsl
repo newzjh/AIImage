@@ -681,6 +681,26 @@ void NcnnReshapeScalar2DToPack4_Impl(uint3 id)
     _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = value;
 }
 
+void NcnnPack4LinearFromScalar2D_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _TexOut0Arr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int baseX = (int)id.x * 4;
+    float4 packed = 0.0;
+    if (baseX < _Pack4LinearFromScalar2DInW && (int)id.y < _Pack4LinearFromScalar2DInH)
+        packed.x = _TexIn0Arr[int3(baseX, (int)id.y, 0)].x;
+    if (baseX + 1 < _Pack4LinearFromScalar2DInW && (int)id.y < _Pack4LinearFromScalar2DInH)
+        packed.y = _TexIn0Arr[int3(baseX + 1, (int)id.y, 0)].x;
+    if (baseX + 2 < _Pack4LinearFromScalar2DInW && (int)id.y < _Pack4LinearFromScalar2DInH)
+        packed.z = _TexIn0Arr[int3(baseX + 2, (int)id.y, 0)].x;
+    if (baseX + 3 < _Pack4LinearFromScalar2DInW && (int)id.y < _Pack4LinearFromScalar2DInH)
+        packed.w = _TexIn0Arr[int3(baseX + 3, (int)id.y, 0)].x;
+    _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = packed;
+}
+
 void NcnnReshapeLinearMatToPack4_Impl(uint3 id)
 {
     uint ow, oh, od;

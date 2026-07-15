@@ -104,6 +104,7 @@
 #pragma kernel NcnnReshapePack4ToLinearMat
 #pragma kernel NcnnReshapePack4ToPack4
 #pragma kernel NcnnReshapeScalar2DToPack4
+#pragma kernel NcnnPack4LinearFromScalar2D
 #pragma kernel NcnnReshapeLinearMatToPack4
 #pragma kernel NcnnAttentionReshapePack4
 #pragma kernel NcnnAttentionContextFlattenPack4
@@ -259,7 +260,7 @@ int _BinaryPack4ChannelVectorMode;
 int _BinaryPack4ChannelVectorPacks;
 int _BinaryPack4LinearMixedMode;
 int _BinaryScalarSingleBroadcastMode;
-Texture2DArray<float4> _CodeFormerSoftOneHotArr;
+Texture2D<float4> _CodeFormerSoftOneHot;
 RWTexture2DArray<float4> _CodeFormerMinEncodingArr;
 int _CodeFormerCodebookSize;
 int _CodeFormerTokenCount;
@@ -431,6 +432,7 @@ void NcnnReshapePack4ToScalar2D_Impl(uint3 id);
 void NcnnReshapePack4ToLinearMat_Impl(uint3 id);
 void NcnnReshapePack4ToPack4_Impl(uint3 id);
 void NcnnReshapeScalar2DToPack4_Impl(uint3 id);
+void NcnnPack4LinearFromScalar2D_Impl(uint3 id);
 void NcnnReshapeLinearMatToPack4_Impl(uint3 id);
 void NcnnAttentionReshapePack4_Impl(uint3 id);
 void NcnnAttentionContextFlattenPack4_Impl(uint3 id);
@@ -1727,6 +1729,9 @@ int _ReshapePack4ToScalar2DInD;
 int _ReshapePack4ToScalar2DInC;
 int _ReshapePack4ToScalar2DInDims;
 
+int _Pack4LinearFromScalar2DInW;
+int _Pack4LinearFromScalar2DInH;
+
 
 int _ReshapePack4ToPack4InW;
 int _ReshapePack4ToPack4InH;
@@ -2474,14 +2479,16 @@ static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int 
     {
         if (linearIndex >= width)
             return 0.0;
-        return NcnnReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)linearIndex, 0, 0);
+        float4 packed = _ReshapePack4ToScalar2DInArr[int3((int)(linearIndex >> 2), 0, 0)];
+        return NcnnReadLane(packed, (int)(linearIndex & 3));
     }
 
     if (inDims == 2)
     {
         if (index >= (uint)inH)
             return 0.0;
-        return _ReshapePack4ToScalar2DInArr[int3((int)x, (int)index, 0)].x;
+        float4 packed = _ReshapePack4ToScalar2DInArr[int3((int)(x >> 2), (int)index, 0)];
+        return NcnnReadLane(packed, (int)(x & 3));
     }
 
     uint height = (uint)inH;
@@ -2526,7 +2533,8 @@ static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW
     {
         if (linearIndex >= width)
             return 0.0;
-        return NcnnReadPack4Channel(_ReshapePack4ToPack4InArr, (int)linearIndex, 0, 0);
+        float4 packed = _ReshapePack4ToPack4InArr[int3((int)(linearIndex >> 2), 0, 0)];
+        return NcnnReadLane(packed, (int)(linearIndex & 3));
     }
 
     if (inDims == 2)
@@ -2577,6 +2585,12 @@ void NcnnReshapePack4ToPack4(uint3 id : SV_DispatchThreadID)
 void NcnnReshapeScalar2DToPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnReshapeScalar2DToPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPack4LinearFromScalar2D(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPack4LinearFromScalar2D_Impl(id);
 }
 
 [numthreads(8,8,1)]

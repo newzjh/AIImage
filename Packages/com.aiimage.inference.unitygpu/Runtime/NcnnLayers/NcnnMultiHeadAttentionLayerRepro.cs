@@ -257,6 +257,9 @@ namespace NcnnCompute
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
+
+            // MHA weights stay FP32. Do not inherit the preceding InnerProduct/Gemm FP16 upload.
+            owner.Ops.SetFp16GemmWeights(null);
             if (!TryResolveRtOnlyPlan(owner, layer, context.textureBlobs, context.textureShapes, out var plan))
                 return false;
 
@@ -276,6 +279,7 @@ namespace NcnnCompute
             RenderTexture contextPermuted = null;
             RenderTexture contextFlat = null;
             RenderTexture output = null;
+            RenderTexture outputPacked = null;
 
             try
             {
@@ -297,10 +301,11 @@ namespace NcnnCompute
                     ref contextHeads,
                     ref contextPermuted,
                     ref contextFlat,
-                    ref output);
+                    ref output,
+                    ref outputPacked);
 
-                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputLogicalShape, plan.outputStorageShape);
-                output = null;
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outputPacked, plan.outputLogicalShape, plan.outputStorageShape);
+                outputPacked = null;
                 owner.Consume(
                     context.textureBlobs,
                     context.bufferBlobs,
@@ -329,6 +334,7 @@ namespace NcnnCompute
                 ReturnTemp(owner, ref contextPermuted);
                 ReturnTemp(owner, ref contextFlat);
                 ReturnTemp(owner, ref output);
+                ReturnTemp(owner, ref outputPacked);
             }
         }
 
@@ -338,6 +344,9 @@ namespace NcnnCompute
                 return false;
             if (owner.ShouldForceCurrentLayerBufferPath())
                 return false;
+
+            // MHA weights stay FP32. Do not inherit the preceding InnerProduct/Gemm FP16 upload.
+            owner.Ops.SetFp16GemmWeights(null);
             if (!TryResolveCmdRtOnlyPlan(owner, layer, context.blobs, context.shapes, out var plan))
                 return false;
 
@@ -358,6 +367,7 @@ namespace NcnnCompute
             ComputeTexture contextPermuted = null;
             ComputeTexture contextFlat = null;
             ComputeTexture output = null;
+            ComputeTexture outputPacked = null;
 
             try
             {
@@ -379,7 +389,8 @@ namespace NcnnCompute
                 contextHeads = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
                 contextPermuted = owner.RentTempArray(cmd, plan.contextPermutedStorageShape.w, plan.contextPermutedStorageShape.h, plan.contextPermutedSlices, plan.pack4TextureFormat);
                 contextFlat = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
-                output = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat);
+                output = owner.RentTempArray(cmd, plan.outputScalarStorageShape.w, plan.outputScalarStorageShape.h, 1, plan.scalarTextureFormat);
+                outputPacked = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat);
 
                 ComputeTexture qScalarInput = null;
                 ComputeTexture kScalarInput = null;
@@ -393,7 +404,7 @@ namespace NcnnCompute
                     if (plan.kTex.texture != null
                         && plan.qTex.texture != null
                         && plan.kTex.texture.nameID == plan.qTex.texture.nameID
-                        && NcnnRepro.IsStrictLinearMatTexture(plan.kTex))
+                        && RequiresScalar2DMaterialization(plan.kTex, plan.kShape))
                     {
                         kScalarInput = qScalarInput;
                         kScalarMaterialized = qScalarMaterialized;
@@ -406,7 +417,7 @@ namespace NcnnCompute
                     if (plan.vTex.texture != null
                         && plan.qTex.texture != null
                         && plan.vTex.texture.nameID == plan.qTex.texture.nameID
-                        && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                        && RequiresScalar2DMaterialization(plan.vTex, plan.vShape))
                     {
                         vScalarInput = qScalarInput;
                         vScalarMaterialized = qScalarMaterialized;
@@ -414,7 +425,7 @@ namespace NcnnCompute
                     else if (plan.vTex.texture != null
                              && plan.kTex.texture != null
                              && plan.vTex.texture.nameID == plan.kTex.texture.nameID
-                             && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                             && RequiresScalar2DMaterialization(plan.vTex, plan.vShape))
                     {
                         vScalarInput = kScalarInput;
                         vScalarMaterialized = kScalarMaterialized;
@@ -550,10 +561,11 @@ namespace NcnnCompute
                     useC: true,
                     broadcastTypeC: 4,
                     output);
+                owner.Ops.Pack4LinearFromScalar2D(cmd, output, plan.outputLogicalShape.w, plan.outputLogicalShape.h, outputPacked);
 
                 context.blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                 {
-                    texture = output,
+                    texture = outputPacked,
                     width = plan.outputStorageShape.w,
                     height = plan.outputStorageShape.h,
                     packs = 1,
@@ -565,7 +577,7 @@ namespace NcnnCompute
                     storageShape = plan.outputStorageShape
                 };
                 context.shapes[layer.topNames[0]] = plan.outputLogicalShape;
-                output = null;
+                outputPacked = null;
                 owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
                 return true;
             }
@@ -587,6 +599,7 @@ namespace NcnnCompute
                 ReturnTemp(owner, cmd, ref contextPermuted);
                 ReturnTemp(owner, cmd, ref contextFlat);
                 ReturnTemp(owner, cmd, ref output);
+                ReturnTemp(owner, cmd, ref outputPacked);
             }
         }
 
@@ -632,7 +645,18 @@ namespace NcnnCompute
             if (pack.qW == null || pack.qB == null || pack.kW == null || pack.kB == null || pack.vW == null || pack.vB == null || pack.oW == null || pack.oB == null)
                 return false;
 
-            plan = new MultiHeadAttentionRtPlan(pack, qTex, qShape, kTex, kShape, vTex, vShape, rows, attnMaskTex, attnMaskShape);
+            plan = new MultiHeadAttentionRtPlan(
+                pack,
+                qTex,
+                qShape,
+                kTex,
+                kShape,
+                vTex,
+                vShape,
+                rows,
+                attnMaskTex,
+                attnMaskShape,
+                owner.ResolveSensitiveOutputTextureFormat());
             return true;
         }
 
@@ -678,7 +702,18 @@ namespace NcnnCompute
             if (pack.qW == null || pack.qB == null || pack.kW == null || pack.kB == null || pack.vW == null || pack.vB == null || pack.oW == null || pack.oB == null)
                 return false;
 
-            plan = new MultiHeadAttentionCmdRtPlan(pack, qTex, qShape, kTex, kShape, vTex, vShape, rows, attnMaskTex, attnMaskShape);
+            plan = new MultiHeadAttentionCmdRtPlan(
+                pack,
+                qTex,
+                qShape,
+                kTex,
+                kShape,
+                vTex,
+                vShape,
+                rows,
+                attnMaskTex,
+                attnMaskShape,
+                owner.ResolveSensitiveOutputTextureFormat());
             return true;
         }
 
@@ -700,7 +735,8 @@ namespace NcnnCompute
             ref RenderTexture contextHeads,
             ref RenderTexture contextPermuted,
             ref RenderTexture contextFlat,
-            ref RenderTexture output)
+            ref RenderTexture output,
+            ref RenderTexture outputPacked)
         {
             qProj = owner.RentTempArray(plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
             kProj = owner.RentTempArray(plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
@@ -720,7 +756,8 @@ namespace NcnnCompute
             contextHeads = owner.RentTempArray(plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
             contextPermuted = owner.RentTempArray(plan.contextPermutedStorageShape.w, plan.contextPermutedStorageShape.h, plan.contextPermutedSlices, plan.pack4TextureFormat);
             contextFlat = owner.RentTempArray(plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
-            output = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat);
+            output = owner.RentTempArray(plan.outputScalarStorageShape.w, plan.outputScalarStorageShape.h, 1, plan.scalarTextureFormat);
+            outputPacked = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat);
 
             RenderTexture qScalarInput = null;
             RenderTexture kScalarInput = null;
@@ -731,7 +768,8 @@ namespace NcnnCompute
             try
             {
                 qScalarInput = MaterializeScalar2DArrayInput(owner, plan.qTex, plan.qShape, plan.scalarTextureFormat, ref qScalarMaterialized);
-                if (ReferenceEquals(plan.kTex.texture, plan.qTex.texture) && NcnnRepro.IsStrictLinearMatTexture(plan.kTex))
+                if (ReferenceEquals(plan.kTex.texture, plan.qTex.texture)
+                    && RequiresScalar2DMaterialization(plan.kTex, plan.kShape))
                 {
                     kScalarInput = qScalarInput;
                     kScalarMaterialized = qScalarMaterialized;
@@ -741,12 +779,14 @@ namespace NcnnCompute
                     kScalarInput = MaterializeScalar2DArrayInput(owner, plan.kTex, plan.kShape, plan.scalarTextureFormat, ref kScalarMaterialized);
                 }
 
-                if (ReferenceEquals(plan.vTex.texture, plan.qTex.texture) && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                if (ReferenceEquals(plan.vTex.texture, plan.qTex.texture)
+                    && RequiresScalar2DMaterialization(plan.vTex, plan.vShape))
                 {
                     vScalarInput = qScalarInput;
                     vScalarMaterialized = qScalarMaterialized;
                 }
-                else if (ReferenceEquals(plan.vTex.texture, plan.kTex.texture) && NcnnRepro.IsStrictLinearMatTexture(plan.vTex))
+                else if (ReferenceEquals(plan.vTex.texture, plan.kTex.texture)
+                         && RequiresScalar2DMaterialization(plan.vTex, plan.vShape))
                 {
                     vScalarInput = kScalarInput;
                     vScalarMaterialized = kScalarMaterialized;
@@ -876,6 +916,7 @@ namespace NcnnCompute
                 useC: true,
                 broadcastTypeC: 4,
                 output);
+            owner.Ops.Pack4LinearFromScalar2D(output, plan.outputLogicalShape.w, plan.outputLogicalShape.h, outputPacked);
         }
 
         private static bool TryGetScalar2DTexture(
@@ -887,14 +928,7 @@ namespace NcnnCompute
         {
             if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, blobName, out texture, out shape))
                 return false;
-            return texture != null
-                && texture.texture != null
-                && shape.dims == 2
-                && shape.w > 0
-                && shape.h > 0
-                && texture.width == shape.w
-                && texture.height == shape.h
-                && texture.packs == 1;
+            return IsScalarOrPack4Linear2DTexture(texture, shape);
         }
 
         private static Vector4Int ResolveAttentionMaskTileRepeats(NcnnRepro.BufferShape scoresShape)
@@ -924,12 +958,49 @@ namespace NcnnCompute
             }
 
             shape = NcnnRepro.GetCmdShape(shapes, blobs, blobName);
-            return shape.dims == 2
+            return IsScalarOrPack4Linear2DTexture(texture, shape);
+        }
+
+        private static bool IsScalarOrPack4Linear2DTexture(
+            NcnnRepro.TensorRef texture,
+            NcnnRepro.BufferShape shape)
+        {
+            return texture != null
+                && texture.texture != null
+                && shape.dims == 2
                 && shape.w > 0
                 && shape.h > 0
-                && texture.width == shape.w
-                && texture.height == shape.h
-                && texture.packs == 1;
+                && ((texture.width == shape.w && texture.height == shape.h && texture.packs == 1)
+                    || NcnnRepro.IsPack4LinearMatTexture(texture, shape));
+        }
+
+        private static bool IsScalarOrPack4Linear2DTexture(
+            NcnnRepro.CmdTensorRef texture,
+            NcnnRepro.BufferShape shape)
+        {
+            return texture != null
+                && texture.texture != null
+                && shape.dims == 2
+                && shape.w > 0
+                && shape.h > 0
+                && ((texture.width == shape.w && texture.height == shape.h && texture.packs == 1)
+                    || NcnnRepro.IsPack4LinearMatTexture(texture, shape));
+        }
+
+        private static bool RequiresScalar2DMaterialization(
+            NcnnRepro.TensorRef texture,
+            NcnnRepro.BufferShape shape)
+        {
+            return NcnnRepro.IsStrictLinearMatTexture(texture)
+                || NcnnRepro.IsPack4LinearMatTexture(texture, shape);
+        }
+
+        private static bool RequiresScalar2DMaterialization(
+            NcnnRepro.CmdTensorRef texture,
+            NcnnRepro.BufferShape shape)
+        {
+            return NcnnRepro.IsStrictLinearMatTexture(texture)
+                || NcnnRepro.IsPack4LinearMatTexture(texture, shape);
         }
 
         private static RenderTexture MaterializeScalar2DArrayInput(
@@ -943,21 +1014,34 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(owner));
             if (source == null || source.texture == null)
                 throw new ArgumentNullException(nameof(source));
-
-            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+            if (!RequiresScalar2DMaterialization(source, shape))
                 return source.texture;
 
             materialized = owner.RentTempArray(Mathf.Max(1, shape.w), Mathf.Max(1, shape.h), 1, outputFormat);
-            owner.Ops.ReshapeLinearMatToPack4(
-                source.texture,
-                shape.w,
-                shape.h,
-                shape.w,
-                shape.h,
-                1,
-                1,
-                2,
-                materialized);
+            if (NcnnRepro.IsPack4LinearMatTexture(source, shape))
+            {
+                owner.Ops.ReshapePack4ToScalar2D(
+                    source.texture,
+                    shape.w,
+                    shape.h,
+                    1,
+                    1,
+                    2,
+                    materialized);
+            }
+            else if (NcnnRepro.IsStrictLinearMatTexture(source))
+            {
+                owner.Ops.ReshapeLinearMatToPack4(
+                    source.texture,
+                    shape.w,
+                    shape.h,
+                    shape.w,
+                    shape.h,
+                    1,
+                    1,
+                    2,
+                    materialized);
+            }
             return materialized;
         }
 
@@ -975,22 +1059,36 @@ namespace NcnnCompute
                 throw new ArgumentNullException(nameof(cmd));
             if (source == null || source.texture == null)
                 throw new ArgumentNullException(nameof(source));
-
-            if (!NcnnRepro.IsStrictLinearMatTexture(source))
+            if (!RequiresScalar2DMaterialization(source, shape))
                 return source.texture;
 
             materialized = owner.RentTempArray(cmd, Mathf.Max(1, shape.w), Mathf.Max(1, shape.h), 1, outputFormat);
-            owner.Ops.ReshapeLinearMatToPack4(
-                cmd,
-                source.texture,
-                shape.w,
-                shape.h,
-                shape.w,
-                shape.h,
-                1,
-                1,
-                2,
-                materialized);
+            if (NcnnRepro.IsPack4LinearMatTexture(source, shape))
+            {
+                owner.Ops.ReshapePack4ToScalar2D(
+                    cmd,
+                    source.texture,
+                    shape.w,
+                    shape.h,
+                    1,
+                    1,
+                    2,
+                    materialized);
+            }
+            else if (NcnnRepro.IsStrictLinearMatTexture(source))
+            {
+                owner.Ops.ReshapeLinearMatToPack4(
+                    cmd,
+                    source.texture,
+                    shape.w,
+                    shape.h,
+                    shape.w,
+                    shape.h,
+                    1,
+                    1,
+                    2,
+                    materialized);
+            }
             return materialized;
         }
 
@@ -1065,6 +1163,7 @@ namespace NcnnCompute
             public readonly int contextPermutedSlices;
             public readonly int contextFlattenOutChannels;
             public readonly NcnnRepro.BufferShape outputLogicalShape;
+            public readonly NcnnRepro.BufferShape outputScalarStorageShape;
             public readonly NcnnRepro.BufferShape outputStorageShape;
             public readonly RenderTextureFormat scalarTextureFormat;
             public readonly RenderTextureFormat pack4TextureFormat;
@@ -1079,7 +1178,8 @@ namespace NcnnCompute
                 NcnnRepro.BufferShape vShape,
                 int rows,
                 NcnnRepro.TensorRef attnMaskTex,
-                NcnnRepro.BufferShape attnMaskShape)
+                NcnnRepro.BufferShape attnMaskShape,
+                RenderTextureFormat sensitiveTextureFormat)
             {
                 this.pack = pack;
                 this.qTex = qTex;
@@ -1110,8 +1210,9 @@ namespace NcnnCompute
                 contextPermutedSlices = Mathf.Max(1, contextPermutedShape.d * Mathf.CeilToInt(contextPermutedShape.c / 4f));
                 contextFlattenOutChannels = Mathf.Max(1, headDim);
                 outputLogicalShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, pack.qdim), Mathf.Max(1, rows), 1, 1);
-                outputStorageShape = new NcnnRepro.BufferShape(3, outputLogicalShape.w, outputLogicalShape.h, 1, 1);
-                scalarTextureFormat = NcnnRepro.ResolveTensorTextureFormat(2);
+                outputScalarStorageShape = new NcnnRepro.BufferShape(3, outputLogicalShape.w, outputLogicalShape.h, 1, 1);
+                outputStorageShape = NcnnRepro.ResolvePack4LinearMatStorageShape(outputLogicalShape);
+                scalarTextureFormat = sensitiveTextureFormat;
                 pack4TextureFormat = NcnnRepro.ResolveTensorTextureFormat(4);
             }
         }
@@ -1147,6 +1248,7 @@ namespace NcnnCompute
             public readonly int contextPermutedSlices;
             public readonly int contextFlattenOutChannels;
             public readonly NcnnRepro.BufferShape outputLogicalShape;
+            public readonly NcnnRepro.BufferShape outputScalarStorageShape;
             public readonly NcnnRepro.BufferShape outputStorageShape;
             public readonly RenderTextureFormat scalarTextureFormat;
             public readonly RenderTextureFormat pack4TextureFormat;
@@ -1161,7 +1263,8 @@ namespace NcnnCompute
                 NcnnRepro.BufferShape vShape,
                 int rows,
                 NcnnRepro.CmdTensorRef attnMaskTex,
-                NcnnRepro.BufferShape attnMaskShape)
+                NcnnRepro.BufferShape attnMaskShape,
+                RenderTextureFormat sensitiveTextureFormat)
             {
                 this.pack = pack;
                 this.qTex = qTex;
@@ -1192,8 +1295,9 @@ namespace NcnnCompute
                 contextPermutedSlices = Mathf.Max(1, contextPermutedShape.d * Mathf.CeilToInt(contextPermutedShape.c / 4f));
                 contextFlattenOutChannels = Mathf.Max(1, headDim);
                 outputLogicalShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, pack.qdim), Mathf.Max(1, rows), 1, 1);
-                outputStorageShape = new NcnnRepro.BufferShape(3, outputLogicalShape.w, outputLogicalShape.h, 1, 1);
-                scalarTextureFormat = NcnnRepro.ResolveTensorTextureFormat(2);
+                outputScalarStorageShape = new NcnnRepro.BufferShape(3, outputLogicalShape.w, outputLogicalShape.h, 1, 1);
+                outputStorageShape = NcnnRepro.ResolvePack4LinearMatStorageShape(outputLogicalShape);
+                scalarTextureFormat = sensitiveTextureFormat;
                 pack4TextureFormat = NcnnRepro.ResolveTensorTextureFormat(4);
             }
         }

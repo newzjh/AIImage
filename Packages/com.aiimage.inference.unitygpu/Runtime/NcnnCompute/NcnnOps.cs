@@ -389,6 +389,7 @@ namespace NcnnCompute
         private readonly int _kReshapePack4ToLinearMat;
         private readonly int _kReshapePack4ToPack4;
         private readonly int _kReshapeScalar2DToPack4;
+        private readonly int _kPack4LinearFromScalar2D;
         private readonly int _kReshapeLinearMatToPack4;
         private readonly int _kAttentionReshapePack4;
         private readonly int _kAttentionContextFlattenPack4;
@@ -747,6 +748,7 @@ namespace NcnnCompute
             _kReshapePack4ToLinearMat = _cs.FindKernel("NcnnReshapePack4ToLinearMat");
             _kReshapePack4ToPack4 = _cs.FindKernel("NcnnReshapePack4ToPack4");
             _kReshapeScalar2DToPack4 = _cs.FindKernel("NcnnReshapeScalar2DToPack4");
+            _kPack4LinearFromScalar2D = _cs.FindKernel("NcnnPack4LinearFromScalar2D");
             _kReshapeLinearMatToPack4 = _cs.FindKernel("NcnnReshapeLinearMatToPack4");
             _kAttentionReshapePack4 = _cs.FindKernel("NcnnAttentionReshapePack4");
             _kAttentionContextFlattenPack4 = _cs.FindKernel("NcnnAttentionContextFlattenPack4");
@@ -2269,6 +2271,29 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kReshapeScalar2DToPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, Mathf.Max(1, outDims >= 4 ? outD * Mathf.CeilToInt(outC / 4f) : Mathf.CeilToInt(outC / 4f))), 8, 8);
         }
 
+        public void Pack4LinearFromScalar2D(RenderTexture input, int inputWidth, int inputHeight, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_Pack4LinearFromScalar2DInW", inputWidth);
+            _cs.SetInt("_Pack4LinearFromScalar2DInH", inputHeight);
+            _cs.SetTexture(_kPack4LinearFromScalar2D, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPack4LinearFromScalar2D, "_TexOut0Arr", output);
+            Dispatch3D(_kPack4LinearFromScalar2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void Pack4LinearFromScalar2D(CommandBuffer cmd, ComputeTexture input, int inputWidth, int inputHeight, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_Pack4LinearFromScalar2DInW", inputWidth);
+            cmd.SetComputeIntParam(_cs, "_Pack4LinearFromScalar2DInH", inputHeight);
+            cmd.SetComputeTextureParam(_cs, _kPack4LinearFromScalar2D, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPack4LinearFromScalar2D, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kPack4LinearFromScalar2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
         public void ReshapeLinearMatToPack4(RenderTexture input, int inW, int inH, int outW, int outH, int outD, int outC, int outDims, RenderTexture output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -3755,7 +3780,7 @@ namespace NcnnCompute
 
             _cs.SetInt("_CodeFormerCodebookSize", codebookSize);
             _cs.SetInt("_CodeFormerTokenCount", tokenCount);
-            _cs.SetTexture(_kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHotArr", softOneHot);
+            _cs.SetTexture(_kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHot", softOneHot);
             _cs.SetTexture(_kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerMinEncodingArr", minEncoding);
             Dispatch3D(_kCodeFormerMinEncodingFromSoftOneHot, codebookSize, tokenCount, ResolveRenderTextureDispatchDepth(minEncoding, 1), 8, 8);
         }
@@ -3770,7 +3795,7 @@ namespace NcnnCompute
 
             cmd.SetComputeIntParam(_cs, "_CodeFormerCodebookSize", codebookSize);
             cmd.SetComputeIntParam(_cs, "_CodeFormerTokenCount", tokenCount);
-            cmd.SetComputeTextureParam(_cs, _kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHotArr", softOneHot.nameID);
+            cmd.SetComputeTextureParam(_cs, _kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerSoftOneHot", softOneHot.nameID);
             cmd.SetComputeTextureParam(_cs, _kCodeFormerMinEncodingFromSoftOneHot, "_CodeFormerMinEncodingArr", minEncoding.nameID);
             Dispatch3D(cmd, _kCodeFormerMinEncodingFromSoftOneHot, codebookSize, tokenCount, ResolveComputeTextureDispatchDepth(minEncoding, 1), 8, 8);
         }
