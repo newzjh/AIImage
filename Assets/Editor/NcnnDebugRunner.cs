@@ -91,9 +91,11 @@ public static class NcnnDebugRunner
     private const string MattingPack4OnlyGuardEnvVar = "AIIMAGE_MATTING_PACK4_ONLY_GUARD";
     private const string MattingUseCommandBufferEnvVar = "AIIMAGE_MATTING_USE_COMMAND_BUFFER";
     private const string MattingUseAsyncComputeEnvVar = "AIIMAGE_MATTING_USE_ASYNC_COMPUTE";
+    private const string MattingPrecisionEnvVar = "AIIMAGE_MATTING_PRECISION";
     private const string MattingFp32ReferenceEnvVar = "AIIMAGE_MATTING_FP32_REFERENCE";
     private const string MattingReferenceLabelEnvVar = "AIIMAGE_MATTING_REFERENCE_LABEL";
     private const string GfpganPack4OnlyGuardEnvVar = "AIIMAGE_GFPGAN_PACK4_ONLY_GUARD";
+    private const string GfpganPrecisionEnvVar = "AIIMAGE_GFPGAN_PRECISION";
     private const string SdWidthEnvVar = "AIIMAGE_SD_WIDTH";
     private const string SdHeightEnvVar = "AIIMAGE_SD_HEIGHT";
     private const string SdStepsEnvVar = "AIIMAGE_SD_STEPS";
@@ -485,6 +487,10 @@ public static class NcnnDebugRunner
         {
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
+            var configuredPrecision = ResolveStringEnv(GfpganPrecisionEnvVar, "Auto");
+            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+                throw new InvalidOperationException("Invalid " + GfpganPrecisionEnvVar + ": " + configuredPrecision);
+            runner.precisionMode = precisionMode;
             ApplyGfpganPack4GuardFromEnv(runner);
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[GFPGAN Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
@@ -589,6 +595,10 @@ public static class NcnnDebugRunner
             NcnnCompute.NcnnGpuResourceTracker.Reset("D1.Matting");
             var runner = go.AddComponent<MatterNcnnReproRunner>();
             runner.enableDebugDump = true;
+            var configuredPrecision = ResolveStringEnv(MattingPrecisionEnvVar, "Auto");
+            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+                throw new InvalidOperationException("Invalid " + MattingPrecisionEnvVar + ": " + configuredPrecision);
+            runner.precisionMode = precisionMode;
             runner.forceBufferConvolution = false;
             runner.useCommandBuffer = ResolveBoolEnv(MattingUseCommandBufferEnvVar, false);
             runner.useAsyncComputeCommandBuffer = runner.useCommandBuffer
@@ -2340,6 +2350,10 @@ public static class NcnnDebugRunner
         {
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
+            var configuredPrecision = ResolveStringEnv(GfpganPrecisionEnvVar, "Auto");
+            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+                throw new InvalidOperationException("Invalid " + GfpganPrecisionEnvVar + ": " + configuredPrecision);
+            runner.precisionMode = precisionMode;
             ApplyGfpganPack4GuardFromEnv(runner);
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[GFPGAN Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));

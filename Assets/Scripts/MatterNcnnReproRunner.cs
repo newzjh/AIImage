@@ -350,7 +350,11 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             return;
         _repro.ForceBufferConvolution = forceBufferConvolution;
         _repro.UseTextureMaxPoolingInd = useTextureMaxPoolingInd;
-        _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        // FP32 retains the existing ARGBFloat path. Do not override an explicitly
+        // selected FP16 session back to float activations.
+        _repro.TensorTextureFormat = _repro.AppliedPrecisionMode == NcnnPrecisionMode.FP16
+            ? RenderTextureFormat.ARGBHalf
+            : useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         _repro.EnableGeneralTextureConvolution = true;
         _repro.DisallowBufferAccess = disallowBufferAccess;
         _repro.DisallowBufferOutputs = disallowBufferOutputs;

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -72,6 +71,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     private float[] _demodTmp;
     private float[] _styleOutTmp;
     private readonly Dictionary<int, ComputeBuffer> _noiseBuf = new Dictionary<int, ComputeBuffer>();
+    private int _noiseSequence;
     private NcnnOps _ops;
     private bool _loaded;
     private bool _hasAppliedPrecisionMode;
@@ -117,6 +117,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             try { kv.Value?.Dispose(); } catch { }
         }
         _noiseBuf.Clear();
+        _noiseSequence = 0;
         _repro?.Release();
         _loaded = false;
         try { _repro?.Dispose(); } catch { }
@@ -290,6 +291,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     {
         if (face512 == null || face512.width != 512 || face512.height != 512)
             return null;
+
+        _noiseSequence = 0;
 
         RenderTexture inArr = null;
         RenderTexture[] cond = null;
@@ -774,9 +777,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return cb;
     }
 
-    private static void FillNoise(ComputeBuffer noise, int wh)
+    private void FillNoise(ComputeBuffer noise, int wh)
     {
-        var r = new System.Random(unchecked((int)DateTime.UtcNow.Ticks));
+        var r = new System.Random(unchecked(0x4F1BBCDC + _noiseSequence++ * unchecked((int)0x9E3779B9)));
         var a = new float[wh];
         var i = 0;
         while (i < wh)
@@ -928,7 +931,11 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _ops ??= new NcnnOps();
         if (_repro == null)
         {
-            _repro = NcnnInferenceSessionFactory.Create(_ops, "gfpgan", precisionMode);
+            // Preserve the verified pre-manifest FP32 contract. GFPGAN's FP16 path is
+            // explicitly selected and remains manifest-backed.
+            _repro = precisionMode == NcnnPrecisionMode.FP16
+                ? NcnnInferenceSessionFactory.Create(_ops, "gfpgan", precisionMode)
+                : NcnnInferenceSessionFactory.Create(_ops);
             _appliedPrecisionMode = precisionMode;
             _hasAppliedPrecisionMode = true;
         }
