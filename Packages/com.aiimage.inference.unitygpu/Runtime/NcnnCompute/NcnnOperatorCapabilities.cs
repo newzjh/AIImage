@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using AIImage.Inference.Core;
 using UnityEngine;
 
 namespace NcnnCompute
@@ -351,14 +352,15 @@ namespace NcnnCompute
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
                 return new[] { 1, 2, 3 };
             if (SentisOperators.Contains(operatorName))
-                return new[] { 1, 2, 3, 4, 5 };
+                return new[] { 1, 2, 3, 4 };
             return new[] { 1, 2, 3, 4 };
         }
 
         private static string ResolveLimitations(string operatorName, string status)
         {
             if (status == NcnnOperatorCapabilityStatus.Unsupported)
-                return operatorName + " is registered only to report a deterministic error; its texture-native implementation is absent.";
+                return operatorName + " is registered only to report a deterministic error; its texture-native implementation is absent. "
+                    + "D3 rejects this graph at plan time rather than reading GPU data back or falling back to a ComputeBuffer.";
             if (status == NcnnOperatorCapabilityStatus.AliasOnly)
                 return "Only alias/view semantics are known. Strict planning requires a separately proven logical/storage layout match.";
             if (status == NcnnOperatorCapabilityStatus.DebugOnly)
@@ -394,6 +396,12 @@ namespace NcnnCompute
                 return "Partial CommandBuffer Pack4 layout profile: every branch validates logicalShape, storageShape, and layout. "
                     + "Only descriptor-proven identity/view branches alias; Permute, non-identity Slice/Tile/Packing/Cast, and storage-changing Reshape/Flatten dispatch a real texture transform. "
                     + "Dynamic data-dependent lengths and unsupported rank/axis/dtype profiles fail strict planning. Placeholder publication is not a production path.";
+            if (operatorName == "TopK")
+                return "Partial LinearMat texture profile: rank=1..4, FP32/FP16 values, Int32 logical indices, static axis and static k only. "
+                    + "GPU-driven k requires a capacity-bounded GPU shape tensor; the current backend rejects it at plan time and never reads back k.";
+            if (operatorName == "OneHot")
+                return "Partial LinearMat texture profile: rank=1..3 indices, static positive depth and axis, FP32/FP16 values, and Int32 logical indices. "
+                    + "GPU-driven depth requires a capacity-bounded GPU shape tensor; the current backend rejects it at plan time and never reads back depth.";
             if (operatorName == "RotaryEmbed")
                 return "RotaryEmbed has no verified CommandBuffer Pack4 production profile and remains unavailable to strict plans; it must not be reported as a production placeholder.";
             return "A texture branch may exist for selected shapes, but this entry has not passed full Pack4 CommandBuffer model validation. Strict planning rejects partial capability.";
@@ -551,6 +559,69 @@ namespace NcnnCompute
                             rejectedParameters = new[] { "dynamic_target_size", "size_expr", "bicubic/other resize modes" }
                         }
                     };
+                case "TopK":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Linear" },
+                            shapeProfile = "rank=1..4; output axis has static k; LinearMat values plus logical Int32 indices",
+                            supportedParameters = new[] { "axis in [-rank,rank-1]", "static k in [1,axis_size]", "largest=0|1", "FP32/FP16 values" },
+                            rejectedParameters = new[] { "dynamic k", "rank>4", "k>axis_size", "CPU readback for output shape" }
+                        }
+                    };
+                case "OneHot":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Linear" },
+                            shapeProfile = "indices rank=1..3; output rank=2..4; static depth axis inserted into output",
+                            supportedParameters = new[] { "Int32 logical indices", "static depth>0", "axis in [-rank-1,rank]", "FP32/FP16 on/off values" },
+                            rejectedParameters = new[] { "dynamic depth", "indices rank>3", "output rank>4", "CPU readback for output shape" }
+                        }
+                    };
+                case "NonZero":
+                case "Compress":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Linear" },
+                            shapeProfile = "data-dependent output requires GPU prefix-sum/compaction and a capacity-bounded Int32 shape tensor",
+                            supportedParameters = Array.Empty<string>(),
+                            rejectedParameters = new[] { "all runtime profiles until compaction kernel is present", "CPU count readback", "unbounded output", "overflow without reject policy" }
+                        }
+                    };
+                case "GatherND":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Linear" },
+                            shapeProfile = "planned subset: data rank=1..4, Int32 indices, batch_dims=0",
+                            supportedParameters = Array.Empty<string>(),
+                            rejectedParameters = new[] { "all runtime profiles until GatherND texture kernel is present", "batch_dims!=0", "non-Int32 indices", "rank>4" }
+                        }
+                    };
+                case "Scatter":
+                case "ScatterElements":
+                case "ScatterND":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Linear" },
+                            shapeProfile = "planned subset: rank=1..4, Int32 indices, provably unique destinations; conflict semantics are reject",
+                            supportedParameters = Array.Empty<string>(),
+                            rejectedParameters = new[] { "all runtime profiles until deterministic texture writes are present", "duplicate destinations", "non-Int32 indices", "atomic or unspecified last-write semantics" }
+                        }
+                    };
                 default:
                     return Array.Empty<NcnnOperatorCapabilityProfile>();
             }
@@ -603,6 +674,9 @@ namespace NcnnCompute
                 var nodeIssues = new List<string>();
                 var nodeInputs = ResolveInputs(layer, knownBlobs, nodeIssues, index, operatorName, missingDependencies);
                 ReportMissingInputDescriptors(layer, capability, inputByBlob, nodeIssues, index, operatorName, missingDependencies);
+                var d3Diagnostic = ValidateD3ShapeIndexNode(layer, operatorName, nodeInputs);
+                if (d3Diagnostic != null)
+                    nodeIssues.Add(d3Diagnostic.code + ": " + d3Diagnostic.message);
                 var missingForNode = FindMissingParameters(layer, capability.requiredParameters);
                 for (var parameterIndex = 0; parameterIndex < missingForNode.Length; parameterIndex++)
                 {
@@ -612,7 +686,9 @@ namespace NcnnCompute
                 }
 
                 var strictEligible = !request.strict || (NcnnOperatorCapabilities.IsStrictlySupported(capability, request.targetBackend, request.targetDtype) && missingForNode.Length == 0 && nodeIssues.Count == 0);
-                var recommendation = ResolveRecommendedAction(capability, request.targetBackend, request.targetDtype, missingForNode.Length > 0);
+                var recommendation = d3Diagnostic != null
+                    ? d3Diagnostic.recommendedAction
+                    : ResolveRecommendedAction(capability, request.targetBackend, request.targetDtype, missingForNode.Length > 0);
                 if (request.strict && !strictEligible && nodeIssues.Count == 0)
                     nodeIssues.Add("Strict target rejects status=" + capability.status + " for backend=" + request.targetBackend + " dtype=" + request.targetDtype + ".");
 
@@ -700,6 +776,71 @@ namespace NcnnCompute
                 result.Add(new NcnnPreflightTensorDescriptor { blob = bottom, logicalShape = Array.Empty<int>(), storageShape = Array.Empty<int>(), layout = "Unknown", dtype = "Unknown" });
             }
             return result;
+        }
+
+        private static OnnxSentisPlanDiagnostic ValidateD3ShapeIndexNode(
+            NcnnParamModel.Layer layer,
+            string operatorName,
+            List<NcnnPreflightTensorDescriptor> inputs)
+        {
+            switch (operatorName)
+            {
+                case "TopK":
+                case "OneHot":
+                case "NonZero":
+                case "Compress":
+                case "GatherND":
+                case "Scatter":
+                case "ScatterElements":
+                case "ScatterND":
+                    break;
+                default:
+                    return null;
+            }
+
+            var inputRank = 1;
+            if (inputs != null && inputs.Count > 0 && inputs[0]?.logicalShape != null && inputs[0].logicalShape.Length > 0)
+                inputRank = inputs[0].logicalShape.Length;
+            var hasStaticParameter = operatorName == "TopK"
+                ? HasLayerParameter(layer, "k", 1)
+                : operatorName == "OneHot"
+                    ? HasLayerParameter(layer, "depth", 1)
+                    : true;
+            var batchDims = ReadLayerInt(layer, "batch_dims", 0, 0);
+            var uniqueIndices = ReadLayerInt(layer, "unique_indices", -1, 0) != 0;
+            return OnnxSentisShapePlanner.Validate(new OnnxSentisNodeContract
+            {
+                name = layer.name ?? string.Empty,
+                opType = operatorName,
+                inputRank = inputRank,
+                batchDims = batchDims,
+                indexDataType = TensorDataType.Int32,
+                dynamicParameter = !hasStaticParameter,
+                uniqueIndices = uniqueIndices
+            });
+        }
+
+        private static bool HasLayerParameter(NcnnParamModel.Layer layer, string name, int key)
+        {
+            return (layer?.stringParams != null && layer.stringParams.ContainsKey(name))
+                || (layer?.intParams != null && layer.intParams.ContainsKey(key));
+        }
+
+        private static int ReadLayerInt(NcnnParamModel.Layer layer, string name, int key, int defaultValue)
+        {
+            if (layer?.stringParams != null
+                && layer.stringParams.TryGetValue(name, out var named)
+                && int.TryParse(named, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedNamed))
+            {
+                return parsedNamed;
+            }
+            if (layer?.intParams != null
+                && layer.intParams.TryGetValue(key, out var keyed)
+                && int.TryParse(keyed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedKeyed))
+            {
+                return parsedKeyed;
+            }
+            return defaultValue;
         }
 
         private static void ReportMissingInputDescriptors(
