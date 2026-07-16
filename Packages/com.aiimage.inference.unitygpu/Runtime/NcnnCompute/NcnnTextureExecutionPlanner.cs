@@ -58,6 +58,10 @@ namespace NcnnCompute
         // Empty means the legacy all-weight D2 plan.  A non-empty list selects the
         // only operators allowed to consume immutable packed INT8 weights.
         public string[] int8WeightOnlyOperators = Array.Empty<string>();
+        // Optional layer whitelist for explicit selective plans. Empty means operator
+        // selection decides coverage.
+        public string[] int8WeightOnlyLayerNames = Array.Empty<string>();
+        public bool int8WeightOnlyLayerSelectionExplicit;
         public NcnnTexturePlanTensorDescriptor[] inputs = Array.Empty<NcnnTexturePlanTensorDescriptor>();
         [NonSerialized] public NcnnTextureExecutionPlanNodeVerifier nodeVerifier;
     }
@@ -262,7 +266,7 @@ namespace NcnnCompute
 
                 var inputsMatchTarget = inputs.Select((input, inputIndex) =>
                     MatchesTarget(input, request) || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)).All(value => value);
-                var quantizesOperator = IsInt8WeightOnlyOperator(request, operatorName);
+                var quantizesOperator = IsInt8WeightOnlyOperator(request, layer.name, operatorName);
                 if (quantizesOperator && HasImmutableWeightsWithoutInt8WeightOnlyKernel(operatorName))
                 {
                     diagnostics.Add(CreateDiagnostic(
@@ -676,10 +680,13 @@ namespace NcnnCompute
                 || string.Equals(operatorName, "InnerProduct", StringComparison.Ordinal);
         }
 
-        private static bool IsInt8WeightOnlyOperator(NcnnTextureExecutionPlanRequest request, string operatorName)
+        private static bool IsInt8WeightOnlyOperator(NcnnTextureExecutionPlanRequest request, string layerName, string operatorName)
         {
             if (request == null || !request.int8WeightOnly)
                 return false;
+            var layerNames = request.int8WeightOnlyLayerNames;
+            if (request.int8WeightOnlyLayerSelectionExplicit)
+                return layerNames != null && layerNames.Any(value => string.Equals(value, layerName, StringComparison.Ordinal));
             var operators = request.int8WeightOnlyOperators;
             if (operators == null || operators.Length == 0)
                 return true;

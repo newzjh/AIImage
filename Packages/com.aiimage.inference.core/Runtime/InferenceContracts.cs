@@ -129,10 +129,10 @@ namespace AIImage.Inference.Core
         public TensorDataType accumulationDataType = TensorDataType.Float32;
         public bool activationQuantized;
         public QuantizedNodePlan[] nodePlans = Array.Empty<QuantizedNodePlan>();
-        // D2 permits a model to quantize only the nodes for which a packed texture
-        // kernel and, when requested, calibrated W8A8 activation scale exist. An
-        // empty list preserves the v1 all-weight legacy behavior (and therefore its
-        // strict rejection of every unsupported weighted op).
+        // Selective INT8 may use quantizedOperators as the default W8 set, while
+        // nodePlans override individual layers to Float or calibrated W8A8.
+        // When nodePlans are present and quantizedOperators is empty, selection is
+        // explicit-only so runner manifests can grow coverage from measured layers.
         public string[] quantizedOperators = Array.Empty<string>();
         public TensorDataType unquantizedWeightDataType = TensorDataType.Float32;
 
@@ -184,11 +184,8 @@ namespace AIImage.Inference.Core
 
         public bool QuantizesOperator(string operatorName)
         {
-            // Manifests produced before selective D2 plans have no list.  Keep their
-            // fail-closed semantics: every immutable-weight node must prove an INT8
-            // kernel instead of silently remaining float.
             if (quantizedOperators == null || quantizedOperators.Length == 0)
-                return true;
+                return nodePlans == null || nodePlans.Length == 0;
             if (string.IsNullOrWhiteSpace(operatorName))
                 return false;
             for (var index = 0; index < quantizedOperators.Length; index++)
@@ -213,6 +210,18 @@ namespace AIImage.Inference.Core
                     plan = candidate;
                     return candidate.mode != QuantizedNodeMode.Float;
                 }
+            }
+            if (QuantizesOperator(operatorName))
+            {
+                plan = new QuantizedNodePlan
+                {
+                    layerName = layerName ?? string.Empty,
+                    operatorName = operatorName ?? string.Empty,
+                    mode = QuantizedNodeMode.Int8WeightOnly,
+                    activationScale = 1f,
+                    activationZeroPoint = 0
+                };
+                return true;
             }
             plan = null;
             return false;

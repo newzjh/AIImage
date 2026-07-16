@@ -1545,6 +1545,7 @@ namespace NcnnCompute
             List<NcnnTexturePlanTensorDescriptor> inputs,
             bool debugOracleRelaxed)
         {
+            var explicitInt8LayerNames = GetExplicitInt8WeightOnlyLayerNamesForPlan();
             LastTextureExecutionPlan = NcnnTextureExecutionPlanner.Analyze(Model, new NcnnTextureExecutionPlanRequest
             {
                 modelName = LastLoadProfile?.modelMagic ?? string.Empty,
@@ -1555,10 +1556,32 @@ namespace NcnnCompute
                 debugOracleRelaxed = debugOracleRelaxed,
                 int8WeightOnly = UsesInt8WeightOnly,
                 int8WeightOnlyOperators = ModelManifest?.quantization?.quantizedOperators ?? Array.Empty<string>(),
+                int8WeightOnlyLayerNames = explicitInt8LayerNames,
+                int8WeightOnlyLayerSelectionExplicit = explicitInt8LayerNames != null,
                 inputs = inputs.ToArray(),
                 nodeVerifier = VerifyStrictCommandBufferPack4Node
             });
             NcnnTextureExecutionPlanner.ThrowIfDispatchRejected(LastTextureExecutionPlan);
+        }
+
+        private string[] GetExplicitInt8WeightOnlyLayerNamesForPlan()
+        {
+            if (!UsesInt8WeightOnly)
+                return null;
+            var quantization = ModelManifest?.quantization;
+            if (quantization == null)
+                return null;
+            if (quantization.quantizedOperators != null && quantization.quantizedOperators.Length > 0)
+                return null;
+            if (quantization.nodePlans == null || quantization.nodePlans.Length == 0)
+                return null;
+            return quantization.nodePlans
+                .Where(plan => plan != null
+                    && plan.mode != QuantizedNodeMode.Float
+                    && !string.IsNullOrWhiteSpace(plan.layerName))
+                .Select(plan => plan.layerName)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
         }
 
         private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPack4Node(
