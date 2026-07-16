@@ -44,11 +44,21 @@ float NcnnReadPackedConvInt8(int index)
     return (float)signedValue;
 }
 
+float NcnnReadPackedConvInt4(int index)
+{
+    uint packed = _ConvWInt4Packed[index >> 3];
+    uint raw = (packed >> ((index & 7) * 4)) & 0xfu;
+    int signedValue = raw >= 8u ? (int)raw - 16 : (int)raw;
+    return (float)signedValue;
+}
+
 // Raw OIHW is only used by the group/tail-safe CommandBuffer Conv kernels. The
 // output-channel scale is applied during the texture dispatch, never by expanding
 // the immutable INT8 payload to a temporary float buffer.
 float NcnnReadRawConvWeight(int index, int outputChannel)
 {
+    if (_UseInt4ConvWeights != 0)
+        return NcnnReadPackedConvInt4(index) * _ConvWInt4Scales[outputChannel];
     if (_UseInt8ConvWeights == 0)
         return _ConvW[index];
     return NcnnReadPackedConvInt8(index) * _ConvWInt8Scales[outputChannel];

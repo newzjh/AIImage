@@ -62,6 +62,10 @@ namespace NcnnCompute
         // selection decides coverage.
         public string[] int8WeightOnlyLayerNames = Array.Empty<string>();
         public bool int8WeightOnlyLayerSelectionExplicit;
+        public bool int4WeightOnly;
+        public string[] int4WeightOnlyOperators = Array.Empty<string>();
+        public string[] int4WeightOnlyLayerNames = Array.Empty<string>();
+        public bool int4WeightOnlyLayerSelectionExplicit;
         public NcnnTexturePlanTensorDescriptor[] inputs = Array.Empty<NcnnTexturePlanTensorDescriptor>();
         [NonSerialized] public NcnnTextureExecutionPlanNodeVerifier nodeVerifier;
     }
@@ -266,7 +270,8 @@ namespace NcnnCompute
 
                 var inputsMatchTarget = inputs.Select((input, inputIndex) =>
                     MatchesTarget(input, request) || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)).All(value => value);
-                var quantizesOperator = IsInt8WeightOnlyOperator(request, layer.name, operatorName);
+                var quantizesOperator = IsInt8WeightOnlyOperator(request, layer.name, operatorName)
+                    || IsInt4WeightOnlyOperator(request, layer.name, operatorName);
                 if (quantizesOperator && HasImmutableWeightsWithoutInt8WeightOnlyKernel(operatorName))
                 {
                     diagnostics.Add(CreateDiagnostic(
@@ -275,11 +280,11 @@ namespace NcnnCompute
                         layer,
                         capability,
                         operatorName,
-                        "missing-int8-weight-only-kernel",
-                        "INT8 selective quantization has no verified immutable packed-weight CommandBuffer kernel for this operator; strict quant planning refuses an FP32 parameter or Buffer fallback.",
+                        "missing-quantized-weight-only-kernel",
+                        "Selective quantization has no verified immutable packed-weight CommandBuffer kernel for this operator; strict quant planning refuses an FP32 parameter or Buffer fallback.",
                         inputs,
                         true,
-                        "Implement and verify a packed INT8 CommandBuffer kernel before enabling this model quantization plan."));
+                        "Implement and verify a packed INT8/INT4 CommandBuffer kernel before enabling this model quantization plan."));
                     nodes.Add(node);
                     continue;
                 }
@@ -688,6 +693,19 @@ namespace NcnnCompute
             if (request.int8WeightOnlyLayerSelectionExplicit)
                 return layerNames != null && layerNames.Any(value => string.Equals(value, layerName, StringComparison.Ordinal));
             var operators = request.int8WeightOnlyOperators;
+            if (operators == null || operators.Length == 0)
+                return true;
+            return operators.Any(value => string.Equals(value, operatorName, StringComparison.Ordinal));
+        }
+
+        private static bool IsInt4WeightOnlyOperator(NcnnTextureExecutionPlanRequest request, string layerName, string operatorName)
+        {
+            if (request == null || !request.int4WeightOnly)
+                return false;
+            var layerNames = request.int4WeightOnlyLayerNames;
+            if (request.int4WeightOnlyLayerSelectionExplicit)
+                return layerNames != null && layerNames.Any(value => string.Equals(value, layerName, StringComparison.Ordinal));
+            var operators = request.int4WeightOnlyOperators;
             if (operators == null || operators.Length == 0)
                 return true;
             return operators.Any(value => string.Equals(value, operatorName, StringComparison.Ordinal));

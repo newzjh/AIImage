@@ -95,14 +95,16 @@ namespace NcnnCompute
                                         // Cmd Pack4 group/tail kernels consume this immutable scalar upload.
                                         // It is never used for activation or intermediate storage.
                                         phaseSw.Restart();
-                                        if (owner.UsesInt8WeightOnlyForLayer(layer))
+                                        if (owner.UsesInt4WeightOnlyForLayer(layer))
+                                            NcnnRepro.UploadInt4WeightOnlyConvWeights(pack, w, b, layer.name);
+                                        else if (owner.UsesInt8WeightOnlyForLayer(layer))
                                             NcnnRepro.UploadInt8WeightOnlyConvWeights(pack, w, b, layer.name);
                                         else
                                             NcnnRepro.UploadRawConvWeights(pack, w, b);
                                         phaseSw.Stop();
                                         uploadMs += phaseSw.ElapsedMilliseconds;
 
-                                        if (needGeneralTexturePack && !owner.UsesInt8WeightOnlyForLayer(layer))
+                                        if (needGeneralTexturePack && !owner.UsesQuantizedWeightsForLayer(layer))
                                         {
                                             phaseSw.Restart();
                                             var w4 = NcnnRepro.PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
@@ -133,7 +135,7 @@ namespace NcnnCompute
                                             phaseSw.Stop();
                                             packMs += phaseSw.ElapsedMilliseconds;
                                         }
-                                        else if (needDepthWiseTexturePack && !owner.UsesInt8WeightOnlyForLayer(layer))
+                                        else if (needDepthWiseTexturePack && !owner.UsesQuantizedWeightsForLayer(layer))
                                         {
                                             phaseSw.Restart();
                                             var w4 = NcnnRepro.PackDepthWiseWeightsToP4KhKw(w, pack.outC, pack.kernelW, pack.kernelH, pack.outPacks);
@@ -329,16 +331,20 @@ namespace NcnnCompute
                                         && !conv.isDepthWise
                                         && conv.kernelW == conv.kernelH;
             var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
+            var useInt4WeightOnly = owner.UsesInt4WeightsForLayer(layer);
             owner.Ops.SetFp16ConvWeights(useFp16GeneralWeights ? conv.packedWeight4Fp16 : null);
             owner.Ops.SetInt8ConvWeights(
                 useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
                 useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+            owner.Ops.SetInt4ConvWeights(
+                useInt4WeightOnly ? conv.rawWeightInt4Packed : null,
+                useInt4WeightOnly ? conv.rawWeightInt4Scales : null);
             owner.ConfigureInt8ActivationQuantization(layer);
-            if (useInt8WeightOnly)
+            if (useInt8WeightOnly || useInt4WeightOnly)
             {
                 owner.Ops.Conv2dGroupPack4(
                     src.texture,
-                    conv.rawWeightInt8Packed,
+                    useInt4WeightOnly ? conv.rawWeightInt4Packed : conv.rawWeightInt8Packed,
                     conv.rawBias,
                     conv.inC,
                     conv.outC,
@@ -438,14 +444,18 @@ namespace NcnnCompute
                                             && conv.kernelW == conv.kernelH;
                 owner.Ops.SetFp16ConvWeights(useFp16GeneralWeights ? conv.packedWeight4Fp16 : null);
                 var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
+                var useInt4WeightOnly = owner.UsesInt4WeightsForLayer(layer);
                 owner.Ops.SetInt8ConvWeights(
                     useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
                     useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+                owner.Ops.SetInt4ConvWeights(
+                    useInt4WeightOnly ? conv.rawWeightInt4Packed : null,
+                    useInt4WeightOnly ? conv.rawWeightInt4Scales : null);
                 owner.ConfigureInt8ActivationQuantization(layer);
-                if (useInt8WeightOnly)
+                if (useInt8WeightOnly || useInt4WeightOnly)
                 {
                     owner.Ops.Conv2dGroupPack4(
-                        cmd, src.texture, conv.rawWeightInt8Packed, conv.rawBias, conv.inC, conv.outC, conv.group,
+                        cmd, src.texture, useInt4WeightOnly ? conv.rawWeightInt4Packed : conv.rawWeightInt8Packed, conv.rawBias, conv.inC, conv.outC, conv.group,
                         conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop,
                         conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
                 }
@@ -536,7 +546,7 @@ namespace NcnnCompute
         private static bool SupportsCommandBufferPack4(NcnnRepro.ConvPack conv, out string reason)
         {
             reason = null;
-            if (conv == null || (conv.rawWeight == null && conv.rawWeightInt8Packed == null) || conv.rawBias == null)
+            if (conv == null || (conv.rawWeight == null && conv.rawWeightInt8Packed == null && conv.rawWeightInt4Packed == null) || conv.rawBias == null)
                 reason = "immutable scalar weights/bias are unavailable";
             else if (conv.inC <= 0 || conv.outC <= 0 || conv.group <= 0 || conv.inC % conv.group != 0 || conv.outC % conv.group != 0)
                 reason = "group must divide positive input and output channels";
@@ -601,19 +611,19 @@ namespace NcnnCompute
                                            && conv.kernelW > 0
                                            && conv.kernelH == conv.kernelW
                                            && !(conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
-            var canUseInt8TexturePath = owner.UsesInt8WeightsForLayer(layer)
-                                        && SupportsCommandBufferPack4(conv, out _);
+            var canUseQuantizedTexturePath = owner.UsesQuantizedWeightsForLayer(layer)
+                                             && SupportsCommandBufferPack4(conv, out _);
             var hasSupportedTexturePath = canUseConv1x1TexturePath
                                           || canUseDepthWiseTexturePath
                                           || canUseSpecialized3x3TexturePath
                                           || canUseGeneralTexturePath
-                                          || canUseInt8TexturePath;
+                                          || canUseQuantizedTexturePath;
 
             if (!hasSupportedTexturePath)
                 return false;
 
             var forceBufferThisConv = owner.ForceBufferConvolutionAll
-                                      || (conv.useBufferPath && !canUseDepthWiseTexturePath && !canUseGeneralTexturePath && !canUseInt8TexturePath)
+                                      || (conv.useBufferPath && !canUseDepthWiseTexturePath && !canUseGeneralTexturePath && !canUseQuantizedTexturePath)
                                       || (conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
 
             if (forceBufferThisConv)

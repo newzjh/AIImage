@@ -500,6 +500,10 @@ namespace NcnnCompute
         private ComputeBuffer _int8ConvWeightScales;
         private ComputeBuffer _int8GemmWeights;
         private ComputeBuffer _int8GemmWeightScales;
+        private ComputeBuffer _int4ConvWeights;
+        private ComputeBuffer _int4ConvWeightScales;
+        private ComputeBuffer _int4GemmWeights;
+        private ComputeBuffer _int4GemmWeightScales;
         private bool _useInt8Activations;
         private float _int8ActivationScale = 1f;
         private int _int8ActivationZeroPoint;
@@ -537,6 +541,22 @@ namespace NcnnCompute
                 throw new ArgumentException("INT8 Gemm weights and per-output scales must be configured together.");
             _int8GemmWeights = packedWeights;
             _int8GemmWeightScales = perOutputScales;
+        }
+
+        public void SetInt4ConvWeights(ComputeBuffer packedWeights, ComputeBuffer perOutputScales)
+        {
+            if ((packedWeights == null) != (perOutputScales == null))
+                throw new ArgumentException("INT4 convolution weights and per-output scales must be configured together.");
+            _int4ConvWeights = packedWeights;
+            _int4ConvWeightScales = perOutputScales;
+        }
+
+        public void SetInt4GemmWeights(ComputeBuffer packedWeights, ComputeBuffer perOutputScales)
+        {
+            if ((packedWeights == null) != (perOutputScales == null))
+                throw new ArgumentException("INT4 Gemm weights and per-output scales must be configured together.");
+            _int4GemmWeights = packedWeights;
+            _int4GemmWeightScales = perOutputScales;
         }
 
         public void SetInt8ActivationQuantization(QuantizedNodePlan plan)
@@ -582,6 +602,9 @@ namespace NcnnCompute
             _cs.SetBuffer(kernel, "_MatBInt8Packed", _int8GemmWeights ?? fp32Weights);
             _cs.SetBuffer(kernel, "_MatBInt8Scales", _int8GemmWeightScales ?? fp32Weights);
             _cs.SetInt("_UseInt8GemmWeights", _int8GemmWeights != null ? 1 : 0);
+            _cs.SetBuffer(kernel, "_MatBInt4Packed", _int4GemmWeights ?? fp32Weights);
+            _cs.SetBuffer(kernel, "_MatBInt4Scales", _int4GemmWeightScales ?? fp32Weights);
+            _cs.SetInt("_UseInt4GemmWeights", _int4GemmWeights != null ? 1 : 0);
             _cs.SetInt("_UseInt8Activations", _useInt8Activations ? 1 : 0);
             _cs.SetFloat("_Int8ActivationScale", _int8ActivationScale);
             _cs.SetInt("_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
@@ -595,6 +618,9 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt8Packed", _int8GemmWeights ?? fp32Weights);
             cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt8Scales", _int8GemmWeightScales ?? fp32Weights);
             cmd.SetComputeIntParam(_cs, "_UseInt8GemmWeights", _int8GemmWeights != null ? 1 : 0);
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt4Packed", _int4GemmWeights ?? fp32Weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt4Scales", _int4GemmWeightScales ?? fp32Weights);
+            cmd.SetComputeIntParam(_cs, "_UseInt4GemmWeights", _int4GemmWeights != null ? 1 : 0);
             cmd.SetComputeIntParam(_cs, "_UseInt8Activations", _useInt8Activations ? 1 : 0);
             cmd.SetComputeFloatParam(_cs, "_Int8ActivationScale", _int8ActivationScale);
             cmd.SetComputeIntParam(_cs, "_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
@@ -4228,6 +4254,9 @@ namespace NcnnCompute
             _cs.SetBuffer(kernel, "_ConvWInt8Packed", _int8ConvWeights ?? weights);
             _cs.SetBuffer(kernel, "_ConvWInt8Scales", _int8ConvWeightScales ?? weights);
             _cs.SetInt("_UseInt8ConvWeights", _int8ConvWeights != null ? 1 : 0);
+            _cs.SetBuffer(kernel, "_ConvWInt4Packed", _int4ConvWeights ?? weights);
+            _cs.SetBuffer(kernel, "_ConvWInt4Scales", _int4ConvWeightScales ?? weights);
+            _cs.SetInt("_UseInt4ConvWeights", _int4ConvWeights != null ? 1 : 0);
             _cs.SetInt("_UseInt8Activations", _useInt8Activations ? 1 : 0);
             _cs.SetFloat("_Int8ActivationScale", _int8ActivationScale);
             _cs.SetInt("_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
@@ -5084,6 +5113,9 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt8Packed", _int8ConvWeights ?? weights);
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt8Scales", _int8ConvWeightScales ?? weights);
             cmd.SetComputeIntParam(_cs, "_UseInt8ConvWeights", _int8ConvWeights != null ? 1 : 0);
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt4Packed", _int4ConvWeights ?? weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt4Scales", _int4ConvWeightScales ?? weights);
+            cmd.SetComputeIntParam(_cs, "_UseInt4ConvWeights", _int4ConvWeights != null ? 1 : 0);
             cmd.SetComputeIntParam(_cs, "_UseInt8Activations", _useInt8Activations ? 1 : 0);
             cmd.SetComputeFloatParam(_cs, "_Int8ActivationScale", _int8ActivationScale);
             cmd.SetComputeIntParam(_cs, "_Int8ActivationZeroPoint", _int8ActivationZeroPoint);

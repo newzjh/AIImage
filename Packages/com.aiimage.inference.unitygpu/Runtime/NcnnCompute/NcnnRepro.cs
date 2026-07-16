@@ -37,6 +37,12 @@ namespace NcnnCompute
             public ComputeBuffer scales;
         }
 
+        internal sealed class Int4WeightOnlyUpload
+        {
+            public ComputeBuffer packedWeights;
+            public ComputeBuffer scales;
+        }
+
         internal static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
         {
             "Mul_581",
@@ -280,6 +286,8 @@ namespace NcnnCompute
             public ComputeBuffer rawWeight;
             public ComputeBuffer rawWeightInt8Packed;
             public ComputeBuffer rawWeightInt8Scales;
+            public ComputeBuffer rawWeightInt4Packed;
+            public ComputeBuffer rawWeightInt4Scales;
             public ComputeBuffer rawBias;
 
             public void Dispose()
@@ -293,6 +301,8 @@ namespace NcnnCompute
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeight, "NcnnRepro.ConvPack.Dispose"); rawWeight?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeightInt8Packed, "NcnnRepro.ConvPack.Dispose"); rawWeightInt8Packed?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeightInt8Scales, "NcnnRepro.ConvPack.Dispose"); rawWeightInt8Scales?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeightInt4Packed, "NcnnRepro.ConvPack.Dispose"); rawWeightInt4Packed?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(rawWeightInt4Scales, "NcnnRepro.ConvPack.Dispose"); rawWeightInt4Scales?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(rawBias, "NcnnRepro.ConvPack.Dispose"); rawBias?.Dispose(); } catch { }
             }
         }
@@ -307,8 +317,10 @@ namespace NcnnCompute
             public ComputeBuffer wFp16;
             public ComputeBuffer wInt8Packed;
             public ComputeBuffer wInt8Scales;
+            public ComputeBuffer wInt4Packed;
+            public ComputeBuffer wInt4Scales;
             public ComputeBuffer b;
-            public ComputeBuffer TextureWeightBinding => w ?? wInt8Packed;
+            public ComputeBuffer TextureWeightBinding => w ?? wInt8Packed ?? wInt4Packed;
 
             public void Dispose()
             {
@@ -316,6 +328,8 @@ namespace NcnnCompute
                 try { NcnnGpuResourceTracker.ReleaseBuffer(wFp16, "NcnnRepro.InnerProductPack.Dispose"); wFp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(wInt8Packed, "NcnnRepro.InnerProductPack.Dispose"); wInt8Packed?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(wInt8Scales, "NcnnRepro.InnerProductPack.Dispose"); wInt8Scales?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(wInt4Packed, "NcnnRepro.InnerProductPack.Dispose"); wInt4Packed?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(wInt4Scales, "NcnnRepro.InnerProductPack.Dispose"); wInt4Scales?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(b, "NcnnRepro.InnerProductPack.Dispose"); b?.Dispose(); } catch { }
             }
         }
@@ -382,10 +396,12 @@ namespace NcnnCompute
             public ComputeBuffer bDataFp16;
             public ComputeBuffer bDataInt8Packed;
             public ComputeBuffer bDataInt8Scales;
+            public ComputeBuffer bDataInt4Packed;
+            public ComputeBuffer bDataInt4Scales;
             public ComputeBuffer cData;
             public float[] bDataCpu;
             public float[] cDataCpu;
-            public ComputeBuffer TextureWeightBinding => bData ?? bDataInt8Packed;
+            public ComputeBuffer TextureWeightBinding => bData ?? bDataInt8Packed ?? bDataInt4Packed;
 
             public void Dispose()
             {
@@ -393,6 +409,8 @@ namespace NcnnCompute
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataFp16, "NcnnRepro.GemmPack.Dispose"); bDataFp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Packed, "NcnnRepro.GemmPack.Dispose"); bDataInt8Packed?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Scales, "NcnnRepro.GemmPack.Dispose"); bDataInt8Scales?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt4Packed, "NcnnRepro.GemmPack.Dispose"); bDataInt4Packed?.Dispose(); } catch { }
+                try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt4Scales, "NcnnRepro.GemmPack.Dispose"); bDataInt4Scales?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(cData, "NcnnRepro.GemmPack.Dispose"); cData?.Dispose(); } catch { }
             }
         }
@@ -1345,6 +1363,8 @@ namespace NcnnCompute
         public NcnnPrecisionMode AppliedPrecisionMode { get; private set; } = NcnnPrecisionMode.Auto;
         public bool UsesFp16WeightStorage => ModelManifest?.precision?.weightDataType == TensorDataType.Float16;
         public bool UsesInt8WeightOnly => ModelManifest?.IsInt8WeightOnly == true;
+        public bool UsesInt4WeightOnly => ModelManifest?.IsInt4WeightOnly == true;
+        public bool UsesQuantizedWeightOnly => UsesInt8WeightOnly || UsesInt4WeightOnly;
         public bool UsesFp16ActivationStorage => ModelManifest?.precision?.activationDataType == TensorDataType.Float16;
         internal bool UsesFp16WeightsForCurrentLayer => UsesFp16WeightStorage;
         public bool UsesInt8WeightOnlyForLayer(NcnnParamModel.Layer layer)
@@ -1353,11 +1373,25 @@ namespace NcnnCompute
             if (ModelManifest?.quantization?.nodePlans != null && ModelManifest.quantization.nodePlans.Length > 0)
             {
                 return ModelManifest.TryGetQuantizedNodePlan(layer?.name, operatorName, out var plan)
-                    && plan.mode != QuantizedNodeMode.Float;
+                    && (plan.mode == QuantizedNodeMode.Int8WeightOnly || plan.mode == QuantizedNodeMode.Int8W8A8);
             }
             return ModelManifest?.UsesInt8WeightOnlyForOperator(operatorName) == true;
         }
         internal bool UsesInt8WeightsForLayer(NcnnParamModel.Layer layer) => UsesInt8WeightOnlyForLayer(layer);
+
+        public bool UsesInt4WeightOnlyForLayer(NcnnParamModel.Layer layer)
+        {
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            if (ModelManifest?.quantization?.nodePlans != null && ModelManifest.quantization.nodePlans.Length > 0)
+            {
+                return ModelManifest.TryGetQuantizedNodePlan(layer?.name, operatorName, out var plan)
+                    && plan.mode == QuantizedNodeMode.Int4WeightOnly;
+            }
+            return ModelManifest?.UsesInt4WeightOnlyForOperator(operatorName) == true;
+        }
+
+        internal bool UsesInt4WeightsForLayer(NcnnParamModel.Layer layer) => UsesInt4WeightOnlyForLayer(layer);
+        internal bool UsesQuantizedWeightsForLayer(NcnnParamModel.Layer layer) => UsesInt8WeightsForLayer(layer) || UsesInt4WeightsForLayer(layer);
 
         internal void ConfigureInt8ActivationQuantization(NcnnParamModel.Layer layer)
         {
@@ -1546,6 +1580,7 @@ namespace NcnnCompute
             bool debugOracleRelaxed)
         {
             var explicitInt8LayerNames = GetExplicitInt8WeightOnlyLayerNamesForPlan();
+            var explicitInt4LayerNames = GetExplicitInt4WeightOnlyLayerNamesForPlan();
             LastTextureExecutionPlan = NcnnTextureExecutionPlanner.Analyze(Model, new NcnnTextureExecutionPlanRequest
             {
                 modelName = LastLoadProfile?.modelMagic ?? string.Empty,
@@ -1558,6 +1593,10 @@ namespace NcnnCompute
                 int8WeightOnlyOperators = ModelManifest?.quantization?.quantizedOperators ?? Array.Empty<string>(),
                 int8WeightOnlyLayerNames = explicitInt8LayerNames,
                 int8WeightOnlyLayerSelectionExplicit = explicitInt8LayerNames != null,
+                int4WeightOnly = UsesInt4WeightOnly,
+                int4WeightOnlyOperators = ModelManifest?.quantization?.quantizedOperators ?? Array.Empty<string>(),
+                int4WeightOnlyLayerNames = explicitInt4LayerNames,
+                int4WeightOnlyLayerSelectionExplicit = explicitInt4LayerNames != null,
                 inputs = inputs.ToArray(),
                 nodeVerifier = VerifyStrictCommandBufferPack4Node
             });
@@ -1567,6 +1606,26 @@ namespace NcnnCompute
         private string[] GetExplicitInt8WeightOnlyLayerNamesForPlan()
         {
             if (!UsesInt8WeightOnly)
+                return null;
+            var quantization = ModelManifest?.quantization;
+            if (quantization == null)
+                return null;
+            if (quantization.quantizedOperators != null && quantization.quantizedOperators.Length > 0)
+                return null;
+            if (quantization.nodePlans == null || quantization.nodePlans.Length == 0)
+                return null;
+            return quantization.nodePlans
+                .Where(plan => plan != null
+                    && plan.mode != QuantizedNodeMode.Float
+                    && !string.IsNullOrWhiteSpace(plan.layerName))
+                .Select(plan => plan.layerName)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        private string[] GetExplicitInt4WeightOnlyLayerNamesForPlan()
+        {
+            if (!UsesInt4WeightOnly)
                 return null;
             var quantization = ModelManifest?.quantization;
             if (quantization == null)
@@ -1608,8 +1667,8 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node(fp16WeightReason);
             }
 
-            if (UsesInt8WeightOnlyForLayer(layer) && !TryVerifyInt8WeightOnlyStorage(layer, out var int8WeightReason))
-                return RejectStrictCommandBufferPack4Node(int8WeightReason);
+            if (UsesQuantizedWeightsForLayer(layer) && !TryVerifyQuantizedWeightOnlyStorage(layer, out var quantizedWeightReason))
+                return RejectStrictCommandBufferPack4Node(quantizedWeightReason);
 
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
             switch (operatorName)
@@ -1967,7 +2026,7 @@ namespace NcnnCompute
         private static bool TryValidateCommandBuffer2dConvProfile(ConvPack conv, out string reason)
         {
             reason = null;
-            if (conv == null || (conv.rawWeight == null && conv.rawWeightInt8Packed == null) || conv.rawBias == null)
+            if (conv == null || (conv.rawWeight == null && conv.rawWeightInt8Packed == null && conv.rawWeightInt4Packed == null) || conv.rawBias == null)
                 reason = "immutable scalar weights/bias are unavailable";
             else if (conv.inC <= 0 || conv.outC <= 0 || conv.group <= 0 || conv.inC % conv.group != 0 || conv.outC % conv.group != 0)
                 reason = "group must divide positive input/output channels";
@@ -2332,19 +2391,19 @@ namespace NcnnCompute
             return true;
         }
 
-        private bool TryVerifyInt8WeightOnlyStorage(NcnnParamModel.Layer layer, out string reason)
+        private bool TryVerifyQuantizedWeightOnlyStorage(NcnnParamModel.Layer layer, out string reason)
         {
             reason = null;
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            var usesInt4 = UsesInt4WeightOnlyForLayer(layer);
             if (string.Equals(operatorName, "Convolution", StringComparison.Ordinal)
                 || string.Equals(operatorName, "ConvolutionDepthWise", StringComparison.Ordinal))
             {
                 if (!_conv.TryGetValue(layer.name, out var conv)
-                    || conv.rawWeightInt8Packed == null
-                    || conv.rawWeightInt8Scales == null
+                    || (usesInt4 ? conv.rawWeightInt4Packed == null || conv.rawWeightInt4Scales == null : conv.rawWeightInt8Packed == null || conv.rawWeightInt8Scales == null)
                     || conv.rawBias == null)
                 {
-                    reason = "INT8 Conv requires immutable packed INT8 OIHW weights, per-output-channel scales, optional calibrated W8A8 activation quantization, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
+                    reason = (usesInt4 ? "INT4" : "INT8") + " Conv requires immutable packed " + (usesInt4 ? "INT4" : "INT8") + " OIHW weights, per-output-channel scales, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
                     return false;
                 }
                 return true;
@@ -2354,10 +2413,9 @@ namespace NcnnCompute
             {
                 if (!_gemm.TryGetValue(layer.name, out var gemm)
                     || !gemm.constantB
-                    || gemm.bDataInt8Packed == null
-                    || gemm.bDataInt8Scales == null)
+                    || (usesInt4 ? gemm.bDataInt4Packed == null || gemm.bDataInt4Scales == null : gemm.bDataInt8Packed == null || gemm.bDataInt8Scales == null))
                 {
-                    reason = "INT8 Gemm requires immutable packed INT8 constant-B weights, per-output-channel scales, and optional calibrated W8A8 activation quantization; FP32 weight or Buffer fallback is prohibited.";
+                    reason = (usesInt4 ? "INT4" : "INT8") + " Gemm requires immutable packed " + (usesInt4 ? "INT4" : "INT8") + " constant-B weights and per-output-channel scales; FP32 weight or Buffer fallback is prohibited.";
                     return false;
                 }
                 return true;
@@ -2366,11 +2424,10 @@ namespace NcnnCompute
             if (string.Equals(operatorName, "InnerProduct", StringComparison.Ordinal))
             {
                 if (!_innerProduct.TryGetValue(layer.name, out var innerProduct)
-                    || innerProduct.wInt8Packed == null
-                    || innerProduct.wInt8Scales == null
+                    || (usesInt4 ? innerProduct.wInt4Packed == null || innerProduct.wInt4Scales == null : innerProduct.wInt8Packed == null || innerProduct.wInt8Scales == null)
                     || innerProduct.b == null)
                 {
-                    reason = "INT8 InnerProduct requires immutable packed INT8 weights, per-output-channel scales, optional calibrated W8A8 activation quantization, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
+                    reason = (usesInt4 ? "INT4" : "INT8") + " InnerProduct requires immutable packed " + (usesInt4 ? "INT4" : "INT8") + " weights, per-output-channel scales, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
                     return false;
                 }
                 return true;
@@ -2390,7 +2447,7 @@ namespace NcnnCompute
                 || string.Equals(operatorName, "PReLU", StringComparison.Ordinal)
                 || string.Equals(operatorName, "Normalize", StringComparison.Ordinal))
             {
-                reason = "INT8 selective quantization has no verified packed-weight CommandBuffer kernel for " + operatorName + "; strict quant planning rejects an FP32 parameter or Buffer fallback.";
+                reason = "Selective quantization has no verified packed-weight CommandBuffer kernel for " + operatorName + "; strict quant planning rejects an FP32 parameter or Buffer fallback.";
                 return false;
             }
 
@@ -2814,7 +2871,7 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("The loaded InnerProduct weights or bias are unavailable.");
             }
             if (string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
-                && !UsesInt8WeightOnlyForLayer(layer)
+                && !UsesQuantizedWeightsForLayer(layer)
                 && innerProduct.wFp16 == null)
                 return RejectStrictCommandBufferPack4Node("FP16 InnerProduct requires a packed-half immutable weight upload.");
             if (input.w != innerProduct.inFeatures)
@@ -4630,14 +4687,16 @@ namespace NcnnCompute
                 // Legacy ForwardPack4 and layer-repro Cmd paths share immutable scalar
                 // OIHW uploads for group/tail-safe Pack4 convolution dispatch.
                 phaseSw.Restart();
-                if (UsesInt8WeightOnlyForLayer(layer))
+                if (UsesInt4WeightOnlyForLayer(layer))
+                    UploadInt4WeightOnlyConvWeights(pack, w, b, layer.name);
+                else if (UsesInt8WeightOnlyForLayer(layer))
                     UploadInt8WeightOnlyConvWeights(pack, w, b, layer.name);
                 else
                     UploadRawConvWeights(pack, w, b);
                 phaseSw.Stop();
                 uploadMs += phaseSw.ElapsedMilliseconds;
 
-                if (needGeneralTexturePack && !UsesInt8WeightOnlyForLayer(layer))
+                if (needGeneralTexturePack && !UsesQuantizedWeightsForLayer(layer))
                 {
                     phaseSw.Restart();
                     var w4 = PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
@@ -4671,7 +4730,7 @@ namespace NcnnCompute
                     phaseSw.Stop();
                     packMs += phaseSw.ElapsedMilliseconds;
                 }
-                else if (needDepthWiseTexturePack && !UsesInt8WeightOnlyForLayer(layer))
+                else if (needDepthWiseTexturePack && !UsesQuantizedWeightsForLayer(layer))
                 {
                     phaseSw.Restart();
                     var w4 = PackDepthWiseWeightsToP4KhKw(w, pack.outC, pack.kernelW, pack.kernelH, pack.outPacks);
@@ -4752,7 +4811,18 @@ namespace NcnnCompute
                 readMs += phaseSw.ElapsedMilliseconds;
 
                 phaseSw.Restart();
-                if (UsesInt8WeightOnlyForLayer(layer))
+                if (UsesInt4WeightOnlyForLayer(layer))
+                {
+                    var quantized = NewInt4WeightOnlyUpload(
+                        w,
+                        ip.outFeatures,
+                        ip.inFeatures,
+                        outputChannelsAreContiguous: true,
+                        "NcnnRepro.InnerProductInt4WeightOnly:" + layer.name);
+                    ip.wInt4Packed = quantized.packedWeights;
+                    ip.wInt4Scales = quantized.scales;
+                }
+                else if (UsesInt8WeightOnlyForLayer(layer))
                 {
                     var quantized = NewInt8WeightOnlyUpload(
                         w,
@@ -4831,7 +4901,18 @@ namespace NcnnCompute
                 readMs += phaseSw.ElapsedMilliseconds;
 
                 phaseSw.Restart();
-                if (UsesInt8WeightOnlyForLayer(layer))
+                if (UsesInt4WeightOnlyForLayer(layer))
+                {
+                    var quantized = NewInt4WeightOnlyUpload(
+                        gp.bDataCpu,
+                        gp.constantN,
+                        gp.constantK,
+                        outputChannelsAreContiguous: gp.transB,
+                        "NcnnRepro.GemmInt4WeightOnly:" + layer.name);
+                    gp.bDataInt4Packed = quantized.packedWeights;
+                    gp.bDataInt4Scales = quantized.scales;
+                }
+                else if (UsesInt8WeightOnlyForLayer(layer))
                 {
                     var quantized = NewInt8WeightOnlyUpload(
                         gp.bDataCpu,
@@ -7992,6 +8073,62 @@ namespace NcnnCompute
             return upload;
         }
 
+        // INT4 stores signed weights as eight two's-complement 4-bit values per uint.
+        // It is an immutable upload selected by INT4Selective manifests; activations
+        // and outputs remain texture-native Pack4 resources during inference.
+        internal static Int4WeightOnlyUpload NewInt4WeightOnlyUpload(
+            float[] data,
+            int outputChannels,
+            int valuesPerOutputChannel,
+            bool outputChannelsAreContiguous,
+            string label)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            if (outputChannels <= 0)
+                throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (valuesPerOutputChannel <= 0 || data.Length != outputChannels * valuesPerOutputChannel)
+                throw new ArgumentException("INT4 weight layout must contain exactly outputChannels * valuesPerOutputChannel values.", nameof(data));
+
+            var scales = new float[outputChannels];
+            var packed = new uint[Mathf.Max(1, (data.Length + 7) / 8)];
+            for (var outputChannel = 0; outputChannel < outputChannels; outputChannel++)
+            {
+                var maxAbs = 0f;
+                for (var valueIndex = 0; valueIndex < valuesPerOutputChannel; valueIndex++)
+                {
+                    var sourceIndex = outputChannelsAreContiguous
+                        ? outputChannel * valuesPerOutputChannel + valueIndex
+                        : valueIndex * outputChannels + outputChannel;
+                    maxAbs = Mathf.Max(maxAbs, Mathf.Abs(data[sourceIndex]));
+                }
+
+                var scale = maxAbs > 0f ? maxAbs / 7f : 1f;
+                scales[outputChannel] = scale;
+                for (var valueIndex = 0; valueIndex < valuesPerOutputChannel; valueIndex++)
+                {
+                    var sourceIndex = outputChannelsAreContiguous
+                        ? outputChannel * valuesPerOutputChannel + valueIndex
+                        : valueIndex * outputChannels + outputChannel;
+                    var quantized = Mathf.Clamp(Mathf.RoundToInt(data[sourceIndex] / scale), -7, 7);
+                    var packedIndex = sourceIndex >> 3;
+                    var bitOffset = (sourceIndex & 7) * 4;
+                    packed[packedIndex] |= ((uint)quantized & 0xfu) << bitOffset;
+                }
+            }
+
+            var upload = new Int4WeightOnlyUpload
+            {
+                packedWeights = new ComputeBuffer(packed.Length, sizeof(uint), ComputeBufferType.Structured),
+                scales = new ComputeBuffer(scales.Length, sizeof(float), ComputeBufferType.Structured)
+            };
+            NcnnGpuResourceTracker.RegisterBuffer(upload.packedWeights, packed.Length, sizeof(uint), (label ?? "NcnnRepro.Int4WeightOnly") + ".PackedInt4");
+            NcnnGpuResourceTracker.RegisterBuffer(upload.scales, scales.Length, sizeof(float), (label ?? "NcnnRepro.Int4WeightOnly") + ".PerOutputScale");
+            upload.packedWeights.SetData(packed);
+            upload.scales.SetData(scales);
+            return upload;
+        }
+
         private static uint PackHalf2(float x, float y)
         {
             return (uint)FloatToHalfBits(x) | ((uint)FloatToHalfBits(y) << 16);
@@ -10382,6 +10519,30 @@ namespace NcnnCompute
                 "NcnnRepro.ConvInt8WeightOnly:" + (layerName ?? string.Empty));
             pack.rawWeightInt8Packed = quantized.packedWeights;
             pack.rawWeightInt8Scales = quantized.scales;
+            pack.rawBias = new ComputeBuffer(bias.Length, sizeof(float), ComputeBufferType.Structured);
+            NcnnGpuResourceTracker.RegisterBuffer(pack.rawBias, bias.Length, sizeof(float), "NcnnRepro.ConvRawBias:" + (layerName ?? string.Empty));
+            pack.rawBias.SetData(bias);
+        }
+
+        internal static void UploadInt4WeightOnlyConvWeights(ConvPack pack, float[] weights, float[] bias, string layerName)
+        {
+            if (pack == null)
+                throw new ArgumentNullException(nameof(pack));
+            if (weights == null)
+                throw new ArgumentNullException(nameof(weights));
+            if (bias == null)
+                throw new ArgumentNullException(nameof(bias));
+            if (pack.outC <= 0 || weights.Length % pack.outC != 0)
+                throw new ArgumentException("Convolution INT4 weight data must be divisible by output channels.", nameof(weights));
+
+            var quantized = NewInt4WeightOnlyUpload(
+                weights,
+                pack.outC,
+                weights.Length / pack.outC,
+                outputChannelsAreContiguous: true,
+                "NcnnRepro.ConvInt4WeightOnly:" + (layerName ?? string.Empty));
+            pack.rawWeightInt4Packed = quantized.packedWeights;
+            pack.rawWeightInt4Scales = quantized.scales;
             pack.rawBias = new ComputeBuffer(bias.Length, sizeof(float), ComputeBufferType.Structured);
             NcnnGpuResourceTracker.RegisterBuffer(pack.rawBias, bias.Length, sizeof(float), "NcnnRepro.ConvRawBias:" + (layerName ?? string.Empty));
             pack.rawBias.SetData(bias);

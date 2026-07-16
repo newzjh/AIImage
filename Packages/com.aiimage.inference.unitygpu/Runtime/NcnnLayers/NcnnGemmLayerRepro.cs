@@ -67,7 +67,18 @@ namespace NcnnCompute
                                             readMs += phaseSw.ElapsedMilliseconds;
 
                                             phaseSw.Restart();
-                                            if (owner.UsesInt8WeightOnlyForLayer(layer))
+                                            if (owner.UsesInt4WeightOnlyForLayer(layer))
+                                            {
+                                                var quantized = NcnnRepro.NewInt4WeightOnlyUpload(
+                                                    gp.bDataCpu,
+                                                    gp.constantN,
+                                                    gp.constantK,
+                                                    outputChannelsAreContiguous: gp.transB,
+                                                    "NcnnRepro.GemmInt4WeightOnly:" + layer.name);
+                                                gp.bDataInt4Packed = quantized.packedWeights;
+                                                gp.bDataInt4Scales = quantized.scales;
+                                            }
+                                            else if (owner.UsesInt8WeightOnlyForLayer(layer))
                                             {
                                                 var quantized = NcnnRepro.NewInt8WeightOnlyUpload(
                                                     gp.bDataCpu,
@@ -212,11 +223,7 @@ namespace NcnnCompute
 
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
-            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._gemm.TryGetValue(layer.name, out var fp16Gemm) ? fp16Gemm.bDataFp16 : null);
-            owner.Ops.SetInt8GemmWeights(
-                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8Gemm) ? int8Gemm.bDataInt8Packed : null,
-                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8GemmScale) ? int8GemmScale.bDataInt8Scales : null);
-            owner.ConfigureInt8ActivationQuantization(layer);
+            ConfigureGemmWeightBindings(owner, layer);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -227,11 +234,7 @@ namespace NcnnCompute
 
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
-            owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._gemm.TryGetValue(layer.name, out var fp16Gemm) ? fp16Gemm.bDataFp16 : null);
-            owner.Ops.SetInt8GemmWeights(
-                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8Gemm) ? int8Gemm.bDataInt8Packed : null,
-                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8GemmScale) ? int8GemmScale.bDataInt8Scales : null);
-            owner.ConfigureInt8ActivationQuantization(layer);
+            ConfigureGemmWeightBindings(owner, layer);
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 
@@ -246,6 +249,22 @@ namespace NcnnCompute
                 + " | transA=" + (gp.transA ? "1" : "0")
                 + " | transB=" + (gp.transB ? "1" : "0")
                 + " | rejectedFallback=placeholder-or-buffer-materialization");
+        }
+
+        private static void ConfigureGemmWeightBindings(NcnnRepro owner, NcnnParamModel.Layer layer)
+        {
+            var hasPack = owner._gemm.TryGetValue(layer.name, out var pack);
+            var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
+            var useInt4WeightOnly = owner.UsesInt4WeightsForLayer(layer);
+            var useFp16Weights = owner.UsesFp16WeightStorage && !owner.UsesQuantizedWeightsForLayer(layer);
+            owner.Ops.SetFp16GemmWeights(useFp16Weights && hasPack ? pack.bDataFp16 : null);
+            owner.Ops.SetInt8GemmWeights(
+                useInt8WeightOnly && hasPack ? pack.bDataInt8Packed : null,
+                useInt8WeightOnly && hasPack ? pack.bDataInt8Scales : null);
+            owner.Ops.SetInt4GemmWeights(
+                useInt4WeightOnly && hasPack ? pack.bDataInt4Packed : null,
+                useInt4WeightOnly && hasPack ? pack.bDataInt4Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
         }
 
         private static bool TryExecuteCommandBufferTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)

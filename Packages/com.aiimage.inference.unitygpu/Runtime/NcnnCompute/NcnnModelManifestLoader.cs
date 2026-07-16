@@ -11,7 +11,8 @@ namespace NcnnCompute
         Auto = 0,
         FP32 = 1,
         FP16 = 2,
-        INT8Selective = 3
+        INT8Selective = 3,
+        INT4Selective = 4
     }
 
     [Serializable]
@@ -98,8 +99,9 @@ namespace NcnnCompute
                 },
                 // JsonUtility may materialize a nested serializable object even when the
                 // JSON omitted it. FP32/FP16 manifests therefore ignore that default
-                // object; only INT8 weights opt into the D2 quantization contract.
+                // object; only quantized weights opt into the D2 quantization contract.
                 quantization = weightDataType == TensorDataType.Int8
+                    || weightDataType == TensorDataType.Int4
                     ? ParseQuantization(document.quantization, source)
                     : null
             };
@@ -153,7 +155,8 @@ namespace NcnnCompute
             if (!TryResolveManifestFileName(modelId, effectiveMode, out var manifestFileName))
             {
                 if (effectiveMode == NcnnPrecisionMode.FP16
-                    || effectiveMode == NcnnPrecisionMode.INT8Selective)
+                    || effectiveMode == NcnnPrecisionMode.INT8Selective
+                    || effectiveMode == NcnnPrecisionMode.INT4Selective)
                 {
                     throw new InferenceContractException(
                         effectiveMode + " was requested but this runner has no verified model manifest"
@@ -178,7 +181,9 @@ namespace NcnnCompute
 
             if (manifest?.precision != null)
             {
-                return manifest.IsInt8WeightOnly
+                return manifest.IsInt4WeightOnly
+                    ? NcnnPrecisionMode.INT4Selective
+                    : manifest.IsInt8WeightOnly
                     ? NcnnPrecisionMode.INT8Selective
                     : manifest.precision.activationDataType == TensorDataType.Float16
                     && manifest.precision.weightDataType == TensorDataType.Float16
@@ -193,17 +198,17 @@ namespace NcnnCompute
         {
             manifestFileName = null;
             if (string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "clip-mobileclip-s0.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT4Selective ? "clip-mobileclip-s0.int4.model.json" : precisionMode == NcnnPrecisionMode.INT8Selective ? "clip-mobileclip-s0.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
             else if (string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "esrgan-realesrgan-x4plus.fp16.model.json" : "esrgan-realesrgan-x4plus.fp32.model.json";
             else if (string.Equals(modelId, "matting.ncnn", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "matting.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT4Selective ? "matting.int4.model.json" : precisionMode == NcnnPrecisionMode.INT8Selective ? "matting.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
             else if (string.Equals(modelId, "codeformer", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "codeformer.fp16.model.json" : "codeformer.fp32.model.json";
             else if (string.Equals(modelId, "gfpgan", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "gfpgan.fp16.model.json" : "gfpgan.fp32.model.json";
             else if (string.Equals(modelId, "yolo-seg", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "yolo-seg.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "yolo-seg.fp16.model.json" : null;
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT4Selective ? "yolo-seg.int4.model.json" : precisionMode == NcnnPrecisionMode.INT8Selective ? "yolo-seg.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "yolo-seg.fp16.model.json" : null;
             else if (string.Equals(modelId, "sd-inpainting", StringComparison.Ordinal)
                 && precisionMode == NcnnPrecisionMode.FP16)
                 manifestFileName = "sd-inpainting.fp16.model.json";
@@ -228,6 +233,9 @@ namespace NcnnCompute
             if (string.Equals(value, "INT8", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "Int8", StringComparison.OrdinalIgnoreCase))
                 return TensorDataType.Int8;
+            if (string.Equals(value, "INT4", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Int4", StringComparison.OrdinalIgnoreCase))
+                return TensorDataType.Int4;
             return ParseActivationType(value, field, source);
         }
 
@@ -236,10 +244,12 @@ namespace NcnnCompute
             if (document == null)
                 return null;
 
-            if (!string.Equals(document.weightScheme, "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC", StringComparison.OrdinalIgnoreCase))
+            var isInt8 = string.Equals(document.weightScheme, "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC", StringComparison.OrdinalIgnoreCase);
+            var isInt4 = string.Equals(document.weightScheme, "INT4_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC", StringComparison.OrdinalIgnoreCase);
+            if (!isInt8 && !isInt4)
             {
                 throw new InferenceContractException(
-                    "Model manifest quantization.weightScheme must be INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC: " + source);
+                    "Model manifest quantization.weightScheme must be INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC or INT4_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC: " + source);
             }
 
             return new ModelQuantizationContract
@@ -247,7 +257,9 @@ namespace NcnnCompute
                 quantizationVersion = document.quantizationVersion ?? string.Empty,
                 calibrationVersion = document.calibrationVersion ?? string.Empty,
                 calibrationMethod = document.calibrationMethod ?? string.Empty,
-                weightScheme = WeightQuantizationScheme.Int8WeightOnlyPerOutputChannelSymmetric,
+                weightScheme = isInt4
+                    ? WeightQuantizationScheme.Int4WeightOnlyPerOutputChannelSymmetric
+                    : WeightQuantizationScheme.Int8WeightOnlyPerOutputChannelSymmetric,
                 outputChannelAxis = document.outputChannelAxis,
                 symmetric = document.symmetric,
                 zeroPoint = document.zeroPoint,
@@ -287,6 +299,9 @@ namespace NcnnCompute
             if (string.Equals(value, "W8", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "WeightOnly", StringComparison.OrdinalIgnoreCase))
                 return QuantizedNodeMode.Int8WeightOnly;
+            if (string.Equals(value, "W4", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "INT4", StringComparison.OrdinalIgnoreCase))
+                return QuantizedNodeMode.Int4WeightOnly;
             if (string.Equals(value, "Float", StringComparison.OrdinalIgnoreCase))
                 return QuantizedNodeMode.Float;
             throw new InferenceContractException("Unsupported quantization node mode " + (value ?? string.Empty) + ": " + source);
