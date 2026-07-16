@@ -15,7 +15,7 @@ using UnityEngine.TestTools;
 [Serializable]
 public sealed class NcnnInt4RunnerComparisonReport
 {
-    public string reportVersion = "aiimage.int4-selective-runner-comparison/v1";
+    public string reportVersion = "aiimage.int4-selective-runner-comparison/v2";
     public string quantizationVersion = "aiimage.int4-selective/v1";
     public string executionBackend = "runner-texture-path";
     public string mattingInputPath;
@@ -44,6 +44,7 @@ public sealed class NcnnInt4RunnerComparisonCase
     public NcnnInt4RunnerQuantizationCoverage int4SelectiveCoverage;
     public NcnnInt4RunnerError fp16VsFp32;
     public NcnnInt4RunnerError int4SelectiveVsFp32;
+    public NcnnInt4RunnerClipDiagnostics clipDiagnostics;
     public float fp16CoverageDelta;
     public float int4SelectiveCoverageDelta;
     public float fp16CosineDistance;
@@ -107,6 +108,62 @@ public sealed class NcnnInt4RunnerError
     public float maxAbsoluteError;
     public float meanAbsoluteError;
     public float rootMeanSquareError;
+}
+
+[Serializable]
+public sealed class NcnnInt4RunnerClipDiagnostics
+{
+    public string scoreScale = "logit = normalized image/text dot product * 100, probability = softmax(logits)";
+    public NcnnInt4RunnerClipTopScore fp32Top1;
+    public NcnnInt4RunnerClipTopScore fp32Top2;
+    public NcnnInt4RunnerClipTopScore fp16Top1;
+    public NcnnInt4RunnerClipTopScore fp16Top2;
+    public NcnnInt4RunnerClipTopScore int4SelectiveTop1;
+    public NcnnInt4RunnerClipTopScore int4SelectiveTop2;
+    public float fp32Top1Top2LogitMargin;
+    public float fp16Top1Top2LogitMargin;
+    public float int4SelectiveTop1Top2LogitMargin;
+    public float fp32Top1Top2ProbabilityMargin;
+    public float fp16Top1Top2ProbabilityMargin;
+    public float int4SelectiveTop1Top2ProbabilityMargin;
+    public float fp16Top1LogitDeltaVsFp32;
+    public float int4SelectiveTop1LogitDeltaVsFp32;
+    public float fp16Top1ProbabilityDeltaVsFp32;
+    public float int4SelectiveTop1ProbabilityDeltaVsFp32;
+    public float fp16MeanAbsLogitDeltaVsFp32;
+    public float int4SelectiveMeanAbsLogitDeltaVsFp32;
+    public float fp16MaxAbsLogitDeltaVsFp32;
+    public float int4SelectiveMaxAbsLogitDeltaVsFp32;
+    public float fp16MeanAbsProbabilityDeltaVsFp32;
+    public float int4SelectiveMeanAbsProbabilityDeltaVsFp32;
+    public float fp16MaxAbsProbabilityDeltaVsFp32;
+    public float int4SelectiveMaxAbsProbabilityDeltaVsFp32;
+    public NcnnInt4RunnerClipScoreDelta[] labels;
+}
+
+[Serializable]
+public sealed class NcnnInt4RunnerClipTopScore
+{
+    public string label;
+    public float logit;
+    public float probability;
+}
+
+[Serializable]
+public sealed class NcnnInt4RunnerClipScoreDelta
+{
+    public string label;
+    public string prompt;
+    public float fp32Logit;
+    public float fp16Logit;
+    public float int4SelectiveLogit;
+    public float fp16LogitDeltaVsFp32;
+    public float int4SelectiveLogitDeltaVsFp32;
+    public float fp32Probability;
+    public float fp16Probability;
+    public float int4SelectiveProbability;
+    public float fp16ProbabilityDeltaVsFp32;
+    public float int4SelectiveProbabilityDeltaVsFp32;
 }
 
 public sealed class NcnnInt4RunnerComparisonTests
@@ -336,6 +393,7 @@ public sealed class NcnnInt4RunnerComparisonTests
                     "clip-mobileclip-s0.int4.model.json"),
                 fp16VsFp32 = CompareVector(fp32.result.imageEmbedding, fp16.result.imageEmbedding),
                 int4SelectiveVsFp32 = CompareVector(fp32.result.imageEmbedding, int4.result.imageEmbedding),
+                clipDiagnostics = CreateClipDiagnostics(fp32.result, fp16.result, int4.result),
                 fp16CosineDistance = fp16CosineDistance,
                 int4SelectiveCosineDistance = int4CosineDistance,
                 status = string.Equals(fp32.result.bestLabel, int4.result.bestLabel, StringComparison.Ordinal) ? "ok" : "best-label-delta"
@@ -746,6 +804,130 @@ public sealed class NcnnInt4RunnerComparisonTests
             meanAbsoluteError = expected.Length > 0 ? (float)(sumAbs / expected.Length) : 0f,
             rootMeanSquareError = expected.Length > 0 ? (float)Math.Sqrt(sumSq / expected.Length) : 0f
         };
+    }
+
+    private static NcnnInt4RunnerClipDiagnostics CreateClipDiagnostics(
+        ClipClassificationResult fp32,
+        ClipClassificationResult fp16,
+        ClipClassificationResult int4)
+    {
+        var labels = fp32.scores ?? Array.Empty<ClipLabelScore>();
+        var rows = new NcnnInt4RunnerClipScoreDelta[labels.Length];
+        double fp16AbsLogit = 0d;
+        double int4AbsLogit = 0d;
+        double fp16AbsProbability = 0d;
+        double int4AbsProbability = 0d;
+        var fp16MaxLogit = 0f;
+        var int4MaxLogit = 0f;
+        var fp16MaxProbability = 0f;
+        var int4MaxProbability = 0f;
+
+        for (var i = 0; i < labels.Length; i++)
+        {
+            var fp32Score = labels[i];
+            var fp16Score = FindClipScore(fp16.scores, fp32Score.label);
+            var int4Score = FindClipScore(int4.scores, fp32Score.label);
+            var fp16LogitDelta = fp16Score.similarity - fp32Score.similarity;
+            var int4LogitDelta = int4Score.similarity - fp32Score.similarity;
+            var fp16ProbabilityDelta = fp16Score.probability - fp32Score.probability;
+            var int4ProbabilityDelta = int4Score.probability - fp32Score.probability;
+
+            var fp16AbsLogitDelta = Mathf.Abs(fp16LogitDelta);
+            var int4AbsLogitDelta = Mathf.Abs(int4LogitDelta);
+            var fp16AbsProbabilityDelta = Mathf.Abs(fp16ProbabilityDelta);
+            var int4AbsProbabilityDelta = Mathf.Abs(int4ProbabilityDelta);
+            fp16AbsLogit += fp16AbsLogitDelta;
+            int4AbsLogit += int4AbsLogitDelta;
+            fp16AbsProbability += fp16AbsProbabilityDelta;
+            int4AbsProbability += int4AbsProbabilityDelta;
+            if (fp16AbsLogitDelta > fp16MaxLogit)
+                fp16MaxLogit = fp16AbsLogitDelta;
+            if (int4AbsLogitDelta > int4MaxLogit)
+                int4MaxLogit = int4AbsLogitDelta;
+            if (fp16AbsProbabilityDelta > fp16MaxProbability)
+                fp16MaxProbability = fp16AbsProbabilityDelta;
+            if (int4AbsProbabilityDelta > int4MaxProbability)
+                int4MaxProbability = int4AbsProbabilityDelta;
+
+            rows[i] = new NcnnInt4RunnerClipScoreDelta
+            {
+                label = fp32Score.label,
+                prompt = fp32Score.prompt,
+                fp32Logit = fp32Score.similarity,
+                fp16Logit = fp16Score.similarity,
+                int4SelectiveLogit = int4Score.similarity,
+                fp16LogitDeltaVsFp32 = fp16LogitDelta,
+                int4SelectiveLogitDeltaVsFp32 = int4LogitDelta,
+                fp32Probability = fp32Score.probability,
+                fp16Probability = fp16Score.probability,
+                int4SelectiveProbability = int4Score.probability,
+                fp16ProbabilityDeltaVsFp32 = fp16ProbabilityDelta,
+                int4SelectiveProbabilityDeltaVsFp32 = int4ProbabilityDelta
+            };
+        }
+
+        return new NcnnInt4RunnerClipDiagnostics
+        {
+            fp32Top1 = CreateClipTopScore(fp32.scores, 0),
+            fp32Top2 = CreateClipTopScore(fp32.scores, 1),
+            fp16Top1 = CreateClipTopScore(fp16.scores, 0),
+            fp16Top2 = CreateClipTopScore(fp16.scores, 1),
+            int4SelectiveTop1 = CreateClipTopScore(int4.scores, 0),
+            int4SelectiveTop2 = CreateClipTopScore(int4.scores, 1),
+            fp32Top1Top2LogitMargin = ClipTopMargin(fp32.scores, true),
+            fp16Top1Top2LogitMargin = ClipTopMargin(fp16.scores, true),
+            int4SelectiveTop1Top2LogitMargin = ClipTopMargin(int4.scores, true),
+            fp32Top1Top2ProbabilityMargin = ClipTopMargin(fp32.scores, false),
+            fp16Top1Top2ProbabilityMargin = ClipTopMargin(fp16.scores, false),
+            int4SelectiveTop1Top2ProbabilityMargin = ClipTopMargin(int4.scores, false),
+            fp16Top1LogitDeltaVsFp32 = FindClipScore(fp16.scores, fp32.bestLabel).similarity - FindClipScore(fp32.scores, fp32.bestLabel).similarity,
+            int4SelectiveTop1LogitDeltaVsFp32 = FindClipScore(int4.scores, fp32.bestLabel).similarity - FindClipScore(fp32.scores, fp32.bestLabel).similarity,
+            fp16Top1ProbabilityDeltaVsFp32 = FindClipScore(fp16.scores, fp32.bestLabel).probability - FindClipScore(fp32.scores, fp32.bestLabel).probability,
+            int4SelectiveTop1ProbabilityDeltaVsFp32 = FindClipScore(int4.scores, fp32.bestLabel).probability - FindClipScore(fp32.scores, fp32.bestLabel).probability,
+            fp16MeanAbsLogitDeltaVsFp32 = rows.Length > 0 ? (float)(fp16AbsLogit / rows.Length) : 0f,
+            int4SelectiveMeanAbsLogitDeltaVsFp32 = rows.Length > 0 ? (float)(int4AbsLogit / rows.Length) : 0f,
+            fp16MaxAbsLogitDeltaVsFp32 = fp16MaxLogit,
+            int4SelectiveMaxAbsLogitDeltaVsFp32 = int4MaxLogit,
+            fp16MeanAbsProbabilityDeltaVsFp32 = rows.Length > 0 ? (float)(fp16AbsProbability / rows.Length) : 0f,
+            int4SelectiveMeanAbsProbabilityDeltaVsFp32 = rows.Length > 0 ? (float)(int4AbsProbability / rows.Length) : 0f,
+            fp16MaxAbsProbabilityDeltaVsFp32 = fp16MaxProbability,
+            int4SelectiveMaxAbsProbabilityDeltaVsFp32 = int4MaxProbability,
+            labels = rows
+        };
+    }
+
+    private static ClipLabelScore FindClipScore(ClipLabelScore[] scores, string label)
+    {
+        if (scores != null)
+        {
+            for (var i = 0; i < scores.Length; i++)
+            {
+                if (string.Equals(scores[i].label, label, StringComparison.Ordinal))
+                    return scores[i];
+            }
+        }
+        return default;
+    }
+
+    private static NcnnInt4RunnerClipTopScore CreateClipTopScore(ClipLabelScore[] scores, int index)
+    {
+        if (scores == null || index < 0 || index >= scores.Length)
+            return null;
+        return new NcnnInt4RunnerClipTopScore
+        {
+            label = scores[index].label,
+            logit = scores[index].similarity,
+            probability = scores[index].probability
+        };
+    }
+
+    private static float ClipTopMargin(ClipLabelScore[] scores, bool logit)
+    {
+        if (scores == null || scores.Length < 2)
+            return 0f;
+        return logit
+            ? scores[0].similarity - scores[1].similarity
+            : scores[0].probability - scores[1].probability;
     }
 
     private static float TextureMeanChannel(Texture2D texture, int channel)
