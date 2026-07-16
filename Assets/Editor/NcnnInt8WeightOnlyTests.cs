@@ -1,0 +1,206 @@
+#if UNITY_EDITOR
+using System;
+using System.Collections.Generic;
+using System.IO;
+using AIImage.Inference.Core;
+using NcnnCompute;
+using NUnit.Framework;
+using UnityEngine;
+
+public sealed class NcnnInt8WeightOnlyTests
+{
+    [Test]
+    public void ManifestParser_AcceptsOnlyTheD2WeightOnlyContract()
+    {
+        var root = Path.GetDirectoryName(Application.dataPath);
+        var manifest = NcnnModelManifestLoader.LoadFromFile(Path.Combine(
+            root,
+            "Assets",
+            "StreamingAssets",
+            "InferenceManifests",
+            "clip-mobileclip-s0.int8wo.model.json"));
+
+        Assert.That(manifest.IsInt8WeightOnly, Is.True);
+        Assert.That(manifest.precision.activationDataType, Is.EqualTo(TensorDataType.Float16));
+        Assert.That(manifest.precision.weightDataType, Is.EqualTo(TensorDataType.Int8));
+        Assert.That(manifest.quantization.weightScheme, Is.EqualTo(WeightQuantizationScheme.Int8WeightOnlyPerOutputChannelSymmetric));
+        Assert.That(manifest.quantization.symmetric, Is.True);
+        Assert.That(manifest.quantization.zeroPoint, Is.Zero);
+        Assert.That(manifest.quantization.accumulationDataType, Is.EqualTo(TensorDataType.Float32));
+        Assert.That(manifest.quantization.activationQuantized, Is.False);
+        Assert.That(manifest.quantization.unquantizedWeightDataType, Is.EqualTo(TensorDataType.Float32));
+        Assert.That(manifest.UsesInt8WeightOnlyForOperator("InnerProduct"), Is.True);
+        Assert.That(manifest.UsesInt8WeightOnlyForOperator("LayerNorm"), Is.False);
+
+        const string fp32 = "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"fp32\",\"precision\":{\"activationDtype\":\"FP32\",\"weightDtype\":\"FP32\",\"sensitiveOutputDtype\":\"FP32\"}}";
+        var fp32Manifest = NcnnModelManifestLoader.LoadFromJson(fp32);
+        Assert.That(fp32Manifest.quantization, Is.Null);
+
+        const string w8a8 = "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"bad\",\"precision\":{\"activationDtype\":\"FP16\",\"weightDtype\":\"INT8\",\"sensitiveOutputDtype\":\"FP16\"},\"quantization\":{\"quantizationVersion\":\"v1\",\"calibrationVersion\":\"fixture\",\"calibrationMethod\":\"absmax\",\"weightScheme\":\"INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC\",\"outputChannelAxis\":0,\"symmetric\":true,\"zeroPoint\":0,\"accumulationDtype\":\"FP32\",\"activationQuantized\":true}}";
+        var error = Assert.Throws<InferenceContractException>(() => NcnnModelManifestLoader.LoadFromJson(w8a8));
+        Assert.That(error.Message, Does.Contain("W8A8"));
+    }
+
+    [Test]
+    public void WeightPacker_UsesPerOutputChannelSymmetricInt8WithoutFloatExpansion()
+    {
+        var source = new[] { -2f, -1f, 0f, 1f, 0.25f, -0.5f, 0.75f, -1f };
+        var upload = NcnnRepro.NewInt8WeightOnlyUpload(
+            source,
+            outputChannels: 2,
+            valuesPerOutputChannel: 4,
+            outputChannelsAreContiguous: true,
+            label: "NcnnInt8WeightOnlyTests");
+        try
+        {
+            var packed = new uint[2];
+            var scales = new float[2];
+            upload.packedWeights.GetData(packed);
+            upload.scales.GetData(scales);
+
+            Assert.That(scales[0], Is.EqualTo(2f / 127f).Within(1e-7f));
+            Assert.That(scales[1], Is.EqualTo(1f / 127f).Within(1e-7f));
+            Assert.That((byte)(packed[0] >> 0), Is.EqualTo(unchecked((byte)-127)));
+            Assert.That((byte)(packed[0] >> 8), Is.EqualTo(unchecked((byte)-64)));
+            Assert.That((byte)(packed[0] >> 16), Is.EqualTo(0));
+            Assert.That((byte)(packed[0] >> 24), Is.EqualTo(64));
+            Assert.That((byte)(packed[1] >> 0), Is.EqualTo(32));
+            Assert.That((byte)(packed[1] >> 8), Is.EqualTo(unchecked((byte)-64)));
+            Assert.That((byte)(packed[1] >> 16), Is.EqualTo(95));
+            Assert.That((byte)(packed[1] >> 24), Is.EqualTo(unchecked((byte)-127)));
+        }
+        finally
+        {
+            NcnnGpuResourceTracker.ReleaseBuffer(upload.packedWeights, "NcnnInt8WeightOnlyTests");
+            NcnnGpuResourceTracker.ReleaseBuffer(upload.scales, "NcnnInt8WeightOnlyTests");
+            upload.packedWeights.Dispose();
+            upload.scales.Dispose();
+        }
+    }
+
+    [Test]
+    public void CapabilityMatrix_AdvertisesOnlyD2WeightKernelOperators()
+    {
+        Assert.That(NcnnOperatorCapabilities.TryGet("Convolution", out var convolution), Is.True);
+        Assert.That(NcnnOperatorCapabilities.TryGet("Gemm", out var gemm), Is.True);
+        Assert.That(NcnnOperatorCapabilities.TryGet("InnerProduct", out var innerProduct), Is.True);
+        Assert.That(NcnnOperatorCapabilities.TryGet("LayerNorm", out var layerNorm), Is.True);
+
+        Assert.That(convolution.int8, Is.True);
+        Assert.That(gemm.int8, Is.True);
+        Assert.That(innerProduct.int8, Is.True);
+        Assert.That(layerNorm.int8, Is.False);
+    }
+
+    [Test]
+    public void StrictInt8Plan_RejectsWeightedOperatorWithoutD2KernelWithFullTensorDiagnostic()
+    {
+        var inputLayer = new NcnnParamModel.Layer
+        {
+            type = NcnnLayerTypes.Input,
+            typeName = "Input",
+            name = "in",
+            topNames = new[] { "input" }
+        };
+        var unsupportedLayer = new NcnnParamModel.Layer
+        {
+            type = NcnnLayerTypes.BatchNorm,
+            typeName = "BatchNorm",
+            name = "affine",
+            bottomNames = new[] { "input" },
+            topNames = new[] { "output" }
+        };
+        var model = new NcnnParamModel
+        {
+            layers = new List<NcnnParamModel.Layer> { inputLayer, unsupportedLayer }
+        };
+        var descriptor = new NcnnTexturePlanTensorDescriptor
+        {
+            blob = "input",
+            logicalShape = new[] { 3, 8, 4, 1, 4 },
+            storageShape = new[] { 1, 8, 4, 1, 1 },
+            layout = NcnnTexturePlanLayout.Packed4,
+            dtype = "FP16",
+            textureBacked = true
+        };
+
+        var exception = Assert.Throws<StrictTextureInferencePlanException>(() => NcnnTextureExecutionPlanner.Compile(
+            model,
+            new NcnnTextureExecutionPlanRequest
+            {
+                int8WeightOnly = true,
+                inputs = new[] { descriptor }
+            }));
+
+        Assert.That(exception.Diagnostics.Count, Is.EqualTo(1));
+        Assert.That(exception.Diagnostics[0].code, Is.EqualTo("missing-int8-weight-only-kernel"));
+        Assert.That(exception.Message, Does.Contain("layer=affine"));
+        Assert.That(exception.Message, Does.Contain("blob=input"));
+        Assert.That(exception.Message, Does.Contain("logical_shape=[3,8,4,1,4]"));
+        Assert.That(exception.Message, Does.Contain("storage_shape=[1,8,4,1,1]"));
+        Assert.That(exception.Message, Does.Contain("layout=Packed4"));
+        Assert.That(exception.Message, Does.Contain("dtype=FP16"));
+        Assert.That(exception.Message, Does.Contain("materialize-from-buffer"));
+    }
+
+    [Test]
+    public void SelectiveInt8Plan_DoesNotQuantizeUnselectedWeightedOperators()
+    {
+        var inputLayer = new NcnnParamModel.Layer
+        {
+            type = NcnnLayerTypes.Input,
+            typeName = "Input",
+            name = "in",
+            topNames = new[] { "input" }
+        };
+        var layerNorm = new NcnnParamModel.Layer
+        {
+            type = NcnnLayerTypes.LayerNorm,
+            typeName = "LayerNorm",
+            name = "float_norm",
+            bottomNames = new[] { "input" },
+            topNames = new[] { "output" }
+        };
+        var plan = NcnnTextureExecutionPlanner.Analyze(
+            new NcnnParamModel { layers = new List<NcnnParamModel.Layer> { inputLayer, layerNorm } },
+            new NcnnTextureExecutionPlanRequest
+            {
+                int8WeightOnly = true,
+                int8WeightOnlyOperators = new[] { "InnerProduct" },
+                inputs = new[]
+                {
+                    new NcnnTexturePlanTensorDescriptor
+                    {
+                        blob = "input",
+                        logicalShape = new[] { 3, 8, 4, 1, 4 },
+                        storageShape = new[] { 1, 8, 4, 1, 1 },
+                        layout = NcnnTexturePlanLayout.Packed4,
+                        dtype = "FP16",
+                        textureBacked = true
+                    }
+                }
+            });
+
+        Assert.That(plan.diagnostics, Has.None.Matches<NcnnTextureExecutionPlanDiagnostic>(diagnostic =>
+            diagnostic.code == "missing-int8-weight-only-kernel"));
+    }
+
+    [Test]
+    public void Int8Kernels_ReadPackedWeightsAndAccumulateIntoFloatTextures()
+    {
+        var root = Path.GetDirectoryName(Application.dataPath);
+        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Conv.hlsl"));
+        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl"));
+        var bindings = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnCompute.compute"));
+
+        Assert.That(conv, Does.Contain("NcnnReadRawConvWeight"));
+        Assert.That(conv, Does.Contain("_ConvWInt8Packed"));
+        Assert.That(gemm, Does.Contain("_MatBInt8Packed"));
+        Assert.That(gemm, Does.Contain("_MatBInt8Scales[col]"));
+        Assert.That(gemm, Does.Contain("float acc"));
+        Assert.That(bindings, Does.Contain("StructuredBuffer<uint> _ConvWInt8Packed"));
+        Assert.That(bindings, Does.Contain("StructuredBuffer<uint> _MatBInt8Packed"));
+        Assert.That(bindings, Does.Not.Contain("RWStructuredBuffer<float> _Int8ExpandedWeights"));
+    }
+}
+#endif

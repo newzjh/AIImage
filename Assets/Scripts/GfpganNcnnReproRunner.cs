@@ -933,7 +933,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         {
             // Preserve the verified pre-manifest FP32 contract. GFPGAN's FP16 path is
             // explicitly selected and remains manifest-backed.
-            _repro = precisionMode == NcnnPrecisionMode.FP16
+            _repro = precisionMode != NcnnPrecisionMode.Auto && precisionMode != NcnnPrecisionMode.FP32
                 ? NcnnInferenceSessionFactory.Create(_ops, "gfpgan", precisionMode)
                 : NcnnInferenceSessionFactory.Create(_ops);
             _appliedPrecisionMode = precisionMode;

@@ -1579,7 +1579,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         _encoderRepro.EnableGeneralTextureConvolution = true;
         _generatorRepro.EnableGeneralTextureConvolution = true;
-        var preserveLegacyFp32 = precisionMode != NcnnPrecisionMode.FP16;
+        var preserveLegacyFp32 = precisionMode == NcnnPrecisionMode.Auto || precisionMode == NcnnPrecisionMode.FP32;
         _encoderRepro.PreserveLegacyFp32Execution = preserveLegacyFp32;
         _generatorRepro.PreserveLegacyFp32Execution = preserveLegacyFp32;
         // The Pack4-linear attention specialization has a different physical layout from
@@ -1819,7 +1819,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             _ops = new NcnnOps();
         // Preserve the original FP32 session contract exactly.  The manifest-backed
         // session is an FP16 experiment and must not alter Auto/explicit FP32 results.
-        var useLegacyFp32Session = precisionMode != NcnnPrecisionMode.FP16;
+        var useLegacyFp32Session = precisionMode == NcnnPrecisionMode.Auto || precisionMode == NcnnPrecisionMode.FP32;
         if (_encoderRepro == null)
             _encoderRepro = useLegacyFp32Session
                 ? NcnnInferenceSessionFactory.Create(_ops)

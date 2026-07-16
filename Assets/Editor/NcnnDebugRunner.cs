@@ -25,6 +25,9 @@ public static class NcnnDebugRunner
         public string manifestPath;
         public string activationDtype;
         public string weightDtype;
+        public string quantizationVersion;
+        public string calibrationVersion;
+        public string[] quantizedOperators;
         public bool strictTexturePlan;
         public string status;
         public string error;
@@ -56,6 +59,7 @@ public static class NcnnDebugRunner
     private const string RealEsrganMaxElapsedMsEnvVar = "AIIMAGE_ESRGAN_MAX_ELAPSED_MS";
     private const string ClipInputDirEnvVar = "AIIMAGE_CLIP_INPUT_DIR";
     private const string ClipModelEnvVar = "AIIMAGE_CLIP_MODEL";
+    private const string ClipPrecisionEnvVar = "AIIMAGE_CLIP_PRECISION";
     private const string ClipEnableDumpEnvVar = "AIIMAGE_CLIP_ENABLE_DUMP";
     private const string ClipForceFullRtEnvVar = "AIIMAGE_CLIP_FORCE_FULL_RT";
     private const string ClipUseCommandBufferEnvVar = "AIIMAGE_CLIP_USE_COMMAND_BUFFER";
@@ -2278,6 +2282,10 @@ public static class NcnnDebugRunner
             return;
 
         var pack4OnlyGuard = ResolveBoolEnv(ClipPack4OnlyGuardEnvVar, false);
+        var configuredPrecision = ResolveStringEnv(ClipPrecisionEnvVar, "Auto");
+        if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+            throw new InvalidOperationException("Invalid " + ClipPrecisionEnvVar + ": " + configuredPrecision);
+        runner.precisionMode = precisionMode;
         runner.enableDebugDump = ResolveBoolEnv(ClipEnableDumpEnvVar, defaultEnableDebugDump);
         runner.forceFullRenderTexturePath = ResolveBoolEnv(ClipForceFullRtEnvVar, runner.forceFullRenderTexturePath)
             || pack4OnlyGuard;
@@ -3912,13 +3920,25 @@ public static class NcnnDebugRunner
         string taskMetricDetail)
     {
         var manifestPath = Environment.GetEnvironmentVariable(NcnnCompute.NcnnModelManifestLoader.ManifestEnvironmentVariable);
-        if (string.IsNullOrWhiteSpace(manifestPath))
-            manifestPath = ResolveD1DefaultManifestPath(runner);
         AIImage.Inference.Core.ModelManifest manifest = null;
         try
         {
             if (!string.IsNullOrWhiteSpace(manifestPath))
                 manifest = NcnnCompute.NcnnModelManifestLoader.LoadFromFile(manifestPath);
+            else if (string.Equals(runner, "clip", StringComparison.Ordinal))
+                manifest = NcnnCompute.NcnnModelManifestLoader.ResolveRunnerManifest(
+                    "mobileclip_s0_export",
+                    ResolveRunnerPrecision(ClipPrecisionEnvVar));
+            else if (string.Equals(runner, "matting", StringComparison.Ordinal))
+                manifest = NcnnCompute.NcnnModelManifestLoader.ResolveRunnerManifest(
+                    "matting.ncnn",
+                    ResolveRunnerPrecision(MattingPrecisionEnvVar));
+            else
+            {
+                manifestPath = ResolveD1DefaultManifestPath(runner);
+                if (!string.IsNullOrWhiteSpace(manifestPath))
+                    manifest = NcnnCompute.NcnnModelManifestLoader.LoadFromFile(manifestPath);
+            }
         }
         catch (Exception e)
         {
@@ -3933,6 +3953,9 @@ public static class NcnnDebugRunner
             manifestPath = manifestPath ?? string.Empty,
             activationDtype = manifest?.precision?.activationDataType.ToString() ?? string.Empty,
             weightDtype = manifest?.precision?.weightDataType.ToString() ?? string.Empty,
+            quantizationVersion = manifest?.quantization?.quantizationVersion ?? string.Empty,
+            calibrationVersion = manifest?.quantization?.calibrationVersion ?? string.Empty,
+            quantizedOperators = manifest?.quantization?.quantizedOperators ?? Array.Empty<string>(),
             strictTexturePlan = manifest?.precision?.requireStrictTexturePlan ?? false,
             status = string.IsNullOrWhiteSpace(error) ? "passed" : "failed",
             error = error ?? string.Empty,
@@ -3971,6 +3994,14 @@ public static class NcnnDebugRunner
 
         var path = Path.Combine(Application.streamingAssetsPath, "InferenceManifests", fileName);
         return File.Exists(path) ? path : null;
+    }
+
+    private static NcnnCompute.NcnnPrecisionMode ResolveRunnerPrecision(string environmentVariable)
+    {
+        var raw = ResolveStringEnv(environmentVariable, "Auto");
+        if (!Enum.TryParse(raw, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+            throw new InvalidOperationException("Invalid " + environmentVariable + ": " + raw);
+        return precisionMode;
     }
 
     private static void ComputeTextureDiff(Texture2D a, Texture2D b, out float meanAbsRgb, out int maxAbsRgb)

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "aiimage.model-manifest/v1",
+  "modelId": "matting.ncnn",
+  "precision": {
+    "activationDtype": "FP16",
+    "weightDtype": "INT8",
+    "sensitiveOutputDtype": "FP32",
+    "requireStrictTexturePlan": true
+  },
+  "quantization": {
+    "quantizationVersion": "aiimage.int8wo/v1",
+    "calibrationVersion": "matting-regression-v1",
+    "calibrationMethod": "weights-absmax-per-output-channel",
+    "weightScheme": "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC",
+    "outputChannelAxis": 0,
+    "symmetric": true,
+    "zeroPoint": 0,
+    "accumulationDtype": "FP32",
+    "activationQuantized": false,
+    "quantizedOperators": ["Convolution", "ConvolutionDepthWise"],
+    "unquantizedWeightDtype": "FP32"
+  }
+}
