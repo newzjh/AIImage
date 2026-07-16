@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Cysharp.Threading.Tasks;
+using AIImage.Inference.Core;
 using NcnnCompute;
 using Newtonsoft.Json;
 using UnityEngine;
@@ -148,6 +149,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public bool enableMhaParallelSoftmax = true;
     public bool enableMhaQkvFusion = true;
     public bool enableAttentionMatMulPack4Specializations = true;
+    // Diffusion error compounds across denoise steps. Keep the latent and condition sources
+    // (text encoder, VAE encoder, UNet) in FP32 when sampling uses FP16 weights; the final
+    // VAE decoder remains FP16 because it does not feed a later denoise step.
+    public bool useFp32DiffusionStateActivationsForFp16Sampling = true;
     public bool enableDebugDump = false;
     public bool enableStageTimings = false;
     public bool enableLayerRuntimeProfile = false;
@@ -1095,10 +1100,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
         ApplyEditorLowVramGuardIfNeeded();
         _ops ??= new NcnnOps();
-        _textRepro ??= CreateSession();
-        _unetRepro ??= CreateSession();
+        _textRepro ??= CreateSession(diffusionStatePrecisionGuard: true);
+        _unetRepro ??= CreateSession(diffusionStatePrecisionGuard: true);
         _vaeRepro ??= CreateSession();
-        _vaeEncoderRepro ??= CreateSession();
+        _vaeEncoderRepro ??= CreateSession(diffusionStatePrecisionGuard: true);
         _appliedPrecisionMode = precisionMode;
         _hasAppliedPrecisionMode = true;
     }
@@ -1355,7 +1360,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (_textRepro?.Model != null)
             return;
 
-        _textRepro ??= CreateSession();
+        _textRepro ??= CreateSession(diffusionStatePrecisionGuard: true);
         ApplyCommonOptions(_textRepro);
         ApplySpatialModelOptions(_textRepro);
         AttachDebugLog(_textRepro, "text_encoder");
@@ -1375,7 +1380,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
         }
 
-        _vaeEncoderRepro ??= CreateSession();
+        _vaeEncoderRepro ??= CreateSession(diffusionStatePrecisionGuard: true);
         ApplyCommonOptions(_vaeEncoderRepro);
         ApplySpatialModelOptions(_vaeEncoderRepro);
         _vaeEncoderRepro.TensorTextureFormat = encoderTensorTextureFormat;
@@ -1395,7 +1400,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return;
         }
 
-        _unetRepro ??= CreateSession();
+        _unetRepro ??= CreateSession(diffusionStatePrecisionGuard: true);
         ApplyCommonOptions(_unetRepro);
         ApplySpatialModelOptions(_unetRepro);
         AttachDebugLog(_unetRepro, "unet");
@@ -6164,9 +6169,41 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 #endif
     }
 
-    private NcnnRepro CreateSession()
+    private NcnnRepro CreateSession(bool diffusionStatePrecisionGuard = false)
     {
-        return NcnnInferenceSessionFactory.Create(_ops, "sd-inpainting", precisionMode);
+        if (!diffusionStatePrecisionGuard
+            || !useFp32DiffusionStateActivationsForFp16Sampling
+            || precisionMode != NcnnPrecisionMode.FP16)
+        {
+            return NcnnInferenceSessionFactory.Create(_ops, "sd-inpainting", precisionMode);
+        }
+
+        var sourceManifest = NcnnModelManifestLoader.ResolveRunnerManifest("sd-inpainting", precisionMode);
+        if (sourceManifest?.precision == null)
+            return NcnnInferenceSessionFactory.Create(_ops, "sd-inpainting", precisionMode);
+
+        var unetManifest = new ModelManifest
+        {
+            schemaVersion = sourceManifest.schemaVersion,
+            modelId = sourceManifest.modelId,
+            precision = new ModelPrecisionContract
+            {
+                activationDataType = TensorDataType.Float32,
+                weightDataType = sourceManifest.precision.weightDataType,
+                sensitiveOutputDataType = sourceManifest.precision.sensitiveOutputDataType,
+                requireStrictTexturePlan = sourceManifest.precision.requireStrictTexturePlan
+            }
+        };
+        var session = NcnnInferenceSessionFactory.Create(_ops, unetManifest);
+        session.SetAppliedPrecisionMode(precisionMode);
+        UnityEngine.Debug.Log(
+            "[NcnnPrecision] model=sd-inpainting-diffusion-state"
+            + " | requested=" + precisionMode
+            + " | applied=" + precisionMode
+            + " | activation=" + session.ResolveActivationTextureFormat(4)
+            + " | weights=" + unetManifest.precision.weightDataType
+            + " | reason=diffusion-state-stability");
+        return session;
     }
 
     private void DumpVaeEncoderStopBlobDebugSafe(RenderTexture inputPack4, string stopAfterTopName, string blobName, string pathStem)

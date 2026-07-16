@@ -107,6 +107,7 @@ public static class NcnnDebugRunner
     private const string SdNegativePromptEnvVar = "AIIMAGE_SD_NEGATIVE_PROMPT";
     private const string SdInitImageEnvVar = "AIIMAGE_SD_INIT_IMAGE";
     private const string SdMaskImageEnvVar = "AIIMAGE_SD_MASK_IMAGE";
+    private const string SdInpaintingPrecisionEnvVar = "AIIMAGE_SD_INPAINTING_PRECISION";
     private const string SdTensorFormatEnvVar = "AIIMAGE_SD_TENSOR_FORMAT";
     private const string SdDecoderTensorFormatEnvVar = "AIIMAGE_SD_DECODER_TENSOR_FORMAT";
     private const string SdEncoderTensorFormatEnvVar = "AIIMAGE_SD_ENCODER_TENSOR_FORMAT";
@@ -1846,6 +1847,10 @@ public static class NcnnDebugRunner
             var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             inpaintRunner.enableDebugDump = enableDump;
             inpaintRunner.ApplyPeopleRemovalPreset();
+            var configuredInpaintPrecision = ResolveStringEnv(SdInpaintingPrecisionEnvVar, "Auto");
+            if (!Enum.TryParse(configuredInpaintPrecision, true, out NcnnCompute.NcnnPrecisionMode inpaintPrecisionMode))
+                throw new InvalidOperationException("Invalid " + SdInpaintingPrecisionEnvVar + ": " + configuredInpaintPrecision);
+            inpaintRunner.precisionMode = inpaintPrecisionMode;
             inpaintRunner.useOfficialUnetCache = ResolveBoolEnv("AIIMAGE_SD_USE_OFFICIAL_UNET_CACHE", inpaintRunner.useOfficialUnetCache);
             inpaintRunner.tensorTextureFormat = ResolveRenderTextureFormatEnv(SdTensorFormatEnvVar, inpaintRunner.tensorTextureFormat);
             inpaintRunner.decoderTensorTextureFormat = ResolveRenderTextureFormatEnv(SdDecoderTensorFormatEnvVar, inpaintRunner.decoderTensorTextureFormat);
