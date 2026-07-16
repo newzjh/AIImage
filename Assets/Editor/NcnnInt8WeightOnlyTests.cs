@@ -31,7 +31,9 @@ public sealed class NcnnInt8WeightOnlyTests
         Assert.That(manifest.quantization.unquantizedWeightDataType, Is.EqualTo(TensorDataType.Float32));
         Assert.That(manifest.TryGetQuantizedNodePlan("gemm_0", "Gemm", out var manifestGemm), Is.True);
         Assert.That(manifestGemm.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));
-        Assert.That(manifest.UsesInt8WeightOnlyForOperator("InnerProduct"), Is.True);
+        Assert.That(manifest.TryGetQuantizedNodePlan("linear_87", "InnerProduct", out var manifestLinear), Is.True);
+        Assert.That(manifestLinear.mode, Is.EqualTo(QuantizedNodeMode.Int8WeightOnly));
+        Assert.That(manifest.UsesInt8WeightOnlyForOperator("InnerProduct"), Is.False);
         Assert.That(manifest.UsesInt8WeightOnlyForOperator("LayerNorm"), Is.False);
 
         const string fp32 = "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"fp32\",\"precision\":{\"activationDtype\":\"FP32\",\"weightDtype\":\"FP32\",\"sensitiveOutputDtype\":\"FP32\"}}";
@@ -193,6 +195,78 @@ public sealed class NcnnInt8WeightOnlyTests
     }
 
     [Test]
+    public void SelectiveInt8Plan_WithExplicitLayerNamesDoesNotQuantizeOtherWeightedLayers()
+    {
+        var inputLayer = new NcnnParamModel.Layer
+        {
+            type = NcnnLayerTypes.Input,
+            typeName = "Input",
+            name = "in",
+            topNames = new[] { "input" }
+        };
+        var batchNorm = new NcnnParamModel.Layer
+        {
+            type = NcnnLayerTypes.BatchNorm,
+            typeName = "BatchNorm",
+            name = "float_affine",
+            bottomNames = new[] { "input" },
+            topNames = new[] { "output" }
+        };
+        var plan = NcnnTextureExecutionPlanner.Analyze(
+            new NcnnParamModel { layers = new List<NcnnParamModel.Layer> { inputLayer, batchNorm } },
+            new NcnnTextureExecutionPlanRequest
+            {
+                int8WeightOnly = true,
+                int8WeightOnlyLayerSelectionExplicit = true,
+                int8WeightOnlyLayerNames = new[] { "selected_conv" },
+                inputs = new[]
+                {
+                    new NcnnTexturePlanTensorDescriptor
+                    {
+                        blob = "input",
+                        logicalShape = new[] { 3, 8, 4, 1, 4 },
+                        storageShape = new[] { 1, 8, 4, 1, 1 },
+                        layout = NcnnTexturePlanLayout.Packed4,
+                        dtype = "FP16",
+                        textureBacked = true
+                    }
+                }
+            });
+
+        Assert.That(plan.diagnostics, Has.None.Matches<NcnnTextureExecutionPlanDiagnostic>(diagnostic =>
+            diagnostic.code == "missing-int8-weight-only-kernel"));
+    }
+
+    [Test]
+    public void SelectiveInt8Manifest_DefaultsQuantizedOperatorsToW8ExceptFloatOverrides()
+    {
+        const string json = "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"selective\",\"precision\":{\"activationDtype\":\"FP16\",\"weightDtype\":\"INT8\",\"sensitiveOutputDtype\":\"FP16\"},\"quantization\":{\"quantizationVersion\":\"aiimage.int8-selective/v1\",\"calibrationVersion\":\"fixture\",\"calibrationMethod\":\"absmax\",\"weightScheme\":\"INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC\",\"outputChannelAxis\":0,\"symmetric\":true,\"zeroPoint\":0,\"accumulationDtype\":\"FP32\",\"activationQuantized\":true,\"quantizedOperators\":[\"Convolution\"],\"nodePlans\":[{\"layerName\":\"sensitive\",\"operatorName\":\"Convolution\",\"mode\":\"Float\",\"activationScale\":1.0,\"activationZeroPoint\":0},{\"layerName\":\"calibrated\",\"operatorName\":\"Convolution\",\"mode\":\"W8A8\",\"activationScale\":0.125,\"activationZeroPoint\":0}]}}";
+        var manifest = NcnnModelManifestLoader.LoadFromJson(json);
+
+        Assert.That(manifest.TryGetQuantizedNodePlan("unplanned", "Convolution", out var defaultPlan), Is.True);
+        Assert.That(defaultPlan.mode, Is.EqualTo(QuantizedNodeMode.Int8WeightOnly));
+        Assert.That(manifest.TryGetQuantizedNodePlan("sensitive", "Convolution", out var floatPlan), Is.False);
+        Assert.That(floatPlan.mode, Is.EqualTo(QuantizedNodeMode.Float));
+        Assert.That(manifest.TryGetQuantizedNodePlan("calibrated", "Convolution", out var w8a8Plan), Is.True);
+        Assert.That(w8a8Plan.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));
+        Assert.That(manifest.TryGetQuantizedNodePlan("norm", "LayerNorm", out var noPlan), Is.False);
+        Assert.That(noPlan, Is.Null);
+    }
+
+    [Test]
+    public void SelectiveInt8Manifest_WithEmptyOperatorsUsesExplicitNodePlansOnly()
+    {
+        const string json = "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"explicit\",\"precision\":{\"activationDtype\":\"FP16\",\"weightDtype\":\"INT8\",\"sensitiveOutputDtype\":\"FP16\"},\"quantization\":{\"quantizationVersion\":\"aiimage.int8-selective/v1\",\"calibrationVersion\":\"fixture\",\"calibrationMethod\":\"absmax\",\"weightScheme\":\"INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC\",\"outputChannelAxis\":0,\"symmetric\":true,\"zeroPoint\":0,\"accumulationDtype\":\"FP32\",\"activationQuantized\":true,\"quantizedOperators\":[],\"nodePlans\":[{\"layerName\":\"selected\",\"operatorName\":\"Convolution\",\"mode\":\"W8\",\"activationScale\":1.0,\"activationZeroPoint\":0}]}}";
+        var manifest = NcnnModelManifestLoader.LoadFromJson(json);
+
+        Assert.That(manifest.TryGetQuantizedNodePlan("selected", "Convolution", out var selected), Is.True);
+        Assert.That(selected.mode, Is.EqualTo(QuantizedNodeMode.Int8WeightOnly));
+        Assert.That(manifest.TryGetQuantizedNodePlan("unplanned", "Convolution", out var unplanned), Is.False);
+        Assert.That(unplanned, Is.Null);
+        Assert.That(manifest.UsesInt8WeightOnlyForOperator("Convolution"), Is.False);
+    }
+
+    [Test]
     public void ShippingSelectiveInt8Manifests_RecordRunnerNodePlans()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
@@ -210,6 +284,8 @@ public sealed class NcnnInt8WeightOnlyTests
         Assert.That(matting.TryGetQuantizedNodePlan("Conv_4", "Convolution", out var mattingConv4), Is.False);
         Assert.That(mattingConv4, Is.Not.Null);
         Assert.That(mattingConv4.mode, Is.EqualTo(QuantizedNodeMode.Float));
+        Assert.That(matting.TryGetQuantizedNodePlan("Conv_6", "Convolution", out var mattingConv6), Is.False);
+        Assert.That(mattingConv6, Is.Null);
         Assert.That(matting.TryGetQuantizedNodePlan("Conv_236", "Convolution", out var mattingConv236), Is.True);
         Assert.That(mattingConv236.mode, Is.EqualTo(QuantizedNodeMode.Int8WeightOnly));
         Assert.That(yolo.TryGetQuantizedNodePlan("conv_0", "Convolution", out var yoloConv), Is.True);

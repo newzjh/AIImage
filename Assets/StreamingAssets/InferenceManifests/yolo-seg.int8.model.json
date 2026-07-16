@@ -16,7 +16,8 @@
     "nodePlans": [
       { "layerName": "conv_0", "operatorName": "Convolution", "mode": "W8A8", "activationScale": 0.0078125, "activationZeroPoint": 0 },
       { "layerName": "conv_1", "operatorName": "Convolution", "mode": "W8", "activationScale": 1.0, "activationZeroPoint": 0 },
-      { "layerName": "conv_2", "operatorName": "Convolution", "mode": "W8", "activationScale": 1.0, "activationZeroPoint": 0 }
+      { "layerName": "conv_2", "operatorName": "Convolution", "mode": "W8", "activationScale": 1.0, "activationZeroPoint": 0 },
+      { "layerName": "conv_74", "operatorName": "Convolution", "mode": "Float", "activationScale": 1.0, "activationZeroPoint": 0 }
     ],
     "unquantizedWeightDtype": "FP32"
   }

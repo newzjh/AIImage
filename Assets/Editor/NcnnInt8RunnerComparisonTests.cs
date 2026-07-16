@@ -39,6 +39,8 @@ public sealed class NcnnInt8RunnerComparisonCase
     public NcnnInt8RunnerGpuStats int8SelectiveGpuStats;
     public NcnnInt8RunnerPeakRtBufferComparison peakRtBufferComparison;
     public NcnnInt8RunnerPackageWeightComparison packageWeightComparison;
+    public NcnnInt8RunnerEffectiveWeightComparison effectiveWeightComparison;
+    public NcnnInt8RunnerQuantizationCoverage int8SelectiveCoverage;
     public NcnnInt8RunnerError fp16VsFp32;
     public NcnnInt8RunnerError int8SelectiveVsFp32;
     public float fp16CoverageDelta;
@@ -74,6 +76,28 @@ public sealed class NcnnInt8RunnerPackageWeightComparison
     public long fp32;
     public long fp16;
     public long int8Selective;
+}
+
+[Serializable]
+public sealed class NcnnInt8RunnerEffectiveWeightComparison
+{
+    public string measurement = "estimated layer weight bytes: FP32/FP16 dense weights vs selected INT8 packed weights plus per-output scales; unselected layers remain FP32";
+    public long fp32;
+    public long fp16;
+    public long int8Selective;
+}
+
+[Serializable]
+public sealed class NcnnInt8RunnerQuantizationCoverage
+{
+    public string manifest;
+    public int weightedLayerCount;
+    public int int8LayerCount;
+    public int floatOverrideLayerCount;
+    public int unselectedLayerCount;
+    public long totalWeightElements;
+    public long int8WeightElements;
+    public float int8WeightCoverage;
 }
 
 [Serializable]
@@ -119,8 +143,10 @@ public sealed class NcnnInt8RunnerComparisonTests
 
         Assert.That(report.cases[0].int8SelectiveVsFp32.meanAbsoluteError, Is.LessThanOrEqualTo(0.035f), "Matting INT8 matte MAE");
         Assert.That(report.cases[0].int8SelectiveVsFp32.rootMeanSquareError, Is.LessThanOrEqualTo(0.06f), "Matting INT8 matte RMSE");
+        Assert.That(report.cases[1].status, Is.EqualTo("ok"), "YOLO INT8 person count");
         Assert.That(report.cases[1].int8SelectiveVsFp32.meanAbsoluteError, Is.LessThanOrEqualTo(0.08f), "YOLO INT8 mask MAE");
         Assert.That(Mathf.Abs(report.cases[1].int8SelectiveCoverageDelta), Is.LessThanOrEqualTo(0.08f), "YOLO INT8 mask coverage delta");
+        Assert.That(report.cases[2].status, Is.EqualTo("ok"), "CLIP INT8 best label");
         Assert.That(report.cases[2].int8SelectiveVsFp32.meanAbsoluteError, Is.LessThanOrEqualTo(0.03f), "CLIP INT8 embedding MAE");
         Assert.That(report.cases[2].int8SelectiveCosineDistance, Is.LessThanOrEqualTo(0.02f), "CLIP INT8 embedding cosine distance");
     }
@@ -152,6 +178,12 @@ public sealed class NcnnInt8RunnerComparisonTests
                 int8SelectiveGpuStats = int8.stats,
                 peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int8.stats),
                 packageWeightComparison = CreateMattingPackageWeightComparison(),
+                effectiveWeightComparison = CreateEffectiveWeightComparison(
+                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Matting", "matting.param"),
+                    "matting.int8.model.json"),
+                int8SelectiveCoverage = CreateQuantizationCoverage(
+                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Matting", "matting.param"),
+                    "matting.int8.model.json"),
                 fp16VsFp32 = CompareTextureChannel(fp32.result.matte, fp16.result.matte, 0),
                 int8SelectiveVsFp32 = CompareTextureChannel(fp32.result.matte, int8.result.matte, 0),
                 fp16CoverageDelta = TextureMeanChannel(fp16.result.matte, 0) - TextureMeanChannel(fp32.result.matte, 0),
@@ -196,13 +228,18 @@ public sealed class NcnnInt8RunnerComparisonTests
                 int8SelectiveGpuStats = int8.stats,
                 peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int8.stats),
                 packageWeightComparison = CreateYoloPackageWeightComparison(),
+                effectiveWeightComparison = CreateEffectiveWeightComparison(
+                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.param"),
+                    "yolo-seg.int8.model.json"),
+                int8SelectiveCoverage = CreateQuantizationCoverage(
+                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.param"),
+                    "yolo-seg.int8.model.json"),
                 fp16VsFp32 = CompareTextureChannel(fp32.result.mask, fp16.result.mask, 0),
                 int8SelectiveVsFp32 = CompareTextureChannel(fp32.result.mask, int8.result.mask, 0),
                 fp16CoverageDelta = fp16.result.maskCoverage01 - fp32.result.maskCoverage01,
                 int8SelectiveCoverageDelta = int8.result.maskCoverage01 - fp32.result.maskCoverage01,
                 status = fp32.result.personCount == int8.result.personCount ? "ok" : "person-count-delta"
             };
-            Assert.That(int8.result.personCount, Is.EqualTo(fp32.result.personCount), "YOLO INT8 person count");
             return result;
         }
         finally
@@ -243,13 +280,18 @@ public sealed class NcnnInt8RunnerComparisonTests
                 int8SelectiveGpuStats = int8.stats,
                 peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int8.stats),
                 packageWeightComparison = CreateClipPackageWeightComparison(),
+                effectiveWeightComparison = CreateEffectiveWeightComparison(
+                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.param"),
+                    "clip-mobileclip-s0.int8.model.json"),
+                int8SelectiveCoverage = CreateQuantizationCoverage(
+                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.param"),
+                    "clip-mobileclip-s0.int8.model.json"),
                 fp16VsFp32 = CompareVector(fp32.result.imageEmbedding, fp16.result.imageEmbedding),
                 int8SelectiveVsFp32 = CompareVector(fp32.result.imageEmbedding, int8.result.imageEmbedding),
                 fp16CosineDistance = fp16CosineDistance,
                 int8SelectiveCosineDistance = int8CosineDistance,
                 status = string.Equals(fp32.result.bestLabel, int8.result.bestLabel, StringComparison.Ordinal) ? "ok" : "best-label-delta"
             };
-            Assert.That(int8.result.bestLabel, Is.EqualTo(fp32.result.bestLabel), "CLIP INT8 best label");
             return result;
         }
         finally
@@ -436,6 +478,145 @@ public sealed class NcnnInt8RunnerComparisonTests
                 total += new FileInfo(path).Length;
         }
         return total;
+    }
+
+    private static NcnnInt8RunnerEffectiveWeightComparison CreateEffectiveWeightComparison(
+        string paramPath,
+        string manifestFileName)
+    {
+        var manifestPath = ManifestPath(manifestFileName);
+        var manifest = NcnnModelManifestLoader.LoadFromFile(manifestPath);
+        long totalWeightElements = 0;
+        long int8SelectiveBytes = 0;
+
+        foreach (var line in File.ReadLines(paramPath))
+        {
+            if (!TryParseWeightedLayer(line, out var operatorName, out var layerName, out var weightElements, out var outputChannels))
+                continue;
+
+            totalWeightElements += weightElements;
+            if (manifest.TryGetQuantizedNodePlan(layerName, operatorName, out _))
+            {
+                int8SelectiveBytes += ((weightElements + 3) / 4) * sizeof(uint);
+                int8SelectiveBytes += Math.Max(1, outputChannels) * sizeof(float);
+            }
+            else
+            {
+                int8SelectiveBytes += weightElements * sizeof(float);
+            }
+        }
+
+        return new NcnnInt8RunnerEffectiveWeightComparison
+        {
+            fp32 = totalWeightElements * sizeof(float),
+            fp16 = totalWeightElements * sizeof(ushort),
+            int8Selective = int8SelectiveBytes
+        };
+    }
+
+    private static NcnnInt8RunnerQuantizationCoverage CreateQuantizationCoverage(
+        string paramPath,
+        string manifestFileName)
+    {
+        var manifestPath = ManifestPath(manifestFileName);
+        var manifest = NcnnModelManifestLoader.LoadFromFile(manifestPath);
+        var coverage = new NcnnInt8RunnerQuantizationCoverage
+        {
+            manifest = manifestFileName
+        };
+
+        foreach (var line in File.ReadLines(paramPath))
+        {
+            if (!TryParseWeightedLayer(line, out var operatorName, out var layerName, out var weightElements, out _))
+                continue;
+
+            coverage.weightedLayerCount++;
+            coverage.totalWeightElements += weightElements;
+            if (manifest.TryGetQuantizedNodePlan(layerName, operatorName, out var plan))
+            {
+                coverage.int8LayerCount++;
+                coverage.int8WeightElements += weightElements;
+            }
+            else if (plan != null && plan.mode == QuantizedNodeMode.Float)
+            {
+                coverage.floatOverrideLayerCount++;
+            }
+            else
+            {
+                coverage.unselectedLayerCount++;
+            }
+        }
+
+        coverage.int8WeightCoverage = coverage.totalWeightElements > 0
+            ? (float)((double)coverage.int8WeightElements / coverage.totalWeightElements)
+            : 0f;
+        return coverage;
+    }
+
+    private static bool TryParseWeightedLayer(
+        string line,
+        out string operatorName,
+        out string layerName,
+        out long weightElements,
+        out long outputChannels)
+    {
+        operatorName = null;
+        layerName = null;
+        weightElements = 0;
+        outputChannels = 0;
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        var tokens = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length < 2)
+            return false;
+
+        operatorName = tokens[0];
+        layerName = tokens[1];
+        var isWeighted =
+            string.Equals(operatorName, "Convolution", StringComparison.Ordinal)
+            || string.Equals(operatorName, "ConvolutionDepthWise", StringComparison.Ordinal)
+            || string.Equals(operatorName, "InnerProduct", StringComparison.Ordinal)
+            || string.Equals(operatorName, "Gemm", StringComparison.Ordinal);
+        if (!isWeighted)
+            return false;
+
+        var p0 = GetParamInt64(tokens, "0");
+        var p2 = GetParamInt64(tokens, "2");
+        var p6 = GetParamInt64(tokens, "6");
+        var p8 = GetParamInt64(tokens, "8");
+        var p9 = GetParamInt64(tokens, "9");
+        if (string.Equals(operatorName, "InnerProduct", StringComparison.Ordinal))
+        {
+            weightElements = p2;
+            outputChannels = p0;
+        }
+        else if (string.Equals(operatorName, "Gemm", StringComparison.Ordinal))
+        {
+            weightElements = p8 > 0 && p9 > 0 ? p8 * p9 : 0;
+            outputChannels = p8;
+        }
+        else
+        {
+            weightElements = p6;
+            outputChannels = p0;
+        }
+
+        return weightElements > 0;
+    }
+
+    private static long GetParamInt64(string[] tokens, string key)
+    {
+        var prefix = key + "=";
+        for (var i = 2; i < tokens.Length; i++)
+        {
+            if (!tokens[i].StartsWith(prefix, StringComparison.Ordinal))
+                continue;
+            if (long.TryParse(tokens[i].Substring(prefix.Length), out var value))
+                return value;
+            return 0;
+        }
+        return 0;
     }
 
     private static IEnumerator WaitForTask(Task task)
