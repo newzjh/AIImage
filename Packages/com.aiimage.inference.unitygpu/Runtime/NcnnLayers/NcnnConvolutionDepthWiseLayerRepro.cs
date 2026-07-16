@@ -257,7 +257,33 @@ namespace NcnnCompute
             var outHTex = NcnnRepro.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
             var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
 
-            if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution)
+            var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
+            owner.Ops.SetInt8ConvWeights(
+                useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
+                useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
+            if (useInt8WeightOnly)
+            {
+                owner.Ops.Conv2dGroupPack4(
+                    src.texture,
+                    conv.rawWeightInt8Packed,
+                    conv.rawBias,
+                    conv.inC,
+                    conv.outC,
+                    conv.group,
+                    conv.kernelW,
+                    conv.kernelH,
+                    conv.strideW,
+                    conv.strideH,
+                    conv.padLeft,
+                    conv.padTop,
+                    conv.dilationW,
+                    conv.dilationH,
+                    conv.activationType,
+                    conv.activationSlope,
+                    outRt);
+            }
+            else if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution)
             {
                 if (src.width != outWTex || src.height != outHTex)
                     throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
@@ -329,6 +355,7 @@ namespace NcnnCompute
                 owner.Ops.SetInt8ConvWeights(
                     useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
                     useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+                owner.ConfigureInt8ActivationQuantization(layer);
                 if (useInt8WeightOnly)
                 {
                     owner.Ops.Conv2dGroupPack4(
@@ -380,9 +407,11 @@ namespace NcnnCompute
                                             && SupportsDepthWiseTexturePath(conv)
                                             && conv.packedDepthWiseWeight4 != null
                                             && conv.packedBias4 != null;
+            var canUseInt8TexturePath = owner.UsesInt8WeightsForLayer(layer)
+                                        && SupportsCommandBufferPack4(conv, out _);
 
             var forceBufferThisConv = owner.ForceBufferConvolutionAll
-                                      || (conv.useBufferPath && !canUseDepthWiseTexturePath)
+                                      || (conv.useBufferPath && !canUseDepthWiseTexturePath && !canUseInt8TexturePath)
                                       || (conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
 
             if (forceBufferThisConv)

@@ -37,13 +37,45 @@ namespace AIImage.Inference.Core
         Int32 = 5
     }
 
-    // D2 intentionally exposes one narrowly-scoped quantized storage contract.  It is
-    // not an activation quantization API: activations and intermediate tensors remain
-    // Float16/Float32 Pack4 textures while only immutable weights are stored as INT8.
+    // D2 exposes one narrowly-scoped quantized weight storage contract. Selective
+    // nodePlans may additionally request calibrated W8A8 math for specific layers;
+    // intermediate tensors remain Float16/Float32 Pack4 textures.
     public enum WeightQuantizationScheme
     {
         None = 0,
         Int8WeightOnlyPerOutputChannelSymmetric = 1
+    }
+
+    public enum QuantizedNodeMode
+    {
+        Float = 0,
+        Int8WeightOnly = 1,
+        Int8W8A8 = 2
+    }
+
+    [Serializable]
+    public sealed class QuantizedNodePlan
+    {
+        public string layerName = string.Empty;
+        public string operatorName = string.Empty;
+        public QuantizedNodeMode mode = QuantizedNodeMode.Float;
+        public float activationScale = 1f;
+        public int activationZeroPoint;
+
+        public void Validate()
+        {
+            if (mode == QuantizedNodeMode.Float)
+                return;
+            if (string.IsNullOrWhiteSpace(layerName))
+                throw new InferenceContractException("Quantized node plans require layerName.");
+            if (mode == QuantizedNodeMode.Int8W8A8
+                && (activationScale <= 0f || float.IsNaN(activationScale) || float.IsInfinity(activationScale)))
+            {
+                throw new InferenceContractException("W8A8 node " + layerName + " requires a finite positive activationScale.");
+            }
+            if (activationZeroPoint < -128 || activationZeroPoint > 127)
+                throw new InferenceContractException("Quantized node " + layerName + " activationZeroPoint must fit INT8.");
+        }
     }
 
     // Precision is a model contract, rather than a renderer-wide switch.  The public
@@ -96,9 +128,11 @@ namespace AIImage.Inference.Core
         public int zeroPoint = 0;
         public TensorDataType accumulationDataType = TensorDataType.Float32;
         public bool activationQuantized;
+        public QuantizedNodePlan[] nodePlans = Array.Empty<QuantizedNodePlan>();
         // D2 permits a model to quantize only the nodes for which a packed texture
-        // kernel exists.  An empty list preserves the v1 all-weight legacy behavior
-        // (and therefore its strict rejection of every unsupported weighted op).
+        // kernel and, when requested, calibrated W8A8 activation scale exist. An
+        // empty list preserves the v1 all-weight legacy behavior (and therefore its
+        // strict rejection of every unsupported weighted op).
         public string[] quantizedOperators = Array.Empty<string>();
         public TensorDataType unquantizedWeightDataType = TensorDataType.Float32;
 
@@ -120,8 +154,8 @@ namespace AIImage.Inference.Core
                 throw new InferenceContractException("INT8 weight-only quantization is symmetric with zeroPoint=0.");
             if (accumulationDataType != TensorDataType.Float32)
                 throw new InferenceContractException("INT8 weight-only kernels require Float32 accumulation.");
-            if (activationQuantized)
-                throw new InferenceContractException("INT8 weight-only does not quantize activations; W8A8 is not supported by this contract.");
+            if (activationQuantized && (nodePlans == null || nodePlans.Length == 0))
+                throw new InferenceContractException("Activation quantization requires explicit calibrated nodePlans.");
             if (unquantizedWeightDataType != TensorDataType.Float16
                 && unquantizedWeightDataType != TensorDataType.Float32)
             {
@@ -134,6 +168,17 @@ namespace AIImage.Inference.Core
                     if (string.IsNullOrWhiteSpace(quantizedOperators[index]))
                         throw new InferenceContractException("INT8 weight-only quantizedOperators cannot contain an empty operator name.");
                 }
+            }
+            var plannedLayers = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var plan in nodePlans ?? Array.Empty<QuantizedNodePlan>())
+            {
+                if (plan == null)
+                    throw new InferenceContractException("Quantization nodePlans cannot contain null.");
+                plan.Validate();
+                if (plan.mode != QuantizedNodeMode.Float && !plannedLayers.Add(plan.layerName))
+                    throw new InferenceContractException("Quantization nodePlans contain duplicate layer " + plan.layerName + ".");
+                if (plan.mode == QuantizedNodeMode.Int8W8A8 && !activationQuantized)
+                    throw new InferenceContractException("W8A8 node " + plan.layerName + " requires activationQuantized=true.");
             }
         }
 
@@ -151,6 +196,25 @@ namespace AIImage.Inference.Core
                 if (string.Equals(quantizedOperators[index], operatorName, StringComparison.Ordinal))
                     return true;
             }
+            return false;
+        }
+
+        public bool TryGetNodePlan(string layerName, string operatorName, out QuantizedNodePlan plan)
+        {
+            foreach (var candidate in nodePlans ?? Array.Empty<QuantizedNodePlan>())
+            {
+                if (candidate != null && string.Equals(candidate.layerName, layerName, StringComparison.Ordinal))
+                {
+                    if (!string.IsNullOrWhiteSpace(candidate.operatorName)
+                        && !string.Equals(candidate.operatorName, operatorName, StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+                    plan = candidate;
+                    return candidate.mode != QuantizedNodeMode.Float;
+                }
+            }
+            plan = null;
             return false;
         }
     }
@@ -210,6 +274,12 @@ namespace AIImage.Inference.Core
         public bool UsesInt8WeightOnlyForOperator(string operatorName)
         {
             return IsInt8WeightOnly && quantization.QuantizesOperator(operatorName);
+        }
+
+        public bool TryGetQuantizedNodePlan(string layerName, string operatorName, out QuantizedNodePlan plan)
+        {
+            plan = null;
+            return IsInt8WeightOnly && quantization != null && quantization.TryGetNodePlan(layerName, operatorName, out plan);
         }
     }
 

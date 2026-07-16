@@ -579,6 +579,25 @@ float4 NcnnGemm2DReadB4(int baseCol, int kk)
     return b;
 }
 
+float NcnnQuantizeGemmActivationForInt8(float value)
+{
+    if (_UseInt8Activations == 0)
+        return value;
+    int quantized = clamp((int)round(value / _Int8ActivationScale) + _Int8ActivationZeroPoint, -128, 127);
+    return (float)(quantized - _Int8ActivationZeroPoint) * _Int8ActivationScale;
+}
+
+float4 NcnnQuantizeGemmActivationForInt8(float4 value)
+{
+    if (_UseInt8Activations == 0)
+        return value;
+    return float4(
+        NcnnQuantizeGemmActivationForInt8(value.x),
+        NcnnQuantizeGemmActivationForInt8(value.y),
+        NcnnQuantizeGemmActivationForInt8(value.z),
+        NcnnQuantizeGemmActivationForInt8(value.w));
+}
+
 float4 NcnnResolveGemm2DBias4(int row, int baseCol)
 {
     float4 bias = 0.0;
@@ -599,6 +618,7 @@ float NcnnGemm2DTextureAValue(int row, int col)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _GemmTexAInArr[int3(kk, row, 0)].x;
 
+        a = NcnnQuantizeGemmActivationForInt8(a);
         acc += a * NcnnGemm2DReadB(col, kk);
     }
 
@@ -615,6 +635,7 @@ float NcnnGemm2DLinearTextureAValue(int row, int col)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _LinearIn0[int2(kk, row)];
 
+        a = NcnnQuantizeGemmActivationForInt8(a);
         acc += a * NcnnGemm2DReadB(col, kk);
     }
 
@@ -627,20 +648,20 @@ float NcnnGemm2DPack4LinearTextureARead(int row, int kk)
         return 0.0;
 
     if (_GemmTexAInW == _MatK)
-        return _LinearIn0[int2(kk, row)];
+        return NcnnQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
 
     int packX = kk >> 2;
     if (packX < 0 || packX >= _GemmTexAInW)
         return 0.0;
 
-    return NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3);
+    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3));
 }
 
 float NcnnGemm2DPack4LinearTextureAReadLinear(int row, int kk)
 {
     if (kk < 0 || kk >= _MatK || kk >= _GemmTexAInW || row < 0 || row >= _GemmTexAInH)
         return 0.0;
-    return _LinearIn0[int2(kk, row)];
+    return NcnnQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
 }
 
 float NcnnGemm2DPack4LinearTextureAReadPack4(int row, int kk)
@@ -652,7 +673,7 @@ float NcnnGemm2DPack4LinearTextureAReadPack4(int row, int kk)
     if (packX < 0 || packX >= _GemmTexAInW)
         return 0.0;
 
-    return NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3);
+    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3));
 }
 
 void NcnnGemm2DTextureA_Impl(uint3 id)
@@ -696,6 +717,7 @@ void NcnnGemm2DTextureA_Impl(uint3 id)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _GemmTexAInArr[int3(kk, row, 0)].x;
 
+        a = NcnnQuantizeGemmActivationForInt8(a);
         if (valid0) acc0 += a * NcnnGemm2DReadB(baseCol, kk);
         if (valid1) acc1 += a * NcnnGemm2DReadB(baseCol + 1, kk);
         if (valid2) acc2 += a * NcnnGemm2DReadB(baseCol + 2, kk);
@@ -746,6 +768,7 @@ void NcnnGemm2DLinearTextureA_Impl(uint3 id)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _LinearIn0[int2(kk, row)];
 
+        a = NcnnQuantizeGemmActivationForInt8(a);
         if (valid0) acc0 += a * NcnnGemm2DReadB(baseCol, kk);
         if (valid1) acc1 += a * NcnnGemm2DReadB(baseCol + 1, kk);
         if (valid2) acc2 += a * NcnnGemm2DReadB(baseCol + 2, kk);
@@ -853,7 +876,7 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
     for (int packX = 0; packX < _GemmTexAInW; packX++)
     {
         int kkBase = packX << 2;
-        float4 a = _GemmTexAInArr[int3(packX, row, 0)];
+        float4 a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)]);
         if (kkBase + 3 < _MatK)
         {
             acc0 += a.x * NcnnGemm2DReadB4(baseCol0, kkBase);
@@ -922,6 +945,7 @@ void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
             float a = 0.0;
             if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
                 a = _LinearIn0[int2(kk, row)];
+            a = NcnnQuantizeGemmActivationForInt8(a);
             acc += a * NcnnGemm2DReadB(col, kk);
         }
 
@@ -963,7 +987,7 @@ void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id)
         for (int kk = 0; kk < _MatK; kk++)
         {
             int packX = kk >> 2;
-            float a = _GemmTexAInArr[int3(packX, row, 0)][kk & 3];
+            float a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)][kk & 3]);
             acc += a * NcnnGemm2DReadB(col, kk);
         }
 
@@ -1007,6 +1031,7 @@ void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id)
             float a = 0.0;
             if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
                 a = _GemmTexAInArr[int3(kk, row, 0)].x;
+            a = NcnnQuantizeGemmActivationForInt8(a);
             acc += a * NcnnGemm2DReadB(col, kk);
         }
 
@@ -1035,7 +1060,7 @@ void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id)
     {
         int head = kk / headDim;
         int dim = kk - head * headDim;
-        float a = NcnnReadPack4Channel(_GemmTexAInArr, dim, row, head);
+        float a = NcnnQuantizeGemmActivationForInt8(NcnnReadPack4Channel(_GemmTexAInArr, dim, row, head));
         acc += a * NcnnGemm2DReadB(col, kk);
     }
 
@@ -1073,7 +1098,7 @@ void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
             if (kk >= _MatK)
                 break;
 
-            float a = NcnnReadPack4Channel(_GemmTexAInArr, dim, row, head);
+            float a = NcnnQuantizeGemmActivationForInt8(NcnnReadPack4Channel(_GemmTexAInArr, dim, row, head));
             acc0 += a * NcnnGemm2DReadB4(baseCol0, kk);
             if (writeSecondPack)
                 acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);

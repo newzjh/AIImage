@@ -216,6 +216,7 @@ namespace NcnnCompute
             owner.Ops.SetInt8GemmWeights(
                 owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8Gemm) ? int8Gemm.bDataInt8Packed : null,
                 owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8GemmScale) ? int8GemmScale.bDataInt8Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -230,6 +231,7 @@ namespace NcnnCompute
             owner.Ops.SetInt8GemmWeights(
                 owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8Gemm) ? int8Gemm.bDataInt8Packed : null,
                 owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8GemmScale) ? int8GemmScale.bDataInt8Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 

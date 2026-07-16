@@ -714,6 +714,7 @@ namespace NcnnCompute
                     if (runtimeProfile == null)
                     {
                         SetCurrentExecutingLayer(layer);
+                        ResetInt8ActivationQuantization();
                         try
                         {
                             layerRepro.ExecuteBuffer(this, layer, context);
@@ -732,6 +733,7 @@ namespace NcnnCompute
                         }
                         finally
                         {
+                            ResetInt8ActivationQuantization();
                             ClearCurrentExecutingLayer();
                         }
                         layerOutputPath = DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs);
@@ -754,6 +756,7 @@ namespace NcnnCompute
 
                     var layerSw = Stopwatch.StartNew();
                     SetCurrentExecutingLayer(layer);
+                    ResetInt8ActivationQuantization();
                     try
                     {
                         layerRepro.ExecuteBuffer(this, layer, context);
@@ -772,6 +775,7 @@ namespace NcnnCompute
                     }
                     finally
                     {
+                        ResetInt8ActivationQuantization();
                         ClearCurrentExecutingLayer();
                     }
                     if (LayerRuntimeProfileSyncGpu)
@@ -890,12 +894,14 @@ namespace NcnnCompute
                     if (runtimeProfile == null)
                     {
                         SetCurrentExecutingLayer(layer);
+                        ResetInt8ActivationQuantization();
                         try
                         {
                             layerRepro.ExecuteCommandBuffer(this, layer, context);
                         }
                         finally
                         {
+                            ResetInt8ActivationQuantization();
                             ClearCurrentExecutingLayer();
                         }
                         if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
@@ -909,12 +915,14 @@ namespace NcnnCompute
 
                     var layerSw = Stopwatch.StartNew();
                     SetCurrentExecutingLayer(layer);
+                    ResetInt8ActivationQuantization();
                     try
                     {
                         layerRepro.ExecuteCommandBuffer(this, layer, context);
                     }
                     finally
                     {
+                        ResetInt8ActivationQuantization();
                         ClearCurrentExecutingLayer();
                     }
                     if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
@@ -997,12 +1005,14 @@ namespace NcnnCompute
                     if (runtimeProfile == null)
                     {
                         SetCurrentExecutingLayer(layer);
+                        ResetInt8ActivationQuantization();
                         try
                         {
                             layerRepro.ExecuteCommandBuffer(this, layer, context);
                         }
                         finally
                         {
+                            ResetInt8ActivationQuantization();
                             ClearCurrentExecutingLayer();
                         }
                         if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
@@ -1016,12 +1026,14 @@ namespace NcnnCompute
                     {
                         var layerSw = Stopwatch.StartNew();
                         SetCurrentExecutingLayer(layer);
+                        ResetInt8ActivationQuantization();
                         try
                         {
                             layerRepro.ExecuteCommandBuffer(this, layer, context);
                         }
                         finally
                         {
+                            ResetInt8ActivationQuantization();
                             ClearCurrentExecutingLayer();
                         }
                         if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))

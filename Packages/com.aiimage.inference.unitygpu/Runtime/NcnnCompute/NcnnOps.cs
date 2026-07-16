@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using AIImage.Inference.Core;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -499,6 +500,9 @@ namespace NcnnCompute
         private ComputeBuffer _int8ConvWeightScales;
         private ComputeBuffer _int8GemmWeights;
         private ComputeBuffer _int8GemmWeightScales;
+        private bool _useInt8Activations;
+        private float _int8ActivationScale = 1f;
+        private int _int8ActivationZeroPoint;
 
         // These immutable uploads are selected only by manifest-driven FP16 sessions.
         // Activations always remain texture resources; no texture-to-buffer path is used.
@@ -533,6 +537,13 @@ namespace NcnnCompute
                 throw new ArgumentException("INT8 Gemm weights and per-output scales must be configured together.");
             _int8GemmWeights = packedWeights;
             _int8GemmWeightScales = perOutputScales;
+        }
+
+        public void SetInt8ActivationQuantization(QuantizedNodePlan plan)
+        {
+            _useInt8Activations = plan != null && plan.mode == QuantizedNodeMode.Int8W8A8;
+            _int8ActivationScale = _useInt8Activations ? plan.activationScale : 1f;
+            _int8ActivationZeroPoint = _useInt8Activations ? plan.activationZeroPoint : 0;
         }
 
         private void SetConvPack4Weights(int kernel, ComputeBuffer fp32Weights)
@@ -571,6 +582,9 @@ namespace NcnnCompute
             _cs.SetBuffer(kernel, "_MatBInt8Packed", _int8GemmWeights ?? fp32Weights);
             _cs.SetBuffer(kernel, "_MatBInt8Scales", _int8GemmWeightScales ?? fp32Weights);
             _cs.SetInt("_UseInt8GemmWeights", _int8GemmWeights != null ? 1 : 0);
+            _cs.SetInt("_UseInt8Activations", _useInt8Activations ? 1 : 0);
+            _cs.SetFloat("_Int8ActivationScale", _int8ActivationScale);
+            _cs.SetInt("_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
         }
 
         private void SetTextureGemmWeights(CommandBuffer cmd, int kernel, ComputeBuffer fp32Weights)
@@ -581,6 +595,9 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt8Packed", _int8GemmWeights ?? fp32Weights);
             cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt8Scales", _int8GemmWeightScales ?? fp32Weights);
             cmd.SetComputeIntParam(_cs, "_UseInt8GemmWeights", _int8GemmWeights != null ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_UseInt8Activations", _useInt8Activations ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_Int8ActivationScale", _int8ActivationScale);
+            cmd.SetComputeIntParam(_cs, "_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
         }
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
@@ -4115,6 +4132,111 @@ namespace NcnnCompute
             Dispatch3D(_kConvDepthWisePack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, packs, 8, 8);
         }
 
+        // Generic 2D/grouped Pack4 path for immediate RenderTexture execution. This
+        // shares the D2 packed INT8 weight and optional W8A8 activation controls used
+        // by the CommandBuffer path, while keeping activations/results texture-backed.
+        public void Conv2dGroupPack4(
+            RenderTexture srcPack4,
+            ComputeBuffer weights,
+            ComputeBuffer bias,
+            int inputChannels,
+            int outputChannels,
+            int group,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            int dilationW,
+            int dilationH,
+            int activationType,
+            float activationParam,
+            RenderTexture dstPack4)
+        {
+            DispatchConv2dGroupPack4(
+                _kConv2dGroupPack4,
+                srcPack4,
+                weights,
+                bias,
+                inputChannels,
+                outputChannels,
+                group,
+                kernelW,
+                kernelH,
+                strideW,
+                strideH,
+                padLeft,
+                padTop,
+                dilationW,
+                dilationH,
+                activationType,
+                activationParam,
+                dstPack4);
+        }
+
+        private void DispatchConv2dGroupPack4(
+            int kernel,
+            RenderTexture srcPack4,
+            ComputeBuffer weights,
+            ComputeBuffer bias,
+            int inputChannels,
+            int outputChannels,
+            int group,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            int dilationW,
+            int dilationH,
+            int activationType,
+            float activationParam,
+            RenderTexture dstPack4)
+        {
+            if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (bias == null) throw new ArgumentNullException(nameof(bias));
+            if (inputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(inputChannels));
+            if (outputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (group <= 0 || inputChannels % group != 0 || outputChannels % group != 0)
+                throw new ArgumentOutOfRangeException(nameof(group), "Group must divide input and output channels.");
+            if (kernelW <= 0 || kernelH <= 0) throw new ArgumentOutOfRangeException(nameof(kernelW));
+            if (strideW <= 0 || strideH <= 0) throw new ArgumentOutOfRangeException(nameof(strideW));
+            if (dilationW <= 0 || dilationH <= 0) throw new ArgumentOutOfRangeException(nameof(dilationW));
+
+            _cs.SetInt("_InW", srcPack4.width);
+            _cs.SetInt("_InH", srcPack4.height);
+            _cs.SetInt("_InC", inputChannels);
+            _cs.SetInt("_OutC", outputChannels);
+            _cs.SetInt("_OutW", dstPack4.width);
+            _cs.SetInt("_OutH", dstPack4.height);
+            _cs.SetInt("_ConvGroup", group);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_StrideWVar", strideW);
+            _cs.SetInt("_StrideHVar", strideH);
+            _cs.SetInt("_PadLeftVar", padLeft);
+            _cs.SetInt("_PadTopVar", padTop);
+            _cs.SetInt("_DilationWVar", dilationW);
+            _cs.SetInt("_DilationHVar", dilationH);
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(kernel, "_ConvW", weights);
+            _cs.SetBuffer(kernel, "_ConvWInt8Packed", _int8ConvWeights ?? weights);
+            _cs.SetBuffer(kernel, "_ConvWInt8Scales", _int8ConvWeightScales ?? weights);
+            _cs.SetInt("_UseInt8ConvWeights", _int8ConvWeights != null ? 1 : 0);
+            _cs.SetInt("_UseInt8Activations", _useInt8Activations ? 1 : 0);
+            _cs.SetFloat("_Int8ActivationScale", _int8ActivationScale);
+            _cs.SetInt("_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
+            _cs.SetBuffer(kernel, "_ConvB", bias);
+            _cs.SetTexture(kernel, "_ConvInArr", srcPack4);
+            _cs.SetTexture(kernel, "_ConvOutArr", dstPack4);
+            Dispatch3D(kernel, dstPack4.width, dstPack4.height, dstPack4.volumeDepth, 8, 8);
+        }
+
         public void Conv3x3Pack4Winograd23(RenderTexture srcPack4, int inPacks, ComputeBuffer wTm23, ComputeBuffer b4, int outPacks, int biasTerm, int activationType, float activationParam, RenderTexture dstPack4)
         {
             if (srcPack4 == null) throw new ArgumentNullException(nameof(srcPack4));
@@ -4962,6 +5084,9 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt8Packed", _int8ConvWeights ?? weights);
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt8Scales", _int8ConvWeightScales ?? weights);
             cmd.SetComputeIntParam(_cs, "_UseInt8ConvWeights", _int8ConvWeights != null ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_UseInt8Activations", _useInt8Activations ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_Int8ActivationScale", _int8ActivationScale);
+            cmd.SetComputeIntParam(_cs, "_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvB", bias);
             cmd.SetComputeTextureParam(_cs, kernel, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, kernel, "_ConvOutArr", dstPack4.nameID);

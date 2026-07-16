@@ -267,7 +267,7 @@ namespace NcnnCompute
             var isAliasOnly = AliasOnlyOperators.Contains(operatorName);
             var hasTexturePath = TextureAndCommandBufferOperators.Contains(operatorName);
             var isSentis = SentisOperators.Contains(operatorName);
-            var hasInt8WeightOnlyKernel = operatorName == "Convolution"
+            var hasInt8QuantizedKernel = operatorName == "Convolution"
                 || operatorName == "ConvolutionDepthWise"
                 || operatorName == "Gemm"
                 || operatorName == "InnerProduct";
@@ -297,7 +297,7 @@ namespace NcnnCompute
                 commandBuffer = hasTexturePath && !isUnsupported,
                 fp32 = hasTexturePath && !isUnsupported,
                 fp16 = hasTexturePath && !isUnsupported,
-                int8 = hasInt8WeightOnlyKernel && hasTexturePath && !isUnsupported,
+                int8 = hasInt8QuantizedKernel && hasTexturePath && !isUnsupported,
                 layouts = ResolveLayouts(operatorName),
                 ranks = ResolveRanks(operatorName),
                 verifiedModels = hasVerifiedCommandBufferPack4
@@ -374,10 +374,11 @@ namespace NcnnCompute
                     + "texture-native activations/outputs, positive rectangular kernel/stride/dilation, non-negative explicit padding, "
                     + "groups dividing input/output channels, optional bias, and activation none/ReLU/LeakyReLU/Sigmoid. "
                     + "Input/output tails use ceil(channel/4) packs and are zeroed. Auto/negative padding, unsupported activations, "
-                    + "and invalid group/weight profiles fail strict planning. INT8 weight-only additionally requires packed signed INT8 OIHW, per-output-channel symmetric scales, and FP32 texture accumulation.";
+                    + "and invalid group/weight profiles fail strict planning. INT8 additionally requires packed signed INT8 OIHW, per-output-channel symmetric scales, "
+                    + "optional calibrated W8A8 activation quantization from ModelManifest nodePlans, and FP32 texture accumulation.";
             }
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
-                return "Partial CommandBuffer Pack4 support: Gemm/InnerProduct use verified LinearMat or attention Pack4 storage. D2 accepts immutable packed INT8 weights with per-output-channel symmetric scales and FP32 accumulation; MatMul remains FP-only. Unsupported profiles fail strict planning without Buffer materialization.";
+                return "Partial CommandBuffer Pack4 support: Gemm/InnerProduct use verified LinearMat or attention Pack4 storage. D2 accepts immutable packed INT8 weights, optional calibrated W8A8 activation quantization from ModelManifest nodePlans, per-output-channel symmetric scales, and FP32 accumulation; MatMul remains FP-only. Unsupported profiles fail strict planning without Buffer materialization.";
             if (operatorName == "LayerNorm" || operatorName == "Softmax" || operatorName == "Reduction"
                 || operatorName == "MultiHeadAttention" || operatorName == "SDPA")
                 return "Partial CommandBuffer Pack4 support: LayerNorm/Softmax use FP32 accumulation; Reduction covers scalar rank-2 and Pack4 spatial SUM/MEAN; SDPA/MHA support texture-native masks where their descriptor profiles prove it. KV-cache, unlisted axes/ranks, and unsupported dtype/layout profiles fail strict planning.";

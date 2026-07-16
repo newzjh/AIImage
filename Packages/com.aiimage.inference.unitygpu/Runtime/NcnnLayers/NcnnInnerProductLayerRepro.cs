@@ -18,6 +18,7 @@ namespace NcnnCompute
             owner.Ops.SetInt8GemmWeights(
                 owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProduct) ? int8InnerProduct.wInt8Packed : null,
                 owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProductScale) ? int8InnerProductScale.wInt8Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -125,6 +126,7 @@ namespace NcnnCompute
             owner.Ops.SetInt8GemmWeights(
                 owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProduct) ? int8InnerProduct.wInt8Packed : null,
                 owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProductScale) ? int8InnerProductScale.wInt8Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -139,6 +141,7 @@ namespace NcnnCompute
             owner.Ops.SetInt8GemmWeights(
                 owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProduct) ? int8InnerProduct.wInt8Packed : null,
                 owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProductScale) ? int8InnerProductScale.wInt8Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 

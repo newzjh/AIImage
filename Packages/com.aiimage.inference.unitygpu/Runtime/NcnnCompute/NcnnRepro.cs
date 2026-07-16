@@ -1350,9 +1350,27 @@ namespace NcnnCompute
         public bool UsesInt8WeightOnlyForLayer(NcnnParamModel.Layer layer)
         {
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            if (ModelManifest?.quantization?.nodePlans != null && ModelManifest.quantization.nodePlans.Length > 0)
+            {
+                return ModelManifest.TryGetQuantizedNodePlan(layer?.name, operatorName, out var plan)
+                    && plan.mode != QuantizedNodeMode.Float;
+            }
             return ModelManifest?.UsesInt8WeightOnlyForOperator(operatorName) == true;
         }
         internal bool UsesInt8WeightsForLayer(NcnnParamModel.Layer layer) => UsesInt8WeightOnlyForLayer(layer);
+
+        internal void ConfigureInt8ActivationQuantization(NcnnParamModel.Layer layer)
+        {
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            QuantizedNodePlan plan = null;
+            ModelManifest?.TryGetQuantizedNodePlan(layer?.name, operatorName, out plan);
+            _ops.SetInt8ActivationQuantization(plan);
+        }
+
+        internal void ResetInt8ActivationQuantization()
+        {
+            _ops.SetInt8ActivationQuantization(null);
+        }
         public long TemporaryTextureBudgetBytes { get; set; }
         public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
         // Production CommandBuffer execution is always planned strictly. DebugOracle is the
@@ -2303,7 +2321,7 @@ namespace NcnnCompute
                     || conv.rawWeightInt8Scales == null
                     || conv.rawBias == null)
                 {
-                    reason = "INT8 weight-only Conv requires immutable packed INT8 OIHW weights, per-output-channel scales, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
+                    reason = "INT8 Conv requires immutable packed INT8 OIHW weights, per-output-channel scales, optional calibrated W8A8 activation quantization, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
                     return false;
                 }
                 return true;
@@ -2316,7 +2334,7 @@ namespace NcnnCompute
                     || gemm.bDataInt8Packed == null
                     || gemm.bDataInt8Scales == null)
                 {
-                    reason = "INT8 weight-only Gemm requires immutable packed INT8 constant-B weights and per-output-channel scales; FP32 weight or Buffer fallback is prohibited.";
+                    reason = "INT8 Gemm requires immutable packed INT8 constant-B weights, per-output-channel scales, and optional calibrated W8A8 activation quantization; FP32 weight or Buffer fallback is prohibited.";
                     return false;
                 }
                 return true;
@@ -2329,7 +2347,7 @@ namespace NcnnCompute
                     || innerProduct.wInt8Scales == null
                     || innerProduct.b == null)
                 {
-                    reason = "INT8 weight-only InnerProduct requires immutable packed INT8 weights, per-output-channel scales, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
+                    reason = "INT8 InnerProduct requires immutable packed INT8 weights, per-output-channel scales, optional calibrated W8A8 activation quantization, and FP32 bias; FP32 weight or Buffer fallback is prohibited.";
                     return false;
                 }
                 return true;
@@ -2349,7 +2367,7 @@ namespace NcnnCompute
                 || string.Equals(operatorName, "PReLU", StringComparison.Ordinal)
                 || string.Equals(operatorName, "Normalize", StringComparison.Ordinal))
             {
-                reason = "INT8 weight-only has no verified packed-weight CommandBuffer kernel for " + operatorName + "; strict quant planning rejects an FP32 parameter or Buffer fallback.";
+                reason = "INT8 selective quantization has no verified packed-weight CommandBuffer kernel for " + operatorName + "; strict quant planning rejects an FP32 parameter or Buffer fallback.";
                 return false;
             }
 

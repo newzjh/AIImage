@@ -54,6 +54,14 @@ float NcnnReadRawConvWeight(int index, int outputChannel)
     return NcnnReadPackedConvInt8(index) * _ConvWInt8Scales[outputChannel];
 }
 
+float NcnnQuantizeActivationForInt8(float value)
+{
+    if (_UseInt8Activations == 0)
+        return value;
+    int quantized = clamp((int)round(value / _Int8ActivationScale) + _Int8ActivationZeroPoint, -128, 127);
+    return (float)(quantized - _Int8ActivationZeroPoint) * _Int8ActivationScale;
+}
+
 void NcnnPackRgbToPack4_Impl(uint3 id)
 {
     uint w, h, d;
@@ -464,7 +472,7 @@ void NcnnConv2dGroupPack4_Impl(uint3 id)
                     int ix = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
                     if (ix < 0 || ix >= _InW)
                         continue;
-                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * NcnnReadRawConvWeight(kernelBase + ky * _KernelWVar + kx, oc);
+                    value += NcnnQuantizeActivationForInt8(NcnnReadPack4Channel(_ConvInArr, ix, iy, ic)) * NcnnReadRawConvWeight(kernelBase + ky * _KernelWVar + kx, oc);
                 }
             }
         }
@@ -527,7 +535,7 @@ void NcnnDeconvolution2dGroupPack4_Impl(uint3 id)
                     int ix = ixNumerator / _StrideWVar;
                     if (ix < 0 || ix >= _InW)
                         continue;
-                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * NcnnReadRawConvWeight(kernelBase + ky * _KernelWVar + kx, oc);
+                    value += NcnnQuantizeActivationForInt8(NcnnReadPack4Channel(_ConvInArr, ix, iy, ic)) * NcnnReadRawConvWeight(kernelBase + ky * _KernelWVar + kx, oc);
                 }
             }
         }

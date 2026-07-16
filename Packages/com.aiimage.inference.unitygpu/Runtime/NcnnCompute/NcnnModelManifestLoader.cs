@@ -11,7 +11,8 @@ namespace NcnnCompute
         Auto = 0,
         FP32 = 1,
         FP16 = 2,
-        INT8WeightOnly = 3
+        INT8WeightOnly = 3,
+        INT8Selective = 4
     }
 
     [Serializable]
@@ -44,8 +45,19 @@ namespace NcnnCompute
         public int zeroPoint;
         public string accumulationDtype;
         public bool activationQuantized;
+        public NcnnModelManifestQuantizedNodePlan[] nodePlans;
         public string[] quantizedOperators;
         public string unquantizedWeightDtype;
+    }
+
+    [Serializable]
+    internal sealed class NcnnModelManifestQuantizedNodePlan
+    {
+        public string layerName;
+        public string operatorName;
+        public string mode;
+        public float activationScale = 1f;
+        public int activationZeroPoint;
     }
 
     // Parsing stays in the Unity backend: core owns only the durable contract and does
@@ -141,7 +153,9 @@ namespace NcnnCompute
                 : precisionMode;
             if (!TryResolveManifestFileName(modelId, effectiveMode, out var manifestFileName))
             {
-                if (effectiveMode == NcnnPrecisionMode.FP16 || effectiveMode == NcnnPrecisionMode.INT8WeightOnly)
+                if (effectiveMode == NcnnPrecisionMode.FP16
+                    || effectiveMode == NcnnPrecisionMode.INT8WeightOnly
+                    || effectiveMode == NcnnPrecisionMode.INT8Selective)
                 {
                     throw new InferenceContractException(
                         effectiveMode + " was requested but this runner has no verified model manifest"
@@ -167,7 +181,7 @@ namespace NcnnCompute
             if (manifest?.precision != null)
             {
                 return manifest.IsInt8WeightOnly
-                    ? NcnnPrecisionMode.INT8WeightOnly
+                    ? manifest.quantization.activationQuantized ? NcnnPrecisionMode.INT8Selective : NcnnPrecisionMode.INT8WeightOnly
                     : manifest.precision.activationDataType == TensorDataType.Float16
                     && manifest.precision.weightDataType == TensorDataType.Float16
                     ? NcnnPrecisionMode.FP16
@@ -181,18 +195,17 @@ namespace NcnnCompute
         {
             manifestFileName = null;
             if (string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "clip-mobileclip-s0.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "clip-mobileclip-s0.int8.model.json" : precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "clip-mobileclip-s0.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
             else if (string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "esrgan-realesrgan-x4plus.fp16.model.json" : "esrgan-realesrgan-x4plus.fp32.model.json";
             else if (string.Equals(modelId, "matting.ncnn", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "matting.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "matting.int8.model.json" : precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "matting.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
             else if (string.Equals(modelId, "codeformer", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "codeformer.fp16.model.json" : "codeformer.fp32.model.json";
             else if (string.Equals(modelId, "gfpgan", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "gfpgan.fp16.model.json" : "gfpgan.fp32.model.json";
-            else if (string.Equals(modelId, "yolo-seg", StringComparison.Ordinal)
-                && precisionMode == NcnnPrecisionMode.FP16)
-                manifestFileName = "yolo-seg.fp16.model.json";
+            else if (string.Equals(modelId, "yolo-seg", StringComparison.Ordinal))
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "yolo-seg.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "yolo-seg.fp16.model.json" : null;
             else if (string.Equals(modelId, "sd-inpainting", StringComparison.Ordinal)
                 && precisionMode == NcnnPrecisionMode.FP16)
                 manifestFileName = "sd-inpainting.fp16.model.json";
@@ -242,11 +255,43 @@ namespace NcnnCompute
                 zeroPoint = document.zeroPoint,
                 accumulationDataType = ParseAccumulationType(document.accumulationDtype, source),
                 activationQuantized = document.activationQuantized,
+                nodePlans = ParseNodePlans(document.nodePlans, source),
                 quantizedOperators = document.quantizedOperators ?? Array.Empty<string>(),
                 unquantizedWeightDataType = string.IsNullOrWhiteSpace(document.unquantizedWeightDtype)
                     ? TensorDataType.Float32
                     : ParseActivationType(document.unquantizedWeightDtype, "unquantizedWeightDtype", source)
             };
+        }
+
+        private static QuantizedNodePlan[] ParseNodePlans(NcnnModelManifestQuantizedNodePlan[] document, string source)
+        {
+            var sourcePlans = document ?? Array.Empty<NcnnModelManifestQuantizedNodePlan>();
+            var plans = new QuantizedNodePlan[sourcePlans.Length];
+            for (var index = 0; index < sourcePlans.Length; index++)
+            {
+                var plan = sourcePlans[index] ?? throw new InferenceContractException("Quantization node plan is null: " + source);
+                plans[index] = new QuantizedNodePlan
+                {
+                    layerName = plan.layerName ?? string.Empty,
+                    operatorName = plan.operatorName ?? string.Empty,
+                    mode = ParseNodeMode(plan.mode, source),
+                    activationScale = plan.activationScale,
+                    activationZeroPoint = plan.activationZeroPoint
+                };
+            }
+            return plans;
+        }
+
+        private static QuantizedNodeMode ParseNodeMode(string value, string source)
+        {
+            if (string.Equals(value, "W8A8", StringComparison.OrdinalIgnoreCase))
+                return QuantizedNodeMode.Int8W8A8;
+            if (string.Equals(value, "W8", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "WeightOnly", StringComparison.OrdinalIgnoreCase))
+                return QuantizedNodeMode.Int8WeightOnly;
+            if (string.Equals(value, "Float", StringComparison.OrdinalIgnoreCase))
+                return QuantizedNodeMode.Float;
+            throw new InferenceContractException("Unsupported quantization node mode " + (value ?? string.Empty) + ": " + source);
         }
 
         private static TensorDataType ParseAccumulationType(string value, string source)

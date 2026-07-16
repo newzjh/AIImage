@@ -328,8 +328,34 @@ namespace NcnnCompute
                                         && conv.group == 1
                                         && !conv.isDepthWise
                                         && conv.kernelW == conv.kernelH;
+            var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
             owner.Ops.SetFp16ConvWeights(useFp16GeneralWeights ? conv.packedWeight4Fp16 : null);
-            if (useFp16GeneralWeights)
+            owner.Ops.SetInt8ConvWeights(
+                useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
+                useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+            owner.ConfigureInt8ActivationQuantization(layer);
+            if (useInt8WeightOnly)
+            {
+                owner.Ops.Conv2dGroupPack4(
+                    src.texture,
+                    conv.rawWeightInt8Packed,
+                    conv.rawBias,
+                    conv.inC,
+                    conv.outC,
+                    conv.group,
+                    conv.kernelW,
+                    conv.kernelH,
+                    conv.strideW,
+                    conv.strideH,
+                    conv.padLeft,
+                    conv.padTop,
+                    conv.dilationW,
+                    conv.dilationH,
+                    conv.activationType,
+                    conv.activationSlope,
+                    outRt);
+            }
+            else if (useFp16GeneralWeights)
             {
                 owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
             }
@@ -415,6 +441,7 @@ namespace NcnnCompute
                 owner.Ops.SetInt8ConvWeights(
                     useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
                     useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+                owner.ConfigureInt8ActivationQuantization(layer);
                 if (useInt8WeightOnly)
                 {
                     owner.Ops.Conv2dGroupPack4(
@@ -574,16 +601,19 @@ namespace NcnnCompute
                                            && conv.kernelW > 0
                                            && conv.kernelH == conv.kernelW
                                            && !(conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
+            var canUseInt8TexturePath = owner.UsesInt8WeightsForLayer(layer)
+                                        && SupportsCommandBufferPack4(conv, out _);
             var hasSupportedTexturePath = canUseConv1x1TexturePath
                                           || canUseDepthWiseTexturePath
                                           || canUseSpecialized3x3TexturePath
-                                          || canUseGeneralTexturePath;
+                                          || canUseGeneralTexturePath
+                                          || canUseInt8TexturePath;
 
             if (!hasSupportedTexturePath)
                 return false;
 
             var forceBufferThisConv = owner.ForceBufferConvolutionAll
-                                      || (conv.useBufferPath && !canUseDepthWiseTexturePath && !canUseGeneralTexturePath)
+                                      || (conv.useBufferPath && !canUseDepthWiseTexturePath && !canUseGeneralTexturePath && !canUseInt8TexturePath)
                                       || (conv.kernelW == 1 && conv.kernelH == 1 && !owner.EnableConv1x1TextureConvolution);
 
             if (forceBufferThisConv)

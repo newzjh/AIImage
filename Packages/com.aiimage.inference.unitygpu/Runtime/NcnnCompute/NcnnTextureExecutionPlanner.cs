@@ -272,10 +272,10 @@ namespace NcnnCompute
                         capability,
                         operatorName,
                         "missing-int8-weight-only-kernel",
-                        "INT8 weight-only has no verified immutable packed-weight CommandBuffer kernel for this operator; strict quant planning refuses an FP32 parameter or Buffer fallback.",
+                        "INT8 selective quantization has no verified immutable packed-weight CommandBuffer kernel for this operator; strict quant planning refuses an FP32 parameter or Buffer fallback.",
                         inputs,
                         true,
-                        "Implement and verify a packed INT8 weight-only CommandBuffer kernel before enabling this model quantization plan."));
+                        "Implement and verify a packed INT8 CommandBuffer kernel before enabling this model quantization plan."));
                     nodes.Add(node);
                     continue;
                 }
