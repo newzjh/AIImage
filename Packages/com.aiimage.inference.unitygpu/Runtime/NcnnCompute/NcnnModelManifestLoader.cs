@@ -11,8 +11,7 @@ namespace NcnnCompute
         Auto = 0,
         FP32 = 1,
         FP16 = 2,
-        INT8WeightOnly = 3,
-        INT8Selective = 4
+        INT8Selective = 3
     }
 
     [Serializable]
@@ -154,7 +153,6 @@ namespace NcnnCompute
             if (!TryResolveManifestFileName(modelId, effectiveMode, out var manifestFileName))
             {
                 if (effectiveMode == NcnnPrecisionMode.FP16
-                    || effectiveMode == NcnnPrecisionMode.INT8WeightOnly
                     || effectiveMode == NcnnPrecisionMode.INT8Selective)
                 {
                     throw new InferenceContractException(
@@ -181,7 +179,7 @@ namespace NcnnCompute
             if (manifest?.precision != null)
             {
                 return manifest.IsInt8WeightOnly
-                    ? manifest.quantization.activationQuantized ? NcnnPrecisionMode.INT8Selective : NcnnPrecisionMode.INT8WeightOnly
+                    ? NcnnPrecisionMode.INT8Selective
                     : manifest.precision.activationDataType == TensorDataType.Float16
                     && manifest.precision.weightDataType == TensorDataType.Float16
                     ? NcnnPrecisionMode.FP16
@@ -195,11 +193,11 @@ namespace NcnnCompute
         {
             manifestFileName = null;
             if (string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "clip-mobileclip-s0.int8.model.json" : precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "clip-mobileclip-s0.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "clip-mobileclip-s0.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
             else if (string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "esrgan-realesrgan-x4plus.fp16.model.json" : "esrgan-realesrgan-x4plus.fp32.model.json";
             else if (string.Equals(modelId, "matting.ncnn", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "matting.int8.model.json" : precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "matting.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT8Selective ? "matting.int8.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
             else if (string.Equals(modelId, "codeformer", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "codeformer.fp16.model.json" : "codeformer.fp32.model.json";
             else if (string.Equals(modelId, "gfpgan", StringComparison.Ordinal))
