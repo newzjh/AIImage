@@ -160,14 +160,14 @@ namespace NcnnCompute
 
         private static readonly HashSet<string> TextureAndCommandBufferOperators = new HashSet<string>(StringComparer.Ordinal)
         {
-            "AbsVal", "AtenTo", "BatchNorm", "BinaryOp", "Cast", "Clip", "Concat", "Convolution",
+            "AbsVal", "aten::to", "BatchNorm", "BinaryOp", "Cast", "Clip", "Concat", "Convolution",
             "Convolution1D", "Convolution3D", "ConvolutionDepthWise", "Crop", "Deconvolution",
             "Deconvolution3D", "DeconvolutionDepthWise", "Eltwise", "ExpandDims", "Flatten", "GELU", "Squeeze",
             "Gemm", "GroupNorm", "InnerProduct", "Interp", "LayerNorm", "MatMul", "Packing", "Padding",
             "MaxPoolingInd", "MaxUnPooling", "Permute", "PixelShuffle", "Pooling", "Pooling3D", "PReLU", "Quantize", "Dequantize",
             "Requantize", "Reduction", "ReLU", "Reorg", "Reshape", "Scale", "Sigmoid", "Slice", "Softmax",
             "Swish", "Tile", "UnaryOp", "Unfold", "MemoryData", "Shape", "Size", "Range", "ConstantOfShape", "Expand",
-            "ArgMax", "ArgMin", "Where", "TopK", "OneHot", "CumSum", "Gather", "GatherElements"
+            "ArgMax", "ArgMin", "Where", "TopK", "OneHot", "CumSum", "Gather", "GatherElements", "pnnx.Expression"
         };
 
         private static readonly Dictionary<string, string[]> RequiredParameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
@@ -321,8 +321,8 @@ namespace NcnnCompute
                 case "BinaryOp": return "BinaryElementwise";
                 case "UnaryOp": return "UnaryElementwise";
                 case "Interp": return "Resize";
-                case "PnnxExpression": return "Expression";
-                case "AtenTo": return "Cast";
+                case "pnnx.Expression": return "Expression";
+                case "aten::to": return "Cast";
                 default: return operatorName;
             }
         }
@@ -361,6 +361,8 @@ namespace NcnnCompute
                 return "The factory entry exists, but no verified Pack4 RenderTexture and CommandBuffer production contract is recorded.";
             if (status == NcnnOperatorCapabilityStatus.Supported)
                 return "Verified FP16 Pack4 CommandBuffer pointwise dispatch. Other dtype/layout combinations remain unsupported.";
+            if (operatorName == "pnnx.Expression")
+                return "Partial CommandBuffer Pack4 support: a no-input constant scalar/list with at most four values is written by the real FillScalarTexture dispatch. Dynamic expressions and wider lists fail strict planning.";
             if (operatorName == "Convolution" || operatorName == "ConvolutionDepthWise"
                 || operatorName == "Deconvolution" || operatorName == "DeconvolutionDepthWise")
             {
@@ -398,6 +400,18 @@ namespace NcnnCompute
             const string LayoutShape = "logical [dims,w,h,d,c]; storage explicitly records LinearMat or Pack4 Texture2DArray physical mapping; descriptor alias requires unchanged storage/layout/dtype";
             switch (operatorName)
             {
+                case "pnnx.Expression":
+                    return new[]
+                    {
+                        new NcnnOperatorCapabilityProfile
+                        {
+                            backend = NcnnOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4" },
+                            shapeProfile = "logical [dims=1,w=value_count,h=1,d=1,c=1]; storage [dims=3,w=value_count,h=1,d=1,c=1]; real scalar-fill texture dispatch",
+                            supportedParameters = new[] { "constant expr", "no input blobs", "value_count=1..4" },
+                            rejectedParameters = new[] { "dynamic expression", "input blobs", "value_count>4" }
+                        }
+                    };
                 case "Reshape":
                     return new[]
                     {

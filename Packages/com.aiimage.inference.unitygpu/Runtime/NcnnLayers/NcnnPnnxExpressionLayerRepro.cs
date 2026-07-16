@@ -86,6 +86,42 @@ namespace NcnnCompute
             return new NcnnRepro.BufferShape(3, Mathf.Max(1, values?.Length ?? 0), 1, 1, 1);
         }
 
+        // The strict CommandBuffer planner must prove the same narrow constant contract that
+        // this layer dispatches.  It intentionally does not accept pnnx expressions with
+        // runtime inputs, nor lists wider than the FillScalarTexture kernel's four lanes.
+        internal static bool TryResolveConstantValueCount(NcnnParamModel.Layer layer, out int count, out string reason)
+        {
+            count = 0;
+            reason = null;
+            if (layer == null)
+            {
+                reason = "The pnnx.Expression layer is missing.";
+                return false;
+            }
+            if (layer.bottomNames != null && layer.bottomNames.Length > 0)
+            {
+                reason = "Only a pnnx.Expression without runtime input blobs has a CommandBuffer scalar-fill path.";
+                return false;
+            }
+
+            try
+            {
+                var values = ResolveConstantValues(layer);
+                count = Mathf.Max(1, values?.Length ?? 0);
+                if (count > 4)
+                {
+                    reason = "The CommandBuffer scalar-fill kernel supports at most four constant values.";
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "The pnnx.Expression constant cannot be parsed: " + exception.Message;
+                return false;
+            }
+        }
+
         private static float[] ResolveConstantValues(NcnnParamModel.Layer layer)
         {
             var expr = layer?.GetString("expr", null);

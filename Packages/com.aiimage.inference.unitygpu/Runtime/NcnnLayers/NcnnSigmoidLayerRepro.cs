@@ -73,7 +73,17 @@ namespace NcnnCompute
             if (!NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape) || srcShape.dims > 3)
                 throw new InvalidOperationException("Sigmoid render-texture path requires existing <=3D texture input: " + layer.name);
 
-            if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
+            if (NcnnRepro.IsPack4LinearMatTexture(srcTex, srcShape))
+            {
+                // Pack4 LinearMat tensors are still logically scalar matrices.  Preserve their
+                // packed storage contract so a following exact Pack4 binary operator can
+                // recognize the texture rather than treating it as a generic rank-2 array.
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                var outRt = owner.RentTempArray(storageShape.w, storageShape.h, 1, srcTex.texture.format);
+                owner.Ops.SigmoidPack4(srcTex.texture, 1, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
+            }
+            else if (NcnnRepro.IsStrictLinearMatTexture(srcTex))
             {
                 var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
                 var outRt = owner.RentTempMat(storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());
@@ -100,7 +110,14 @@ namespace NcnnCompute
                         {
                                                 var src = NcnnRepro.GetCmdTensor(blobs, layer.bottomNames[0]);
                                                 var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-                                                if (NcnnRepro.IsStrictLinearMatTexture(src) && srcShape.dims <= 2)
+                                                if (NcnnRepro.IsPack4LinearMatTexture(src, srcShape))
+                                                {
+                                                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                                                    var outArr = owner.RentTempArray(cmd, storageShape.w, storageShape.h, 1, src.texture.format);
+                                                    owner.Ops.SigmoidPack4(cmd, src.texture, 1, outArr);
+                                                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true);
+                                                }
+                                                else if (NcnnRepro.IsStrictLinearMatTexture(src) && srcShape.dims <= 2)
                                                 {
                                                     var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
                                                     var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, NcnnRepro.ResolveLinearMatTextureFormat());

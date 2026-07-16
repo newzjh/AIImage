@@ -166,6 +166,9 @@ namespace NcnnCompute
             else if (string.Equals(modelId, "yolo-seg", StringComparison.Ordinal)
                 && precisionMode == NcnnPrecisionMode.FP16)
                 manifestFileName = "yolo-seg.fp16.model.json";
+            else if (string.Equals(modelId, "sd-inpainting", StringComparison.Ordinal)
+                && precisionMode == NcnnPrecisionMode.FP16)
+                manifestFileName = "sd-inpainting.fp16.model.json";
             else if (string.Equals(modelId, "wholeBrain probe", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "wholebrain-probe.fp16.model.json" : "wholebrain-probe.fp32.model.json";
             return !string.IsNullOrWhiteSpace(manifestFileName);

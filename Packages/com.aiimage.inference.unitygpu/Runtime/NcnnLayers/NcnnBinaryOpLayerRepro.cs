@@ -1607,7 +1607,7 @@ namespace NcnnCompute
             return false;
         }
 
-        private static bool TryResolveScalarSingleBroadcastShapes(
+        internal static bool TryResolveScalarSingleBroadcastShapes(
             NcnnRepro.BufferShape aShape,
             NcnnRepro.BufferShape bShape,
             out int broadcastMode,

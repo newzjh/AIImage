@@ -48,6 +48,11 @@ namespace NcnnCompute
                                             owner._memoryData[layer.name] = memoryPack;
                                             return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
                                         }
+                                        if (TryCreateLinearMatTexture(memoryPack))
+                                        {
+                                            owner._memoryData[layer.name] = memoryPack;
+                                            return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+                                        }
                                         if (ShouldUseVistaPromptPack4RtOnly(owner, layer, memoryPack))
                                         {
                                             phaseSw.Restart();
@@ -139,6 +144,8 @@ namespace NcnnCompute
                 throw new InvalidOperationException("MemoryData not found: " + layer.name);
             if (TryPublishChannelVectorCmdBlob(owner, cmd, layer, mp, blobs, shapes))
                 return;
+            if (TryPublishLinearMatCmdBlob(owner, cmd, layer, mp, blobs, shapes))
+                return;
             if (TryPublishVistaPromptPack4CmdBlob(owner, cmd, layer, mp, blobs, shapes))
                 return;
             if (mp.data == null && !TryCreateMemoryDataBuffer(mp))
@@ -151,6 +158,107 @@ namespace NcnnCompute
                 preferTexture: true,
                 blobs,
                 shapes);
+        }
+
+        private static bool TryCreateLinearMatTexture(NcnnRepro.MemoryDataPack memoryPack)
+        {
+            if (memoryPack == null
+                || (memoryPack.dims != 1 && memoryPack.dims != 2)
+                || memoryPack.w <= 0
+                || memoryPack.h <= 0
+                || memoryPack.cpuData == null
+                || memoryPack.cpuData.Length < memoryPack.w * memoryPack.h)
+            {
+                return false;
+            }
+
+            Texture2D upload = null;
+            RenderTexture texture = null;
+            try
+            {
+                var descriptor = new RenderTextureDescriptor(memoryPack.w, memoryPack.h, RenderTextureFormat.RFloat, 0)
+                {
+                    dimension = TextureDimension.Tex2D,
+                    enableRandomWrite = false,
+                    msaaSamples = 1
+                };
+                texture = new RenderTexture(descriptor)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    name = "NcnnMemoryDataLinearMat"
+                };
+                texture.Create();
+                NcnnGpuResourceTracker.RegisterTexture(texture, "NcnnMemoryDataLinearMat");
+
+                upload = new Texture2D(memoryPack.w, memoryPack.h, TextureFormat.RFloat, false, true)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    anisoLevel = 0,
+                    name = "NcnnMemoryDataLinearMatUpload"
+                };
+                upload.SetPixelData(memoryPack.cpuData, 0);
+                upload.Apply(false, true);
+                Graphics.CopyTexture(upload, 0, 0, texture, 0, 0);
+
+                memoryPack.linearMatRt = texture;
+                texture = null;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (upload != null)
+                    UnityEngine.Object.DestroyImmediate(upload);
+                if (texture != null)
+                {
+                    NcnnGpuResourceTracker.ReleaseTexture(texture, "NcnnMemoryDataLinearMat.create-failed");
+                    texture.Release();
+                    UnityEngine.Object.DestroyImmediate(texture);
+                }
+            }
+        }
+
+        private static bool TryPublishLinearMatCmdBlob(
+            NcnnRepro owner,
+            CommandBuffer cmd,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.MemoryDataPack memoryPack,
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            if (memoryPack?.linearMatRt == null
+                || !memoryPack.linearMatRt.IsCreated()
+                || (memoryPack.dims != 1 && memoryPack.dims != 2)
+                || memoryPack.w <= 0
+                || memoryPack.h <= 0
+                || layer?.topNames == null
+                || layer.topNames.Length == 0
+                || string.IsNullOrWhiteSpace(layer.topNames[0]))
+            {
+                return false;
+            }
+
+            var output = owner.RentTempMat(
+                cmd,
+                memoryPack.w,
+                memoryPack.h,
+                NcnnRepro.ResolveLinearMatTextureFormat());
+            cmd.CopyTexture(memoryPack.linearMatRt, 0, 0, output.nameID, 0, 0);
+            var logicalShape = new NcnnRepro.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, 1, 1);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, logicalShape, logicalShape, owned: true, blobName: layer.topNames[0]);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = logicalShape;
+            owner.DebugLog?.Invoke(
+                "[MemoryDataLinearMat][cmd] texture copy"
+                + " | layer=" + layer.name
+                + " | top=" + layer.topNames[0]
+                + " | shape=" + memoryPack.w.ToString(CultureInfo.InvariantCulture) + "x" + memoryPack.h.ToString(CultureInfo.InvariantCulture));
+            return true;
         }
 
         private static bool TryCreateChannelVectorTexture(NcnnRepro.MemoryDataPack memoryPack)

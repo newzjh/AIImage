@@ -384,8 +384,17 @@ namespace NcnnCompute
             Dictionary<string, NcnnTexturePlanTensorDescriptor> descriptors)
         {
             var inputs = new List<NcnnTexturePlanTensorDescriptor>();
-            foreach (var bottomName in layer.bottomNames ?? Array.Empty<string>())
+            var bottomNames = layer?.bottomNames ?? Array.Empty<string>();
+            // aten::to in the exported SD graph carries dtype/device/non-blocking metadata
+            // after its data input.  Its runtime layer aliases only the first texture and
+            // consumes the rest as scalar metadata, so strict descriptor planning must
+            // validate precisely that same single data dependency.
+            var count = layer != null && layer.type == NcnnLayerTypes.AtenTo
+                ? Math.Min(1, bottomNames.Length)
+                : bottomNames.Length;
+            for (var index = 0; index < count; index++)
             {
+                var bottomName = bottomNames[index];
                 descriptors.TryGetValue(bottomName, out var descriptor);
                 inputs.Add(descriptor == null ? null : CloneDescriptor(descriptor, bottomName));
             }
@@ -395,6 +404,7 @@ namespace NcnnCompute
         private static bool IsViewOperator(string operatorName)
         {
             return string.Equals(operatorName, "Noop", StringComparison.Ordinal)
+                || string.Equals(operatorName, "aten::to", StringComparison.Ordinal)
                 || string.Equals(operatorName, "Split", StringComparison.Ordinal)
                 || string.Equals(operatorName, "Reshape", StringComparison.Ordinal)
                 || string.Equals(operatorName, "Flatten", StringComparison.Ordinal)

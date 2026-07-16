@@ -390,6 +390,7 @@ namespace NcnnCompute
             public RenderTexture pack4Rt;
             public int pack4RtChannels;
             public int pack4RtDepth;
+            public RenderTexture linearMatRt;
 
             public void Dispose()
             {
@@ -402,6 +403,16 @@ namespace NcnnCompute
                         NcnnGpuResourceTracker.ReleaseTexture(pack4Rt, "NcnnRepro.MemoryDataPack.Dispose");
                         pack4Rt.Release();
                         UnityEngine.Object.DestroyImmediate(pack4Rt);
+                    }
+                }
+                catch { }
+                try
+                {
+                    if (linearMatRt != null)
+                    {
+                        NcnnGpuResourceTracker.ReleaseTexture(linearMatRt, "NcnnRepro.MemoryDataPack.Dispose");
+                        linearMatRt.Release();
+                        UnityEngine.Object.DestroyImmediate(linearMatRt);
                     }
                 }
                 catch { }
@@ -1554,6 +1565,8 @@ namespace NcnnCompute
                     return VerifyStrictCommandBufferUnaryOp(layer, inputs, request);
                 case "GELU":
                     return VerifyStrictCommandBufferGelu(layer, inputs, request);
+                case "pnnx.Expression":
+                    return VerifyStrictCommandBufferPnnxExpression(layer, request);
                 case "MemoryData":
                     return VerifyStrictCommandBufferMemoryData(layer, request);
                 case "InnerProduct":
@@ -2072,8 +2085,13 @@ namespace NcnnCompute
         {
             if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
                 return RejectStrictCommandBufferPack4Node(reason);
-            if (shapes.Length < 2 || (shapes[0].dims != 3 && shapes[0].dims != 4))
-                return RejectStrictCommandBufferPack4Node("Concat CommandBuffer Pack4 requires two or more 3D/4D inputs.");
+            if (shapes.Length < 2)
+                return RejectStrictCommandBufferPack4Node("Concat CommandBuffer Pack4 requires two or more inputs.");
+
+            if (shapes[0].dims == 1 || shapes[0].dims == 2)
+                return VerifyStrictCommandBufferLowDimConcat(layer, inputs, shapes, request);
+            if (shapes[0].dims != 3 && shapes[0].dims != 4)
+                return RejectStrictCommandBufferPack4Node("Concat CommandBuffer Pack4 requires rank-one through rank-four inputs.");
 
             var axis = layer.GetInt(0, 0);
             if (axis < 0)
@@ -2106,6 +2124,60 @@ namespace NcnnCompute
                 "command-buffer-pack4:concat-channel");
         }
 
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferLowDimConcat(
+            NcnnParamModel.Layer layer,
+            IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
+            IReadOnlyList<BufferShape> shapes,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            var first = shapes[0];
+            var axis = layer.GetInt(0, 0);
+            if (axis < 0)
+                axis += first.dims;
+            if (axis < 0 || axis >= first.dims)
+                return RejectStrictCommandBufferPack4Node("Concat axis is outside the input rank.");
+
+            var tensorAxis = MapNcnnAxisToTensorAxis(first.dims, axis);
+            if ((first.dims == 1 && tensorAxis != 0)
+                || (first.dims == 2 && tensorAxis != 0 && tensorAxis != 1))
+            {
+                return RejectStrictCommandBufferPack4Node("Low-dimensional Concat supports only its width or height axis.");
+            }
+
+            var outW = first.w;
+            var outH = first.h;
+            for (var index = 0; index < shapes.Count; index++)
+            {
+                var shape = shapes[index];
+                if (shape.dims != first.dims
+                    || !HasStrictScalarLikePlanStorage(inputs[index], shape)
+                    || (tensorAxis != 0 && shape.w != first.w)
+                    || (tensorAxis != 1 && shape.h != first.h)
+                    || shape.d != first.d
+                    || shape.c != first.c)
+                {
+                    return RejectStrictCommandBufferPack4Node("Low-dimensional Concat requires matching descriptor-backed scalar storage on every non-concatenated axis.");
+                }
+
+                if (index > 0)
+                {
+                    if (tensorAxis == 0)
+                        outW += shape.w;
+                    else
+                        outH += shape.h;
+                }
+            }
+
+            var output = new BufferShape(first.dims, outW, outH, 1, 1);
+            var storage = new BufferShape(3, outW, outH, 1, 1);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                storage,
+                request,
+                "command-buffer-pack4:concat-low-dim");
+        }
+
         private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferBinaryOp(
             NcnnParamModel.Layer layer,
             IReadOnlyList<NcnnTexturePlanTensorDescriptor> inputs,
@@ -2135,6 +2207,22 @@ namespace NcnnCompute
             if (shapes.Length != 2)
                 return RejectStrictCommandBufferPack4Node("BinaryOp CommandBuffer Pack4 requires exactly two descriptor-backed inputs.");
 
+            if (TryResolveStrictCommandBufferScalarSingleBinary(
+                    inputs[0],
+                    shapes[0],
+                    inputs[1],
+                    shapes[1],
+                    out var scalarSingleOutput,
+                    out var scalarSingleStorage))
+            {
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    scalarSingleOutput,
+                    scalarSingleStorage,
+                    request,
+                    "command-buffer-pack4:binary-scalar-single-broadcast");
+            }
+
             if ((shapes[0].dims == 3 || shapes[0].dims == 4)
                 && StrictPlanShapesEqual(shapes[0], shapes[1]))
             {
@@ -2148,6 +2236,44 @@ namespace NcnnCompute
                 return AcceptStrictCommandBufferPack4Node(layer, spatialBroadcastOutput, request, "command-buffer-pack4:binary-spatial-broadcast");
 
             return RejectStrictCommandBufferPack4Node("BinaryOp does not match an exact or channel-vector CommandBuffer Pack4 descriptor profile.");
+        }
+
+        private static bool TryResolveStrictCommandBufferScalarSingleBinary(
+            NcnnTexturePlanTensorDescriptor firstDescriptor,
+            BufferShape first,
+            NcnnTexturePlanTensorDescriptor secondDescriptor,
+            BufferShape second,
+            out BufferShape output,
+            out BufferShape storage)
+        {
+            output = default;
+            storage = default;
+            if (!HasStrictScalarLikePlanStorage(firstDescriptor, first)
+                || !HasStrictScalarLikePlanStorage(secondDescriptor, second)
+                || !NcnnBinaryOpLayerRepro.TryResolveScalarSingleBroadcastShapes(first, second, out _, out output, out storage))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private static bool HasStrictScalarLikePlanStorage(
+            NcnnTexturePlanTensorDescriptor descriptor,
+            BufferShape logicalShape)
+        {
+            var storage = descriptor?.storageShape;
+            if (storage == null || storage.Length != 5
+                || logicalShape.dims < 1 || logicalShape.dims > 2
+                || logicalShape.w <= 0 || logicalShape.h <= 0
+                || storage[1] != logicalShape.w
+                || storage[2] != (logicalShape.dims == 1 ? 1 : logicalShape.h)
+                || storage[3] != 1
+                || storage[4] != 1)
+            {
+                return false;
+            }
+
+            return storage[0] == 1 || storage[0] == 2 || storage[0] == 3;
         }
 
         private static bool TryResolveStrictCommandBufferSpatialBroadcast(
@@ -2470,12 +2596,45 @@ namespace NcnnCompute
             return AcceptStrictCommandBufferPack4Node(layer, input, request, "command-buffer-pack4:gelu");
         }
 
+        private static NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPnnxExpression(
+            NcnnParamModel.Layer layer,
+            NcnnTextureExecutionPlanRequest request)
+        {
+            if (!NcnnPnnxExpressionLayerRepro.TryResolveConstantValueCount(layer, out var valueCount, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            // This mirrors ExecuteCommandBuffer exactly: a rank-one logical list is materialized
+            // into a one-pack scalar Texture2DArray by NcnnOps.FillScalarTexture.
+            var logicalShape = new BufferShape(1, valueCount, 1, 1, 1);
+            var storageShape = new BufferShape(3, valueCount, 1, 1, 1);
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                logicalShape,
+                storageShape,
+                request,
+                "command-buffer-pack4:pnnx-expression-constant");
+        }
+
         private NcnnTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMemoryData(
             NcnnParamModel.Layer layer,
             NcnnTextureExecutionPlanRequest request)
         {
             if (!_memoryData.TryGetValue(layer.name, out var memory) || memory == null)
                 return RejectStrictCommandBufferPack4Node("MemoryData was not loaded for this node.");
+            if (memory.linearMatRt != null
+                && memory.linearMatRt.IsCreated()
+                && (memory.dims == 1 || memory.dims == 2)
+                && memory.w > 0
+                && memory.h > 0)
+            {
+                var linearLogicalShape = new BufferShape(memory.dims, memory.w, memory.h, 1, 1);
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    linearLogicalShape,
+                    linearLogicalShape,
+                    request,
+                    "command-buffer-pack4:memory-data-linear-mat");
+            }
             if (memory.channelVectorTexture == null
                 || memory.dims != 3
                 || memory.w != 1
@@ -3184,8 +3343,9 @@ namespace NcnnCompute
                 return RejectStrictCommandBufferPack4Node("Slice supports only descriptor-backed rank-one through rank-four tensors.");
             var linearMatInput = input.dims <= 2 && HasStrictLinearMatStorage(inputs[0], input);
             var pack4LinearInput = input.dims == 2 && HasStrictPack4LinearMatStorage(inputs[0], input);
-            if (input.dims <= 2 && !linearMatInput && !pack4LinearInput)
-                return RejectStrictCommandBufferPack4Node("Rank-one/rank-two Slice requires verified LinearMat or Pack4-Linear descriptor storage.");
+            var scalarPack4Input = input.dims <= 2 && HasStrictScalarLikePlanStorage(inputs[0], input);
+            if (input.dims <= 2 && !linearMatInput && !pack4LinearInput && !scalarPack4Input)
+                return RejectStrictCommandBufferPack4Node("Rank-one/rank-two Slice requires verified LinearMat, Pack4-Linear, or scalar Pack4 descriptor storage.");
             if (input.dims >= 3 && input.dims != 4 && !IsStrictAttentionMatMulInput(inputs[0], input))
                 return RejectStrictCommandBufferPack4Node("Rank-three Slice requires exact Pack4 logical/storage descriptor mapping.");
             if (input.dims == 4 && !HasStrictCdhwPack4Storage(inputs[0], input))
@@ -3222,7 +3382,9 @@ namespace NcnnCompute
                 var storage = input.dims <= 2
                     ? linearMatInput
                         ? ResolveLinearMatStorageShape(output)
-                        : ResolvePack4LinearMatStorageShape(output)
+                        : pack4LinearInput
+                            ? ResolvePack4LinearMatStorageShape(output)
+                            : new BufferShape(3, output.w, output.dims == 2 ? output.h : 1, 1, 1)
                     : output;
 
                 outputs[index] = new NcnnTexturePlanTensorDescriptor
@@ -3250,7 +3412,9 @@ namespace NcnnCompute
                 executionPath = input.dims <= 2
                     ? linearMatInput
                         ? "command-buffer-pack4:slice-linear-mat"
-                        : "command-buffer-pack4:slice-pack4-linear"
+                        : pack4LinearInput
+                            ? "command-buffer-pack4:slice-pack4-linear"
+                            : "command-buffer-pack4:slice-scalar-pack4"
                     : input.dims == 4
                         ? "command-buffer-pack4:slice-pack4-cdhw"
                         : "command-buffer-pack4:slice-pack4",
