@@ -37,6 +37,8 @@ public sealed class NcnnInt8RunnerComparisonCase
     public NcnnInt8RunnerGpuStats fp32GpuStats;
     public NcnnInt8RunnerGpuStats fp16GpuStats;
     public NcnnInt8RunnerGpuStats int8SelectiveGpuStats;
+    public NcnnInt8RunnerPeakRtBufferComparison peakRtBufferComparison;
+    public NcnnInt8RunnerPackageWeightComparison packageWeightComparison;
     public NcnnInt8RunnerError fp16VsFp32;
     public NcnnInt8RunnerError int8SelectiveVsFp32;
     public float fp16CoverageDelta;
@@ -55,6 +57,23 @@ public sealed class NcnnInt8RunnerGpuStats
     public long peakTemporaryTextureBytes;
     public int peakBufferCount;
     public int peakTextureCount;
+}
+
+[Serializable]
+public sealed class NcnnInt8RunnerPeakRtBufferComparison
+{
+    public NcnnInt8RunnerGpuStats fp32;
+    public NcnnInt8RunnerGpuStats fp16;
+    public NcnnInt8RunnerGpuStats int8Selective;
+}
+
+[Serializable]
+public sealed class NcnnInt8RunnerPackageWeightComparison
+{
+    public string measurement = "param+bin+manifest asset bytes currently packaged";
+    public long fp32;
+    public long fp16;
+    public long int8Selective;
 }
 
 [Serializable]
@@ -131,6 +150,8 @@ public sealed class NcnnInt8RunnerComparisonTests
                 fp32GpuStats = fp32.stats,
                 fp16GpuStats = fp16.stats,
                 int8SelectiveGpuStats = int8.stats,
+                peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int8.stats),
+                packageWeightComparison = CreateMattingPackageWeightComparison(),
                 fp16VsFp32 = CompareTextureChannel(fp32.result.matte, fp16.result.matte, 0),
                 int8SelectiveVsFp32 = CompareTextureChannel(fp32.result.matte, int8.result.matte, 0),
                 fp16CoverageDelta = TextureMeanChannel(fp16.result.matte, 0) - TextureMeanChannel(fp32.result.matte, 0),
@@ -173,6 +194,8 @@ public sealed class NcnnInt8RunnerComparisonTests
                 fp32GpuStats = fp32.stats,
                 fp16GpuStats = fp16.stats,
                 int8SelectiveGpuStats = int8.stats,
+                peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int8.stats),
+                packageWeightComparison = CreateYoloPackageWeightComparison(),
                 fp16VsFp32 = CompareTextureChannel(fp32.result.mask, fp16.result.mask, 0),
                 int8SelectiveVsFp32 = CompareTextureChannel(fp32.result.mask, int8.result.mask, 0),
                 fp16CoverageDelta = fp16.result.maskCoverage01 - fp32.result.maskCoverage01,
@@ -218,6 +241,8 @@ public sealed class NcnnInt8RunnerComparisonTests
                 fp32GpuStats = fp32.stats,
                 fp16GpuStats = fp16.stats,
                 int8SelectiveGpuStats = int8.stats,
+                peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int8.stats),
+                packageWeightComparison = CreateClipPackageWeightComparison(),
                 fp16VsFp32 = CompareVector(fp32.result.imageEmbedding, fp16.result.imageEmbedding),
                 int8SelectiveVsFp32 = CompareVector(fp32.result.imageEmbedding, int8.result.imageEmbedding),
                 fp16CosineDistance = fp16CosineDistance,
@@ -336,6 +361,81 @@ public sealed class NcnnInt8RunnerComparisonTests
             peakBufferCount = stats.peakBufferCount,
             peakTextureCount = stats.peakTextureCount
         };
+    }
+
+    private static NcnnInt8RunnerPeakRtBufferComparison CreatePeakComparison(
+        NcnnInt8RunnerGpuStats fp32,
+        NcnnInt8RunnerGpuStats fp16,
+        NcnnInt8RunnerGpuStats int8Selective)
+    {
+        return new NcnnInt8RunnerPeakRtBufferComparison
+        {
+            fp32 = fp32,
+            fp16 = fp16,
+            int8Selective = int8Selective
+        };
+    }
+
+    private static NcnnInt8RunnerPackageWeightComparison CreateMattingPackageWeightComparison()
+    {
+        var root = Directory.GetCurrentDirectory();
+        var modelParam = Path.Combine(root, "Assets", "StreamingAssets", "Matting", "matting.param");
+        var modelBin = Path.Combine(root, "Assets", "StreamingAssets", "Matting", "matting.bin");
+        return CreatePackageWeightComparison(
+            new[] { modelParam, modelBin, ManifestPath("matting.fp32.model.json") },
+            new[] { modelParam, modelBin, ManifestPath("matting.fp16.model.json") },
+            new[] { modelParam, modelBin, ManifestPath("matting.int8.model.json") });
+    }
+
+    private static NcnnInt8RunnerPackageWeightComparison CreateYoloPackageWeightComparison()
+    {
+        var root = Directory.GetCurrentDirectory();
+        var modelParam = Path.Combine(root, "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.param");
+        var modelBin = Path.Combine(root, "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.bin");
+        return CreatePackageWeightComparison(
+            new[] { modelParam, modelBin },
+            new[] { modelParam, modelBin, ManifestPath("yolo-seg.fp16.model.json") },
+            new[] { modelParam, modelBin, ManifestPath("yolo-seg.int8.model.json") });
+    }
+
+    private static NcnnInt8RunnerPackageWeightComparison CreateClipPackageWeightComparison()
+    {
+        var root = Directory.GetCurrentDirectory();
+        var modelParam = Path.Combine(root, "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.param");
+        var modelBin = Path.Combine(root, "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.bin");
+        return CreatePackageWeightComparison(
+            new[] { modelParam, modelBin, ManifestPath("clip-mobileclip-s0.fp32.model.json") },
+            new[] { modelParam, modelBin, ManifestPath("clip-mobileclip-s0.fp16.model.json") },
+            new[] { modelParam, modelBin, ManifestPath("clip-mobileclip-s0.int8.model.json") });
+    }
+
+    private static NcnnInt8RunnerPackageWeightComparison CreatePackageWeightComparison(
+        string[] fp32,
+        string[] fp16,
+        string[] int8Selective)
+    {
+        return new NcnnInt8RunnerPackageWeightComparison
+        {
+            fp32 = SumExistingFileBytes(fp32),
+            fp16 = SumExistingFileBytes(fp16),
+            int8Selective = SumExistingFileBytes(int8Selective)
+        };
+    }
+
+    private static string ManifestPath(string fileName)
+    {
+        return Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "InferenceManifests", fileName);
+    }
+
+    private static long SumExistingFileBytes(string[] paths)
+    {
+        long total = 0;
+        foreach (var path in paths ?? Array.Empty<string>())
+        {
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                total += new FileInfo(path).Length;
+        }
+        return total;
     }
 
     private static IEnumerator WaitForTask(Task task)

@@ -10,7 +10,7 @@ using UnityEngine;
 public sealed class NcnnInt8WeightOnlyTests
 {
     [Test]
-    public void ManifestParser_AcceptsD2WeightOnlyAndRequiresPlansForW8A8()
+    public void ManifestParser_AcceptsD2SelectiveInt8AndRequiresPlansForW8A8()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
         var manifest = NcnnModelManifestLoader.LoadFromFile(Path.Combine(
@@ -18,7 +18,7 @@ public sealed class NcnnInt8WeightOnlyTests
             "Assets",
             "StreamingAssets",
             "InferenceManifests",
-            "clip-mobileclip-s0.int8wo.model.json"));
+            "clip-mobileclip-s0.int8.model.json"));
 
         Assert.That(manifest.IsInt8WeightOnly, Is.True);
         Assert.That(manifest.precision.activationDataType, Is.EqualTo(TensorDataType.Float16));
@@ -27,8 +27,10 @@ public sealed class NcnnInt8WeightOnlyTests
         Assert.That(manifest.quantization.symmetric, Is.True);
         Assert.That(manifest.quantization.zeroPoint, Is.Zero);
         Assert.That(manifest.quantization.accumulationDataType, Is.EqualTo(TensorDataType.Float32));
-        Assert.That(manifest.quantization.activationQuantized, Is.False);
+        Assert.That(manifest.quantization.activationQuantized, Is.True);
         Assert.That(manifest.quantization.unquantizedWeightDataType, Is.EqualTo(TensorDataType.Float32));
+        Assert.That(manifest.TryGetQuantizedNodePlan("gemm_0", "Gemm", out var manifestGemm), Is.True);
+        Assert.That(manifestGemm.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));
         Assert.That(manifest.UsesInt8WeightOnlyForOperator("InnerProduct"), Is.True);
         Assert.That(manifest.UsesInt8WeightOnlyForOperator("LayerNorm"), Is.False);
 

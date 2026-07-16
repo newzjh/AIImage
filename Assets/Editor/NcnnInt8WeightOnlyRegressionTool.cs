@@ -38,11 +38,9 @@ public sealed class NcnnInt8WeightOnlyRegressionCase
     public long fp32RtBytes;
     public long fp16RtBytes;
     public long int8SelectiveRtBytes;
-    public long int8WeightOnlyRtBytes;
     public NcnnInt8WeightOnlyGpuTiming gpuSubmitAndReadback;
     public NcnnInt8WeightOnlyError fp16VsFp32;
     public NcnnInt8WeightOnlyError int8SelectiveVsFp32;
-    public NcnnInt8WeightOnlyError int8WeightOnlyVsFp32;
 }
 
 [Serializable]
@@ -68,7 +66,32 @@ public sealed class NcnnInt8WeightOnlyGpuTiming
     public double fp32Milliseconds;
     public double fp16Milliseconds;
     public double int8SelectiveMilliseconds;
-    public double int8WeightOnlyMilliseconds;
+    public NcnnInt8PeakResources fp32PeakResources;
+    public NcnnInt8PeakResources fp16PeakResources;
+    public NcnnInt8PeakResources int8SelectivePeakResources;
+}
+
+[Serializable]
+public sealed class NcnnInt8PeakResources
+{
+    public long peakBufferBytes;
+    public long peakTextureBytes;
+    public long peakTotalBytes;
+    public long peakTemporaryTextureBytes;
+    public int peakBufferCount;
+    public int peakTextureCount;
+}
+
+internal readonly struct NcnnInt8GpuModeMeasurement
+{
+    public readonly double milliseconds;
+    public readonly NcnnInt8PeakResources peakResources;
+
+    public NcnnInt8GpuModeMeasurement(double milliseconds, NcnnInt8PeakResources peakResources)
+    {
+        this.milliseconds = milliseconds;
+        this.peakResources = peakResources;
+    }
 }
 
 // Numeric errors use deterministic CPU oracle arithmetic. GPU timings use the actual
@@ -213,7 +236,6 @@ public static class NcnnInt8WeightOnlyRegressionTool
         var fp16 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, null, null, 0f);
         Quantize(weights, outChannels, weightCount / outChannels, true, out var quantized, out var scales);
         const float activationScale = 0.0078125f;
-        var int8WeightOnly = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, quantized, scales, 0f);
         var int8 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, quantized, scales, activationScale);
 
         var result = CreateCase(
@@ -227,8 +249,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
             outputHeight,
             fp32,
             fp16,
-            int8,
-            int8WeightOnly);
+            int8);
         result.gpuSubmitAndReadback = MeasureMattingGpuTiming(
             weights,
             bias,
@@ -266,7 +287,6 @@ public static class NcnnInt8WeightOnlyRegressionTool
         var fp16 = RunGemm(input, weights, bias, pack.constantN, pack.constantK, true, null, null, 0f);
         Quantize(weights, pack.constantN, pack.constantK, pack.transB, out var quantized, out var scales);
         const float activationScale = 0.03125f;
-        var int8WeightOnly = RunGemm(input, weights, bias, pack.constantN, pack.constantK, true, quantized, scales, 0f);
         var int8 = RunGemm(input, weights, bias, pack.constantN, pack.constantK, true, quantized, scales, activationScale);
 
         var result = CreateCase(
@@ -281,7 +301,6 @@ public static class NcnnInt8WeightOnlyRegressionTool
             fp32,
             fp16,
             int8,
-            int8WeightOnly,
             rtPackCountOverride: 1);
         result.gpuSubmitAndReadback = MeasureFrozenClipGpuTiming(weights, bias, input, pack.constantN, pack.constantK, activationScale);
         return result;
@@ -299,10 +318,8 @@ public static class NcnnInt8WeightOnlyRegressionTool
         float[] fp32,
         float[] fp16,
         float[] int8,
-        float[] int8WeightOnly = null,
         int rtPackCountOverride = 0)
     {
-        int8WeightOnly ??= int8;
         var packCount = rtPackCountOverride > 0 ? rtPackCountOverride : (outputChannels + 3) / 4;
         var fp32RtBytes = (long)outputWidth * outputHeight * packCount * 16;
         var fp16RtBytes = (long)outputWidth * outputHeight * packCount * 8;
@@ -322,10 +339,8 @@ public static class NcnnInt8WeightOnlyRegressionTool
             fp32RtBytes = fp32RtBytes,
             fp16RtBytes = fp16RtBytes,
             int8SelectiveRtBytes = fp16RtBytes,
-            int8WeightOnlyRtBytes = fp16RtBytes,
             fp16VsFp32 = Compare(fp32, fp16),
-            int8SelectiveVsFp32 = Compare(fp32, int8),
-            int8WeightOnlyVsFp32 = Compare(fp32, int8WeightOnly)
+            int8SelectiveVsFp32 = Compare(fp32, int8)
         };
     }
 
@@ -372,8 +387,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
             return CreateAvailableGpuTiming(
                 MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.FP32),
                 MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.FP16),
-                MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.INT8Selective, activationScale),
-                MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.INT8WeightOnly));
+                MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.INT8Selective, activationScale));
         }
         catch (Exception exception)
         {
@@ -399,7 +413,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         }
     }
 
-    private static double MeasureMattingGpuMode(
+    private static NcnnInt8GpuModeMeasurement MeasureMattingGpuMode(
         NcnnRepro repro,
         NcnnOps ops,
         float[] input,
@@ -420,50 +434,62 @@ public static class NcnnInt8WeightOnlyRegressionTool
         NcnnPrecisionMode precision,
         float activationScale = 0f)
     {
-        var format = precision == NcnnPrecisionMode.FP32 ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
-        var inputPacks = (inputChannels + 3) / 4;
-        var outputPacks = (outputChannels + 3) / 4;
-        var inputTexture = CreatePackedChwInputTexture(input, inputWidth, inputHeight, inputChannels, format);
-        var persistentOutputs = CreatePersistentOutputs(outputPacks, outputWidth, outputHeight, format);
+        var previousTracker = NcnnGpuResourceTracker.Enabled;
+        NcnnGpuResourceTracker.Enabled = true;
+        NcnnGpuResourceTracker.Reset("NcnnInt8SelectiveRegression.Conv." + precision);
         try
         {
-            var useInt8 = precision == NcnnPrecisionMode.INT8WeightOnly || precision == NcnnPrecisionMode.INT8Selective;
-            ops.SetFp16ConvWeights(precision == NcnnPrecisionMode.FP16 ? fp16Weights : null);
-            ops.SetInt8ConvWeights(useInt8 ? int8Weights.packedWeights : null, useInt8 ? int8Weights.scales : null);
-            ops.SetInt8ActivationQuantization(precision == NcnnPrecisionMode.INT8Selective && activationScale > 0f
-                ? new QuantizedNodePlan
-                {
-                    mode = QuantizedNodeMode.Int8W8A8,
-                    activationScale = activationScale,
-                    activationZeroPoint = 0
-                }
-                : null);
-            return MeasureGpuSubmitAndReadback(() => DispatchMattingConv(
-                repro,
-                ops,
-                inputTexture,
-                inputPacks,
-                inputWidth,
-                inputHeight,
-                inputChannels,
-                outputWidth,
-                outputHeight,
-                outputChannels,
-                kernel,
-                stride,
-                pad,
-                format,
-                packedWeights,
-                packedBias,
-                useInt8 ? int8Weights.packedWeights : packedWeights,
-                rawBias,
-                useInt8,
-                persistentOutputs));
+            var format = precision == NcnnPrecisionMode.FP32 ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+            var inputPacks = (inputChannels + 3) / 4;
+            var outputPacks = (outputChannels + 3) / 4;
+            RegisterConvModeBuffers(precision, packedWeights, packedBias, rawBias, fp16Weights, int8Weights);
+            var inputTexture = CreatePackedChwInputTexture(input, inputWidth, inputHeight, inputChannels, format);
+            var persistentOutputs = CreatePersistentOutputs(outputPacks, outputWidth, outputHeight, format, "NcnnInt8SelectiveRegression.ConvOutput." + precision);
+            try
+            {
+                var useInt8 = precision == NcnnPrecisionMode.INT8Selective;
+                ops.SetFp16ConvWeights(precision == NcnnPrecisionMode.FP16 ? fp16Weights : null);
+                ops.SetInt8ConvWeights(useInt8 ? int8Weights.packedWeights : null, useInt8 ? int8Weights.scales : null);
+                ops.SetInt8ActivationQuantization(precision == NcnnPrecisionMode.INT8Selective && activationScale > 0f
+                    ? new QuantizedNodePlan
+                    {
+                        mode = QuantizedNodeMode.Int8W8A8,
+                        activationScale = activationScale,
+                        activationZeroPoint = 0
+                    }
+                    : null);
+                var milliseconds = MeasureGpuSubmitAndReadback(() => DispatchMattingConv(
+                    repro,
+                    ops,
+                    inputTexture,
+                    inputPacks,
+                    inputWidth,
+                    inputHeight,
+                    inputChannels,
+                    outputWidth,
+                    outputHeight,
+                    outputChannels,
+                    kernel,
+                    stride,
+                    pad,
+                    format,
+                    packedWeights,
+                    packedBias,
+                    useInt8 ? int8Weights.packedWeights : packedWeights,
+                    rawBias,
+                    useInt8,
+                    persistentOutputs));
+                return new NcnnInt8GpuModeMeasurement(milliseconds, CapturePeakResources());
+            }
+            finally
+            {
+                ReleasePersistentOutputs(persistentOutputs, "NcnnInt8SelectiveRegression.ConvOutput." + precision);
+                UnityEngine.Object.DestroyImmediate(inputTexture);
+            }
         }
         finally
         {
-            ReleasePersistentOutputs(persistentOutputs);
-            UnityEngine.Object.DestroyImmediate(inputTexture);
+            NcnnGpuResourceTracker.Enabled = previousTracker;
         }
     }
 
@@ -504,10 +530,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
             var int8Ms = MeasureFrozenClipGpuMode(
                 repro, ops, input, outputFeatures, inputFeatures, RenderTextureFormat.ARGBHalf,
                 fp32, biasBuffer, fp16, int8, unusedWeightBinding, NcnnPrecisionMode.INT8Selective, activationScale);
-            var int8WeightOnlyMs = MeasureFrozenClipGpuMode(
-                repro, ops, input, outputFeatures, inputFeatures, RenderTextureFormat.ARGBHalf,
-                fp32, biasBuffer, fp16, int8, unusedWeightBinding, NcnnPrecisionMode.INT8WeightOnly);
-            return CreateAvailableGpuTiming(fp32Ms, fp16Ms, int8Ms, int8WeightOnlyMs);
+            return CreateAvailableGpuTiming(fp32Ms, fp16Ms, int8Ms);
         }
         catch (Exception exception)
         {
@@ -533,7 +556,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         }
     }
 
-    private static double MeasureFrozenClipGpuMode(
+    private static NcnnInt8GpuModeMeasurement MeasureFrozenClipGpuMode(
         NcnnRepro repro,
         NcnnOps ops,
         float[] input,
@@ -548,36 +571,48 @@ public static class NcnnInt8WeightOnlyRegressionTool
         NcnnPrecisionMode precision,
         float activationScale = 0f)
     {
-        var inputTexture = CreatePackedLinearInputTexture(input, format);
-        var persistentOutputs = CreatePersistentOutputs(1, (outputFeatures + 3) / 4, 1, format);
+        var previousTracker = NcnnGpuResourceTracker.Enabled;
+        NcnnGpuResourceTracker.Enabled = true;
+        NcnnGpuResourceTracker.Reset("NcnnInt8SelectiveRegression.Gemm." + precision);
         try
         {
-            var useInt8 = precision == NcnnPrecisionMode.INT8WeightOnly || precision == NcnnPrecisionMode.INT8Selective;
-            ops.SetFp16GemmWeights(precision == NcnnPrecisionMode.FP16 ? fp16Weights : null);
-            ops.SetInt8GemmWeights(useInt8 ? int8Weights.packedWeights : null, useInt8 ? int8Weights.scales : null);
-            ops.SetInt8ActivationQuantization(precision == NcnnPrecisionMode.INT8Selective
-                ? new QuantizedNodePlan
-                {
-                    mode = QuantizedNodeMode.Int8W8A8,
-                    activationScale = activationScale,
-                    activationZeroPoint = 0
-                }
-                : null);
-            return MeasureGpuSubmitAndReadback(() => DispatchFrozenClipProjection(
-                repro,
-                ops,
-                inputTexture,
-                inputFeatures,
-                outputFeatures,
-                format,
-                useInt8 ? unusedWeightBinding : fp32Weights,
-                bias,
-                persistentOutputs));
+            RegisterGemmModeBuffers(precision, fp32Weights, bias, fp16Weights, int8Weights, unusedWeightBinding);
+            var inputTexture = CreatePackedLinearInputTexture(input, format);
+            var persistentOutputs = CreatePersistentOutputs(1, (outputFeatures + 3) / 4, 1, format, "NcnnInt8SelectiveRegression.GemmOutput." + precision);
+            try
+            {
+                var useInt8 = precision == NcnnPrecisionMode.INT8Selective;
+                ops.SetFp16GemmWeights(precision == NcnnPrecisionMode.FP16 ? fp16Weights : null);
+                ops.SetInt8GemmWeights(useInt8 ? int8Weights.packedWeights : null, useInt8 ? int8Weights.scales : null);
+                ops.SetInt8ActivationQuantization(precision == NcnnPrecisionMode.INT8Selective
+                    ? new QuantizedNodePlan
+                    {
+                        mode = QuantizedNodeMode.Int8W8A8,
+                        activationScale = activationScale,
+                        activationZeroPoint = 0
+                    }
+                    : null);
+                var milliseconds = MeasureGpuSubmitAndReadback(() => DispatchFrozenClipProjection(
+                    repro,
+                    ops,
+                    inputTexture,
+                    inputFeatures,
+                    outputFeatures,
+                    format,
+                    useInt8 ? unusedWeightBinding : fp32Weights,
+                    bias,
+                    persistentOutputs));
+                return new NcnnInt8GpuModeMeasurement(milliseconds, CapturePeakResources());
+            }
+            finally
+            {
+                ReleasePersistentOutputs(persistentOutputs, "NcnnInt8SelectiveRegression.GemmOutput." + precision);
+                UnityEngine.Object.DestroyImmediate(inputTexture);
+            }
         }
         finally
         {
-            ReleasePersistentOutputs(persistentOutputs);
-            UnityEngine.Object.DestroyImmediate(inputTexture);
+            NcnnGpuResourceTracker.Enabled = previousTracker;
         }
     }
 
@@ -726,7 +761,10 @@ public static class NcnnInt8WeightOnlyRegressionTool
         return true;
     }
 
-    private static NcnnInt8WeightOnlyGpuTiming CreateAvailableGpuTiming(double fp32Ms, double fp16Ms, double int8Ms, double int8WeightOnlyMs)
+    private static NcnnInt8WeightOnlyGpuTiming CreateAvailableGpuTiming(
+        NcnnInt8GpuModeMeasurement fp32,
+        NcnnInt8GpuModeMeasurement fp16,
+        NcnnInt8GpuModeMeasurement int8Selective)
     {
         return new NcnnInt8WeightOnlyGpuTiming
         {
@@ -738,10 +776,12 @@ public static class NcnnInt8WeightOnlyRegressionTool
             graphicsDeviceType = SystemInfo.graphicsDeviceType.ToString(),
             graphicsDeviceVersion = SystemInfo.graphicsDeviceVersion,
             unityVersion = Application.unityVersion,
-            fp32Milliseconds = fp32Ms,
-            fp16Milliseconds = fp16Ms,
-            int8SelectiveMilliseconds = int8Ms,
-            int8WeightOnlyMilliseconds = int8WeightOnlyMs
+            fp32Milliseconds = fp32.milliseconds,
+            fp16Milliseconds = fp16.milliseconds,
+            int8SelectiveMilliseconds = int8Selective.milliseconds,
+            fp32PeakResources = fp32.peakResources,
+            fp16PeakResources = fp16.peakResources,
+            int8SelectivePeakResources = int8Selective.peakResources
         };
     }
 
@@ -765,6 +805,74 @@ public static class NcnnInt8WeightOnlyRegressionTool
         var buffer = new ComputeBuffer(values.Length, sizeof(float), ComputeBufferType.Structured);
         buffer.SetData(values);
         return buffer;
+    }
+
+    private static void RegisterConvModeBuffers(
+        NcnnPrecisionMode precision,
+        ComputeBuffer packedWeights,
+        ComputeBuffer packedBias,
+        ComputeBuffer rawBias,
+        ComputeBuffer fp16Weights,
+        NcnnRepro.Int8WeightOnlyUpload int8Weights)
+    {
+        if (precision == NcnnPrecisionMode.FP32)
+        {
+            RegisterModeBuffer(packedWeights, "NcnnInt8SelectiveRegression.Conv.FP32Weights");
+            RegisterModeBuffer(packedBias, "NcnnInt8SelectiveRegression.Conv.FP32Bias");
+        }
+        else if (precision == NcnnPrecisionMode.FP16)
+        {
+            RegisterModeBuffer(packedWeights, "NcnnInt8SelectiveRegression.Conv.FP16BaseWeights");
+            RegisterModeBuffer(fp16Weights, "NcnnInt8SelectiveRegression.Conv.FP16Weights");
+            RegisterModeBuffer(packedBias, "NcnnInt8SelectiveRegression.Conv.FP16Bias");
+        }
+        else if (precision == NcnnPrecisionMode.INT8Selective)
+        {
+            RegisterModeBuffer(int8Weights?.packedWeights, "NcnnInt8SelectiveRegression.Conv.Int8PackedWeights");
+            RegisterModeBuffer(int8Weights?.scales, "NcnnInt8SelectiveRegression.Conv.Int8Scales");
+            RegisterModeBuffer(rawBias, "NcnnInt8SelectiveRegression.Conv.Int8Bias");
+        }
+    }
+
+    private static void RegisterGemmModeBuffers(
+        NcnnPrecisionMode precision,
+        ComputeBuffer fp32Weights,
+        ComputeBuffer bias,
+        ComputeBuffer fp16Weights,
+        NcnnRepro.Int8WeightOnlyUpload int8Weights,
+        ComputeBuffer unusedWeightBinding)
+    {
+        RegisterModeBuffer(bias, "NcnnInt8SelectiveRegression.Gemm.Bias");
+        if (precision == NcnnPrecisionMode.FP32)
+            RegisterModeBuffer(fp32Weights, "NcnnInt8SelectiveRegression.Gemm.FP32Weights");
+        else if (precision == NcnnPrecisionMode.FP16)
+            RegisterModeBuffer(fp16Weights, "NcnnInt8SelectiveRegression.Gemm.FP16Weights");
+        else if (precision == NcnnPrecisionMode.INT8Selective)
+        {
+            RegisterModeBuffer(int8Weights?.packedWeights, "NcnnInt8SelectiveRegression.Gemm.Int8PackedWeights");
+            RegisterModeBuffer(int8Weights?.scales, "NcnnInt8SelectiveRegression.Gemm.Int8Scales");
+            RegisterModeBuffer(unusedWeightBinding, "NcnnInt8SelectiveRegression.Gemm.UnusedFloatWeightBinding");
+        }
+    }
+
+    private static void RegisterModeBuffer(ComputeBuffer buffer, string label)
+    {
+        if (buffer != null)
+            NcnnGpuResourceTracker.RegisterBuffer(buffer, buffer.count, buffer.stride, label);
+    }
+
+    private static NcnnInt8PeakResources CapturePeakResources()
+    {
+        var stats = NcnnGpuResourceTracker.GetStatsSnapshot();
+        return new NcnnInt8PeakResources
+        {
+            peakBufferBytes = stats.peakBufferBytes,
+            peakTextureBytes = stats.peakTextureBytes,
+            peakTotalBytes = stats.peakTotalBytes,
+            peakTemporaryTextureBytes = stats.peakTemporaryTextureBytes,
+            peakBufferCount = stats.peakBufferCount,
+            peakTextureCount = stats.peakTextureCount
+        };
     }
 
     private static Texture2DArray CreatePackedChwInputTexture(float[] values, int width, int height, int channels, RenderTextureFormat format)
@@ -815,7 +923,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         return format == RenderTextureFormat.ARGBHalf ? TextureFormat.RGBAHalf : TextureFormat.RGBAFloat;
     }
 
-    private static RenderTexture[] CreatePersistentOutputs(int count, int width, int height, RenderTextureFormat format)
+    private static RenderTexture[] CreatePersistentOutputs(int count, int width, int height, RenderTextureFormat format, string label)
     {
         var outputs = new RenderTexture[count];
         for (var index = 0; index < outputs.Length; index++)
@@ -828,19 +936,26 @@ public static class NcnnInt8WeightOnlyRegressionTool
                 msaaSamples = 1
             });
             outputs[index].Create();
+            NcnnGpuResourceTracker.RegisterTexture(outputs[index], label + "." + index);
         }
         return outputs;
     }
 
-    private static void ReleasePersistentOutputs(RenderTexture[] outputs)
+    private static void ReleasePersistentOutputs(RenderTexture[] outputs, string label)
     {
+        var index = 0;
         foreach (var output in outputs ?? Array.Empty<RenderTexture>())
         {
             if (output == null)
+            {
+                index++;
                 continue;
+            }
+            NcnnGpuResourceTracker.ReleaseTexture(output, label + "." + index);
             if (output.IsCreated())
                 output.Release();
             UnityEngine.Object.DestroyImmediate(output);
+            index++;
         }
     }
 
