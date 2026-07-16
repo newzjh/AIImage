@@ -36,6 +36,24 @@ float4 NcnnMaskConvOutputTail(float4 value, int outputPack)
     return value;
 }
 
+float NcnnReadPackedConvInt8(int index)
+{
+    uint packed = _ConvWInt8Packed[index >> 2];
+    uint raw = (packed >> ((index & 3) * 8)) & 0xffu;
+    int signedValue = raw >= 128u ? (int)raw - 256 : (int)raw;
+    return (float)signedValue;
+}
+
+// Raw OIHW is only used by the group/tail-safe CommandBuffer Conv kernels. The
+// output-channel scale is applied during the texture dispatch, never by expanding
+// the immutable INT8 payload to a temporary float buffer.
+float NcnnReadRawConvWeight(int index, int outputChannel)
+{
+    if (_UseInt8ConvWeights == 0)
+        return _ConvW[index];
+    return NcnnReadPackedConvInt8(index) * _ConvWInt8Scales[outputChannel];
+}
+
 void NcnnPackRgbToPack4_Impl(uint3 id)
 {
     uint w, h, d;
@@ -446,7 +464,7 @@ void NcnnConv2dGroupPack4_Impl(uint3 id)
                     int ix = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
                     if (ix < 0 || ix >= _InW)
                         continue;
-                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * _ConvW[kernelBase + ky * _KernelWVar + kx];
+                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * NcnnReadRawConvWeight(kernelBase + ky * _KernelWVar + kx, oc);
                 }
             }
         }
@@ -509,7 +527,7 @@ void NcnnDeconvolution2dGroupPack4_Impl(uint3 id)
                     int ix = ixNumerator / _StrideWVar;
                     if (ix < 0 || ix >= _InW)
                         continue;
-                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * _ConvW[kernelBase + ky * _KernelWVar + kx];
+                    value += NcnnReadPack4Channel(_ConvInArr, ix, iy, ic) * NcnnReadRawConvWeight(kernelBase + ky * _KernelWVar + kx, oc);
                 }
             }
         }

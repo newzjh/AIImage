@@ -260,6 +260,7 @@ namespace NcnnCompute
 
             // MHA weights stay FP32. Do not inherit the preceding InnerProduct/Gemm FP16 upload.
             owner.Ops.SetFp16GemmWeights(null);
+            owner.Ops.SetInt8GemmWeights(null, null);
             if (!TryResolveRtOnlyPlan(owner, layer, context.textureBlobs, context.textureShapes, out var plan))
                 return false;
 
@@ -355,6 +356,7 @@ namespace NcnnCompute
 
             // MHA weights stay FP32. Do not inherit the preceding InnerProduct/Gemm FP16 upload.
             owner.Ops.SetFp16GemmWeights(null);
+            owner.Ops.SetInt8GemmWeights(null, null);
             if (!TryResolveCmdRtOnlyPlan(owner, layer, context.blobs, context.shapes, out var plan))
                 return false;
 

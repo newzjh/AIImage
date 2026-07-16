@@ -85,11 +85,14 @@ namespace NcnnCompute
                                         // The Cmd Pack4 generic group kernel reads immutable weights only;
                                         // activations and outputs never materialize to a ComputeBuffer.
                                         phaseSw.Restart();
-                                        NcnnRepro.UploadRawConvWeights(pack, w, b);
+                                        if (owner.UsesInt8WeightOnlyForLayer(layer))
+                                            NcnnRepro.UploadInt8WeightOnlyConvWeights(pack, w, b, layer.name);
+                                        else
+                                            NcnnRepro.UploadRawConvWeights(pack, w, b);
                                         phaseSw.Stop();
                                         uploadMs += phaseSw.ElapsedMilliseconds;
 
-                                        if (needGeneralTexturePack)
+                                        if (needGeneralTexturePack && !owner.UsesInt8WeightOnlyForLayer(layer))
                                         {
                                             phaseSw.Restart();
                                             var w4 = NcnnRepro.PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
@@ -118,7 +121,7 @@ namespace NcnnCompute
                                             phaseSw.Stop();
                                             packMs += phaseSw.ElapsedMilliseconds;
                                         }
-                                        else if (needDepthWiseTexturePack)
+                                        else if (needDepthWiseTexturePack && !owner.UsesInt8WeightOnlyForLayer(layer))
                                         {
                                             phaseSw.Restart();
                                             var w4 = NcnnRepro.PackDepthWiseWeightsToP4KhKw(w, pack.outC, pack.kernelW, pack.kernelH, pack.outPacks);
@@ -322,7 +325,18 @@ namespace NcnnCompute
             try
             {
                 output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                if (SupportsDepthWiseTexturePath(conv) && (conv.outC & 3) == 0 && conv.packedDepthWiseWeight4 != null && conv.packedBias4 != null)
+                var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
+                owner.Ops.SetInt8ConvWeights(
+                    useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
+                    useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+                if (useInt8WeightOnly)
+                {
+                    owner.Ops.Conv2dGroupPack4(
+                        cmd, src.texture, conv.rawWeightInt8Packed, conv.rawBias, conv.inC, conv.outC, conv.group,
+                        conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop,
+                        conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
+                }
+                else if (SupportsDepthWiseTexturePath(conv) && (conv.outC & 3) == 0 && conv.packedDepthWiseWeight4 != null && conv.packedBias4 != null)
                 {
                     owner.Ops.SetFp16DepthWiseWeights(owner.UsesFp16WeightStorage ? conv.packedDepthWiseWeight4Fp16 : null);
                     owner.Ops.ConvDepthWisePack4(cmd, src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
@@ -407,7 +421,7 @@ namespace NcnnCompute
         private static bool SupportsCommandBufferPack4(NcnnRepro.ConvPack conv, out string reason)
         {
             reason = null;
-            if (conv == null || conv.rawWeight == null || conv.rawBias == null)
+            if (conv == null || (conv.rawWeight == null && conv.rawWeightInt8Packed == null) || conv.rawBias == null)
                 reason = "immutable scalar weights/bias are unavailable";
             else if (!conv.isDepthWise)
                 reason = "layer profile is not ConvolutionDepthWise";

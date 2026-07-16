@@ -494,8 +494,11 @@ void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
 
 StructuredBuffer<float> _ConvIn;
 StructuredBuffer<float> _ConvW;
+StructuredBuffer<uint> _ConvWInt8Packed;
+StructuredBuffer<float> _ConvWInt8Scales;
 StructuredBuffer<float> _ConvB;
 RWStructuredBuffer<float> _ConvOut;
+int _UseInt8ConvWeights;
 Texture2DArray<float4> _Pack4ChannelInArr;
 RWTexture2DArray<float4> _Pack4ChannelOutArr;
 int _Pack4ChannelCount;
@@ -1780,6 +1783,8 @@ int _GeluFast;
 StructuredBuffer<float> _MatA;
 StructuredBuffer<float> _MatB;
 StructuredBuffer<uint> _MatBFp16;
+StructuredBuffer<uint> _MatBInt8Packed;
+StructuredBuffer<float> _MatBInt8Scales;
 StructuredBuffer<float> _MatC;
 RWStructuredBuffer<float> _MatOut;
 
@@ -1796,6 +1801,7 @@ int _MatBroadcastTypeC;
 float _MatAlpha;
 float _MatBeta;
 int _UseFp16GemmWeights;
+int _UseInt8GemmWeights;
 int _MatPack4ABatchD;
 int _MatPack4ABatchC;
 int _MatPack4BBatchD;

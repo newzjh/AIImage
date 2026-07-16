@@ -37,6 +37,15 @@ namespace AIImage.Inference.Core
         Int32 = 5
     }
 
+    // D2 intentionally exposes one narrowly-scoped quantized storage contract.  It is
+    // not an activation quantization API: activations and intermediate tensors remain
+    // Float16/Float32 Pack4 textures while only immutable weights are stored as INT8.
+    public enum WeightQuantizationScheme
+    {
+        None = 0,
+        Int8WeightOnlyPerOutputChannelSymmetric = 1
+    }
+
     // Precision is a model contract, rather than a renderer-wide switch.  The public
     // fields deliberately remain serializer-friendly so importers may use Unity's JSON
     // support without making the core package depend on Unity.
@@ -51,7 +60,7 @@ namespace AIImage.Inference.Core
         public void Validate()
         {
             ValidateFloatingType(activationDataType, nameof(activationDataType));
-            ValidateFloatingType(weightDataType, nameof(weightDataType));
+            ValidateWeightType(weightDataType, nameof(weightDataType));
             ValidateFloatingType(sensitiveOutputDataType, nameof(sensitiveOutputDataType));
         }
 
@@ -59,6 +68,90 @@ namespace AIImage.Inference.Core
         {
             if (value != TensorDataType.Float16 && value != TensorDataType.Float32)
                 throw new InferenceContractException("Model precision " + name + " must be Float16 or Float32; INT8 is not part of this contract.");
+        }
+
+        private static void ValidateWeightType(TensorDataType value, string name)
+        {
+            if (value != TensorDataType.Float16
+                && value != TensorDataType.Float32
+                && value != TensorDataType.Int8)
+            {
+                throw new InferenceContractException(
+                    "Model precision " + name + " must be Float16, Float32, or INT8 weight-only.");
+            }
+        }
+    }
+
+    // The serialized names are deliberately explicit so a released model records both
+    // the mathematical policy and the calibration provenance required to reproduce it.
+    [Serializable]
+    public sealed class ModelQuantizationContract
+    {
+        public string quantizationVersion = string.Empty;
+        public string calibrationVersion = string.Empty;
+        public string calibrationMethod = string.Empty;
+        public WeightQuantizationScheme weightScheme = WeightQuantizationScheme.None;
+        public int outputChannelAxis = 0;
+        public bool symmetric = true;
+        public int zeroPoint = 0;
+        public TensorDataType accumulationDataType = TensorDataType.Float32;
+        public bool activationQuantized;
+        // D2 permits a model to quantize only the nodes for which a packed texture
+        // kernel exists.  An empty list preserves the v1 all-weight legacy behavior
+        // (and therefore its strict rejection of every unsupported weighted op).
+        public string[] quantizedOperators = Array.Empty<string>();
+        public TensorDataType unquantizedWeightDataType = TensorDataType.Float32;
+
+        public bool IsInt8WeightOnly => weightScheme == WeightQuantizationScheme.Int8WeightOnlyPerOutputChannelSymmetric;
+
+        public void ValidateInt8WeightOnly()
+        {
+            if (!IsInt8WeightOnly)
+                throw new InferenceContractException("Only INT8 per-output-channel weight-only quantization is supported.");
+            if (string.IsNullOrWhiteSpace(quantizationVersion))
+                throw new InferenceContractException("INT8 weight-only quantization requires a quantizationVersion.");
+            if (string.IsNullOrWhiteSpace(calibrationVersion))
+                throw new InferenceContractException("INT8 weight-only quantization requires a calibrationVersion.");
+            if (string.IsNullOrWhiteSpace(calibrationMethod))
+                throw new InferenceContractException("INT8 weight-only quantization requires a calibrationMethod.");
+            if (outputChannelAxis != 0)
+                throw new InferenceContractException("INT8 weight-only quantization supports only outputChannelAxis=0.");
+            if (!symmetric || zeroPoint != 0)
+                throw new InferenceContractException("INT8 weight-only quantization is symmetric with zeroPoint=0.");
+            if (accumulationDataType != TensorDataType.Float32)
+                throw new InferenceContractException("INT8 weight-only kernels require Float32 accumulation.");
+            if (activationQuantized)
+                throw new InferenceContractException("INT8 weight-only does not quantize activations; W8A8 is not supported by this contract.");
+            if (unquantizedWeightDataType != TensorDataType.Float16
+                && unquantizedWeightDataType != TensorDataType.Float32)
+            {
+                throw new InferenceContractException("INT8 weight-only unquantized weights must remain Float16 or Float32.");
+            }
+            if (quantizedOperators != null)
+            {
+                for (var index = 0; index < quantizedOperators.Length; index++)
+                {
+                    if (string.IsNullOrWhiteSpace(quantizedOperators[index]))
+                        throw new InferenceContractException("INT8 weight-only quantizedOperators cannot contain an empty operator name.");
+                }
+            }
+        }
+
+        public bool QuantizesOperator(string operatorName)
+        {
+            // Manifests produced before selective D2 plans have no list.  Keep their
+            // fail-closed semantics: every immutable-weight node must prove an INT8
+            // kernel instead of silently remaining float.
+            if (quantizedOperators == null || quantizedOperators.Length == 0)
+                return true;
+            if (string.IsNullOrWhiteSpace(operatorName))
+                return false;
+            for (var index = 0; index < quantizedOperators.Length; index++)
+            {
+                if (string.Equals(quantizedOperators[index], operatorName, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
         }
     }
 
@@ -70,6 +163,7 @@ namespace AIImage.Inference.Core
         public string schemaVersion = Contract;
         public string modelId = string.Empty;
         public ModelPrecisionContract precision = new ModelPrecisionContract();
+        public ModelQuantizationContract quantization;
 
         public void Validate()
         {
@@ -80,6 +174,16 @@ namespace AIImage.Inference.Core
             if (precision == null)
                 throw new InferenceContractException("Model manifest requires a precision contract.");
             precision.Validate();
+            if (precision.weightDataType == TensorDataType.Int8)
+            {
+                if (quantization == null)
+                    throw new InferenceContractException("INT8 weights require a quantization contract.");
+                quantization.ValidateInt8WeightOnly();
+            }
+            else if (quantization != null && quantization.weightScheme != WeightQuantizationScheme.None)
+            {
+                throw new InferenceContractException("A quantization contract requires precision.weightDataType=Int8.");
+            }
         }
 
         public bool IsFp16Mixed
@@ -90,6 +194,22 @@ namespace AIImage.Inference.Core
                     && (precision.activationDataType == TensorDataType.Float16
                         || precision.weightDataType == TensorDataType.Float16);
             }
+        }
+
+        public bool IsInt8WeightOnly
+        {
+            get
+            {
+                return precision != null
+                    && precision.weightDataType == TensorDataType.Int8
+                    && quantization != null
+                    && quantization.IsInt8WeightOnly;
+            }
+        }
+
+        public bool UsesInt8WeightOnlyForOperator(string operatorName)
+        {
+            return IsInt8WeightOnly && quantization.QuantizesOperator(operatorName);
         }
     }
 

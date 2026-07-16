@@ -52,6 +52,12 @@ namespace NcnnCompute
         public string targetLayout = NcnnTexturePlanLayout.Packed4;
         public bool strict = true;
         public bool debugOracleRelaxed;
+        // Activations still use targetDtype. When true, Conv/Gemm/InnerProduct must
+        // additionally prove the D2 immutable INT8 weight kernel contract.
+        public bool int8WeightOnly;
+        // Empty means the legacy all-weight D2 plan.  A non-empty list selects the
+        // only operators allowed to consume immutable packed INT8 weights.
+        public string[] int8WeightOnlyOperators = Array.Empty<string>();
         public NcnnTexturePlanTensorDescriptor[] inputs = Array.Empty<NcnnTexturePlanTensorDescriptor>();
         [NonSerialized] public NcnnTextureExecutionPlanNodeVerifier nodeVerifier;
     }
@@ -85,6 +91,7 @@ namespace NcnnCompute
         public string targetBackend;
         public string targetDtype;
         public string targetLayout;
+        public bool int8WeightOnly;
         public NcnnTexturePlanTensorDescriptor[] inputs;
         public string[] rejectedPaths;
         public string recommendedAction;
@@ -100,6 +107,7 @@ namespace NcnnCompute
         public string targetBackend;
         public string targetDtype;
         public string targetLayout;
+        public bool int8WeightOnly;
         public bool strict;
         public bool debugOracleRelaxed;
         public NcnnTextureExecutionPlanNode[] nodes;
@@ -127,6 +135,8 @@ namespace NcnnCompute
             if (first == null)
                 return "StrictTextureInference rejected the CommandBuffer Pack4 execution plan.";
 
+            var input = first.inputs != null && first.inputs.Length > 0 ? first.inputs[0] : null;
+
             return "StrictTextureInference rejected the CommandBuffer Pack4 execution plan"
                 + " | layer_index=" + first.layerIndex
                 + " | layer=" + (first.layer ?? string.Empty)
@@ -136,8 +146,18 @@ namespace NcnnCompute
                 + " | target_backend=" + (first.targetBackend ?? string.Empty)
                 + " | target_dtype=" + (first.targetDtype ?? string.Empty)
                 + " | target_layout=" + (first.targetLayout ?? string.Empty)
+                + " | blob=" + (input?.blob ?? string.Empty)
+                + " | logical_shape=" + FormatShape(input?.logicalShape)
+                + " | storage_shape=" + FormatShape(input?.storageShape)
+                + " | layout=" + (input?.layout ?? string.Empty)
+                + " | dtype=" + (input?.dtype ?? string.Empty)
                 + " | rejected_paths=" + string.Join(",", first.rejectedPaths ?? Array.Empty<string>())
                 + " | recommendation=" + (first.recommendedAction ?? string.Empty);
+        }
+
+        private static string FormatShape(int[] shape)
+        {
+            return shape == null ? string.Empty : "[" + string.Join(",", shape) + "]";
         }
     }
 
@@ -242,11 +262,30 @@ namespace NcnnCompute
 
                 var inputsMatchTarget = inputs.Select((input, inputIndex) =>
                     MatchesTarget(input, request) || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)).All(value => value);
+                var quantizesOperator = IsInt8WeightOnlyOperator(request, operatorName);
+                if (quantizesOperator && HasImmutableWeightsWithoutInt8WeightOnlyKernel(operatorName))
+                {
+                    diagnostics.Add(CreateDiagnostic(
+                        request,
+                        index,
+                        layer,
+                        capability,
+                        operatorName,
+                        "missing-int8-weight-only-kernel",
+                        "INT8 weight-only has no verified immutable packed-weight CommandBuffer kernel for this operator; strict quant planning refuses an FP32 parameter or Buffer fallback.",
+                        inputs,
+                        true,
+                        "Implement and verify a packed INT8 weight-only CommandBuffer kernel before enabling this model quantization plan."));
+                    nodes.Add(node);
+                    continue;
+                }
+                var requiresInt8WeightKernel = quantizesOperator && RequiresInt8WeightOnlyKernel(operatorName);
                 var strictCapability = NcnnOperatorCapabilities.IsStrictlySupported(
                     capability,
                     request.targetBackend,
                     request.targetDtype,
-                    request.targetLayout);
+                    request.targetLayout)
+                    && (!requiresInt8WeightKernel || capability.int8);
                 var verifiedOutputs = Array.Empty<NcnnTexturePlanTensorDescriptor>();
                 var verifiedPath = string.Empty;
                 var verificationReason = string.Empty;
@@ -254,7 +293,7 @@ namespace NcnnCompute
                 var profileVerified = !strictCapability
                     && inputsMatchTarget
                     && string.Equals(capability?.status, NcnnOperatorCapabilityStatus.Partial, StringComparison.Ordinal)
-                    && IsProfileTargetCompatible(capability, request)
+                    && IsProfileTargetCompatible(capability, request, requiresInt8WeightKernel)
                     && TryAcceptRuntimeVerifiedNode(layer, inputs, request, out verifiedOutputs, out verifiedPath, out verifiedUsesDescriptorAlias, out verificationReason);
                 if (strictCapability && inputsMatchTarget)
                 {
@@ -289,12 +328,12 @@ namespace NcnnCompute
                         : !inputsMatchTarget
                             ? "Input descriptor dtype/layout does not match the requested CommandBuffer Pack4 target."
                             : string.Equals(capability.status, NcnnOperatorCapabilityStatus.Partial, StringComparison.Ordinal)
-                                && IsProfileTargetCompatible(capability, request)
+                                && IsProfileTargetCompatible(capability, request, requiresInt8WeightKernel)
                                 ? "The loaded runtime profile cannot prove that this node reaches a real CommandBuffer Pack4 path"
                                     + (string.IsNullOrWhiteSpace(verificationReason) ? "." : ": " + verificationReason)
                             : "The capability matrix does not record a verified CommandBuffer Pack4 implementation for this dtype/layout.";
                     var code = string.Equals(capability?.status, NcnnOperatorCapabilityStatus.Partial, StringComparison.Ordinal)
-                        && IsProfileTargetCompatible(capability, request)
+                        && IsProfileTargetCompatible(capability, request, requiresInt8WeightKernel)
                         ? "command-buffer-pack4-profile-rejected"
                         : "missing-command-buffer-pack4-capability";
                     diagnostics.Add(CreateDiagnostic(request, index, layer, capability, operatorName, code, reason, inputs, true, "Implement and verify a real CommandBuffer Pack4 path, then update the capability matrix."));
@@ -314,13 +353,14 @@ namespace NcnnCompute
                 targetBackend = request.targetBackend ?? string.Empty,
                 targetDtype = request.targetDtype ?? string.Empty,
                 targetLayout = request.targetLayout ?? string.Empty,
+                int8WeightOnly = request.int8WeightOnly,
                 strict = request.strict,
                 debugOracleRelaxed = request.debugOracleRelaxed,
                 nodes = nodes.ToArray(),
                 diagnostics = diagnostics.ToArray(),
                 strictEligible = strictEligible,
                 dispatchAllowed = dispatchAllowed,
-                summary = "nodes=" + nodes.Count + " | diagnostics=" + diagnostics.Count + " | strict_eligible=" + strictEligible + " | dispatch_allowed=" + dispatchAllowed
+                summary = "nodes=" + nodes.Count + " | diagnostics=" + diagnostics.Count + " | int8_weight_only=" + request.int8WeightOnly + " | strict_eligible=" + strictEligible + " | dispatch_allowed=" + dispatchAllowed
             };
         }
 
@@ -611,7 +651,8 @@ namespace NcnnCompute
 
         private static bool IsProfileTargetCompatible(
             NcnnOperatorCapability capability,
-            NcnnTextureExecutionPlanRequest request)
+            NcnnTextureExecutionPlanRequest request,
+            bool requiresInt8WeightKernel)
         {
             if (capability == null || request == null)
                 return false;
@@ -623,7 +664,43 @@ namespace NcnnCompute
                 : string.Equals(request.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase) ? capability.fp16
                 : string.Equals(request.targetDtype, "INT8", StringComparison.OrdinalIgnoreCase) && capability.int8;
             return dtypeSupported
+                && (!requiresInt8WeightKernel || capability.int8)
                 && (capability.layouts ?? Array.Empty<string>()).Any(layout => string.Equals(layout, request.targetLayout, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool RequiresInt8WeightOnlyKernel(string operatorName)
+        {
+            return string.Equals(operatorName, "Convolution", StringComparison.Ordinal)
+                || string.Equals(operatorName, "ConvolutionDepthWise", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Gemm", StringComparison.Ordinal)
+                || string.Equals(operatorName, "InnerProduct", StringComparison.Ordinal);
+        }
+
+        private static bool IsInt8WeightOnlyOperator(NcnnTextureExecutionPlanRequest request, string operatorName)
+        {
+            if (request == null || !request.int8WeightOnly)
+                return false;
+            var operators = request.int8WeightOnlyOperators;
+            if (operators == null || operators.Length == 0)
+                return true;
+            return operators.Any(value => string.Equals(value, operatorName, StringComparison.Ordinal));
+        }
+
+        private static bool HasImmutableWeightsWithoutInt8WeightOnlyKernel(string operatorName)
+        {
+            return string.Equals(operatorName, "Convolution1D", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Convolution3D", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Deconvolution", StringComparison.Ordinal)
+                || string.Equals(operatorName, "DeconvolutionDepthWise", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Deconvolution3D", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Embed", StringComparison.Ordinal)
+                || string.Equals(operatorName, "MultiHeadAttention", StringComparison.Ordinal)
+                || string.Equals(operatorName, "BatchNorm", StringComparison.Ordinal)
+                || string.Equals(operatorName, "GroupNorm", StringComparison.Ordinal)
+                || string.Equals(operatorName, "LayerNorm", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Scale", StringComparison.Ordinal)
+                || string.Equals(operatorName, "PReLU", StringComparison.Ordinal)
+                || string.Equals(operatorName, "Normalize", StringComparison.Ordinal);
         }
 
         private static bool TryAcceptRuntimeVerifiedNode(
@@ -879,6 +956,7 @@ namespace NcnnCompute
                 targetBackend = request.targetBackend,
                 targetDtype = request.targetDtype,
                 targetLayout = request.targetLayout,
+                int8WeightOnly = request.int8WeightOnly,
                 inputs = (inputs ?? Array.Empty<NcnnTexturePlanTensorDescriptor>()).Select(input => input == null ? null : CloneDescriptor(input, input.blob)).ToArray(),
                 rejectedPaths = RejectedComputationPaths,
                 recommendedAction = recommendedAction,

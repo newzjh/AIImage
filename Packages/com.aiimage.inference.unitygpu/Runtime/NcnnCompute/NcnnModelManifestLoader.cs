@@ -10,7 +10,8 @@ namespace NcnnCompute
     {
         Auto = 0,
         FP32 = 1,
-        FP16 = 2
+        FP16 = 2,
+        INT8WeightOnly = 3
     }
 
     [Serializable]
@@ -19,6 +20,7 @@ namespace NcnnCompute
         public string schemaVersion;
         public string modelId;
         public NcnnModelManifestPrecision precision;
+        public NcnnModelManifestQuantization quantization;
     }
 
     [Serializable]
@@ -28,6 +30,22 @@ namespace NcnnCompute
         public string weightDtype;
         public string sensitiveOutputDtype;
         public bool requireStrictTexturePlan = true;
+    }
+
+    [Serializable]
+    internal sealed class NcnnModelManifestQuantization
+    {
+        public string quantizationVersion;
+        public string calibrationVersion;
+        public string calibrationMethod;
+        public string weightScheme;
+        public int outputChannelAxis;
+        public bool symmetric = true;
+        public int zeroPoint;
+        public string accumulationDtype;
+        public bool activationQuantized;
+        public string[] quantizedOperators;
+        public string unquantizedWeightDtype;
     }
 
     // Parsing stays in the Unity backend: core owns only the durable contract and does
@@ -55,17 +73,24 @@ namespace NcnnCompute
             if (document == null)
                 throw new InferenceContractException("Model manifest could not be parsed: " + source);
 
+            var weightDataType = ParseWeightType(document.precision?.weightDtype, "weightDtype", source);
             var manifest = new ModelManifest
             {
                 schemaVersion = string.IsNullOrWhiteSpace(document.schemaVersion) ? ModelManifest.Contract : document.schemaVersion,
                 modelId = document.modelId ?? string.Empty,
                 precision = new ModelPrecisionContract
                 {
-                    activationDataType = ParseFloatingType(document.precision?.activationDtype, "activationDtype", source),
-                    weightDataType = ParseFloatingType(document.precision?.weightDtype, "weightDtype", source),
-                    sensitiveOutputDataType = ParseFloatingType(document.precision?.sensitiveOutputDtype, "sensitiveOutputDtype", source),
+                    activationDataType = ParseActivationType(document.precision?.activationDtype, "activationDtype", source),
+                    weightDataType = weightDataType,
+                    sensitiveOutputDataType = ParseActivationType(document.precision?.sensitiveOutputDtype, "sensitiveOutputDtype", source),
                     requireStrictTexturePlan = document.precision == null || document.precision.requireStrictTexturePlan
-                }
+                },
+                // JsonUtility may materialize a nested serializable object even when the
+                // JSON omitted it. FP32/FP16 manifests therefore ignore that default
+                // object; only INT8 weights opt into the D2 quantization contract.
+                quantization = weightDataType == TensorDataType.Int8
+                    ? ParseQuantization(document.quantization, source)
+                    : null
             };
             manifest.Validate();
             return manifest;
@@ -116,10 +141,10 @@ namespace NcnnCompute
                 : precisionMode;
             if (!TryResolveManifestFileName(modelId, effectiveMode, out var manifestFileName))
             {
-                if (effectiveMode == NcnnPrecisionMode.FP16)
+                if (effectiveMode == NcnnPrecisionMode.FP16 || effectiveMode == NcnnPrecisionMode.INT8WeightOnly)
                 {
                     throw new InferenceContractException(
-                        "FP16 was requested but this runner has no verified FP16 model manifest"
+                        effectiveMode + " was requested but this runner has no verified model manifest"
                         + " | model=" + (modelId ?? string.Empty));
                 }
 
@@ -141,7 +166,9 @@ namespace NcnnCompute
 
             if (manifest?.precision != null)
             {
-                return manifest.precision.activationDataType == TensorDataType.Float16
+                return manifest.IsInt8WeightOnly
+                    ? NcnnPrecisionMode.INT8WeightOnly
+                    : manifest.precision.activationDataType == TensorDataType.Float16
                     && manifest.precision.weightDataType == TensorDataType.Float16
                     ? NcnnPrecisionMode.FP16
                     : NcnnPrecisionMode.FP32;
@@ -154,11 +181,11 @@ namespace NcnnCompute
         {
             manifestFileName = null;
             if (string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "clip-mobileclip-s0.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
             else if (string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "esrgan-realesrgan-x4plus.fp16.model.json" : "esrgan-realesrgan-x4plus.fp32.model.json";
             else if (string.Equals(modelId, "matting.ncnn", StringComparison.Ordinal))
-                manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
+                manifestFileName = precisionMode == NcnnPrecisionMode.INT8WeightOnly ? "matting.int8wo.model.json" : precisionMode == NcnnPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
             else if (string.Equals(modelId, "codeformer", StringComparison.Ordinal))
                 manifestFileName = precisionMode == NcnnPrecisionMode.FP16 ? "codeformer.fp16.model.json" : "codeformer.fp32.model.json";
             else if (string.Equals(modelId, "gfpgan", StringComparison.Ordinal))
@@ -174,7 +201,7 @@ namespace NcnnCompute
             return !string.IsNullOrWhiteSpace(manifestFileName);
         }
 
-        private static TensorDataType ParseFloatingType(string value, string field, string source)
+        private static TensorDataType ParseActivationType(string value, string field, string source)
         {
             if (string.Equals(value, "FP16", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "Float16", StringComparison.OrdinalIgnoreCase))
@@ -183,6 +210,51 @@ namespace NcnnCompute
                 || string.Equals(value, "Float32", StringComparison.OrdinalIgnoreCase))
                 return TensorDataType.Float32;
             throw new InferenceContractException("Model manifest " + field + " must be FP16 or FP32: " + source);
+        }
+
+        private static TensorDataType ParseWeightType(string value, string field, string source)
+        {
+            if (string.Equals(value, "INT8", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Int8", StringComparison.OrdinalIgnoreCase))
+                return TensorDataType.Int8;
+            return ParseActivationType(value, field, source);
+        }
+
+        private static ModelQuantizationContract ParseQuantization(NcnnModelManifestQuantization document, string source)
+        {
+            if (document == null)
+                return null;
+
+            if (!string.Equals(document.weightScheme, "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InferenceContractException(
+                    "Model manifest quantization.weightScheme must be INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC: " + source);
+            }
+
+            return new ModelQuantizationContract
+            {
+                quantizationVersion = document.quantizationVersion ?? string.Empty,
+                calibrationVersion = document.calibrationVersion ?? string.Empty,
+                calibrationMethod = document.calibrationMethod ?? string.Empty,
+                weightScheme = WeightQuantizationScheme.Int8WeightOnlyPerOutputChannelSymmetric,
+                outputChannelAxis = document.outputChannelAxis,
+                symmetric = document.symmetric,
+                zeroPoint = document.zeroPoint,
+                accumulationDataType = ParseAccumulationType(document.accumulationDtype, source),
+                activationQuantized = document.activationQuantized,
+                quantizedOperators = document.quantizedOperators ?? Array.Empty<string>(),
+                unquantizedWeightDataType = string.IsNullOrWhiteSpace(document.unquantizedWeightDtype)
+                    ? TensorDataType.Float32
+                    : ParseActivationType(document.unquantizedWeightDtype, "unquantizedWeightDtype", source)
+            };
+        }
+
+        private static TensorDataType ParseAccumulationType(string value, string source)
+        {
+            if (string.Equals(value, "FP32", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Float32", StringComparison.OrdinalIgnoreCase))
+                return TensorDataType.Float32;
+            throw new InferenceContractException("Model manifest quantization.accumulationDtype must be FP32: " + source);
         }
     }
 }

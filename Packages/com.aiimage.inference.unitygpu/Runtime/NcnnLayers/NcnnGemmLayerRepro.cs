@@ -67,7 +67,21 @@ namespace NcnnCompute
                                             readMs += phaseSw.ElapsedMilliseconds;
 
                                             phaseSw.Restart();
-                                            gp.bData = NcnnRepro.NewBuffer(gp.bDataCpu);
+                                            if (owner.UsesInt8WeightOnlyForLayer(layer))
+                                            {
+                                                var quantized = NcnnRepro.NewInt8WeightOnlyUpload(
+                                                    gp.bDataCpu,
+                                                    gp.constantN,
+                                                    gp.constantK,
+                                                    outputChannelsAreContiguous: gp.transB,
+                                                    "NcnnRepro.GemmInt8WeightOnly:" + layer.name);
+                                                gp.bDataInt8Packed = quantized.packedWeights;
+                                                gp.bDataInt8Scales = quantized.scales;
+                                            }
+                                            else
+                                            {
+                                                gp.bData = NcnnRepro.NewBuffer(gp.bDataCpu);
+                                            }
                                             if (owner.UsesFp16WeightStorage)
                                                 gp.bDataFp16 = NcnnRepro.NewFp16Buffer(gp.bDataCpu, "NcnnRepro.GemmWeightFp16:" + layer.name);
                                             if (gp.cDataCpu != null)
@@ -199,6 +213,9 @@ namespace NcnnCompute
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._gemm.TryGetValue(layer.name, out var fp16Gemm) ? fp16Gemm.bDataFp16 : null);
+            owner.Ops.SetInt8GemmWeights(
+                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8Gemm) ? int8Gemm.bDataInt8Packed : null,
+                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8GemmScale) ? int8GemmScale.bDataInt8Scales : null);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -210,6 +227,9 @@ namespace NcnnCompute
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
             owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightStorage && owner._gemm.TryGetValue(layer.name, out var fp16Gemm) ? fp16Gemm.bDataFp16 : null);
+            owner.Ops.SetInt8GemmWeights(
+                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8Gemm) ? int8Gemm.bDataInt8Packed : null,
+                owner.UsesInt8WeightsForLayer(layer) && owner._gemm.TryGetValue(layer.name, out var int8GemmScale) ? int8GemmScale.bDataInt8Scales : null);
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 
@@ -298,7 +318,7 @@ namespace NcnnCompute
                     context.commandBuffer,
                     srcTex.texture,
                     srcIsPack4Linear,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -315,7 +335,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DLinearTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -332,7 +352,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -441,7 +461,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DPack4LinearTextureA(
                     srcTex.texture,
                     srcIsPack4Linear,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -457,7 +477,7 @@ namespace NcnnCompute
             {
                 owner.Ops.Gemm2DLinearTextureA(
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -473,7 +493,7 @@ namespace NcnnCompute
             {
                 owner.Ops.Gemm2DTextureA(
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -539,7 +559,7 @@ namespace NcnnCompute
                 {
                     owner.Ops.Gemm2DAttentionQkvLinearTextureA(
                         srcTex.texture,
-                        gp.bData,
+                        gp.TextureWeightBinding,
                         useC ? gp.cData : null,
                         m,
                         n,
@@ -557,7 +577,7 @@ namespace NcnnCompute
                 {
                     owner.Ops.Gemm2DAttentionQkvPack4LinearTextureA(
                         srcTex.texture,
-                        gp.bData,
+                        gp.TextureWeightBinding,
                         useC ? gp.cData : null,
                         m,
                         n,
@@ -575,7 +595,7 @@ namespace NcnnCompute
                 {
                     owner.Ops.Gemm2DAttentionQkvTextureA(
                         srcTex.texture,
-                        gp.bData,
+                        gp.TextureWeightBinding,
                         useC ? gp.cData : null,
                         m,
                         n,
@@ -631,7 +651,7 @@ namespace NcnnCompute
             {
                 owner.Ops.Gemm2DAttentionPack4ToPack4LinearTextureA(
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -649,7 +669,7 @@ namespace NcnnCompute
             {
                 owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -728,7 +748,7 @@ namespace NcnnCompute
                     owner.Ops.Gemm2DAttentionQkvLinearTextureA(
                         context.commandBuffer,
                         srcTex.texture,
-                        gp.bData,
+                        gp.TextureWeightBinding,
                         useC ? gp.cData : null,
                         m,
                         n,
@@ -747,7 +767,7 @@ namespace NcnnCompute
                     owner.Ops.Gemm2DAttentionQkvPack4LinearTextureA(
                         context.commandBuffer,
                         srcTex.texture,
-                        gp.bData,
+                        gp.TextureWeightBinding,
                         useC ? gp.cData : null,
                         m,
                         n,
@@ -766,7 +786,7 @@ namespace NcnnCompute
                     owner.Ops.Gemm2DAttentionQkvTextureA(
                         context.commandBuffer,
                         srcTex.texture,
-                        gp.bData,
+                        gp.TextureWeightBinding,
                         useC ? gp.cData : null,
                         m,
                         n,
@@ -816,7 +836,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DAttentionPack4ToPack4LinearTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,
@@ -835,7 +855,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    gp.bData,
+                    gp.TextureWeightBinding,
                     useC ? gp.cData : null,
                     m,
                     n,

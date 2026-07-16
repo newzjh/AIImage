@@ -15,6 +15,9 @@ namespace NcnnCompute
         public override void ExecuteBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightsForCurrentLayer && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
+            owner.Ops.SetInt8GemmWeights(
+                owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProduct) ? int8InnerProduct.wInt8Packed : null,
+                owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProductScale) ? int8InnerProductScale.wInt8Scales : null);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -44,10 +47,24 @@ namespace NcnnCompute
                                         readMs += phaseSw.ElapsedMilliseconds;
 
                                         phaseSw.Restart();
-                                        ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
                                         ip.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);
-                                        ip.w.SetData(w);
                                         ip.b.SetData(b);
+                                        if (owner.UsesInt8WeightOnlyForLayer(layer))
+                                        {
+                                            var quantized = NcnnRepro.NewInt8WeightOnlyUpload(
+                                                w,
+                                                ip.outFeatures,
+                                                ip.inFeatures,
+                                                outputChannelsAreContiguous: true,
+                                                "NcnnRepro.InnerProductInt8WeightOnly:" + layer.name);
+                                            ip.wInt8Packed = quantized.packedWeights;
+                                            ip.wInt8Scales = quantized.scales;
+                                        }
+                                        else
+                                        {
+                                            ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                                            ip.w.SetData(w);
+                                        }
                                         if (owner.UsesFp16WeightStorage)
                                             ip.wFp16 = NcnnRepro.NewFp16Buffer(w, "NcnnRepro.InnerProductWeightFp16:" + layer.name);
                                         phaseSw.Stop();
@@ -83,9 +100,9 @@ namespace NcnnCompute
                                                     ? owner.RentTempTensorBuffer(2, ip.outFeatures, rows)
                                                     : owner.RentTempTensorBuffer(1, ip.outFeatures);
                                                 if (rows > 1)
-                                                    owner.Ops.InnerProduct2D(srcTensor.buffer, rows, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
+                                                    owner.Ops.InnerProduct2D(srcTensor.buffer, rows, ip.inFeatures, ip.TextureWeightBinding, ip.b, ip.outFeatures, outTensor.buffer);
                                                 else
-                                                    owner.Ops.InnerProduct(srcTensor.buffer, ip.inFeatures, ip.w, ip.b, ip.outFeatures, outTensor.buffer);
+                                                    owner.Ops.InnerProduct(srcTensor.buffer, ip.inFeatures, ip.TextureWeightBinding, ip.b, ip.outFeatures, outTensor.buffer);
 
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],
@@ -105,6 +122,9 @@ namespace NcnnCompute
         public override void ExecuteRenderTexturePath(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerBufferContext context)
         {
             owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightsForCurrentLayer && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
+            owner.Ops.SetInt8GemmWeights(
+                owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProduct) ? int8InnerProduct.wInt8Packed : null,
+                owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProductScale) ? int8InnerProductScale.wInt8Scales : null);
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
@@ -116,6 +136,9 @@ namespace NcnnCompute
         public override void ExecuteCommandBuffer(NcnnRepro owner, NcnnParamModel.Layer layer, NcnnLayerCommandBufferContext context)
         {
             owner.Ops.SetFp16GemmWeights(owner.UsesFp16WeightsForCurrentLayer && owner._innerProduct.TryGetValue(layer.name, out var fp16InnerProduct) ? fp16InnerProduct.wFp16 : null);
+            owner.Ops.SetInt8GemmWeights(
+                owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProduct) ? int8InnerProduct.wInt8Packed : null,
+                owner.UsesInt8WeightsForLayer(layer) && owner._innerProduct.TryGetValue(layer.name, out var int8InnerProductScale) ? int8InnerProductScale.wInt8Scales : null);
             if (TryExecuteCommandBufferTexturePath(owner, layer, context))
                 return;
 
@@ -165,7 +188,7 @@ namespace NcnnCompute
                 return false;
             if (!owner._innerProduct.TryGetValue(layer.name, out var ip))
                 return false;
-            if (ip.w == null || ip.b == null)
+            if (ip.TextureWeightBinding == null || ip.b == null)
                 return false;
 
             var srcTex = NcnnRepro.GetCmdTensor(context.blobs, layer.bottomNames[0]);
@@ -184,7 +207,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     attentionRows,
                     ip.outFeatures,
@@ -258,7 +281,7 @@ namespace NcnnCompute
                     context.commandBuffer,
                     srcTex.texture,
                     false,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     rows,
                     ip.outFeatures,
@@ -275,7 +298,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DLinearTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     rows,
                     ip.outFeatures,
@@ -292,7 +315,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     rows,
                     ip.outFeatures,
@@ -338,7 +361,7 @@ namespace NcnnCompute
                 return false;
             if (!owner._innerProduct.TryGetValue(layer.name, out var ip))
                 return false;
-            if (ip.w == null || ip.b == null)
+            if (ip.TextureWeightBinding == null || ip.b == null)
                 return false;
             if (!NcnnRepro.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape))
                 return false;
@@ -355,7 +378,7 @@ namespace NcnnCompute
                 var attentionOut = owner.RentTempMat(attentionOutStorage.w, attentionOutStorage.h, NcnnRepro.ResolveLinearMatTextureFormat());
                 owner.Ops.Gemm2DAttentionPack4ToLinearTextureA(
                     srcTex.texture,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     attentionRows,
                     ip.outFeatures,
@@ -433,7 +456,7 @@ namespace NcnnCompute
                 owner.Ops.Gemm2DPack4LinearTextureA(
                     srcTex.texture,
                     false,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     rows,
                     ip.outFeatures,
@@ -449,7 +472,7 @@ namespace NcnnCompute
             {
                 owner.Ops.Gemm2DLinearTextureA(
                     srcTex.texture,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     rows,
                     ip.outFeatures,
@@ -465,7 +488,7 @@ namespace NcnnCompute
             {
                 owner.Ops.Gemm2DTextureA(
                     srcTex.texture,
-                    ip.w,
+                    ip.TextureWeightBinding,
                     ip.b,
                     rows,
                     ip.outFeatures,

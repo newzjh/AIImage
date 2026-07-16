@@ -550,6 +550,13 @@ float NcnnGemm2DReadB(int col, int kk)
     int index = _MatTransB != 0
         ? col * _MatK + kk
         : kk * _MatN + col;
+    if (_UseInt8GemmWeights != 0)
+    {
+        uint packed = _MatBInt8Packed[index >> 2];
+        uint raw = (packed >> ((index & 3) * 8)) & 0xffu;
+        int signedValue = raw >= 128u ? (int)raw - 256 : (int)raw;
+        return (float)signedValue * _MatBInt8Scales[col];
+    }
     if (_UseFp16GemmWeights == 0)
         return _MatB[index];
 

@@ -95,11 +95,14 @@ namespace NcnnCompute
                                         // Cmd Pack4 group/tail kernels consume this immutable scalar upload.
                                         // It is never used for activation or intermediate storage.
                                         phaseSw.Restart();
-                                        NcnnRepro.UploadRawConvWeights(pack, w, b);
+                                        if (owner.UsesInt8WeightOnlyForLayer(layer))
+                                            NcnnRepro.UploadInt8WeightOnlyConvWeights(pack, w, b, layer.name);
+                                        else
+                                            NcnnRepro.UploadRawConvWeights(pack, w, b);
                                         phaseSw.Stop();
                                         uploadMs += phaseSw.ElapsedMilliseconds;
 
-                                        if (needGeneralTexturePack)
+                                        if (needGeneralTexturePack && !owner.UsesInt8WeightOnlyForLayer(layer))
                                         {
                                             phaseSw.Restart();
                                             var w4 = NcnnRepro.PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
@@ -130,7 +133,7 @@ namespace NcnnCompute
                                             phaseSw.Stop();
                                             packMs += phaseSw.ElapsedMilliseconds;
                                         }
-                                        else if (needDepthWiseTexturePack)
+                                        else if (needDepthWiseTexturePack && !owner.UsesInt8WeightOnlyForLayer(layer))
                                         {
                                             phaseSw.Restart();
                                             var w4 = NcnnRepro.PackDepthWiseWeightsToP4KhKw(w, pack.outC, pack.kernelW, pack.kernelH, pack.outPacks);
@@ -408,7 +411,18 @@ namespace NcnnCompute
                                             && !conv.isDepthWise
                                             && conv.kernelW == conv.kernelH;
                 owner.Ops.SetFp16ConvWeights(useFp16GeneralWeights ? conv.packedWeight4Fp16 : null);
-                if (useFp16GeneralWeights)
+                var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
+                owner.Ops.SetInt8ConvWeights(
+                    useInt8WeightOnly ? conv.rawWeightInt8Packed : null,
+                    useInt8WeightOnly ? conv.rawWeightInt8Scales : null);
+                if (useInt8WeightOnly)
+                {
+                    owner.Ops.Conv2dGroupPack4(
+                        cmd, src.texture, conv.rawWeightInt8Packed, conv.rawBias, conv.inC, conv.outC, conv.group,
+                        conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop,
+                        conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
+                }
+                else if (useFp16GeneralWeights)
                 {
                     owner.Ops.ConvPack4General(cmd, src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
                 }
@@ -495,7 +509,7 @@ namespace NcnnCompute
         private static bool SupportsCommandBufferPack4(NcnnRepro.ConvPack conv, out string reason)
         {
             reason = null;
-            if (conv == null || conv.rawWeight == null || conv.rawBias == null)
+            if (conv == null || (conv.rawWeight == null && conv.rawWeightInt8Packed == null) || conv.rawBias == null)
                 reason = "immutable scalar weights/bias are unavailable";
             else if (conv.inC <= 0 || conv.outC <= 0 || conv.group <= 0 || conv.inC % conv.group != 0 || conv.outC % conv.group != 0)
                 reason = "group must divide positive input and output channels";

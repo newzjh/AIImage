@@ -495,6 +495,10 @@ namespace NcnnCompute
         private ComputeBuffer _fp16ConvWeights;
         private ComputeBuffer _fp16DepthWiseWeights;
         private ComputeBuffer _fp16GemmWeights;
+        private ComputeBuffer _int8ConvWeights;
+        private ComputeBuffer _int8ConvWeightScales;
+        private ComputeBuffer _int8GemmWeights;
+        private ComputeBuffer _int8GemmWeightScales;
 
         // These immutable uploads are selected only by manifest-driven FP16 sessions.
         // Activations always remain texture resources; no texture-to-buffer path is used.
@@ -511,6 +515,24 @@ namespace NcnnCompute
         public void SetFp16GemmWeights(ComputeBuffer weights)
         {
             _fp16GemmWeights = weights;
+        }
+
+        // INT8 D2 weights are immutable packed uploads. Activations remain Pack4
+        // textures; the shader dequantizes each read and accumulates in FP32.
+        public void SetInt8ConvWeights(ComputeBuffer packedWeights, ComputeBuffer perOutputScales)
+        {
+            if ((packedWeights == null) != (perOutputScales == null))
+                throw new ArgumentException("INT8 convolution weights and per-output scales must be configured together.");
+            _int8ConvWeights = packedWeights;
+            _int8ConvWeightScales = perOutputScales;
+        }
+
+        public void SetInt8GemmWeights(ComputeBuffer packedWeights, ComputeBuffer perOutputScales)
+        {
+            if ((packedWeights == null) != (perOutputScales == null))
+                throw new ArgumentException("INT8 Gemm weights and per-output scales must be configured together.");
+            _int8GemmWeights = packedWeights;
+            _int8GemmWeightScales = perOutputScales;
         }
 
         private void SetConvPack4Weights(int kernel, ComputeBuffer fp32Weights)
@@ -546,6 +568,9 @@ namespace NcnnCompute
             _cs.SetBuffer(kernel, "_MatB", fp32Weights);
             _cs.SetBuffer(kernel, "_MatBFp16", _fp16GemmWeights ?? fp32Weights);
             _cs.SetInt("_UseFp16GemmWeights", _fp16GemmWeights != null ? 1 : 0);
+            _cs.SetBuffer(kernel, "_MatBInt8Packed", _int8GemmWeights ?? fp32Weights);
+            _cs.SetBuffer(kernel, "_MatBInt8Scales", _int8GemmWeightScales ?? fp32Weights);
+            _cs.SetInt("_UseInt8GemmWeights", _int8GemmWeights != null ? 1 : 0);
         }
 
         private void SetTextureGemmWeights(CommandBuffer cmd, int kernel, ComputeBuffer fp32Weights)
@@ -553,6 +578,9 @@ namespace NcnnCompute
             cmd.SetComputeBufferParam(_cs, kernel, "_MatB", fp32Weights);
             cmd.SetComputeBufferParam(_cs, kernel, "_MatBFp16", _fp16GemmWeights ?? fp32Weights);
             cmd.SetComputeIntParam(_cs, "_UseFp16GemmWeights", _fp16GemmWeights != null ? 1 : 0);
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt8Packed", _int8GemmWeights ?? fp32Weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt8Scales", _int8GemmWeightScales ?? fp32Weights);
+            cmd.SetComputeIntParam(_cs, "_UseInt8GemmWeights", _int8GemmWeights != null ? 1 : 0);
         }
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
@@ -4931,6 +4959,9 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_ActType", activationType);
             cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvW", weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt8Packed", _int8ConvWeights ?? weights);
+            cmd.SetComputeBufferParam(_cs, kernel, "_ConvWInt8Scales", _int8ConvWeightScales ?? weights);
+            cmd.SetComputeIntParam(_cs, "_UseInt8ConvWeights", _int8ConvWeights != null ? 1 : 0);
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvB", bias);
             cmd.SetComputeTextureParam(_cs, kernel, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, kernel, "_ConvOutArr", dstPack4.nameID);
