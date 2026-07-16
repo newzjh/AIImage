@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "aiimage.model-manifest/v1",
+  "modelId": "mobileclip_s0_export",
+  "precision": { "activationDtype": "FP16", "weightDtype": "INT8", "sensitiveOutputDtype": "FP32", "requireStrictTexturePlan": true },
+  "quantization": {
+    "quantizationVersion": "aiimage.int8-selective/v1",
+    "calibrationVersion": "clip-mobileclip-s0-public-fixture-v1",
+    "calibrationMethod": "symmetric-activation-absmax-per-calibrated-layer",
+    "weightScheme": "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC",
+    "outputChannelAxis": 0,
+    "symmetric": true,
+    "zeroPoint": 0,
+    "accumulationDtype": "FP32",
+    "activationQuantized": true,
+    "quantizedOperators": ["Convolution", "Gemm", "InnerProduct"],
+    "nodePlans": [
+      { "layerName": "conv_6", "operatorName": "Convolution", "mode": "W8A8", "activationScale": 0.03125, "activationZeroPoint": 0 },
+      { "layerName": "gemm_0", "operatorName": "Gemm", "mode": "W8A8", "activationScale": 0.03125, "activationZeroPoint": 0 },
+      { "layerName": "linear_87", "operatorName": "InnerProduct", "mode": "W8", "activationScale": 1.0, "activationZeroPoint": 0 }
+    ],
+    "unquantizedWeightDtype": "FP32"
+  }
+}

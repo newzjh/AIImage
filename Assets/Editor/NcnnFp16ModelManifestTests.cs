@@ -158,5 +158,17 @@ public sealed class NcnnFp16ModelManifestTests
         var multiHeadAttentionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", "NcnnMultiHeadAttentionLayerRepro.cs"));
         Assert.That(multiHeadAttentionLayer, Does.Contain("owner.Ops.SetFp16GemmWeights(null);"));
     }
+
+    [Test]
+    public void ManifestParser_AcceptsSelectiveW8A8AndRejectsMissingCalibrationScale()
+    {
+        var valid = NcnnModelManifestLoader.LoadFromJson(
+            "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"fixture\",\"precision\":{\"activationDtype\":\"FP16\",\"weightDtype\":\"INT8\",\"sensitiveOutputDtype\":\"FP32\"},\"quantization\":{\"quantizationVersion\":\"v1\",\"calibrationVersion\":\"fixture-v1\",\"calibrationMethod\":\"absmax\",\"weightScheme\":\"INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC\",\"accumulationDtype\":\"FP32\",\"activationQuantized\":true,\"nodePlans\":[{\"layerName\":\"conv_0\",\"operatorName\":\"Convolution\",\"mode\":\"W8A8\",\"activationScale\":0.03125}]}}");
+        Assert.That(valid.TryGetQuantizedNodePlan("conv_0", "Convolution", out var plan), Is.True);
+        Assert.That(plan.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));
+
+        Assert.Throws<InferenceContractException>(() => NcnnModelManifestLoader.LoadFromJson(
+            "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"fixture\",\"precision\":{\"activationDtype\":\"FP16\",\"weightDtype\":\"INT8\",\"sensitiveOutputDtype\":\"FP32\"},\"quantization\":{\"quantizationVersion\":\"v1\",\"calibrationVersion\":\"fixture-v1\",\"calibrationMethod\":\"absmax\",\"weightScheme\":\"INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC\",\"accumulationDtype\":\"FP32\",\"activationQuantized\":true,\"nodePlans\":[{\"layerName\":\"conv_0\",\"operatorName\":\"Convolution\",\"mode\":\"W8A8\",\"activationScale\":0}]}}"));
+    }
 }
 #endif

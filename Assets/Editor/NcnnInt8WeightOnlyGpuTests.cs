@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.Linq;
+using AIImage.Inference.Core;
 using NcnnCompute;
 using NUnit.Framework;
 using UnityEngine;
@@ -13,6 +14,7 @@ public sealed class NcnnInt8WeightOnlyGpuTests
     {
         AssertConvKernel();
         AssertGemmKernel();
+        AssertGemmW8A8Kernel();
     }
 
     private static void AssertConvKernel()
@@ -107,6 +109,60 @@ public sealed class NcnnInt8WeightOnlyGpuTests
         }
     }
 
+    private static void AssertGemmW8A8Kernel()
+    {
+        var input = new[] { 1.1f, -0.9f, 0.3f, 1.7f };
+        var weights = new[] { 1f, -0.5f, 0.25f, 2f, 0.5f, 1f, -1f, 0.25f };
+        var bias = new[] { 0.1f, -0.2f };
+        const float activationScale = 0.5f;
+        var upload = NcnnRepro.NewInt8WeightOnlyUpload(weights, 2, 4, true, "NcnnInt8WeightOnlyGpuTests.GemmW8A8");
+        using var ops = new NcnnOps();
+        using var repro = new NcnnRepro(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var commandBuffer = new CommandBuffer { name = "NcnnInt8WeightOnlyGpuTests.GemmW8A8" };
+        using var inputBuffer = NewFloatBuffer(input);
+        using var biasBuffer = NewFloatBuffer(bias);
+        using var unusedFloatBinding = NewFloatBuffer(new[] { 0f });
+        var persistent = CreatePersistent(1, 1);
+        ComputeTexture source = null;
+        ComputeTexture output = null;
+        try
+        {
+            source = repro.RentTempArray(commandBuffer, 1, 1, 1, RenderTextureFormat.ARGBFloat);
+            output = repro.RentTempArray(commandBuffer, 1, 1, 1, RenderTextureFormat.ARGBFloat);
+            ops.FillPack4FromBufferCHW(commandBuffer, inputBuffer, 1, 1, 4, source);
+            ops.SetInt8GemmWeights(upload.packedWeights, upload.scales);
+            ops.SetInt8ActivationQuantization(new QuantizedNodePlan
+            {
+                mode = QuantizedNodeMode.Int8W8A8,
+                activationScale = activationScale,
+                activationZeroPoint = 0
+            });
+            ops.Gemm2DPack4LinearTextureA(commandBuffer, source, true, unusedFloatBinding, biasBuffer, 1, 2, 4, true, 1f, 1f, true, 4, output);
+            commandBuffer.CopyTexture(output.nameID, 0, 0, persistent, 0, 0);
+            repro.ReturnTempArray(commandBuffer, output);
+            repro.ReturnTempArray(commandBuffer, source);
+            output = null;
+            source = null;
+            Graphics.ExecuteCommandBuffer(commandBuffer);
+
+            var quantizedInput = QuantizeActivations(input, activationScale);
+            var expected0 = bias[0] + DotDequantized(quantizedInput, weights, 0, 4);
+            var expected1 = bias[1] + DotDequantized(quantizedInput, weights, 1, 4);
+            var actual = Readback(persistent)[0];
+            Assert.That(actual.x, Is.EqualTo(expected0).Within(1e-5f), "gemm W8A8 output=0");
+            Assert.That(actual.y, Is.EqualTo(expected1).Within(1e-5f), "gemm W8A8 output=1");
+        }
+        finally
+        {
+            if (output != null)
+                repro.ReturnTempArray(commandBuffer, output);
+            if (source != null)
+                repro.ReturnTempArray(commandBuffer, source);
+            ReleasePersistent(persistent);
+            ReleaseUpload(upload, "NcnnInt8WeightOnlyGpuTests.GemmW8A8");
+        }
+    }
+
     private static float DotDequantized(float[] input, float[] weights, int outputChannel, int valuesPerOutputChannel)
     {
         var start = outputChannel * valuesPerOutputChannel;
@@ -121,6 +177,17 @@ public sealed class NcnnInt8WeightOnlyGpuTests
             sum += input[index] * quantized * scale;
         }
         return sum;
+    }
+
+    private static float[] QuantizeActivations(float[] input, float scale)
+    {
+        var output = new float[input.Length];
+        for (var index = 0; index < input.Length; index++)
+        {
+            var quantized = Mathf.Clamp(Mathf.RoundToInt(input[index] / scale), -128, 127);
+            output[index] = quantized * scale;
+        }
+        return output;
     }
 
     private static ComputeBuffer NewFloatBuffer(float[] values)
@@ -147,7 +214,7 @@ public sealed class NcnnInt8WeightOnlyGpuTests
     {
         var request = AsyncGPUReadback.Request(texture, 0);
         request.WaitForCompletion();
-        Assert.That(request.hasError, Is.False, "INT8 weight-only output readback");
+        Assert.That(request.hasError, Is.False, "INT8 output readback");
         return request.GetData<Vector4>().ToArray();
     }
 

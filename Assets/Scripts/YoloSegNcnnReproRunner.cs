@@ -292,7 +292,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 TryDumpPack4TextureLogicalSummary(inputLogical, letterbox.inputWidth, letterbox.inputHeight, 3, Path.Combine(_lastDumpDir, "blob_in0_summary.txt"));
                 TryWriteFloatArray(inputLogical, _lastDumpDir, "blob_in0_f32.bin");
                 if (debugInputTexture != null)
-                    Destroy(debugInputTexture);
+                    DestroyRuntimeObject(debugInputTexture);
             }
 
             ReportProgress(0.35f, "Run YOLO seg");
@@ -502,7 +502,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             if (inputPack4 != null)
                 _repro?.ReturnTempArray(inputPack4);
             if (readableSrc != null && readableSrc != src)
-                Destroy(readableSrc);
+                DestroyRuntimeObject(readableSrc);
             LogResourceSnapshot("process_finally_end");
             ReportProgress(1f, string.Empty);
         }
@@ -1021,9 +1021,9 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             var overlayTexture = await ReadbackTextureAsync(overlayRt, width, height, ct);
             if (maskTexture == null || transparentTexture == null || overlayTexture == null)
             {
-                if (maskTexture != null) Destroy(maskTexture);
-                if (transparentTexture != null) Destroy(transparentTexture);
-                if (overlayTexture != null) Destroy(overlayTexture);
+                if (maskTexture != null) DestroyRuntimeObject(maskTexture);
+                if (transparentTexture != null) DestroyRuntimeObject(transparentTexture);
+                if (overlayTexture != null) DestroyRuntimeObject(overlayTexture);
                 return null;
             }
 
@@ -1097,8 +1097,19 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
         NcnnGpuResourceTracker.ReleaseTexture(rt, rt.name ?? "YoloSeg.WorkingRt");
         rt.Release();
-        UnityEngine.Object.Destroy(rt);
+        DestroyRuntimeObject(rt);
         rt = null;
+    }
+
+    private static void DestroyRuntimeObject(UnityEngine.Object obj)
+    {
+        if (obj == null)
+            return;
+
+        if (Application.isEditor && !Application.isPlaying)
+            UnityEngine.Object.DestroyImmediate(obj);
+        else
+            UnityEngine.Object.Destroy(obj);
     }
 
     private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int width, int height, CancellationToken ct)

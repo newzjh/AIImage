@@ -10,7 +10,7 @@ using UnityEngine;
 public sealed class NcnnInt8WeightOnlyTests
 {
     [Test]
-    public void ManifestParser_AcceptsOnlyTheD2WeightOnlyContract()
+    public void ManifestParser_AcceptsD2WeightOnlyAndRequiresPlansForW8A8()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
         var manifest = NcnnModelManifestLoader.LoadFromFile(Path.Combine(
@@ -38,7 +38,12 @@ public sealed class NcnnInt8WeightOnlyTests
 
         const string w8a8 = "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"bad\",\"precision\":{\"activationDtype\":\"FP16\",\"weightDtype\":\"INT8\",\"sensitiveOutputDtype\":\"FP16\"},\"quantization\":{\"quantizationVersion\":\"v1\",\"calibrationVersion\":\"fixture\",\"calibrationMethod\":\"absmax\",\"weightScheme\":\"INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC\",\"outputChannelAxis\":0,\"symmetric\":true,\"zeroPoint\":0,\"accumulationDtype\":\"FP32\",\"activationQuantized\":true}}";
         var error = Assert.Throws<InferenceContractException>(() => NcnnModelManifestLoader.LoadFromJson(w8a8));
-        Assert.That(error.Message, Does.Contain("W8A8"));
+        Assert.That(error.Message, Does.Contain("nodePlans"));
+
+        const string selective = "{\"schemaVersion\":\"aiimage.model-manifest/v1\",\"modelId\":\"ok\",\"precision\":{\"activationDtype\":\"FP16\",\"weightDtype\":\"INT8\",\"sensitiveOutputDtype\":\"FP16\"},\"quantization\":{\"quantizationVersion\":\"aiimage.int8-selective/v1\",\"calibrationVersion\":\"fixture\",\"calibrationMethod\":\"absmax\",\"weightScheme\":\"INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC\",\"outputChannelAxis\":0,\"symmetric\":true,\"zeroPoint\":0,\"accumulationDtype\":\"FP32\",\"activationQuantized\":true,\"quantizedOperators\":[\"Gemm\"],\"nodePlans\":[{\"layerName\":\"gemm_0\",\"operatorName\":\"Gemm\",\"mode\":\"W8A8\",\"activationScale\":0.03125,\"activationZeroPoint\":0}]}}";
+        var selectiveManifest = NcnnModelManifestLoader.LoadFromJson(selective);
+        Assert.That(selectiveManifest.TryGetQuantizedNodePlan("gemm_0", "Gemm", out var plan), Is.True);
+        Assert.That(plan.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));
     }
 
     [Test]
@@ -186,6 +191,30 @@ public sealed class NcnnInt8WeightOnlyTests
     }
 
     [Test]
+    public void ShippingSelectiveInt8Manifests_RecordRunnerNodePlans()
+    {
+        var root = Path.GetDirectoryName(Application.dataPath);
+        var clip = NcnnModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "clip-mobileclip-s0.int8.model.json"));
+        var matting = NcnnModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "matting.int8.model.json"));
+        var yolo = NcnnModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "yolo-seg.int8.model.json"));
+
+        Assert.That(clip.TryGetQuantizedNodePlan("gemm_0", "Gemm", out var clipGemm), Is.True);
+        Assert.That(clipGemm.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));
+        Assert.That(clip.TryGetQuantizedNodePlan("linear_87", "InnerProduct", out var clipLinear), Is.True);
+        Assert.That(clipLinear.mode, Is.EqualTo(QuantizedNodeMode.Int8WeightOnly));
+        Assert.That(matting.TryGetQuantizedNodePlan("Conv_0", "Convolution", out var mattingConv), Is.False);
+        Assert.That(mattingConv, Is.Not.Null);
+        Assert.That(mattingConv.mode, Is.EqualTo(QuantizedNodeMode.Float));
+        Assert.That(matting.TryGetQuantizedNodePlan("Conv_4", "Convolution", out var mattingConv4), Is.False);
+        Assert.That(mattingConv4, Is.Not.Null);
+        Assert.That(mattingConv4.mode, Is.EqualTo(QuantizedNodeMode.Float));
+        Assert.That(matting.TryGetQuantizedNodePlan("Conv_236", "Convolution", out var mattingConv236), Is.True);
+        Assert.That(mattingConv236.mode, Is.EqualTo(QuantizedNodeMode.Int8WeightOnly));
+        Assert.That(yolo.TryGetQuantizedNodePlan("conv_0", "Convolution", out var yoloConv), Is.True);
+        Assert.That(yoloConv.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));
+    }
+
+    [Test]
     public void Int8Kernels_ReadPackedWeightsAndAccumulateIntoFloatTextures()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
@@ -197,6 +226,8 @@ public sealed class NcnnInt8WeightOnlyTests
         Assert.That(conv, Does.Contain("_ConvWInt8Packed"));
         Assert.That(gemm, Does.Contain("_MatBInt8Packed"));
         Assert.That(gemm, Does.Contain("_MatBInt8Scales[col]"));
+        Assert.That(gemm, Does.Contain("NcnnQuantizeGemmActivationForInt8"));
+        Assert.That(gemm, Does.Contain("_UseInt8Activations"));
         Assert.That(gemm, Does.Contain("float acc"));
         Assert.That(bindings, Does.Contain("StructuredBuffer<uint> _ConvWInt8Packed"));
         Assert.That(bindings, Does.Contain("StructuredBuffer<uint> _MatBInt8Packed"));

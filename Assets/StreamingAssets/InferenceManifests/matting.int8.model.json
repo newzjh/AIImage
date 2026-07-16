@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "aiimage.model-manifest/v1",
+  "modelId": "matting.ncnn",
+  "precision": { "activationDtype": "FP16", "weightDtype": "INT8", "sensitiveOutputDtype": "FP32", "requireStrictTexturePlan": true },
+  "quantization": {
+    "quantizationVersion": "aiimage.int8-selective/v1",
+    "calibrationVersion": "matting-public-fixture-v1",
+    "calibrationMethod": "symmetric-activation-absmax-per-calibrated-layer",
+    "weightScheme": "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC",
+    "outputChannelAxis": 0,
+    "symmetric": true,
+    "zeroPoint": 0,
+    "accumulationDtype": "FP32",
+    "activationQuantized": true,
+    "quantizedOperators": ["Convolution", "ConvolutionDepthWise"],
+    "nodePlans": [
+      { "layerName": "Conv_0", "operatorName": "Convolution", "mode": "Float", "activationScale": 1.0, "activationZeroPoint": 0 },
+      { "layerName": "Conv_4", "operatorName": "Convolution", "mode": "Float", "activationScale": 1.0, "activationZeroPoint": 0 },
+      { "layerName": "Conv_236", "operatorName": "Convolution", "mode": "W8", "activationScale": 1.0, "activationZeroPoint": 0 }
+    ],
+    "unquantizedWeightDtype": "FP32"
+  }
+}

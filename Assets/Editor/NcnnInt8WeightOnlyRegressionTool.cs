@@ -3,6 +3,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using AIImage.Inference.Core;
 using NcnnCompute;
 using UnityEditor;
 using UnityEngine;
@@ -11,9 +12,9 @@ using UnityEngine.Rendering;
 [Serializable]
 public sealed class NcnnInt8WeightOnlyRegressionReport
 {
-    public string reportVersion = "aiimage.int8wo-regression/v3";
-    public string quantizationVersion = "aiimage.int8wo/v1";
-    public string calibrationMethod = "weights-absmax-per-output-channel";
+    public string reportVersion = "aiimage.int8-selective-regression/v1";
+    public string quantizationVersion = "aiimage.int8-selective/v1";
+    public string calibrationMethod = "weights-absmax-per-output-channel-plus-manifest-activation-scale";
     public string accumulation = "FP32";
     public string activationStorage = "FP16 Pack4 texture";
     public int inputSeed = 20260716;
@@ -26,6 +27,9 @@ public sealed class NcnnInt8WeightOnlyRegressionCase
 {
     public string fixture;
     public string operatorName;
+    public string int8Mode;
+    public float activationScale;
+    public int activationZeroPoint;
     public int outputChannels;
     public int valuesPerOutputChannel;
     public int fp32WeightBytes;
@@ -33,9 +37,11 @@ public sealed class NcnnInt8WeightOnlyRegressionCase
     public int int8WeightBytes;
     public long fp32RtBytes;
     public long fp16RtBytes;
+    public long int8SelectiveRtBytes;
     public long int8WeightOnlyRtBytes;
     public NcnnInt8WeightOnlyGpuTiming gpuSubmitAndReadback;
     public NcnnInt8WeightOnlyError fp16VsFp32;
+    public NcnnInt8WeightOnlyError int8SelectiveVsFp32;
     public NcnnInt8WeightOnlyError int8WeightOnlyVsFp32;
 }
 
@@ -61,6 +67,7 @@ public sealed class NcnnInt8WeightOnlyGpuTiming
     public string unityVersion;
     public double fp32Milliseconds;
     public double fp16Milliseconds;
+    public double int8SelectiveMilliseconds;
     public double int8WeightOnlyMilliseconds;
 }
 
@@ -72,13 +79,13 @@ public static class NcnnInt8WeightOnlyRegressionTool
     private const int GpuWarmupIterations = 2;
     private const int GpuMeasuredIterations = 5;
 
-    [MenuItem("AIImage/Inference/Export INT8 Weight-Only Regression")]
+    [MenuItem("AIImage/Inference/Export INT8 Selective Regression")]
     public static void ExportFromMenu()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var path = Path.Combine(root, "output", "int8-weight-only-regression.json");
+        var path = Path.Combine(root, "output", "int8-selective-regression.json");
         Export(path);
-        UnityEngine.Debug.Log("[INT8WeightOnly] wrote " + path);
+        UnityEngine.Debug.Log("[INT8Selective] wrote " + path);
     }
 
     public static void ExportFromBatch()
@@ -106,39 +113,58 @@ public static class NcnnInt8WeightOnlyRegressionTool
             cases = new[]
             {
                 RunMattingConv(Path.Combine(root, "Assets", "StreamingAssets", "Matting")),
-                RunFrozenClipInnerProduct(Path.Combine(root, "Assets", "StreamingAssets", "StableDiffusion"))
+                RunYoloConv(Path.Combine(root, "Assets", "StreamingAssets", "Yolo")),
+                RunMobileClipGemm(Path.Combine(root, "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export"))
             }
         };
     }
 
     private static NcnnInt8WeightOnlyRegressionCase RunMattingConv(string modelDirectory)
     {
-        var param = NcnnParamParser.Parse(File.ReadAllText(Path.Combine(modelDirectory, "matting.param")));
-        var layer = param.FindByName("Conv_0") ?? throw new InvalidOperationException("Matting Conv_0 was not found.");
+        const string layerName = "Conv_236";
+        var paramText = File.ReadAllText(Path.Combine(modelDirectory, "matting.param"));
+        var param = NcnnParamParser.Parse(paramText);
+        var layer = param.FindByName(layerName) ?? throw new InvalidOperationException("Matting " + layerName + " was not found.");
         var outChannels = layer.GetInt(0, 0);
         var kernel = layer.GetInt(1, 0);
+        var stride = layer.GetInt(3, 1);
+        var pad = layer.GetInt(4, 0);
         var weightCount = layer.GetInt(6, 0);
         var inputChannels = weightCount / Math.Max(1, outChannels * kernel * kernel);
-        using var stream = File.OpenRead(Path.Combine(modelDirectory, "matting.bin"));
-        using var reader = new NcnnBinReader(stream);
-        var weights = NcnnRepro.ReadPackedOrRawWeightArray(reader, weightCount, layer.name);
-        var bias = layer.GetInt(5, 0) != 0 ? reader.ReadFloat32Array(outChannels) : new float[outChannels];
+        var weights = new float[weightCount];
+        var bias = new float[outChannels];
+        using (var ops = new NcnnOps())
+        using (var session = new NcnnRepro(ops))
+        using (var stream = File.OpenRead(Path.Combine(modelDirectory, "matting.bin")))
+        using (var reader = new NcnnBinReader(stream))
+        {
+            session.LoadModel(paramText, reader);
+            if (!session._conv.TryGetValue(layerName, out var pack)
+                || pack.rawWeight == null
+                || pack.rawBias == null)
+            {
+                throw new InvalidOperationException("Matting " + layerName + " raw weights were not loaded.");
+            }
+            pack.rawWeight.GetData(weights);
+            pack.rawBias.GetData(bias);
+        }
 
         const int inputWidth = 32;
         const int inputHeight = 32;
-        const int pad = 3;
-        const int stride = 2;
         var input = CreateValues(inputWidth * inputHeight * inputChannels, InputSeed);
         var outputWidth = (inputWidth + pad * 2 - kernel) / stride + 1;
         var outputHeight = (inputHeight + pad * 2 - kernel) / stride + 1;
-        var fp32 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, false, null, null);
-        var fp16 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, null, null);
+        var fp32 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, false, null, null, 0f);
+        var fp16 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, null, null, 0f);
         Quantize(weights, outChannels, weightCount / outChannels, true, out var quantized, out var scales);
-        var int8 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, quantized, scales);
+        const float activationScale = 0f;
+        var int8 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, quantized, scales, activationScale);
 
         var result = CreateCase(
-            "matting/Conv_0",
+            "matting/" + layerName,
             "Convolution",
+            "W8",
+            activationScale,
             outChannels,
             weightCount / outChannels,
             outputWidth,
@@ -158,57 +184,126 @@ public static class NcnnInt8WeightOnlyRegressionTool
             outChannels,
             kernel,
             stride,
-            pad);
+            pad,
+            activationScale);
         return result;
     }
 
-    private static NcnnInt8WeightOnlyRegressionCase RunFrozenClipInnerProduct(string modelDirectory)
+    private static NcnnInt8WeightOnlyRegressionCase RunYoloConv(string modelDirectory)
     {
-        var paramText = File.ReadAllText(Path.Combine(modelDirectory, "FrozenCLIPEmbedder-fp16.param"));
+        var param = NcnnParamParser.Parse(File.ReadAllText(Path.Combine(modelDirectory, "yolov8n_seg.ncnn.param")));
+        var layer = param.FindByName("conv_0") ?? throw new InvalidOperationException("YOLO conv_0 was not found.");
+        var outChannels = layer.GetInt(0, 0);
+        var kernel = layer.GetInt(1, 0);
+        var weightCount = layer.GetInt(6, 0);
+        var inputChannels = weightCount / Math.Max(1, outChannels * kernel * kernel);
+        using var stream = File.OpenRead(Path.Combine(modelDirectory, "yolov8n_seg.ncnn.bin"));
+        using var reader = new NcnnBinReader(stream);
+        var weights = NcnnRepro.ReadPackedOrRawWeightArray(reader, weightCount, layer.name);
+        var bias = layer.GetInt(5, 0) != 0 ? reader.ReadFloat32Array(outChannels) : new float[outChannels];
+
+        const int inputWidth = 64;
+        const int inputHeight = 64;
+        var stride = layer.GetInt(3, 1);
+        var pad = layer.GetInt(4, 0);
+        var input = CreateValues(inputWidth * inputHeight * inputChannels, InputSeed + 1);
+        var outputWidth = (inputWidth + pad * 2 - kernel) / stride + 1;
+        var outputHeight = (inputHeight + pad * 2 - kernel) / stride + 1;
+        var fp32 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, false, null, null, 0f);
+        var fp16 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, null, null, 0f);
+        Quantize(weights, outChannels, weightCount / outChannels, true, out var quantized, out var scales);
+        const float activationScale = 0.0078125f;
+        var int8WeightOnly = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, quantized, scales, 0f);
+        var int8 = RunConv(input, weights, bias, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outChannels, kernel, stride, pad, true, quantized, scales, activationScale);
+
+        var result = CreateCase(
+            "yolo-seg/conv_0",
+            "Convolution",
+            "W8A8",
+            activationScale,
+            outChannels,
+            weightCount / outChannels,
+            outputWidth,
+            outputHeight,
+            fp32,
+            fp16,
+            int8,
+            int8WeightOnly);
+        result.gpuSubmitAndReadback = MeasureMattingGpuTiming(
+            weights,
+            bias,
+            input,
+            inputWidth,
+            inputHeight,
+            inputChannels,
+            outputWidth,
+            outputHeight,
+            outChannels,
+            kernel,
+            stride,
+            pad,
+            activationScale);
+        return result;
+    }
+
+    private static NcnnInt8WeightOnlyRegressionCase RunMobileClipGemm(string modelDirectory)
+    {
+        var paramText = File.ReadAllText(Path.Combine(modelDirectory, "image_encoder.ncnn.param"));
         using var ops = new NcnnOps();
         using var session = new NcnnRepro(ops);
-        using var stream = File.OpenRead(Path.Combine(modelDirectory, "FrozenCLIPEmbedder-fp16.bin"));
+        using var stream = File.OpenRead(Path.Combine(modelDirectory, "image_encoder.ncnn.bin"));
         using var reader = new NcnnBinReader(stream);
         session.LoadModel(paramText, reader);
 
-        var pack = session._innerProduct.Values.OrderBy(value => value.outFeatures).FirstOrDefault(value => value.w != null)
-            ?? throw new InvalidOperationException("Frozen CLIP has no loaded FP32 InnerProduct fixture.");
-        var weights = new float[pack.weightSize];
-        var bias = new float[pack.outFeatures];
-        pack.w.GetData(weights);
-        pack.b.GetData(bias);
-        var input = CreateValues(pack.inFeatures, InputSeed + 1);
-        var fp32 = RunGemm(input, weights, bias, pack.outFeatures, pack.inFeatures, false, null, null);
-        var fp16 = RunGemm(input, weights, bias, pack.outFeatures, pack.inFeatures, true, null, null);
-        Quantize(weights, pack.outFeatures, pack.inFeatures, true, out var quantized, out var scales);
-        var int8 = RunGemm(input, weights, bias, pack.outFeatures, pack.inFeatures, true, quantized, scales);
+        if (!session._gemm.TryGetValue("gemm_0", out var pack) || pack.bDataCpu == null)
+            throw new InvalidOperationException("MobileCLIP gemm_0 was not loaded.");
+        var weights = pack.bDataCpu;
+        var bias = pack.cDataCpu != null && pack.cDataCpu.Length == pack.constantN
+            ? pack.cDataCpu
+            : new float[pack.constantN];
+        var input = CreateValues(pack.constantK, InputSeed + 2);
+        var fp32 = RunGemm(input, weights, bias, pack.constantN, pack.constantK, false, null, null, 0f);
+        var fp16 = RunGemm(input, weights, bias, pack.constantN, pack.constantK, true, null, null, 0f);
+        Quantize(weights, pack.constantN, pack.constantK, pack.transB, out var quantized, out var scales);
+        const float activationScale = 0.03125f;
+        var int8WeightOnly = RunGemm(input, weights, bias, pack.constantN, pack.constantK, true, quantized, scales, 0f);
+        var int8 = RunGemm(input, weights, bias, pack.constantN, pack.constantK, true, quantized, scales, activationScale);
 
         var result = CreateCase(
-            "frozen-clip/" + pack.outFeatures + "x" + pack.inFeatures,
-            "InnerProduct",
-            pack.outFeatures,
-            pack.inFeatures,
-            pack.outFeatures,
+            "mobileclip-s0/gemm_0",
+            "Gemm",
+            "W8A8",
+            activationScale,
+            pack.constantN,
+            pack.constantK,
+            (pack.constantN + 3) / 4,
             1,
             fp32,
             fp16,
-            int8);
-        result.gpuSubmitAndReadback = MeasureFrozenClipGpuTiming(weights, bias, input, pack.outFeatures, pack.inFeatures);
+            int8,
+            int8WeightOnly,
+            rtPackCountOverride: 1);
+        result.gpuSubmitAndReadback = MeasureFrozenClipGpuTiming(weights, bias, input, pack.constantN, pack.constantK, activationScale);
         return result;
     }
 
     private static NcnnInt8WeightOnlyRegressionCase CreateCase(
         string fixture,
         string operatorName,
+        string int8Mode,
+        float activationScale,
         int outputChannels,
         int valuesPerOutputChannel,
         int outputWidth,
         int outputHeight,
         float[] fp32,
         float[] fp16,
-        float[] int8)
+        float[] int8,
+        float[] int8WeightOnly = null,
+        int rtPackCountOverride = 0)
     {
-        var packCount = (outputChannels + 3) / 4;
+        int8WeightOnly ??= int8;
+        var packCount = rtPackCountOverride > 0 ? rtPackCountOverride : (outputChannels + 3) / 4;
         var fp32RtBytes = (long)outputWidth * outputHeight * packCount * 16;
         var fp16RtBytes = (long)outputWidth * outputHeight * packCount * 8;
         var elements = outputChannels * valuesPerOutputChannel;
@@ -216,6 +311,9 @@ public static class NcnnInt8WeightOnlyRegressionTool
         {
             fixture = fixture,
             operatorName = operatorName,
+            int8Mode = int8Mode,
+            activationScale = activationScale,
+            activationZeroPoint = 0,
             outputChannels = outputChannels,
             valuesPerOutputChannel = valuesPerOutputChannel,
             fp32WeightBytes = elements * sizeof(float),
@@ -223,9 +321,11 @@ public static class NcnnInt8WeightOnlyRegressionTool
             int8WeightBytes = ((elements + 3) / 4) * sizeof(uint) + outputChannels * sizeof(float),
             fp32RtBytes = fp32RtBytes,
             fp16RtBytes = fp16RtBytes,
+            int8SelectiveRtBytes = fp16RtBytes,
             int8WeightOnlyRtBytes = fp16RtBytes,
             fp16VsFp32 = Compare(fp32, fp16),
-            int8WeightOnlyVsFp32 = Compare(fp32, int8)
+            int8SelectiveVsFp32 = Compare(fp32, int8),
+            int8WeightOnlyVsFp32 = Compare(fp32, int8WeightOnly)
         };
     }
 
@@ -241,7 +341,8 @@ public static class NcnnInt8WeightOnlyRegressionTool
         int outputChannels,
         int kernel,
         int stride,
-        int pad)
+        int pad,
+        float activationScale)
     {
         if (!CanRunGpuTiming(out var unavailableReason))
             return CreateUnavailableGpuTiming(unavailableReason);
@@ -271,6 +372,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
             return CreateAvailableGpuTiming(
                 MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.FP32),
                 MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.FP16),
+                MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.INT8Selective, activationScale),
                 MeasureMattingGpuMode(repro, ops, input, inputWidth, inputHeight, inputChannels, outputWidth, outputHeight, outputChannels, kernel, stride, pad, packedWeightBuffer, packedBiasBuffer, rawBiasBuffer, fp16, int8, NcnnPrecisionMode.INT8WeightOnly));
         }
         catch (Exception exception)
@@ -315,7 +417,8 @@ public static class NcnnInt8WeightOnlyRegressionTool
         ComputeBuffer rawBias,
         ComputeBuffer fp16Weights,
         NcnnRepro.Int8WeightOnlyUpload int8Weights,
-        NcnnPrecisionMode precision)
+        NcnnPrecisionMode precision,
+        float activationScale = 0f)
     {
         var format = precision == NcnnPrecisionMode.FP32 ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         var inputPacks = (inputChannels + 3) / 4;
@@ -324,9 +427,17 @@ public static class NcnnInt8WeightOnlyRegressionTool
         var persistentOutputs = CreatePersistentOutputs(outputPacks, outputWidth, outputHeight, format);
         try
         {
-            var useInt8 = precision == NcnnPrecisionMode.INT8WeightOnly;
+            var useInt8 = precision == NcnnPrecisionMode.INT8WeightOnly || precision == NcnnPrecisionMode.INT8Selective;
             ops.SetFp16ConvWeights(precision == NcnnPrecisionMode.FP16 ? fp16Weights : null);
             ops.SetInt8ConvWeights(useInt8 ? int8Weights.packedWeights : null, useInt8 ? int8Weights.scales : null);
+            ops.SetInt8ActivationQuantization(precision == NcnnPrecisionMode.INT8Selective && activationScale > 0f
+                ? new QuantizedNodePlan
+                {
+                    mode = QuantizedNodeMode.Int8W8A8,
+                    activationScale = activationScale,
+                    activationZeroPoint = 0
+                }
+                : null);
             return MeasureGpuSubmitAndReadback(() => DispatchMattingConv(
                 repro,
                 ops,
@@ -361,7 +472,8 @@ public static class NcnnInt8WeightOnlyRegressionTool
         float[] bias,
         float[] input,
         int outputFeatures,
-        int inputFeatures)
+        int inputFeatures,
+        float activationScale)
     {
         if (!CanRunGpuTiming(out var unavailableReason))
             return CreateUnavailableGpuTiming(unavailableReason);
@@ -391,8 +503,11 @@ public static class NcnnInt8WeightOnlyRegressionTool
                 fp32, biasBuffer, fp16, int8, unusedWeightBinding, NcnnPrecisionMode.FP16);
             var int8Ms = MeasureFrozenClipGpuMode(
                 repro, ops, input, outputFeatures, inputFeatures, RenderTextureFormat.ARGBHalf,
+                fp32, biasBuffer, fp16, int8, unusedWeightBinding, NcnnPrecisionMode.INT8Selective, activationScale);
+            var int8WeightOnlyMs = MeasureFrozenClipGpuMode(
+                repro, ops, input, outputFeatures, inputFeatures, RenderTextureFormat.ARGBHalf,
                 fp32, biasBuffer, fp16, int8, unusedWeightBinding, NcnnPrecisionMode.INT8WeightOnly);
-            return CreateAvailableGpuTiming(fp32Ms, fp16Ms, int8Ms);
+            return CreateAvailableGpuTiming(fp32Ms, fp16Ms, int8Ms, int8WeightOnlyMs);
         }
         catch (Exception exception)
         {
@@ -430,15 +545,24 @@ public static class NcnnInt8WeightOnlyRegressionTool
         ComputeBuffer fp16Weights,
         NcnnRepro.Int8WeightOnlyUpload int8Weights,
         ComputeBuffer unusedWeightBinding,
-        NcnnPrecisionMode precision)
+        NcnnPrecisionMode precision,
+        float activationScale = 0f)
     {
         var inputTexture = CreatePackedLinearInputTexture(input, format);
         var persistentOutputs = CreatePersistentOutputs(1, (outputFeatures + 3) / 4, 1, format);
         try
         {
-            var useInt8 = precision == NcnnPrecisionMode.INT8WeightOnly;
+            var useInt8 = precision == NcnnPrecisionMode.INT8WeightOnly || precision == NcnnPrecisionMode.INT8Selective;
             ops.SetFp16GemmWeights(precision == NcnnPrecisionMode.FP16 ? fp16Weights : null);
             ops.SetInt8GemmWeights(useInt8 ? int8Weights.packedWeights : null, useInt8 ? int8Weights.scales : null);
+            ops.SetInt8ActivationQuantization(precision == NcnnPrecisionMode.INT8Selective
+                ? new QuantizedNodePlan
+                {
+                    mode = QuantizedNodeMode.Int8W8A8,
+                    activationScale = activationScale,
+                    activationZeroPoint = 0
+                }
+                : null);
             return MeasureGpuSubmitAndReadback(() => DispatchFrozenClipProjection(
                 repro,
                 ops,
@@ -602,7 +726,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         return true;
     }
 
-    private static NcnnInt8WeightOnlyGpuTiming CreateAvailableGpuTiming(double fp32Ms, double fp16Ms, double int8Ms)
+    private static NcnnInt8WeightOnlyGpuTiming CreateAvailableGpuTiming(double fp32Ms, double fp16Ms, double int8Ms, double int8WeightOnlyMs)
     {
         return new NcnnInt8WeightOnlyGpuTiming
         {
@@ -616,7 +740,8 @@ public static class NcnnInt8WeightOnlyRegressionTool
             unityVersion = Application.unityVersion,
             fp32Milliseconds = fp32Ms,
             fp16Milliseconds = fp16Ms,
-            int8WeightOnlyMilliseconds = int8Ms
+            int8SelectiveMilliseconds = int8Ms,
+            int8WeightOnlyMilliseconds = int8WeightOnlyMs
         };
     }
 
@@ -742,7 +867,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         }
     }
 
-    private static float[] RunConv(float[] input, float[] weights, float[] bias, int inW, int inH, int inC, int outW, int outH, int outC, int kernel, int stride, int pad, bool fp16, sbyte[] quantized, float[] scales)
+    private static float[] RunConv(float[] input, float[] weights, float[] bias, int inW, int inH, int inC, int outW, int outH, int outC, int kernel, int stride, int pad, bool fp16, sbyte[] quantized, float[] scales, float activationScale)
     {
         var output = new float[outW * outH * outC];
         for (var outputChannel = 0; outputChannel < outC; outputChannel++)
@@ -758,17 +883,21 @@ public static class NcnnInt8WeightOnlyRegressionTool
                 var srcY = y * stride - pad + ky;
                 if (srcX < 0 || srcX >= inW || srcY < 0 || srcY >= inH)
                     continue;
-                var inputValue = input[(inputChannel * inH + srcY) * inW + srcX];
+                var inputValue = fp16
+                    ? ToHalf(input[(inputChannel * inH + srcY) * inW + srcX])
+                    : input[(inputChannel * inH + srcY) * inW + srcX];
+                if (activationScale > 0f)
+                    inputValue = QuantizeActivation(inputValue, activationScale, 0);
                 var weightIndex = ((outputChannel * inC + inputChannel) * kernel + ky) * kernel + kx;
                 var weightValue = quantized == null ? weights[weightIndex] : quantized[weightIndex] * scales[outputChannel];
-                sum += (fp16 ? ToHalf(inputValue) : inputValue) * (fp16 && quantized == null ? ToHalf(weightValue) : weightValue);
+                sum += inputValue * (fp16 && quantized == null ? ToHalf(weightValue) : weightValue);
             }
             output[(outputChannel * outH + y) * outW + x] = sum;
         }
         return output;
     }
 
-    private static float[] RunGemm(float[] input, float[] weights, float[] bias, int outFeatures, int inFeatures, bool fp16, sbyte[] quantized, float[] scales)
+    private static float[] RunGemm(float[] input, float[] weights, float[] bias, int outFeatures, int inFeatures, bool fp16, sbyte[] quantized, float[] scales, float activationScale)
     {
         var output = new float[outFeatures];
         for (var outputChannel = 0; outputChannel < outFeatures; outputChannel++)
@@ -777,12 +906,21 @@ public static class NcnnInt8WeightOnlyRegressionTool
             var baseIndex = outputChannel * inFeatures;
             for (var inputIndex = 0; inputIndex < inFeatures; inputIndex++)
             {
+                var inputValue = fp16 ? ToHalf(input[inputIndex]) : input[inputIndex];
+                if (activationScale > 0f)
+                    inputValue = QuantizeActivation(inputValue, activationScale, 0);
                 var weightValue = quantized == null ? weights[baseIndex + inputIndex] : quantized[baseIndex + inputIndex] * scales[outputChannel];
-                sum += (fp16 ? ToHalf(input[inputIndex]) : input[inputIndex]) * (fp16 && quantized == null ? ToHalf(weightValue) : weightValue);
+                sum += inputValue * (fp16 && quantized == null ? ToHalf(weightValue) : weightValue);
             }
             output[outputChannel] = sum;
         }
         return output;
+    }
+
+    private static float QuantizeActivation(float value, float scale, int zeroPoint)
+    {
+        var quantized = Mathf.Clamp(Mathf.RoundToInt(value / scale) + zeroPoint, -128, 127);
+        return (quantized - zeroPoint) * scale;
     }
 
     private static void Quantize(float[] source, int outputChannels, int valuesPerOutputChannel, bool contiguous, out sbyte[] quantized, out float[] scales)
