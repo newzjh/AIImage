@@ -86,7 +86,73 @@ void NcnnPackRgbToPack4_Impl(uint3 id)
     if (_FlipY != 0)
         sy = (int)th - 1 - sy;
     float4 v = _NcnnIn[int2(sx, sy)];
+    v.xyz *= _InputValueScale;
     _NcnnOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
+}
+
+void NcnnPackRgbToNhwcPack4_Impl(uint3 id)
+{
+    uint w, h, d;
+    _NcnnOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d) return;
+
+    uint tw, th;
+    _NcnnIn.GetDimensions(tw, th);
+    int rgbChannel = (int)id.x;
+    int sx = (int)((id.y + _OffsetX) * _ScaleX);
+    sx = clamp(sx, 0, (int)tw - 1);
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int logicalY = (int)id.z * 4 + lane;
+        if (logicalY >= (int)th)
+            continue;
+
+        int sy = (int)((logicalY + _OffsetY) * _ScaleY);
+        sy = clamp(sy, 0, (int)th - 1);
+        if (_FlipY != 0)
+            sy = (int)th - 1 - sy;
+
+        float4 v = _NcnnIn[int2(sx, sy)];
+        float value = rgbChannel == 0 ? v.x : (rgbChannel == 1 ? v.y : v.z);
+        NcnnWriteLane(o, lane, value * _InputValueScale);
+    }
+
+    _NcnnOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = o;
+}
+
+void NcnnPackMaskToNhwcPack4_Impl(uint3 id)
+{
+    uint w, h, d;
+    _NcnnOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d) return;
+
+    uint tw, th;
+    _NcnnIn.GetDimensions(tw, th);
+    int sx = (int)((id.y + _OffsetX) * _ScaleX);
+    sx = clamp(sx, 0, (int)tw - 1);
+
+    float4 o = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int logicalY = (int)id.z * 4 + lane;
+        if (logicalY >= (int)th)
+            continue;
+
+        int sy = (int)((logicalY + _OffsetY) * _ScaleY);
+        sy = clamp(sy, 0, (int)th - 1);
+        if (_FlipY != 0)
+            sy = (int)th - 1 - sy;
+
+        float4 v = _NcnnIn[int2(sx, sy)];
+        float m = max(v.x, max(v.y, v.z));
+        NcnnWriteLane(o, lane, m >= _MaskThreshold ? _InputValueScale : 0.0);
+    }
+
+    _NcnnOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = o;
 }
 
 void NcnnUnpackPack4ToRgb_Impl(uint3 id)
@@ -1059,6 +1125,7 @@ void NcnnPackRgbToPack4Gfpgan_Impl(uint3 id)
     if (_FlipY != 0)
         sy = (int)th - 1 - sy;
     float4 v = _NcnnIn[int2(sx, sy)];
+    v.xyz *= _InputValueScale;
     v.xyz = v.xyz * 2.0 - 1.0;
     _NcnnOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
 }

@@ -808,6 +808,56 @@ namespace NcnnCompute
                 return true;
             }
 
+            var matchingRowsAndChannels = aShape.h == bShape.h
+                && aShape.d == bShape.d
+                && aShape.c == bShape.c
+                && aTex.packs == bTex.packs
+                && aTex.height == bTex.height
+                && aTex.packs == Mathf.Max(1, Mathf.CeilToInt(aShape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(aTex, aShape)
+                && NcnnRepro.MatchesPack4TextureStorage(bTex, bShape);
+            if (matchingRowsAndChannels
+                && aShape.w == 1
+                && bShape.w > 1
+                && aTex.width == 1
+                && bTex.width == bShape.w)
+            {
+                broadcastMode = 5;
+                outWidth = bTex.width;
+                outHeight = bTex.height;
+                outPacks = bTex.packs;
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
+                return true;
+            }
+
+            if (matchingRowsAndChannels
+                && bShape.w == 1
+                && aShape.w > 1
+                && bTex.width == 1
+                && aTex.width == aShape.w)
+            {
+                broadcastMode = 6;
+                outWidth = aTex.width;
+                outHeight = aTex.height;
+                outPacks = aTex.packs;
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
+                return true;
+            }
+
+            if (TryResolvePack4WidthVectorBroadcast(
+                    aTex,
+                    aShape,
+                    bTex,
+                    bShape,
+                    out broadcastMode,
+                    out outShape,
+                    out outWidth,
+                    out outHeight,
+                    out outPacks))
+            {
+                return true;
+            }
+
             if (aShape.c != bShape.c || aTex.packs != bTex.packs)
                 return false;
 
@@ -837,6 +887,82 @@ namespace NcnnCompute
             }
 
             return false;
+        }
+
+        private static bool TryResolvePack4WidthVectorBroadcast(
+            NcnnRepro.TensorRef aTex,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.TensorRef bTex,
+            NcnnRepro.BufferShape bShape,
+            out int broadcastMode,
+            out NcnnRepro.BufferShape outShape,
+            out int outWidth,
+            out int outHeight,
+            out int outPacks)
+        {
+            broadcastMode = 0;
+            outShape = default;
+            outWidth = 0;
+            outHeight = 0;
+            outPacks = 0;
+
+            if (aTex == null || bTex == null || aTex.texture == null || bTex.texture == null)
+                return false;
+            if ((aShape.dims != 3 && aShape.dims != 4) || aShape.dims != bShape.dims)
+                return false;
+
+            if (IsPack4WidthVector(aTex, aShape)
+                && IsPack4WidthVectorTarget(bTex, bShape, aShape.w))
+            {
+                broadcastMode = 7;
+                outWidth = bTex.width;
+                outHeight = bTex.height;
+                outPacks = bTex.packs;
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
+                return true;
+            }
+
+            if (IsPack4WidthVector(bTex, bShape)
+                && IsPack4WidthVectorTarget(aTex, aShape, bShape.w))
+            {
+                broadcastMode = 8;
+                outWidth = aTex.width;
+                outHeight = aTex.height;
+                outPacks = aTex.packs;
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsPack4WidthVector(NcnnRepro.TensorRef texture, NcnnRepro.BufferShape shape)
+        {
+            return texture != null
+                && texture.texture != null
+                && (shape.dims == 3 || shape.dims == 4)
+                && shape.w > 0
+                && shape.h == 1
+                && shape.d == 1
+                && shape.c == 1
+                && texture.width == shape.w
+                && texture.height == 1
+                && texture.packs == 1
+                && NcnnRepro.MatchesPack4TextureStorage(texture, shape);
+        }
+
+        private static bool IsPack4WidthVectorTarget(NcnnRepro.TensorRef texture, NcnnRepro.BufferShape shape, int width)
+        {
+            return texture != null
+                && texture.texture != null
+                && (shape.dims == 3 || shape.dims == 4)
+                && shape.w == width
+                && shape.h > 0
+                && shape.d > 0
+                && shape.c > 0
+                && texture.width == width
+                && texture.packs == Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(texture, shape);
         }
 
         private static bool TryResolvePack4ChannelVectorBroadcast(
@@ -2436,6 +2562,56 @@ namespace NcnnCompute
                 return true;
             }
 
+            if (TryResolveCmdPack4WidthVectorBroadcast(
+                    a,
+                    aShape,
+                    b,
+                    bShape,
+                    out broadcastMode,
+                    out outShape,
+                    out outWidth,
+                    out outHeight,
+                    out outPacks))
+            {
+                return true;
+            }
+
+            var matchingRowsAndChannels = aShape.h == bShape.h
+                && aShape.d == bShape.d
+                && aShape.c == bShape.c
+                && a.packs == b.packs
+                && a.height == b.height
+                && a.packs == Mathf.Max(1, Mathf.CeilToInt(aShape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(a, aShape)
+                && NcnnRepro.MatchesPack4TextureStorage(b, bShape);
+            if (matchingRowsAndChannels
+                && aShape.w == 1
+                && bShape.w > 1
+                && a.width == 1
+                && b.width == bShape.w)
+            {
+                broadcastMode = 5;
+                outWidth = b.width;
+                outHeight = b.height;
+                outPacks = b.packs;
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
+                return true;
+            }
+
+            if (matchingRowsAndChannels
+                && bShape.w == 1
+                && aShape.w > 1
+                && b.width == 1
+                && a.width == aShape.w)
+            {
+                broadcastMode = 6;
+                outWidth = a.width;
+                outHeight = a.height;
+                outPacks = a.packs;
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
+                return true;
+            }
+
             if (aShape.c != bShape.c || a.packs != b.packs)
                 return false;
 
@@ -2465,6 +2641,82 @@ namespace NcnnCompute
             }
 
             return false;
+        }
+
+        private static bool TryResolveCmdPack4WidthVectorBroadcast(
+            NcnnRepro.CmdTensorRef a,
+            NcnnRepro.BufferShape aShape,
+            NcnnRepro.CmdTensorRef b,
+            NcnnRepro.BufferShape bShape,
+            out int broadcastMode,
+            out NcnnRepro.BufferShape outShape,
+            out int outWidth,
+            out int outHeight,
+            out int outPacks)
+        {
+            broadcastMode = 0;
+            outShape = default;
+            outWidth = 0;
+            outHeight = 0;
+            outPacks = 0;
+
+            if (a == null || b == null || a.texture == null || b.texture == null)
+                return false;
+            if ((aShape.dims != 3 && aShape.dims != 4) || aShape.dims != bShape.dims)
+                return false;
+
+            if (IsCmdPack4WidthVector(a, aShape)
+                && IsCmdPack4WidthVectorTarget(b, bShape, aShape.w))
+            {
+                broadcastMode = 7;
+                outWidth = b.width;
+                outHeight = b.height;
+                outPacks = b.packs;
+                outShape = new NcnnRepro.BufferShape(bShape.dims, bShape.w, bShape.h, bShape.d, bShape.c);
+                return true;
+            }
+
+            if (IsCmdPack4WidthVector(b, bShape)
+                && IsCmdPack4WidthVectorTarget(a, aShape, bShape.w))
+            {
+                broadcastMode = 8;
+                outWidth = a.width;
+                outHeight = a.height;
+                outPacks = a.packs;
+                outShape = new NcnnRepro.BufferShape(aShape.dims, aShape.w, aShape.h, aShape.d, aShape.c);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsCmdPack4WidthVector(NcnnRepro.CmdTensorRef texture, NcnnRepro.BufferShape shape)
+        {
+            return texture != null
+                && texture.texture != null
+                && (shape.dims == 3 || shape.dims == 4)
+                && shape.w > 0
+                && shape.h == 1
+                && shape.d == 1
+                && shape.c == 1
+                && texture.width == shape.w
+                && texture.height == 1
+                && texture.packs == 1
+                && NcnnRepro.MatchesPack4TextureStorage(texture, shape);
+        }
+
+        private static bool IsCmdPack4WidthVectorTarget(NcnnRepro.CmdTensorRef texture, NcnnRepro.BufferShape shape, int width)
+        {
+            return texture != null
+                && texture.texture != null
+                && (shape.dims == 3 || shape.dims == 4)
+                && shape.w == width
+                && shape.h > 0
+                && shape.d > 0
+                && shape.c > 0
+                && texture.width == width
+                && texture.packs == Mathf.Max(1, Mathf.CeilToInt(shape.c / 4f))
+                && NcnnRepro.MatchesPack4TextureStorage(texture, shape);
         }
 
         private static NcnnRepro.BufferShape ResolveCmdOutputShape(NcnnRepro.BufferShape aShape, NcnnRepro.BufferShape bShape)

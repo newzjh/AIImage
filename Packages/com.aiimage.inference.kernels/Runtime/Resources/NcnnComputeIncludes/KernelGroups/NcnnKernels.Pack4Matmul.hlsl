@@ -1735,6 +1735,195 @@ void NcnnReductionScalar2D_Impl(uint3 id)
     _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = float4(result, 0.0, 0.0, 0.0);
 }
 
+void NcnnReductionPack4Width_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _ReduceScalar2DOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int inW = max(1, _ReduceScalar2DInW);
+    int inH = max(1, _ReduceScalar2DInH);
+    int outX = (int)id.x;
+    int row = (int)id.y;
+    int pack = (int)id.z;
+    if (outX != 0 || row < 0 || row >= inH)
+    {
+        _ReduceScalar2DOutArr[int3(outX, row, pack)] = 0.0;
+        return;
+    }
+
+    int opType = _ReduceScalar2DOpType;
+    float coeff = _ReduceScalar2DCoeff;
+    float4 result = 0.0;
+
+    if (opType == 4)
+    {
+        float4 acc = _ReduceScalar2DInArr[int3(0, row, pack)];
+        for (int x = 1; x < inW; x++)
+            acc = max(acc, _ReduceScalar2DInArr[int3(x, row, pack)]);
+        result = acc * coeff;
+    }
+    else if (opType == 5)
+    {
+        float4 acc = _ReduceScalar2DInArr[int3(0, row, pack)];
+        for (int x = 1; x < inW; x++)
+            acc = min(acc, _ReduceScalar2DInArr[int3(x, row, pack)]);
+        result = acc * coeff;
+    }
+    else if (opType == 0 || opType == 3)
+    {
+        float4 sum = 0.0;
+        for (int x = 0; x < inW; x++)
+            sum += _ReduceScalar2DInArr[int3(x, row, pack)];
+        if (opType == 3)
+            sum /= (float)inW;
+        result = sum * coeff;
+    }
+    else if (opType == 2)
+    {
+        float4 sumSq = 0.0;
+        for (int x = 0; x < inW; x++)
+        {
+            float4 v = _ReduceScalar2DInArr[int3(x, row, pack)];
+            sumSq += v * v;
+        }
+        result = sumSq * coeff;
+    }
+    else if (opType == 1 || opType == 7)
+    {
+        float4 sumAbs = 0.0;
+        for (int x = 0; x < inW; x++)
+            sumAbs += abs(_ReduceScalar2DInArr[int3(x, row, pack)]);
+        result = sumAbs * coeff;
+    }
+    else if (opType == 6 || opType == 10)
+    {
+        float4 sumLog = 0.0;
+        for (int x = 0; x < inW; x++)
+            sumLog += log(max(_ReduceScalar2DInArr[int3(x, row, pack)], 1e-12));
+        result = exp(sumLog) * coeff;
+    }
+    else if (opType == 9)
+    {
+        float4 sumVal = 0.0;
+        for (int x = 0; x < inW; x++)
+            sumVal += _ReduceScalar2DInArr[int3(x, row, pack)];
+        result = log(max(sumVal, 1e-12)) * coeff;
+    }
+    else if (opType == 8)
+    {
+        float4 sumSq = 0.0;
+        for (int x = 0; x < inW; x++)
+        {
+            float4 v = _ReduceScalar2DInArr[int3(x, row, pack)];
+            sumSq += v * v;
+        }
+        result = sqrt(max(sumSq, 0.0)) * coeff;
+    }
+    else
+    {
+        result = _ReduceScalar2DInArr[int3(0, row, pack)] * coeff;
+    }
+
+    _ReduceScalar2DOutArr[int3(outX, row, pack)] = result;
+}
+
+void NcnnReductionPack4Channel_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _ReduceScalar2DOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int inW = max(1, _ReduceScalar2DInW);
+    int inH = max(1, _ReduceScalar2DInH);
+    int inC = max(1, _ReducePack4InC);
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int outPack = (int)id.z;
+    if (outPack != 0 || outX < 0 || outX >= inW || outY < 0 || outY >= inH)
+    {
+        _ReduceScalar2DOutArr[int3(outX, outY, outPack)] = 0.0;
+        return;
+    }
+
+    int opType = _ReduceScalar2DOpType;
+    float coeff = _ReduceScalar2DCoeff;
+    float result = 0.0;
+
+    if (opType == 4)
+    {
+        float acc = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0);
+        for (int c = 1; c < inC; c++)
+            acc = max(acc, NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
+        result = acc * coeff;
+    }
+    else if (opType == 5)
+    {
+        float acc = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0);
+        for (int c = 1; c < inC; c++)
+            acc = min(acc, NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
+        result = acc * coeff;
+    }
+    else if (opType == 0 || opType == 3)
+    {
+        float sum = 0.0;
+        for (int c = 0; c < inC; c++)
+            sum += NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+        if (opType == 3)
+            sum /= (float)inC;
+        result = sum * coeff;
+    }
+    else if (opType == 2)
+    {
+        float sumSq = 0.0;
+        for (int c = 0; c < inC; c++)
+        {
+            float v = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+            sumSq += v * v;
+        }
+        result = sumSq * coeff;
+    }
+    else if (opType == 1 || opType == 7)
+    {
+        float sumAbs = 0.0;
+        for (int c = 0; c < inC; c++)
+            sumAbs += abs(NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
+        result = sumAbs * coeff;
+    }
+    else if (opType == 6 || opType == 10)
+    {
+        float sumLog = 0.0;
+        for (int c = 0; c < inC; c++)
+            sumLog += log(max(NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c), 1e-12));
+        result = exp(sumLog) * coeff;
+    }
+    else if (opType == 9)
+    {
+        float sumVal = 0.0;
+        for (int c = 0; c < inC; c++)
+            sumVal += NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+        result = log(max(sumVal, 1e-12)) * coeff;
+    }
+    else if (opType == 8)
+    {
+        float sumSq = 0.0;
+        for (int c = 0; c < inC; c++)
+        {
+            float v = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+            sumSq += v * v;
+        }
+        result = sqrt(max(sumSq, 0.0)) * coeff;
+    }
+    else
+    {
+        result = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0) * coeff;
+    }
+
+    _ReduceScalar2DOutArr[int3(outX, outY, outPack)] = float4(result, 0.0, 0.0, 0.0);
+}
+
 void NcnnReductionLinearMat2D_Impl(uint3 id)
 {
     uint ow, oh;

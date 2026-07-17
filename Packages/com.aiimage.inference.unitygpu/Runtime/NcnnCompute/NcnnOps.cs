@@ -296,6 +296,8 @@ namespace NcnnCompute
         private readonly int _kInterp2x;
         private readonly int _kBlitTileToDst;
         private readonly int _kPackRgbToPack4;
+        private readonly int _kPackRgbToNhwcPack4;
+        private readonly int _kPackMaskToNhwcPack4;
         private readonly int _kConv3x3Pack4;
         private readonly int _kConvPack4General;
         private readonly int _kDeconvolutionPack4General;
@@ -355,6 +357,8 @@ namespace NcnnCompute
         private readonly int _kClipPack4;
         private readonly int _kSftPack4;
         private readonly int _kPack4ToRgb01;
+        private readonly int _kPack4ToRgbScaled;
+        private readonly int _kNhwcPack4ToRgbScaled;
         private readonly int _kProbeTilePack4;
         private readonly int _kProbeSeams;
         private readonly int _kPaddingPack4;
@@ -384,6 +388,8 @@ namespace NcnnCompute
         private readonly int _kSlicePack4Cdhw;
         private readonly int _kPermutePack4;
         private readonly int _kPermutePack4Cdhw;
+        private readonly int _kPermutePack4CdhwFoldD;
+        private readonly int _kPermutePack4FoldDToCdhw;
         private readonly int _kPermuteLinearMat2D;
         private readonly int _kWindowPartitionPack4;
         private readonly int _kWindowUnpartitionPack4;
@@ -425,6 +431,8 @@ namespace NcnnCompute
         private readonly int _kSoftmaxPack4Cdhw;
         private readonly int _kReductionScalar2D;
         private readonly int _kReductionLinearMat2D;
+        private readonly int _kReductionPack4Width;
+        private readonly int _kReductionPack4Channel;
         private readonly int _kEmbed;
         private readonly int _kEmbedTexture;
         private readonly int _kEmbedTextureLinearIndex;
@@ -482,6 +490,8 @@ namespace NcnnCompute
         private readonly int _kRmsNormBuf;
         private readonly int _kUnfoldBuf;
         private readonly int _kUnfoldPack4;
+        private readonly int _kExtractPatchesPack4;
+        private readonly int _kExtractPatchesFoldDPack4;
         private readonly int _kSdpaQkBuf;
         private readonly int _kSdpaSoftmaxBuf;
         private readonly int _kSdpaQkvBuf;
@@ -733,6 +743,8 @@ namespace NcnnCompute
             _kInterp2x = _cs.FindKernel("NcnnInterp2x");
             _kBlitTileToDst = _cs.FindKernel("NcnnBlitTileToDst");
             _kPackRgbToPack4 = _cs.FindKernel("NcnnPackRgbToPack4");
+            _kPackRgbToNhwcPack4 = _cs.FindKernel("NcnnPackRgbToNhwcPack4");
+            _kPackMaskToNhwcPack4 = _cs.FindKernel("NcnnPackMaskToNhwcPack4");
             _kConv3x3Pack4 = _cs.FindKernel("NcnnConv3x3Pack4");
             _kConvPack4General = _cs.FindKernel("NcnnConvPack4General");
             _kDeconvolutionPack4General = _cs.FindKernel("NcnnDeconvolutionPack4General");
@@ -785,6 +797,8 @@ namespace NcnnCompute
             _kClipPack4 = _cs.FindKernel("NcnnClipPack4");
             _kSftPack4 = _cs.FindKernel("NcnnSftPack4");
             _kPack4ToRgb01 = _cs.FindKernel("NcnnPack4ToRgb01");
+            _kPack4ToRgbScaled = _cs.FindKernel("NcnnPack4ToRgbScaled");
+            _kNhwcPack4ToRgbScaled = _cs.FindKernel("NcnnNhwcPack4ToRgbScaled");
             _kProbeTilePack4 = _cs.FindKernel("NcnnProbeTilePack4");
             _kProbeSeams = _cs.FindKernel("NcnnProbeSeams");
             _kPaddingPack4 = _cs.FindKernel("NcnnPaddingPack4");
@@ -814,6 +828,8 @@ namespace NcnnCompute
             _kSlicePack4Cdhw = _cs.FindKernel("NcnnSlicePack4CDHW");
             _kPermutePack4 = _cs.FindKernel("NcnnPermutePack4");
             _kPermutePack4Cdhw = _cs.FindKernel("NcnnPermutePack4CDHW");
+            _kPermutePack4CdhwFoldD = _cs.FindKernel("NcnnPermutePack4CDHWFoldD");
+            _kPermutePack4FoldDToCdhw = _cs.FindKernel("NcnnPermutePack4FoldDToCDHW");
             _kPermuteLinearMat2D = _cs.FindKernel("NcnnPermuteLinearMat2D");
             _kWindowPartitionPack4 = _cs.FindKernel("NcnnWindowPartitionPack4");
             _kWindowUnpartitionPack4 = _cs.FindKernel("NcnnWindowUnpartitionPack4");
@@ -855,6 +871,8 @@ namespace NcnnCompute
             _kSoftmaxPack4Cdhw = _cs.FindKernel("NcnnSoftmaxPack4CDHW");
             _kReductionScalar2D = _cs.FindKernel("NcnnReductionScalar2D");
             _kReductionLinearMat2D = _cs.FindKernel("NcnnReductionLinearMat2D");
+            _kReductionPack4Width = _cs.FindKernel("NcnnReductionPack4Width");
+            _kReductionPack4Channel = _cs.FindKernel("NcnnReductionPack4Channel");
             _kEmbed = _cs.FindKernel("NcnnEmbed");
             _kEmbedTexture = _cs.FindKernel("NcnnEmbedTexture");
             _kEmbedTextureLinearIndex = _cs.FindKernel("NcnnEmbedTextureLinearIndex");
@@ -911,6 +929,8 @@ namespace NcnnCompute
             _kRmsNormBuf = _cs.FindKernel("NcnnRmsNormBuf");
             _kUnfoldBuf = _cs.FindKernel("NcnnUnfoldBuf");
             _kUnfoldPack4 = _cs.FindKernel("NcnnUnfoldPack4");
+            _kExtractPatchesPack4 = _cs.FindKernel("NcnnExtractPatchesPack4");
+            _kExtractPatchesFoldDPack4 = _cs.FindKernel("NcnnExtractPatchesFoldDPack4");
             _kSdpaQkBuf = _cs.FindKernel("NcnnSdpaQkBuf");
             _kSdpaSoftmaxBuf = _cs.FindKernel("NcnnSdpaSoftmaxBuf");
             _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
@@ -1022,25 +1042,68 @@ namespace NcnnCompute
 
         public void PackRgbToPack4(Texture src, int offsetX, int offsetY, float sx, float sy, RenderTexture dstPack4, bool flipY = false)
         {
+            PackRgbToPack4(src, offsetX, offsetY, sx, sy, dstPack4, flipY, 1f);
+        }
+
+        public void PackRgbToPack4(Texture src, int offsetX, int offsetY, float sx, float sy, RenderTexture dstPack4, bool flipY, float valueScale)
+        {
             if (src == null) throw new ArgumentNullException(nameof(src));
             _cs.SetInt("_OffsetX", offsetX);
             _cs.SetInt("_OffsetY", offsetY);
             _cs.SetFloat("_ScaleX", sx);
             _cs.SetFloat("_ScaleY", sy);
+            _cs.SetFloat("_InputValueScale", valueScale);
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnIn", src);
             _cs.SetTexture(_kPackRgbToPack4, "_NcnnOutArr", dstPack4);
             Dispatch2D(_cs, _kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);
         }
 
+        public void PackRgbToNhwcPack4(Texture src, int offsetX, int offsetY, float sx, float sy, RenderTexture dstPack4, bool flipY, float valueScale)
+        {
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            _cs.SetInt("_OffsetX", offsetX);
+            _cs.SetInt("_OffsetY", offsetY);
+            _cs.SetFloat("_ScaleX", sx);
+            _cs.SetFloat("_ScaleY", sy);
+            _cs.SetFloat("_InputValueScale", valueScale);
+            _cs.SetInt("_FlipY", flipY ? 1 : 0);
+            _cs.SetTexture(_kPackRgbToNhwcPack4, "_NcnnIn", src);
+            _cs.SetTexture(_kPackRgbToNhwcPack4, "_NcnnOutArr", dstPack4);
+            Dispatch3D(_kPackRgbToNhwcPack4, dstPack4.width, dstPack4.height, ResolveRenderTextureDispatchDepth(dstPack4, dstPack4.volumeDepth > 0 ? dstPack4.volumeDepth : 1), 8, 8);
+        }
+
+        public void PackMaskToNhwcPack4(Texture src, int offsetX, int offsetY, float sx, float sy, RenderTexture dstPack4, bool flipY, float maskThreshold = 0.5f)
+        {
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (dstPack4 == null) throw new ArgumentNullException(nameof(dstPack4));
+            _cs.SetInt("_OffsetX", offsetX);
+            _cs.SetInt("_OffsetY", offsetY);
+            _cs.SetFloat("_ScaleX", sx);
+            _cs.SetFloat("_ScaleY", sy);
+            _cs.SetFloat("_InputValueScale", 1f);
+            _cs.SetFloat("_MaskThreshold", maskThreshold);
+            _cs.SetInt("_FlipY", flipY ? 1 : 0);
+            _cs.SetTexture(_kPackMaskToNhwcPack4, "_NcnnIn", src);
+            _cs.SetTexture(_kPackMaskToNhwcPack4, "_NcnnOutArr", dstPack4);
+            Dispatch3D(_kPackMaskToNhwcPack4, dstPack4.width, dstPack4.height, ResolveRenderTextureDispatchDepth(dstPack4, dstPack4.volumeDepth > 0 ? dstPack4.volumeDepth : 1), 8, 8);
+        }
+
 
         public void PackRgbToPack4(CommandBuffer cmd, Texture src, int offsetX, int offsetY, float sx, float sy, ComputeTexture dstPack4, bool flipY = false)
+        {
+            PackRgbToPack4(cmd, src, offsetX, offsetY, sx, sy, dstPack4, flipY, 1f);
+        }
+
+        public void PackRgbToPack4(CommandBuffer cmd, Texture src, int offsetX, int offsetY, float sx, float sy, ComputeTexture dstPack4, bool flipY, float valueScale)
         {
             if (src == null) throw new ArgumentNullException(nameof(src));
             cmd.SetComputeIntParams(_cs, "_OffsetX", offsetX);
             cmd.SetComputeIntParams(_cs, "_OffsetY", offsetY);
             cmd.SetComputeFloatParam(_cs, "_ScaleX", sx);
             cmd.SetComputeFloatParam(_cs, "_ScaleY", sy);
+            cmd.SetComputeFloatParam(_cs, "_InputValueScale", valueScale);
             cmd.SetComputeIntParam(_cs, "_FlipY", flipY ? 1 : 0);
             cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_NcnnIn", src);
             cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_NcnnOutArr", dstPack4.nameID);
@@ -1057,6 +1120,7 @@ namespace NcnnCompute
             _cs.SetInt("_OffsetY", offsetY);
             _cs.SetFloat("_ScaleX", sx);
             _cs.SetFloat("_ScaleY", sy);
+            _cs.SetFloat("_InputValueScale", 1f);
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
             _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnIn", src);
             _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnOutArr", dstPack4);
@@ -1072,6 +1136,7 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_OffsetY", offsetY);
             cmd.SetComputeFloatParam(_cs, "_ScaleX", sx);
             cmd.SetComputeFloatParam(_cs, "_ScaleY", sy);
+            cmd.SetComputeFloatParam(_cs, "_InputValueScale", 1f);
             cmd.SetComputeIntParam(_cs, "_FlipY", flipY ? 1 : 0);
             cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_NcnnIn", src);
             cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_NcnnOutArr", dstPack4.nameID);
@@ -2095,6 +2160,92 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kPermutePack4Cdhw, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
+        public void PermutePack4CdhwFoldD(RenderTexture input, int inW, int inH, int inD, int inC, Vector4Int axes, int outW, int outH, int outD, int outC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PermutePack4CDHWInW", inW);
+            _cs.SetInt("_PermutePack4CDHWInH", inH);
+            _cs.SetInt("_PermutePack4CDHWInD", inD);
+            _cs.SetInt("_PermutePack4CDHWInC", inC);
+            _cs.SetInt("_PermutePack4CDHWOutW", outW);
+            _cs.SetInt("_PermutePack4CDHWOutH", outH);
+            _cs.SetInt("_PermutePack4CDHWOutD", outD);
+            _cs.SetInt("_PermutePack4CDHWOutC", outC);
+            _cs.SetInt("_PermutePack4CDHWAxis0", axes.x);
+            _cs.SetInt("_PermutePack4CDHWAxis1", axes.y);
+            _cs.SetInt("_PermutePack4CDHWAxis2", axes.z);
+            _cs.SetInt("_PermutePack4CDHWAxis3", axes.w);
+            _cs.SetTexture(_kPermutePack4CdhwFoldD, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPermutePack4CdhwFoldD, "_TexOut0Arr", output);
+            Dispatch3D(_kPermutePack4CdhwFoldD, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void PermutePack4CdhwFoldD(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, Vector4Int axes, int outW, int outH, int outD, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInW", inW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInH", inH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInD", inD);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInC", inC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutD", outD);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutC", outC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis0", axes.x);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis1", axes.y);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis2", axes.z);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis3", axes.w);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4CdhwFoldD, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4CdhwFoldD, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kPermutePack4CdhwFoldD, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
+        public void PermutePack4FoldDToCdhw(RenderTexture input, int inW, int inH, int inD, int inC, Vector4Int axes, int outW, int outH, int outD, int outC, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_PermutePack4CDHWInW", inW);
+            _cs.SetInt("_PermutePack4CDHWInH", inH);
+            _cs.SetInt("_PermutePack4CDHWInD", inD);
+            _cs.SetInt("_PermutePack4CDHWInC", inC);
+            _cs.SetInt("_PermutePack4CDHWOutW", outW);
+            _cs.SetInt("_PermutePack4CDHWOutH", outH);
+            _cs.SetInt("_PermutePack4CDHWOutD", outD);
+            _cs.SetInt("_PermutePack4CDHWOutC", outC);
+            _cs.SetInt("_PermutePack4CDHWAxis0", axes.x);
+            _cs.SetInt("_PermutePack4CDHWAxis1", axes.y);
+            _cs.SetInt("_PermutePack4CDHWAxis2", axes.z);
+            _cs.SetInt("_PermutePack4CDHWAxis3", axes.w);
+            _cs.SetTexture(_kPermutePack4FoldDToCdhw, "_TexIn0Arr", input);
+            _cs.SetTexture(_kPermutePack4FoldDToCdhw, "_TexOut0Arr", output);
+            Dispatch3D(_kPermutePack4FoldDToCdhw, output.width, output.height, ResolveRenderTextureDispatchDepth(output, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f))), 8, 8);
+        }
+
+        public void PermutePack4FoldDToCdhw(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, Vector4Int axes, int outW, int outH, int outD, int outC, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInW", inW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInH", inH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInD", inD);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWInC", inC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutD", outD);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWOutC", outC);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis0", axes.x);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis1", axes.y);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis2", axes.z);
+            cmd.SetComputeIntParam(_cs, "_PermutePack4CDHWAxis3", axes.w);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4FoldDToCdhw, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPermutePack4FoldDToCdhw, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kPermutePack4FoldDToCdhw, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
+        }
+
         public void PermuteLinearMat2D(RenderTexture input, int inW, int inH, Vector4Int axes, RenderTexture output)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -3066,6 +3217,30 @@ namespace NcnnCompute
             Dispatch2D(_kPack4ToRgb01, outputRgb.width, outputRgb.height, 32, 32);
         }
 
+        public void Pack4ToRgbScaled(RenderTexture inputPack4, RenderTexture outputRgb, float scale, float bias = 0f, bool flipY = false)
+        {
+            if (inputPack4 == null) throw new ArgumentNullException(nameof(inputPack4));
+            if (outputRgb == null) throw new ArgumentNullException(nameof(outputRgb));
+            _cs.SetInt("_FlipY", flipY ? 1 : 0);
+            _cs.SetFloat("_OutputValueScale", scale);
+            _cs.SetFloat("_OutputValueBias", bias);
+            _cs.SetTexture(_kPack4ToRgbScaled, "_TexIn0Arr", inputPack4);
+            _cs.SetTexture(_kPack4ToRgbScaled, "_RgbOut", outputRgb);
+            Dispatch2D(_kPack4ToRgbScaled, outputRgb.width, outputRgb.height, 32, 32);
+        }
+
+        public void NhwcPack4ToRgbScaled(RenderTexture inputPack4, RenderTexture outputRgb, float scale, float bias = 0f, bool flipY = false)
+        {
+            if (inputPack4 == null) throw new ArgumentNullException(nameof(inputPack4));
+            if (outputRgb == null) throw new ArgumentNullException(nameof(outputRgb));
+            _cs.SetInt("_FlipY", flipY ? 1 : 0);
+            _cs.SetFloat("_OutputValueScale", scale);
+            _cs.SetFloat("_OutputValueBias", bias);
+            _cs.SetTexture(_kNhwcPack4ToRgbScaled, "_TexIn0Arr", inputPack4);
+            _cs.SetTexture(_kNhwcPack4ToRgbScaled, "_RgbOut", outputRgb);
+            Dispatch2D(_kNhwcPack4ToRgbScaled, outputRgb.width, outputRgb.height, 32, 32);
+        }
+
         public void ProbeTilePack4(CommandBuffer cmd, ComputeTexture tileOutPack4, int probeIndex, int pad, int coreW, int coreH, ComputeBuffer probeOut)
         {
             if (probeOut == null) throw new ArgumentNullException(nameof(probeOut));
@@ -3646,7 +3821,7 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            if (broadcastMode < 1 || broadcastMode > 4)
+            if (broadcastMode < 1 || broadcastMode > 8)
                 throw new ArgumentOutOfRangeException(nameof(broadcastMode));
             if (_probeFastZeroBinaryOp)
             {
@@ -3740,7 +3915,7 @@ namespace NcnnCompute
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            if (broadcastMode < 1 || broadcastMode > 4)
+            if (broadcastMode < 1 || broadcastMode > 8)
                 throw new ArgumentOutOfRangeException(nameof(broadcastMode));
             if (_probeFastZeroBinaryOp)
             {
@@ -6855,6 +7030,182 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kUnfoldPack4, output.width, output.height, 1, 8, 8);
         }
 
+        public void ExtractPatchesPack4(
+            RenderTexture input,
+            int inW,
+            int inH,
+            int inC,
+            int outW,
+            int outH,
+            int kernelW,
+            int kernelH,
+            int dilationW,
+            int dilationH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            float padValue,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0 || inH <= 0 || inC <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+
+            _cs.SetInt("_UnfoldInW", inW);
+            _cs.SetInt("_UnfoldInH", inH);
+            _cs.SetInt("_UnfoldInC", inC);
+            _cs.SetInt("_UnfoldOutW", outW);
+            _cs.SetInt("_UnfoldOutH", outH);
+            _cs.SetInt("_UnfoldKernelW", kernelW);
+            _cs.SetInt("_UnfoldKernelH", kernelH);
+            _cs.SetInt("_UnfoldDilationW", dilationW);
+            _cs.SetInt("_UnfoldDilationH", dilationH);
+            _cs.SetInt("_UnfoldStrideW", strideW);
+            _cs.SetInt("_UnfoldStrideH", strideH);
+            _cs.SetInt("_UnfoldPadLeft", padLeft);
+            _cs.SetInt("_UnfoldPadTop", padTop);
+            _cs.SetFloat("_UnfoldPadValue", padValue);
+            _cs.SetTexture(_kExtractPatchesPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kExtractPatchesPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kExtractPatchesPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, output.volumeDepth), 8, 8);
+        }
+
+        public void ExtractPatchesPack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            int inW,
+            int inH,
+            int inC,
+            int outW,
+            int outH,
+            int kernelW,
+            int kernelH,
+            int dilationW,
+            int dilationH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            float padValue,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0 || inH <= 0 || inC <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+
+            cmd.SetComputeIntParam(_cs, "_UnfoldInW", inW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldInH", inH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldInC", inC);
+            cmd.SetComputeIntParam(_cs, "_UnfoldOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldKernelW", kernelW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldKernelH", kernelH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldDilationW", dilationW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldDilationH", dilationH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldStrideW", strideW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldStrideH", strideH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldPadLeft", padLeft);
+            cmd.SetComputeIntParam(_cs, "_UnfoldPadTop", padTop);
+            cmd.SetComputeFloatParam(_cs, "_UnfoldPadValue", padValue);
+            cmd.SetComputeTextureParam(_cs, _kExtractPatchesPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kExtractPatchesPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kExtractPatchesPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, output.depth), 8, 8);
+        }
+
+        public void ExtractPatchesFoldDPack4(
+            RenderTexture input,
+            int inW,
+            int inH,
+            int inD,
+            int inC,
+            int outW,
+            int outH,
+            int kernelW,
+            int kernelH,
+            int dilationW,
+            int dilationH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            float padValue,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0 || inH <= 0 || inD <= 0 || inC <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+
+            _cs.SetInt("_UnfoldInW", inW);
+            _cs.SetInt("_UnfoldInH", inH);
+            _cs.SetInt("_UnfoldInD", inD);
+            _cs.SetInt("_UnfoldInC", inC);
+            _cs.SetInt("_UnfoldOutW", outW);
+            _cs.SetInt("_UnfoldOutH", outH);
+            _cs.SetInt("_UnfoldKernelW", kernelW);
+            _cs.SetInt("_UnfoldKernelH", kernelH);
+            _cs.SetInt("_UnfoldDilationW", dilationW);
+            _cs.SetInt("_UnfoldDilationH", dilationH);
+            _cs.SetInt("_UnfoldStrideW", strideW);
+            _cs.SetInt("_UnfoldStrideH", strideH);
+            _cs.SetInt("_UnfoldPadLeft", padLeft);
+            _cs.SetInt("_UnfoldPadTop", padTop);
+            _cs.SetFloat("_UnfoldPadValue", padValue);
+            _cs.SetTexture(_kExtractPatchesFoldDPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kExtractPatchesFoldDPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kExtractPatchesFoldDPack4, output.width, output.height, ResolveRenderTextureDispatchDepth(output, output.volumeDepth), 8, 8);
+        }
+
+        public void ExtractPatchesFoldDPack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            int inW,
+            int inH,
+            int inD,
+            int inC,
+            int outW,
+            int outH,
+            int kernelW,
+            int kernelH,
+            int dilationW,
+            int dilationH,
+            int strideW,
+            int strideH,
+            int padLeft,
+            int padTop,
+            float padValue,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0 || inH <= 0 || inD <= 0 || inC <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (outW <= 0 || outH <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+
+            cmd.SetComputeIntParam(_cs, "_UnfoldInW", inW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldInH", inH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldInD", inD);
+            cmd.SetComputeIntParam(_cs, "_UnfoldInC", inC);
+            cmd.SetComputeIntParam(_cs, "_UnfoldOutW", outW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldOutH", outH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldKernelW", kernelW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldKernelH", kernelH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldDilationW", dilationW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldDilationH", dilationH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldStrideW", strideW);
+            cmd.SetComputeIntParam(_cs, "_UnfoldStrideH", strideH);
+            cmd.SetComputeIntParam(_cs, "_UnfoldPadLeft", padLeft);
+            cmd.SetComputeIntParam(_cs, "_UnfoldPadTop", padTop);
+            cmd.SetComputeFloatParam(_cs, "_UnfoldPadValue", padValue);
+            cmd.SetComputeTextureParam(_cs, _kExtractPatchesFoldDPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kExtractPatchesFoldDPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kExtractPatchesFoldDPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, output.depth), 8, 8);
+        }
+
         public void SdpaQkBuf(
             ComputeBuffer query,
             ComputeBuffer key,
@@ -7804,6 +8155,76 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kReductionLinearMat2D, "_LinearIn0", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kReductionLinearMat2D, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kReductionLinearMat2D, output.width, output.height, 8, 8);
+        }
+
+        public void ReductionPack4Width(RenderTexture input, int inW, int inH, int opType, float coeff, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (inH <= 0) throw new ArgumentOutOfRangeException(nameof(inH));
+            _cs.SetInt("_ReduceScalar2DInW", inW);
+            _cs.SetInt("_ReduceScalar2DInH", inH);
+            _cs.SetInt("_ReduceScalar2DAxis", 1);
+            _cs.SetInt("_ReduceScalar2DOpType", opType);
+            _cs.SetFloat("_ReduceScalar2DCoeff", coeff);
+            _cs.SetTexture(_kReductionPack4Width, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReductionPack4Width, "_TexOut0Arr", output);
+            Dispatch3D(_kReductionPack4Width, output.width, output.height, ResolveRenderTextureDispatchDepth(output, output.volumeDepth), 8, 8);
+        }
+
+        public void ReductionPack4Width(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int opType, float coeff, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (inH <= 0) throw new ArgumentOutOfRangeException(nameof(inH));
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DInW", inW);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DInH", inH);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DAxis", 1);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DOpType", opType);
+            cmd.SetComputeFloatParam(_cs, "_ReduceScalar2DCoeff", coeff);
+            cmd.SetComputeTextureParam(_cs, _kReductionPack4Width, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReductionPack4Width, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kReductionPack4Width, output.width, output.height, ResolveComputeTextureDispatchDepth(output, output.depth), 8, 8);
+        }
+
+        public void ReductionPack4Channel(RenderTexture input, int inW, int inH, int inC, int opType, float coeff, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (inH <= 0) throw new ArgumentOutOfRangeException(nameof(inH));
+            if (inC <= 0) throw new ArgumentOutOfRangeException(nameof(inC));
+            _cs.SetInt("_ReduceScalar2DInW", inW);
+            _cs.SetInt("_ReduceScalar2DInH", inH);
+            _cs.SetInt("_ReduceScalar2DAxis", 0);
+            _cs.SetInt("_ReduceScalar2DOpType", opType);
+            _cs.SetFloat("_ReduceScalar2DCoeff", coeff);
+            _cs.SetInt("_ReducePack4InC", inC);
+            _cs.SetTexture(_kReductionPack4Channel, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReductionPack4Channel, "_TexOut0Arr", output);
+            Dispatch3D(_kReductionPack4Channel, output.width, output.height, ResolveRenderTextureDispatchDepth(output, output.volumeDepth), 8, 8);
+        }
+
+        public void ReductionPack4Channel(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inC, int opType, float coeff, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inW <= 0) throw new ArgumentOutOfRangeException(nameof(inW));
+            if (inH <= 0) throw new ArgumentOutOfRangeException(nameof(inH));
+            if (inC <= 0) throw new ArgumentOutOfRangeException(nameof(inC));
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DInW", inW);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DInH", inH);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DAxis", 0);
+            cmd.SetComputeIntParam(_cs, "_ReduceScalar2DOpType", opType);
+            cmd.SetComputeFloatParam(_cs, "_ReduceScalar2DCoeff", coeff);
+            cmd.SetComputeIntParam(_cs, "_ReducePack4InC", inC);
+            cmd.SetComputeTextureParam(_cs, _kReductionPack4Channel, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReductionPack4Channel, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kReductionPack4Channel, output.width, output.height, ResolveComputeTextureDispatchDepth(output, output.depth), 8, 8);
         }
 
         public void Embed(ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, ComputeBuffer output)

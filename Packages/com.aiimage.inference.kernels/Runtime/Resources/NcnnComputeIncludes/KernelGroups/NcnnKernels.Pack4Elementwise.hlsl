@@ -310,6 +310,38 @@ void NcnnPack4ToRgb01_Impl(uint3 id)
     _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
 }
 
+void NcnnPack4ToRgbScaled_Impl(uint3 id)
+{
+    uint w, h;
+    _RgbOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int sy = _FlipY != 0 ? (int)(h - 1 - id.y) : (int)id.y;
+    float4 v = _RgbInArr[int3((int)id.x, sy, 0)];
+    v.xyz = saturate(v.xyz * _OutputValueScale + _OutputValueBias);
+    _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
+}
+
+void NcnnNhwcPack4ToRgbScaled_Impl(uint3 id)
+{
+    uint w, h;
+    _RgbOut.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int logicalY = _FlipY != 0 ? (int)(h - 1 - id.y) : (int)id.y;
+    int pack = logicalY >> 2;
+    int lane = logicalY & 3;
+    int x = (int)id.x;
+
+    float r = NcnnReadLane(_RgbInArr[int3(0, x, pack)], lane);
+    float g = NcnnReadLane(_RgbInArr[int3(1, x, pack)], lane);
+    float b = NcnnReadLane(_RgbInArr[int3(2, x, pack)], lane);
+    _RgbOut[int2((int)id.x, (int)id.y)] = float4(
+        saturate(r * _OutputValueScale + _OutputValueBias),
+        saturate(g * _OutputValueScale + _OutputValueBias),
+        saturate(b * _OutputValueScale + _OutputValueBias),
+        1.0);
+}
+
 void NcnnProbeTilePack4_Impl(uint3 id)
 {
     uint iw, ih, idd;

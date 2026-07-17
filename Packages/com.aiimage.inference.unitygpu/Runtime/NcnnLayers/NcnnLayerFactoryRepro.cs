@@ -87,6 +87,7 @@ namespace NcnnCompute
             { NcnnLayerTypes.MaxPoolingInd, () => new NcnnMaxPoolingIndLayerRepro() },
             { NcnnLayerTypes.MaxUnPooling, () => new NcnnMaxUnPoolingLayerRepro() },
             { NcnnLayerTypes.Unfold, () => new NcnnUnfoldLayerRepro() },
+            { NcnnLayerTypes.ExtractPatches, () => new NcnnExtractPatchesLayerRepro() },
             { NcnnLayerTypes.Tile, () => new NcnnTileLayerRepro() },
             { NcnnLayerTypes.Shape, () => new NcnnShapeLayerRepro() },
             { NcnnLayerTypes.Size, () => new NcnnSizeLayerRepro() },

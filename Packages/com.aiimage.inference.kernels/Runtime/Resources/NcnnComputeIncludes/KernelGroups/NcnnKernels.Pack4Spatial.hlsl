@@ -724,12 +724,24 @@ void NcnnBinaryOpPack4Broadcast_Impl(uint3 id)
         aCoord.z = 0;
     else if (broadcastMode == 4)
         bCoord.z = 0;
+    else if (broadcastMode == 5)
+        aCoord.x = 0;
+    else if (broadcastMode == 6)
+        bCoord.x = 0;
+    else if (broadcastMode == 7)
+        aCoord = int3((int)id.x, 0, 0);
+    else if (broadcastMode == 8)
+        bCoord = int3((int)id.x, 0, 0);
 
     float4 a = _BinaryA[aCoord];
     float4 b = _BinaryB[bCoord];
     if (broadcastMode == 3)
         a = a.xxxx;
     else if (broadcastMode == 4)
+        b = b.xxxx;
+    else if (broadcastMode == 7)
+        a = a.xxxx;
+    else if (broadcastMode == 8)
         b = b.xxxx;
 
     float4 o = a;

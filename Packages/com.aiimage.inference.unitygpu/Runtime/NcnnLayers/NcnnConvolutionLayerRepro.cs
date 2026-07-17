@@ -270,6 +270,14 @@ namespace NcnnCompute
                 src = NcnnRepro.CreateTextureRef(tempInputTex, srcShape, srcShape, owned: false);
             }
 
+            if (srcShape.dims == 2 && conv.inC == 1)
+            {
+                var promotedShape = new NcnnRepro.BufferShape(3, srcShape.w, srcShape.h, 1, 1);
+                if (!NcnnRepro.IsStrictLinearMatTexture(src))
+                    src = NcnnRepro.CreateTextureRef(src.texture, promotedShape, promotedShape, owned: false, sharedTextureOwner: src, blobName: layer.bottomNames[0]);
+                srcShape = promotedShape;
+            }
+
             if (srcShape.dims != 3 || srcShape.d != 1 || srcShape.c != conv.inC)
             {
                 throw new InvalidOperationException(
@@ -340,6 +348,13 @@ namespace NcnnCompute
                 useInt4WeightOnly ? conv.rawWeightInt4Packed : null,
                 useInt4WeightOnly ? conv.rawWeightInt4Scales : null);
             owner.ConfigureInt8ActivationQuantization(layer);
+            var preferRawGroupPack4 = !useInt8WeightOnly
+                                      && !useInt4WeightOnly
+                                      && !conv.isDepthWise
+                                      && conv.group == 1
+                                      && (conv.dilationW != 1 || conv.dilationH != 1)
+                                      && conv.rawWeight != null
+                                      && conv.rawBias != null;
             if (useInt8WeightOnly || useInt4WeightOnly)
             {
                 owner.Ops.Conv2dGroupPack4(
@@ -361,14 +376,38 @@ namespace NcnnCompute
                     conv.activationSlope,
                     outRt);
             }
+            else if (preferRawGroupPack4)
+            {
+                owner.Ops.Conv2dGroupPack4(
+                    src.texture,
+                    conv.rawWeight,
+                    conv.rawBias,
+                    conv.inC,
+                    conv.outC,
+                    conv.group,
+                    conv.kernelW,
+                    conv.kernelH,
+                    conv.strideW,
+                    conv.strideH,
+                    conv.padLeft,
+                    conv.padTop,
+                    conv.dilationW,
+                    conv.dilationH,
+                    conv.activationType,
+                    conv.activationSlope,
+                    outRt);
+            }
             else if (useFp16GeneralWeights)
             {
                 owner.Ops.ConvPack4General(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.outC, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
             }
-            else if (conv.kernelW == 1 && conv.kernelH == 1 && owner.EnableConv1x1TextureConvolution && !forceGeneralTexturePath)
+            else if (conv.kernelW == 1
+                && conv.kernelH == 1
+                && owner.EnableConv1x1TextureConvolution
+                && !forceGeneralTexturePath
+                && src.width == outWTex
+                && src.height == outHTex)
             {
-                if (src.width != outWTex || src.height != outHTex)
-                    throw new InvalidOperationException("Conv1x1 texture path does not support spatial resize: " + layer.name);
                 owner.Ops.Conv1x1Pack4(src.texture, conv.inPacks, conv.packedWeight4, conv.packedBias4, conv.outPacks, conv.activationType, conv.activationSlope, outRt);
                 if (owner.ShouldCompareTextureConvLayer(layer.name) && !forceGeneralTexturePath)
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
@@ -421,6 +460,14 @@ namespace NcnnCompute
             ComputeTexture output = null;
             try
             {
+                if (srcShape.dims == 2 && conv.inC == 1)
+                {
+                    var promotedShape = new NcnnRepro.BufferShape(3, srcShape.w, srcShape.h, 1, 1);
+                    if (!NcnnRepro.IsStrictLinearMatTexture(src))
+                        src = NcnnRepro.CreateCmdTensorRef(src.texture, promotedShape, promotedShape, owned: false, sharedTextureOwner: src, blobName: layer.bottomNames[0]);
+                    srcShape = promotedShape;
+                }
+
                 if (NcnnRepro.IsStrictLinearMatTexture(src)
                     && srcShape.dims == 3
                     && srcShape.d == 1

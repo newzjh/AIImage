@@ -2480,11 +2480,25 @@ namespace NcnnCompute
         {
             output = default;
             if ((first.dims != 3 && first.dims != 4)
-                || first.dims != second.dims
-                || first.c != second.c)
+                || first.dims != second.dims)
             {
                 return false;
             }
+
+            if (IsStrictCommandBufferWidthVector(first) && IsStrictCommandBufferWidthVectorTarget(second, first.w))
+            {
+                output = second;
+                return true;
+            }
+
+            if (IsStrictCommandBufferWidthVector(second) && IsStrictCommandBufferWidthVectorTarget(first, second.w))
+            {
+                output = first;
+                return true;
+            }
+
+            if (first.c != second.c)
+                return false;
 
             var firstIsScalarSpatial = first.w == 1 && first.h == 1 && first.d == 1;
             var secondIsScalarSpatial = second.w == 1 && second.h == 1 && second.d == 1;
@@ -2501,6 +2515,24 @@ namespace NcnnCompute
             }
 
             return false;
+        }
+
+        private static bool IsStrictCommandBufferWidthVector(BufferShape shape)
+        {
+            return (shape.dims == 3 || shape.dims == 4)
+                && shape.w > 0
+                && shape.h == 1
+                && shape.d == 1
+                && shape.c == 1;
+        }
+
+        private static bool IsStrictCommandBufferWidthVectorTarget(BufferShape shape, int width)
+        {
+            return (shape.dims == 3 || shape.dims == 4)
+                && shape.w == width
+                && shape.h > 0
+                && shape.d > 0
+                && shape.c > 0;
         }
 
         private static bool TryResolveStrictCommandBufferChannelVector(

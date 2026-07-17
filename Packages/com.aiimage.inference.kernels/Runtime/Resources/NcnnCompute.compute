@@ -17,6 +17,8 @@
 #pragma kernel NcnnInterp2x
 #pragma kernel NcnnBlitTileToDst
 #pragma kernel NcnnPackRgbToPack4
+#pragma kernel NcnnPackRgbToNhwcPack4
+#pragma kernel NcnnPackMaskToNhwcPack4
 #pragma kernel NcnnUnpackPack4ToRgb
 #pragma kernel NcnnConv3x3Pack4
 #pragma kernel NcnnConvPack4General
@@ -70,6 +72,8 @@
 #pragma kernel NcnnClipPack4
 #pragma kernel NcnnSftPack4
 #pragma kernel NcnnPack4ToRgb01
+#pragma kernel NcnnPack4ToRgbScaled
+#pragma kernel NcnnNhwcPack4ToRgbScaled
 #pragma kernel NcnnProbeTilePack4
 #pragma kernel NcnnProbeSeams
 #pragma kernel NcnnPaddingPack4
@@ -98,6 +102,8 @@
 #pragma kernel NcnnSliceLinearMat2D
 #pragma kernel NcnnPermutePack4
 #pragma kernel NcnnPermutePack4CDHW
+#pragma kernel NcnnPermutePack4CDHWFoldD
+#pragma kernel NcnnPermutePack4FoldDToCDHW
 #pragma kernel NcnnPermuteLinearMat2D
 #pragma kernel NcnnWindowPartitionPack4
 #pragma kernel NcnnWindowUnpartitionPack4
@@ -140,6 +146,8 @@
 #pragma kernel NcnnSoftmaxPack4CDHW
 #pragma kernel NcnnReductionScalar2D
 #pragma kernel NcnnReductionLinearMat2D
+#pragma kernel NcnnReductionPack4Width
+#pragma kernel NcnnReductionPack4Channel
 #pragma kernel NcnnEmbed
 #pragma kernel NcnnEmbedTexture
 #pragma kernel NcnnEmbedTextureLinearIndex
@@ -204,6 +212,8 @@
 #pragma kernel NcnnRmsNormBuf
 #pragma kernel NcnnUnfoldBuf
 #pragma kernel NcnnUnfoldPack4
+#pragma kernel NcnnExtractPatchesPack4
+#pragma kernel NcnnExtractPatchesFoldDPack4
 #pragma kernel NcnnSdpaQkBuf
 #pragma kernel NcnnSdpaSoftmaxBuf
 #pragma kernel NcnnSdpaQkvBuf
@@ -276,6 +286,8 @@ groupshared float red1[256];
 // Auto-generated grouped kernel implementation forward declarations.
 void NcnnLeakyRelu_Impl(uint3 id);
 void NcnnPackRgbToPack4_Impl(uint3 id);
+void NcnnPackRgbToNhwcPack4_Impl(uint3 id);
+void NcnnPackMaskToNhwcPack4_Impl(uint3 id);
 void NcnnPackRgbToPack4Gfpgan_Impl(uint3 id);
 void NcnnUnpackPack4ToRgb_Impl(uint3 id);
 void NcnnConv3x3Pack4_Impl(uint3 id, uint3 groupId, uint3 groupThreadId);
@@ -336,6 +348,8 @@ void NcnnAddNoiseBroadcastPack4_Impl(uint3 id);
 void NcnnClipPack4_Impl(uint3 id);
 void NcnnSftPack4_Impl(uint3 id);
 void NcnnPack4ToRgb01_Impl(uint3 id);
+void NcnnPack4ToRgbScaled_Impl(uint3 id);
+void NcnnNhwcPack4ToRgbScaled_Impl(uint3 id);
 void NcnnConv3x3_Impl(uint3 id);
 void NcnnConvDepthWise_Impl(uint3 id);
 void NcnnConv3dBuf_Impl(uint3 id);
@@ -392,6 +406,8 @@ void NcnnSlicePack4_Impl(uint3 id);
 void NcnnSliceLinearMat2D_Impl(uint3 id);
 void NcnnPermutePack4_Impl(uint3 id);
 void NcnnPermutePack4CDHW_Impl(uint3 id);
+void NcnnPermutePack4CDHWFoldD_Impl(uint3 id);
+void NcnnPermutePack4FoldDToCDHW_Impl(uint3 id);
 void NcnnPermuteLinearMat2D_Impl(uint3 id);
 void NcnnWindowPartitionPack4_Impl(uint3 id);
 void NcnnWindowUnpartitionPack4_Impl(uint3 id);
@@ -459,6 +475,8 @@ void NcnnReorgBuf_Impl(uint3 id);
 void NcnnReductionRowsBuf_Impl(uint3 id);
 void NcnnReductionScalar2D_Impl(uint3 id);
 void NcnnReductionLinearMat2D_Impl(uint3 id);
+void NcnnReductionPack4Width_Impl(uint3 id);
+void NcnnReductionPack4Channel_Impl(uint3 id);
 void NcnnConv1dBuf_Impl(uint3 id);
 void NcnnReorgPack4_Impl(uint3 id);
 void NcnnPointwisePack4_Impl(uint3 id);
@@ -482,6 +500,8 @@ void NcnnLrnBuf_Impl(uint3 id);
 void NcnnRmsNormBuf_Impl(uint3 id);
 void NcnnUnfoldBuf_Impl(uint3 id);
 void NcnnUnfoldPack4_Impl(uint3 id);
+void NcnnExtractPatchesPack4_Impl(uint3 id);
+void NcnnExtractPatchesFoldDPack4_Impl(uint3 id);
 void NcnnPassthrough_Impl(uint3 id);
 void NcnnConv2dGroupPack4_Impl(uint3 id);
 void NcnnDeconvolution2dGroupPack4_Impl(uint3 id);
@@ -542,6 +562,10 @@ int _ActType;
 float _ActParam;
 float _ScaleX;
 float _ScaleY;
+float _InputValueScale;
+float _OutputValueScale;
+float _OutputValueBias;
+float _MaskThreshold;
 float _InterpScaleFactorX;
 float _InterpScaleFactorY;
 float _InterpScaleFactorZ;
@@ -560,6 +584,18 @@ int _ArgmaxInitialize;
 void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnPackRgbToPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPackRgbToNhwcPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPackRgbToNhwcPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPackMaskToNhwcPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPackMaskToNhwcPack4_Impl(id);
 }
 
 [numthreads(32,32,1)]
@@ -1209,6 +1245,18 @@ void NcnnPack4ToRgb01(uint3 id : SV_DispatchThreadID)
 {
     NcnnPack4ToRgb01_Impl(id);
 }
+[numthreads(32,32,1)]
+void NcnnPack4ToRgbScaled(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPack4ToRgbScaled_Impl(id);
+}
+
+[numthreads(32,32,1)]
+void NcnnNhwcPack4ToRgbScaled(uint3 id : SV_DispatchThreadID)
+{
+    NcnnNhwcPack4ToRgbScaled_Impl(id);
+}
+
 [numthreads(8,8,1)]
 void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
 {
@@ -1641,6 +1689,7 @@ int _ReduceScalar2DInH;
 int _ReduceScalar2DAxis;
 int _ReduceScalar2DOpType;
 float _ReduceScalar2DCoeff;
+int _ReducePack4InC;
 
 
 int _ShuffleGroup;
@@ -1703,6 +1752,8 @@ int _PermutePack4CDHWAxis0;
 int _PermutePack4CDHWAxis1;
 int _PermutePack4CDHWAxis2;
 int _PermutePack4CDHWAxis3;
+
+int _UnfoldInD;
 
 
 int _WindowPartitionPack4InW;
@@ -2174,6 +2225,18 @@ void NcnnPermutePack4(uint3 id : SV_DispatchThreadID)
 void NcnnPermutePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
     NcnnPermutePack4CDHW_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPermutePack4CDHWFoldD(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPermutePack4CDHWFoldD_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPermutePack4FoldDToCDHW(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPermutePack4FoldDToCDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -3101,6 +3164,18 @@ void NcnnReductionLinearMat2D(uint3 id : SV_DispatchThreadID)
     NcnnReductionLinearMat2D_Impl(id);
 }
 
+[numthreads(8,8,1)]
+void NcnnReductionPack4Width(uint3 id : SV_DispatchThreadID)
+{
+    NcnnReductionPack4Width_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnReductionPack4Channel(uint3 id : SV_DispatchThreadID)
+{
+    NcnnReductionPack4Channel_Impl(id);
+}
+
 [numthreads(256,1,1)]
 void NcnnConv1dBuf(uint3 id : SV_DispatchThreadID)
 {
@@ -3334,6 +3409,18 @@ void NcnnUnfoldBuf(uint3 id : SV_DispatchThreadID)
 void NcnnUnfoldPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnUnfoldPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnExtractPatchesPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnExtractPatchesPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnExtractPatchesFoldDPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnExtractPatchesFoldDPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]

@@ -206,7 +206,9 @@ namespace NcnnCompute
             var canUseLowDimLinearConcat =
                 (firstShape.dims == 1 && tensorAxis == 0)
                 || (firstShape.dims == 2 && (tensorAxis == 0 || tensorAxis == 1));
+            var canUsePack4WidthConcat = firstShape.dims == 3 && tensorAxis == 0;
             if (!canUseLowDimLinearConcat
+                && !canUsePack4WidthConcat
                 && ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis))
                 return false;
 
@@ -248,6 +250,17 @@ namespace NcnnCompute
                         || shape.c != firstShape.c
                         || width != LowDimTextureStorageWidth(shape)
                         || height != LowDimTextureStorageHeight(shape)
+                        || packs != firstPacks)
+                    {
+                        return false;
+                    }
+                }
+                else if (canUsePack4WidthConcat)
+                {
+                    if (shape.h != firstShape.h
+                        || shape.d != firstShape.d
+                        || shape.c != firstShape.c
+                        || height != firstHeight
                         || packs != firstPacks)
                     {
                         return false;
@@ -346,7 +359,9 @@ namespace NcnnCompute
             var canUseLowDimLinearConcat =
                 (firstShape.dims == 1 && tensorAxis == 0)
                 || (firstShape.dims == 2 && (tensorAxis == 0 || tensorAxis == 1));
+            var canUsePack4WidthConcat = firstShape.dims == 3 && tensorAxis == 0;
             if (!canUseLowDimLinearConcat
+                && !canUsePack4WidthConcat
                 && ((firstShape.dims != 3 && firstShape.dims != 4) || tensorAxis != concatChannelAxis))
                 return Fail("unsupported axis/dims dims=" + firstShape.dims + " tensorAxis=" + tensorAxis);
 
@@ -372,6 +387,8 @@ namespace NcnnCompute
                         else
                             outH += shapes[i].h;
                     }
+                    else if (canUsePack4WidthConcat)
+                        outW += shapes[i].w;
                     else
                         outC += shapes[i].c;
                 }
@@ -420,6 +437,21 @@ namespace NcnnCompute
                             + " shape=d" + shape.dims + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c);
                     }
                 }
+                else if (canUsePack4WidthConcat)
+                {
+                    if (!NcnnRepro.MatchesPack4TextureStorage(tex, shape)
+                        || shape.h != firstShape.h
+                        || shape.d != firstShape.d
+                        || shape.c != firstShape.c
+                        || tex.height != firstTex.height
+                        || tex.packs != firstTex.packs)
+                    {
+                        return Fail("width concat mismatch part=" + i
+                            + " tex=" + tex.width + "x" + tex.height + "x" + tex.packs
+                            + " first=" + firstTex.width + "x" + firstTex.height + "x" + firstTex.packs
+                            + " shape=d" + shape.dims + ":" + shape.w + "x" + shape.h + "x" + shape.d + "x" + shape.c);
+                    }
+                }
                 else
                 {
                     if (shape.w != firstShape.w
@@ -437,6 +469,23 @@ namespace NcnnCompute
                 var storageShape = NcnnRepro.GetTextureStorageShape(firstTex, firstShape);
                 textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureAlias(firstTex, firstShape, storageShape);
                 textureShapes[layer.topNames[0]] = firstShape;
+                return true;
+            }
+
+            if (canUsePack4WidthConcat)
+            {
+                var outShape = new NcnnRepro.BufferShape(3, outW, firstShape.h, 1, firstShape.c);
+                var outRt = owner.RentTempArray(outShape.w, outShape.h, firstTex.packs, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+                var dstOffsetX = 0;
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    var src = parts[i].texture;
+                    for (var pack = 0; pack < parts[i].packs; pack++)
+                        Graphics.CopyTexture(src, pack, 0, 0, 0, src.width, src.height, outRt, pack, 0, dstOffsetX, 0);
+                    dstOffsetX += shapes[i].w;
+                }
+
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
                 return true;
             }
 

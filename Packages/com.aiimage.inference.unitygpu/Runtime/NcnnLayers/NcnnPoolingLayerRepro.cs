@@ -282,16 +282,8 @@ namespace NcnnCompute
                 var outH = Mathf.Max(1, (pooledInputH - kernelH) / Mathf.Max(1, strideH) + 1);
                 var outRt = owner.RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
                 owner.Ops.PoolingPack4(pooledInput, src.packs, kernelW, kernelH, strideW, strideH, 0, 0, poolType, outRt);
-                textureBlobs[layer.topNames[0]] = new NcnnRepro.TensorRef
-                {
-                    texture = outRt,
-                    width = outW,
-                    height = outH,
-                    packs = src.packs,
-                    refs = 1,
-                    owned = true
-                };
-                textureShapes[layer.topNames[0]] = new NcnnRepro.BufferShape(3, outW, outH, 1, srcShape.c);
+                var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, srcShape.c);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
             }
             finally
             {

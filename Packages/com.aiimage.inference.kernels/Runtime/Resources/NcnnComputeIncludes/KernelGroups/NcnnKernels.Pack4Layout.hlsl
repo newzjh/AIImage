@@ -392,6 +392,106 @@ void NcnnPermutePack4CDHW_Impl(uint3 id)
     _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
+float NcnnReadPack4ChannelFoldD(Texture2DArray<float4> tex, int x, int y, int z, int channel, int logicalH)
+{
+    int foldedY = z * max(1, logicalH) + y;
+    return NcnnReadPack4Channel(tex, x, foldedY, channel);
+}
+
+void NcnnPermutePack4CDHWFoldD_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _PermutePack4CDHWOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outX = (int)id.x;
+    int foldedY = (int)id.y;
+    int outH = max(1, _PermutePack4CDHWOutH);
+    int outZ = foldedY / outH;
+    int outY = foldedY - outZ * outH;
+    if (outZ < 0 || outZ >= _PermutePack4CDHWOutD)
+    {
+        _PermutePack4CDHWOutArr[int3(outX, foldedY, (int)id.z)] = 0.0;
+        return;
+    }
+
+    int outPack = (int)id.z;
+    int4 oc4 = outPack * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outC = lane == 0 ? oc4.x : (lane == 1 ? oc4.y : (lane == 2 ? oc4.z : oc4.w));
+        if (outC >= _PermutePack4CDHWOutC)
+            continue;
+
+        int srcW = _PermutePack4CDHWAxis0 == 0 ? outX : (_PermutePack4CDHWAxis1 == 0 ? outY : (_PermutePack4CDHWAxis2 == 0 ? outZ : outC));
+        int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : outC));
+        int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : outC));
+        int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : outC));
+        float scalar = 0.0;
+        if ((uint)srcW < (uint)_PermutePack4CDHWInW
+            && (uint)srcH < (uint)_PermutePack4CDHWInH
+            && (uint)srcD < (uint)_PermutePack4CDHWInD
+            && (uint)srcC < (uint)_PermutePack4CDHWInC)
+        {
+            scalar = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+        }
+        NcnnWriteLane(o, lane, scalar);
+    }
+
+    _PermutePack4CDHWOutArr[int3(outX, foldedY, outPack)] = o;
+}
+
+void NcnnPermutePack4FoldDToCDHW_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _PermutePack4CDHWOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outPackCount = max(1, (_PermutePack4CDHWOutC + 3) / 4);
+    int outX = (int)id.x;
+    int outY = (int)id.y;
+    int slice = (int)id.z;
+    int outZ = slice / outPackCount;
+    int outPack = slice - outZ * outPackCount;
+    if (outZ < 0 || outZ >= _PermutePack4CDHWOutD)
+    {
+        _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = 0.0;
+        return;
+    }
+
+    int4 oc4 = outPack * 4 + int4(0, 1, 2, 3);
+    float4 o = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int outC = lane == 0 ? oc4.x : (lane == 1 ? oc4.y : (lane == 2 ? oc4.z : oc4.w));
+        if (outC >= _PermutePack4CDHWOutC)
+            continue;
+
+        int srcW = _PermutePack4CDHWAxis0 == 0 ? outX : (_PermutePack4CDHWAxis1 == 0 ? outY : (_PermutePack4CDHWAxis2 == 0 ? outZ : outC));
+        int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : outC));
+        int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : outC));
+        int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : outC));
+        float scalar = 0.0;
+        if ((uint)srcW < (uint)_PermutePack4CDHWInW
+            && (uint)srcH < (uint)_PermutePack4CDHWInH
+            && (uint)srcD < (uint)_PermutePack4CDHWInD
+            && (uint)srcC < (uint)_PermutePack4CDHWInC)
+        {
+            scalar = NcnnReadPack4ChannelFoldD(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInH);
+        }
+        NcnnWriteLane(o, lane, scalar);
+    }
+
+    _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = o;
+}
+
 void NcnnPermuteLinearMat2D_Impl(uint3 id)
 {
     uint ow, oh;
@@ -1034,4 +1134,98 @@ void NcnnUnfoldPack4_Impl(uint3 id)
         value = NcnnReadPack4Channel(_TexIn0Arr, inX, inY, c);
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, 0)] = float4(value, 0.0, 0.0, 0.0);
+}
+
+void NcnnExtractPatchesPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _TexOut0Arr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outw = max(1, _UnfoldOutW);
+    int outh = max(1, _UnfoldOutH);
+    if ((int)id.x >= outw || (int)id.y >= outh)
+        return;
+
+    int inC = max(1, _UnfoldInC);
+    int maxk = max(1, _UnfoldKernelW * _UnfoldKernelH);
+    int outC = maxk * inC;
+    int4 oc4 = int4((int)id.z * 4 + 0, (int)id.z * 4 + 1, (int)id.z * 4 + 2, (int)id.z * 4 + 3);
+    float4 value = float4(_UnfoldPadValue, _UnfoldPadValue, _UnfoldPadValue, _UnfoldPadValue);
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int oc = lane == 0 ? oc4.x : (lane == 1 ? oc4.y : (lane == 2 ? oc4.z : oc4.w));
+        if (oc >= outC)
+            continue;
+
+        // TensorFlow ExtractImagePatches flattens as [ky, kx, channel].
+        int k = oc / inC;
+        int c = oc - k * inC;
+        int ky = k / max(1, _UnfoldKernelW);
+        int kx = k - ky * max(1, _UnfoldKernelW);
+        int inY = (int)id.y * _UnfoldStrideH + ky * _UnfoldDilationH - _UnfoldPadTop;
+        int inX = (int)id.x * _UnfoldStrideW + kx * _UnfoldDilationW - _UnfoldPadLeft;
+        float sampleValue = _UnfoldPadValue;
+        if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && c < inC)
+            sampleValue = NcnnReadPack4Channel(_TexIn0Arr, inX, inY, c);
+
+        if (lane == 0) value.x = sampleValue;
+        else if (lane == 1) value.y = sampleValue;
+        else if (lane == 2) value.z = sampleValue;
+        else value.w = sampleValue;
+    }
+
+    _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = value;
+}
+
+void NcnnExtractPatchesFoldDPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _TexOut0Arr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int outw = max(1, _UnfoldOutW);
+    int outh = max(1, _UnfoldOutH);
+    int inD = max(1, _UnfoldInD);
+    if ((int)id.x >= outw)
+        return;
+
+    int foldedY = (int)id.y;
+    int outZ = foldedY / outh;
+    int outY = foldedY - outZ * outh;
+    if (outY < 0 || outY >= outh || outZ < 0 || outZ >= inD)
+        return;
+
+    int inC = max(1, _UnfoldInC);
+    int maxk = max(1, _UnfoldKernelW * _UnfoldKernelH);
+    int outC = maxk * inC;
+    int4 oc4 = int4((int)id.z * 4 + 0, (int)id.z * 4 + 1, (int)id.z * 4 + 2, (int)id.z * 4 + 3);
+    float4 value = float4(_UnfoldPadValue, _UnfoldPadValue, _UnfoldPadValue, _UnfoldPadValue);
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int oc = lane == 0 ? oc4.x : (lane == 1 ? oc4.y : (lane == 2 ? oc4.z : oc4.w));
+        if (oc >= outC)
+            continue;
+
+        // TensorFlow ExtractImagePatches flattens as [ky, kx, channel].
+        int k = oc / inC;
+        int c = oc - k * inC;
+        int ky = k / max(1, _UnfoldKernelW);
+        int kx = k - ky * max(1, _UnfoldKernelW);
+        int inY = outY * _UnfoldStrideH + ky * _UnfoldDilationH - _UnfoldPadTop;
+        int inX = (int)id.x * _UnfoldStrideW + kx * _UnfoldDilationW - _UnfoldPadLeft;
+        float sampleValue = _UnfoldPadValue;
+        if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && c < inC)
+            sampleValue = NcnnReadPack4ChannelFoldD(_TexIn0Arr, inX, inY, outZ, c, _UnfoldInH);
+
+        NcnnWriteLane(value, lane, sampleValue);
+    }
+
+    _TexOut0Arr[int3((int)id.x, foldedY, (int)id.z)] = value;
 }

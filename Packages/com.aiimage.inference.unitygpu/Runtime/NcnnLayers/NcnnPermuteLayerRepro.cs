@@ -110,6 +110,13 @@ namespace NcnnCompute
                 }
                 else if (srcShape.dims == 4)
                 {
+                    if (TryExecuteRenderTextureCdhwToFoldD(owner, layer, srcTex, srcShape, axes, outShape, textureBlobs, textureShapes)
+                        || TryExecuteRenderTextureFoldDToCdhw(owner, layer, srcTex, srcShape, axes, outShape, textureBlobs, textureShapes))
+                    {
+                        owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
+                        return;
+                    }
+
                     var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
                     var outSlices = Mathf.Max(1, outShape.d) * outPacks;
                     var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
@@ -191,13 +198,18 @@ namespace NcnnCompute
                     }
                     else
                     {
-                        var outChannels = srcShape.dims == 2 ? 1 : outShape.c;
-                        var outPacks = Mathf.Max(1, Mathf.CeilToInt(outChannels / 4f));
-                        var outDepth = srcShape.dims == 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
-                        var outFormat = srcShape.dims == 4 ? NcnnRepro.ResolveTensorTextureFormat(outShape.dims) : RenderTextureFormat.ARGBHalf;
-                        var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outDepth, outFormat);
                         if (srcShape.dims == 4)
                         {
+                            if (TryExecuteCommandBufferCdhwToFoldD(owner, layer, src, srcShape, axes, outShape, blobs, shapes, cmd)
+                                || TryExecuteCommandBufferFoldDToCdhw(owner, layer, src, srcShape, axes, outShape, blobs, shapes, cmd))
+                            {
+                                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                                return;
+                            }
+
+                            var outPacks4D = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+                            var outDepth4D = Mathf.Max(1, outShape.d) * outPacks4D;
+                            var outArr4D = owner.RentTempArray(cmd, outShape.w, outShape.h, outDepth4D, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
                             owner.Ops.PermutePack4Cdhw(
                                 cmd,
                                 src.texture,
@@ -210,16 +222,20 @@ namespace NcnnCompute
                                 outShape.h,
                                 outShape.d,
                                 outShape.c,
-                                outArr);
+                                outArr4D);
+                            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr4D, outShape, outShape, owned: true, blobName: layer.topNames[0]);
                         }
                         else
                         {
+                            var outChannels = srcShape.dims == 2 ? 1 : outShape.c;
+                            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outChannels / 4f));
+                            var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
                             owner.Ops.PermutePack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.dims == 2 ? 1 : srcShape.c, axes, outShape.w, outShape.h, outChannels, outArr);
+                            var storageShape = srcShape.dims == 2
+                                ? new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
+                                : outShape;
+                            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, outShape, storageShape, owned: true, blobName: layer.topNames[0]);
                         }
-                        var storageShape = srcShape.dims == 2
-                            ? new NcnnRepro.BufferShape(3, outShape.w, outShape.h, 1, 1)
-                            : outShape;
-                        blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, outShape, storageShape, owned: true, blobName: layer.topNames[0]);
                     }
                     if (shapes != null)
                         shapes[layer.topNames[0]] = outShape;
@@ -452,6 +468,306 @@ namespace NcnnCompute
             }
 
             return found;
+        }
+
+        private static bool TryExecuteRenderTextureCdhwToFoldD(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Vector4Int axes,
+            NcnnRepro.BufferShape outShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!IsExactCdhwStorage(src, srcShape))
+                return false;
+            if (CanUseExactCdhwStorageShape(outShape))
+                return false;
+            if (!TryResolveFoldDStorageShape(outShape, out var foldStorageShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outRt = owner.RentTempArray(foldStorageShape.w, foldStorageShape.h, outPacks, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.PermutePack4CdhwFoldD(
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                axes,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, foldStorageShape);
+            owner.DebugLog?.Invoke(
+                "[PermuteFoldD][RT] cdhw->foldD"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | storage=d" + foldStorageShape.dims + ":" + foldStorageShape.w + "x" + foldStorageShape.h + "x" + foldStorageShape.d + "x" + foldStorageShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTextureFoldDToCdhw(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Vector4Int axes,
+            NcnnRepro.BufferShape outShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null)
+                return false;
+            if (!IsFoldDStorage(src, srcShape))
+                return false;
+            if (!CanUseExactCdhwStorageShape(outShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = Mathf.Max(1, outShape.d) * outPacks;
+            var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.PermutePack4FoldDToCdhw(
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                axes,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                outRt);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            owner.DebugLog?.Invoke(
+                "[PermuteFoldD][RT] foldD->cdhw"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferCdhwToFoldD(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Vector4Int axes,
+            NcnnRepro.BufferShape outShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null || cmd == null)
+                return false;
+            if (!IsExactCdhwStorage(src, srcShape))
+                return false;
+            if (CanUseExactCdhwStorageShape(outShape))
+                return false;
+            if (!TryResolveFoldDStorageShape(outShape, out var foldStorageShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outRt = owner.RentTempArray(cmd, foldStorageShape.w, foldStorageShape.h, outPacks, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.PermutePack4CdhwFoldD(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                axes,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                outRt);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outRt, outShape, foldStorageShape, owned: true, blobName: layer.topNames[0]);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[PermuteFoldD][Cmd] cdhw->foldD"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | storage=d" + foldStorageShape.dims + ":" + foldStorageShape.w + "x" + foldStorageShape.h + "x" + foldStorageShape.d + "x" + foldStorageShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferFoldDToCdhw(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.CmdTensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            Vector4Int axes,
+            NcnnRepro.BufferShape outShape,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, NcnnRepro.BufferShape> shapes,
+            CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null || cmd == null)
+                return false;
+            if (!IsFoldDStorage(src, srcShape))
+                return false;
+            if (!CanUseExactCdhwStorageShape(outShape))
+                return false;
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
+            var outSlices = Mathf.Max(1, outShape.d) * outPacks;
+            var outRt = owner.RentTempArray(cmd, outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.PermutePack4FoldDToCdhw(
+                cmd,
+                src.texture,
+                srcShape.w,
+                srcShape.h,
+                srcShape.d,
+                srcShape.c,
+                axes,
+                outShape.w,
+                outShape.h,
+                outShape.d,
+                outShape.c,
+                outRt);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outRt, outShape, outShape, owned: true, blobName: layer.topNames[0]);
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[PermuteFoldD][Cmd] foldD->cdhw"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool IsExactCdhwStorage(NcnnRepro.TensorRef tensor, NcnnRepro.BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || logicalShape.dims != 4)
+                return false;
+            var storageShape = NcnnRepro.GetTextureStorageShape(tensor, logicalShape);
+            var expectedPacks = Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f));
+            return ShapesEqual(storageShape, logicalShape)
+                && tensor.width == logicalShape.w
+                && tensor.height == logicalShape.h
+                && tensor.packs == expectedPacks
+                && Mathf.Max(1, tensor.texture.volumeDepth) == Mathf.Max(1, logicalShape.d) * expectedPacks;
+        }
+
+        private static bool IsExactCdhwStorage(NcnnRepro.CmdTensorRef tensor, NcnnRepro.BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || logicalShape.dims != 4)
+                return false;
+            var storageShape = NcnnRepro.GetCmdStorageShape(tensor, logicalShape);
+            var expectedPacks = Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f));
+            return ShapesEqual(storageShape, logicalShape)
+                && tensor.width == logicalShape.w
+                && tensor.height == logicalShape.h
+                && tensor.packs == expectedPacks
+                && Mathf.Max(1, tensor.texture.depth) == Mathf.Max(1, logicalShape.d) * expectedPacks;
+        }
+
+        private static bool IsFoldDStorage(NcnnRepro.TensorRef tensor, NcnnRepro.BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || !TryResolveFoldDStorageShape(logicalShape, out var foldStorageShape))
+                return false;
+            var storageShape = NcnnRepro.GetTextureStorageShape(tensor, logicalShape);
+            var expectedPacks = Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f));
+            return ShapesEqual(storageShape, foldStorageShape)
+                && tensor.width == foldStorageShape.w
+                && tensor.height == foldStorageShape.h
+                && tensor.packs == expectedPacks
+                && Mathf.Max(1, tensor.texture.volumeDepth) == expectedPacks;
+        }
+
+        private static bool IsFoldDStorage(NcnnRepro.CmdTensorRef tensor, NcnnRepro.BufferShape logicalShape)
+        {
+            if (tensor == null || tensor.texture == null || !TryResolveFoldDStorageShape(logicalShape, out var foldStorageShape))
+                return false;
+            var storageShape = NcnnRepro.GetCmdStorageShape(tensor, logicalShape);
+            var expectedPacks = Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f));
+            return ShapesEqual(storageShape, foldStorageShape)
+                && tensor.width == foldStorageShape.w
+                && tensor.height == foldStorageShape.h
+                && tensor.packs == expectedPacks
+                && Mathf.Max(1, tensor.texture.depth) == expectedPacks;
+        }
+
+        private static bool TryResolveFoldDStorageShape(NcnnRepro.BufferShape logicalShape, out NcnnRepro.BufferShape storageShape)
+        {
+            storageShape = default;
+            if (logicalShape.dims != 4
+                || logicalShape.w <= 0
+                || logicalShape.h <= 0
+                || logicalShape.d <= 0
+                || logicalShape.c <= 0)
+            {
+                return false;
+            }
+
+            var foldedHeight = checked(logicalShape.h * logicalShape.d);
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f));
+            if (foldedHeight > GetMaxTextureSizeSafe() || outPacks > GetMaxTextureArraySlicesSafe())
+                return false;
+
+            storageShape = new NcnnRepro.BufferShape(4, logicalShape.w, foldedHeight, 1, logicalShape.c);
+            return true;
+        }
+
+        private static bool CanUseExactCdhwStorageShape(NcnnRepro.BufferShape logicalShape)
+        {
+            if (logicalShape.dims != 4
+                || logicalShape.w <= 0
+                || logicalShape.h <= 0
+                || logicalShape.d <= 0
+                || logicalShape.c <= 0)
+            {
+                return false;
+            }
+
+            var outPacks = Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f));
+            var outSlices = checked(Mathf.Max(1, logicalShape.d) * outPacks);
+            return logicalShape.w <= GetMaxTextureSizeSafe()
+                && logicalShape.h <= GetMaxTextureSizeSafe()
+                && outSlices <= GetMaxTextureArraySlicesSafe();
+        }
+
+        private static bool ShapesEqual(NcnnRepro.BufferShape a, NcnnRepro.BufferShape b)
+        {
+            return a.dims == b.dims
+                && a.w == b.w
+                && a.h == b.h
+                && a.d == b.d
+                && a.c == b.c;
+        }
+
+        private static int GetMaxTextureArraySlicesSafe()
+        {
+            try
+            {
+                return Mathf.Max(1, SystemInfo.maxTextureArraySlices);
+            }
+            catch
+            {
+                return 2048;
+            }
+        }
+
+        private static int GetMaxTextureSizeSafe()
+        {
+            try
+            {
+                return Mathf.Max(1, SystemInfo.maxTextureSize);
+            }
+            catch
+            {
+                return 16384;
+            }
         }
 
         private static bool CanUsePack4Permute(NcnnRepro.TensorRef srcTex, NcnnRepro.BufferShape srcShape, int orderType, out Vector4Int axes, out NcnnRepro.BufferShape outShape)

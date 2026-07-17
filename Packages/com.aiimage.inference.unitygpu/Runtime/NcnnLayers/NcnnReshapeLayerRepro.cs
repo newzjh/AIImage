@@ -393,6 +393,18 @@ namespace NcnnCompute
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     return;
                 }
+
+                if (TryExecuteRenderTexturePack4Linear2DToPack4Reshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
+                if (TryExecuteRenderTextureScalar2DToPack4Reshape(owner, layer, src, srcShape, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
             }
 
             if (CanAliasLinearMatTextureLayout(src, srcShape, outShape))
@@ -504,6 +516,18 @@ namespace NcnnCompute
                 }
 
                 if (TryExecuteCommandBufferPack4ToPack4Reshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
+                if (TryExecuteCommandBufferPack4Linear2DToPack4Reshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
+                if (TryExecuteCommandBufferScalar2DToPack4Reshape(owner, layer, src, srcShape, blobs, shapes, cmd))
                 {
                     owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                     return;
@@ -1258,6 +1282,10 @@ namespace NcnnCompute
                 if (canGenericPack4ToScalar2D)
                     return src != null && src.texture != null;
                 if (canGenericPack4ToPack4)
+                    return src != null && src.texture != null;
+                if (TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out _))
+                    return src != null && src.texture != null;
+                if (NcnnRepro.IsPack4LinearMatTexture(src, srcShape) && outShape.dims >= 3 && GetShapeElementCount(srcShape) == GetShapeElementCount(outShape))
                     return src != null && src.texture != null;
             }
 

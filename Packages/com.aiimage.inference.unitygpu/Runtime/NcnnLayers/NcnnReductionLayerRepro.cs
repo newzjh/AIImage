@@ -206,6 +206,24 @@ namespace NcnnCompute
             var op = layer.GetInt(0, 0);
             var coeff = layer.GetFloat(2, 1f);
             var axes = layer.GetInts(-23303, null);
+            var cmd = context.commandBuffer;
+            var outTop = layer.topNames[0];
+            if (TryResolveChannelReductionAxes(srcShape, reduceAll, axes, out var reduceChannelsOnly)
+                && reduceChannelsOnly
+                && CanUseScalarTextureReductionOp(op))
+            {
+                var outShape = keepDims
+                    ? new NcnnRepro.BufferShape(3, srcShape.w, srcShape.h, 1, 1)
+                    : new NcnnRepro.BufferShape(2, srcShape.w, srcShape.h, 1, 1);
+                var outStorage = new NcnnRepro.BufferShape(3, srcShape.w, srcShape.h, 1, 1);
+                var outRt = owner.RentTempArray(cmd, outStorage.w, outStorage.h, 1, RenderTextureFormat.ARGBHalf);
+                owner.Ops.ReductionPack4Channel(cmd, srcTex.texture, srcShape.w, srcShape.h, srcShape.c, op, coeff, outRt);
+                context.blobs[outTop] = NcnnRepro.CreateCmdTensorRef(outRt, outShape, outStorage, owned: true, blobName: outTop);
+                context.shapes[outTop] = outShape;
+                owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
+
             if (!TryResolveSpatialReductionAxes(srcShape, reduceAll, axes, out var reduceSpatialOnly, out var reduceSpatialAndChannels))
                 return false;
             if (op != 3 && op != 0)
@@ -213,9 +231,7 @@ namespace NcnnCompute
             if (!reduceSpatialOnly && !reduceSpatialAndChannels)
                 return false;
 
-            var cmd = context.commandBuffer;
             var area = Mathf.Max(1, srcShape.w * srcShape.h);
-            var outTop = layer.topNames[0];
 
             ComputeTexture pooled = null;
             if (reduceSpatialOnly || reduceSpatialAndChannels)
@@ -336,9 +352,32 @@ namespace NcnnCompute
             var op = layer.GetInt(0, 0);
             var coeff = layer.GetFloat(2, 1f);
             var axes = layer.GetInts(-23303, null);
+            var outTop = layer.topNames[0];
 
             if (srcShape.dims != 3 || srcShape.d != 1 || !NcnnRepro.MatchesPack4TextureStorage(srcTex, srcShape))
                 return false;
+            if (TryResolveChannelReductionAxes(srcShape, reduceAll, axes, out var reduceChannelsOnly)
+                && reduceChannelsOnly
+                && CanUseScalarTextureReductionOp(op))
+            {
+                var outShape = keepDims
+                    ? new NcnnRepro.BufferShape(3, srcShape.w, srcShape.h, 1, 1)
+                    : new NcnnRepro.BufferShape(2, srcShape.w, srcShape.h, 1, 1);
+                var outStorage = new NcnnRepro.BufferShape(3, srcShape.w, srcShape.h, 1, 1);
+                var outRt = owner.RentTempArray(outStorage.w, outStorage.h, 1, RenderTextureFormat.ARGBHalf);
+                owner.Ops.ReductionPack4Channel(srcTex.texture, srcShape.w, srcShape.h, srcShape.c, op, coeff, outRt);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, outTop, outRt, outShape, outStorage);
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
+
             if (!TryResolveSpatialReductionAxes(srcShape, reduceAll, axes, out var reduceSpatialOnly, out var reduceSpatialAndChannels))
                 return false;
             if (op != 3 && op != 0)
@@ -347,8 +386,6 @@ namespace NcnnCompute
                 return false;
 
             var area = Mathf.Max(1, srcShape.w * srcShape.h);
-            var outTop = layer.topNames[0];
-
             if (reduceSpatialOnly && keepDims)
             {
                 var outRt = owner.RentTempArray(1, 1, srcTex.packs, RenderTextureFormat.ARGBHalf);
@@ -747,6 +784,29 @@ namespace NcnnCompute
             reduceSpatialOnly = normalized.SetEquals(new[] { 1, 2 });
             reduceSpatialAndChannels = normalized.SetEquals(new[] { 0, 1, 2 });
             return reduceSpatialOnly || reduceSpatialAndChannels;
+        }
+
+        private static bool TryResolveChannelReductionAxes(
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAll,
+            int[] axes,
+            out bool reduceChannelsOnly)
+        {
+            reduceChannelsOnly = false;
+            if (srcShape.dims != 3)
+                return false;
+            if (reduceAll)
+                return false;
+            if (axes == null || axes.Length != 1)
+                return false;
+
+            var axis = axes[0];
+            if (axis < 0)
+                axis += srcShape.dims;
+            if (axis != 0)
+                return false;
+            reduceChannelsOnly = true;
+            return true;
         }
     }
 }
