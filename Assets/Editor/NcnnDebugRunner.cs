@@ -122,6 +122,16 @@ public static class NcnnDebugRunner
     private const string SdUseAsyncComputeEnvVar = "AIIMAGE_SD_USE_ASYNC_COMPUTE";
     private const string SdDisallowTempComputeBuffersEnvVar = "AIIMAGE_SD_DISALLOW_TEMP_COMPUTE_BUFFERS";
     private const string SdPack4OnlyGuardEnvVar = "AIIMAGE_SD_PACK4_ONLY_GUARD";
+    private const string InpaintBackendEnvVar = "AIIMAGE_INPAINT_BACKEND";
+    private const string DeepFillV2BackendEnvVar = "AIIMAGE_DEEPFILLV2_BACKEND";
+    private const string DeepFillV2UseArgbFloatEnvVar = "AIIMAGE_DEEPFILLV2_USE_ARGB_FLOAT";
+    private const string DeepFillV2FlipYInputEnvVar = "AIIMAGE_DEEPFILLV2_FLIPY_INPUT";
+    private const string DeepFillV2FlipYOutputEnvVar = "AIIMAGE_DEEPFILLV2_FLIPY_OUTPUT";
+    private const string DeepFillV2EnableLayerPathLogEnvVar = "AIIMAGE_DEEPFILLV2_ENABLE_LAYER_PATH_LOG";
+    private const string DeepFillV2OnnxPathEnvVar = "AIIMAGE_DEEPFILLV2_ONNX_PATH";
+    private const string DeepFillV2ParamPathEnvVar = "AIIMAGE_DEEPFILLV2_PARAM_PATH";
+    private const string DeepFillV2BinPathEnvVar = "AIIMAGE_DEEPFILLV2_BIN_PATH";
+    private const string DeepFillV2DebugTensorBlobEnvVar = "AIIMAGE_DEEPFILLV2_DEBUG_TENSOR_BLOB";
     private const string SdReplayBaselineDirEnvVar = "AIIMAGE_SD_REPLAY_BASELINE_DIR";
     private const string SdDirectBaselineDirEnvVar = "AIIMAGE_SD_DIRECT_BASELINE_DIR";
     private const string SdReplayReferenceDirEnvVar = "AIIMAGE_SD_REPLAY_REFERENCE_DIR";
@@ -186,6 +196,7 @@ public static class NcnnDebugRunner
     private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
     private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
     private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
+    private static readonly string DefaultDeepFillV2DebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "Documents", "ClipCompareInput", "03.jpg");
     private static readonly string DefaultMonaiBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "brats_mri_segmentation_baseline", "RegLib_C01_1", "baseline_manifest.json");
     private static readonly string DefaultMonaiInputPath = @"E:\Projects\CTData\sliceexampledata2\MRBrainTumor1\RegLib_C01_1.nrrd";
     private static readonly string DefaultVistaBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "vista3d_ct_philips_heart_baseline", "ct_philips_heart", "baseline_manifest.json");
@@ -248,6 +259,9 @@ public static class NcnnDebugRunner
                 return;
             case nameof(RunYoloAndInpaintingDebugBatch):
                 RunYoloAndInpaintingDebugBatch();
+                return;
+            case nameof(RunYoloAndDeepFillV2DebugBatch):
+                RunYoloAndDeepFillV2DebugBatch();
                 return;
             case nameof(RunYoloAndInpaintingProbeBatch):
                 RunYoloAndInpaintingProbeBatch();
@@ -324,6 +338,12 @@ public static class NcnnDebugRunner
     public static void RunYoloAndInpaintingDebugMenu()
     {
         RunYoloAndInpaintingDebug().Forget();
+    }
+
+    [MenuItem("Tools/AIImage/Run YOLO + DeepFillV2 Debug")]
+    public static void RunYoloAndDeepFillV2DebugMenu()
+    {
+        RunYoloAndDeepFillV2DebugBatch();
     }
 
     [MenuItem("Tools/AIImage/Run Stable Diffusion Debug")]
@@ -556,6 +576,8 @@ public static class NcnnDebugRunner
     public static void RunYoloSegDebugBatch() => RunBatchBlocking(nameof(RunYoloSegDebugBatch), RunYoloSegDebugInternal);
 
     public static void RunYoloAndInpaintingDebugBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingDebugBatch), RunYoloAndInpaintingDebugInternal, TimeSpan.FromHours(4));
+
+    public static void RunYoloAndDeepFillV2DebugBatch() => RunBatchBlocking(nameof(RunYoloAndDeepFillV2DebugBatch), RunYoloAndDeepFillV2DebugInternal, TimeSpan.FromMinutes(45));
 
     public static void RunStableDiffusionBaselineDebugBatch() => RunBatchBlocking(nameof(RunStableDiffusionBaselineDebugBatch), RunStableDiffusionBaselineDebugInternal, TimeSpan.FromHours(4));
 
@@ -1463,6 +1485,192 @@ public static class NcnnDebugRunner
             try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
             NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
         }
+    }
+
+    private static async UniTask RunYoloAndDeepFillV2DebugInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultDeepFillV2DebugImagePath);
+        var outputDir = CreateGenericDumpDir("AIImage_YoloDeepFillV2");
+        Directory.CreateDirectory(outputDir);
+        var tex = LoadTexture(inputPath);
+        if (tex == null)
+            throw new InvalidOperationException("Failed to load DeepFillV2 debug input: " + inputPath);
+
+        TryWriteTexturePng(tex, outputDir, "00_source.png");
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloDeepFillV2");
+
+        var go = new GameObject("YoloAndDeepFillV2DebugRunner");
+        YoloSegResult yoloResult = default;
+        try
+        {
+            var yoloRunner = go.AddComponent<YoloSegNcnnReproRunner>();
+            yoloRunner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
+            yoloRunner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, false);
+            yoloRunner.targetPersonOnly = true;
+            yoloRunner.enableMaskClose = true;
+            yoloRunner.enableMaskDilate = true;
+            yoloRunner.flipYInput = ResolveBoolEnv(YoloFlipYEnvVar, yoloRunner.flipYInput);
+            yoloRunner.ProgressChanged += (value, message) =>
+            {
+                Debug.Log("[DeepFillV2Batch][YOLO] progress=" + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
+            };
+
+            yoloResult = await yoloRunner.ProcessAsync(tex, CancellationToken.None);
+            Debug.Log(
+                "[DeepFillV2Batch] yoloError=" + (yoloResult.error ?? string.Empty)
+                + " | elapsedMs=" + yoloResult.elapsedMs.ToString(CultureInfo.InvariantCulture)
+                + " | personCount=" + yoloResult.personCount.ToString(CultureInfo.InvariantCulture)
+                + " | maskCoverage=" + yoloResult.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture)
+                + " | dump=" + (yoloRunner.LastDumpDir ?? string.Empty));
+
+            if (!string.IsNullOrWhiteSpace(yoloResult.error))
+                throw new InvalidOperationException("YOLO failed: " + yoloResult.error);
+            if (yoloResult.mask == null)
+                throw new InvalidOperationException("YOLO mask is null.");
+            if (yoloResult.personCount <= 0)
+                throw new InvalidOperationException("YOLO detected no person regions for DeepFillV2.");
+            if (yoloResult.maskCoverage01 <= 0f)
+                throw new InvalidOperationException("YOLO person mask coverage is zero.");
+
+            TryWriteTexturePng(yoloResult.mask, outputDir, "01_person_mask.png");
+            TryWriteTexturePng(yoloResult.overlay, outputDir, "02_overlay.png");
+            if (yoloResult.texture != null)
+            {
+                UnityEngine.Object.DestroyImmediate(yoloResult.texture);
+                yoloResult.texture = null;
+            }
+            if (yoloResult.overlay != null)
+            {
+                UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
+                yoloResult.overlay = null;
+            }
+
+            TryInvokeReleaseMethod(yoloRunner);
+            UnityEngine.Object.DestroyImmediate(yoloRunner);
+            await ReleaseGpuPressureAsync();
+
+            var backends = ResolveDeepFillV2Backends();
+            if (backends.Length == 0)
+                throw new InvalidOperationException("No DeepFillV2 backend selected.");
+
+            var summaryLines = new List<string>
+            {
+                "input=" + inputPath,
+                "person_count=" + yoloResult.personCount.ToString(CultureInfo.InvariantCulture),
+                "mask_coverage=" + yoloResult.maskCoverage01.ToString("0.000000", CultureInfo.InvariantCulture)
+            };
+
+            for (var i = 0; i < backends.Length; i++)
+            {
+                var backend = backends[i];
+                var backendDir = Path.Combine(outputDir, backend.ToString());
+                Directory.CreateDirectory(backendDir);
+                var runner = go.AddComponent<DeepFillV2Runner>();
+                DeepFillV2Result result = default;
+                try
+                {
+                    runner.backend = backend;
+                    runner.enableDebugDump = true;
+                    runner.precisionMode = NcnnCompute.NcnnPrecisionMode.Auto;
+                    runner.useArgbFloatTensor = ResolveBoolEnv(DeepFillV2UseArgbFloatEnvVar, runner.useArgbFloatTensor);
+                    runner.flipYInput = ResolveBoolEnv(DeepFillV2FlipYInputEnvVar, runner.flipYInput);
+                    runner.flipYOutput = ResolveBoolEnv(DeepFillV2FlipYOutputEnvVar, runner.flipYOutput);
+                    runner.enableLayerPathDebugLog = ResolveBoolEnv(DeepFillV2EnableLayerPathLogEnvVar, runner.enableLayerPathDebugLog);
+                    runner.sourceOnnxRelativePath = ResolveStringEnv(DeepFillV2OnnxPathEnvVar, runner.sourceOnnxRelativePath);
+                    runner.ncnnParamRelativePath = ResolveStringEnv(DeepFillV2ParamPathEnvVar, runner.ncnnParamRelativePath);
+                    runner.ncnnBinRelativePath = ResolveStringEnv(DeepFillV2BinPathEnvVar, runner.ncnnBinRelativePath);
+                    runner.debugTensorBlobName = ResolveStringEnv(DeepFillV2DebugTensorBlobEnvVar, runner.debugTensorBlobName);
+                    runner.enableGeneralTextureConvolution = true;
+                    runner.enableDepthWiseTextureConvolution = true;
+                    runner.enableConv1x1TextureConvolution = true;
+
+                    result = await runner.ProcessAsync(tex, yoloResult.mask, CancellationToken.None);
+                    Debug.Log(
+                        "[DeepFillV2Batch][" + backend + "] error=" + (result.error ?? string.Empty)
+                        + " | elapsedMs=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture)
+                        + " | loadMs=" + result.loadElapsedMs.ToString(CultureInfo.InvariantCulture)
+                        + " | inferMs=" + result.inferenceElapsedMs.ToString(CultureInfo.InvariantCulture)
+                        + " | dump=" + (result.dumpDir ?? string.Empty)
+                        + " | model=" + (result.modelReport ?? string.Empty));
+
+                    if (!string.IsNullOrWhiteSpace(result.error))
+                        throw new InvalidOperationException("DeepFillV2 " + backend + " failed: " + result.error);
+                    if (result.texture == null)
+                        throw new InvalidOperationException("DeepFillV2 " + backend + " output texture is null.");
+
+                    TryWriteTexturePng(result.texture, backendDir, "03_final_output.png");
+                    var maskedDiff = ComputeMaskedMeanAbsDiff(tex, result.texture, yoloResult.mask, false, out var maskedPixels);
+                    var backendSummary = string.Join(
+                        Environment.NewLine,
+                        "backend=" + backend,
+                        "elapsed_ms=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture),
+                        "load_ms=" + result.loadElapsedMs.ToString(CultureInfo.InvariantCulture),
+                        "inference_ms=" + result.inferenceElapsedMs.ToString(CultureInfo.InvariantCulture),
+                        "masked_pixels=" + maskedPixels.ToString(CultureInfo.InvariantCulture),
+                        "masked_mean_abs_diff_rgb=" + maskedDiff.ToString("0.0000", CultureInfo.InvariantCulture),
+                        "deepfill_dump=" + (result.dumpDir ?? string.Empty),
+                        "model_report=" + (result.modelReport ?? string.Empty));
+                    File.WriteAllText(Path.Combine(backendDir, "summary.txt"), backendSummary);
+                    summaryLines.Add(backend + "_elapsed_ms=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture));
+                    summaryLines.Add(backend + "_masked_pixels=" + maskedPixels.ToString(CultureInfo.InvariantCulture));
+                    summaryLines.Add(backend + "_masked_mean_abs_diff_rgb=" + maskedDiff.ToString("0.0000", CultureInfo.InvariantCulture));
+                    summaryLines.Add(backend + "_dump=" + (result.dumpDir ?? string.Empty));
+
+                    if (maskedPixels <= 0)
+                        throw new InvalidOperationException("DeepFillV2 " + backend + " mask has zero pixels.");
+                    if (maskedDiff <= 1f)
+                        throw new InvalidOperationException("DeepFillV2 " + backend + " masked RGB diff is too small: " + maskedDiff.ToString("0.0000", CultureInfo.InvariantCulture));
+                }
+                finally
+                {
+                    if (result.texture != null)
+                        UnityEngine.Object.DestroyImmediate(result.texture);
+                    TryInvokeReleaseMethod(runner);
+                    UnityEngine.Object.DestroyImmediate(runner);
+                    await ReleaseGpuPressureAsync();
+                }
+            }
+
+            File.WriteAllText(Path.Combine(outputDir, "summary.txt"), string.Join(Environment.NewLine, summaryLines));
+            Debug.Log("[DeepFillV2Batch] summary\n" + string.Join(Environment.NewLine, summaryLines));
+        }
+        finally
+        {
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            if (yoloResult.texture != null) UnityEngine.Object.DestroyImmediate(yoloResult.texture);
+            if (yoloResult.mask != null) UnityEngine.Object.DestroyImmediate(yoloResult.mask);
+            if (yoloResult.overlay != null) UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(tex);
+            await ReleaseGpuPressureAsync();
+        }
+    }
+
+    private static DeepFillV2Backend[] ResolveDeepFillV2Backends()
+    {
+        var configured = ResolveStringEnv(DeepFillV2BackendEnvVar, null);
+        if (string.IsNullOrWhiteSpace(configured))
+            configured = ResolveStringEnv(InpaintBackendEnvVar, "both");
+        configured = (configured ?? "both").Trim();
+        if (string.Equals(configured, "both", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "all", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "deepfillv2", StringComparison.OrdinalIgnoreCase))
+            return new[] { DeepFillV2Backend.OnnxDirect, DeepFillV2Backend.NcnnBin };
+        if (string.Equals(configured, "onnx", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "onnxdirect", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "deepfillv2_onnx", StringComparison.OrdinalIgnoreCase))
+            return new[] { DeepFillV2Backend.OnnxDirect };
+        if (string.Equals(configured, "bin", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "ncnn", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "ncnnbin", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "deepfillv2_ncnn", StringComparison.OrdinalIgnoreCase))
+            return new[] { DeepFillV2Backend.NcnnBin };
+        if (string.Equals(configured, "sd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(configured, "sd15", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("RunYoloAndDeepFillV2DebugBatch cannot run SD backend; use RunYoloAndInpaintingDebugBatch for SD1.5.");
+        throw new InvalidOperationException("Unsupported DeepFillV2 backend: " + configured);
     }
 
     private static async UniTask RunStableDiffusionBaselineDebugInternal()

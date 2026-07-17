@@ -25,6 +25,7 @@ public sealed class AIImagePageHost : MonoBehaviour
     public CodeFormerNcnnReproRunner2 CodeFormerReproRunner => _codeFormerReproRunner;
     public MatterNcnnReproRunner MattingReproRunner => _mattingReproRunner;
     public YoloSegNcnnReproRunner YoloSegRunner => _yoloSegRunner;
+    public DeepFillV2Runner DeepFillV2Runner => _deepFillV2Runner;
     public SDInpaintingNcnnReproRunner SDInpaintingRunner => _sdInpaintingRunner;
     public ClipNcnnReproRunner ClipRunner => _clipNcnnReproRunner;
     public MainView2 MainPage => _mainView2;
@@ -47,6 +48,7 @@ public sealed class AIImagePageHost : MonoBehaviour
     private CodeFormerNcnnReproRunner2 _codeFormerReproRunner;
     private MatterNcnnReproRunner _mattingReproRunner;
     private YoloSegNcnnReproRunner _yoloSegRunner;
+    private DeepFillV2Runner _deepFillV2Runner;
     private SDInpaintingNcnnReproRunner _sdInpaintingRunner;
     private ClipNcnnReproRunner _clipNcnnReproRunner;
 
@@ -356,6 +358,7 @@ public sealed class AIImagePageHost : MonoBehaviour
         _codeFormerReproRunner = GetOrAdd<CodeFormerNcnnReproRunner2>();
         _mattingReproRunner = GetOrAdd<MatterNcnnReproRunner>();
         _yoloSegRunner = GetOrAdd<YoloSegNcnnReproRunner>();
+        _deepFillV2Runner = GetOrAdd<DeepFillV2Runner>();
         _sdInpaintingRunner = GetOrAdd<SDInpaintingNcnnReproRunner>();
         _clipNcnnReproRunner = GetOrAdd<ClipNcnnReproRunner>();
     }

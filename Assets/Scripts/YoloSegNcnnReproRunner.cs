@@ -1096,6 +1096,8 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             return;
 
         NcnnGpuResourceTracker.ReleaseTexture(rt, rt.name ?? "YoloSeg.WorkingRt");
+        if (RenderTexture.active == rt)
+            RenderTexture.active = null;
         rt.Release();
         DestroyRuntimeObject(rt);
         rt = null;

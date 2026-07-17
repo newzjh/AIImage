@@ -22,6 +22,7 @@ public sealed class MainView2 : BasePageView
     private const string PrefKeyHuggingFaceToken = "MainView.AI.HuggingFaceToken";
     private const string PrefKeyRunwareApiKey = "MainView.AI.RunwareApiKey";
     private const string PrefKeyLumenfallApiKey = "MainView.AI.LumenfallApiKey";
+    private const string InpaintBackendEnvVar = "AIIMAGE_INPAINT_BACKEND";
 
     private static readonly string[] OriginalNameMarkersZh = { "原图", "原始", "原片", "未编辑", "未处理", "直出", "原版" };
     private static readonly string[] OriginalNameMarkersEn = { "original", "originals", "orig", "unedited", "unprocessed", "raw", "source", "camera" };
@@ -882,6 +883,30 @@ public sealed class MainView2 : BasePageView
     private void OnGfpganRepro() => ApplyGfpganReproAsync().Forget();
     private void OnCodeFormerRepro() => ApplyCodeFormerReproAsync().Forget();
 
+    private enum PeopleRemovalInpaintBackend
+    {
+        DeepFillV2Onnx,
+        DeepFillV2Ncnn,
+        Sd15
+    }
+
+    private static PeopleRemovalInpaintBackend ResolvePeopleRemovalInpaintBackend()
+    {
+        var value = Environment.GetEnvironmentVariable(InpaintBackendEnvVar);
+        if (string.IsNullOrWhiteSpace(value))
+            return PeopleRemovalInpaintBackend.DeepFillV2Onnx;
+        value = value.Trim();
+        if (string.Equals(value, "sd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "sd15", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "sdinpainting1.5", StringComparison.OrdinalIgnoreCase))
+            return PeopleRemovalInpaintBackend.Sd15;
+        if (string.Equals(value, "deepfillv2_ncnn", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "ncnn", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "bin", StringComparison.OrdinalIgnoreCase))
+            return PeopleRemovalInpaintBackend.DeepFillV2Ncnn;
+        return PeopleRemovalInpaintBackend.DeepFillV2Onnx;
+    }
+
     private async UniTaskVoid ApplyGpuSharpenAsync()
     {
         if (_aiRunning || _adjustRunning || _lifetimeCts == null || Host?.GpuSharpenRunner == null)
@@ -954,7 +979,13 @@ public sealed class MainView2 : BasePageView
 
     private async UniTaskVoid ApplyYoloAndInpaintingReproAsync()
     {
-        if (_aiRunning || _adjustRunning || _lifetimeCts == null || Host?.YoloSegRunner == null || Host?.SDInpaintingRunner == null)
+        if (_aiRunning || _adjustRunning || _lifetimeCts == null || Host?.YoloSegRunner == null)
+            return;
+        var inpaintBackend = ResolvePeopleRemovalInpaintBackend();
+        var useSdInpainting = inpaintBackend == PeopleRemovalInpaintBackend.Sd15;
+        if (useSdInpainting && Host.SDInpaintingRunner == null)
+            return;
+        if (!useSdInpainting && Host.DeepFillV2Runner == null)
             return;
         var src = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
         if (src == null)
@@ -1013,6 +1044,40 @@ public sealed class MainView2 : BasePageView
             Host.YoloSegRunner.ReleaseRuntimeResources();
             await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
             LogYoloInpaintResourceSnapshot("after_yolo_release");
+
+            if (!useSdInpainting)
+            {
+                var deepFillRunner = Host.DeepFillV2Runner;
+                deepFillRunner.backend = inpaintBackend == PeopleRemovalInpaintBackend.DeepFillV2Ncnn
+                    ? DeepFillV2Backend.NcnnBin
+                    : DeepFillV2Backend.OnnxDirect;
+                deepFillRunner.enableDebugDump = false;
+                deepFillRunner.precisionMode = NcnnPrecisionMode.Auto;
+                deepFillRunner.useArgbFloatTensor = false;
+                deepFillRunner.enableGeneralTextureConvolution = true;
+                deepFillRunner.enableDepthWiseTextureConvolution = true;
+                deepFillRunner.enableConv1x1TextureConvolution = true;
+                SetProgress(0.40f, deepFillRunner.backend == DeepFillV2Backend.OnnxDirect ? "DeepFillV2 ONNX" : "DeepFillV2 NCNN");
+                await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
+                LogYoloInpaintResourceSnapshot("before_deepfillv2_process");
+
+                var deepFillResult = await deepFillRunner.ProcessAsync(src, result.mask, _lifetimeCts.Token);
+                LogYoloInpaintResourceSnapshot("after_deepfillv2_process");
+                if (!string.IsNullOrWhiteSpace(deepFillResult.error))
+                {
+                    ShowToast(deepFillResult.error, 3600);
+                    if (result.overlay != null)
+                        AddHistory(result.overlay, $"YOLO 璇嗗埆 {result.personCount}");
+                    return;
+                }
+
+                if (deepFillResult.texture != null)
+                {
+                    AddHistory(deepFillResult.texture, $"YOLO DeepFillV2 {result.personCount}");
+                    LogYoloInpaintResourceSnapshot("after_add_history");
+                }
+                return;
+            }
 
             Host.SDInpaintingRunner.useOfficialUnetCache = false;
             Host.SDInpaintingRunner.keepRawConvWeightsForTexturePath = false;
