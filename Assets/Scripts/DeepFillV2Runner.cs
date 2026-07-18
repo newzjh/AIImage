@@ -33,7 +33,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     private const string OutputName = "out0";
     private const int InputWidth = 400;
     private const int InputHeight = 512;
-    private const int Case1ReferenceWidth = 406;
 
     public DeepFillV2Backend backend = DeepFillV2Backend.OnnxDirect;
     public string sourceOnnxRelativePath = "DeepFileV2/deepfillv2_case1.source.onnx";
@@ -43,7 +42,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     public bool flipYInput = true;
     public bool flipYOutput = true;
     public bool preserveUnmaskedPixels = true;
-    public bool matchReferenceUint8Truncation = true;
     public bool enableDebugDump = true;
     public bool useArgbFloatTensor = true;
     public bool enableGeneralTextureConvolution = true;
@@ -153,13 +151,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
 
                 var outPack4 = infer.GetTexture(OutputName);
                 rgb512 = NewRenderTexture(InputWidth, InputHeight, RenderTextureFormat.ARGB32, true, "DeepFillV2.Rgb400x512");
-                _ops.Pack4ToRgbScaled(
-                    outPack4,
-                    rgb512,
-                    0.5f,
-                    0.5f,
-                    flipYOutput,
-                    matchReferenceUint8Truncation);
+                _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
                 generated512 = ReadRenderTexture(rgb512, TextureFormat.RGBA32, false);
             }
             inferSw.Stop();
@@ -173,7 +165,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to resize output to source size." });
 
             var finalTexture = preserveUnmaskedPixels
-                ? CompositeMasked(readableSource, generatedFull, readableMask, matchReferenceUint8Truncation)
+                ? CompositeMasked(readableSource, generatedFull, readableMask)
                 : generatedFull;
             if (preserveUnmaskedPixels)
                 DestroyRuntimeObject(generatedFull);
@@ -407,12 +399,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     {
         if (source == null)
             return null;
-        if (source.width >= InputWidth && source.height == InputHeight)
-        {
-            var cropped = NewRenderTexture(InputWidth, InputHeight, RenderTextureFormat.ARGB32, false, "DeepFillV2.Crop400x512");
-            Graphics.Blit(source, cropped, new Vector2(InputWidth / (float)source.width, 1f), Vector2.zero);
-            return cropped;
-        }
         return ResizeTexture(source, InputWidth, InputHeight, RenderTextureFormat.ARGB32);
     }
 
@@ -420,20 +406,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     {
         if (modelOutput == null || original == null)
             return null;
-        if (modelOutput.width == InputWidth
-            && modelOutput.height == InputHeight
-            && original.width >= InputWidth
-            && original.height == InputHeight)
-        {
-            var destination = original.GetPixels32();
-            var generated = modelOutput.GetPixels32();
-            for (var y = 0; y < InputHeight; y++)
-                Array.Copy(generated, y * InputWidth, destination, y * original.width, InputWidth);
-            var restored = new Texture2D(original.width, original.height, TextureFormat.RGBA32, false);
-            restored.SetPixels32(destination);
-            restored.Apply(false, false);
-            return restored;
-        }
         return ResizeTextureToTexture2D(modelOutput, original.width, original.height);
     }
 
@@ -493,11 +465,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         }
     }
 
-    private static Texture2D CompositeMasked(
-        Texture2D original,
-        Texture2D candidate,
-        Texture2D mask,
-        bool matchReferenceUint8Truncation)
+    private static Texture2D CompositeMasked(Texture2D original, Texture2D candidate, Texture2D mask)
     {
         if (original == null || candidate == null || mask == null)
             return null;
@@ -514,14 +482,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             for (var i = 0; i < count; i++)
             {
                 var m = Mathf.Max(maskPixels[i].r, Mathf.Max(maskPixels[i].g, maskPixels[i].b)) / 255f;
-                var x = i % original.width;
-                var sourcePixel = matchReferenceUint8Truncation
-                                  && original.width == Case1ReferenceWidth
-                                  && original.height == InputHeight
-                                  && x < InputWidth
-                    ? QuantizeReferenceSourcePixel(src[i])
-                    : src[i];
-                dst[i] = Lerp(sourcePixel, gen[i], m);
+                dst[i] = Lerp(src[i], gen[i], m);
             }
             for (var i = count; i < dst.Length; i++)
                 dst[i] = src[i];
@@ -545,22 +506,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             (byte)Mathf.RoundToInt(a.g + (b.g - a.g) * t),
             (byte)Mathf.RoundToInt(a.b + (b.b - a.b) * t),
             255);
-    }
-
-    private static Color32 QuantizeReferenceSourcePixel(Color32 value)
-    {
-        return new Color32(
-            QuantizeReferenceSourceChannel(value.r),
-            QuantizeReferenceSourceChannel(value.g),
-            QuantizeReferenceSourceChannel(value.b),
-            255);
-    }
-
-    private static byte QuantizeReferenceSourceChannel(byte value)
-    {
-        var normalized = value / 255f;
-        var minusOneToOne = normalized * 2f - 1f;
-        return (byte)Mathf.Clamp((int)((minusOneToOne + 1f) * 127.5f), 0, 255);
     }
 
     private static string CreateDumpDir()
