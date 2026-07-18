@@ -197,6 +197,12 @@ public static class NcnnDebugRunner
     private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
     private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
     private static readonly string DefaultDeepFillV2DebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "Documents", "ClipCompareInput", "03.jpg");
+    private static readonly string DefaultDeepFillV2Case1ImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "deepfillv2", "deepfillv2-pytorch-master", "examples", "inpaint", "case1.png");
+    private static readonly string DefaultDeepFillV2Case1MaskedPath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "deepfillv2", "deepfillv2-pytorch-master", "examples", "inpaint", "case1_masked.png");
+    private static readonly string DefaultDeepFillV2Case1OutputPath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "deepfillv2", "deepfillv2-pytorch-master", "examples", "inpaint", "case1_out.png");
+    private const double DeepFillV2Case1MaxFullMae = 0.01;
+    private const double DeepFillV2Case1MaxMaskedMae = 0.15;
+    private const int DeepFillV2Case1MaxAbs = 1;
     private static readonly string DefaultMonaiBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "brats_mri_segmentation_baseline", "RegLib_C01_1", "baseline_manifest.json");
     private static readonly string DefaultMonaiInputPath = @"E:\Projects\CTData\sliceexampledata2\MRBrainTumor1\RegLib_C01_1.nrrd";
     private static readonly string DefaultVistaBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "vista3d_ct_philips_heart_baseline", "ct_philips_heart", "baseline_manifest.json");
@@ -262,6 +268,9 @@ public static class NcnnDebugRunner
                 return;
             case nameof(RunYoloAndDeepFillV2DebugBatch):
                 RunYoloAndDeepFillV2DebugBatch();
+                return;
+            case nameof(RunDeepFillV2Case1DebugBatch):
+                RunDeepFillV2Case1DebugBatch();
                 return;
             case nameof(RunYoloAndInpaintingProbeBatch):
                 RunYoloAndInpaintingProbeBatch();
@@ -578,6 +587,8 @@ public static class NcnnDebugRunner
     public static void RunYoloAndInpaintingDebugBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingDebugBatch), RunYoloAndInpaintingDebugInternal, TimeSpan.FromHours(4));
 
     public static void RunYoloAndDeepFillV2DebugBatch() => RunBatchBlocking(nameof(RunYoloAndDeepFillV2DebugBatch), RunYoloAndDeepFillV2DebugInternal, TimeSpan.FromMinutes(45));
+
+    public static void RunDeepFillV2Case1DebugBatch() => RunBatchBlocking(nameof(RunDeepFillV2Case1DebugBatch), RunDeepFillV2Case1DebugInternal, TimeSpan.FromMinutes(45));
 
     public static void RunStableDiffusionBaselineDebugBatch() => RunBatchBlocking(nameof(RunStableDiffusionBaselineDebugBatch), RunStableDiffusionBaselineDebugInternal, TimeSpan.FromHours(4));
 
@@ -1644,6 +1655,119 @@ public static class NcnnDebugRunner
             if (yoloResult.overlay != null) UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
+            await ReleaseGpuPressureAsync();
+        }
+    }
+
+    private static async UniTask RunDeepFillV2Case1DebugInternal()
+    {
+        var outputDir = CreateGenericDumpDir("AIImage_DeepFillV2_Case1");
+        Directory.CreateDirectory(outputDir);
+        var source = LoadTexture(DefaultDeepFillV2Case1ImagePath);
+        var maskedExample = LoadTexture(DefaultDeepFillV2Case1MaskedPath);
+        var reference = LoadTexture(DefaultDeepFillV2Case1OutputPath);
+        if (source == null || maskedExample == null || reference == null)
+            throw new InvalidOperationException("Failed to load DeepFillV2 case1 source/masked/reference images.");
+        if (source.width != maskedExample.width || source.height != maskedExample.height
+            || source.width != reference.width || source.height != reference.height)
+            throw new InvalidOperationException("DeepFillV2 case1 source/masked/reference dimensions do not match.");
+
+        var mask = BuildPureWhiteMask(maskedExample);
+        TryWriteTexturePng(source, outputDir, "00_source.png");
+        TryWriteTexturePng(mask, outputDir, "01_mask_from_masked_example.png");
+        TryWriteTexturePng(reference, outputDir, "02_reference_case1_out.png");
+        var go = new GameObject("DeepFillV2Case1DebugRunner");
+        var summary = new List<string>
+        {
+            "source=" + DefaultDeepFillV2Case1ImagePath,
+            "masked_example=" + DefaultDeepFillV2Case1MaskedPath,
+            "reference=" + DefaultDeepFillV2Case1OutputPath
+        };
+        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.DeepFillV2Case1");
+        try
+        {
+            var backends = ResolveDeepFillV2Backends();
+            for (var i = 0; i < backends.Length; i++)
+            {
+                var backend = backends[i];
+                var backendDir = Path.Combine(outputDir, backend.ToString());
+                Directory.CreateDirectory(backendDir);
+                var runner = go.AddComponent<DeepFillV2Runner>();
+                DeepFillV2Result result = default;
+                try
+                {
+                    runner.backend = backend;
+                    runner.enableDebugDump = true;
+                    runner.preserveUnmaskedPixels = true;
+                    runner.useArgbFloatTensor = ResolveBoolEnv(DeepFillV2UseArgbFloatEnvVar, true);
+                    runner.flipYInput = ResolveBoolEnv(DeepFillV2FlipYInputEnvVar, runner.flipYInput);
+                    runner.flipYOutput = ResolveBoolEnv(DeepFillV2FlipYOutputEnvVar, runner.flipYOutput);
+                    runner.enableLayerPathDebugLog = ResolveBoolEnv(DeepFillV2EnableLayerPathLogEnvVar, runner.enableLayerPathDebugLog);
+                    runner.sourceOnnxRelativePath = ResolveStringEnv(DeepFillV2OnnxPathEnvVar, runner.sourceOnnxRelativePath);
+                    runner.ncnnParamRelativePath = ResolveStringEnv(DeepFillV2ParamPathEnvVar, runner.ncnnParamRelativePath);
+                    runner.ncnnBinRelativePath = ResolveStringEnv(DeepFillV2BinPathEnvVar, runner.ncnnBinRelativePath);
+                    runner.debugTensorBlobName = ResolveStringEnv(DeepFillV2DebugTensorBlobEnvVar, runner.debugTensorBlobName);
+                    result = await runner.ProcessAsync(source, mask, CancellationToken.None);
+                    if (!string.IsNullOrWhiteSpace(result.error))
+                        throw new InvalidOperationException("DeepFillV2 case1 " + backend + " failed: " + result.error);
+                    if (result.texture == null)
+                        throw new InvalidOperationException("DeepFillV2 case1 " + backend + " returned no output texture.");
+
+                    TryWriteTexturePng(result.texture, backendDir, "case1_unity.png");
+                    var maskedMae = ComputeMaskedMeanAbsDiff(reference, result.texture, mask, false, out var maskedPixels);
+                    var fullMae = ComputeFullRgbMeanAbsDiff(reference, result.texture, out var maxAbs);
+                    var backendSummary = string.Join(
+                        Environment.NewLine,
+                        "backend=" + backend,
+                        "elapsed_ms=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture),
+                        "load_ms=" + result.loadElapsedMs.ToString(CultureInfo.InvariantCulture),
+                        "inference_ms=" + result.inferenceElapsedMs.ToString(CultureInfo.InvariantCulture),
+                        "masked_pixels=" + maskedPixels.ToString(CultureInfo.InvariantCulture),
+                        "full_mae_rgb=" + fullMae.ToString("0.000000", CultureInfo.InvariantCulture),
+                        "masked_mae_rgb=" + maskedMae.ToString("0.000000", CultureInfo.InvariantCulture),
+                        "max_abs_rgb=" + maxAbs.ToString(CultureInfo.InvariantCulture),
+                        "model_report=" + (result.modelReport ?? string.Empty),
+                        "deepfill_dump=" + (result.dumpDir ?? string.Empty));
+                    File.WriteAllText(Path.Combine(backendDir, "summary.txt"), backendSummary);
+                    summary.Add(backend + "_full_mae_rgb=" + fullMae.ToString("0.000000", CultureInfo.InvariantCulture));
+                    summary.Add(backend + "_masked_mae_rgb=" + maskedMae.ToString("0.000000", CultureInfo.InvariantCulture));
+                    summary.Add(backend + "_max_abs_rgb=" + maxAbs.ToString(CultureInfo.InvariantCulture));
+                    summary.Add(backend + "_elapsed_ms=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture));
+                    Debug.Log("[DeepFillV2Case1][" + backend + "]\n" + backendSummary);
+
+                    if (maskedPixels != 14229)
+                        throw new InvalidOperationException("DeepFillV2 case1 effective mask pixel count mismatch: " + maskedPixels + ".");
+                    if (fullMae > DeepFillV2Case1MaxFullMae
+                        || maskedMae > DeepFillV2Case1MaxMaskedMae
+                        || maxAbs > DeepFillV2Case1MaxAbs)
+                    {
+                        throw new InvalidOperationException(
+                            "DeepFillV2 case1 alignment failed: fullMae=" + fullMae.ToString("0.000000", CultureInfo.InvariantCulture)
+                            + " maskedMae=" + maskedMae.ToString("0.000000", CultureInfo.InvariantCulture)
+                            + " maxAbs=" + maxAbs.ToString(CultureInfo.InvariantCulture));
+                    }
+                }
+                finally
+                {
+                    if (result.texture != null) UnityEngine.Object.DestroyImmediate(result.texture);
+                    TryInvokeReleaseMethod(runner);
+                    UnityEngine.Object.DestroyImmediate(runner);
+                    await ReleaseGpuPressureAsync();
+                }
+            }
+            File.WriteAllText(Path.Combine(outputDir, "summary.txt"), string.Join(Environment.NewLine, summary));
+            Debug.Log("[DeepFillV2Case1] summary\n" + string.Join(Environment.NewLine, summary));
+        }
+        finally
+        {
+            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(source);
+            UnityEngine.Object.DestroyImmediate(maskedExample);
+            UnityEngine.Object.DestroyImmediate(reference);
+            UnityEngine.Object.DestroyImmediate(mask);
             await ReleaseGpuPressureAsync();
         }
     }
@@ -4048,6 +4172,43 @@ public static class NcnnDebugRunner
         }
 
         return maskedPixels > 0 ? (float)(sumAbs / (maskedPixels * 3d)) : 0f;
+    }
+
+    private static Texture2D BuildPureWhiteMask(Texture2D maskedExample)
+    {
+        if (maskedExample == null)
+            return null;
+        var source = maskedExample.GetPixels32();
+        var output = new Color32[source.Length];
+        for (var i = 0; i < source.Length; i++)
+        {
+            var white = source[i].r == 255 && source[i].g == 255 && source[i].b == 255;
+            output[i] = white ? new Color32(255, 255, 255, 255) : new Color32(0, 0, 0, 255);
+        }
+        var mask = new Texture2D(maskedExample.width, maskedExample.height, TextureFormat.RGBA32, false);
+        mask.SetPixels32(output);
+        mask.Apply(false, false);
+        return mask;
+    }
+
+    private static double ComputeFullRgbMeanAbsDiff(Texture2D reference, Texture2D candidate, out int maxAbs)
+    {
+        maxAbs = 0;
+        if (reference == null || candidate == null
+            || reference.width != candidate.width || reference.height != candidate.height)
+            return double.PositiveInfinity;
+        var a = reference.GetPixels32();
+        var b = candidate.GetPixels32();
+        double sum = 0d;
+        for (var i = 0; i < a.Length; i++)
+        {
+            var dr = Mathf.Abs(a[i].r - b[i].r);
+            var dg = Mathf.Abs(a[i].g - b[i].g);
+            var db = Mathf.Abs(a[i].b - b[i].b);
+            sum += dr + dg + db;
+            maxAbs = Mathf.Max(maxAbs, Mathf.Max(dr, Mathf.Max(dg, db)));
+        }
+        return a.Length > 0 ? sum / (a.Length * 3d) : 0d;
     }
 
     private static void TryWriteTexturePng(Texture2D texture, string dir, string fileName)
