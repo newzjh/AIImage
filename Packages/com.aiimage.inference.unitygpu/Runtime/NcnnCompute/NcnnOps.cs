@@ -3225,20 +3225,13 @@ namespace NcnnCompute
             Dispatch2D(_kPack4ToRgb01, outputRgb.width, outputRgb.height, 32, 32);
         }
 
-        public void Pack4ToRgbScaled(
-            RenderTexture inputPack4,
-            RenderTexture outputRgb,
-            float scale,
-            float bias = 0f,
-            bool flipY = false,
-            bool quantizeToUint8Floor = false)
+        public void Pack4ToRgbScaled(RenderTexture inputPack4, RenderTexture outputRgb, float scale, float bias = 0f, bool flipY = false)
         {
             if (inputPack4 == null) throw new ArgumentNullException(nameof(inputPack4));
             if (outputRgb == null) throw new ArgumentNullException(nameof(outputRgb));
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
             _cs.SetFloat("_OutputValueScale", scale);
             _cs.SetFloat("_OutputValueBias", bias);
-            _cs.SetInt("_OutputQuantizeToUint8Floor", quantizeToUint8Floor ? 1 : 0);
             _cs.SetTexture(_kPack4ToRgbScaled, "_TexIn0Arr", inputPack4);
             _cs.SetTexture(_kPack4ToRgbScaled, "_RgbOut", outputRgb);
             Dispatch2D(_kPack4ToRgbScaled, outputRgb.width, outputRgb.height, 32, 32);

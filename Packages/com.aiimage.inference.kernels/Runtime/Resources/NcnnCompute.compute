@@ -573,7 +573,6 @@ float _ScaleY;
 float _InputValueScale;
 float _OutputValueScale;
 float _OutputValueBias;
-int _OutputQuantizeToUint8Floor;
 float _MaskThreshold;
 float _InterpScaleFactorX;
 float _InterpScaleFactorY;
