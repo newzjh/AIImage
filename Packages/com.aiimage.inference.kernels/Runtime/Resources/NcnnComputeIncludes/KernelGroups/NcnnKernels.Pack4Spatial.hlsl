@@ -19,8 +19,12 @@ void NcnnInterpPack4_Impl(uint3 id)
 
     float sxScale = max(_InterpScaleFactorX, 1e-6);
     float syScale = max(_InterpScaleFactorY, 1e-6);
-    float fx = ((float)id.x + 0.5) / sxScale - 0.5;
-    float fy = ((float)id.y + 0.5) / syScale - 0.5;
+    float fx = _InterpCoordinateTransformMode != 0
+        ? (float)id.x / sxScale
+        : ((float)id.x + 0.5) / sxScale - 0.5;
+    float fy = _InterpCoordinateTransformMode != 0
+        ? (float)id.y / syScale
+        : ((float)id.y + 0.5) / syScale - 0.5;
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
     float tx = fx - x0;
@@ -81,8 +85,12 @@ void NcnnInterpPack4Nearest_Impl(uint3 id)
 
     float sxScale = max(_InterpScaleFactorX, 1e-6);
     float syScale = max(_InterpScaleFactorY, 1e-6);
-    int sx = min((int)(((float)id.x + 0.5) / sxScale), (int)iw - 1);
-    int sy = min((int)(((float)id.y + 0.5) / syScale), (int)ih - 1);
+    int sx = min((int)(_InterpCoordinateTransformMode != 0
+        ? floor((float)id.x / sxScale)
+        : floor(((float)id.x + 0.5) / sxScale)), (int)iw - 1);
+    int sy = min((int)(_InterpCoordinateTransformMode != 0
+        ? floor((float)id.y / syScale)
+        : floor(((float)id.y + 0.5) / syScale)), (int)ih - 1);
     sx = max(0, sx);
     sy = max(0, sy);
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = _InterpInArr[int3(sx, sy, p)];
@@ -118,13 +126,13 @@ void NcnnInterpPack4CDHW_Impl(uint3 id)
 
     float fx = _InterpAlignCorners != 0 && _OutW > 1 && _InW > 1
         ? (float)id.x * ((float)(_InW - 1) / (float)(_OutW - 1))
-        : ((float)id.x + 0.5) / max(scaleX, 1e-6) - 0.5;
+        : (_InterpCoordinateTransformMode != 0 ? (float)id.x / max(scaleX, 1e-6) : ((float)id.x + 0.5) / max(scaleX, 1e-6) - 0.5);
     float fy = _InterpAlignCorners != 0 && _OutH > 1 && _InH > 1
         ? (float)id.y * ((float)(_InH - 1) / (float)(_OutH - 1))
-        : ((float)id.y + 0.5) / max(scaleY, 1e-6) - 0.5;
+        : (_InterpCoordinateTransformMode != 0 ? (float)id.y / max(scaleY, 1e-6) : ((float)id.y + 0.5) / max(scaleY, 1e-6) - 0.5);
     float fz = _InterpAlignCorners != 0 && _OutD > 1 && _InD > 1
         ? (float)oz * ((float)(_InD - 1) / (float)(_OutD - 1))
-        : ((float)oz + 0.5) / max(scaleZ, 1e-6) - 0.5;
+        : (_InterpCoordinateTransformMode != 0 ? (float)oz / max(scaleZ, 1e-6) : ((float)oz + 0.5) / max(scaleZ, 1e-6) - 0.5);
 
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
@@ -186,8 +194,12 @@ void NcnnInterp2xPack4_Impl(uint3 id)
     uint iw, ih, idd;
     _InterpInArr.GetDimensions(iw, ih, idd);
 
-    float fx = ((float)id.x + 0.5) * 0.5 - 0.5;
-    float fy = ((float)id.y + 0.5) * 0.5 - 0.5;
+    float fx = _InterpCoordinateTransformMode != 0
+        ? (float)id.x * 0.5
+        : ((float)id.x + 0.5) * 0.5 - 0.5;
+    float fy = _InterpCoordinateTransformMode != 0
+        ? (float)id.y * 0.5
+        : ((float)id.y + 0.5) * 0.5 - 0.5;
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
     float tx = fx - x0;
@@ -234,8 +246,12 @@ void NcnnInterpDown2Pack4_Impl(uint3 id)
     uint iw, ih, idd;
     _InterpDownInArr.GetDimensions(iw, ih, idd);
 
-    float fx = ((float)id.x + 0.5) / 0.5 - 0.5;
-    float fy = ((float)id.y + 0.5) / 0.5 - 0.5;
+    float fx = _InterpCoordinateTransformMode != 0
+        ? (float)id.x / 0.5
+        : ((float)id.x + 0.5) / 0.5 - 0.5;
+    float fy = _InterpCoordinateTransformMode != 0
+        ? (float)id.y / 0.5
+        : ((float)id.y + 0.5) / 0.5 - 0.5;
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
     float tx = fx - x0;

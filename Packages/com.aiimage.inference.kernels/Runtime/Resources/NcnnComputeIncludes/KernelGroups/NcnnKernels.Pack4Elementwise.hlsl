@@ -318,6 +318,8 @@ void NcnnPack4ToRgbScaled_Impl(uint3 id)
     int sy = _FlipY != 0 ? (int)(h - 1 - id.y) : (int)id.y;
     float4 v = _RgbInArr[int3((int)id.x, sy, 0)];
     v.xyz = saturate(v.xyz * _OutputValueScale + _OutputValueBias);
+    if (_OutputQuantizeToUint8Floor != 0)
+        v.xyz = floor(v.xyz * 255.0) / 255.0;
     _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
 }
 

@@ -11,6 +11,7 @@ namespace NcnnCompute
     public sealed class DeepFillV2OnnxNcnnImportReport
     {
         public string status = "unknown";
+        public string modelVariant = string.Empty;
         public string onnxPath = string.Empty;
         public string paramTemplatePath = string.Empty;
         public long onnxBytes;
@@ -21,6 +22,8 @@ namespace NcnnCompute
         public int ncnnConvLayerCount;
         public int extractImagePatchesNodeCount;
         public int extractPatchesLayerCount;
+        public int contextualAttentionNodeCount;
+        public int contextualAttentionLayerCount;
         public int generatedBinBytes;
         public string generatedBinSha256 = string.Empty;
     }
@@ -43,6 +46,8 @@ namespace NcnnCompute
         private const int ExpectedConvCount = 102;
         private const int ExpectedExtractImagePatchesCount = 8;
         private const int ExpectedExtractPatchesLayerCount = 8;
+        private const int ExpectedCase1Opset = 17;
+        private const int ExpectedCase1ConvCount = 82;
 
         public static DeepFillV2OnnxNcnnImportResult Import(string onnxPath, string paramTemplatePath)
         {
@@ -58,6 +63,8 @@ namespace NcnnCompute
             var onnx = OnnxModelReader.Read(onnxPath);
             var paramText = File.ReadAllText(paramTemplatePath);
             var paramModel = NcnnParamParser.Parse(paramText);
+            if (onnx.graph.CountNodes("DeepFillV2ContextualAttention") == 1)
+                return ImportCase1Official(onnx, onnxPath, paramText, paramTemplatePath, paramModel);
             ValidateOnnx(onnx, onnxPath);
 
             var convNodes = new List<OnnxNode>(ExpectedConvCount);
@@ -104,6 +111,7 @@ namespace NcnnCompute
             var report = new DeepFillV2OnnxNcnnImportReport
             {
                 status = "passed",
+                modelVariant = "hifill",
                 onnxPath = Path.GetFullPath(onnxPath),
                 paramTemplatePath = Path.GetFullPath(paramTemplatePath),
                 onnxBytes = new FileInfo(onnxPath).Length,
@@ -114,6 +122,97 @@ namespace NcnnCompute
                 ncnnConvLayerCount = ncnnConvLayers.Count,
                 extractImagePatchesNodeCount = onnx.graph.CountNodes("ExtractImagePatches"),
                 extractPatchesLayerCount = extractPatchesLayers,
+                contextualAttentionNodeCount = 0,
+                contextualAttentionLayerCount = 0,
+                generatedBinBytes = binBytes.Length,
+                generatedBinSha256 = Sha256(binBytes)
+            };
+
+            return new DeepFillV2OnnxNcnnImportResult
+            {
+                paramText = paramText,
+                ncnnBinBytes = binBytes,
+                report = report
+            };
+        }
+
+        private static DeepFillV2OnnxNcnnImportResult ImportCase1Official(
+            OnnxModel onnx,
+            string onnxPath,
+            string paramText,
+            string paramTemplatePath,
+            NcnnParamModel paramModel)
+        {
+            if (onnx.opset != ExpectedCase1Opset)
+                throw new InvalidDataException("DeepFillV2 case1 ONNX opset must be " + ExpectedCase1Opset + ", got " + onnx.opset + ".");
+            if (onnx.graph.CountNodes("Conv") != ExpectedCase1ConvCount)
+                throw new InvalidDataException("DeepFillV2 case1 ONNX must contain " + ExpectedCase1ConvCount + " Conv nodes, got " + onnx.graph.CountNodes("Conv") + ".");
+            if (onnx.graph.CountNodes("DeepFillV2ContextualAttention") != 1)
+                throw new InvalidDataException("DeepFillV2 case1 ONNX must contain exactly one DeepFillV2ContextualAttention node.");
+
+            ValidateValueInfo(onnx.graph.inputs, "image", TensorDataType.Float32, new long[] { 1, 3, 512, 400 }, "input");
+            ValidateValueInfo(onnx.graph.inputs, "mask", TensorDataType.Float32, new long[] { 1, 1, 512, 400 }, "input");
+            ValidateValueInfo(onnx.graph.outputs, "out0", TensorDataType.Float32, new long[] { 1, 3, 512, 400 }, "output");
+
+            var convByName = new Dictionary<string, OnnxNode>(StringComparer.Ordinal);
+            for (var i = 0; i < onnx.graph.nodes.Count; i++)
+            {
+                var node = onnx.graph.nodes[i];
+                if (!string.Equals(node?.opType, "Conv", StringComparison.Ordinal))
+                    continue;
+                if (string.IsNullOrWhiteSpace(node.name) || convByName.ContainsKey(node.name))
+                    throw new InvalidDataException("DeepFillV2 case1 ONNX Conv node names must be unique and non-empty.");
+                convByName.Add(node.name, node);
+            }
+
+            var convLayers = new List<NcnnParamModel.Layer>(ExpectedCase1ConvCount);
+            var attentionLayers = 0;
+            for (var i = 0; i < paramModel.layers.Count; i++)
+            {
+                var layer = paramModel.layers[i];
+                if (layer == null)
+                    continue;
+                if (layer.type == NcnnLayerTypes.Convolution)
+                    convLayers.Add(layer);
+                else if (layer.type == NcnnLayerTypes.DeepFillV2ContextualAttention)
+                    attentionLayers++;
+            }
+            if (convLayers.Count != ExpectedCase1ConvCount)
+                throw new InvalidDataException("DeepFillV2 case1 param must contain " + ExpectedCase1ConvCount + " Convolution layers, got " + convLayers.Count + ".");
+            if (attentionLayers != 1)
+                throw new InvalidDataException("DeepFillV2 case1 param must contain exactly one DeepFillV2ContextualAttention layer.");
+
+            byte[] binBytes;
+            using (var ms = new MemoryStream(20 * 1024 * 1024))
+            using (var bw = new BinaryWriter(ms))
+            {
+                for (var i = 0; i < convLayers.Count; i++)
+                {
+                    var layer = convLayers[i];
+                    if (!convByName.TryGetValue(layer.name, out var node))
+                        throw new InvalidDataException("DeepFillV2 case1 ONNX Conv node not found for param layer " + layer.name + ".");
+                    WriteConvLayerWeights(onnx.graph.initializers, node, layer, bw);
+                }
+                bw.Flush();
+                binBytes = ms.ToArray();
+            }
+
+            var report = new DeepFillV2OnnxNcnnImportReport
+            {
+                status = "passed",
+                modelVariant = "pytorch-case1-2021",
+                onnxPath = Path.GetFullPath(onnxPath),
+                paramTemplatePath = Path.GetFullPath(paramTemplatePath),
+                onnxBytes = new FileInfo(onnxPath).Length,
+                opset = onnx.opset,
+                nodeCount = onnx.graph.nodes.Count,
+                initializerCount = onnx.graph.initializers.Count,
+                convNodeCount = convByName.Count,
+                ncnnConvLayerCount = convLayers.Count,
+                extractImagePatchesNodeCount = 0,
+                extractPatchesLayerCount = 0,
+                contextualAttentionNodeCount = 1,
+                contextualAttentionLayerCount = attentionLayers,
                 generatedBinBytes = binBytes.Length,
                 generatedBinSha256 = Sha256(binBytes)
             };

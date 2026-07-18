@@ -492,6 +492,10 @@ namespace NcnnCompute
         private readonly int _kUnfoldPack4;
         private readonly int _kExtractPatchesPack4;
         private readonly int _kExtractPatchesFoldDPack4;
+        private readonly int _kDeepFillV2PatchStats;
+        private readonly int _kDeepFillV2Scores;
+        private readonly int _kDeepFillV2Softmax;
+        private readonly int _kDeepFillV2Reconstruct;
         private readonly int _kSdpaQkBuf;
         private readonly int _kSdpaSoftmaxBuf;
         private readonly int _kSdpaQkvBuf;
@@ -931,6 +935,10 @@ namespace NcnnCompute
             _kUnfoldPack4 = _cs.FindKernel("NcnnUnfoldPack4");
             _kExtractPatchesPack4 = _cs.FindKernel("NcnnExtractPatchesPack4");
             _kExtractPatchesFoldDPack4 = _cs.FindKernel("NcnnExtractPatchesFoldDPack4");
+            _kDeepFillV2PatchStats = _cs.FindKernel("NcnnDeepFillV2PatchStats");
+            _kDeepFillV2Scores = _cs.FindKernel("NcnnDeepFillV2Scores");
+            _kDeepFillV2Softmax = _cs.FindKernel("NcnnDeepFillV2Softmax");
+            _kDeepFillV2Reconstruct = _cs.FindKernel("NcnnDeepFillV2Reconstruct");
             _kSdpaQkBuf = _cs.FindKernel("NcnnSdpaQkBuf");
             _kSdpaSoftmaxBuf = _cs.FindKernel("NcnnSdpaSoftmaxBuf");
             _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
@@ -3217,13 +3225,20 @@ namespace NcnnCompute
             Dispatch2D(_kPack4ToRgb01, outputRgb.width, outputRgb.height, 32, 32);
         }
 
-        public void Pack4ToRgbScaled(RenderTexture inputPack4, RenderTexture outputRgb, float scale, float bias = 0f, bool flipY = false)
+        public void Pack4ToRgbScaled(
+            RenderTexture inputPack4,
+            RenderTexture outputRgb,
+            float scale,
+            float bias = 0f,
+            bool flipY = false,
+            bool quantizeToUint8Floor = false)
         {
             if (inputPack4 == null) throw new ArgumentNullException(nameof(inputPack4));
             if (outputRgb == null) throw new ArgumentNullException(nameof(outputRgb));
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
             _cs.SetFloat("_OutputValueScale", scale);
             _cs.SetFloat("_OutputValueBias", bias);
+            _cs.SetInt("_OutputQuantizeToUint8Floor", quantizeToUint8Floor ? 1 : 0);
             _cs.SetTexture(_kPack4ToRgbScaled, "_TexIn0Arr", inputPack4);
             _cs.SetTexture(_kPack4ToRgbScaled, "_RgbOut", outputRgb);
             Dispatch2D(_kPack4ToRgbScaled, outputRgb.width, outputRgb.height, 32, 32);
@@ -4889,32 +4904,35 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kCopyPack4, dst.width, dst.height, packs, 8, 8);
         }
 
-        public void Interp2xPack4(RenderTexture input, int packs, RenderTexture output)
+        public void Interp2xPack4(RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_InterpCoordinateTransformMode", coordinateTransformMode);
             _cs.SetTexture(_kInterp2xPack4, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterp2xPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterp2xPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpPack4(RenderTexture input, int packs, float scaleX, float scaleY, RenderTexture output)
+        public void InterpPack4(RenderTexture input, int packs, float scaleX, float scaleY, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_InterpScaleFactorX", scaleX);
             _cs.SetFloat("_InterpScaleFactorY", scaleY);
+            _cs.SetInt("_InterpCoordinateTransformMode", coordinateTransformMode);
             _cs.SetTexture(_kInterpPack4, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterpPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterpPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpPack4Nearest(RenderTexture input, int packs, float scaleX, float scaleY, RenderTexture output)
+        public void InterpPack4Nearest(RenderTexture input, int packs, float scaleX, float scaleY, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             _cs.SetFloat("_InterpScaleFactorX", scaleX);
             _cs.SetFloat("_InterpScaleFactorY", scaleY);
+            _cs.SetInt("_InterpCoordinateTransformMode", coordinateTransformMode);
             _cs.SetTexture(_kInterpPack4Nearest, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterpPack4Nearest, "_TexOut0Arr", output);
             Dispatch3D(_kInterpPack4Nearest, output.width, output.height, packs, 8, 8);
@@ -4934,7 +4952,8 @@ namespace NcnnCompute
             float scaleY,
             float scaleZ,
             int resizeType,
-            RenderTexture output)
+            RenderTexture output,
+            int coordinateTransformMode = 0)
         {
             InterpPack4CDHW(
                 input,
@@ -4951,7 +4970,8 @@ namespace NcnnCompute
                 scaleZ,
                 resizeType,
                 alignCorners: false,
-                output);
+                output,
+                coordinateTransformMode);
         }
 
         public void InterpPack4CDHW(
@@ -4969,7 +4989,8 @@ namespace NcnnCompute
             float scaleZ,
             int resizeType,
             bool alignCorners,
-            RenderTexture output)
+            RenderTexture output,
+            int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -4990,6 +5011,7 @@ namespace NcnnCompute
             _cs.SetFloat("_InterpScaleFactorZ", scaleZ);
             _cs.SetInt("_InterpResizeType", resizeType);
             _cs.SetInt("_InterpAlignCorners", alignCorners ? 1 : 0);
+            _cs.SetInt("_InterpCoordinateTransformMode", coordinateTransformMode);
             _cs.SetTexture(_kInterpPack4Cdhw, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterpPack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kInterpPack4Cdhw, outW, outH, ResolveRenderTextureDispatchDepth(output, outD * outPacks), 8, 8);
@@ -5011,7 +5033,8 @@ namespace NcnnCompute
             float scaleZ,
             int resizeType,
             bool alignCorners,
-            ComputeTexture output)
+            ComputeTexture output,
+            int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -5033,93 +5056,103 @@ namespace NcnnCompute
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorZ", scaleZ);
             cmd.SetComputeIntParam(_cs, "_InterpResizeType", resizeType);
             cmd.SetComputeIntParam(_cs, "_InterpAlignCorners", alignCorners ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpPack4Cdhw, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterpPack4Cdhw, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpPack4Cdhw, outW, outH, ResolveComputeTextureDispatchDepth(output, outD * outPacks), 8, 8);
         }
 
-        public void InterpPack4(CommandBuffer cmd, ComputeTexture input, int packs, float scaleX, float scaleY, ComputeTexture output)
+        public void InterpPack4(CommandBuffer cmd, ComputeTexture input, int packs, float scaleX, float scaleY, ComputeTexture output, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorX", scaleX);
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorY", scaleY);
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterpPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpPack4Nearest(CommandBuffer cmd, ComputeTexture input, int packs, float scaleX, float scaleY, ComputeTexture output)
+        public void InterpPack4Nearest(CommandBuffer cmd, ComputeTexture input, int packs, float scaleX, float scaleY, ComputeTexture output, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorX", scaleX);
             cmd.SetComputeFloatParam(_cs, "_InterpScaleFactorY", scaleY);
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterpPack4Nearest, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpPack4Nearest, output.width, output.height, packs, 8, 8);
         }
          
-        public void Interp2xPack4(CommandBuffer cmd,  ComputeTexture input, int packs, ComputeTexture output)
+        public void Interp2xPack4(CommandBuffer cmd,  ComputeTexture input, int packs, ComputeTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterp2xPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void Interp2xNearestPack4(RenderTexture input, int packs, RenderTexture output)
+        public void Interp2xNearestPack4(RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_InterpCoordinateTransformMode", coordinateTransformMode);
             _cs.SetTexture(_kInterp2xNearestPack4, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterp2xNearestPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterp2xNearestPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void Interp2xNearestPack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output)
+        public void Interp2xNearestPack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterp2xNearestPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpDown2Pack4(RenderTexture input, int packs, RenderTexture output)
+        public void InterpDown2Pack4(RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_InterpCoordinateTransformMode", coordinateTransformMode);
             _cs.SetTexture(_kInterpDown2Pack4, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterpDown2Pack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpDown2Pack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output)
+        public void InterpDown2Pack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpDown2NearestPack4(RenderTexture input, int packs, RenderTexture output)
+        public void InterpDown2NearestPack4(RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_InterpCoordinateTransformMode", coordinateTransformMode);
             _cs.SetTexture(_kInterpDown2NearestPack4, "_TexIn0Arr", input);
             _cs.SetTexture(_kInterpDown2NearestPack4, "_TexOut0Arr", output);
             Dispatch3D(_kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpDown2NearestPack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output)
+        public void InterpDown2NearestPack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output, int coordinateTransformMode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
@@ -5437,73 +5470,81 @@ namespace NcnnCompute
 
 
 
-        public void Interp2xPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        public void Interp2xPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexIn0Arr", input);
             cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterp2xPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void Interp2xPack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height)
+        public void Interp2xPack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, inputID, (RenderTargetIdentifier)inputID);
             cmd.SetComputeTextureParam(_cs, _kInterp2xPack4, outputID, (RenderTargetIdentifier)outputID);
             Dispatch3D(cmd, _kInterp2xPack4, width, height, packs, 8, 8);
         }
 
-        public void Interp2xNearestPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        public void Interp2xNearestPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexIn0Arr", input);
             cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterp2xNearestPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void Interp2xNearestPack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height)
+        public void Interp2xNearestPack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, inputID, (RenderTargetIdentifier)inputID);
             cmd.SetComputeTextureParam(_cs, _kInterp2xNearestPack4, outputID, (RenderTargetIdentifier)outputID);
             Dispatch3D(cmd, _kInterp2xNearestPack4, width, height, packs, 8, 8);
         }
 
-        public void InterpDown2Pack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        public void InterpDown2Pack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexIn0Arr", input);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterpDown2Pack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpDown2Pack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height)
+        public void InterpDown2Pack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, inputID, (RenderTargetIdentifier)inputID);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2Pack4, outputID, (RenderTargetIdentifier)outputID);
             Dispatch3D(cmd, _kInterpDown2Pack4, width, height, packs, 8, 8);
         }
 
-        public void InterpDown2NearestPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output)
+        public void InterpDown2NearestPack4(CommandBuffer cmd, RenderTexture input, int packs, RenderTexture output, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexIn0Arr", input);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, "_TexOut0Arr", output);
             Dispatch3D(cmd, _kInterpDown2NearestPack4, output.width, output.height, packs, 8, 8);
         }
 
-        public void InterpDown2NearestPack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height)
+        public void InterpDown2NearestPack4(CommandBuffer cmd, int inputID, int packs, int outputID, int width, int height, int coordinateTransformMode = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            cmd.SetComputeIntParam(_cs, "_InterpCoordinateTransformMode", coordinateTransformMode);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, inputID, (RenderTargetIdentifier)inputID);
             cmd.SetComputeTextureParam(_cs, _kInterpDown2NearestPack4, outputID, (RenderTargetIdentifier)outputID);
             Dispatch3D(cmd, _kInterpDown2NearestPack4, width, height, packs, 8, 8);
@@ -7028,6 +7069,139 @@ namespace NcnnCompute
             cmd.SetComputeTextureParam(_cs, _kUnfoldPack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kUnfoldPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kUnfoldPack4, output.width, output.height, 1, 8, 8);
+        }
+
+        private void ConfigureDeepFillV2(
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int featurePacks,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale)
+        {
+            _cs.SetInt("_DeepFillFeatureW", featureW);
+            _cs.SetInt("_DeepFillFeatureH", featureH);
+            _cs.SetInt("_DeepFillFeatureChannels", featureChannels);
+            _cs.SetInt("_DeepFillFeaturePacks", featurePacks);
+            _cs.SetInt("_DeepFillMatchW", matchW);
+            _cs.SetInt("_DeepFillMatchH", matchH);
+            _cs.SetInt("_DeepFillSourceCount", matchW * matchH);
+            _cs.SetInt("_DeepFillSourcePacks", Mathf.CeilToInt(matchW * matchH / 4f));
+            _cs.SetInt("_DeepFillMaskW", maskW);
+            _cs.SetInt("_DeepFillMaskH", maskH);
+            _cs.SetInt("_DeepFillMaskDownsample", maskDownsample);
+            _cs.SetFloat("_DeepFillPatchEpsilon", patchEpsilon);
+            _cs.SetFloat("_DeepFillSoftmaxScale", softmaxScale);
+        }
+
+        public void DeepFillV2PatchStats(
+            RenderTexture feature,
+            RenderTexture mask,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            RenderTexture output)
+        {
+            if (feature == null) throw new ArgumentNullException(nameof(feature));
+            if (mask == null) throw new ArgumentNullException(nameof(mask));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            ConfigureDeepFillV2(featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            _cs.SetTexture(_kDeepFillV2PatchStats, "_DeepFillFeatureArr", feature);
+            _cs.SetTexture(_kDeepFillV2PatchStats, "_DeepFillMaskArr", mask);
+            _cs.SetTexture(_kDeepFillV2PatchStats, "_DeepFillPatchStatsOutArr", output);
+            Dispatch3D(_kDeepFillV2PatchStats, matchW, matchH, 1, 8, 8);
+        }
+
+        public void DeepFillV2Scores(
+            RenderTexture feature,
+            RenderTexture patchStats,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            RenderTexture output)
+        {
+            if (feature == null) throw new ArgumentNullException(nameof(feature));
+            if (patchStats == null) throw new ArgumentNullException(nameof(patchStats));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            ConfigureDeepFillV2(featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            _cs.SetTexture(_kDeepFillV2Scores, "_DeepFillFeatureArr", feature);
+            _cs.SetTexture(_kDeepFillV2Scores, "_DeepFillPatchStatsArr", patchStats);
+            _cs.SetTexture(_kDeepFillV2Scores, "_DeepFillScoresOutArr", output);
+            Dispatch3D(_kDeepFillV2Scores, matchW, matchH, sourcePacks, 4, 4);
+        }
+
+        public void DeepFillV2Softmax(
+            RenderTexture scores,
+            RenderTexture patchStats,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            RenderTexture output)
+        {
+            if (scores == null) throw new ArgumentNullException(nameof(scores));
+            if (patchStats == null) throw new ArgumentNullException(nameof(patchStats));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            ConfigureDeepFillV2(featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            _cs.SetTexture(_kDeepFillV2Softmax, "_DeepFillScoresArr", scores);
+            _cs.SetTexture(_kDeepFillV2Softmax, "_DeepFillPatchStatsArr", patchStats);
+            _cs.SetTexture(_kDeepFillV2Softmax, "_DeepFillWeightsOutArr", output);
+            _cs.Dispatch(_kDeepFillV2Softmax, Mathf.Max(1, matchW * matchH), 1, 1);
+        }
+
+        public void DeepFillV2Reconstruct(
+            RenderTexture feature,
+            RenderTexture weights,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            RenderTexture output)
+        {
+            if (feature == null) throw new ArgumentNullException(nameof(feature));
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            ConfigureDeepFillV2(featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillFeatureArr", feature);
+            _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillWeightsArr", weights);
+            _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillOutputArr", output);
+            Dispatch3D(_kDeepFillV2Reconstruct, featureW, featureH, featurePacks, 4, 4);
         }
 
         public void ExtractPatchesPack4(

@@ -208,6 +208,20 @@ namespace NcnnCompute
             var axes = layer.GetInts(-23303, null);
             var cmd = context.commandBuffer;
             var outTop = layer.topNames[0];
+            if (TryResolveWidthReductionAxes(srcShape, reduceAll, keepDims, axes, out var reduceWidthOnly)
+                && reduceWidthOnly
+                && CanUseScalarTextureReductionOp(op))
+            {
+                var outShape = new NcnnRepro.BufferShape(3, 1, srcShape.h, 1, srcShape.c);
+                var outStorage = new NcnnRepro.BufferShape(3, 1, srcShape.h, 1, srcShape.c);
+                var outRt = owner.RentTempArray(cmd, outStorage.w, outStorage.h, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.ReductionPack4Width(cmd, srcTex.texture, srcShape.w, srcShape.h, op, coeff, outRt);
+                context.blobs[outTop] = NcnnRepro.CreateCmdTensorRef(outRt, outShape, outStorage, owned: true, blobName: outTop);
+                context.shapes[outTop] = outShape;
+                owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return true;
+            }
+
             if (TryResolveChannelReductionAxes(srcShape, reduceAll, axes, out var reduceChannelsOnly)
                 && reduceChannelsOnly
                 && CanUseScalarTextureReductionOp(op))
@@ -356,6 +370,26 @@ namespace NcnnCompute
 
             if (srcShape.dims != 3 || srcShape.d != 1 || !NcnnRepro.MatchesPack4TextureStorage(srcTex, srcShape))
                 return false;
+            if (TryResolveWidthReductionAxes(srcShape, reduceAll, keepDims, axes, out var reduceWidthOnly)
+                && reduceWidthOnly
+                && CanUseScalarTextureReductionOp(op))
+            {
+                var outShape = new NcnnRepro.BufferShape(3, 1, srcShape.h, 1, srcShape.c);
+                var outStorage = new NcnnRepro.BufferShape(3, 1, srcShape.h, 1, srcShape.c);
+                var outRt = owner.RentTempArray(outStorage.w, outStorage.h, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.ReductionPack4Width(srcTex.texture, srcShape.w, srcShape.h, op, coeff, outRt);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, outTop, outRt, outShape, outStorage);
+                owner.Consume(
+                    context.textureBlobs,
+                    context.bufferBlobs,
+                    context.bufferRefs,
+                    context.bufferViews,
+                    context.remaining,
+                    layer.bottomNames,
+                    context.pinnedNames);
+                return true;
+            }
+
             if (TryResolveChannelReductionAxes(srcShape, reduceAll, axes, out var reduceChannelsOnly)
                 && reduceChannelsOnly
                 && CanUseScalarTextureReductionOp(op))
@@ -806,6 +840,31 @@ namespace NcnnCompute
             if (axis != 0)
                 return false;
             reduceChannelsOnly = true;
+            return true;
+        }
+
+        private static bool TryResolveWidthReductionAxes(
+            NcnnRepro.BufferShape srcShape,
+            bool reduceAll,
+            bool keepDims,
+            int[] axes,
+            out bool reduceWidthOnly)
+        {
+            reduceWidthOnly = false;
+            if (srcShape.dims != 3)
+                return false;
+            if (reduceAll || !keepDims)
+                return false;
+            if (axes == null || axes.Length != 1)
+                return false;
+
+            var axis = axes[0];
+            if (axis < 0)
+                axis += srcShape.dims;
+            if (axis != 0)
+                return false;
+
+            reduceWidthOnly = true;
             return true;
         }
     }

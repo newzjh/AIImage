@@ -214,6 +214,10 @@
 #pragma kernel NcnnUnfoldPack4
 #pragma kernel NcnnExtractPatchesPack4
 #pragma kernel NcnnExtractPatchesFoldDPack4
+#pragma kernel NcnnDeepFillV2PatchStats AIIMAGE_DEEPFILLV2
+#pragma kernel NcnnDeepFillV2Scores AIIMAGE_DEEPFILLV2
+#pragma kernel NcnnDeepFillV2Softmax AIIMAGE_DEEPFILLV2
+#pragma kernel NcnnDeepFillV2Reconstruct AIIMAGE_DEEPFILLV2
 #pragma kernel NcnnSdpaQkBuf
 #pragma kernel NcnnSdpaSoftmaxBuf
 #pragma kernel NcnnSdpaQkvBuf
@@ -502,6 +506,10 @@ void NcnnUnfoldBuf_Impl(uint3 id);
 void NcnnUnfoldPack4_Impl(uint3 id);
 void NcnnExtractPatchesPack4_Impl(uint3 id);
 void NcnnExtractPatchesFoldDPack4_Impl(uint3 id);
+void NcnnDeepFillV2PatchStats_Impl(uint3 id);
+void NcnnDeepFillV2Scores_Impl(uint3 id);
+void NcnnDeepFillV2Softmax_Impl(uint3 groupId, uint3 groupThreadId);
+void NcnnDeepFillV2Reconstruct_Impl(uint3 id);
 void NcnnPassthrough_Impl(uint3 id);
 void NcnnConv2dGroupPack4_Impl(uint3 id);
 void NcnnDeconvolution2dGroupPack4_Impl(uint3 id);
@@ -565,12 +573,17 @@ float _ScaleY;
 float _InputValueScale;
 float _OutputValueScale;
 float _OutputValueBias;
+int _OutputQuantizeToUint8Floor;
 float _MaskThreshold;
 float _InterpScaleFactorX;
 float _InterpScaleFactorY;
 float _InterpScaleFactorZ;
 int _InterpResizeType;
 int _InterpAlignCorners;
+// 0: legacy/half-pixel, 1: ONNX asymmetric.  Kept opt-in so existing ncnn
+// runners preserve their previous interpolation semantics unless their param
+// explicitly requests the ONNX DeepFillV2 mode.
+int _InterpCoordinateTransformMode;
 int _FlipY;
 Texture2DArray<float4> _ArgmaxPack4InArr;
 RWTexture2DArray<float4> _ArgmaxBestValueArr;
@@ -3430,7 +3443,32 @@ void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
 }
 
 
-// Auto-generated grouped kernel implementations.
+#if defined(AIIMAGE_DEEPFILLV2)
+[numthreads(8, 8, 1)]
+void NcnnDeepFillV2PatchStats(uint3 id : SV_DispatchThreadID)
+{
+    NcnnDeepFillV2PatchStats_Impl(id);
+}
+
+[numthreads(4, 4, 1)]
+void NcnnDeepFillV2Scores(uint3 id : SV_DispatchThreadID)
+{
+    NcnnDeepFillV2Scores_Impl(id);
+}
+
+[numthreads(128, 1, 1)]
+void NcnnDeepFillV2Softmax(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    NcnnDeepFillV2Softmax_Impl(groupId, groupThreadId);
+}
+
+[numthreads(4, 4, 1)]
+void NcnnDeepFillV2Reconstruct(uint3 id : SV_DispatchThreadID)
+{
+    NcnnDeepFillV2Reconstruct_Impl(id);
+}
+#endif
+
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferCore.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4Conv.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.Pack4Elementwise.hlsl"
@@ -3444,3 +3482,6 @@ void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.GroupNorm.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferAttention.hlsl"
 #include "NcnnComputeIncludes/KernelGroups/NcnnKernels.BufferPointwiseNorm.hlsl"
+#if defined(AIIMAGE_DEEPFILLV2)
+#include "NcnnComputeIncludes/KernelGroups/NcnnKernels.DeepFillV2.hlsl"
+#endif

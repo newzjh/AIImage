@@ -155,6 +155,7 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey Tile = NcnnLayerTypeKey.FromString("Tile");
         public static readonly NcnnLayerTypeKey Unfold = NcnnLayerTypeKey.FromString("Unfold");
         public static readonly NcnnLayerTypeKey ExtractPatches = NcnnLayerTypeKey.FromString("ExtractPatches");
+        public static readonly NcnnLayerTypeKey DeepFillV2ContextualAttention = NcnnLayerTypeKey.FromString("DeepFillV2ContextualAttention");
         public static readonly NcnnLayerTypeKey Shape = NcnnLayerTypeKey.FromString("Shape");
         public static readonly NcnnLayerTypeKey Size = NcnnLayerTypeKey.FromString("Size");
         public static readonly NcnnLayerTypeKey Range = NcnnLayerTypeKey.FromString("Range");

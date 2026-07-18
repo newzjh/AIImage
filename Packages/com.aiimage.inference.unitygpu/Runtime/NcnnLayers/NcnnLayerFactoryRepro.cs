@@ -88,6 +88,7 @@ namespace NcnnCompute
             { NcnnLayerTypes.MaxUnPooling, () => new NcnnMaxUnPoolingLayerRepro() },
             { NcnnLayerTypes.Unfold, () => new NcnnUnfoldLayerRepro() },
             { NcnnLayerTypes.ExtractPatches, () => new NcnnExtractPatchesLayerRepro() },
+            { NcnnLayerTypes.DeepFillV2ContextualAttention, () => new NcnnDeepFillV2ContextualAttentionLayerRepro() },
             { NcnnLayerTypes.Tile, () => new NcnnTileLayerRepro() },
             { NcnnLayerTypes.Shape, () => new NcnnShapeLayerRepro() },
             { NcnnLayerTypes.Size, () => new NcnnSizeLayerRepro() },

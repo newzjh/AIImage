@@ -1195,34 +1195,39 @@ void NcnnExtractPatchesFoldDPack4_Impl(uint3 id)
         return;
 
     int foldedY = (int)id.y;
-    int outZ = foldedY / outh;
-    int outY = foldedY - outZ * outh;
-    if (outY < 0 || outY >= outh || outZ < 0 || outZ >= inD)
+    int outPatchC = max(1, _UnfoldKernelW * _UnfoldKernelH * inD);
+    int outPatch = foldedY / outh;
+    int outY = foldedY - outPatch * outh;
+    if (outY < 0 || outY >= outh || outPatch < 0 || outPatch >= outPatchC)
         return;
 
-    int inC = max(1, _UnfoldInC);
+    int batchC = max(1, _UnfoldInC);
     int maxk = max(1, _UnfoldKernelW * _UnfoldKernelH);
-    int outC = maxk * inC;
-    int4 oc4 = int4((int)id.z * 4 + 0, (int)id.z * 4 + 1, (int)id.z * 4 + 2, (int)id.z * 4 + 3);
+    int4 batch4 = int4((int)id.z * 4 + 0, (int)id.z * 4 + 1, (int)id.z * 4 + 2, (int)id.z * 4 + 3);
     float4 value = float4(_UnfoldPadValue, _UnfoldPadValue, _UnfoldPadValue, _UnfoldPadValue);
+
+    // Dims=4 DeepFillV2 patch tensors are logical NCHW batches encoded as
+    // NCNN w=W, h=H, d=input-channel, c=batch.  Fold-D storage folds d into
+    // the texture y coordinate and packs batch over RGBA lanes/slices.
+    // TensorFlow ExtractImagePatches expands [ky, kx, channel] into d and
+    // preserves the batch dimension.
+    int k = outPatch / inD;
+    int inputChannel = outPatch - k * inD;
+    int ky = k / max(1, _UnfoldKernelW);
+    int kx = k - ky * max(1, _UnfoldKernelW);
+    int inY = outY * _UnfoldStrideH + ky * _UnfoldDilationH - _UnfoldPadTop;
+    int inX = (int)id.x * _UnfoldStrideW + kx * _UnfoldDilationW - _UnfoldPadLeft;
 
     [unroll]
     for (int lane = 0; lane < 4; lane++)
     {
-        int oc = lane == 0 ? oc4.x : (lane == 1 ? oc4.y : (lane == 2 ? oc4.z : oc4.w));
-        if (oc >= outC)
+        int batch = lane == 0 ? batch4.x : (lane == 1 ? batch4.y : (lane == 2 ? batch4.z : batch4.w));
+        if (batch >= batchC)
             continue;
 
-        // TensorFlow ExtractImagePatches flattens as [ky, kx, channel].
-        int k = oc / inC;
-        int c = oc - k * inC;
-        int ky = k / max(1, _UnfoldKernelW);
-        int kx = k - ky * max(1, _UnfoldKernelW);
-        int inY = outY * _UnfoldStrideH + ky * _UnfoldDilationH - _UnfoldPadTop;
-        int inX = (int)id.x * _UnfoldStrideW + kx * _UnfoldDilationW - _UnfoldPadLeft;
         float sampleValue = _UnfoldPadValue;
-        if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && c < inC)
-            sampleValue = NcnnReadPack4ChannelFoldD(_TexIn0Arr, inX, inY, outZ, c, _UnfoldInH);
+        if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && inputChannel < inD)
+            sampleValue = NcnnReadPack4ChannelFoldD(_TexIn0Arr, inX, inY, inputChannel, batch, _UnfoldInH);
 
         NcnnWriteLane(value, lane, sampleValue);
     }

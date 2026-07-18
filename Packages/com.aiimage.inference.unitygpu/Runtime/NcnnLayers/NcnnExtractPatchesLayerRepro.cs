@@ -244,7 +244,11 @@ namespace NcnnCompute
                 throw new InvalidOperationException("ExtractPatches output shape is empty: " + layerName);
             var outC = Mathf.Max(1, srcShape.c * pack.kernelW * pack.kernelH);
             outShape = srcShape.dims == 4
-                ? new NcnnRepro.BufferShape(4, outW, outH, Mathf.Max(1, srcShape.d), outC)
+                // DeepFillV2's nested patch attention reshapes NCNN dims=4 as
+                // logical NCHW batches: w=W, h=H, d=inputChannels, c=batch.
+                // ExtractImagePatches runs over the spatial H/W plane and
+                // expands the input-channel axis, while preserving batch.
+                ? new NcnnRepro.BufferShape(4, outW, outH, Mathf.Max(1, srcShape.d) * pack.kernelW * pack.kernelH, Mathf.Max(1, srcShape.c))
                 : new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
         }
 
