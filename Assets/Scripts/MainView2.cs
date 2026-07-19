@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using NcnnCompute;
@@ -23,6 +24,10 @@ public sealed class MainView2 : BasePageView
     private const string PrefKeyRunwareApiKey = "MainView.AI.RunwareApiKey";
     private const string PrefKeyLumenfallApiKey = "MainView.AI.LumenfallApiKey";
     private const string InpaintBackendEnvVar = "AIIMAGE_INPAINT_BACKEND";
+    private const int Qwen35AnalysisMaxNewTokens = 256;
+    private const string Qwen35AnalysisPrompt =
+        "请对当前图像进行详细、客观的中文分析，涵盖主体与人物、场景环境、构图、色彩与光线、可见文字、关键细节和可能用途。"
+        + "对无法确认的内容明确说明，不要编造。";
 
     private static readonly string[] OriginalNameMarkersZh = { "原图", "原始", "原片", "未编辑", "未处理", "直出", "原版" };
     private static readonly string[] OriginalNameMarkersEn = { "original", "originals", "orig", "unedited", "unprocessed", "raw", "source", "camera" };
@@ -58,6 +63,7 @@ public sealed class MainView2 : BasePageView
     private Button _femaleFaceButton;
     private Button _backgroundButton;
     private Button _panelToggleButton;
+    private Button _qwenAnalysisButton;
     private VisualElement _adjustPanel;
     private VisualElement _adjustBody;
     private VisualElement _adjustHost;
@@ -69,12 +75,21 @@ public sealed class MainView2 : BasePageView
     private bool _gpuSharpenDumpStages;
     private bool _aiRunning;
     private bool _adjustRunning;
+    private bool _qwenAnalysisRunning;
+    private VisualElement _qwenAnalysisOverlay;
+    private Label _qwenAnalysisStatus;
+    private Label _qwenAnalysisOutput;
+    private ProgressBar _qwenAnalysisProgress;
+    private Button _qwenAnalysisCancelButton;
+    private Button _qwenAnalysisCloseButton;
+    private Button _qwenAnalysisCopyButton;
     private static readonly List<string> YoloInpaintResourceSnapshotLines = new List<string>(256);
 
     private System.Threading.CancellationTokenSource _lifetimeCts;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
+    private System.Threading.CancellationTokenSource _qwenAnalysisCts;
 
     protected override void OnInitialized()
     {
@@ -112,6 +127,7 @@ public sealed class MainView2 : BasePageView
     protected override void OnBeforeDetach()
     {
         UnbindAiEvents();
+        CancelAndDisposeCts(ref _qwenAnalysisCts);
         CancelAndDisposeCts(ref _lifetimeCts);
         CancelAndDisposeCts(ref _faceMaskCts);
         CancelAndDisposeCts(ref _maleFaceMaskCts);
@@ -231,6 +247,7 @@ public sealed class MainView2 : BasePageView
         presetBar.style.bottom = 28;
         _adjustHost.Add(presetBar);
         BuildStandardOverlays();
+        BuildQwenAnalysisOverlay();
 
         SetAdjustPanelCollapsed(IsPortraitLayout, false);
     }
@@ -284,9 +301,10 @@ public sealed class MainView2 : BasePageView
         row.style.height = 52;
         _toolbarScroll.Add(row);
 
-        void AddTool(string title, string icon, Action onClick, Color? tint = null)
+        Button AddTool(string title, string icon, Action onClick, Color? tint = null)
         {
             var button = new Button(onClick);
+            button.tooltip = title;
             button.style.width = 54;
             button.style.height = 54;
             button.style.marginRight = 8;
@@ -315,6 +333,7 @@ public sealed class MainView2 : BasePageView
             textLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
             button.Add(textLabel);
             row.Add(button);
+            return button;
         }
 
         AddTool("Fit", "⌖", () => CompareView?.FitToView());
@@ -322,6 +341,8 @@ public sealed class MainView2 : BasePageView
         AddTool("保存", "⇩", OnSaveCurrentImage, new Color(0.37f, 0.78f, 1f));
         AddTool("浏览", "▣", OnBrowseOriginalImage);
         AddTool("CLIP", "◎", OnClipClassify, new Color(0.73f, 0.56f, 1f));
+        _qwenAnalysisButton = AddTool("Qwen", "◉", OnQwenAnalyze, new Color(0.33f, 0.86f, 0.72f));
+        _qwenAnalysisButton.tooltip = "使用 Qwen3.5 分析当前历史图像";
         AddTool("换脸", "☺", OnFaceSwap, new Color(0.99f, 0.74f, 0.35f));
         AddTool("清晰", "✦", OnSharpen);
         AddTool("美白", "◌", OnWhiten);
@@ -337,6 +358,307 @@ public sealed class MainView2 : BasePageView
         AddTool("GFP", "◍", OnGfpganRepro);
         AddTool("CF", "◎", OnCodeFormerRepro);
         return shell;
+    }
+
+    private void BuildQwenAnalysisOverlay()
+    {
+        _qwenAnalysisOverlay = new VisualElement();
+        _qwenAnalysisOverlay.style.position = Position.Absolute;
+        _qwenAnalysisOverlay.style.left = 0;
+        _qwenAnalysisOverlay.style.top = 0;
+        _qwenAnalysisOverlay.style.right = 0;
+        _qwenAnalysisOverlay.style.bottom = 0;
+        _qwenAnalysisOverlay.style.backgroundColor = new StyleColor(new Color(0f, 0f, 0f, 0.68f));
+        _qwenAnalysisOverlay.style.alignItems = Align.Center;
+        _qwenAnalysisOverlay.style.justifyContent = Justify.Center;
+        _qwenAnalysisOverlay.style.display = DisplayStyle.None;
+
+        var panel = new VisualElement();
+        panel.style.width = 720;
+        panel.style.height = Length.Percent(76);
+        panel.style.maxWidth = Length.Percent(92);
+        panel.style.maxHeight = 720;
+        panel.style.minHeight = 360;
+        panel.style.backgroundColor = new StyleColor(new Color(0.10f, 0.11f, 0.14f, 0.99f));
+        panel.style.borderTopLeftRadius = 8;
+        panel.style.borderTopRightRadius = 8;
+        panel.style.borderBottomLeftRadius = 8;
+        panel.style.borderBottomRightRadius = 8;
+        panel.style.paddingLeft = 18;
+        panel.style.paddingRight = 18;
+        panel.style.paddingTop = 16;
+        panel.style.paddingBottom = 16;
+        panel.style.flexDirection = FlexDirection.Column;
+        _qwenAnalysisOverlay.Add(panel);
+
+        var header = new VisualElement();
+        header.style.flexDirection = FlexDirection.Row;
+        header.style.alignItems = Align.Center;
+        header.style.marginBottom = 12;
+        panel.Add(header);
+
+        var title = new Label("Qwen3.5 图像分析");
+        title.style.flexGrow = 1;
+        title.style.color = Color.white;
+        title.style.fontSize = 17;
+        title.style.unityFontStyleAndWeight = FontStyle.Bold;
+        header.Add(title);
+
+        _qwenAnalysisCopyButton = new Button(CopyQwenAnalysisResult) { text = "复制" };
+        _qwenAnalysisCopyButton.tooltip = "复制分析结果";
+        _qwenAnalysisCopyButton.style.height = 32;
+        _qwenAnalysisCopyButton.style.marginRight = 8;
+        _qwenAnalysisCopyButton.style.paddingLeft = 12;
+        _qwenAnalysisCopyButton.style.paddingRight = 12;
+        _qwenAnalysisCopyButton.style.display = DisplayStyle.None;
+        header.Add(_qwenAnalysisCopyButton);
+
+        _qwenAnalysisCloseButton = new Button(HideQwenAnalysisOverlay) { text = "×" };
+        _qwenAnalysisCloseButton.tooltip = "关闭";
+        _qwenAnalysisCloseButton.style.width = 34;
+        _qwenAnalysisCloseButton.style.height = 32;
+        _qwenAnalysisCloseButton.style.fontSize = 18;
+        _qwenAnalysisCloseButton.style.display = DisplayStyle.None;
+        header.Add(_qwenAnalysisCloseButton);
+
+        _qwenAnalysisStatus = new Label();
+        _qwenAnalysisStatus.style.color = new Color(0.76f, 0.83f, 0.91f, 1f);
+        _qwenAnalysisStatus.style.marginBottom = 8;
+        panel.Add(_qwenAnalysisStatus);
+
+        _qwenAnalysisProgress = new ProgressBar
+        {
+            lowValue = 0,
+            highValue = 100,
+            value = 0,
+            title = "0%"
+        };
+        _qwenAnalysisProgress.style.height = 18;
+        _qwenAnalysisProgress.style.marginBottom = 10;
+        panel.Add(_qwenAnalysisProgress);
+
+        var outputScroll = new ScrollView(ScrollViewMode.Vertical);
+        outputScroll.style.flexGrow = 1;
+        outputScroll.style.minHeight = 0;
+        outputScroll.style.backgroundColor = new StyleColor(new Color(0.06f, 0.07f, 0.09f, 1f));
+        outputScroll.style.borderTopLeftRadius = 6;
+        outputScroll.style.borderTopRightRadius = 6;
+        outputScroll.style.borderBottomLeftRadius = 6;
+        outputScroll.style.borderBottomRightRadius = 6;
+        outputScroll.style.paddingLeft = 14;
+        outputScroll.style.paddingRight = 14;
+        outputScroll.style.paddingTop = 12;
+        outputScroll.style.paddingBottom = 12;
+        panel.Add(outputScroll);
+
+        _qwenAnalysisOutput = new Label();
+        _qwenAnalysisOutput.enableRichText = false;
+        _qwenAnalysisOutput.style.whiteSpace = WhiteSpace.Normal;
+        _qwenAnalysisOutput.style.color = new Color(0.92f, 0.94f, 0.97f, 1f);
+        _qwenAnalysisOutput.style.fontSize = 14;
+        outputScroll.Add(_qwenAnalysisOutput);
+
+        var footer = new VisualElement();
+        footer.style.flexDirection = FlexDirection.Row;
+        footer.style.justifyContent = Justify.FlexEnd;
+        footer.style.marginTop = 12;
+        panel.Add(footer);
+
+        _qwenAnalysisCancelButton = new Button(CancelQwenAnalysis) { text = "取消" };
+        _qwenAnalysisCancelButton.style.height = 34;
+        _qwenAnalysisCancelButton.style.paddingLeft = 18;
+        _qwenAnalysisCancelButton.style.paddingRight = 18;
+        _qwenAnalysisCancelButton.style.backgroundColor = new StyleColor(new Color(0.68f, 0.22f, 0.24f, 1f));
+        _qwenAnalysisCancelButton.style.color = Color.white;
+        footer.Add(_qwenAnalysisCancelButton);
+
+        PageRoot.Add(_qwenAnalysisOverlay);
+    }
+
+    private void OnQwenAnalyze()
+    {
+        AnalyzeCurrentImageWithQwenAsync().Forget();
+    }
+
+    private async UniTaskVoid AnalyzeCurrentImageWithQwenAsync()
+    {
+        if (_qwenAnalysisRunning || _aiRunning || _adjustRunning)
+        {
+            ShowToast("已有图像任务正在运行", 2200);
+            return;
+        }
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+            return;
+
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+        {
+            ShowToast("请先在历史记录中选择图像", 2200);
+            return;
+        }
+
+        var modelDirectory = ResolveQwen35ModelDirectory();
+        var manifestPath = Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName);
+        if (!Directory.Exists(modelDirectory) || !File.Exists(manifestPath))
+        {
+            ShowToast("Qwen3.5 q8 模型未安装: " + modelDirectory, 5000);
+            return;
+        }
+
+        CancelAndDisposeCts(ref _qwenAnalysisCts);
+        _qwenAnalysisCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        var operationCts = _qwenAnalysisCts;
+        var token = operationCts.Token;
+        var streamedTokenIds = new List<int>(Qwen35AnalysisMaxNewTokens);
+        var streamedText = new StringBuilder(2048);
+        var stopwatch = Stopwatch.StartNew();
+        _qwenAnalysisRunning = true;
+        _aiRunning = true;
+        _qwenAnalysisButton?.SetEnabled(false);
+        ShowQwenAnalysisOverlay();
+
+        try
+        {
+            await UniTask.Yield(PlayerLoopTiming.Update, token);
+            using (var runner = new Qwen35Runner(modelDirectory, Qwen35AnalysisMaxNewTokens))
+            {
+                var result = await runner.GenerateImageAsync(
+                    source,
+                    Qwen35AnalysisPrompt,
+                    Qwen35SamplingConfig.Greedy(),
+                    token,
+                    (tokenId, piece) =>
+                    {
+                        streamedTokenIds.Add(tokenId);
+                        streamedText.Clear();
+                        streamedText.Append(runner.Tokenizer.Decode(streamedTokenIds, true));
+                        _qwenAnalysisOutput.text = streamedText.ToString();
+                    },
+                    (completed, total) =>
+                    {
+                        var progress = 20f + 80f * completed / Mathf.Max(1, total);
+                        SetQwenAnalysisProgress(progress, "正在生成 " + completed + " / " + total);
+                    },
+                    SetQwenAnalysisStage);
+
+                var finalText = string.IsNullOrWhiteSpace(result.Text)
+                    ? streamedText.ToString().Trim()
+                    : result.Text.Trim();
+                _qwenAnalysisOutput.text = finalText;
+                SetQwenAnalysisProgress(100f, "分析完成");
+                _qwenAnalysisStatus.text = "当前历史图像 · " + GetCurrentHistoryLabel()
+                    + " · " + stopwatch.Elapsed.TotalSeconds.ToString("0.0") + " 秒";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _qwenAnalysisStatus.text = "分析已取消";
+        }
+        catch (Exception exception)
+        {
+            _qwenAnalysisStatus.text = "分析失败";
+            var partial = streamedText.ToString().Trim();
+            _qwenAnalysisOutput.text = string.IsNullOrEmpty(partial)
+                ? exception.Message
+                : partial + "\n\n" + exception.Message;
+            UnityEngine.Debug.LogException(exception);
+        }
+        finally
+        {
+            stopwatch.Stop();
+            _qwenAnalysisRunning = false;
+            _aiRunning = false;
+            if (ReferenceEquals(_qwenAnalysisCts, operationCts))
+                _qwenAnalysisCts = null;
+            try { operationCts.Dispose(); } catch { }
+            _qwenAnalysisButton?.SetEnabled(true);
+            _qwenAnalysisCancelButton.style.display = DisplayStyle.None;
+            _qwenAnalysisCloseButton.style.display = DisplayStyle.Flex;
+            _qwenAnalysisCopyButton.style.display = string.IsNullOrWhiteSpace(_qwenAnalysisOutput.text)
+                ? DisplayStyle.None
+                : DisplayStyle.Flex;
+        }
+    }
+
+    private void ShowQwenAnalysisOverlay()
+    {
+        _qwenAnalysisOutput.text = string.Empty;
+        _qwenAnalysisStatus.text = "准备分析当前历史图像";
+        _qwenAnalysisProgress.value = 0;
+        _qwenAnalysisProgress.title = "0%";
+        _qwenAnalysisCancelButton.style.display = DisplayStyle.Flex;
+        _qwenAnalysisCloseButton.style.display = DisplayStyle.None;
+        _qwenAnalysisCopyButton.style.display = DisplayStyle.None;
+        _qwenAnalysisOverlay.style.display = DisplayStyle.Flex;
+        _qwenAnalysisOverlay.BringToFront();
+    }
+
+    private void SetQwenAnalysisStage(string stage)
+    {
+        switch (stage)
+        {
+            case "loading_vision": SetQwenAnalysisProgress(2f, "正在加载视觉模型"); break;
+            case "encoding_image": SetQwenAnalysisProgress(8f, "正在编码图像"); break;
+            case "loading_decoder": SetQwenAnalysisProgress(12f, "正在加载语言模型"); break;
+            case "generating": SetQwenAnalysisProgress(20f, "正在生成分析"); break;
+        }
+    }
+
+    private void SetQwenAnalysisProgress(float progress, string status)
+    {
+        var value = Mathf.Clamp(progress, 0f, 100f);
+        _qwenAnalysisProgress.value = value;
+        _qwenAnalysisProgress.title = Mathf.RoundToInt(value) + "%";
+        _qwenAnalysisStatus.text = status ?? string.Empty;
+    }
+
+    private void CancelQwenAnalysis()
+    {
+        if (!_qwenAnalysisRunning)
+            return;
+        _qwenAnalysisStatus.text = "正在取消";
+        try { _qwenAnalysisCts?.Cancel(); } catch { }
+    }
+
+    private void HideQwenAnalysisOverlay()
+    {
+        if (_qwenAnalysisRunning)
+            return;
+        if (_qwenAnalysisOverlay != null)
+            _qwenAnalysisOverlay.style.display = DisplayStyle.None;
+    }
+
+    private void CopyQwenAnalysisResult()
+    {
+        var text = _qwenAnalysisOutput?.text;
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+        GUIUtility.systemCopyBuffer = text;
+        ShowToast("分析结果已复制", 1600);
+    }
+
+    private static string ResolveQwen35ModelDirectory()
+    {
+        var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (!string.IsNullOrWhiteSpace(configured))
+            return Path.GetFullPath(configured);
+
+        var mobileDirectory = Path.Combine(Application.persistentDataPath, "qwen3.5_0.8b_mobile_q8");
+        if (Directory.Exists(mobileDirectory))
+            return mobileDirectory;
+
+#if UNITY_EDITOR
+        var projectDirectory = Path.GetFullPath(Path.Combine(
+            Application.dataPath,
+            "..",
+            "Tools",
+            "Qwen35NcnnBaseline",
+            "_models",
+            "qwen3.5_0.8b_mobile_q8"));
+        if (Directory.Exists(projectDirectory))
+            return projectDirectory;
+#endif
+        return mobileDirectory;
     }
 
     private VisualElement BuildPresetBar()

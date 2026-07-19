@@ -312,6 +312,9 @@ public static class NcnnDebugRunner
             case nameof(RunQwen35MultimodalGenerationBatch):
                 RunQwen35MultimodalGenerationBatch();
                 return;
+            case nameof(RunQwen35AsyncMultimodalGenerationBatch):
+                RunQwen35AsyncMultimodalGenerationBatch();
+                return;
             case nameof(RunQwen35DecoderPrefixProbeBatch):
                 RunQwen35DecoderPrefixProbeBatch();
                 return;
@@ -2816,6 +2819,179 @@ public static class NcnnDebugRunner
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen3.5 multimodal generation failed; see " + outputPath);
         EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35AsyncMultimodalGenerationBatch()
+    {
+        RunBatchBlocking(
+            nameof(RunQwen35AsyncMultimodalGenerationBatch),
+            RunQwen35AsyncMultimodalGenerationInternal,
+            TimeSpan.FromMinutes(45));
+    }
+
+    private static async UniTask RunQwen35AsyncMultimodalGenerationInternal()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b_mobile_q8");
+        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_ASYNC_MULTIMODAL_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            outputPath = Path.Combine(
+                projectRoot,
+                "Tools",
+                "Qwen35NcnnBaseline",
+                "reports",
+                "unity_async_multimodal_smoke_mobile_q8.json");
+        }
+        var prompt = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE_PROMPT");
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            prompt = "请对当前图像进行详细、客观的中文分析，涵盖主体与人物、场景环境、构图、色彩与光线、可见文字、关键细节和可能用途。"
+                + "对无法确认的内容明确说明，不要编造。";
+        }
+        var maxNewTokens = 6;
+        if (int.TryParse(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MAX_NEW_TOKENS"), out var configuredMax))
+            maxNewTokens = Mathf.Clamp(configuredMax, 1, 512);
+
+        var stageCallbacks = new JArray();
+        var progressCallbacks = new JArray();
+        var streamedTokenIds = new JArray();
+        var streamedText = new System.Text.StringBuilder();
+        var generatedTokenIds = new JArray();
+        var generatedText = string.Empty;
+        var progressMonotonic = true;
+        var previousCompleted = 0;
+        var progressTotalConsistent = true;
+        var finalCacheTextureCount = 0;
+        var decoderRuns = 0L;
+        var promptTokenCount = 0;
+        var visionTokenCount = 0;
+        var expandedPromptTokenCount = 0;
+        var stoppedOnEndOfTurn = false;
+        var valid = false;
+        string error = null;
+        Texture2D image = null;
+
+        try
+        {
+            image = LoadTexture(imagePath);
+            if (image == null)
+                throw new FileNotFoundException("Failed to load Qwen3.5 async smoke image.", imagePath);
+
+            using (var runner = new Qwen35Runner(modelDir, maxNewTokens))
+            {
+                var generated = await runner.GenerateImageAsync(
+                    image,
+                    prompt,
+                    Qwen35SamplingConfig.Greedy(),
+                    CancellationToken.None,
+                    (tokenId, piece) =>
+                    {
+                        streamedTokenIds.Add(tokenId);
+                        if (!string.IsNullOrEmpty(piece))
+                            streamedText.Append(piece);
+                    },
+                    (completed, total) =>
+                    {
+                        if (completed <= previousCompleted)
+                            progressMonotonic = false;
+                        previousCompleted = completed;
+                        if (total != maxNewTokens)
+                            progressTotalConsistent = false;
+                        progressCallbacks.Add(new JObject
+                        {
+                            ["completed"] = completed,
+                            ["total"] = total
+                        });
+                    },
+                    stage => stageCallbacks.Add(stage ?? string.Empty));
+
+                generatedText = generated.Text ?? string.Empty;
+                promptTokenCount = generated.PromptTokenCount;
+                visionTokenCount = generated.VisionTokenCount;
+                expandedPromptTokenCount = generated.ExpandedPromptTokenCount;
+                finalCacheTextureCount = generated.FinalCacheTextureCount;
+                decoderRuns = generated.DecoderStepCount;
+                stoppedOnEndOfTurn = generated.StoppedOnEndOfTurn;
+                for (var i = 0; i < generated.TokenIds.Count; i++)
+                    generatedTokenIds.Add(generated.TokenIds[i]);
+
+                var expectedStages = new[] { "loading_vision", "encoding_image", "loading_decoder", "generating" };
+                var stageSequenceMatches = stageCallbacks.Count == expectedStages.Length;
+                for (var i = 0; stageSequenceMatches && i < expectedStages.Length; i++)
+                    stageSequenceMatches = string.Equals((string)stageCallbacks[i], expectedStages[i], StringComparison.Ordinal);
+                var callbackCountsMatch = generated.TokenIds.Count == streamedTokenIds.Count
+                    && generated.TokenIds.Count == progressCallbacks.Count;
+                var firstTokenMatches = generated.TokenIds.Count > 0
+                    && generated.TokenIds[0] == runner.Tokenizer.IdOf("<think>");
+                valid = stageSequenceMatches
+                    && callbackCountsMatch
+                    && progressMonotonic
+                    && progressTotalConsistent
+                    && previousCompleted == generated.TokenIds.Count
+                    && firstTokenMatches
+                    && !string.IsNullOrWhiteSpace(generatedText)
+                    && finalCacheTextureCount == 48
+                    && decoderRuns > 0
+                    && promptTokenCount > 0
+                    && visionTokenCount > 0
+                    && expandedPromptTokenCount == promptTokenCount - 1 + visionTokenCount;
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+        }
+        finally
+        {
+            if (image != null)
+                UnityEngine.Object.DestroyImmediate(image);
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.async-multimodal-generation/v1",
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["model_directory"] = modelDir,
+            ["image"] = imagePath,
+            ["image_sha256"] = File.Exists(imagePath) ? ComputeQwen35Sha256(imagePath) : string.Empty,
+            ["prompt"] = prompt,
+            ["max_new_tokens"] = maxNewTokens,
+            ["stage_callbacks"] = stageCallbacks,
+            ["progress_callbacks"] = progressCallbacks,
+            ["progress_monotonic"] = progressMonotonic,
+            ["progress_total_consistent"] = progressTotalConsistent,
+            ["streamed_token_ids"] = streamedTokenIds,
+            ["streamed_text"] = streamedText.ToString(),
+            ["generated_token_ids"] = generatedTokenIds,
+            ["generated_text"] = generatedText,
+            ["prompt_token_count"] = promptTokenCount,
+            ["vision_token_count"] = visionTokenCount,
+            ["expanded_prompt_token_count"] = expandedPromptTokenCount,
+            ["decoder_runs"] = decoderRuns,
+            ["cache_texture_count"] = finalCacheTextureCount,
+            ["stopped_on_end_of_turn"] = stoppedOnEndOfTurn,
+            ["strict_texture_execution"] = true,
+            ["activation_storage"] = "texture-backed",
+            ["compute_buffer_fallback"] = false,
+            ["exit_code"] = valid && string.IsNullOrEmpty(error) ? 0 : 1,
+            ["error"] = error ?? string.Empty,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35AsyncMultimodalGenerationBatch",
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_async_multimodal_smoke.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] async multimodal generation report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen3.5 async multimodal generation failed; see " + outputPath);
     }
 
     public static void RunQwen35ContractBatch()
