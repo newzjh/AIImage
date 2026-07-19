@@ -8,6 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using Cysharp.Threading.Tasks;
+using AIImage.Qwen35;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;

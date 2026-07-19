@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using NcnnCompute;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
+using AIImage.Qwen35;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 using UnityEngine.Rendering;

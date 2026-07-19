@@ -1,5 +1,6 @@
 using NcnnCompute;
 using NUnit.Framework;
+using AIImage.Qwen35;
 using UnityEngine;
 using UnityEngine.Rendering;
 

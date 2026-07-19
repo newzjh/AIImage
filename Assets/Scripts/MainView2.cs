@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
+using AIImage.Qwen35;
 using NcnnCompute;
 using UnityEngine;
 using UnityEngine.UIElements;

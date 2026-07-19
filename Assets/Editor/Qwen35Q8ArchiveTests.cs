@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using NcnnCompute;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
+using AIImage.Qwen35;
 
 public sealed class Qwen35Q8ArchiveTests
 {
