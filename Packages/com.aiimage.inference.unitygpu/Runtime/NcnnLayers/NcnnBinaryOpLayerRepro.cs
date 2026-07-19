@@ -300,8 +300,8 @@ namespace NcnnCompute
                     finalTexture = owner.RentTempArray(
                         mixedStorageShape.w,
                         mixedStorageShape.h,
-                        1,
-                        owner.ResolveActivationTextureFormat(mixedOutShape.dims));
+                        ResolveTexturePhysicalDepth(mixedPack4Linear.texture, mixedPack4Linear.packs),
+                        mixedPack4Linear.texture.format);
                     owner.Ops.BinaryOpPack4LinearMixed(mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, finalTexture);
                     NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, mixedOutShape, mixedStorageShape);
                     finalTexture = null;
@@ -1208,8 +1208,8 @@ namespace NcnnCompute
                 return false;
             }
 
-            var aPack4 = NcnnRepro.IsPack4LinearMatTexture(aTex, aShape);
-            var bPack4 = NcnnRepro.IsPack4LinearMatTexture(bTex, bShape);
+            var aPack4 = IsPackedLogical2DTexture(aTex, aShape);
+            var bPack4 = IsPackedLogical2DTexture(bTex, bShape);
             var aLinear = NcnnRepro.IsStrictLinearMatTexture(aTex);
             var bLinear = NcnnRepro.IsStrictLinearMatTexture(bTex);
             if (aPack4 == bPack4)
@@ -1271,8 +1271,8 @@ namespace NcnnCompute
                 return false;
             }
 
-            var aPack4 = NcnnRepro.IsPack4LinearMatTexture(aTex, aShape);
-            var bPack4 = NcnnRepro.IsPack4LinearMatTexture(bTex, bShape);
+            var aPack4 = IsPackedLogical2DTexture(aTex, aShape);
+            var bPack4 = IsPackedLogical2DTexture(bTex, bShape);
             var aLinear = NcnnRepro.IsStrictLinearMatTexture(aTex);
             var bLinear = NcnnRepro.IsStrictLinearMatTexture(bTex);
             if (aPack4 == bPack4)
@@ -1299,6 +1299,39 @@ namespace NcnnCompute
             }
 
             return false;
+        }
+
+        private static bool IsPackedLogical2DTexture(NcnnRepro.TensorRef tensor, NcnnRepro.BufferShape shape)
+        {
+            if (NcnnRepro.IsPack4LinearMatTexture(tensor, shape))
+                return true;
+            if (tensor == null
+                || tensor.texture == null
+                || shape.dims != 2
+                || tensor.texture.dimension != TextureDimension.Tex2DArray
+                || tensor.height != shape.h)
+            {
+                return false;
+            }
+            var slices = ResolveTexturePhysicalDepth(tensor.texture, tensor.packs);
+            var capacity = checked(tensor.width * slices * 4);
+            return capacity >= shape.w && checked(tensor.width * Math.Max(0, slices - 1) * 4) < shape.w;
+        }
+
+        private static bool IsPackedLogical2DTexture(NcnnRepro.CmdTensorRef tensor, NcnnRepro.BufferShape shape)
+        {
+            if (NcnnRepro.IsPack4LinearMatTexture(tensor, shape))
+                return true;
+            if (tensor == null
+                || tensor.texture == null
+                || shape.dims != 2
+                || tensor.height != shape.h)
+            {
+                return false;
+            }
+            var slices = ResolveTexturePhysicalDepth(tensor.texture, tensor.packs);
+            var capacity = checked(tensor.width * slices * 4);
+            return capacity >= shape.w && checked(tensor.width * Math.Max(0, slices - 1) * 4) < shape.w;
         }
 
         private static bool TryResolveScalarSingleBroadcastTextureBinaryPath(
@@ -2146,8 +2179,8 @@ namespace NcnnCompute
                                                             cmd,
                                                             mixedStorageShape.w,
                                                             mixedStorageShape.h,
-                                                            1,
-                                                            owner.ResolveActivationTextureFormat(mixedOutShape.dims));
+                                                            ResolveTexturePhysicalDepth(mixedPack4Linear.texture, mixedPack4Linear.packs),
+                                                            mixedPack4Linear.texture.format);
                                                         owner.Ops.BinaryOpPack4LinearMixed(cmd, mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, outArr);
                                                         blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, mixedOutShape, mixedStorageShape, owned: true);
                                                         if (shapes != null)

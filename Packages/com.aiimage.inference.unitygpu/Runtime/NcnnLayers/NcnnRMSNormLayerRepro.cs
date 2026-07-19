@@ -105,6 +105,22 @@ namespace NcnnCompute
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.RmsNormPack rp)
                 throw new InvalidOperationException("RMSNorm pack not found: " + layer.name);
 
+            if (NcnnRepro.TryGetExistingTexture(
+                    context.textureBlobs,
+                    context.textureShapes,
+                    layer.bottomNames[0],
+                    out var src,
+                    out var shape)
+                && NcnnRepro.IsPack4LinearMatTexture(src, shape))
+            {
+                var storageShape = NcnnRepro.GetTextureStorageShape(src, shape);
+                var output = owner.RentTempArray(storageShape.w, storageShape.h, 1, src.texture.format);
+                owner.Ops.RmsNormPack4LinearMat(src.texture, shape, rp.gamma, rp.affineSize, rp.affine, rp.eps, output);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, shape, storageShape);
+                owner.Consume(context.textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
+                return;
+            }
+
             NcnnPack4LayerHelpers.ExecuteShapePreservingRenderTexture(
                 owner,
                 layer,
@@ -117,6 +133,20 @@ namespace NcnnCompute
         {
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not NcnnRepro.RmsNormPack rp)
                 throw new InvalidOperationException("RMSNorm pack not found: " + layer.name);
+
+            var src = NcnnRepro.GetCmdTensor(context.blobs, layer.bottomNames[0]);
+            var shape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+            if (NcnnRepro.IsPack4LinearMatTexture(src, shape))
+            {
+                var storageShape = NcnnRepro.GetCmdStorageShape(src, shape);
+                var output = owner.RentTempArray(context.commandBuffer, storageShape.w, storageShape.h, 1, src.texture.format);
+                owner.Ops.RmsNormPack4LinearMat(context.commandBuffer, src.texture, shape, rp.gamma, rp.affineSize, rp.affine, rp.eps, output);
+                context.blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, shape, storageShape, owned: true);
+                if (context.shapes != null)
+                    context.shapes[layer.topNames[0]] = shape;
+                owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
+                return;
+            }
 
             NcnnPack4LayerHelpers.ExecuteShapePreservingCommandBuffer(
                 owner,

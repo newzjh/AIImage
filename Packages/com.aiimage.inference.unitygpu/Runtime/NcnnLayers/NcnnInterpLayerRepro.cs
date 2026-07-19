@@ -195,13 +195,14 @@ namespace NcnnCompute
 
             var resizeTypePack = layer.GetInt(0, 0);
             var coordinateTransformModePack = ResolveCoordinateTransformMode(layer);
+            var alignCornersPack = layer.GetInt(6, 0) != 0;
             var sxPack = layer.GetFloat(2, 1f);
             var syPack = layer.GetFloat(1, 1f);
             var outShape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
             var outRt = owner.RentTempArray(outW, outH, srcTex.packs, RenderTextureFormat.ARGBHalf);
             var executed = false;
 
-            if (Mathf.Abs(sxPack - 2f) < 1e-3f && Mathf.Abs(syPack - 2f) < 1e-3f)
+            if (!alignCornersPack && Mathf.Abs(sxPack - 2f) < 1e-3f && Mathf.Abs(syPack - 2f) < 1e-3f)
             {
                 if (resizeTypePack == 1)
                     owner.Ops.Interp2xNearestPack4(srcTex.texture, srcTex.packs, outRt, coordinateTransformModePack);
@@ -209,7 +210,7 @@ namespace NcnnCompute
                     owner.Ops.Interp2xPack4(srcTex.texture, srcTex.packs, outRt, coordinateTransformModePack);
                 executed = true;
             }
-            else if (Mathf.Abs(sxPack - 0.5f) < 1e-3f && Mathf.Abs(syPack - 0.5f) < 1e-3f)
+            else if (!alignCornersPack && Mathf.Abs(sxPack - 0.5f) < 1e-3f && Mathf.Abs(syPack - 0.5f) < 1e-3f)
             {
                 if (resizeTypePack == 1)
                     owner.Ops.InterpDown2NearestPack4(srcTex.texture, srcTex.packs, outRt, coordinateTransformModePack);
@@ -228,14 +229,14 @@ namespace NcnnCompute
             {
                 var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
                 var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
-                owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt, coordinateTransformModePack);
+                owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt, coordinateTransformModePack, alignCornersPack);
                 executed = true;
             }
             else if (resizeTypePack != 1 && resizeTypePack != 3)
             {
                 var scaleX = outW / (float)Mathf.Max(1, srcTex.width);
                 var scaleY = outH / (float)Mathf.Max(1, srcTex.height);
-                owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt, coordinateTransformModePack);
+                owner.Ops.InterpPack4(srcTex.texture, srcTex.packs, scaleX, scaleY, outRt, coordinateTransformModePack, alignCornersPack);
                 executed = true;
             }
 
@@ -329,7 +330,8 @@ namespace NcnnCompute
             }
 
             var coordinateTransformModePack = ResolveCoordinateTransformMode(layer);
-            if (Mathf.Abs(sx - 2f) < 1e-3f && Mathf.Abs(sy - 2f) < 1e-3f)
+            var alignCornersPack = layer.GetInt(6, 0) != 0;
+            if (!alignCornersPack && Mathf.Abs(sx - 2f) < 1e-3f && Mathf.Abs(sy - 2f) < 1e-3f)
             {
                 var outArr = owner.RentTempArray(cmd, src.width * 2, src.height * 2, src.packs, RenderTextureFormat.ARGBHalf);
                 if (resizeType == 1)
@@ -343,7 +345,7 @@ namespace NcnnCompute
                 return;
             }
 
-            if (Mathf.Abs(sx - 0.5f) < 1e-3f && Mathf.Abs(sy - 0.5f) < 1e-3f)
+            if (!alignCornersPack && Mathf.Abs(sx - 0.5f) < 1e-3f && Mathf.Abs(sy - 0.5f) < 1e-3f)
             {
                 var outArr = owner.RentTempArray(cmd, Mathf.Max(1, src.width / 2), Mathf.Max(1, src.height / 2), src.packs, RenderTextureFormat.ARGBHalf);
                 if (resizeType == 1)
@@ -384,7 +386,7 @@ namespace NcnnCompute
                 var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
                 var scaleX = outW / (float)Mathf.Max(1, src.width);
                 var scaleY = outH / (float)Mathf.Max(1, src.height);
-                owner.Ops.InterpPack4(cmd, src.texture, src.packs, scaleX, scaleY, outArr, coordinateTransformModePack);
+                owner.Ops.InterpPack4(cmd, src.texture, src.packs, scaleX, scaleY, outArr, coordinateTransformModePack, alignCornersPack);
                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                 {
                     texture = outArr,
@@ -406,7 +408,7 @@ namespace NcnnCompute
                 var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
                 var scaleX = outW / (float)Mathf.Max(1, src.width);
                 var scaleY = outH / (float)Mathf.Max(1, src.height);
-                owner.Ops.InterpPack4(cmd, src.texture, src.packs, scaleX, scaleY, outArr, coordinateTransformModePack);
+                owner.Ops.InterpPack4(cmd, src.texture, src.packs, scaleX, scaleY, outArr, coordinateTransformModePack, alignCornersPack);
                 blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
                 {
                     texture = outArr,

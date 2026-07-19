@@ -41,10 +41,17 @@ namespace NcnnCompute
                                         {
                                             var bw = gp.transB ? gp.constantK : gp.constantN;
                                             var bh = gp.transB ? gp.constantN : gp.constantK;
+                                            var weightCount = checked(bw * bh);
+                                            var useSharedWeights = owner.SharedTokenEmbeddingWeights != null
+                                                && owner.SharedTokenEmbeddingWeights.count == weightCount
+                                                && !owner.UsesQuantizedWeightsForLayer(layer)
+                                                && !owner.UsesFp16WeightStorage;
 
                                             phaseSw.Restart();
-                                            var b = NcnnRepro.ReadClipMatAsFloat32(br, bw, bh, 0, 0, 0);
-                                            gp.bDataCpu = b;
+                                            if (useSharedWeights)
+                                                br.SkipNcnnMat(bw, bh, 0, 0, 0);
+                                            else
+                                                gp.bDataCpu = NcnnRepro.ReadClipMatAsFloat32(br, bw, bh, 0, 0, 0);
                                             if (gp.constantC && gp.broadcastTypeC != -1)
                                             {
                                                 int cw;
@@ -67,7 +74,12 @@ namespace NcnnCompute
                                             readMs += phaseSw.ElapsedMilliseconds;
 
                                             phaseSw.Restart();
-                                            if (owner.UsesInt4WeightOnlyForLayer(layer))
+                                            if (useSharedWeights)
+                                            {
+                                                gp.bData = owner.SharedTokenEmbeddingWeights;
+                                                gp.ownsBData = false;
+                                            }
+                                            else if (owner.UsesInt4WeightOnlyForLayer(layer))
                                             {
                                                 var quantized = NcnnRepro.NewInt4WeightOnlyUpload(
                                                     gp.bDataCpu,
@@ -292,7 +304,7 @@ namespace NcnnCompute
             if (srcShape.dims != 2)
                 return false;
             var srcIsStrictLinear = NcnnRepro.IsStrictLinearMatTexture(srcTex);
-            var srcIsPack4Linear = NcnnRepro.IsPack4LinearMatTexture(srcTex, srcShape);
+            var srcIsPack4Linear = IsPackedLogical2DTexture(srcTex, srcShape);
             if (!srcIsPack4Linear && (srcTex.width != srcShape.w || srcTex.height != srcShape.h || srcTex.packs != 1))
                 return false;
             if (srcShape.w <= 0 || srcShape.h <= 0)
@@ -312,8 +324,12 @@ namespace NcnnCompute
             var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
             var usePack4LinearMat = (srcIsStrictLinear || srcIsPack4Linear) && n % 4 == 0;
+            var usePack4TiledMat = usePack4LinearMat
+                && Mathf.CeilToInt(n / 4f) > Mathf.Max(1, SystemInfo.maxTextureSize);
             var useStrictLinearMat = srcIsStrictLinear && !usePack4LinearMat;
-            var outStorageShape = usePack4LinearMat
+            var outStorageShape = usePack4TiledMat
+                ? NcnnRepro.ResolvePack4TiledLinearMatStorageShape(outShape)
+                : usePack4LinearMat
                 ? NcnnRepro.ResolvePack4LinearMatStorageShape(outShape)
                 : useStrictLinearMat
                 ? NcnnRepro.ResolveLinearMatStorageShape(outShape)
@@ -335,21 +351,15 @@ namespace NcnnCompute
                     ShouldPromoteAttentionGemmOutputTexture(owner, layer) ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
             if (usePack4LinearMat)
             {
-                owner.Ops.Gemm2DPack4LinearTextureA(
-                    context.commandBuffer,
-                    srcTex.texture,
-                    srcIsPack4Linear,
-                    gp.TextureWeightBinding,
-                    useC ? gp.cData : null,
-                    m,
-                    n,
-                    k,
-                    gp.transB,
-                    gp.alpha,
-                    gp.beta,
-                    useC,
-                    gp.broadcastTypeC,
-                    outRt);
+                if (usePack4TiledMat)
+                {
+                    if (srcIsPack4Linear)
+                        owner.Ops.Gemm2DPack4TiledTextureAFromPack4(context.commandBuffer, srcTex.texture, gp.TextureWeightBinding, useC ? gp.cData : null, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outStorageShape.h / m, outRt);
+                    else
+                        owner.Ops.Gemm2DPack4TiledTextureAFromLinear(context.commandBuffer, srcTex.texture, gp.TextureWeightBinding, useC ? gp.cData : null, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outStorageShape.h / m, outRt);
+                }
+                else
+                    owner.Ops.Gemm2DPack4LinearTextureA(context.commandBuffer, srcTex.texture, srcIsPack4Linear, gp.TextureWeightBinding, useC ? gp.cData : null, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outRt);
             }
             else if (useStrictLinearMat)
             {
@@ -436,7 +446,7 @@ namespace NcnnCompute
             if (srcShape.dims != 2)
                 return false;
             var srcIsStrictLinear = NcnnRepro.IsStrictLinearMatTexture(srcTex);
-            var srcIsPack4Linear = NcnnRepro.IsPack4LinearMatTexture(srcTex, srcShape);
+            var srcIsPack4Linear = IsPackedLogical2DTexture(srcTex, srcShape);
             if (!srcIsPack4Linear && (srcTex.width != srcShape.w || srcTex.height != srcShape.h || srcTex.packs != 1))
                 return false;
             if (srcShape.w <= 0 || srcShape.h <= 0)
@@ -458,8 +468,12 @@ namespace NcnnCompute
             var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
             var outShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, n), Mathf.Max(1, m), 1, 1);
             var usePack4LinearMat = (srcIsStrictLinear || srcIsPack4Linear) && n % 4 == 0;
+            var usePack4TiledMat = usePack4LinearMat
+                && Mathf.CeilToInt(n / 4f) > Mathf.Max(1, SystemInfo.maxTextureSize);
             var useStrictLinearMat = srcIsStrictLinear && !usePack4LinearMat;
-            var outStorageShape = usePack4LinearMat
+            var outStorageShape = usePack4TiledMat
+                ? NcnnRepro.ResolvePack4TiledLinearMatStorageShape(outShape)
+                : usePack4LinearMat
                 ? NcnnRepro.ResolvePack4LinearMatStorageShape(outShape)
                 : useStrictLinearMat
                 ? NcnnRepro.ResolveLinearMatStorageShape(outShape)
@@ -479,20 +493,15 @@ namespace NcnnCompute
                     ShouldPromoteAttentionGemmOutputTexture(owner, layer) ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
             if (usePack4LinearMat)
             {
-                owner.Ops.Gemm2DPack4LinearTextureA(
-                    srcTex.texture,
-                    srcIsPack4Linear,
-                    gp.TextureWeightBinding,
-                    useC ? gp.cData : null,
-                    m,
-                    n,
-                    k,
-                    gp.transB,
-                    gp.alpha,
-                    gp.beta,
-                    useC,
-                    gp.broadcastTypeC,
-                    outRt);
+                if (usePack4TiledMat)
+                {
+                    if (srcIsPack4Linear)
+                        owner.Ops.Gemm2DPack4TiledTextureAFromPack4(srcTex.texture, gp.TextureWeightBinding, useC ? gp.cData : null, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outStorageShape.h / m, outRt);
+                    else
+                        owner.Ops.Gemm2DPack4TiledTextureAFromLinear(srcTex.texture, gp.TextureWeightBinding, useC ? gp.cData : null, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outStorageShape.h / m, outRt);
+                }
+                else
+                    owner.Ops.Gemm2DPack4LinearTextureA(srcTex.texture, srcIsPack4Linear, gp.TextureWeightBinding, useC ? gp.cData : null, m, n, k, gp.transB, gp.alpha, gp.beta, useC, gp.broadcastTypeC, outRt);
             }
             else if (useStrictLinearMat)
             {
@@ -527,6 +536,14 @@ namespace NcnnCompute
                     outRt);
             }
             NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, outStorageShape);
+            owner.DebugLog?.Invoke(
+                "[Texture][Gemm] layer=" + layer.name
+                + " srcLinear=" + (srcIsStrictLinear ? "1" : "0")
+                + " srcPack4=" + (srcIsPack4Linear ? "1" : "0")
+                + " tiled=" + (usePack4TiledMat ? "1" : "0")
+                + " m=" + m + " n=" + n + " k=" + k
+                + " srcTexture=" + srcTex.texture.width + "x" + srcTex.texture.height + "x" + srcTex.texture.volumeDepth
+                + " outTexture=" + outRt.width + "x" + outRt.height + "x" + outRt.volumeDepth);
             owner.Consume(
                 context.textureBlobs,
                 context.bufferBlobs,
@@ -536,6 +553,34 @@ namespace NcnnCompute
                 layer.bottomNames,
                 context.pinnedNames);
             return true;
+        }
+
+        private static bool IsPackedLogical2DTexture(NcnnRepro.TensorRef tensor, NcnnRepro.BufferShape shape)
+        {
+            if (NcnnRepro.IsPack4LinearMatTexture(tensor, shape))
+                return true;
+            if (tensor == null
+                || tensor.texture == null
+                || shape.dims != 2
+                || tensor.texture.dimension != TextureDimension.Tex2DArray
+                || tensor.height != shape.h)
+            {
+                return false;
+            }
+            var slices = Mathf.Max(1, tensor.texture.volumeDepth > 0 ? tensor.texture.volumeDepth : tensor.packs);
+            var capacity = checked(tensor.width * slices * 4);
+            return capacity >= shape.w && checked(tensor.width * Mathf.Max(0, slices - 1) * 4) < shape.w;
+        }
+
+        private static bool IsPackedLogical2DTexture(NcnnRepro.CmdTensorRef tensor, NcnnRepro.BufferShape shape)
+        {
+            if (NcnnRepro.IsPack4LinearMatTexture(tensor, shape))
+                return true;
+            if (tensor == null || tensor.texture == null || shape.dims != 2 || tensor.height != shape.h)
+                return false;
+            var slices = Mathf.Max(1, tensor.packs);
+            var capacity = checked(tensor.width * slices * 4);
+            return capacity >= shape.w && checked(tensor.width * Mathf.Max(0, slices - 1) * 4) < shape.w;
         }
 
         private static bool TryExecuteRenderTextureAttentionProjectionTexturePath(

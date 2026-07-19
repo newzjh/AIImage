@@ -34,6 +34,7 @@
 #pragma kernel NcnnAddPack4
 #pragma kernel NcnnCopyPack4
 #pragma kernel NcnnConcatPack4CDHW
+#pragma kernel NcnnConcatSequencePack4CDHW
 #pragma kernel NcnnBuildSdInpaintInput9Pack4
 #pragma kernel NcnnInterpPack4
 #pragma kernel NcnnInterpPack4Nearest
@@ -45,6 +46,9 @@
 #pragma kernel NcnnPack4ToBufferCHW
 #pragma kernel NcnnLinearMatToBuffer
 #pragma kernel NcnnPack4ChannelsToWidth
+#pragma kernel NcnnPack4SpatialToPack4Linear
+#pragma kernel NcnnPack4ReorderMergeRows
+#pragma kernel NcnnLinearMatReorderMergeRows
 #pragma kernel NcnnPack4ToBufferCDHW
 #pragma kernel NcnnInnerProduct
 #pragma kernel NcnnPackRgbToPack4Gfpgan
@@ -113,6 +117,7 @@
 #pragma kernel NcnnReshapeScalar2DToPack4
 #pragma kernel NcnnPack4LinearFromScalar2D
 #pragma kernel NcnnReshapeLinearMatToPack4
+#pragma kernel NcnnReshapeLinearMat2D
 #pragma kernel NcnnAttentionReshapePack4
 #pragma kernel NcnnAttentionContextFlattenPack4
 #pragma kernel NcnnSlicePack4CDHW
@@ -132,6 +137,8 @@
 #pragma kernel NcnnGemm2DPack4LinearTextureA
 #pragma kernel NcnnGemm2DPack4LinearTextureAFromLinear
 #pragma kernel NcnnGemm2DPack4LinearTextureAFromPack4
+#pragma kernel NcnnGemm2DPack4TiledTextureAFromLinear
+#pragma kernel NcnnGemm2DPack4TiledTextureAFromPack4
 #pragma kernel NcnnGemm2DAttentionQkvTextureA
 #pragma kernel NcnnGemm2DAttentionQkvLinearTextureA
 #pragma kernel NcnnGemm2DAttentionQkvPack4LinearTextureA
@@ -203,6 +210,7 @@
 #pragma kernel NcnnNormalizePack4
 #pragma kernel NcnnLrnPack4
 #pragma kernel NcnnRmsNormPack4
+#pragma kernel NcnnRmsNormPack4LinearMat
 #pragma kernel NcnnPixelShuffleBuf
 #pragma kernel NcnnRotaryEmbedBuf
 #pragma kernel NcnnRotaryEmbedPack4
@@ -223,8 +231,211 @@
 #pragma kernel NcnnSdpaQkvBuf
 #pragma kernel NcnnSdpaAttentionFast
 #pragma kernel NcnnSdpaAttentionPack4CDHW
+#pragma kernel Qwen35ShortConvPack4
+#pragma kernel Qwen35GatedDeltaRulePack4
 
 #include "NcnnComputeIncludes/NcnnUnifiedBindings.Pack4.hlsl"
+
+// Qwen3.5 custom recurrent operators.  These bindings are texture-only for
+// activations and caches; the only StructuredBuffer use is immutable debug-free
+// metadata/weights in future quantized variants.
+Texture2DArray<float4> _QwenWeightArr;
+Texture2DArray<float4> _QwenMixedArr;
+Texture2DArray<float4> _QwenConvCacheInArr;
+RWTexture2DArray<float4> _QwenConvOutArr;
+RWTexture2DArray<float4> _QwenConvCacheOutArr;
+Texture2DArray<float4> _QwenQArr;
+Texture2DArray<float4> _QwenKArr;
+Texture2DArray<float4> _QwenVArr;
+Texture2D<float4> _QwenAlogTex;
+Texture2D<float4> _QwenDtBiasTex;
+Texture2D<float4> _QwenBTex;
+Texture2D<float4> _QwenATex;
+Texture2DArray<float4> _QwenGdrStateInArr;
+RWTexture2DArray<float4> _QwenGdrOutArr;
+RWTexture2DArray<float4> _QwenGdrStateOutArr;
+int _QwenGroups;
+int _QwenKernel;
+int _QwenSeq;
+int _QwenCacheLength;
+int _QwenHeads;
+int _QwenKeyDim;
+int _QwenValueDim;
+int _QwenToken;
+float _QwenEpsilon;
+
+float QwenLoad2(Texture2DArray<float4> tex, int logicalWidth, int row, int index)
+{
+    float4 c = tex.Load(int4(index / 4, row, 0, 0));
+    return c[index & 3];
+}
+
+float QwenLoad2Slice(Texture2DArray<float4> tex, int logicalWidth, int row, int slice, int index)
+{
+    float4 c = tex.Load(int4(index / 4, row, slice, 0));
+    return c[index & 3];
+}
+
+float QwenLoadShortConvWeight(int group, int kernelIndex)
+{
+    // MemoryData exposes the kernel as logical [w=kernel, h=1, c=groups].
+    // Pack4 storage therefore places groups in array slices, not texture rows.
+    float4 packed = _QwenWeightArr.Load(int4(kernelIndex, 0, group / 4, 0));
+    return packed[group & 3];
+}
+
+float QwenLoadLinearScalar(Texture2D<float4> tex, int row, int index)
+{
+    return tex.Load(int3(row * _QwenHeads + index, 0, 0)).x;
+}
+
+float QwenLoadGdrTensor(Texture2DArray<float4> tex, int token, int head, int index)
+{
+    float4 packedSequence = tex.Load(int4(index, head, token / 4, 0));
+    return packedSequence[token & 3];
+}
+
+float QwenReadLane(float4 value, int lane)
+{
+    if (lane <= 0) return value.x;
+    if (lane == 1) return value.y;
+    if (lane == 2) return value.z;
+    return value.w;
+}
+
+float4 QwenWriteLane(float4 value, int lane, float scalar)
+{
+    if (lane <= 0) value.x = scalar;
+    else if (lane == 1) value.y = scalar;
+    else if (lane == 2) value.z = scalar;
+    else value.w = scalar;
+    return value;
+}
+
+[numthreads(8, 8, 1)]
+void Qwen35ShortConvPack4(uint3 id : SV_DispatchThreadID)
+{
+    int groupBase = (int)id.x * 4;
+    int token = (int)id.y;
+    if (groupBase >= _QwenGroups)
+        return;
+
+    // Rebuild the fixed-size causal cache from the tail of
+    // [cacheIn, mixed]. This preserves old rows during one-token decode.
+    if (token < _QwenCacheLength)
+    {
+        int sourceIndex = _QwenSeq + token;
+        float4 cacheValue = 0.0;
+        for (int lane = 0; lane < 4; ++lane)
+        {
+            int group = groupBase + lane;
+            if (group >= _QwenGroups)
+                continue;
+            float cached = sourceIndex < _QwenCacheLength
+                ? QwenLoad2(_QwenConvCacheInArr, _QwenGroups, sourceIndex, group)
+                : QwenLoad2(_QwenMixedArr, _QwenGroups, sourceIndex - _QwenCacheLength, group);
+            if (lane == 0) cacheValue.x = cached;
+            else if (lane == 1) cacheValue.y = cached;
+            else if (lane == 2) cacheValue.z = cached;
+            else cacheValue.w = cached;
+        }
+        _QwenConvCacheOutArr[int3(id.x, token, 0)] = cacheValue;
+    }
+
+    if (token >= _QwenSeq)
+        return;
+    float4 outValue = _QwenConvOutArr[int3(id.x, token, 0)];
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        int group = groupBase + lane;
+        if (group >= _QwenGroups)
+            continue;
+        float sum = 0.0;
+        for (int k = 0; k < _QwenKernel; ++k)
+        {
+            int historyIndex = _QwenCacheLength - _QwenKernel + token + 1 + k;
+            float x = historyIndex < 0
+                ? 0.0
+                : (historyIndex < _QwenCacheLength
+                    ? QwenLoad2(_QwenConvCacheInArr, _QwenGroups, historyIndex, group)
+                    : QwenLoad2(_QwenMixedArr, _QwenGroups, historyIndex - _QwenCacheLength, group));
+            sum += x * QwenLoadShortConvWeight(group, k);
+        }
+        float silu = sum / (1.0 + exp(-sum));
+        if (lane == 0) outValue.x = silu;
+        else if (lane == 1) outValue.y = silu;
+        else if (lane == 2) outValue.z = silu;
+        else outValue.w = silu;
+    }
+    _QwenConvOutArr[int3(id.x, token, 0)] = outValue;
+}
+
+[numthreads(8, 8, 1)]
+void Qwen35GatedDeltaRulePack4(uint3 id : SV_DispatchThreadID)
+{
+    int head = (int)id.y;
+    int valueBase = (int)id.x * 4;
+    int token = _QwenToken;
+    if (head >= _QwenHeads || token >= _QwenSeq || valueBase >= _QwenValueDim)
+        return;
+
+    float qNorm2 = 0.0;
+    float kNorm2 = 0.0;
+    for (int j = 0; j < _QwenKeyDim; ++j)
+    {
+        float qj = QwenLoadGdrTensor(_QwenQArr, token, head, j);
+        float kj = QwenLoadGdrTensor(_QwenKArr, token, head, j);
+        qNorm2 += qj * qj;
+        kNorm2 += kj * kj;
+    }
+    float qScale = rsqrt(qNorm2 + _QwenEpsilon);
+    float kScale = rsqrt(kNorm2 + _QwenEpsilon);
+    float b = QwenLoadLinearScalar(_QwenBTex, token, head);
+    float a = QwenLoadLinearScalar(_QwenATex, token, head);
+    float alog = QwenLoadLinearScalar(_QwenAlogTex, 0, head);
+    float dt = QwenLoadLinearScalar(_QwenDtBiasTex, 0, head);
+    float beta = 1.0 / (1.0 + exp(-b));
+    float decay = exp(-exp(alog) * (max(a + dt, 0.0) + log(1.0 + exp(-abs(a + dt)))));
+
+    float4 memory = 0.0;
+    for (int j = 0; j < _QwenKeyDim; ++j)
+    {
+        float kj = QwenLoadGdrTensor(_QwenKArr, token, head, j) * kScale;
+        float4 decayedState = _QwenGdrStateInArr.Load(int4(id.x, j, head, 0)) * decay;
+        memory += kj * decayedState;
+    }
+
+    float4 value = 0.0;
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        int valueIndex = valueBase + lane;
+        if (valueIndex < _QwenValueDim)
+            value = QwenWriteLane(value, lane, QwenLoadGdrTensor(_QwenVArr, token, head, valueIndex));
+    }
+    float4 delta = (value - memory) * beta;
+    float4 projected = 0.0;
+    for (int j = 0; j < _QwenKeyDim; ++j)
+    {
+        float kj = QwenLoadGdrTensor(_QwenKArr, token, head, j) * kScale;
+        float qj = QwenLoadGdrTensor(_QwenQArr, token, head, j) * qScale;
+        float4 updatedState = _QwenGdrStateInArr.Load(int4(id.x, j, head, 0)) * decay + kj * delta;
+        _QwenGdrStateOutArr[int3(id.x, j, head)] = updatedState;
+        projected += qj * updatedState;
+    }
+    projected *= rsqrt((float)_QwenKeyDim);
+
+    int sequencePack = token / 4;
+    int sequenceLane = token & 3;
+    for (int outputLane = 0; outputLane < 4; ++outputLane)
+    {
+        int valueIndex = valueBase + outputLane;
+        if (valueIndex >= _QwenValueDim)
+            continue;
+        float4 packedSequence = _QwenGdrOutArr[int3(valueIndex, head, sequencePack)];
+        packedSequence = QwenWriteLane(packedSequence, sequenceLane, QwenReadLane(projected, outputLane));
+        _QwenGdrOutArr[int3(valueIndex, head, sequencePack)] = packedSequence;
+    }
+}
 
 
 RWTexture2D<float4> _NcnnOut;
@@ -306,6 +517,7 @@ void NcnnConvDepthWisePack4_Impl(uint3 id);
 void NcnnAddPack4_Impl(uint3 id);
 void NcnnCopyPack4_Impl(uint3 id);
 void NcnnConcatPack4CDHW_Impl(uint3 id);
+void NcnnConcatSequencePack4CDHW_Impl(uint3 id);
 void NcnnBuildSdInpaintInput9Pack4_Impl(uint3 id);
 void NcnnInterpPack4CDHW_Impl(uint3 id);
 void NcnnInterpPack4_Impl(uint3 id);
@@ -361,6 +573,9 @@ void NcnnConv3dPack4CDHW16x4_Impl(uint3 id);
 void NcnnConv3dPack4CDHWZ2_Impl(uint3 id);
 void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id);
 void NcnnPack4ChannelsToWidth_Impl(uint3 id);
+void NcnnPack4SpatialToPack4Linear_Impl(uint3 id);
+void NcnnPack4ReorderMergeRows_Impl(uint3 id);
+void NcnnLinearMatReorderMergeRows_Impl(uint3 id);
 void NcnnArgmaxUpdatePack4CDHW_Impl(uint3 id);
 void NcnnDeconvolution3dPack4CDHW_Impl(uint3 id);
 void NcnnDeconvolutionBuf_Impl(uint3 id);
@@ -465,6 +680,8 @@ void NcnnGemm2DLinearTextureA_Impl(uint3 id);
 void NcnnGemm2DPack4LinearTextureA_Impl(uint3 id);
 void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id);
 void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id);
+void NcnnGemm2DPack4TiledTextureAFromLinear_Impl(uint3 id);
+void NcnnGemm2DPack4TiledTextureAFromPack4_Impl(uint3 id);
 void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id);
 void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id);
 void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id);
@@ -784,11 +1001,19 @@ int _ConcatPack4CDHWD;
 int _ConcatPack4CDHWAC;
 int _ConcatPack4CDHWBC;
 int _ConcatPack4CDHWOutC;
+int _ConcatSequencePack4CDHWAH;
+int _ConcatSequencePack4CDHWBH;
 
 [numthreads(8,8,1)]
 void NcnnConcatPack4CDHW(uint3 id : SV_DispatchThreadID)
 {
     NcnnConcatPack4CDHW_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnConcatSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    NcnnConcatSequencePack4CDHW_Impl(id);
 }
 
 
@@ -1452,6 +1677,24 @@ void NcnnPack4ChannelsToWidth(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnPack4SpatialToPack4Linear(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPack4SpatialToPack4Linear_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnPack4ReorderMergeRows(uint3 id : SV_DispatchThreadID)
+{
+    NcnnPack4ReorderMergeRows_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnLinearMatReorderMergeRows(uint3 id : SV_DispatchThreadID)
+{
+    NcnnLinearMatReorderMergeRows_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnArgmaxUpdatePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
     NcnnArgmaxUpdatePack4CDHW_Impl(id);
@@ -1804,6 +2047,9 @@ int _ReshapePack4ToScalar2DInD;
 int _ReshapePack4ToScalar2DInC;
 int _ReshapePack4ToScalar2DInDims;
 int _ReshapePack4ToLinearMatInputPack4Linear;
+int _LinearReshapeInW;
+int _LinearReshapeInH;
+int _GemmPack4TiledRowsPerMatrix;
 
 int _Pack4LinearFromScalar2DInW;
 int _Pack4LinearFromScalar2DInH;
@@ -2698,6 +2944,19 @@ void NcnnReshapeLinearMatToPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnReshapeLinearMat2D(uint3 id : SV_DispatchThreadID)
+{
+    uint outW, outH;
+    _LinearOut0.GetDimensions(outW, outH);
+    if (id.x >= outW || id.y >= outH)
+        return;
+    int linearIndex = (int)id.y * (int)outW + (int)id.x;
+    int sourceY = linearIndex / max(1, _LinearReshapeInW);
+    int sourceX = linearIndex - sourceY * _LinearReshapeInW;
+    _LinearOut0[int2(id.xy)] = sourceY < _LinearReshapeInH ? _LinearIn0[int2(sourceX, sourceY)] : 0.0;
+}
+
+[numthreads(8,8,1)]
 void NcnnAttentionReshapePack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnAttentionReshapePack4_Impl(id);
@@ -2743,6 +3002,18 @@ void NcnnGemm2DPack4LinearTextureAFromLinear(uint3 id : SV_DispatchThreadID)
 void NcnnGemm2DPack4LinearTextureAFromPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnGemm2DPack4LinearTextureAFromPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DPack4TiledTextureAFromLinear(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DPack4TiledTextureAFromLinear_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnGemm2DPack4TiledTextureAFromPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnGemm2DPack4TiledTextureAFromPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -3367,6 +3638,41 @@ void NcnnLrnPack4(uint3 id : SV_DispatchThreadID)
 void NcnnRmsNormPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnRmsNormPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnRmsNormPack4LinearMat(uint3 id : SV_DispatchThreadID)
+{
+    uint ow, oh, od;
+    _TexOut0Arr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int logicalWidth = max(1, _RmsNormW);
+    int packBase = (int)id.x * 4;
+    float sumSquare = 0.0;
+    for (int i = 0; i < logicalWidth; ++i)
+    {
+        float4 packed = _TexIn0Arr[int3(i / 4, (int)id.y, 0)];
+        float value = NcnnReadLane(packed, i & 3);
+        sumSquare += value * value;
+    }
+
+    float invRms = rsqrt(max(sumSquare / logicalWidth + _RmsNormEps, 1e-20));
+    float4 src = _TexIn0Arr[int3((int)id.x, (int)id.y, 0)];
+    float4 dst = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        int innerIndex = packBase + lane;
+        if (innerIndex >= logicalWidth)
+            continue;
+        float value = NcnnReadLane(src, lane) * invRms;
+        if (_RmsNormAffine != 0 && _RmsNormAffineSize > 0)
+            value *= _RmsNormGamma[clamp(innerIndex, 0, _RmsNormAffineSize - 1)];
+        NcnnWriteLane(dst, lane, value);
+    }
+    _TexOut0Arr[int3((int)id.x, (int)id.y, 0)] = dst;
 }
 
 [numthreads(256,1,1)]

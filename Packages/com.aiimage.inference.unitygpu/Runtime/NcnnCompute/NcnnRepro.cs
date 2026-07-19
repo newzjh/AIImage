@@ -399,13 +399,14 @@ namespace NcnnCompute
             public ComputeBuffer bDataInt4Packed;
             public ComputeBuffer bDataInt4Scales;
             public ComputeBuffer cData;
+            public bool ownsBData = true;
             public float[] bDataCpu;
             public float[] cDataCpu;
             public ComputeBuffer TextureWeightBinding => bData ?? bDataInt8Packed ?? bDataInt4Packed;
 
             public void Dispose()
             {
-                try { NcnnGpuResourceTracker.ReleaseBuffer(bData, "NcnnRepro.GemmPack.Dispose"); bData?.Dispose(); } catch { }
+                try { if (ownsBData) { NcnnGpuResourceTracker.ReleaseBuffer(bData, "NcnnRepro.GemmPack.Dispose"); bData?.Dispose(); } } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataFp16, "NcnnRepro.GemmPack.Dispose"); bDataFp16?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Packed, "NcnnRepro.GemmPack.Dispose"); bDataInt8Packed?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Scales, "NcnnRepro.GemmPack.Dispose"); bDataInt8Scales?.Dispose(); } catch { }
@@ -465,10 +466,11 @@ namespace NcnnCompute
             public int weightSize;
             public ComputeBuffer w;
             public ComputeBuffer b;
+            public bool ownsW = true;
 
             public void Dispose()
             {
-                try { NcnnGpuResourceTracker.ReleaseBuffer(w, "NcnnRepro.EmbedPack.Dispose"); w?.Dispose(); } catch { }
+                try { if (ownsW) { NcnnGpuResourceTracker.ReleaseBuffer(w, "NcnnRepro.EmbedPack.Dispose"); w?.Dispose(); } } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(b, "NcnnRepro.EmbedPack.Dispose"); b?.Dispose(); } catch { }
             }
         }
@@ -921,7 +923,7 @@ namespace NcnnCompute
                 return GetExistingTextureData(name);
             }
 
-            private static float[] ReadExistingTextureData(
+            internal static float[] ReadExistingTextureData(
                 RenderTexture texture,
                 BufferShape logicalShape,
                 BufferShape storageShape,
@@ -1014,7 +1016,21 @@ namespace NcnnCompute
                         return valuesOut;
 
                     var logicalValues = new float[logicalCount];
-                    Array.Copy(physical, logicalValues, logicalCount);
+                    var logicalW = Mathf.Max(1, logicalShape.w);
+                    var logicalH = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
+                    var logicalD = logicalShape.dims == 4 ? Mathf.Max(1, logicalShape.d) : 1;
+                    var logicalC = logicalShape.dims >= 3 ? Mathf.Max(1, logicalShape.c) : 1;
+                    if (logicalW > physicalW || logicalH > physicalH || logicalD > physicalD || logicalC > physicalC)
+                        throw new InvalidOperationException("texture logical crop exceeds physical storage");
+                    for (var c = 0; c < logicalC; c++)
+                    for (var z = 0; z < logicalD; z++)
+                    for (var y = 0; y < logicalH; y++)
+                    for (var x = 0; x < logicalW; x++)
+                    {
+                        var sourceIndex = ((c * physicalD + z) * physicalH + y) * physicalW + x;
+                        var destinationIndex = ((c * logicalD + z) * logicalH + y) * logicalW + x;
+                        logicalValues[destinationIndex] = physical[sourceIndex];
+                    }
                     return logicalValues;
                 }
                 finally
@@ -1095,10 +1111,13 @@ namespace NcnnCompute
                 out float[] values)
             {
                 values = null;
+                var logicalHeight = logicalShape.dims == 1 ? 1 : Mathf.Max(1, logicalShape.h);
+                var logicalPackWidth = Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f);
+                var tileRows = storageShape.w > 0 ? Mathf.CeilToInt(logicalPackWidth / (float)storageShape.w) : 0;
                 if ((logicalShape.dims != 1 && logicalShape.dims != 2)
                     || storageShape.dims != 3
-                    || storageShape.w != Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f)
-                    || storageShape.h != (logicalShape.dims == 1 ? 1 : Mathf.Max(1, logicalShape.h))
+                    || storageShape.w <= 0
+                    || storageShape.h != logicalHeight * tileRows
                     || storageShape.d != 1
                     || storageShape.c != 4
                     || texture.dimension != TextureDimension.Tex2DArray
@@ -1109,17 +1128,19 @@ namespace NcnnCompute
                     return false;
                 }
 
-                var logicalHeight = logicalShape.dims == 1 ? 1 : logicalShape.h;
                 values = new float[logicalShape.w * logicalHeight];
                 ReadRenderTextureSlice(texture, readback, 0);
                 var raw = readback.GetRawTextureData<float>();
                 for (var row = 0; row < logicalHeight; row++)
                 {
-                    for (var packX = 0; packX < storageShape.w; packX++)
+                    for (var packIndex = 0; packIndex < logicalPackWidth; packIndex++)
                     {
-                        var srcBase = (row * storageShape.w + packX) * 4;
-                        var dstBase = row * logicalShape.w + packX * 4;
-                        for (var lane = 0; lane < 4 && dstBase + lane < values.Length && packX * 4 + lane < logicalShape.w; lane++)
+                        var tileY = packIndex / storageShape.w;
+                        var tileX = packIndex - tileY * storageShape.w;
+                        var physicalY = row * tileRows + tileY;
+                        var srcBase = (physicalY * storageShape.w + tileX) * 4;
+                        var dstBase = row * logicalShape.w + packIndex * 4;
+                        for (var lane = 0; lane < 4 && dstBase + lane < values.Length && packIndex * 4 + lane < logicalShape.w; lane++)
                             values[dstBase + lane] = raw[srcBase + lane];
                     }
                 }
@@ -1273,6 +1294,7 @@ namespace NcnnCompute
         public IReadOnlyList<NcnnBaseLayerRepro> LayerRepros { get; private set; }
         public ModelLoadProfile LastLoadProfile { get; private set; }
         public bool ForceBufferBinaryOpAll { get; set; }
+        public ComputeBuffer SharedTokenEmbeddingWeights { get; set; }
         public bool ForceCpuGemmAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
         // Default false: some runners intentionally use the buffer GELU fallback as a GPU sync point via SetData.
@@ -1377,6 +1399,24 @@ namespace NcnnCompute
             }
             return ModelManifest?.UsesInt8WeightOnlyForOperator(operatorName) == true;
         }
+
+        // Qwen3.5 recurrent operators deliberately carry no mutable CPU state.
+        // Weights are model tensors and caches are published as graph textures.
+        public sealed class ShortConvPack : IDisposable
+        {
+            public int groups;
+            public int kernelSize;
+            public void Dispose() { }
+        }
+
+        public sealed class GatedDeltaRulePack : IDisposable
+        {
+            public int heads;
+            public int keyDim;
+            public int valueDim;
+            public float epsilon = 1e-6f;
+            public void Dispose() { }
+        }
         internal bool UsesInt8WeightsForLayer(NcnnParamModel.Layer layer) => UsesInt8WeightOnlyForLayer(layer);
 
         public bool UsesInt4WeightOnlyForLayer(NcnnParamModel.Layer layer)
@@ -1406,6 +1446,7 @@ namespace NcnnCompute
             _ops.SetInt8ActivationQuantization(null);
         }
         public long TemporaryTextureBudgetBytes { get; set; }
+        public int AttentionKvCacheTextureCapacity { get; set; }
         public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
         // Production CommandBuffer execution is always planned strictly. DebugOracle is the
         // only explicit relaxation path and remains unavailable in non-debug builds.
@@ -1422,6 +1463,8 @@ namespace NcnnCompute
         public ISet<string> DebugCompareTextureLayers { get; set; }
         public ISet<string> DebugCompareTextureConvLayers { get; set; }
         public ISet<string> DebugCompareMaxPoolingLayers { get; set; }
+        public ISet<string> DebugLayerReadbackBlobs { get; set; }
+        public Action<string, string, float[]> DebugLayerTextureReadback { get; set; }
         public Action<string> DebugLog { get; set; }
         public bool DebugLogAllLayerOutputs { get; set; }
         public bool DebugLogAllLayerHeartbeats { get; set; }
@@ -6313,6 +6356,17 @@ namespace NcnnCompute
             return new BufferShape(3, Mathf.CeilToInt(logicalWidth / 4f), logicalHeight, 1, 4);
         }
 
+        internal static BufferShape ResolvePack4TiledLinearMatStorageShape(BufferShape logicalShape)
+        {
+            var logicalWidth = Mathf.Max(1, logicalShape.w);
+            var logicalHeight = logicalShape.dims >= 2 ? Mathf.Max(1, logicalShape.h) : 1;
+            var packWidth = Mathf.CeilToInt(logicalWidth / 4f);
+            var tileWidthLimit = Mathf.Max(1, Mathf.Min(8192, SystemInfo.maxTextureSize));
+            var tileWidth = Mathf.Min(packWidth, tileWidthLimit);
+            var tileRows = Mathf.CeilToInt(packWidth / (float)tileWidth);
+            return new BufferShape(3, tileWidth, logicalHeight * tileRows, 1, 4);
+        }
+
         internal static bool IsStrictLinearMatTexture(TensorRef tensor)
         {
             return tensor != null
@@ -7164,7 +7218,8 @@ namespace NcnnCompute
                 if (logicalCount > physicalCount)
                     throw new InvalidOperationException("texture input logical shape exceeds physical storage: " + kv.Key);
 
-                textureBlobs[kv.Key] = CreateTextureRef(rt, logicalShape, logicalShape, owned: false, refs: useCount, blobName: kv.Key);
+                var storageShape = ResolveExternalTextureInputStorageShape(logicalShape, rt.width, rt.height, rt.dimension, Mathf.Max(1, rt.volumeDepth));
+                textureBlobs[kv.Key] = CreateTextureRef(rt, logicalShape, storageShape, owned: false, refs: useCount, blobName: kv.Key);
                 textureShapes[kv.Key] = logicalShape;
             }
         }
@@ -7202,9 +7257,29 @@ namespace NcnnCompute
                 if (logicalCount > physicalCount)
                     throw new InvalidOperationException("command-buffer texture input logical shape exceeds physical storage: " + kv.Key);
 
-                blobs[kv.Key] = CreateCmdTensorRef(texture, logicalShape, logicalShape, owned: false, refs: useCount, blobName: kv.Key);
+                var storageShape = ResolveExternalTextureInputStorageShape(logicalShape, texture.width, texture.height, texture.dimension, depth);
+                blobs[kv.Key] = CreateCmdTensorRef(texture, logicalShape, storageShape, owned: false, refs: useCount, blobName: kv.Key);
                 shapes[kv.Key] = logicalShape;
             }
+        }
+
+        private static BufferShape ResolveExternalTextureInputStorageShape(
+            BufferShape logicalShape,
+            int textureWidth,
+            int textureHeight,
+            TextureDimension dimension,
+            int textureDepth)
+        {
+            if ((logicalShape.dims == 1 || logicalShape.dims == 2)
+                && dimension == TextureDimension.Tex2DArray
+                && textureDepth == 1
+                && textureWidth == Mathf.CeilToInt(Mathf.Max(1, logicalShape.w) / 4f)
+                && textureHeight == (logicalShape.dims == 1 ? 1 : Mathf.Max(1, logicalShape.h)))
+            {
+                return ResolvePack4LinearMatStorageShape(logicalShape);
+            }
+
+            return logicalShape;
         }
 
         internal bool TryGetPack4Texture(

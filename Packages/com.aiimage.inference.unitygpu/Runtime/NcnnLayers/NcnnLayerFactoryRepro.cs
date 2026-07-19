@@ -109,6 +109,8 @@ namespace NcnnCompute
             { NcnnLayerTypes.ScatterElements, () => new NcnnUnsupportedSentisLayerRepro(NcnnLayerTypes.ScatterElements, "ScatterElements needs conflict-safe texture writes/reductions before it can run without buffer fallback.") },
             { NcnnLayerTypes.ScatterND, () => new NcnnUnsupportedSentisLayerRepro(NcnnLayerTypes.ScatterND, "ScatterND needs conflict-safe texture writes/reductions before it can run without buffer fallback.") },
             { NcnnLayerTypes.Scatter, () => new NcnnUnsupportedSentisLayerRepro(NcnnLayerTypes.Scatter, "Scatter needs conflict-safe texture writes/reductions before it can run without buffer fallback.") },
+            { NcnnLayerTypes.ShortConv, () => new NcnnShortConvLayerRepro() },
+            { NcnnLayerTypes.GatedDeltaRule, () => new NcnnGatedDeltaRuleLayerRepro() },
         };
 
         public static IReadOnlyList<NcnnBaseLayerRepro> CreateModelLayers(IList<NcnnParamModel.Layer> layers)
@@ -676,6 +678,39 @@ namespace NcnnCompute
                 return false;
             }
 
+            void TryDebugReadbackLayerOutputs(NcnnParamModel.Layer layer)
+            {
+                if (DebugLayerTextureReadback == null
+                    || DebugLayerReadbackBlobs == null
+                    || DebugLayerReadbackBlobs.Count == 0
+                    || layer?.topNames == null)
+                {
+                    return;
+                }
+
+                for (var topIndex = 0; topIndex < layer.topNames.Length; topIndex++)
+                {
+                    var topName = layer.topNames[topIndex];
+                    if (string.IsNullOrWhiteSpace(topName) || !DebugLayerReadbackBlobs.Contains(topName))
+                        continue;
+                    if (!TryGetExistingTextureContract(textureBlobs, textureShapes, topName, out var textureRef, out var contract))
+                    {
+                        if (string.Equals(layer.typeName, "Input", StringComparison.Ordinal))
+                        {
+                            DebugLog?.Invoke("[DebugCheckpointSkip] optional input is not bound | layer=" + (layer.name ?? string.Empty) + " | top=" + topName);
+                            continue;
+                        }
+                        throw new InvalidOperationException("Debug texture checkpoint is not texture-backed: " + topName);
+                    }
+                    var values = InferResult.ReadExistingTextureData(
+                        textureRef.texture,
+                        contract.LogicalShape,
+                        contract.StorageShape,
+                        contract.LayoutKind);
+                    DebugLayerTextureReadback(layer.name ?? string.Empty, topName, values);
+                }
+            }
+
             BeginInferenceTempResourceTracking();
             try
             {
@@ -738,6 +773,7 @@ namespace NcnnCompute
                             ResetInt8ActivationQuantization();
                             ClearCurrentExecutingLayer();
                         }
+                        TryDebugReadbackLayerOutputs(layer);
                         layerOutputPath = DescribeLayerOutputPath(layer, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs);
                         if (DebugLog != null && (DebugLogAllLayerOutputs || HasStrideBlob(layer?.topNames)))
                         {
@@ -780,6 +816,7 @@ namespace NcnnCompute
                         ResetInt8ActivationQuantization();
                         ClearCurrentExecutingLayer();
                     }
+                    TryDebugReadbackLayerOutputs(layer);
                     if (LayerRuntimeProfileSyncGpu)
                         Ops.DebugSyncGpu();
                     layerSw.Stop();

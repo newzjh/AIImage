@@ -322,8 +322,9 @@ namespace NcnnCompute
                 return;
             }
 
-            if (TryExecuteRenderTextureDirectAttentionQkvReshapeAlias(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes)
-                || TryExecuteRenderTextureDirectAttentionContextReshapeAlias(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+            // A d3 attention context packs channels into texture lanes. Flattening
+            // it to d2 changes physical order and must use the texture reshape path.
+            if (TryExecuteRenderTextureDirectAttentionQkvReshapeAlias(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
             {
                 owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                 return;
@@ -382,6 +383,12 @@ namespace NcnnCompute
 
             if (ShouldAllowGenericPack4ReshapeSpecializations(owner))
             {
+                if (TryExecuteRenderTextureLinearMat2DReshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
                 if (TryExecuteRenderTexturePack4ToScalar2DReshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
                 {
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -449,8 +456,7 @@ namespace NcnnCompute
                 return;
             }
 
-            if (TryExecuteCommandBufferDirectAttentionQkvReshapeAlias(owner, layer, src, srcShape, bottomShapes, blobs, shapes)
-                || TryExecuteCommandBufferDirectAttentionContextReshapeAlias(owner, layer, src, srcShape, bottomShapes, blobs, shapes))
+            if (TryExecuteCommandBufferDirectAttentionQkvReshapeAlias(owner, layer, src, srcShape, bottomShapes, blobs, shapes))
             {
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
@@ -584,20 +590,32 @@ namespace NcnnCompute
 
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
             var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
-            var outRt = owner.RentTempArray(cmd, outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            var storageShape = outShape;
+            var outputHeight = outShape.h;
+            var outputSlices = outSlices;
+            if (outShape.dims == 4
+                && outSlices > GetMaxTextureArraySlicesSafe()
+                && outPacks <= GetMaxTextureArraySlicesSafe()
+                && checked(outShape.h * outShape.d) <= GetMaxTextureSizeSafe())
+            {
+                outputHeight = checked(outShape.h * outShape.d);
+                outputSlices = outPacks;
+                storageShape = new NcnnRepro.BufferShape(4, outShape.w, outputHeight, 1, outShape.c);
+            }
+            var outRt = owner.RentTempArray(cmd, outShape.w, outputHeight, outputSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
             owner.Ops.ReshapePack4ToPack4(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, outShape.dims, outRt, inputPack4Linear: true);
             blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef
             {
                 texture = outRt,
                 width = outShape.w,
-                height = outShape.h,
+                height = outputHeight,
                 packs = outPacks,
                 refs = 1,
                 owned = true,
                 hasLogicalShape = true,
                 logicalShape = outShape,
                 hasStorageShape = true,
-                storageShape = outShape
+                storageShape = storageShape
             };
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
@@ -1419,9 +1437,57 @@ namespace NcnnCompute
 
             var outPacks = Mathf.Max(1, Mathf.CeilToInt(outShape.c / 4f));
             var outSlices = outShape.dims >= 4 ? Mathf.Max(1, outShape.d) * outPacks : outPacks;
-            var outRt = owner.RentTempArray(outShape.w, outShape.h, outSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
+            var storageShape = outShape;
+            var outputHeight = outShape.h;
+            var outputSlices = outSlices;
+            if (outShape.dims == 4
+                && outSlices > GetMaxTextureArraySlicesSafe()
+                && outPacks <= GetMaxTextureArraySlicesSafe()
+                && checked(outShape.h * outShape.d) <= GetMaxTextureSizeSafe())
+            {
+                outputHeight = checked(outShape.h * outShape.d);
+                outputSlices = outPacks;
+                storageShape = new NcnnRepro.BufferShape(4, outShape.w, outputHeight, 1, outShape.c);
+            }
+            var outRt = owner.RentTempArray(outShape.w, outputHeight, outputSlices, NcnnRepro.ResolveTensorTextureFormat(outShape.dims));
             owner.Ops.ReshapePack4ToPack4(src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, outShape.w, outShape.h, outShape.d, outShape.c, outShape.dims, outRt, inputPack4Linear: true);
-            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, outShape);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, storageShape);
+            return true;
+        }
+
+        private static int GetMaxTextureArraySlicesSafe()
+        {
+            try { return Mathf.Max(1, SystemInfo.maxTextureArraySlices); }
+            catch { return 2048; }
+        }
+
+        private static int GetMaxTextureSizeSafe()
+        {
+            try { return Mathf.Max(1, SystemInfo.maxTextureSize); }
+            catch { return 16384; }
+        }
+
+        private static bool TryExecuteRenderTextureLinearMat2DReshape(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.TensorRef src,
+            NcnnRepro.BufferShape srcShape,
+            System.Collections.Generic.IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null || !NcnnRepro.IsStrictLinearMatTexture(src))
+                return false;
+            var outShape = NcnnRepro.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (srcShape.dims > 2 || outShape.dims > 2 || GetShapeElementCount(srcShape) != GetShapeElementCount(outShape))
+                return false;
+            if (src.texture.width == outShape.w && src.texture.height == outShape.h)
+                return false;
+
+            var output = owner.RentTempMat(outShape.w, outShape.h, src.texture.format);
+            owner.Ops.ReshapeLinearMat2D(src.texture, src.texture.width, src.texture.height, output);
+            var storageShape = NcnnRepro.ResolveLinearMatStorageShape(outShape);
+            NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], output, outShape, storageShape);
             return true;
         }
 
@@ -2442,7 +2508,9 @@ namespace NcnnCompute
             if (consumer != null
                 && (consumer.type == NcnnLayerTypes.Permute
                     || consumer.type == NcnnLayerTypes.Gemm
-                    || consumer.type == NcnnLayerTypes.InnerProduct))
+                    || consumer.type == NcnnLayerTypes.InnerProduct
+                    || consumer.type == NcnnLayerTypes.RMSNorm
+                    || consumer.type == NcnnLayerTypes.Swish))
             {
                 return true;
             }

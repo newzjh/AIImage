@@ -27,7 +27,13 @@ namespace NcnnCompute
                                         ep.weightSize = layer.GetInt(3, 0);
 
                                         phaseSw.Restart();
-                                        var w = NcnnRepro.ReadClipArrayAsFloat32(br, ep.weightSize, 0);
+                                        var useSharedWeights = owner.SharedTokenEmbeddingWeights != null
+                                            && owner.SharedTokenEmbeddingWeights.count == ep.weightSize;
+                                        float[] w = null;
+                                        if (useSharedWeights)
+                                            br.SkipNcnnMat(ep.weightSize, 0, 0, 0, 0);
+                                        else
+                                            w = NcnnRepro.ReadClipArrayAsFloat32(br, ep.weightSize, 0);
                                         float[] b = null;
                                         if (ep.biasTerm != 0)
                                             b = br.ReadNcnnMatAsFloat32(ep.numOutput, 0, 0, 0, 1);
@@ -35,8 +41,16 @@ namespace NcnnCompute
                                         readMs += phaseSw.ElapsedMilliseconds;
 
                                         phaseSw.Restart();
-                                        ep.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
-                                        ep.w.SetData(w);
+                                        if (useSharedWeights)
+                                        {
+                                            ep.w = owner.SharedTokenEmbeddingWeights;
+                                            ep.ownsW = false;
+                                        }
+                                        else
+                                        {
+                                            ep.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
+                                            ep.w.SetData(w);
+                                        }
                                         if (b != null)
                                         {
                                             ep.b = new ComputeBuffer(b.Length, sizeof(float), ComputeBufferType.Structured);

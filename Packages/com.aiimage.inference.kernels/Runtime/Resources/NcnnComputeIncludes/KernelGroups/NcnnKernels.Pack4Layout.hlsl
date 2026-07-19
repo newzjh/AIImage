@@ -392,6 +392,106 @@ void NcnnPermutePack4CDHW_Impl(uint3 id)
     _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
+void NcnnPack4SpatialToPack4Linear_Impl(uint3 id)
+{
+    uint inputWidth, inputHeight, inputDepth;
+    uint outputWidth, outputHeight, outputDepth;
+    _Pack4SpatialInArr.GetDimensions(inputWidth, inputHeight, inputDepth);
+    _Pack4SpatialOutArr.GetDimensions(outputWidth, outputHeight, outputDepth);
+    if (id.x >= outputWidth || id.y >= outputHeight || id.z >= outputDepth)
+        return;
+
+    uint sourceX = inputWidth > 0 ? id.y % inputWidth : 0;
+    uint sourceY = inputWidth > 0 ? id.y / inputWidth : 0;
+    if (sourceY >= inputHeight || id.x >= inputDepth)
+    {
+        _Pack4SpatialOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = 0.0;
+        return;
+    }
+
+    _Pack4SpatialOutArr[int3((int)id.x, (int)id.y, (int)id.z)] =
+        _Pack4SpatialInArr[int3((int)sourceX, (int)sourceY, (int)id.x)];
+}
+
+int _Pack4ReorderGridWidth;
+int _Pack4ReorderGridHeight;
+int _Pack4ReorderMerge;
+
+void NcnnPack4ReorderMergeRows_Impl(uint3 id)
+{
+    uint inputWidth, inputHeight, inputDepth;
+    uint outputWidth, outputHeight, outputDepth;
+    _Pack4SpatialInArr.GetDimensions(inputWidth, inputHeight, inputDepth);
+    _Pack4SpatialOutArr.GetDimensions(outputWidth, outputHeight, outputDepth);
+    if (id.x >= outputWidth || id.y >= outputHeight || id.z >= outputDepth)
+        return;
+
+    int gridWidth = max(1, _Pack4ReorderGridWidth);
+    int gridHeight = max(1, _Pack4ReorderGridHeight);
+    int merge = max(1, _Pack4ReorderMerge);
+    int mergeArea = merge * merge;
+    int groupedWidth = gridWidth / merge;
+    int destinationRow = (int)id.y;
+    int groupIndex = destinationRow / mergeArea;
+    int localIndex = destinationRow - groupIndex * mergeArea;
+    int groupY = groupedWidth > 0 ? groupIndex / groupedWidth : 0;
+    int groupX = groupedWidth > 0 ? groupIndex - groupY * groupedWidth : 0;
+    int localY = localIndex / merge;
+    int localX = localIndex - localY * merge;
+    int sourceY = groupY * merge + localY;
+    int sourceX = groupX * merge + localX;
+    int sourceRow = sourceY * gridWidth + sourceX;
+
+    if (gridWidth % merge != 0 || gridHeight % merge != 0
+        || destinationRow >= gridWidth * gridHeight
+        || sourceRow < 0 || sourceRow >= (int)inputHeight
+        || id.x >= inputWidth || id.z >= inputDepth)
+    {
+        _Pack4SpatialOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = 0.0;
+        return;
+    }
+
+    _Pack4SpatialOutArr[int3((int)id.x, (int)id.y, (int)id.z)] =
+        _Pack4SpatialInArr[int3((int)id.x, sourceRow, (int)id.z)];
+}
+
+void NcnnLinearMatReorderMergeRows_Impl(uint3 id)
+{
+    uint inputWidth, inputHeight;
+    uint outputWidth, outputHeight;
+    _LinearIn0.GetDimensions(inputWidth, inputHeight);
+    _LinearOut0.GetDimensions(outputWidth, outputHeight);
+    if (id.x >= outputWidth || id.y >= outputHeight)
+        return;
+
+    int gridWidth = max(1, _Pack4ReorderGridWidth);
+    int gridHeight = max(1, _Pack4ReorderGridHeight);
+    int merge = max(1, _Pack4ReorderMerge);
+    int mergeArea = merge * merge;
+    int groupedWidth = gridWidth / merge;
+    int destinationRow = (int)id.y;
+    int groupIndex = destinationRow / mergeArea;
+    int localIndex = destinationRow - groupIndex * mergeArea;
+    int groupY = groupedWidth > 0 ? groupIndex / groupedWidth : 0;
+    int groupX = groupedWidth > 0 ? groupIndex - groupY * groupedWidth : 0;
+    int localY = localIndex / merge;
+    int localX = localIndex - localY * merge;
+    int sourceY = groupY * merge + localY;
+    int sourceX = groupX * merge + localX;
+    int sourceRow = sourceY * gridWidth + sourceX;
+
+    if (gridWidth % merge != 0 || gridHeight % merge != 0
+        || destinationRow >= gridWidth * gridHeight
+        || sourceRow < 0 || sourceRow >= (int)inputHeight
+        || id.x >= inputWidth)
+    {
+        _LinearOut0[int2((int)id.x, (int)id.y)] = 0.0;
+        return;
+    }
+
+    _LinearOut0[int2((int)id.x, (int)id.y)] = _LinearIn0[int2((int)id.x, sourceRow)];
+}
+
 float NcnnReadPack4ChannelFoldD(Texture2DArray<float4> tex, int x, int y, int z, int channel, int logicalH)
 {
     int foldedY = z * max(1, logicalH) + y;
@@ -692,13 +792,27 @@ void NcnnReshapePack4ToLinearMat_Impl(uint3 id)
         return;
 
     uint linearIndex = id.y * ow + id.x;
-    float scalar = NcnnReadPack4LinearScalar2DInput(
-        linearIndex,
-        _ReshapePack4ToScalar2DInDims,
-        _ReshapePack4ToScalar2DInW,
-        _ReshapePack4ToScalar2DInH,
-        _ReshapePack4ToScalar2DInD,
-        _ReshapePack4ToScalar2DInC);
+    float scalar;
+    if (_ReshapePack4ToLinearMatInputPack4Linear != 0
+        && (_ReshapePack4ToScalar2DInDims == 1 || _ReshapePack4ToScalar2DInDims == 2))
+    {
+        uint inputWidth = (uint)_ReshapePack4ToScalar2DInW;
+        uint row = linearIndex / inputWidth;
+        uint column = linearIndex - row * inputWidth;
+        scalar = row < (uint)_ReshapePack4ToScalar2DInH
+            ? NcnnReadLane(_TexIn0Arr[int3((int)(column >> 2), (int)row, 0)], (int)(column & 3))
+            : 0.0;
+    }
+    else
+    {
+        scalar = NcnnReadPack4LinearScalar2DInput(
+            linearIndex,
+            _ReshapePack4ToScalar2DInDims,
+            _ReshapePack4ToScalar2DInW,
+            _ReshapePack4ToScalar2DInH,
+            _ReshapePack4ToScalar2DInD,
+            _ReshapePack4ToScalar2DInC);
+    }
     _LinearOut0[int2((int)id.x, (int)id.y)] = scalar;
 }
 
@@ -713,10 +827,22 @@ void NcnnReshapePack4ToPack4_Impl(uint3 id)
     int outPacks = max(1, (_ReshapePack4ToPack4OutC + 3) / 4);
     int outZ = 0;
     int outPack = slice;
+    int outY = (int)id.y;
+    bool outputFoldD = _ReshapePack4ToPack4OutDims >= 4
+        && od == (uint)outPacks
+        && oh == (uint)(max(1, _ReshapePack4ToPack4OutH) * max(1, _ReshapePack4ToPack4OutD));
     if (_ReshapePack4ToPack4OutDims >= 4)
     {
-        outZ = slice / outPacks;
-        outPack = slice - outZ * outPacks;
+        if (outputFoldD)
+        {
+            outZ = outY / max(1, _ReshapePack4ToPack4OutH);
+            outY -= outZ * max(1, _ReshapePack4ToPack4OutH);
+        }
+        else
+        {
+            outZ = slice / outPacks;
+            outPack = slice - outZ * outPacks;
+        }
         if (outZ < 0 || outZ >= max(1, _ReshapePack4ToPack4OutD))
         {
             _ReshapePack4ToPack4OutArr[int3((int)id.x, (int)id.y, slice)] = 0.0;
@@ -733,7 +859,7 @@ void NcnnReshapePack4ToPack4_Impl(uint3 id)
             continue;
 
         uint linearIndex = _ReshapePack4ToPack4OutDims >= 4
-            ? (((uint)outC * (uint)max(1, _ReshapePack4ToPack4OutD) + (uint)outZ) * (uint)_ReshapePack4ToPack4OutH + id.y) * (uint)_ReshapePack4ToPack4OutW + id.x
+            ? (((uint)outC * (uint)max(1, _ReshapePack4ToPack4OutD) + (uint)outZ) * (uint)_ReshapePack4ToPack4OutH + (uint)outY) * (uint)_ReshapePack4ToPack4OutW + id.x
             : ((uint)outC * (uint)_ReshapePack4ToPack4OutH + id.y) * (uint)_ReshapePack4ToPack4OutW + id.x;
         float scalar = NcnnReadPack4LinearPack4Input(
             linearIndex,

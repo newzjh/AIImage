@@ -175,6 +175,8 @@ namespace NcnnCompute
         public static readonly NcnnLayerTypeKey ScatterElements = NcnnLayerTypeKey.FromString("ScatterElements");
         public static readonly NcnnLayerTypeKey ScatterND = NcnnLayerTypeKey.FromString("ScatterND");
         public static readonly NcnnLayerTypeKey Scatter = NcnnLayerTypeKey.FromString("Scatter");
+        public static readonly NcnnLayerTypeKey ShortConv = NcnnLayerTypeKey.FromString("ShortConv");
+        public static readonly NcnnLayerTypeKey GatedDeltaRule = NcnnLayerTypeKey.FromString("GatedDeltaRule");
     }
 
     [Serializable]

@@ -189,6 +189,9 @@ namespace NcnnCompute
             if (TryExecuteRenderTexturePath(owner, layer, context))
                 return;
 
+            if (owner != null && owner.StrictTextureInference)
+                throw new InvalidOperationException("SDPA texture execution plan rejected; refusing ComputeBuffer fallback: layer=" + (layer?.name ?? string.Empty));
+
 #pragma warning disable CS0618
             ExecuteComputeBufferPath(owner, layer, context);
 #pragma warning restore CS0618
@@ -279,16 +282,34 @@ namespace NcnnCompute
             RenderTexture scores = null;
             RenderTexture weights = null;
             RenderTexture output = null;
+            RenderTexture keyCache = null;
+            RenderTexture valueCache = null;
 
             try
             {
+                var keyInput = plan.key.texture;
+                var valueInput = plan.value.texture;
+                if (plan.hasPastCache)
+                {
+                    var keySlices = Mathf.Max(1, plan.keyShape.d * Mathf.CeilToInt(plan.keyShape.c / 4f));
+                    var valueSlices = Mathf.Max(1, plan.valueShape.d * Mathf.CeilToInt(plan.valueShape.c / 4f));
+                    var keyStorageHeight = Mathf.Max(plan.keyShape.h, owner.AttentionKvCacheTextureCapacity);
+                    var valueStorageHeight = Mathf.Max(plan.valueShape.h, owner.AttentionKvCacheTextureCapacity);
+                    keyCache = owner.RentTempArray(plan.keyShape.w, keyStorageHeight, keySlices, plan.pack4TextureFormat);
+                    valueCache = owner.RentTempArray(plan.valueShape.w, valueStorageHeight, valueSlices, plan.pack4TextureFormat);
+                    owner.Ops.ConcatSequencePack4Cdhw(plan.pastKey.texture, plan.key.texture, plan.pastKeyShape.h, plan.keyCurrentShape.h, keyCache);
+                    owner.Ops.ConcatSequencePack4Cdhw(plan.pastValue.texture, plan.value.texture, plan.pastValueShape.h, plan.valueCurrentShape.h, valueCache);
+                    keyInput = keyCache;
+                    valueInput = valueCache;
+                }
+
                 if (ResolveSdpaFastPathEnabled() || plan.hasAttnMask || plan.causal)
                 {
                     output = owner.RentTempArray(plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
                     owner.Ops.SdpaAttentionPack4Cdhw(
                         plan.query.texture,
-                        plan.key.texture,
-                        plan.value.texture,
+                        keyInput,
+                        valueInput,
                         plan.queryShape.h,
                         plan.keyShape.h,
                         plan.queryShape.w,
@@ -302,6 +323,7 @@ namespace NcnnCompute
 
                     NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
                     output = null;
+                    PublishKvCache(owner, layer, context, plan, ref keyCache, ref valueCache);
 
                     owner.Consume(
                         context.textureBlobs,
@@ -319,7 +341,7 @@ namespace NcnnCompute
 
                 keyTransposed = owner.RentTempArray(plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat);
                 owner.Ops.PermutePack4Cdhw(
-                    plan.key.texture,
+                    keyInput,
                     plan.keyShape.w,
                     plan.keyShape.h,
                     plan.keyShape.d,
@@ -362,7 +384,7 @@ namespace NcnnCompute
                     plan.scoresShape.w,
                     plan.scoresShape.d,
                     plan.scoresShape.c,
-                    plan.value.texture,
+                    valueInput,
                     plan.valueShape.h,
                     plan.valueShape.w,
                     plan.valueShape.d,
@@ -376,6 +398,7 @@ namespace NcnnCompute
 
                 NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
                 output = null;
+                PublishKvCache(owner, layer, context, plan, ref keyCache, ref valueCache);
 
                 owner.Consume(
                     context.textureBlobs,
@@ -394,6 +417,8 @@ namespace NcnnCompute
                 ReturnTemp(owner, ref scores);
                 ReturnTemp(owner, ref weights);
                 ReturnTemp(owner, ref output);
+                ReturnTemp(owner, ref keyCache);
+                ReturnTemp(owner, ref valueCache);
             }
         }
 
@@ -412,17 +437,35 @@ namespace NcnnCompute
             ComputeTexture scores = null;
             ComputeTexture weights = null;
             ComputeTexture output = null;
+            ComputeTexture keyCache = null;
+            ComputeTexture valueCache = null;
 
             try
             {
+                var keyInput = plan.key.texture;
+                var valueInput = plan.value.texture;
+                if (plan.hasPastCache)
+                {
+                    var keySlices = Mathf.Max(1, plan.keyShape.d * Mathf.CeilToInt(plan.keyShape.c / 4f));
+                    var valueSlices = Mathf.Max(1, plan.valueShape.d * Mathf.CeilToInt(plan.valueShape.c / 4f));
+                    var keyStorageHeight = Mathf.Max(plan.keyShape.h, owner.AttentionKvCacheTextureCapacity);
+                    var valueStorageHeight = Mathf.Max(plan.valueShape.h, owner.AttentionKvCacheTextureCapacity);
+                    keyCache = owner.RentTempArray(cmd, plan.keyShape.w, keyStorageHeight, keySlices, plan.pack4TextureFormat);
+                    valueCache = owner.RentTempArray(cmd, plan.valueShape.w, valueStorageHeight, valueSlices, plan.pack4TextureFormat);
+                    owner.Ops.ConcatSequencePack4Cdhw(cmd, plan.pastKey.texture, plan.key.texture, plan.pastKeyShape.h, plan.keyCurrentShape.h, keyCache);
+                    owner.Ops.ConcatSequencePack4Cdhw(cmd, plan.pastValue.texture, plan.value.texture, plan.pastValueShape.h, plan.valueCurrentShape.h, valueCache);
+                    keyInput = keyCache;
+                    valueInput = valueCache;
+                }
+
                 if (ResolveSdpaFastPathEnabled() || plan.hasAttnMask || plan.causal)
                 {
                     output = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, plan.outputSlices, plan.pack4TextureFormat);
                     owner.Ops.SdpaAttentionPack4Cdhw(
                         cmd,
                         plan.query.texture,
-                        plan.key.texture,
-                        plan.value.texture,
+                        keyInput,
+                        valueInput,
                         plan.queryShape.h,
                         plan.keyShape.h,
                         plan.queryShape.w,
@@ -449,6 +492,7 @@ namespace NcnnCompute
                     };
                     context.shapes[layer.topNames[0]] = plan.outputShape;
                     output = null;
+                    PublishKvCache(owner, layer, context, plan, ref keyCache, ref valueCache);
 
                     owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
                     return true;
@@ -460,7 +504,7 @@ namespace NcnnCompute
                 keyTransposed = owner.RentTempArray(cmd, plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat);
                 owner.Ops.PermutePack4Cdhw(
                     cmd,
-                    plan.key.texture,
+                    keyInput,
                     plan.keyShape.w,
                     plan.keyShape.h,
                     plan.keyShape.d,
@@ -508,7 +552,7 @@ namespace NcnnCompute
                     plan.scoresShape.w,
                     plan.scoresShape.d,
                     plan.scoresShape.c,
-                    plan.value.texture,
+                    valueInput,
                     plan.valueShape.h,
                     plan.valueShape.w,
                     plan.valueShape.d,
@@ -536,6 +580,7 @@ namespace NcnnCompute
                 };
                 context.shapes[layer.topNames[0]] = plan.outputShape;
                 output = null;
+                PublishKvCache(owner, layer, context, plan, ref keyCache, ref valueCache);
 
                 owner.ConsumeCmd(cmd, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
                 return true;
@@ -547,6 +592,73 @@ namespace NcnnCompute
                 ReturnTemp(owner, cmd, ref scores);
                 ReturnTemp(owner, cmd, ref weights);
                 ReturnTemp(owner, cmd, ref output);
+                ReturnTemp(owner, cmd, ref keyCache);
+                ReturnTemp(owner, cmd, ref valueCache);
+            }
+        }
+
+        private static void PublishKvCache(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerBufferContext context,
+            in SdpaRtPlan plan,
+            ref RenderTexture keyCache,
+            ref RenderTexture valueCache)
+        {
+            if (layer.topNames == null || layer.topNames.Length < 3)
+                return;
+
+            if (plan.hasPastCache)
+            {
+                var keyCapacityStorageShape = new NcnnRepro.BufferShape(3, plan.keyShape.w, keyCache.height, plan.keyShape.d, plan.keyShape.c);
+                var valueCapacityStorageShape = new NcnnRepro.BufferShape(3, plan.valueShape.w, valueCache.height, plan.valueShape.d, plan.valueShape.c);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[1], keyCache, plan.keyShape, keyCapacityStorageShape);
+                NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[2], valueCache, plan.valueShape, valueCapacityStorageShape);
+                keyCache = null;
+                valueCache = null;
+                return;
+            }
+
+            var keyStorageShape = NcnnRepro.GetTextureStorageShape(plan.key, plan.keyCurrentShape);
+            var valueStorageShape = NcnnRepro.GetTextureStorageShape(plan.value, plan.valueCurrentShape);
+            context.textureBlobs[layer.topNames[1]] = NcnnRepro.CreateTextureAlias(plan.key, plan.keyShape, keyStorageShape);
+            context.textureBlobs[layer.topNames[2]] = NcnnRepro.CreateTextureAlias(plan.value, plan.valueShape, valueStorageShape);
+            context.textureShapes[layer.topNames[1]] = plan.keyShape;
+            context.textureShapes[layer.topNames[2]] = plan.valueShape;
+        }
+
+        private static void PublishKvCache(
+            NcnnRepro owner,
+            NcnnParamModel.Layer layer,
+            NcnnLayerCommandBufferContext context,
+            in SdpaCmdRtPlan plan,
+            ref ComputeTexture keyCache,
+            ref ComputeTexture valueCache)
+        {
+            if (layer.topNames == null || layer.topNames.Length < 3)
+                return;
+
+            if (plan.hasPastCache)
+            {
+                var keyCapacityStorageShape = new NcnnRepro.BufferShape(3, plan.keyShape.w, keyCache.height, plan.keyShape.d, plan.keyShape.c);
+                var valueCapacityStorageShape = new NcnnRepro.BufferShape(3, plan.valueShape.w, valueCache.height, plan.valueShape.d, plan.valueShape.c);
+                context.blobs[layer.topNames[1]] = NcnnRepro.CreateCmdTensorRef(keyCache, plan.keyShape, keyCapacityStorageShape, owned: true);
+                context.blobs[layer.topNames[2]] = NcnnRepro.CreateCmdTensorRef(valueCache, plan.valueShape, valueCapacityStorageShape, owned: true);
+                keyCache = null;
+                valueCache = null;
+            }
+            else
+            {
+                var keyStorageShape = NcnnRepro.GetCmdStorageShape(plan.key, plan.keyCurrentShape);
+                var valueStorageShape = NcnnRepro.GetCmdStorageShape(plan.value, plan.valueCurrentShape);
+                context.blobs[layer.topNames[1]] = NcnnRepro.CreateCmdTensorAlias(plan.key, plan.keyShape, keyStorageShape);
+                context.blobs[layer.topNames[2]] = NcnnRepro.CreateCmdTensorAlias(plan.value, plan.valueShape, valueStorageShape);
+            }
+
+            if (context.shapes != null)
+            {
+                context.shapes[layer.topNames[1]] = plan.keyShape;
+                context.shapes[layer.topNames[2]] = plan.valueShape;
             }
         }
 
@@ -562,7 +674,7 @@ namespace NcnnCompute
             plan = default;
             if (!TryResolveCommonPlan(owner, layer, out var common))
                 return false;
-            if (common.sp.kvCache || common.sp.int8ScaleTerm)
+            if (common.sp.int8ScaleTerm)
                 return false;
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var query, out var queryShape)
                 || !owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var key, out var keyShape)
@@ -571,7 +683,32 @@ namespace NcnnCompute
                 return false;
             }
 
-            if (!TryValidateTextureInputs(query, queryShape, key, keyShape, value, valueShape, common, out var outputShape, out var outputStorageShape))
+            NcnnRepro.TensorRef pastKey = null;
+            NcnnRepro.TensorRef pastValue = null;
+            NcnnRepro.BufferShape pastKeyShape = default;
+            NcnnRepro.BufferShape pastValueShape = default;
+            var attentionKeyShape = keyShape;
+            var attentionValueShape = valueShape;
+            if (common.sp.kvCache)
+            {
+                var pastKeyBottom = common.sp.attnMask ? 4 : 3;
+                var pastValueBottom = common.sp.attnMask ? 5 : 4;
+                var hasPastKey = layer.bottomNames.Length > pastKeyBottom
+                    && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[pastKeyBottom], out pastKey, out pastKeyShape);
+                var hasPastValue = layer.bottomNames.Length > pastValueBottom
+                    && NcnnRepro.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[pastValueBottom], out pastValue, out pastValueShape);
+                if (hasPastKey != hasPastValue)
+                    return false;
+                if (hasPastKey)
+                {
+                    if (!TryValidatePastCache(keyShape, valueShape, pastKey, pastKeyShape, pastValue, pastValueShape))
+                        return false;
+                    attentionKeyShape = new NcnnRepro.BufferShape(3, keyShape.w, pastKeyShape.h + keyShape.h, 1, keyShape.c);
+                    attentionValueShape = new NcnnRepro.BufferShape(3, valueShape.w, pastValueShape.h + valueShape.h, 1, valueShape.c);
+                }
+            }
+
+            if (!TryValidateTextureInputs(query, queryShape, key, attentionKeyShape, value, attentionValueShape, common, out var outputShape, out var outputStorageShape))
                 return false;
 
             NcnnRepro.TensorRef attnMask = null;
@@ -581,7 +718,7 @@ namespace NcnnCompute
                 if (layer.bottomNames.Length <= 3
                     || !owner.TryGetPack4Texture(layer.bottomNames[3], textureBlobs, textureShapes, bufferBlobs, bufferViews, out attnMask, out attnMaskShape)
                     || attnMaskShape.dims != 2
-                    || attnMaskShape.w != keyShape.h
+                    || attnMaskShape.w != attentionKeyShape.h
                     || attnMaskShape.h != queryShape.h
                     || attnMask.packs != 1
                     || NcnnRepro.IsStrictLinearMatTexture(attnMask))
@@ -597,6 +734,12 @@ namespace NcnnCompute
                 keyShape,
                 value,
                 valueShape,
+                pastKey,
+                pastKeyShape,
+                pastValue,
+                pastValueShape,
+                attentionKeyShape,
+                attentionValueShape,
                 attnMask,
                 outputShape,
                 outputStorageShape);
@@ -613,7 +756,7 @@ namespace NcnnCompute
             plan = default;
             if (!TryResolveCommonPlan(owner, layer, out var common))
                 return false;
-            if (common.sp.kvCache || common.sp.int8ScaleTerm)
+            if (common.sp.int8ScaleTerm)
                 return false;
             if (!TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[0], out var query, out var queryShape)
                 || !TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[1], out var key, out var keyShape)
@@ -622,7 +765,32 @@ namespace NcnnCompute
                 return false;
             }
 
-            if (!TryValidateTextureInputs(query, queryShape, key, keyShape, value, valueShape, common, out var outputShape, out var outputStorageShape))
+            NcnnRepro.CmdTensorRef pastKey = null;
+            NcnnRepro.CmdTensorRef pastValue = null;
+            NcnnRepro.BufferShape pastKeyShape = default;
+            NcnnRepro.BufferShape pastValueShape = default;
+            var attentionKeyShape = keyShape;
+            var attentionValueShape = valueShape;
+            if (common.sp.kvCache)
+            {
+                var pastKeyBottom = common.sp.attnMask ? 4 : 3;
+                var pastValueBottom = common.sp.attnMask ? 5 : 4;
+                var hasPastKey = layer.bottomNames.Length > pastKeyBottom
+                    && TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[pastKeyBottom], out pastKey, out pastKeyShape);
+                var hasPastValue = layer.bottomNames.Length > pastValueBottom
+                    && TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[pastValueBottom], out pastValue, out pastValueShape);
+                if (hasPastKey != hasPastValue)
+                    return false;
+                if (hasPastKey)
+                {
+                    if (!TryValidatePastCache(keyShape, valueShape, pastKey, pastKeyShape, pastValue, pastValueShape))
+                        return false;
+                    attentionKeyShape = new NcnnRepro.BufferShape(3, keyShape.w, pastKeyShape.h + keyShape.h, 1, keyShape.c);
+                    attentionValueShape = new NcnnRepro.BufferShape(3, valueShape.w, pastValueShape.h + valueShape.h, 1, valueShape.c);
+                }
+            }
+
+            if (!TryValidateTextureInputs(query, queryShape, key, attentionKeyShape, value, attentionValueShape, common, out var outputShape, out var outputStorageShape))
                 return false;
 
             NcnnRepro.CmdTensorRef attnMask = null;
@@ -632,7 +800,7 @@ namespace NcnnCompute
                 if (layer.bottomNames.Length <= 3
                     || !TryGetExistingCmdTexture(blobs, shapes, layer.bottomNames[3], out attnMask, out attnMaskShape)
                     || attnMaskShape.dims != 2
-                    || attnMaskShape.w != keyShape.h
+                    || attnMaskShape.w != attentionKeyShape.h
                     || attnMaskShape.h != queryShape.h
                     || attnMask.packs != 1
                     || NcnnRepro.IsStrictLinearMatTexture(attnMask))
@@ -648,6 +816,12 @@ namespace NcnnCompute
                 keyShape,
                 value,
                 valueShape,
+                pastKey,
+                pastKeyShape,
+                pastValue,
+                pastValueShape,
+                attentionKeyShape,
+                attentionValueShape,
                 attnMask,
                 outputShape,
                 outputStorageShape);
@@ -703,6 +877,27 @@ namespace NcnnCompute
             outputShape = new NcnnRepro.BufferShape(3, valueShape.w, queryShape.h, 1, queryShape.c);
             outputStorageShape = outputShape;
             return true;
+        }
+
+        private static bool TryValidatePastCache(
+            NcnnRepro.BufferShape currentKeyShape,
+            NcnnRepro.BufferShape currentValueShape,
+            object pastKey,
+            NcnnRepro.BufferShape pastKeyShape,
+            object pastValue,
+            NcnnRepro.BufferShape pastValueShape)
+        {
+            if (pastKey == null || pastValue == null)
+                return false;
+            if (pastKeyShape.dims != 3 || pastValueShape.dims != 3 || pastKeyShape.h <= 0 || pastValueShape.h <= 0)
+                return false;
+            return pastKeyShape.w == currentKeyShape.w
+                && pastKeyShape.d == currentKeyShape.d
+                && pastKeyShape.c == currentKeyShape.c
+                && pastValueShape.w == currentValueShape.w
+                && pastValueShape.d == currentValueShape.d
+                && pastValueShape.c == currentValueShape.c
+                && pastKeyShape.h == pastValueShape.h;
         }
 
         private static bool TryGetExistingCmdTexture(
@@ -763,9 +958,16 @@ namespace NcnnCompute
             public readonly NcnnRepro.BufferShape queryStorageShape;
             public readonly int querySlices;
             public readonly NcnnRepro.TensorRef key;
+            public readonly NcnnRepro.BufferShape keyCurrentShape;
             public readonly NcnnRepro.BufferShape keyShape;
             public readonly NcnnRepro.TensorRef value;
+            public readonly NcnnRepro.BufferShape valueCurrentShape;
             public readonly NcnnRepro.BufferShape valueShape;
+            public readonly NcnnRepro.TensorRef pastKey;
+            public readonly NcnnRepro.BufferShape pastKeyShape;
+            public readonly NcnnRepro.TensorRef pastValue;
+            public readonly NcnnRepro.BufferShape pastValueShape;
+            public readonly bool hasPastCache;
             public readonly NcnnRepro.TensorRef attnMask;
             public readonly bool hasAttnMask;
             public readonly NcnnRepro.BufferShape keyTransposedShape;
@@ -789,6 +991,12 @@ namespace NcnnCompute
                 NcnnRepro.BufferShape keyShape,
                 NcnnRepro.TensorRef value,
                 NcnnRepro.BufferShape valueShape,
+                NcnnRepro.TensorRef pastKey,
+                NcnnRepro.BufferShape pastKeyShape,
+                NcnnRepro.TensorRef pastValue,
+                NcnnRepro.BufferShape pastValueShape,
+                NcnnRepro.BufferShape attentionKeyShape,
+                NcnnRepro.BufferShape attentionValueShape,
                 NcnnRepro.TensorRef attnMask,
                 NcnnRepro.BufferShape outputShape,
                 NcnnRepro.BufferShape outputStorageShape)
@@ -800,9 +1008,16 @@ namespace NcnnCompute
                 queryStorageShape = queryShape;
                 querySlices = Mathf.Max(1, queryShape.d * Mathf.CeilToInt(queryShape.c / 4f));
                 this.key = key;
-                this.keyShape = keyShape;
+                keyCurrentShape = keyShape;
+                this.keyShape = attentionKeyShape;
                 this.value = value;
-                this.valueShape = valueShape;
+                valueCurrentShape = valueShape;
+                this.valueShape = attentionValueShape;
+                this.pastKey = pastKey;
+                this.pastKeyShape = pastKeyShape;
+                this.pastValue = pastValue;
+                this.pastValueShape = pastValueShape;
+                hasPastCache = pastKey != null && pastValue != null;
                 this.attnMask = attnMask;
                 hasAttnMask = attnMask != null && attnMask.texture != null;
                 keyTransposedShape = new NcnnRepro.BufferShape(4, keyShape.h, keyShape.w, Mathf.Max(1, keyShape.d), keyShape.c);
@@ -828,9 +1043,16 @@ namespace NcnnCompute
             public readonly NcnnRepro.BufferShape queryStorageShape;
             public readonly int querySlices;
             public readonly NcnnRepro.CmdTensorRef key;
+            public readonly NcnnRepro.BufferShape keyCurrentShape;
             public readonly NcnnRepro.BufferShape keyShape;
             public readonly NcnnRepro.CmdTensorRef value;
+            public readonly NcnnRepro.BufferShape valueCurrentShape;
             public readonly NcnnRepro.BufferShape valueShape;
+            public readonly NcnnRepro.CmdTensorRef pastKey;
+            public readonly NcnnRepro.BufferShape pastKeyShape;
+            public readonly NcnnRepro.CmdTensorRef pastValue;
+            public readonly NcnnRepro.BufferShape pastValueShape;
+            public readonly bool hasPastCache;
             public readonly NcnnRepro.CmdTensorRef attnMask;
             public readonly bool hasAttnMask;
             public readonly NcnnRepro.BufferShape keyTransposedShape;
@@ -854,6 +1076,12 @@ namespace NcnnCompute
                 NcnnRepro.BufferShape keyShape,
                 NcnnRepro.CmdTensorRef value,
                 NcnnRepro.BufferShape valueShape,
+                NcnnRepro.CmdTensorRef pastKey,
+                NcnnRepro.BufferShape pastKeyShape,
+                NcnnRepro.CmdTensorRef pastValue,
+                NcnnRepro.BufferShape pastValueShape,
+                NcnnRepro.BufferShape attentionKeyShape,
+                NcnnRepro.BufferShape attentionValueShape,
                 NcnnRepro.CmdTensorRef attnMask,
                 NcnnRepro.BufferShape outputShape,
                 NcnnRepro.BufferShape outputStorageShape)
@@ -865,9 +1093,16 @@ namespace NcnnCompute
                 queryStorageShape = queryShape;
                 querySlices = Mathf.Max(1, queryShape.d * Mathf.CeilToInt(queryShape.c / 4f));
                 this.key = key;
-                this.keyShape = keyShape;
+                keyCurrentShape = keyShape;
+                this.keyShape = attentionKeyShape;
                 this.value = value;
-                this.valueShape = valueShape;
+                valueCurrentShape = valueShape;
+                this.valueShape = attentionValueShape;
+                this.pastKey = pastKey;
+                this.pastKeyShape = pastKeyShape;
+                this.pastValue = pastValue;
+                this.pastValueShape = pastValueShape;
+                hasPastCache = pastKey != null && pastValue != null;
                 this.attnMask = attnMask;
                 hasAttnMask = attnMask != null && attnMask.texture != null;
                 keyTransposedShape = new NcnnRepro.BufferShape(4, keyShape.h, keyShape.w, Mathf.Max(1, keyShape.d), keyShape.c);

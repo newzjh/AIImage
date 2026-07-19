@@ -61,6 +61,25 @@ void NcnnConcatPack4CDHW_Impl(uint3 id)
     _ConcatPack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
+void NcnnConcatSequencePack4CDHW_Impl(uint3 id)
+{
+    uint w, h, d;
+    _ConcatSequenceOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    int y = (int)id.y;
+    if (y >= _ConcatSequencePack4CDHWAH + _ConcatSequencePack4CDHWBH)
+    {
+        _ConcatSequenceOutArr[int3(id.x, id.y, id.z)] = 0.0;
+        return;
+    }
+    float4 value = y < _ConcatSequencePack4CDHWAH
+        ? _ConcatSequenceAInArr[int3(id.x, id.y, id.z)]
+        : _ConcatSequenceBInArr[int3(id.x, y - _ConcatSequencePack4CDHWAH, id.z)];
+    _ConcatSequenceOutArr[int3(id.x, id.y, id.z)] = value;
+}
+
 void NcnnBuildSdInpaintInput9Pack4_Impl(uint3 id)
 {
     uint w, h, d;

@@ -53,6 +53,15 @@ namespace NcnnCompute
                                             owner._memoryData[layer.name] = memoryPack;
                                             return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
                                         }
+                                        phaseSw.Restart();
+                                        var createdPack4Texture = TryCreatePack4Texture(memoryPack);
+                                        phaseSw.Stop();
+                                        uploadMs += phaseSw.ElapsedMilliseconds;
+                                        if (createdPack4Texture)
+                                        {
+                                            owner._memoryData[layer.name] = memoryPack;
+                                            return new NcnnRepro.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
+                                        }
                                         if (ShouldUseVistaPromptPack4RtOnly(owner, layer, memoryPack))
                                         {
                                             phaseSw.Restart();
@@ -95,6 +104,8 @@ namespace NcnnCompute
                                                     throw new InvalidOperationException("MemoryData not found: " + layer.name);
 
                                                 if (TryPublishVistaPromptPack4RtBlob(owner, layer, mp, textureBlobs, textureShapes))
+                                                    continue;
+                                                if (TryPublishPack4RtBlob(layer, mp, textureBlobs, textureShapes))
                                                     continue;
 
                                                 if (mp.data == null && !TryCreateMemoryDataBuffer(mp))
@@ -147,6 +158,8 @@ namespace NcnnCompute
             if (TryPublishLinearMatCmdBlob(owner, cmd, layer, mp, blobs, shapes))
                 return;
             if (TryPublishVistaPromptPack4CmdBlob(owner, cmd, layer, mp, blobs, shapes))
+                return;
+            if (TryPublishPack4CmdBlob(owner, cmd, layer, mp, blobs, shapes))
                 return;
             if (mp.data == null && !TryCreateMemoryDataBuffer(mp))
                 throw new InvalidOperationException("MemoryData not found: " + layer.name);
@@ -221,6 +234,149 @@ namespace NcnnCompute
                     UnityEngine.Object.DestroyImmediate(texture);
                 }
             }
+        }
+
+        private static bool TryCreatePack4Texture(NcnnRepro.MemoryDataPack memoryPack)
+        {
+            if (memoryPack == null
+                || (memoryPack.dims != 3 && memoryPack.dims != 4)
+                || memoryPack.w <= 0
+                || memoryPack.h <= 0
+                || memoryPack.d <= 0
+                || memoryPack.c <= 0
+                || memoryPack.cpuData == null
+                || memoryPack.cpuData.Length < memoryPack.w * memoryPack.h * memoryPack.d * memoryPack.c)
+            {
+                return false;
+            }
+
+            var packs = Mathf.Max(1, Mathf.CeilToInt(memoryPack.c / 4f));
+            var slices = Mathf.Max(1, memoryPack.d) * packs;
+            RenderTexture texture = null;
+            Texture2DArray upload = null;
+            try
+            {
+                var descriptor = new RenderTextureDescriptor(memoryPack.w, memoryPack.h, RenderTextureFormat.ARGBFloat, 0)
+                {
+                    dimension = TextureDimension.Tex2DArray,
+                    volumeDepth = slices,
+                    enableRandomWrite = false,
+                    msaaSamples = 1
+                };
+                texture = new RenderTexture(descriptor)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    name = "NcnnMemoryDataPack4"
+                };
+                texture.Create();
+                NcnnGpuResourceTracker.RegisterTexture(texture, "NcnnMemoryDataPack4");
+
+                upload = new Texture2DArray(memoryPack.w, memoryPack.h, slices, TextureFormat.RGBAFloat, false, true)
+                {
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    anisoLevel = 0,
+                    name = "NcnnMemoryDataPack4Upload"
+                };
+                var spatialCount = memoryPack.w * memoryPack.h;
+                for (var z = 0; z < memoryPack.d; z++)
+                {
+                    for (var pack = 0; pack < packs; pack++)
+                    {
+                        var pixels = new Color[spatialCount];
+                        for (var y = 0; y < memoryPack.h; y++)
+                        {
+                            for (var x = 0; x < memoryPack.w; x++)
+                            {
+                                var spatial = y * memoryPack.w + x;
+                                var channel = pack * 4;
+                                var r = channel < memoryPack.c ? memoryPack.cpuData[((channel * memoryPack.d + z) * memoryPack.h + y) * memoryPack.w + x] : 0f;
+                                var g = channel + 1 < memoryPack.c ? memoryPack.cpuData[(((channel + 1) * memoryPack.d + z) * memoryPack.h + y) * memoryPack.w + x] : 0f;
+                                var b = channel + 2 < memoryPack.c ? memoryPack.cpuData[(((channel + 2) * memoryPack.d + z) * memoryPack.h + y) * memoryPack.w + x] : 0f;
+                                var a = channel + 3 < memoryPack.c ? memoryPack.cpuData[(((channel + 3) * memoryPack.d + z) * memoryPack.h + y) * memoryPack.w + x] : 0f;
+                                pixels[spatial] = new Color(r, g, b, a);
+                            }
+                        }
+                        upload.SetPixels(pixels, z * packs + pack, 0);
+                    }
+                }
+                upload.Apply(false, true);
+                for (var slice = 0; slice < slices; slice++)
+                    Graphics.CopyTexture(upload, slice, 0, texture, slice, 0);
+
+                memoryPack.pack4Rt = texture;
+                memoryPack.pack4RtChannels = memoryPack.c;
+                memoryPack.pack4RtDepth = slices;
+                texture = null;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (upload != null) UnityEngine.Object.DestroyImmediate(upload);
+                if (texture != null)
+                {
+                    NcnnGpuResourceTracker.ReleaseTexture(texture, "NcnnMemoryDataPack4.create-failed");
+                    texture.Release();
+                    UnityEngine.Object.DestroyImmediate(texture);
+                }
+            }
+        }
+
+        private static bool TryPublishPack4RtBlob(
+            NcnnParamModel.Layer layer,
+            NcnnRepro.MemoryDataPack memoryPack,
+            Dictionary<string, NcnnRepro.TensorRef> textureBlobs,
+            Dictionary<string, NcnnRepro.BufferShape> textureShapes)
+        {
+            if (memoryPack?.pack4Rt == null
+                || !memoryPack.pack4Rt.IsCreated()
+                || (memoryPack.dims != 3 && memoryPack.dims != 4)
+                || layer?.topNames == null
+                || layer.topNames.Length == 0)
+            {
+                return false;
+            }
+
+            var shape = new NcnnRepro.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, memoryPack.d, memoryPack.c);
+            textureBlobs[layer.topNames[0]] = NcnnRepro.CreateTextureRef(memoryPack.pack4Rt, shape, shape, owned: false, blobName: layer.topNames[0]);
+            textureShapes[layer.topNames[0]] = shape;
+            return true;
+        }
+
+        private static bool TryPublishPack4CmdBlob(
+            NcnnRepro owner,
+            CommandBuffer commandBuffer,
+            NcnnParamModel.Layer layer,
+            NcnnRepro.MemoryDataPack memoryPack,
+            Dictionary<string, NcnnRepro.CmdTensorRef> blobs,
+            Dictionary<string, NcnnRepro.BufferShape> shapes)
+        {
+            if (memoryPack?.pack4Rt == null
+                || !memoryPack.pack4Rt.IsCreated()
+                || (memoryPack.dims != 3 && memoryPack.dims != 4)
+                || layer?.topNames == null
+                || layer.topNames.Length == 0)
+            {
+                return false;
+            }
+
+            var texture = owner.RentTempArray(
+                commandBuffer,
+                memoryPack.w,
+                memoryPack.h,
+                memoryPack.pack4RtDepth,
+                memoryPack.pack4Rt.format);
+            for (var slice = 0; slice < memoryPack.pack4RtDepth; slice++)
+                commandBuffer.CopyTexture(memoryPack.pack4Rt, slice, 0, texture.nameID, slice, 0);
+            var shape = new NcnnRepro.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, memoryPack.d, memoryPack.c);
+            blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(texture, shape, shape, owned: true, blobName: layer.topNames[0]);
+            if (shapes != null) shapes[layer.topNames[0]] = shape;
+            return true;
         }
 
         private static bool TryPublishLinearMatCmdBlob(

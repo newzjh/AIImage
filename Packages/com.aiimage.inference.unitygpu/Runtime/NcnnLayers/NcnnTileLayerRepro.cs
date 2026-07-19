@@ -139,7 +139,7 @@ namespace NcnnCompute
             }
             else
             {
-                if (src.texture.dimension != TextureDimension.Tex2DArray || !NcnnRepro.BufferShapeEquals(srcShape, srcStorageShape))
+                if (src.texture.dimension != TextureDimension.Tex2DArray || !IsDirectPack4StorageView(srcShape, srcStorageShape))
                     throw new InvalidOperationException(
                         "Tile render-texture path requires direct pack4 storage"
                         + " | layer=" + layer.name
@@ -190,7 +190,7 @@ namespace NcnnCompute
             }
             else
             {
-                if (src.texture.dimension != TextureDimension.Tex2DArray || !NcnnRepro.BufferShapeEquals(srcShape, srcStorageShape))
+                if (src.texture.dimension != TextureDimension.Tex2DArray || !IsDirectPack4StorageView(srcShape, srcStorageShape))
                     throw new InvalidOperationException(
                         "Tile command-buffer path requires direct pack4 storage"
                         + " | layer=" + layer.name
@@ -375,6 +375,19 @@ namespace NcnnCompute
         {
             var packs = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, shape.c) / 4f));
             return shape.dims == 4 ? Mathf.Max(1, shape.d) * packs : packs;
+        }
+
+        private static bool IsDirectPack4StorageView(NcnnRepro.BufferShape logicalShape, NcnnRepro.BufferShape storageShape)
+        {
+            if (NcnnRepro.BufferShapeEquals(logicalShape, storageShape))
+                return true;
+
+            return logicalShape.dims == 4
+                && logicalShape.d == 1
+                && storageShape.dims == 3
+                && logicalShape.w == storageShape.w
+                && logicalShape.h == storageShape.h
+                && logicalShape.c == storageShape.c;
         }
     }
 }

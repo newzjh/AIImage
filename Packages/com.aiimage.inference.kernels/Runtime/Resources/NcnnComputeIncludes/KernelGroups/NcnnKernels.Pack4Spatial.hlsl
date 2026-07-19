@@ -19,12 +19,12 @@ void NcnnInterpPack4_Impl(uint3 id)
 
     float sxScale = max(_InterpScaleFactorX, 1e-6);
     float syScale = max(_InterpScaleFactorY, 1e-6);
-    float fx = _InterpCoordinateTransformMode != 0
-        ? (float)id.x / sxScale
-        : ((float)id.x + 0.5) / sxScale - 0.5;
-    float fy = _InterpCoordinateTransformMode != 0
-        ? (float)id.y / syScale
-        : ((float)id.y + 0.5) / syScale - 0.5;
+    float fx = _InterpAlignCorners != 0 && ow > 1 && iw > 1
+        ? (float)id.x * ((float)(iw - 1) / (float)(ow - 1))
+        : (_InterpCoordinateTransformMode != 0 ? (float)id.x / sxScale : ((float)id.x + 0.5) / sxScale - 0.5);
+    float fy = _InterpAlignCorners != 0 && oh > 1 && ih > 1
+        ? (float)id.y * ((float)(ih - 1) / (float)(oh - 1))
+        : (_InterpCoordinateTransformMode != 0 ? (float)id.y / syScale : ((float)id.y + 0.5) / syScale - 0.5);
     int x0 = (int)floor(fx);
     int y0 = (int)floor(fy);
     float tx = fx - x0;

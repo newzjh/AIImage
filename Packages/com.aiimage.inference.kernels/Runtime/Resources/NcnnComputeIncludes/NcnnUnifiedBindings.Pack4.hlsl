@@ -21,6 +21,9 @@ RWTexture2D<float> _LinearOut1;
 #define _ConcatPack4CDHWAInArr _TexIn0Arr
 #define _ConcatPack4CDHWBInArr _TexIn1Arr
 #define _ConcatPack4CDHWOutArr _TexOut0Arr
+#define _ConcatSequenceAInArr _TexIn0Arr
+#define _ConcatSequenceBInArr _TexIn1Arr
+#define _ConcatSequenceOutArr _TexOut0Arr
 #define _SdInpaintLatentsArr _TexIn0Arr
 #define _SdInpaintMaskArr _TexIn1Arr
 #define _SdInpaintMaskedLatentsArr _TexIn2Arr
@@ -34,6 +37,8 @@ RWTexture2D<float> _LinearOut1;
 #define _InterpDownNnInArr _TexIn0Arr
 #define _InterpDownNnOutArr _TexOut0Arr
 #define _Pack4InArr _TexIn0Arr
+#define _Pack4SpatialInArr _TexIn0Arr
+#define _Pack4SpatialOutArr _TexOut0Arr
 #define _FillOutArr _TexOut0Arr
 #define _FillScalarOutArr _TexOut0Arr
 #define _ScaleInArr _TexIn0Arr

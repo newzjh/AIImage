@@ -183,7 +183,7 @@ void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id)
 
     int packX = (int)id.x;
     int row = (int)id.y;
-    int baseCol = packX * 4;
+    int baseCol = (((int)id.z * (int)w) + packX) * 4;
     float4 a = _TexIn0Arr[int3(packX, row, (int)id.z)];
     float4 o = 0.0;
 
@@ -657,11 +657,13 @@ float NcnnGemm2DPack4LinearTextureARead(int row, int kk)
     if (_GemmTexAInW == _MatK)
         return NcnnQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
 
-    int packX = kk >> 2;
+    int logicalPack = kk >> 2;
+    int packX = logicalPack % max(1, _GemmTexAInW);
+    int packSlice = logicalPack / max(1, _GemmTexAInW);
     if (packX < 0 || packX >= _GemmTexAInW)
         return 0.0;
 
-    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3));
+    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, packSlice)], kk & 3));
 }
 
 float NcnnGemm2DPack4LinearTextureAReadLinear(int row, int kk)
@@ -676,11 +678,13 @@ float NcnnGemm2DPack4LinearTextureAReadPack4(int row, int kk)
     if (kk < 0 || kk >= _MatK || row < 0 || row >= _GemmTexAInH)
         return 0.0;
 
-    int packX = kk >> 2;
+    int logicalPack = kk >> 2;
+    int packX = logicalPack % max(1, _GemmTexAInW);
+    int packSlice = logicalPack / max(1, _GemmTexAInW);
     if (packX < 0 || packX >= _GemmTexAInW)
         return 0.0;
 
-    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, 0)], kk & 3));
+    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, packSlice)], kk & 3));
 }
 
 void NcnnGemm2DTextureA_Impl(uint3 id)
@@ -843,8 +847,10 @@ void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
         return;
 
     bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
-    float4 acc0 = 0.0;
-    float4 acc1 = 0.0;
+    // ncnn initializes Gemm accumulation with beta * C. Keeping the bias in
+    // the running FP32 sum is numerically observable for large cancellation.
+    float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
+    float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
 
     [loop]
     for (int kk = 0; kk < _MatK; kk++)
@@ -855,9 +861,9 @@ void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
             acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);
     }
 
-    _GemmTexOutArr[int3(outPackX, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol0) + acc0 * _MatAlpha;
+    _GemmTexOutArr[int3(outPackX, row, 0)] = acc0 * _MatAlpha;
     if (writeSecondPack)
-        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol1) + acc1 * _MatAlpha;
+        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = acc1 * _MatAlpha;
 }
 
 void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
@@ -876,14 +882,20 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
         return;
 
     bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
-    float4 acc0 = 0.0;
-    float4 acc1 = 0.0;
+    float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
+    float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
 
+    uint inputWidth, inputHeight, inputSlices;
+    _GemmTexAInArr.GetDimensions(inputWidth, inputHeight, inputSlices);
     [loop]
-    for (int packX = 0; packX < _GemmTexAInW; packX++)
+    for (int logicalPack = 0; logicalPack * 4 < _MatK; logicalPack++)
     {
-        int kkBase = packX << 2;
-        float4 a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)]);
+        int packX = logicalPack % max(1, (int)inputWidth);
+        int packSlice = logicalPack / max(1, (int)inputWidth);
+        if (packSlice >= (int)inputSlices)
+            break;
+        int kkBase = logicalPack << 2;
+        float4 a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, packSlice)]);
         if (kkBase + 3 < _MatK)
         {
             acc0 += a.x * NcnnGemm2DReadB4(baseCol0, kkBase);
@@ -913,9 +925,9 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
         }
     }
 
-    _GemmTexOutArr[int3(outPackX, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol0) + acc0 * _MatAlpha;
+    _GemmTexOutArr[int3(outPackX, row, 0)] = acc0 * _MatAlpha;
     if (writeSecondPack)
-        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol1) + acc1 * _MatAlpha;
+        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = acc1 * _MatAlpha;
 }
 
 void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
@@ -945,7 +957,7 @@ void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
         if (col < 0 || col >= _MatN)
             continue;
 
-        float acc = 0.0;
+        float acc = NcnnResolveGemm2DBias(row, col);
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
@@ -956,7 +968,7 @@ void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
             acc += a * NcnnGemm2DReadB(col, kk);
         }
 
-        NcnnWriteLane(o, lane, NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha);
+        NcnnWriteLane(o, lane, acc * _MatAlpha);
     }
 
     _GemmTexOutArr[int3(outX, row, headPack)] = o;
@@ -989,7 +1001,7 @@ void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id)
         if (col < 0 || col >= _MatN)
             continue;
 
-        float acc = 0.0;
+        float acc = NcnnResolveGemm2DBias(row, col);
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
@@ -998,7 +1010,7 @@ void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id)
             acc += a * NcnnGemm2DReadB(col, kk);
         }
 
-        NcnnWriteLane(o, lane, NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha);
+        NcnnWriteLane(o, lane, acc * _MatAlpha);
     }
 
     _GemmTexOutArr[int3(outX, row, headPack)] = o;
@@ -1031,7 +1043,7 @@ void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id)
         if (col < 0 || col >= _MatN)
             continue;
 
-        float acc = 0.0;
+        float acc = NcnnResolveGemm2DBias(row, col);
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
@@ -1042,7 +1054,7 @@ void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id)
             acc += a * NcnnGemm2DReadB(col, kk);
         }
 
-        NcnnWriteLane(o, lane, NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha);
+        NcnnWriteLane(o, lane, acc * _MatAlpha);
     }
 
     _GemmTexOutArr[int3(outX, row, headPack)] = o;
@@ -1061,7 +1073,7 @@ void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id)
     if (col < 0 || col >= _MatN || row < 0 || row >= _MatM)
         return;
 
-    float acc = 0.0;
+    float acc = NcnnResolveGemm2DBias(row, col);
     [loop]
     for (int kk = 0; kk < _MatK; kk++)
     {
@@ -1071,7 +1083,7 @@ void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id)
         acc += a * NcnnGemm2DReadB(col, kk);
     }
 
-    _LinearOut0[int2(col, row)] = NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha;
+    _LinearOut0[int2(col, row)] = acc * _MatAlpha;
 }
 
 void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
@@ -1092,8 +1104,8 @@ void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
         return;
 
     bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
-    float4 acc0 = 0.0;
-    float4 acc1 = 0.0;
+    float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
+    float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
 
     [loop]
     for (int head = 0; head < headCount; head++)
@@ -1112,9 +1124,9 @@ void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
         }
     }
 
-    _GemmTexOutArr[int3(outPackX, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol0) + acc0 * _MatAlpha;
+    _GemmTexOutArr[int3(outPackX, row, 0)] = acc0 * _MatAlpha;
     if (writeSecondPack)
-        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = NcnnResolveGemm2DBias4(row, baseCol1) + acc1 * _MatAlpha;
+        _GemmTexOutArr[int3(outPackX + 1, row, 0)] = acc1 * _MatAlpha;
 }
 
 void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId)
@@ -1258,18 +1270,85 @@ void NcnnLayerNormPack4WidthTex_Impl(uint3 id)
         return;
     }
 
+    if (_LnC == 1 && packs == 1)
+    {
+        float4 sumLo = 0.0;
+        float4 sumHi = 0.0;
+        int groupCount = _LnW / 8;
+        for (int group = 0; group < groupCount; group++)
+        {
+            int baseX = group * 8;
+            sumLo += float4(
+                _LnTexInArr[int3(baseX, y, 0)].x,
+                _LnTexInArr[int3(baseX + 1, y, 0)].x,
+                _LnTexInArr[int3(baseX + 2, y, 0)].x,
+                _LnTexInArr[int3(baseX + 3, y, 0)].x);
+            sumHi += float4(
+                _LnTexInArr[int3(baseX + 4, y, 0)].x,
+                _LnTexInArr[int3(baseX + 5, y, 0)].x,
+                _LnTexInArr[int3(baseX + 6, y, 0)].x,
+                _LnTexInArr[int3(baseX + 7, y, 0)].x);
+        }
+        float tailSum = 0.0;
+        for (int tailX = groupCount * 8; tailX < _LnW; tailX++)
+            tailSum += _LnTexInArr[int3(tailX, y, 0)].x;
+        float4 mergedSum = sumLo + sumHi;
+        float2 pairedSum = mergedSum.xy + mergedSum.zw;
+        float sum = (pairedSum.x + pairedSum.y) + tailSum;
+        float mean = sum / max(1, _LnW);
+
+        float4 varianceLo = 0.0;
+        float4 varianceHi = 0.0;
+        for (int group2 = 0; group2 < groupCount; group2++)
+        {
+            int baseX2 = group2 * 8;
+            float4 centeredLo = float4(
+                _LnTexInArr[int3(baseX2, y, 0)].x,
+                _LnTexInArr[int3(baseX2 + 1, y, 0)].x,
+                _LnTexInArr[int3(baseX2 + 2, y, 0)].x,
+                _LnTexInArr[int3(baseX2 + 3, y, 0)].x) - mean;
+            float4 centeredHi = float4(
+                _LnTexInArr[int3(baseX2 + 4, y, 0)].x,
+                _LnTexInArr[int3(baseX2 + 5, y, 0)].x,
+                _LnTexInArr[int3(baseX2 + 6, y, 0)].x,
+                _LnTexInArr[int3(baseX2 + 7, y, 0)].x) - mean;
+            varianceLo += centeredLo * centeredLo;
+            varianceHi += centeredHi * centeredHi;
+        }
+        float tailVariance = 0.0;
+        for (int tailX2 = groupCount * 8; tailX2 < _LnW; tailX2++)
+        {
+            float centeredTail = _LnTexInArr[int3(tailX2, y, 0)].x - mean;
+            tailVariance += centeredTail * centeredTail;
+        }
+        float4 mergedVariance = varianceLo + varianceHi;
+        float2 pairedVariance = mergedVariance.xy + mergedVariance.zw;
+        float variance = ((pairedVariance.x + pairedVariance.y) + tailVariance) / max(1, _LnW);
+        float invstd = rsqrt(max(variance + _LnEps, 1e-20));
+        float scaledMean = mean * invstd;
+        float normalized = _LnTexInArr[int3(x, y, 0)].x * invstd - scaledMean;
+        if (_LnAffine != 0)
+            normalized = normalized * _LnGamma[x] + _LnBeta[x];
+        _LnTexOutArr[int3(x, y, slice)] = float4(normalized, 0.0, 0.0, 0.0);
+        return;
+    }
+
     float4 sum = 0.0;
-    float4 sqsum = 0.0;
     for (int ix = 0; ix < _LnW; ix++)
     {
         float4 v = _LnTexInArr[int3(ix, y, slice)];
         sum += v;
-        sqsum += v * v;
     }
 
     float widthCount = max(1, _LnW);
     float4 mean = sum / widthCount;
-    float4 var = sqsum / widthCount - mean * mean;
+    float4 sqsum = 0.0;
+    for (int ix2 = 0; ix2 < _LnW; ix2++)
+    {
+        float4 centered = _LnTexInArr[int3(ix2, y, slice)] - mean;
+        sqsum += centered * centered;
+    }
+    float4 var = sqsum / widthCount;
     float4 invstd = rsqrt(max(var + _LnEps, 1e-20));
 
     float4 o = 0.0;
@@ -1303,27 +1382,64 @@ void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
     if (row < 0 || row >= _LnH || packX < 0 || packX >= storageW)
         return;
 
-    float sum = 0.0;
-    float sqsum = 0.0;
-    for (int px = 0; px < storageW; px++)
+    float4 sumLo = 0.0;
+    float4 sumHi = 0.0;
+    int pairCount = storageW / 2;
+    for (int pair = 0; pair < pairCount; pair++)
     {
-        float4 v = _LnTexInArr[int3(px, row, 0)];
+        sumLo += _LnTexInArr[int3(pair * 2, row, 0)];
+        sumHi += _LnTexInArr[int3(pair * 2 + 1, row, 0)];
+    }
+    float tailSum = 0.0;
+    for (int tailPack = pairCount * 2; tailPack < storageW; tailPack++)
+    {
+        float4 tail = _LnTexInArr[int3(tailPack, row, 0)];
         [unroll]
-        for (int lane = 0; lane < 4; lane++)
+        for (int tailLane = 0; tailLane < 4; tailLane++)
         {
-            int col = px * 4 + lane;
-            if (col >= logicalW)
-                continue;
-            float scalar = NcnnReadLane(v, lane);
-            sum += scalar;
-            sqsum += scalar * scalar;
+            int tailCol = tailPack * 4 + tailLane;
+            if (tailCol < logicalW)
+                tailSum += NcnnReadLane(tail, tailLane);
         }
     }
 
     float invCount = 1.0 / (float)logicalW;
+    float4 mergedSum = sumLo + sumHi;
+    float2 pairedSum = mergedSum.xy + mergedSum.zw;
+    float sum = (pairedSum.x + pairedSum.y) + tailSum;
     float mean = sum * invCount;
-    float variance = sqsum * invCount - mean * mean;
-    float invstd = rsqrt(max(variance + _LnEps, 1e-20));
+    float4 varianceLo = 0.0;
+    float4 varianceHi = 0.0;
+    for (int pair2 = 0; pair2 < pairCount; pair2++)
+    {
+        float4 centeredLo = _LnTexInArr[int3(pair2 * 2, row, 0)] - mean;
+        float4 centeredHi = _LnTexInArr[int3(pair2 * 2 + 1, row, 0)] - mean;
+        varianceLo += centeredLo * centeredLo;
+        varianceHi += centeredHi * centeredHi;
+    }
+    float tailVariance = 0.0;
+    for (int tailPack2 = pairCount * 2; tailPack2 < storageW; tailPack2++)
+    {
+        float4 tail2 = _LnTexInArr[int3(tailPack2, row, 0)];
+        [unroll]
+        for (int tailLane2 = 0; tailLane2 < 4; tailLane2++)
+        {
+            int tailCol2 = tailPack2 * 4 + tailLane2;
+            if (tailCol2 < logicalW)
+            {
+                float centeredTail = NcnnReadLane(tail2, tailLane2) - mean;
+                tailVariance += centeredTail * centeredTail;
+            }
+        }
+    }
+    float4 mergedVariance = varianceLo + varianceHi;
+    float2 pairedVariance = mergedVariance.xy + mergedVariance.zw;
+    float sqsum = (pairedVariance.x + pairedVariance.y) + tailVariance;
+    float variance = sqsum * invCount;
+    // Match ncnn's FP32 elempack=1 LayerNorm path (1 / sqrtf), rather than
+    // the approximate reciprocal-square-root used by packed image norms.
+    float invstd = 1.0 / sqrt(max(variance + _LnEps, 1e-20));
+    float scaledMean = mean * invstd;
 
     float4 src = _LnTexInArr[int3(packX, row, 0)];
     float4 o = 0.0;
@@ -1333,7 +1449,7 @@ void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
         int col = packX * 4 + outLane;
         if (col >= logicalW)
             continue;
-        float normalized = (NcnnReadLane(src, outLane) - mean) * invstd;
+        float normalized = NcnnReadLane(src, outLane) * invstd - scaledMean;
         if (_LnAffine != 0)
             normalized = normalized * _LnGamma[col] + _LnBeta[col];
         NcnnWriteLane(o, outLane, normalized);
@@ -1733,6 +1849,65 @@ void NcnnReductionScalar2D_Impl(uint3 id)
     }
 
     _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = float4(result, 0.0, 0.0, 0.0);
+}
+
+void NcnnGemm2DPack4TiledTextureAFromLinear_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int tileRows = max(1, _GemmPack4TiledRowsPerMatrix);
+    int row = (int)id.y / tileRows;
+    int tileRow = (int)id.y - row * tileRows;
+    int outPack = tileRow * (int)ow + (int)id.x;
+    int baseCol = outPack * 4;
+    if (row < 0 || row >= _MatM || baseCol >= _MatN)
+        return;
+
+    float4 acc = 0.0;
+    [loop]
+    for (int kk = 0; kk < _MatK; ++kk)
+    {
+        float a = NcnnQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
+        acc += a * NcnnGemm2DReadB4(baseCol, kk);
+    }
+
+    _GemmTexOutArr[int3((int)id.x, (int)id.y, 0)] = NcnnResolveGemm2DBias4(row, baseCol) + acc * _MatAlpha;
+}
+
+void NcnnGemm2DPack4TiledTextureAFromPack4_Impl(uint3 id)
+{
+    uint ow, oh, od;
+    _GemmTexOutArr.GetDimensions(ow, oh, od);
+    if (id.x >= ow || id.y >= oh || id.z >= od)
+        return;
+
+    int tileRows = max(1, _GemmPack4TiledRowsPerMatrix);
+    int row = (int)id.y / tileRows;
+    int tileRow = (int)id.y - row * tileRows;
+    int outPack = tileRow * (int)ow + (int)id.x;
+    int baseCol = outPack * 4;
+    if (row < 0 || row >= _MatM || baseCol >= _MatN)
+        return;
+
+    float4 acc = 0.0;
+    [loop]
+    for (int packX = 0; packX < _GemmTexAInW; ++packX)
+    {
+        int kkBase = packX << 2;
+        float4 a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)]);
+        [unroll]
+        for (int lane = 0; lane < 4; ++lane)
+        {
+            int kk = kkBase + lane;
+            if (kk < _MatK)
+                acc += NcnnReadLane(a, lane) * NcnnGemm2DReadB4(baseCol, kk);
+        }
+    }
+
+    _GemmTexOutArr[int3((int)id.x, (int)id.y, 0)] = NcnnResolveGemm2DBias4(row, baseCol) + acc * _MatAlpha;
 }
 
 void NcnnReductionPack4Width_Impl(uint3 id)

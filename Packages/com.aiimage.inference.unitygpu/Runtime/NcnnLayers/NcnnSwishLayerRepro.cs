@@ -82,9 +82,11 @@ namespace NcnnCompute
             }
             else
             {
-                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.SwishPack4(srcTex.texture, srcTex.packs, outRt);
-                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                var storageShape = NcnnRepro.GetTextureStorageShape(srcTex, srcShape);
+                var outputDepth = Mathf.Max(1, srcTex.texture.volumeDepth);
+                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outputDepth, srcTex.texture.format);
+                owner.Ops.SwishPack4(srcTex.texture, outputDepth, outRt);
+                NcnnRepro.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
             }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
@@ -109,9 +111,11 @@ namespace NcnnCompute
                                                 }
                                                 else
                                                 {
-                                                    var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-                                                    owner.Ops.SwishPack4(cmd, src.texture, src.packs, outArr);
-                                                    blobs[layer.topNames[0]] = new NcnnRepro.CmdTensorRef { texture = outArr, width = src.width, height = src.height, packs = src.packs, refs = 1, owned = true };
+                                                    var storageShape = NcnnRepro.GetCmdStorageShape(src, srcShape);
+                                                    var outputDepth = Mathf.Max(1, src.texture.depth);
+                                                    var outArr = owner.RentTempArray(cmd, src.width, src.height, outputDepth, src.texture.format);
+                                                    owner.Ops.SwishPack4(cmd, src.texture, outputDepth, outArr);
+                                                    blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true);
                                                 }
                                                 if (shapes != null)
                                                     shapes[layer.topNames[0]] = srcShape;
