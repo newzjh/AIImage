@@ -1412,7 +1412,7 @@ namespace NcnnCompute
             return ModelManifest?.UsesInt8WeightOnlyForOperator(operatorName) == true;
         }
 
-        // Qwen3.5 recurrent operators deliberately carry no mutable CPU state.
+        // Recurrent operators deliberately carry no mutable CPU state.
         // Weights are model tensors and caches are published as graph textures.
         public sealed class ShortConvPack : IDisposable
         {
@@ -6335,7 +6335,7 @@ namespace NcnnCompute
                 || string.Equals(operatorName, "Swish", StringComparison.Ordinal);
         }
 
-        internal static RenderTextureFormat ResolveLinearMatTextureFormat()
+        public static RenderTextureFormat ResolveLinearMatTextureFormat()
         {
             return RenderTextureFormat.RFloat;
         }
@@ -8094,12 +8094,32 @@ namespace NcnnCompute
             return Mathf.Max(1, bordered - Mathf.Max(0, padBefore) - Mathf.Max(0, padAfter));
         }
 
+        public static ComputeBuffer UploadImmutableFloatConstants(float[] data, string label)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            if (data.Length == 0)
+                throw new ArgumentException("Immutable constant data is empty.", nameof(data));
+            if (string.IsNullOrWhiteSpace(label))
+                throw new ArgumentException("Immutable constant label is empty.", nameof(label));
+            var buf = new ComputeBuffer(data.Length, sizeof(float), ComputeBufferType.Structured);
+            try
+            {
+                NcnnGpuResourceTracker.RegisterBuffer(buf, data.Length, sizeof(float), label);
+                buf.SetData(data);
+                return buf;
+            }
+            catch
+            {
+                try { NcnnGpuResourceTracker.ReleaseBuffer(buf, label + ".UploadFailure"); } catch { }
+                buf.Dispose();
+                throw;
+            }
+        }
+
         internal static ComputeBuffer NewBuffer(float[] data)
         {
-            var buf = new ComputeBuffer(data.Length, sizeof(float), ComputeBufferType.Structured);
-            NcnnGpuResourceTracker.RegisterBuffer(buf, data.Length, sizeof(float), "NcnnRepro.NewBuffer");
-            buf.SetData(data);
-            return buf;
+            return UploadImmutableFloatConstants(data, "NcnnRepro.NewBuffer");
         }
 
         internal static ComputeBuffer NewFp16Buffer(float[] data, string label)

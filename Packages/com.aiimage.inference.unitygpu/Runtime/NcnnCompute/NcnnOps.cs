@@ -509,8 +509,8 @@ namespace NcnnCompute
         private readonly int _kSdpaQkvBuf;
         private readonly int _kSdpaAttentionFast;
         private readonly int _kSdpaAttentionPack4Cdhw;
-        private readonly int _kQwenShortConvPack4;
-        private readonly int _kQwenGatedDeltaRulePack4;
+        private readonly int _kShortConvPack4;
+        private readonly int _kGatedDeltaRulePack4;
         private readonly bool _probeFastZeroGemm;
         private readonly bool _probeFastZeroSdpa;
         private readonly bool _probeFastZeroBinaryOp;
@@ -972,8 +972,8 @@ namespace NcnnCompute
             _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
             _kSdpaAttentionFast = _cs.FindKernel("NcnnSdpaAttentionFast");
             _kSdpaAttentionPack4Cdhw = _cs.FindKernel("NcnnSdpaAttentionPack4CDHW");
-            _kQwenShortConvPack4 = _cs.FindKernel("Qwen35ShortConvPack4");
-            _kQwenGatedDeltaRulePack4 = _cs.FindKernel("Qwen35GatedDeltaRulePack4");
+            _kShortConvPack4 = _cs.FindKernel("NcnnShortConvPack4");
+            _kGatedDeltaRulePack4 = _cs.FindKernel("NcnnGatedDeltaRulePack4");
             _probeFastZeroGemm = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_GEMM_ZERO", "gemm");
             _probeFastZeroSdpa = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_SDPA_ZERO", "sdpa");
             _probeFastZeroBinaryOp = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_BINARY_ZERO", "binary");
@@ -10432,7 +10432,7 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kPixelShufflePack4, output.width, output.height, Mathf.Max(1, Mathf.CeilToInt(outChannels / 4f)), 8, 8);
         }
 
-        public void Qwen35ShortConvPack4(
+        public void ShortConvPack4(
             RenderTexture weight,
             RenderTexture mixed,
             RenderTexture cacheIn,
@@ -10444,22 +10444,22 @@ namespace NcnnCompute
             int cacheLength)
         {
             if (weight == null || mixed == null || cacheIn == null || output == null || cacheOut == null)
-                throw new ArgumentNullException("Qwen35 ShortConv texture input/output is null.");
+                throw new ArgumentNullException("ShortConv texture input/output is null.");
             if (groups <= 0 || kernelSize <= 0 || sequenceLength <= 0 || cacheLength < kernelSize - 1)
                 throw new ArgumentOutOfRangeException(nameof(groups));
-            _cs.SetInt("_QwenGroups", groups);
-            _cs.SetInt("_QwenKernel", kernelSize);
-            _cs.SetInt("_QwenSeq", sequenceLength);
-            _cs.SetInt("_QwenCacheLength", cacheLength);
-            _cs.SetTexture(_kQwenShortConvPack4, "_QwenWeightArr", weight);
-            _cs.SetTexture(_kQwenShortConvPack4, "_QwenMixedArr", mixed);
-            _cs.SetTexture(_kQwenShortConvPack4, "_QwenConvCacheInArr", cacheIn);
-            _cs.SetTexture(_kQwenShortConvPack4, "_QwenConvOutArr", output);
-            _cs.SetTexture(_kQwenShortConvPack4, "_QwenConvCacheOutArr", cacheOut);
-            Dispatch3D(_kQwenShortConvPack4, Mathf.CeilToInt(groups / 4f), Mathf.Max(sequenceLength, cacheLength), 1, 8, 8);
+            _cs.SetInt("_RecurrentGroups", groups);
+            _cs.SetInt("_RecurrentKernel", kernelSize);
+            _cs.SetInt("_RecurrentSeq", sequenceLength);
+            _cs.SetInt("_RecurrentCacheLength", cacheLength);
+            _cs.SetTexture(_kShortConvPack4, "_RecurrentWeightArr", weight);
+            _cs.SetTexture(_kShortConvPack4, "_RecurrentMixedArr", mixed);
+            _cs.SetTexture(_kShortConvPack4, "_RecurrentConvCacheInArr", cacheIn);
+            _cs.SetTexture(_kShortConvPack4, "_RecurrentConvOutArr", output);
+            _cs.SetTexture(_kShortConvPack4, "_RecurrentConvCacheOutArr", cacheOut);
+            Dispatch3D(_kShortConvPack4, Mathf.CeilToInt(groups / 4f), Mathf.Max(sequenceLength, cacheLength), 1, 8, 8);
         }
 
-        public void Qwen35GatedDeltaRulePack4(
+        public void GatedDeltaRulePack4(
             RenderTexture aLog,
             RenderTexture dtBias,
             RenderTexture b,
@@ -10478,27 +10478,27 @@ namespace NcnnCompute
             float epsilon)
         {
             if (aLog == null || dtBias == null || b == null || a == null || query == null || key == null || value == null || stateIn == null || output == null || stateOut == null)
-                throw new ArgumentNullException("Qwen35 GDR texture input/output is null.");
-            _cs.SetInt("_QwenHeads", heads);
-            _cs.SetInt("_QwenKeyDim", keyDim);
-            _cs.SetInt("_QwenValueDim", valueDim);
-            _cs.SetInt("_QwenSeq", sequenceLength);
-            _cs.SetInt("_QwenToken", tokenIndex);
-            _cs.SetFloat("_QwenEpsilon", epsilon);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenAlogTex", aLog);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenDtBiasTex", dtBias);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenBTex", b);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenATex", a);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenQArr", query);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenKArr", key);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenVArr", value);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenGdrStateInArr", stateIn);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenGdrOutArr", output);
-            _cs.SetTexture(_kQwenGatedDeltaRulePack4, "_QwenGdrStateOutArr", stateOut);
-            Dispatch3D(_kQwenGatedDeltaRulePack4, Mathf.CeilToInt(valueDim / 4f), heads, 1, 8, 8);
+                throw new ArgumentNullException("GatedDeltaRule texture input/output is null.");
+            _cs.SetInt("_RecurrentHeads", heads);
+            _cs.SetInt("_RecurrentKeyDim", keyDim);
+            _cs.SetInt("_RecurrentValueDim", valueDim);
+            _cs.SetInt("_RecurrentSeq", sequenceLength);
+            _cs.SetInt("_RecurrentToken", tokenIndex);
+            _cs.SetFloat("_RecurrentEpsilon", epsilon);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentAlogTex", aLog);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentDtBiasTex", dtBias);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentBTex", b);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentATex", a);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentQArr", query);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentKArr", key);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentVArr", value);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentGdrStateInArr", stateIn);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentGdrOutArr", output);
+            _cs.SetTexture(_kGatedDeltaRulePack4, "_RecurrentGdrStateOutArr", stateOut);
+            Dispatch3D(_kGatedDeltaRulePack4, Mathf.CeilToInt(valueDim / 4f), heads, 1, 8, 8);
         }
 
-        public void Qwen35ShortConvPack4(
+        public void ShortConvPack4(
             CommandBuffer cmd,
             ComputeTexture weight,
             ComputeTexture mixed,
@@ -10511,20 +10511,20 @@ namespace NcnnCompute
             int cacheLength)
         {
             if (cmd == null || weight == null || mixed == null || cacheIn == null || output == null || cacheOut == null)
-                throw new ArgumentNullException("Qwen35 ShortConv command texture input/output is null.");
-            cmd.SetComputeIntParam(_cs, "_QwenGroups", groups);
-            cmd.SetComputeIntParam(_cs, "_QwenKernel", kernelSize);
-            cmd.SetComputeIntParam(_cs, "_QwenSeq", sequenceLength);
-            cmd.SetComputeIntParam(_cs, "_QwenCacheLength", cacheLength);
-            cmd.SetComputeTextureParam(_cs, _kQwenShortConvPack4, "_QwenWeightArr", weight.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenShortConvPack4, "_QwenMixedArr", mixed.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenShortConvPack4, "_QwenConvCacheInArr", cacheIn.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenShortConvPack4, "_QwenConvOutArr", output.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenShortConvPack4, "_QwenConvCacheOutArr", cacheOut.nameID);
-            Dispatch3D(cmd, _kQwenShortConvPack4, Mathf.CeilToInt(groups / 4f), Mathf.Max(sequenceLength, cacheLength), 1, 8, 8);
+                throw new ArgumentNullException("ShortConv command texture input/output is null.");
+            cmd.SetComputeIntParam(_cs, "_RecurrentGroups", groups);
+            cmd.SetComputeIntParam(_cs, "_RecurrentKernel", kernelSize);
+            cmd.SetComputeIntParam(_cs, "_RecurrentSeq", sequenceLength);
+            cmd.SetComputeIntParam(_cs, "_RecurrentCacheLength", cacheLength);
+            cmd.SetComputeTextureParam(_cs, _kShortConvPack4, "_RecurrentWeightArr", weight.nameID);
+            cmd.SetComputeTextureParam(_cs, _kShortConvPack4, "_RecurrentMixedArr", mixed.nameID);
+            cmd.SetComputeTextureParam(_cs, _kShortConvPack4, "_RecurrentConvCacheInArr", cacheIn.nameID);
+            cmd.SetComputeTextureParam(_cs, _kShortConvPack4, "_RecurrentConvOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kShortConvPack4, "_RecurrentConvCacheOutArr", cacheOut.nameID);
+            Dispatch3D(cmd, _kShortConvPack4, Mathf.CeilToInt(groups / 4f), Mathf.Max(sequenceLength, cacheLength), 1, 8, 8);
         }
 
-        public void Qwen35GatedDeltaRulePack4(
+        public void GatedDeltaRulePack4(
             CommandBuffer cmd,
             ComputeTexture aLog,
             ComputeTexture dtBias,
@@ -10544,24 +10544,24 @@ namespace NcnnCompute
             float epsilon)
         {
             if (cmd == null || aLog == null || dtBias == null || b == null || a == null || query == null || key == null || value == null || stateIn == null || output == null || stateOut == null)
-                throw new ArgumentNullException("Qwen35 GDR command texture input/output is null.");
-            cmd.SetComputeIntParam(_cs, "_QwenHeads", heads);
-            cmd.SetComputeIntParam(_cs, "_QwenKeyDim", keyDim);
-            cmd.SetComputeIntParam(_cs, "_QwenValueDim", valueDim);
-            cmd.SetComputeIntParam(_cs, "_QwenSeq", sequenceLength);
-            cmd.SetComputeIntParam(_cs, "_QwenToken", tokenIndex);
-            cmd.SetComputeFloatParam(_cs, "_QwenEpsilon", epsilon);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenAlogTex", aLog.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenDtBiasTex", dtBias.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenBTex", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenATex", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenQArr", query.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenKArr", key.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenVArr", value.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenGdrStateInArr", stateIn.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenGdrOutArr", output.nameID);
-            cmd.SetComputeTextureParam(_cs, _kQwenGatedDeltaRulePack4, "_QwenGdrStateOutArr", stateOut.nameID);
-            Dispatch3D(cmd, _kQwenGatedDeltaRulePack4, Mathf.CeilToInt(valueDim / 4f), heads, 1, 8, 8);
+                throw new ArgumentNullException("GatedDeltaRule command texture input/output is null.");
+            cmd.SetComputeIntParam(_cs, "_RecurrentHeads", heads);
+            cmd.SetComputeIntParam(_cs, "_RecurrentKeyDim", keyDim);
+            cmd.SetComputeIntParam(_cs, "_RecurrentValueDim", valueDim);
+            cmd.SetComputeIntParam(_cs, "_RecurrentSeq", sequenceLength);
+            cmd.SetComputeIntParam(_cs, "_RecurrentToken", tokenIndex);
+            cmd.SetComputeFloatParam(_cs, "_RecurrentEpsilon", epsilon);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentAlogTex", aLog.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentDtBiasTex", dtBias.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentBTex", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentATex", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentQArr", query.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentKArr", key.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentVArr", value.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentGdrStateInArr", stateIn.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentGdrOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentGdrStateOutArr", stateOut.nameID);
+            Dispatch3D(cmd, _kGatedDeltaRulePack4, Mathf.CeilToInt(valueDim / 4f), heads, 1, 8, 8);
         }
 
         private void Dispatch1D(int kernel, int total, int threadsPerGroup)

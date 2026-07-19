@@ -5,7 +5,7 @@ using UnityEngine.Rendering;
 
 namespace NcnnCompute
 {
-    /// Texture-only causal depthwise convolution used by Qwen3.5 linear blocks.
+    /// Texture-only causal depthwise convolution used by recurrent linear blocks.
     /// The cache is a graph tensor and is never materialized through a buffer.
     public sealed class NcnnShortConvLayerRepro : NcnnBaseLayerRepro
     {
@@ -47,7 +47,7 @@ namespace NcnnCompute
             var cacheOut = owner.RentTempArray(cache.texture.width, cache.texture.height, cache.texture.volumeDepth, owner.TensorTextureFormat);
             try
             {
-                owner.Ops.Qwen35ShortConvPack4(weight.texture, mixed.texture, cache.texture, output, cacheOut, groups, kernel, mixedShape.h, cacheLength);
+                owner.Ops.ShortConvPack4(weight.texture, mixed.texture, cache.texture, output, cacheOut, groups, kernel, mixedShape.h, cacheLength);
                 NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, mixedShape, StorageShape(mixedShape, output));
                 NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[1], cacheOut, cacheShape, StorageShape(cacheShape, cacheOut));
                 output = null;
@@ -75,7 +75,7 @@ namespace NcnnCompute
             var cacheShape = NcnnRepro.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[2]);
             var output = owner.RentTempArray(context.commandBuffer, mixed.texture.width, mixed.texture.height, mixed.texture.depth, owner.TensorTextureFormat);
             var cacheOut = owner.RentTempArray(context.commandBuffer, cache.texture.width, cache.texture.height, cache.texture.depth, owner.TensorTextureFormat);
-            owner.Ops.Qwen35ShortConvPack4(context.commandBuffer, weight.texture, mixed.texture, cache.texture, output, cacheOut, mixedShape.w, Mathf.Max(1, cacheShape.h), mixedShape.h, Mathf.Max(1, cacheShape.h));
+            owner.Ops.ShortConvPack4(context.commandBuffer, weight.texture, mixed.texture, cache.texture, output, cacheOut, mixedShape.w, Mathf.Max(1, cacheShape.h), mixedShape.h, Mathf.Max(1, cacheShape.h));
             context.blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, mixedShape, new NcnnRepro.BufferShape(3, output.width, output.height, 1, output.depth * 4), owned: true);
             context.blobs[layer.topNames[1]] = NcnnRepro.CreateCmdTensorRef(cacheOut, cacheShape, new NcnnRepro.BufferShape(3, cacheOut.width, cacheOut.height, 1, cacheOut.depth * 4), owned: true);
             if (context.shapes != null) { context.shapes[layer.topNames[0]] = mixedShape; context.shapes[layer.topNames[1]] = cacheShape; }

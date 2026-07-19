@@ -231,71 +231,71 @@
 #pragma kernel NcnnSdpaQkvBuf
 #pragma kernel NcnnSdpaAttentionFast
 #pragma kernel NcnnSdpaAttentionPack4CDHW
-#pragma kernel Qwen35ShortConvPack4
-#pragma kernel Qwen35GatedDeltaRulePack4
+#pragma kernel NcnnShortConvPack4
+#pragma kernel NcnnGatedDeltaRulePack4
 
 #include "NcnnComputeIncludes/NcnnUnifiedBindings.Pack4.hlsl"
 
-// Qwen3.5 custom recurrent operators.  These bindings are texture-only for
+// Recurrent NCNN operators. These bindings are texture-only for
 // activations and caches; the only StructuredBuffer use is immutable debug-free
 // metadata/weights in future quantized variants.
-Texture2DArray<float4> _QwenWeightArr;
-Texture2DArray<float4> _QwenMixedArr;
-Texture2DArray<float4> _QwenConvCacheInArr;
-RWTexture2DArray<float4> _QwenConvOutArr;
-RWTexture2DArray<float4> _QwenConvCacheOutArr;
-Texture2DArray<float4> _QwenQArr;
-Texture2DArray<float4> _QwenKArr;
-Texture2DArray<float4> _QwenVArr;
-Texture2D<float4> _QwenAlogTex;
-Texture2D<float4> _QwenDtBiasTex;
-Texture2D<float4> _QwenBTex;
-Texture2D<float4> _QwenATex;
-Texture2DArray<float4> _QwenGdrStateInArr;
-RWTexture2DArray<float4> _QwenGdrOutArr;
-RWTexture2DArray<float4> _QwenGdrStateOutArr;
-int _QwenGroups;
-int _QwenKernel;
-int _QwenSeq;
-int _QwenCacheLength;
-int _QwenHeads;
-int _QwenKeyDim;
-int _QwenValueDim;
-int _QwenToken;
-float _QwenEpsilon;
+Texture2DArray<float4> _RecurrentWeightArr;
+Texture2DArray<float4> _RecurrentMixedArr;
+Texture2DArray<float4> _RecurrentConvCacheInArr;
+RWTexture2DArray<float4> _RecurrentConvOutArr;
+RWTexture2DArray<float4> _RecurrentConvCacheOutArr;
+Texture2DArray<float4> _RecurrentQArr;
+Texture2DArray<float4> _RecurrentKArr;
+Texture2DArray<float4> _RecurrentVArr;
+Texture2D<float4> _RecurrentAlogTex;
+Texture2D<float4> _RecurrentDtBiasTex;
+Texture2D<float4> _RecurrentBTex;
+Texture2D<float4> _RecurrentATex;
+Texture2DArray<float4> _RecurrentGdrStateInArr;
+RWTexture2DArray<float4> _RecurrentGdrOutArr;
+RWTexture2DArray<float4> _RecurrentGdrStateOutArr;
+int _RecurrentGroups;
+int _RecurrentKernel;
+int _RecurrentSeq;
+int _RecurrentCacheLength;
+int _RecurrentHeads;
+int _RecurrentKeyDim;
+int _RecurrentValueDim;
+int _RecurrentToken;
+float _RecurrentEpsilon;
 
-float QwenLoad2(Texture2DArray<float4> tex, int logicalWidth, int row, int index)
+float RecurrentLoad2(Texture2DArray<float4> tex, int logicalWidth, int row, int index)
 {
     float4 c = tex.Load(int4(index / 4, row, 0, 0));
     return c[index & 3];
 }
 
-float QwenLoad2Slice(Texture2DArray<float4> tex, int logicalWidth, int row, int slice, int index)
+float RecurrentLoad2Slice(Texture2DArray<float4> tex, int logicalWidth, int row, int slice, int index)
 {
     float4 c = tex.Load(int4(index / 4, row, slice, 0));
     return c[index & 3];
 }
 
-float QwenLoadShortConvWeight(int group, int kernelIndex)
+float RecurrentLoadShortConvWeight(int group, int kernelIndex)
 {
     // MemoryData exposes the kernel as logical [w=kernel, h=1, c=groups].
     // Pack4 storage therefore places groups in array slices, not texture rows.
-    float4 packed = _QwenWeightArr.Load(int4(kernelIndex, 0, group / 4, 0));
+    float4 packed = _RecurrentWeightArr.Load(int4(kernelIndex, 0, group / 4, 0));
     return packed[group & 3];
 }
 
-float QwenLoadLinearScalar(Texture2D<float4> tex, int row, int index)
+float RecurrentLoadLinearScalar(Texture2D<float4> tex, int row, int index)
 {
-    return tex.Load(int3(row * _QwenHeads + index, 0, 0)).x;
+    return tex.Load(int3(row * _RecurrentHeads + index, 0, 0)).x;
 }
 
-float QwenLoadGdrTensor(Texture2DArray<float4> tex, int token, int head, int index)
+float RecurrentLoadGdrTensor(Texture2DArray<float4> tex, int token, int head, int index)
 {
     float4 packedSequence = tex.Load(int4(index, head, token / 4, 0));
     return packedSequence[token & 3];
 }
 
-float QwenReadLane(float4 value, int lane)
+float RecurrentReadLane(float4 value, int lane)
 {
     if (lane <= 0) return value.x;
     if (lane == 1) return value.y;
@@ -303,7 +303,7 @@ float QwenReadLane(float4 value, int lane)
     return value.w;
 }
 
-float4 QwenWriteLane(float4 value, int lane, float scalar)
+float4 RecurrentWriteLane(float4 value, int lane, float scalar)
 {
     if (lane <= 0) value.x = scalar;
     else if (lane == 1) value.y = scalar;
@@ -313,53 +313,53 @@ float4 QwenWriteLane(float4 value, int lane, float scalar)
 }
 
 [numthreads(8, 8, 1)]
-void Qwen35ShortConvPack4(uint3 id : SV_DispatchThreadID)
+void NcnnShortConvPack4(uint3 id : SV_DispatchThreadID)
 {
     int groupBase = (int)id.x * 4;
     int token = (int)id.y;
-    if (groupBase >= _QwenGroups)
+    if (groupBase >= _RecurrentGroups)
         return;
 
     // Rebuild the fixed-size causal cache from the tail of
     // [cacheIn, mixed]. This preserves old rows during one-token decode.
-    if (token < _QwenCacheLength)
+    if (token < _RecurrentCacheLength)
     {
-        int sourceIndex = _QwenSeq + token;
+        int sourceIndex = _RecurrentSeq + token;
         float4 cacheValue = 0.0;
         for (int lane = 0; lane < 4; ++lane)
         {
             int group = groupBase + lane;
-            if (group >= _QwenGroups)
+            if (group >= _RecurrentGroups)
                 continue;
-            float cached = sourceIndex < _QwenCacheLength
-                ? QwenLoad2(_QwenConvCacheInArr, _QwenGroups, sourceIndex, group)
-                : QwenLoad2(_QwenMixedArr, _QwenGroups, sourceIndex - _QwenCacheLength, group);
+            float cached = sourceIndex < _RecurrentCacheLength
+                ? RecurrentLoad2(_RecurrentConvCacheInArr, _RecurrentGroups, sourceIndex, group)
+                : RecurrentLoad2(_RecurrentMixedArr, _RecurrentGroups, sourceIndex - _RecurrentCacheLength, group);
             if (lane == 0) cacheValue.x = cached;
             else if (lane == 1) cacheValue.y = cached;
             else if (lane == 2) cacheValue.z = cached;
             else cacheValue.w = cached;
         }
-        _QwenConvCacheOutArr[int3(id.x, token, 0)] = cacheValue;
+        _RecurrentConvCacheOutArr[int3(id.x, token, 0)] = cacheValue;
     }
 
-    if (token >= _QwenSeq)
+    if (token >= _RecurrentSeq)
         return;
-    float4 outValue = _QwenConvOutArr[int3(id.x, token, 0)];
+    float4 outValue = _RecurrentConvOutArr[int3(id.x, token, 0)];
     for (int lane = 0; lane < 4; ++lane)
     {
         int group = groupBase + lane;
-        if (group >= _QwenGroups)
+        if (group >= _RecurrentGroups)
             continue;
         float sum = 0.0;
-        for (int k = 0; k < _QwenKernel; ++k)
+        for (int k = 0; k < _RecurrentKernel; ++k)
         {
-            int historyIndex = _QwenCacheLength - _QwenKernel + token + 1 + k;
+            int historyIndex = _RecurrentCacheLength - _RecurrentKernel + token + 1 + k;
             float x = historyIndex < 0
                 ? 0.0
-                : (historyIndex < _QwenCacheLength
-                    ? QwenLoad2(_QwenConvCacheInArr, _QwenGroups, historyIndex, group)
-                    : QwenLoad2(_QwenMixedArr, _QwenGroups, historyIndex - _QwenCacheLength, group));
-            sum += x * QwenLoadShortConvWeight(group, k);
+                : (historyIndex < _RecurrentCacheLength
+                    ? RecurrentLoad2(_RecurrentConvCacheInArr, _RecurrentGroups, historyIndex, group)
+                    : RecurrentLoad2(_RecurrentMixedArr, _RecurrentGroups, historyIndex - _RecurrentCacheLength, group));
+            sum += x * RecurrentLoadShortConvWeight(group, k);
         }
         float silu = sum / (1.0 + exp(-sum));
         if (lane == 0) outValue.x = silu;
@@ -367,41 +367,41 @@ void Qwen35ShortConvPack4(uint3 id : SV_DispatchThreadID)
         else if (lane == 2) outValue.z = silu;
         else outValue.w = silu;
     }
-    _QwenConvOutArr[int3(id.x, token, 0)] = outValue;
+    _RecurrentConvOutArr[int3(id.x, token, 0)] = outValue;
 }
 
 [numthreads(8, 8, 1)]
-void Qwen35GatedDeltaRulePack4(uint3 id : SV_DispatchThreadID)
+void NcnnGatedDeltaRulePack4(uint3 id : SV_DispatchThreadID)
 {
     int head = (int)id.y;
     int valueBase = (int)id.x * 4;
-    int token = _QwenToken;
-    if (head >= _QwenHeads || token >= _QwenSeq || valueBase >= _QwenValueDim)
+    int token = _RecurrentToken;
+    if (head >= _RecurrentHeads || token >= _RecurrentSeq || valueBase >= _RecurrentValueDim)
         return;
 
     float qNorm2 = 0.0;
     float kNorm2 = 0.0;
-    for (int j = 0; j < _QwenKeyDim; ++j)
+    for (int j = 0; j < _RecurrentKeyDim; ++j)
     {
-        float qj = QwenLoadGdrTensor(_QwenQArr, token, head, j);
-        float kj = QwenLoadGdrTensor(_QwenKArr, token, head, j);
+        float qj = RecurrentLoadGdrTensor(_RecurrentQArr, token, head, j);
+        float kj = RecurrentLoadGdrTensor(_RecurrentKArr, token, head, j);
         qNorm2 += qj * qj;
         kNorm2 += kj * kj;
     }
-    float qScale = rsqrt(qNorm2 + _QwenEpsilon);
-    float kScale = rsqrt(kNorm2 + _QwenEpsilon);
-    float b = QwenLoadLinearScalar(_QwenBTex, token, head);
-    float a = QwenLoadLinearScalar(_QwenATex, token, head);
-    float alog = QwenLoadLinearScalar(_QwenAlogTex, 0, head);
-    float dt = QwenLoadLinearScalar(_QwenDtBiasTex, 0, head);
+    float qScale = rsqrt(qNorm2 + _RecurrentEpsilon);
+    float kScale = rsqrt(kNorm2 + _RecurrentEpsilon);
+    float b = RecurrentLoadLinearScalar(_RecurrentBTex, token, head);
+    float a = RecurrentLoadLinearScalar(_RecurrentATex, token, head);
+    float alog = RecurrentLoadLinearScalar(_RecurrentAlogTex, 0, head);
+    float dt = RecurrentLoadLinearScalar(_RecurrentDtBiasTex, 0, head);
     float beta = 1.0 / (1.0 + exp(-b));
     float decay = exp(-exp(alog) * (max(a + dt, 0.0) + log(1.0 + exp(-abs(a + dt)))));
 
     float4 memory = 0.0;
-    for (int j = 0; j < _QwenKeyDim; ++j)
+    for (int j = 0; j < _RecurrentKeyDim; ++j)
     {
-        float kj = QwenLoadGdrTensor(_QwenKArr, token, head, j) * kScale;
-        float4 decayedState = _QwenGdrStateInArr.Load(int4(id.x, j, head, 0)) * decay;
+        float kj = RecurrentLoadGdrTensor(_RecurrentKArr, token, head, j) * kScale;
+        float4 decayedState = _RecurrentGdrStateInArr.Load(int4(id.x, j, head, 0)) * decay;
         memory += kj * decayedState;
     }
 
@@ -409,31 +409,31 @@ void Qwen35GatedDeltaRulePack4(uint3 id : SV_DispatchThreadID)
     for (int lane = 0; lane < 4; ++lane)
     {
         int valueIndex = valueBase + lane;
-        if (valueIndex < _QwenValueDim)
-            value = QwenWriteLane(value, lane, QwenLoadGdrTensor(_QwenVArr, token, head, valueIndex));
+        if (valueIndex < _RecurrentValueDim)
+            value = RecurrentWriteLane(value, lane, RecurrentLoadGdrTensor(_RecurrentVArr, token, head, valueIndex));
     }
     float4 delta = (value - memory) * beta;
     float4 projected = 0.0;
-    for (int j = 0; j < _QwenKeyDim; ++j)
+    for (int j = 0; j < _RecurrentKeyDim; ++j)
     {
-        float kj = QwenLoadGdrTensor(_QwenKArr, token, head, j) * kScale;
-        float qj = QwenLoadGdrTensor(_QwenQArr, token, head, j) * qScale;
-        float4 updatedState = _QwenGdrStateInArr.Load(int4(id.x, j, head, 0)) * decay + kj * delta;
-        _QwenGdrStateOutArr[int3(id.x, j, head)] = updatedState;
+        float kj = RecurrentLoadGdrTensor(_RecurrentKArr, token, head, j) * kScale;
+        float qj = RecurrentLoadGdrTensor(_RecurrentQArr, token, head, j) * qScale;
+        float4 updatedState = _RecurrentGdrStateInArr.Load(int4(id.x, j, head, 0)) * decay + kj * delta;
+        _RecurrentGdrStateOutArr[int3(id.x, j, head)] = updatedState;
         projected += qj * updatedState;
     }
-    projected *= rsqrt((float)_QwenKeyDim);
+    projected *= rsqrt((float)_RecurrentKeyDim);
 
     int sequencePack = token / 4;
     int sequenceLane = token & 3;
     for (int outputLane = 0; outputLane < 4; ++outputLane)
     {
         int valueIndex = valueBase + outputLane;
-        if (valueIndex >= _QwenValueDim)
+        if (valueIndex >= _RecurrentValueDim)
             continue;
-        float4 packedSequence = _QwenGdrOutArr[int3(valueIndex, head, sequencePack)];
-        packedSequence = QwenWriteLane(packedSequence, sequenceLane, QwenReadLane(projected, outputLane));
-        _QwenGdrOutArr[int3(valueIndex, head, sequencePack)] = packedSequence;
+        float4 packedSequence = _RecurrentGdrOutArr[int3(valueIndex, head, sequencePack)];
+        packedSequence = RecurrentWriteLane(packedSequence, sequenceLane, RecurrentReadLane(projected, outputLane));
+        _RecurrentGdrOutArr[int3(valueIndex, head, sequencePack)] = packedSequence;
     }
 }
 

@@ -51,7 +51,7 @@ namespace NcnnCompute
             var valueDim = vShape.w;
             var sequence = Mathf.Max(1, qShape.c);
             owner.DebugLog?.Invoke(
-                "[Qwen35][GatedDeltaRule] layer=" + layer.name
+                "[Ncnn][GatedDeltaRule] layer=" + layer.name
                 + " q=d" + qShape.dims + ":" + qShape.w + "x" + qShape.h + "x" + qShape.d + "x" + qShape.c
                 + " qTexture=" + q.texture.width + "x" + q.texture.height + "x" + q.texture.volumeDepth
                 + " v=d" + vShape.dims + ":" + vShape.w + "x" + vShape.h + "x" + vShape.d + "x" + vShape.c
@@ -73,7 +73,7 @@ namespace NcnnCompute
                 {
                     var source = token == 0 ? state.texture : ((token & 1) == 1 ? stateA : stateB);
                     var target = (token & 1) == 0 ? stateA : stateB;
-                    owner.Ops.Qwen35GatedDeltaRulePack4(alog.texture, dt.texture, b.texture, a.texture, q.texture, k.texture, v.texture, source, output, target, heads, keyDim, valueDim, sequence, token, 1e-6f);
+                    owner.Ops.GatedDeltaRulePack4(alog.texture, dt.texture, b.texture, a.texture, q.texture, k.texture, v.texture, source, output, target, heads, keyDim, valueDim, sequence, token, 1e-6f);
                     finalState = target;
                 }
                 // The final state is in current.  Copying is intentionally not
@@ -122,7 +122,7 @@ namespace NcnnCompute
             {
                 var source = token == 0 ? state.texture : ((token & 1) == 1 ? stateA : stateB);
                 var target = (token & 1) == 0 ? stateA : stateB;
-                owner.Ops.Qwen35GatedDeltaRulePack4(context.commandBuffer, alog.texture, dt.texture, b.texture, a.texture, q.texture, k.texture, v.texture, source, output, target, heads, qShape.w, vShape.w, sequence, token, 1e-6f);
+                owner.Ops.GatedDeltaRulePack4(context.commandBuffer, alog.texture, dt.texture, b.texture, a.texture, q.texture, k.texture, v.texture, source, output, target, heads, qShape.w, vShape.w, sequence, token, 1e-6f);
                 finalState = target;
             }
             context.blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, vShape, new NcnnRepro.BufferShape(vShape.dims, output.width, output.height, vShape.d, output.depth * 4), owned: true);
