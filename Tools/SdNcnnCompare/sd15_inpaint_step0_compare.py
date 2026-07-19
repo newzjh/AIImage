@@ -20,6 +20,18 @@ def save_bin(path: Path, arr: np.ndarray) -> None:
     np.asarray(arr, dtype=np.float32).tofile(path)
 
 
+def read_key_values(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    result: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        result[key.strip()] = value.strip()
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump-dir", required=True, type=Path)
@@ -32,10 +44,11 @@ def main() -> int:
 
     prompt = (dump_dir / "positive_prompt.txt").read_text(encoding="utf-8").strip()
     negative_prompt = (dump_dir / "negative_prompt.txt").read_text(encoding="utf-8").strip()
-    seed = 123456
-    steps = 8
-    strength = 1.0
-    guidance = 7.5
+    run_config = read_key_values(dump_dir / "run_config.txt")
+    seed = int(run_config.get("seed", "123456"))
+    steps = int(run_config.get("steps", "12"))
+    strength = float(run_config.get("strength", "1.0"))
+    guidance = float(run_config.get("guidance_scale", "10.0"))
 
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         str(args.model_dir),
