@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
@@ -80,6 +82,48 @@ namespace NcnnCompute
                     MaxNewTokens,
                     sampling ?? Qwen35SamplingConfig.Greedy(),
                     onToken);
+        }
+
+        public async UniTask<Qwen35GenerationResult> GenerateImageAsync(
+            Texture2D image,
+            string userText,
+            Qwen35SamplingConfig sampling = null,
+            CancellationToken cancellationToken = default,
+            Action<int, string> onToken = null,
+            Action<int, int> onProgress = null,
+            Action<string> onStage = null)
+        {
+            if (image == null) throw new ArgumentNullException(nameof(image));
+            cancellationToken.ThrowIfCancellationRequested();
+
+            onStage?.Invoke("loading_vision");
+            await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+            using (var visionSession = CreateVisionEncoderSession())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                onStage?.Invoke("encoding_image");
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                using (var vision = visionSession.Encode(image))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    onStage?.Invoke("loading_decoder");
+                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                    using (var decoder = CreateDecoderSession())
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        onStage?.Invoke("generating");
+                        await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                        return await decoder.GenerateMultimodalAsync(
+                            EncodeImagePrompt(userText),
+                            vision,
+                            MaxNewTokens,
+                            sampling ?? Qwen35SamplingConfig.Greedy(),
+                            cancellationToken,
+                            onToken,
+                            onProgress);
+                    }
+                }
+            }
         }
 
         public Qwen35GenerationResult GenerateImageFile(

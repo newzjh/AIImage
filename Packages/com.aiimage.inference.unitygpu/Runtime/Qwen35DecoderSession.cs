@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 
 namespace NcnnCompute
@@ -504,6 +506,112 @@ namespace NcnnCompute
                     if (stepIndex + 1 >= maxNewTokens)
                         break;
 
+                    RunTokens(new[] { nextToken }, ref position, ref state, out hidden);
+                    decoderRuns++;
+                    nextToken = sampler.Select(ProjectLogits(hidden));
+                    hidden.Dispose();
+                    hidden = null;
+                }
+
+                output.Text = Tokenizer.Decode(output.TokenIds, true);
+                output.ExpandedPromptTokenCount = state.SequenceLength - Math.Max(0, output.TokenIds.Count - 1);
+                output.FinalPosition = position;
+                output.DecoderStepCount = decoderRuns;
+                output.FinalCacheTextureCount = state.TextureCount;
+                return output;
+            }
+            finally
+            {
+                hidden?.Dispose();
+                state?.Dispose();
+            }
+        }
+
+        public async UniTask<Qwen35GenerationResult> GenerateMultimodalAsync(
+            IReadOnlyList<int> promptTokenIds,
+            Qwen35VisionEncoding vision,
+            int maxNewTokens,
+            Qwen35SamplingConfig sampling = null,
+            CancellationToken cancellationToken = default,
+            Action<int, string> onToken = null,
+            Action<int, int> onProgress = null)
+        {
+            ThrowIfDisposed();
+            if (promptTokenIds == null || promptTokenIds.Count < 2)
+                throw new ArgumentException("Multimodal prompt requires at least two token ids.", nameof(promptTokenIds));
+            if (vision == null || vision.Embeddings == null || vision.Embeddings.Texture == null)
+                throw new ArgumentNullException(nameof(vision));
+            if (maxNewTokens <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maxNewTokens));
+            sampling ??= new Qwen35SamplingConfig();
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var output = new Qwen35GenerationResult
+            {
+                PromptTokenCount = promptTokenIds.Count,
+                VisionTokenCount = vision.EmbeddingCount
+            };
+            var sampler = new Qwen35Sampler(Tokenizer.VocabularySize, sampling);
+            var position = 0;
+            long decoderRuns = 0;
+            Qwen35DecoderState state = null;
+            Qwen35OwnedTexture hidden = null;
+            try
+            {
+                state = CreateInitialState();
+                var prefix = new int[promptTokenIds.Count - 1];
+                for (var i = 0; i < prefix.Length; i++) prefix[i] = promptTokenIds[i];
+
+                using (var embeddings = InjectImageEmbeddings(prefix, vision, out var imagePadIndex))
+                {
+                    BuildVisionMrope(
+                        embeddings.LogicalShape.h,
+                        position,
+                        imagePadIndex,
+                        vision.EmbeddingCount,
+                        vision.GridWidth,
+                        vision.GridHeight,
+                        out var cosine,
+                        out var sine,
+                        out var nextPosition);
+                    using (var step = DecodeCore(embeddings, position, state, cosine, sine, nextPosition))
+                    {
+                        var oldState = state;
+                        state = step.DetachState();
+                        hidden = step.DetachHidden();
+                        position = nextPosition;
+                        oldState.Dispose();
+                    }
+                }
+                decoderRuns++;
+                hidden.Dispose();
+                hidden = null;
+
+                cancellationToken.ThrowIfCancellationRequested();
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                RunTokens(new[] { promptTokenIds[promptTokenIds.Count - 1] }, ref position, ref state, out hidden);
+                decoderRuns++;
+                var nextToken = sampler.Select(ProjectLogits(hidden));
+                hidden.Dispose();
+                hidden = null;
+
+                for (var stepIndex = 0; stepIndex < maxNewTokens; stepIndex++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    output.TokenIds.Add(nextToken);
+                    sampler.AddHistory(nextToken);
+                    var piece = Tokenizer.Decode(new[] { nextToken }, false);
+                    onToken?.Invoke(nextToken, piece);
+                    onProgress?.Invoke(stepIndex + 1, maxNewTokens);
+                    if (nextToken == Tokenizer.EndOfTurnId)
+                    {
+                        output.StoppedOnEndOfTurn = true;
+                        break;
+                    }
+                    if (stepIndex + 1 >= maxNewTokens)
+                        break;
+
+                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
                     RunTokens(new[] { nextToken }, ref position, ref state, out hidden);
                     decoderRuns++;
                     nextToken = sampler.Select(ProjectLogits(hidden));
