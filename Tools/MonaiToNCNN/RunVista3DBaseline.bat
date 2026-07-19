@@ -15,7 +15,7 @@ if not exist "%PYTHON_EXE%" (
 )
 
 echo [RunVista3DBaseline] Ensuring tool dependencies...
-"%PYTHON_EXE%" -c "import monai, nibabel, torch, requests"
+"%PYTHON_EXE%" -c "import monai, nibabel, torch, requests, psutil"
 if errorlevel 1 "%PYTHON_EXE%" -m pip install -r "%REQ_FILE%"
 if errorlevel 1 exit /b 1
 

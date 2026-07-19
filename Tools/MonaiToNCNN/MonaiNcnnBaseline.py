@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import gzip
 import json
 import math
 import os
 import struct
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import nibabel as nib
 import numpy as np
+import psutil
 import torch
 import torch.nn.functional as F
 
@@ -25,6 +28,36 @@ class VolumeData:
     affine: np.ndarray | None
     source_format: str
     nrrd_header: dict[str, str] | None = None
+
+
+def env_flag_enabled(*names: str) -> bool:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        value = raw.strip().lower()
+        if value in ("1", "true", "yes", "on"):
+            return True
+        if value in ("0", "false", "no", "off"):
+            return False
+    return False
+
+
+def env_positive_int(*names: str) -> int:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        text = raw.strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            continue
+        if value > 0:
+            return value
+    return 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,6 +158,49 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=16,
         help="Maximum number of channels for saving per-channel mask volumes when --save-channel-masks is enabled.",
+    )
+    parser.add_argument(
+        "--label-subset-values",
+        default="",
+        help="Optional comma-separated label values to merge into one binary subset mask from the restored labelmap.",
+    )
+    parser.add_argument(
+        "--label-subset-name",
+        default="",
+        help="Optional output name for the merged binary label subset.",
+    )
+    parser.add_argument(
+        "--label-subsets",
+        default="",
+        help="Optional semicolon-separated merged binary subsets, for example ventricles=1,2,18,19,20,21;skull=7.",
+    )
+    parser.add_argument(
+        "--save-multiclass-probs",
+        action="store_true",
+        help="Also materialize and save full multiclass softmax probabilities. Disabled by default to avoid very large allocations.",
+    )
+    parser.add_argument(
+        "--save-multiclass-logits",
+        action="store_true",
+        help="Also materialize and save full multiclass logits. Disabled by default to avoid very large allocations.",
+    )
+    parser.add_argument(
+        "--low-power-mode",
+        action="store_true",
+        default=env_flag_enabled("AIIMAGE_MONAI_LOW_POWER_MODE", "MONAI_LOW_POWER_MODE"),
+        help="Reduce instantaneous CPU load while keeping the output labelmap unchanged.",
+    )
+    parser.add_argument(
+        "--torch-threads",
+        type=int,
+        default=env_positive_int("AIIMAGE_MONAI_TORCH_THREADS", "TORCH_NUM_THREADS"),
+        help="Optional torch intra-op thread count override.",
+    )
+    parser.add_argument(
+        "--torch-interop-threads",
+        type=int,
+        default=env_positive_int("AIIMAGE_MONAI_TORCH_INTEROP_THREADS", "TORCH_NUM_INTEROP_THREADS"),
+        help="Optional torch inter-op thread count override.",
     )
     return parser.parse_args()
 
@@ -509,18 +585,40 @@ def center_crop_or_pad(array: np.ndarray, target_shape: tuple[int, int, int], pa
 
 def normalize_nonzero_per_channel(channels: np.ndarray) -> np.ndarray:
     result = channels.copy()
+    chunk_size = 1_000_000
     for c in range(result.shape[0]):
         values = result[c]
-        mask = values != 0
-        if not np.any(mask):
+        flat = values.reshape(-1)
+        count = 0
+        sum_value = 0.0
+        sum_square = 0.0
+        for start in range(0, flat.size, chunk_size):
+            chunk = flat[start:start + chunk_size]
+            mask = chunk != 0
+            if not np.any(mask):
+                continue
+            nonzero = chunk[mask].astype(np.float64, copy=False)
+            count += int(mask.sum())
+            sum_value += float(nonzero.sum(dtype=np.float64))
+            sum_square += float((nonzero * nonzero).sum(dtype=np.float64))
+
+        if count <= 0:
             continue
-        nonzero = values[mask]
-        mean = float(nonzero.mean())
-        std = float(nonzero.std())
+
+        mean = sum_value / float(count)
+        variance = max((sum_square / float(count)) - (mean * mean), 0.0)
+        std = math.sqrt(variance)
         if std < 1e-6:
             std = 1.0
-        values = values.copy()
-        values[mask] = (nonzero - mean) / std
+
+        for start in range(0, flat.size, chunk_size):
+            chunk = flat[start:start + chunk_size]
+            mask = chunk != 0
+            if not np.any(mask):
+                continue
+            chunk_values = chunk[mask].astype(np.float32, copy=False)
+            chunk[mask] = ((chunk_values - mean) / std).astype(np.float32, copy=False)
+
         result[c] = values
     return result
 
@@ -552,6 +650,152 @@ def build_multiclass_label_map(class_probs: np.ndarray) -> np.ndarray:
     if class_probs.ndim != 4:
         raise ValueError(f"Expected C,D,H,W probabilities, got {class_probs.shape}")
     return np.argmax(class_probs, axis=0).astype(np.uint16, copy=False)
+
+
+def compute_ov0_patch_starts(axis_size: int, roi_size: int) -> list[int]:
+    axis_size = int(axis_size)
+    roi_size = max(1, min(int(roi_size), axis_size))
+    if axis_size <= roi_size:
+        return [0]
+    starts = list(range(0, axis_size - roi_size + 1, roi_size))
+    last_start = axis_size - roi_size
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
+
+def compute_ov0_owned_interval(
+    starts: list[int],
+    axis_index: int,
+    roi_size: int,
+    axis_size: int,
+) -> tuple[int, int]:
+    start = int(starts[axis_index])
+    owned_start = 0 if axis_index <= 0 else int((starts[axis_index - 1] + start + roi_size) // 2)
+    owned_end = (
+        int(axis_size)
+        if axis_index >= len(starts) - 1
+        else int((start + starts[axis_index + 1] + roi_size) // 2)
+    )
+    owned_start = max(owned_start, start)
+    owned_end = min(owned_end, start + roi_size, int(axis_size))
+    if owned_end <= owned_start:
+        raise RuntimeError(
+            f"Invalid ov0 owned interval: axis_size={axis_size}, roi_size={roi_size}, starts={starts}, index={axis_index}"
+        )
+    return owned_start, owned_end
+
+
+def estimate_tensor_bytes(shape: Iterable[int], dtype: np.dtype | str = np.float32) -> int:
+    count = 1
+    for dim in shape:
+        count *= max(1, int(dim))
+    return int(count * np.dtype(dtype).itemsize)
+
+
+def infer_multiclass_labelmap_patchwise_ov0(
+    network,
+    input_tensor: torch.Tensor,
+    roi_size: tuple[int, int, int],
+    output_channels: int,
+    preserve_labels: set[int] | None,
+    yield_every_patches: int = 1,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    if input_tensor.ndim != 5 or int(input_tensor.shape[0]) != 1:
+        raise ValueError(f"Expected input tensor with shape [1,C,D,H,W], got {tuple(int(v) for v in input_tensor.shape)}")
+
+    spatial_shape = tuple(int(v) for v in input_tensor.shape[2:])
+    roi_dhw = tuple(max(1, min(int(roi_size[i]), spatial_shape[i])) for i in range(3))
+    start_lists = [compute_ov0_patch_starts(spatial_shape[i], roi_dhw[i]) for i in range(3)]
+    patch_grid_dhw = [len(start_lists[0]), len(start_lists[1]), len(start_lists[2])]
+    patch_count = int(patch_grid_dhw[0] * patch_grid_dhw[1] * patch_grid_dhw[2])
+    label_map = np.zeros(spatial_shape, dtype=np.uint16 if output_channels > 255 else np.uint8)
+
+    peak_rss_mb = 0.0
+    peak_private_mb = 0.0
+    peak_cuda_allocated_mb = 0.0
+    process = psutil.Process(os.getpid())
+    patch_ms_total = 0.0
+    patch_ms_max = 0.0
+    patch_index = 0
+
+    for z_index, z_start in enumerate(start_lists[0]):
+        z_owned_start, z_owned_end = compute_ov0_owned_interval(start_lists[0], z_index, roi_dhw[0], spatial_shape[0])
+        z_slice = slice(int(z_start), int(z_start + roi_dhw[0]))
+        z_owned_global = slice(z_owned_start, z_owned_end)
+        z_owned_local = slice(z_owned_start - int(z_start), z_owned_end - int(z_start))
+
+        for y_index, y_start in enumerate(start_lists[1]):
+            y_owned_start, y_owned_end = compute_ov0_owned_interval(start_lists[1], y_index, roi_dhw[1], spatial_shape[1])
+            y_slice = slice(int(y_start), int(y_start + roi_dhw[1]))
+            y_owned_global = slice(y_owned_start, y_owned_end)
+            y_owned_local = slice(y_owned_start - int(y_start), y_owned_end - int(y_start))
+
+            for x_index, x_start in enumerate(start_lists[2]):
+                x_owned_start, x_owned_end = compute_ov0_owned_interval(start_lists[2], x_index, roi_dhw[2], spatial_shape[2])
+                x_slice = slice(int(x_start), int(x_start + roi_dhw[2]))
+                x_owned_global = slice(x_owned_start, x_owned_end)
+                x_owned_local = slice(x_owned_start - int(x_start), x_owned_end - int(x_start))
+
+                patch_t0 = time.perf_counter()
+                logits_patch = network(input_tensor[:, :, z_slice, y_slice, x_slice])
+                patch_shape = tuple(int(v) for v in logits_patch.shape)
+                expected_patch_shape = (1, int(output_channels), int(roi_dhw[0]), int(roi_dhw[1]), int(roi_dhw[2]))
+                if patch_shape != expected_patch_shape:
+                    raise RuntimeError(
+                        f"Unexpected patch output shape: expected {expected_patch_shape}, got {patch_shape}"
+                    )
+
+                patch_labels = torch.argmax(logits_patch, dim=1)[0]
+                if preserve_labels:
+                    preserve_mask = torch.zeros_like(patch_labels, dtype=torch.bool)
+                    for label_value in preserve_labels:
+                        preserve_mask |= patch_labels == int(label_value)
+                    patch_labels = torch.where(
+                        preserve_mask,
+                        patch_labels,
+                        torch.zeros_like(patch_labels),
+                    )
+
+                owned_patch = patch_labels[z_owned_local, y_owned_local, x_owned_local]
+                owned_np = owned_patch.detach().cpu().numpy().astype(label_map.dtype, copy=False)
+                label_map[z_owned_global, y_owned_global, x_owned_global] = owned_np
+
+                patch_elapsed_ms = (time.perf_counter() - patch_t0) * 1000.0
+                patch_ms_total += patch_elapsed_ms
+                patch_ms_max = max(patch_ms_max, patch_elapsed_ms)
+                patch_index += 1
+
+                memory = process.memory_info()
+                peak_rss_mb = max(peak_rss_mb, float(memory.rss / (1024 * 1024)))
+                if hasattr(memory, "private"):
+                    peak_private_mb = max(peak_private_mb, float(memory.private / (1024 * 1024)))
+                if torch.cuda.is_available() and input_tensor.device.type == "cuda":
+                    peak_cuda_allocated_mb = max(
+                        peak_cuda_allocated_mb,
+                        float(torch.cuda.memory_allocated(input_tensor.device) / (1024 * 1024)),
+                    )
+
+                del owned_np, owned_patch, patch_labels, logits_patch
+                if torch.cuda.is_available() and input_tensor.device.type == "cuda":
+                    torch.cuda.empty_cache()
+                if yield_every_patches > 0 and (patch_index % yield_every_patches) == 0:
+                    gc.collect()
+                    time.sleep(0.01)
+
+    return label_map, {
+        "patch_count": patch_count,
+        "patch_grid_dhw": patch_grid_dhw,
+        "roi_size_dhw": list(roi_dhw),
+        "ownership_mode": "center-ownership",
+        "sw_overlap": 0.0,
+        "patch_time_mean_ms": float(patch_ms_total / patch_count) if patch_count > 0 else 0.0,
+        "patch_time_max_ms": float(patch_ms_max),
+        "peak_process_rss_mb": float(peak_rss_mb),
+        "peak_process_private_mb": float(peak_private_mb) if peak_private_mb > 0.0 else None,
+        "peak_cuda_allocated_mb": float(peak_cuda_allocated_mb) if peak_cuda_allocated_mb > 0.0 else None,
+        "preserve_labels": sorted(int(v) for v in preserve_labels) if preserve_labels else None,
+    }
 
 
 def save_nifti(path: Path, array: np.ndarray, reference: VolumeData) -> None:
@@ -649,6 +893,56 @@ def save_summary(path: Path, lines: Iterable[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def parse_label_values(text: str) -> list[int]:
+    values: list[int] = []
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        values.append(int(token))
+    return values
+
+
+def parse_label_subset_specs(text: str) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for raw_part in text.split(";"):
+        part = raw_part.strip()
+        if not part:
+            continue
+        name_part, sep, values_part = part.partition("=")
+        if not sep:
+            raise ValueError(
+                "Each --label-subsets entry must use name=value1,value2 format; got: " + part
+            )
+        subset_name = make_safe_name(name_part, "label_subset")
+        subset_values = parse_label_values(values_part)
+        if not subset_values:
+            raise ValueError("Label subset has no values: " + part)
+        specs.append({"label_name": subset_name, "label_values": subset_values})
+    return specs
+
+
+def make_safe_name(text: str, fallback: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in text.strip()).strip("_")
+    return safe or fallback
+
+
+def should_use_patchwise_ov0_multiclass(
+    infer_mode: str,
+    task_mode: str,
+    save_multiclass_logits: bool,
+    save_multiclass_probs: bool,
+    sw_overlap: float,
+) -> bool:
+    return (
+        infer_mode == "monai-sliding-window"
+        and task_mode == "multiclass"
+        and not save_multiclass_logits
+        and not save_multiclass_probs
+        and abs(float(sw_overlap)) <= 1e-8
+    )
+
+
 def describe_array(name: str, array: np.ndarray) -> dict:
     flat = np.asarray(array).astype(np.float32, copy=False).reshape(-1)
     finite = np.isfinite(flat)
@@ -667,29 +961,138 @@ def describe_array(name: str, array: np.ndarray) -> dict:
     }
 
 
+def describe_tensor_shape(name: str, shape: Iterable[int], dtype: str, count: int) -> dict[str, Any]:
+    return {
+        "name": name,
+        "shape": [int(v) for v in shape],
+        "dtype": dtype,
+        "count": int(count),
+        "finite": None,
+        "nan": None,
+        "inf": None,
+        "min": None,
+        "max": None,
+        "mean": None,
+    }
+
+
 def restore_to_original_shape(array: np.ndarray, original_shape: tuple[int, int, int], pad_value: int | float = 0) -> np.ndarray:
     if len(original_shape) != 3:
         raise ValueError(f"Expected 3D original shape, got {original_shape}")
     return center_crop_or_pad(array, original_shape, pad_value=pad_value)
 
 
+def build_resource_stats(device: str) -> dict[str, Any]:
+    process = psutil.Process(os.getpid())
+    memory = process.memory_info()
+    stats: dict[str, Any] = {
+        "process_private_mb": float(memory.private / (1024 * 1024)) if hasattr(memory, "private") else None,
+        "process_rss_mb": float(memory.rss / (1024 * 1024)),
+        "process_vms_mb": float(memory.vms / (1024 * 1024)),
+        "torch_cuda_available": bool(torch.cuda.is_available()),
+        "torch_device": str(device),
+        "torch_cuda_device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
+        "torch_cuda_memory": None,
+        "python_temp_rt_count": 0,
+        "python_compute_buffer_count": 0,
+        "note": "Python baseline does not allocate Unity RenderTexture or ComputeBuffer objects.",
+    }
+
+    if torch.cuda.is_available() and str(device).startswith("cuda"):
+        current = torch.cuda.current_device()
+        stats["torch_cuda_memory"] = {
+            "device_index": current,
+            "device_name": torch.cuda.get_device_name(current),
+            "allocated_mb": float(torch.cuda.memory_allocated(current) / (1024 * 1024)),
+            "reserved_mb": float(torch.cuda.memory_reserved(current) / (1024 * 1024)),
+            "max_allocated_mb": float(torch.cuda.max_memory_allocated(current) / (1024 * 1024)),
+            "max_reserved_mb": float(torch.cuda.max_memory_reserved(current) / (1024 * 1024)),
+        }
+
+    return stats
+
+
+def capture_resource_snapshot(stage: str, device: str) -> dict[str, Any]:
+    snapshot = build_resource_stats(device)
+    snapshot["stage"] = stage
+    return snapshot
+
+
+def apply_torch_runtime_limits(args: argparse.Namespace) -> dict[str, Any]:
+    requested_threads = int(args.torch_threads) if int(args.torch_threads) > 0 else None
+    requested_interop_threads = int(args.torch_interop_threads) if int(args.torch_interop_threads) > 0 else None
+    if args.low_power_mode:
+        if requested_threads is None:
+            requested_threads = 1
+        if requested_interop_threads is None:
+            requested_interop_threads = 1
+        os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+        os.environ.setdefault("KMP_BLOCKTIME", "0")
+
+    if requested_threads is not None:
+        torch.set_num_threads(max(1, int(requested_threads)))
+    if requested_interop_threads is not None:
+        torch.set_num_interop_threads(max(1, int(requested_interop_threads)))
+
+    return {
+        "low_power_mode": bool(args.low_power_mode),
+        "requested_torch_threads": requested_threads,
+        "requested_torch_interop_threads": requested_interop_threads,
+        "effective_torch_threads": int(torch.get_num_threads()),
+        "effective_torch_interop_threads": int(torch.get_num_interop_threads()),
+        "omp_num_threads_env": os.environ.get("OMP_NUM_THREADS"),
+        "mkl_num_threads_env": os.environ.get("MKL_NUM_THREADS"),
+        "openblas_num_threads_env": os.environ.get("OPENBLAS_NUM_THREADS"),
+        "numexpr_num_threads_env": os.environ.get("NUMEXPR_NUM_THREADS"),
+        "omp_wait_policy_env": os.environ.get("OMP_WAIT_POLICY"),
+        "kmp_blocktime_env": os.environ.get("KMP_BLOCKTIME"),
+    }
+
+
 def main() -> int:
     args = parse_args()
+    runtime_limits = apply_torch_runtime_limits(args)
     bundle_root = Path(args.bundle_root).resolve()
     output_root = Path(args.output_dir).resolve()
     input_paths = [Path(path).resolve() for path in args.input]
     target_shape = parse_shape(args.target_shape)
     roi_size = parse_shape(args.roi_size)
+    total_t0 = time.perf_counter()
+    timings: dict[str, int] = {}
+    resource_snapshots: list[dict[str, Any]] = []
 
+    load_model_t0 = time.perf_counter()
+    if torch.cuda.is_available() and str(args.device).startswith("cuda"):
+        torch.cuda.reset_peak_memory_stats(torch.device(args.device))
     network, inference_config, metadata = resolve_model(bundle_root)
+    timings["load_model_ms"] = int(round((time.perf_counter() - load_model_t0) * 1000.0))
+    resource_snapshots.append(capture_resource_snapshot("after_load_model", args.device))
+
     required_channels = int(inference_config["network_def"].get("in_channels", 1))
     output_channels = int(inference_config["network_def"].get("out_channels", 1))
 
+    load_inputs_t0 = time.perf_counter()
     volumes = [load_volume(path) for path in input_paths]
     stacked, input_entries = align_modalities(volumes)
+    timings["load_inputs_ms"] = int(round((time.perf_counter() - load_inputs_t0) * 1000.0))
+    resource_snapshots.append(capture_resource_snapshot("after_load_inputs", args.device))
+
+    prepare_input_t0 = time.perf_counter()
     filled = fill_channels(stacked, required_channels, args.channel_fill)
     if args.normalize_nonzero:
         filled = normalize_nonzero_per_channel(filled)
+    prepared = center_crop_or_pad(filled, target_shape) if args.infer_mode == "ncnn-fixed" else filled
+    timings["prepare_input_ms"] = int(round((time.perf_counter() - prepare_input_t0) * 1000.0))
+    resource_snapshots.append(capture_resource_snapshot("after_prepare_input", args.device))
+
+    subset_specs = parse_label_subset_specs(args.label_subsets)
+    if args.label_subset_values.strip():
+        subset_specs.append(
+            {
+                "label_name": make_safe_name(args.label_subset_name or "label_subset", "label_subset"),
+                "label_values": parse_label_values(args.label_subset_values),
+            }
+        )
 
     case_name = args.case_name.strip() if args.case_name else input_paths[0].stem.replace(".nii", "")
     case_dir = output_root / case_name
@@ -697,10 +1100,29 @@ def main() -> int:
 
     device = torch.device(args.device)
     network = network.to(device)
-    prepared = center_crop_or_pad(filled, target_shape) if args.infer_mode == "ncnn-fixed" else filled
+    inference_t0 = time.perf_counter()
+    patchwise_stats: dict[str, Any] | None = None
     with torch.no_grad():
         input_tensor = torch.from_numpy(prepared).unsqueeze(0).to(device=device, dtype=torch.float32)
-        if args.infer_mode == "monai-sliding-window":
+        task_mode = resolve_task_mode(args.task_mode, output_channels, metadata)
+        if should_use_patchwise_ov0_multiclass(
+            args.infer_mode,
+            task_mode,
+            args.save_multiclass_logits,
+            args.save_multiclass_probs,
+            args.sw_overlap,
+        ):
+            logits = None
+            label_map = None
+            label_map, patchwise_stats = infer_multiclass_labelmap_patchwise_ov0(
+                network=network,
+                input_tensor=input_tensor,
+                roi_size=roi_size,
+                output_channels=output_channels,
+                preserve_labels=None,
+                yield_every_patches=1,
+            )
+        elif args.infer_mode == "monai-sliding-window":
             from monai.inferers import SlidingWindowInferer
 
             inferer = SlidingWindowInferer(
@@ -709,24 +1131,53 @@ def main() -> int:
                 overlap=float(args.sw_overlap),
             )
             logits = inferer(input_tensor, network)
+            label_map = None
         else:
             logits = network(input_tensor)
+            label_map = None
+    timings["inference_ms"] = int(round((time.perf_counter() - inference_t0) * 1000.0))
+    resource_snapshots.append(capture_resource_snapshot("after_inference", args.device))
 
-    logits_np = logits.detach().cpu().numpy().astype(np.float32, copy=False)
-    if logits_np.shape[1] != output_channels:
-        raise RuntimeError(f"Unexpected output channel count: expected {output_channels}, got {logits_np.shape}")
-    task_mode = resolve_task_mode(args.task_mode, output_channels, metadata)
+    postprocess_t0 = time.perf_counter()
+    if logits is not None:
+        logits_shape = tuple(int(v) for v in logits.shape)
+        if logits_shape[1] != output_channels:
+            raise RuntimeError(f"Unexpected output channel count: expected {output_channels}, got {logits_shape}")
+        logits_dtype_name = str(logits.dtype)
+        logits_element_count = int(torch.numel(logits[0]))
+    else:
+        logits_shape = (
+            1,
+            int(output_channels),
+            int(input_tensor.shape[2]),
+            int(input_tensor.shape[3]),
+            int(input_tensor.shape[4]),
+        )
+        logits_dtype_name = "patchwise-argmax-only"
+        logits_element_count = int(output_channels * input_tensor.shape[2] * input_tensor.shape[3] * input_tensor.shape[4])
 
+    logits_np = None
     if task_mode == "brats-multilabel":
+        if logits is None:
+            raise RuntimeError("Patchwise ov0 mode currently supports multiclass tasks only.")
+        logits_np = logits.detach().cpu().numpy().astype(np.float32, copy=False)
         probs = torch.sigmoid(logits)
         masks = (probs >= args.threshold).to(torch.uint8)
         probs_np = probs.detach().cpu().numpy().astype(np.float32, copy=False)
         masks_np = masks.detach().cpu().numpy().astype(np.uint8, copy=False)
         label_map = build_label_map(masks_np[0])
     else:
-        probs = torch.softmax(logits, dim=1)
-        probs_np = probs.detach().cpu().numpy().astype(np.float32, copy=False)
-        label_map = build_multiclass_label_map(probs_np[0])
+        probs_np = None
+        if logits is not None and args.save_multiclass_logits:
+            logits_np = logits.detach().cpu().numpy().astype(np.float32, copy=False)
+        if logits is not None and args.save_multiclass_probs:
+            probs = torch.softmax(logits, dim=1)
+            probs_np = probs.detach().cpu().numpy().astype(np.float32, copy=False)
+            label_map = build_multiclass_label_map(probs_np[0])
+        elif logits is not None:
+            label_map = torch.argmax(logits, dim=1)[0].detach().cpu().numpy().astype(np.uint16, copy=False)
+        elif label_map is None:
+            raise RuntimeError("Expected patchwise multiclass label_map to be available.")
         masks_np = None
 
     original_shape = tuple(int(v) for v in volumes[0].data.shape)
@@ -743,6 +1194,8 @@ def main() -> int:
         restored_label_map = restored_label_map.astype(np.uint16, copy=False)
     else:
         restored_label_map = restored_label_map.astype(np.uint8, copy=False)
+    timings["postprocess_ms"] = int(round((time.perf_counter() - postprocess_t0) * 1000.0))
+    resource_snapshots.append(capture_resource_snapshot("after_postprocess", args.device))
 
     manifest = {
         "bundle_root": str(bundle_root),
@@ -759,15 +1212,17 @@ def main() -> int:
         "target_shape_dhw": list(target_shape),
         "sliding_window_roi_dhw": list(roi_size),
         "sliding_window_overlap": float(args.sw_overlap),
+        "low_power_runtime": runtime_limits,
         "model_input_shape_ncdhw": list(input_tensor.shape),
         "original_volume_shape_dhw": list(original_shape),
         "unity_buffer_shape_whdc": [prepared.shape[3], prepared.shape[2], prepared.shape[1], prepared.shape[0]],
-        "model_output_shape_ncdhw": list(logits_np.shape),
-        "unity_output_shape_whdc": [logits_np.shape[4], logits_np.shape[3], logits_np.shape[2], logits_np.shape[1]],
+        "model_output_shape_ncdhw": list(logits_shape),
+        "unity_output_shape_whdc": [logits_shape[4], logits_shape[3], logits_shape[2], logits_shape[1]],
+        "patchwise_multiclass_ov0": patchwise_stats,
         "files": {
             "input_tensor_f32_bin": "input_tensor_ncdhw_f32.bin",
-            "logits_f32_bin": "logits_ncdhw_f32.bin",
-            "probs_f32_bin": "probs_ncdhw_f32.bin",
+            "logits_f32_bin": "logits_ncdhw_f32.bin" if logits_np is not None else None,
+            "probs_f32_bin": "probs_ncdhw_f32.bin" if probs_np is not None else None,
             "masks_u8_bin": "masks_ncdhw_u8.bin" if masks_np is not None else None,
             "labelmap_u8_bin": "labelmap_dhw_u8.bin",
             "restored_labelmap": None,
@@ -775,26 +1230,34 @@ def main() -> int:
         },
         "stats": {
             "input_tensor": describe_array("input_tensor", input_tensor[0].detach().cpu().numpy()),
-            "logits": describe_array("logits", logits_np[0]),
-            "probs": describe_array("probs", probs_np[0]),
+            "logits": describe_array("logits", logits_np[0]) if logits_np is not None else describe_tensor_shape("logits", logits_shape[1:], logits_dtype_name, logits_element_count),
+            "probs": describe_array("probs", probs_np[0]) if probs_np is not None else None,
             "labelmap": describe_array("labelmap", label_map),
             "restored_labelmap": describe_array("restored_labelmap", restored_label_map),
         },
+        "timings_ms": timings,
+        "resource_stats": None,
+        "resource_snapshots": resource_snapshots,
     }
     if masks_np is not None:
         manifest["stats"]["masks"] = describe_array("masks", masks_np[0])
     if restored_masks is not None:
         manifest["stats"]["restored_masks"] = describe_array("restored_masks", restored_masks)
 
+    export_t0 = time.perf_counter()
     save_array_bin(case_dir / "input_tensor_ncdhw_f32.bin", input_tensor[0].detach().cpu().numpy().astype(np.float32, copy=False))
-    save_array_bin(case_dir / "logits_ncdhw_f32.bin", logits_np[0])
-    save_array_bin(case_dir / "probs_ncdhw_f32.bin", probs_np[0])
+    if logits_np is not None:
+        save_array_bin(case_dir / "logits_ncdhw_f32.bin", logits_np[0])
+    if probs_np is not None:
+        save_array_bin(case_dir / "probs_ncdhw_f32.bin", probs_np[0])
     if masks_np is not None:
         save_array_bin(case_dir / "masks_ncdhw_u8.bin", masks_np[0])
     save_array_bin(case_dir / "labelmap_dhw_u8.bin", label_map)
     np.save(case_dir / "input_tensor_ncdhw_f32.npy", input_tensor[0].detach().cpu().numpy().astype(np.float32, copy=False))
-    np.save(case_dir / "logits_ncdhw_f32.npy", logits_np[0])
-    np.save(case_dir / "probs_ncdhw_f32.npy", probs_np[0])
+    if logits_np is not None:
+        np.save(case_dir / "logits_ncdhw_f32.npy", logits_np[0])
+    if probs_np is not None:
+        np.save(case_dir / "probs_ncdhw_f32.npy", probs_np[0])
     if masks_np is not None:
         np.save(case_dir / "masks_ncdhw_u8.npy", masks_np[0])
     np.save(case_dir / "labelmap_dhw_u8.npy", label_map)
@@ -824,7 +1287,63 @@ def main() -> int:
                 restored_mask_files.append(f"restored_masks/{file_name}")
             manifest["files"]["restored_mask_channels"] = restored_mask_files
 
+        if subset_specs:
+            subset_dir = case_dir / "label_subsets"
+            subset_dir.mkdir(parents=True, exist_ok=True)
+            subset_ext = ".nrrd" if reference_volume.source_format == "nrrd" else ".nii.gz"
+            manifest_subsets: list[dict[str, Any]] = []
+            for subset_spec in subset_specs:
+                subset_name = str(subset_spec["label_name"])
+                subset_values = [int(value) for value in subset_spec["label_values"]]
+                subset_processed = np.isin(label_map, subset_values).astype(np.uint8, copy=False)
+                subset_restored = np.isin(restored_label_map, subset_values).astype(np.uint8, copy=False)
+                subset_labelmap = np.where(
+                    np.isin(label_map, subset_values),
+                    label_map,
+                    np.zeros_like(label_map),
+                ).astype(restored_label_map.dtype if restored_label_map.dtype.itemsize >= label_map.dtype.itemsize else label_map.dtype, copy=False)
+                subset_restored_labelmap = np.where(
+                    np.isin(restored_label_map, subset_values),
+                    restored_label_map,
+                    np.zeros_like(restored_label_map),
+                ).astype(restored_label_map.dtype, copy=False)
+                processed_subset_name = f"{subset_name}_mask_dhw_u8.bin"
+                save_array_bin(subset_dir / processed_subset_name, subset_processed)
+                processed_subset_labelmap_name = f"{subset_name}_labelmap_dhw_u16.bin"
+                save_array_bin(subset_dir / processed_subset_labelmap_name, subset_labelmap.astype(np.uint16, copy=False))
+                restored_subset_name = f"{subset_name}_mask_restored{subset_ext}"
+                save_original_format_volume(subset_dir / restored_subset_name, subset_restored, reference_volume)
+                restored_subset_labelmap_name = f"{subset_name}_labelmap_restored{subset_ext}"
+                save_original_format_volume(
+                    subset_dir / restored_subset_labelmap_name,
+                    subset_restored_labelmap.astype(np.uint16, copy=False),
+                    reference_volume,
+                )
+                manifest_subsets.append(
+                    {
+                        "label_values": subset_values,
+                        "label_name": subset_name,
+                        "processed_binary_mask": f"label_subsets/{processed_subset_name}",
+                        "restored_binary_mask": f"label_subsets/{restored_subset_name}",
+                        "processed_labelmap": f"label_subsets/{processed_subset_labelmap_name}",
+                        "restored_labelmap": f"label_subsets/{restored_subset_labelmap_name}",
+                    }
+                )
+            manifest["label_subsets"] = manifest_subsets
+            if manifest_subsets:
+                manifest["label_subset"] = manifest_subsets[0]
+
+    timings["export_ms"] = int(round((time.perf_counter() - export_t0) * 1000.0))
+    timings["total_elapsed_ms"] = int(round((time.perf_counter() - total_t0) * 1000.0))
+    resource_snapshots.append(capture_resource_snapshot("after_export", args.device))
+    resource_stats = build_resource_stats(args.device)
+    manifest["timings_ms"] = timings
+    manifest["resource_stats"] = resource_stats
+    manifest["resource_snapshots"] = resource_snapshots
     save_json(case_dir / "baseline_manifest.json", manifest)
+    save_json(case_dir / "timings.json", timings)
+    save_json(case_dir / "resource_stats.json", resource_stats)
+    save_json(case_dir / "resource_snapshots.json", {"snapshots": resource_snapshots})
 
     if args.save_nifti and volumes[0].affine is not None:
         nii = nib.Nifti1Image(label_map.astype(np.uint8), volumes[0].affine)
@@ -842,10 +1361,16 @@ def main() -> int:
         f"sliding_window_overlap={args.sw_overlap}",
         f"original_shape_dhw={original_shape[0]},{original_shape[1]},{original_shape[2]}",
         f"input_tensor_shape={tuple(input_tensor.shape)}",
-        f"logits_shape={tuple(logits_np.shape)}",
+        f"logits_shape={tuple(logits_shape)}",
         f"threshold={args.threshold}",
         f"task_mode={task_mode}",
         f"output_channels={output_channels}",
+        f"save_multiclass_logits={bool(args.save_multiclass_logits)}",
+        f"save_multiclass_probs={bool(args.save_multiclass_probs)}",
+        f"patchwise_multiclass_ov0={bool(patchwise_stats is not None)}",
+        f"timings_json={case_dir / 'timings.json'}",
+        f"resource_stats_json={case_dir / 'resource_stats.json'}",
+        f"resource_snapshots_json={case_dir / 'resource_snapshots.json'}",
     ]
     if task_mode == "brats-multilabel":
         summary_lines.append("labels=0:background,1:tumor core,2:whole tumor,4:enhancing tumor")

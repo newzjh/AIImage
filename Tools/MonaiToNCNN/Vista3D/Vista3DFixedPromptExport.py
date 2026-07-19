@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import logging
 import os
@@ -144,12 +145,62 @@ def parse_input_shape(shape_text: str) -> tuple[int, ...]:
     return values
 
 
+def _normalize_label_values(values: Any) -> list[int]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple, set)):
+        normalized: list[int] = []
+        for value in values:
+            normalized.extend(_normalize_label_values(value))
+        return normalized
+    if isinstance(values, str):
+        text = values.strip()
+        if not text:
+            return []
+        if text.startswith("$"):
+            return _evaluate_subclass_expression(text[1:])
+        return [int(text)]
+    if hasattr(values, "tolist") and not isinstance(values, (str, bytes)):
+        return _normalize_label_values(values.tolist())
+    return [int(values)]
+
+
+def _evaluate_subclass_expression(expression: str) -> list[int]:
+    def eval_node(node: ast.AST) -> Any:
+        if isinstance(node, ast.Expression):
+            return eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return int(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            operand = int(eval_node(node.operand))
+            return operand if isinstance(node.op, ast.UAdd) else -operand
+        if isinstance(node, (ast.List, ast.Tuple)):
+            values: list[int] = []
+            for element in node.elts:
+                values.extend(_normalize_label_values(eval_node(element)))
+            return values
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return _normalize_label_values(eval_node(node.left)) + _normalize_label_values(eval_node(node.right))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            if func_name == "range":
+                args = [int(eval_node(arg)) for arg in node.args]
+                return list(range(*args))
+            if func_name == "list":
+                if len(node.args) != 1:
+                    raise ExportError(f"Unsupported list() subclass expression: {expression}")
+                return _normalize_label_values(eval_node(node.args[0]))
+        raise ExportError(f"Unsupported subclass expression: {expression}")
+
+    return _normalize_label_values(eval_node(ast.parse(expression, mode="eval")))
+
+
 def expand_label_prompt(requested_label: int, config: dict[str, Any]) -> list[int]:
     subclass = config.get("subclass") or {}
-    values = subclass.get(str(int(requested_label)))
+    values = _normalize_label_values(subclass.get(str(int(requested_label))))
     if not values:
         return [int(requested_label)]
-    return [int(value) for value in values]
+    return values
 
 
 def ensure_bundle_pythonpath(bundle_root: Path) -> None:
