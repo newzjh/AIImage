@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 
 namespace NcnnCompute
@@ -21,12 +22,35 @@ namespace NcnnCompute
 
         private Qwen35ModelContract(string directory) { ModelDirectory = directory; }
 
-        public static Qwen35ModelContract Validate(string directory, bool requireWeights = true)
+        public static Qwen35ModelContract Validate(
+            string directory,
+            bool requireWeights = true,
+            Action<Qwen35Progress> onProgress = null,
+            CancellationToken cancellationToken = default)
         {
             var contract = new Qwen35ModelContract(Path.GetFullPath(directory ?? string.Empty));
             if (!Directory.Exists(contract.ModelDirectory)) { contract.Errors.Add("model directory missing: " + contract.ModelDirectory); return contract; }
-            try { contract.MobileAssets = Qwen35MobileAssetSet.TryLoad(contract.ModelDirectory, verifyHashes: true); }
+            onProgress?.Invoke(new Qwen35Progress("validating_assets", "Reading mobile asset manifest", 0f));
+            try
+            {
+                contract.MobileAssets = Qwen35MobileAssetSet.TryLoad(
+                    contract.ModelDirectory,
+                    verifyHashes: true,
+                    (completed, total, file) =>
+                    {
+                        var progress = total > 0 ? (float)((double)completed / total) : 1f;
+                        onProgress?.Invoke(new Qwen35Progress(
+                            "validating_assets",
+                            "Verifying " + file,
+                            progress * 0.9f,
+                            completed,
+                            total));
+                    },
+                    cancellationToken);
+            }
             catch (Exception error) { contract.Errors.Add("mobile asset manifest invalid: " + error.Message); }
+            cancellationToken.ThrowIfCancellationRequested();
+            onProgress?.Invoke(new Qwen35Progress("validating_contract", "Parsing model contract", 0.92f));
             var modelJsonPath = Path.Combine(contract.ModelDirectory, "model.json");
             if (!File.Exists(modelJsonPath)) { contract.Errors.Add("model.json missing"); return contract; }
             var root = JObject.Parse(File.ReadAllText(modelJsonPath));
@@ -65,6 +89,8 @@ namespace NcnnCompute
                 if (contract.ShortConvCount != 18) contract.Errors.Add("ShortConv count mismatch: " + contract.ShortConvCount);
                 if (contract.GatedDeltaRuleCount != 18) contract.Errors.Add("GDR count mismatch: " + contract.GatedDeltaRuleCount);
             }
+            cancellationToken.ThrowIfCancellationRequested();
+            onProgress?.Invoke(new Qwen35Progress("validating_contract", "Model contract ready", 1f));
             return contract;
         }
 

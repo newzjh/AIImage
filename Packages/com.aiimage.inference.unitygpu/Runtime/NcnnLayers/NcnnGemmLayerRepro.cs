@@ -591,8 +591,11 @@ namespace NcnnCompute
                 return false;
             }
             var slices = Mathf.Max(1, tensor.texture.volumeDepth > 0 ? tensor.texture.volumeDepth : tensor.packs);
-            var capacity = checked(tensor.width * slices * 4);
-            return capacity >= shape.w && checked(tensor.width * Mathf.Max(0, slices - 1) * 4) < shape.w;
+            if (slices <= 1 || tensor.width >= shape.w)
+                return false;
+            var logicalPacks = checked((shape.w + 3) / 4);
+            return checked(tensor.width * slices) >= logicalPacks
+                && checked(tensor.width * (slices - 1)) < logicalPacks;
         }
 
         private static bool IsPackedLogical2DTexture(NcnnRepro.CmdTensorRef tensor, NcnnRepro.BufferShape shape)
@@ -602,8 +605,11 @@ namespace NcnnCompute
             if (tensor == null || tensor.texture == null || shape.dims != 2 || tensor.height != shape.h)
                 return false;
             var slices = Mathf.Max(1, tensor.packs);
-            var capacity = checked(tensor.width * slices * 4);
-            return capacity >= shape.w && checked(tensor.width * Mathf.Max(0, slices - 1) * 4) < shape.w;
+            if (slices <= 1 || tensor.width >= shape.w)
+                return false;
+            var logicalPacks = checked((shape.w + 3) / 4);
+            return checked(tensor.width * slices) >= logicalPacks
+                && checked(tensor.width * (slices - 1)) < logicalPacks;
         }
 
         private static bool TryExecuteRenderTextureAttentionProjectionTexturePath(

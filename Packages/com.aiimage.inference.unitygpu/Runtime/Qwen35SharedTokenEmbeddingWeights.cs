@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 
 namespace NcnnCompute
@@ -47,41 +49,91 @@ namespace NcnnCompute
                 return Load(stream, expectedElementCount);
         }
 
+        public static async UniTask<Qwen35SharedTokenEmbeddingWeights> LoadModelAssetAsync(
+            string modelDirectory,
+            string logicalName = "qwen3.5_embed_token.ncnn.bin",
+            int expectedElementCount = ExpectedElementCount,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(modelDirectory)) throw new ArgumentException("Model directory is empty.", nameof(modelDirectory));
+            if (string.IsNullOrWhiteSpace(logicalName)) throw new ArgumentException("Logical token embedding asset name is empty.", nameof(logicalName));
+            cancellationToken.ThrowIfCancellationRequested();
+            var stopwatch = Stopwatch.StartNew();
+            var payload = await UniTask.RunOnThreadPool(
+                () =>
+                {
+                    using (var stream = Qwen35ModelAssetResolver.OpenBin(modelDirectory, logicalName))
+                        return ReadCpuPayload(stream, expectedElementCount);
+                },
+                cancellationToken: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = Upload(payload);
+            stopwatch.Stop();
+            result.LoadMilliseconds = stopwatch.ElapsedMilliseconds;
+            return result;
+        }
+
         private static Qwen35SharedTokenEmbeddingWeights Load(Stream stream, int expectedElementCount)
         {
             if (stream == null) throw new ArgumentNullException(nameof(stream));
             if (expectedElementCount <= 0) throw new ArgumentOutOfRangeException(nameof(expectedElementCount));
             var stopwatch = Stopwatch.StartNew();
+            var result = Upload(ReadCpuPayload(stream, expectedElementCount));
+            stopwatch.Stop();
+            result.LoadMilliseconds = stopwatch.ElapsedMilliseconds;
+            return result;
+        }
+
+        private static CpuPayload ReadCpuPayload(Stream stream, int expectedElementCount)
+        {
             using (var reader = new NcnnBinReader(stream))
             {
                 if (reader.IsQ8Archive)
                 {
                     var packed = reader.ReadQ8NcnnMatPacked(expectedElementCount, Qwen35DecoderSession.HiddenSize);
-                    var sharedQ8 = new Qwen35SharedTokenEmbeddingWeights
-                    {
-                        Int8PackedBuffer = new ComputeBuffer(packed.PackedValues.Length, sizeof(uint), ComputeBufferType.Structured),
-                        Int8ScalesBuffer = new ComputeBuffer(packed.Scales.Length, sizeof(float), ComputeBufferType.Structured),
-                        ElementCount = packed.ElementCount
-                    };
-                    NcnnGpuResourceTracker.RegisterBuffer(sharedQ8.Int8PackedBuffer, packed.PackedValues.Length, sizeof(uint), "Qwen35SharedTokenEmbeddingWeights.Int8Packed");
-                    NcnnGpuResourceTracker.RegisterBuffer(sharedQ8.Int8ScalesBuffer, packed.Scales.Length, sizeof(float), "Qwen35SharedTokenEmbeddingWeights.Int8Scales");
-                    sharedQ8.Int8PackedBuffer.SetData(packed.PackedValues);
-                    sharedQ8.Int8ScalesBuffer.SetData(packed.Scales);
-                    stopwatch.Stop();
-                    sharedQ8.LoadMilliseconds = stopwatch.ElapsedMilliseconds;
-                    return sharedQ8;
+                    return new CpuPayload { Packed = packed, ElementCount = packed.ElementCount };
                 }
 
                 var values = reader.ReadNcnnMatAsFloat32(expectedElementCount, 0, 0, 0, 0);
-                var sharedFp32 = new Qwen35SharedTokenEmbeddingWeights
-                {
-                    Buffer = NcnnRepro.NewBuffer(values),
-                    ElementCount = values.Length
-                };
-                stopwatch.Stop();
-                sharedFp32.LoadMilliseconds = stopwatch.ElapsedMilliseconds;
-                return sharedFp32;
+                return new CpuPayload { Values = values, ElementCount = values.Length };
             }
+        }
+
+        private static Qwen35SharedTokenEmbeddingWeights Upload(CpuPayload payload)
+        {
+            if (payload == null) throw new ArgumentNullException(nameof(payload));
+            if (payload.Packed == null)
+            {
+                return new Qwen35SharedTokenEmbeddingWeights
+                {
+                    Buffer = NcnnRepro.NewBuffer(payload.Values),
+                    ElementCount = payload.ElementCount
+                };
+            }
+
+            var result = new Qwen35SharedTokenEmbeddingWeights { ElementCount = payload.ElementCount };
+            try
+            {
+                result.Int8PackedBuffer = new ComputeBuffer(payload.Packed.PackedValues.Length, sizeof(uint), ComputeBufferType.Structured);
+                result.Int8ScalesBuffer = new ComputeBuffer(payload.Packed.Scales.Length, sizeof(float), ComputeBufferType.Structured);
+                NcnnGpuResourceTracker.RegisterBuffer(result.Int8PackedBuffer, payload.Packed.PackedValues.Length, sizeof(uint), "Qwen35SharedTokenEmbeddingWeights.Int8Packed");
+                NcnnGpuResourceTracker.RegisterBuffer(result.Int8ScalesBuffer, payload.Packed.Scales.Length, sizeof(float), "Qwen35SharedTokenEmbeddingWeights.Int8Scales");
+                result.Int8PackedBuffer.SetData(payload.Packed.PackedValues);
+                result.Int8ScalesBuffer.SetData(payload.Packed.Scales);
+                return result;
+            }
+            catch
+            {
+                result.Dispose();
+                throw;
+            }
+        }
+
+        private sealed class CpuPayload
+        {
+            public NcnnQ8PackedArray Packed;
+            public float[] Values;
+            public int ElementCount;
         }
 
         public void Attach(NcnnRepro repro)

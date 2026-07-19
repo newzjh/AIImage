@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 
 namespace NcnnCompute
@@ -25,7 +26,11 @@ namespace NcnnCompute
         public long StoredWeightBytes { get; private set; }
         public bool WeightOnly { get; private set; }
 
-        public static Qwen35MobileAssetSet TryLoad(string modelDirectory, bool verifyHashes = false)
+        public static Qwen35MobileAssetSet TryLoad(
+            string modelDirectory,
+            bool verifyHashes = false,
+            Action<long, long, string> onHashProgress = null,
+            CancellationToken cancellationToken = default)
         {
             var root = Path.GetFullPath(modelDirectory ?? string.Empty);
             var path = Path.Combine(root, ManifestFileName);
@@ -40,8 +45,21 @@ namespace NcnnCompute
             };
             var logicalFiles = document["logical_files"] as JObject
                 ?? throw new InvalidDataException("Qwen3.5 mobile asset manifest has no logical_files object: " + path);
+            long totalHashBytes = 0;
+            if (verifyHashes)
+            {
+                foreach (var property in logicalFiles.Properties())
+                {
+                    if (!(property.Value is JObject item) || !(item["parts"] is JArray parts))
+                        continue;
+                    foreach (var token in parts)
+                        totalHashBytes = checked(totalHashBytes + ((long?)token?["bytes"] ?? 0));
+                }
+            }
+            long completedHashBytes = 0;
             foreach (var property in logicalFiles.Properties())
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var item = property.Value as JObject
                     ?? throw new InvalidDataException("Invalid logical asset entry: " + property.Name);
                 var parts = item["parts"] as JArray
@@ -61,8 +79,17 @@ namespace NcnnCompute
                         throw new InvalidDataException("Qwen3.5 mobile shard size mismatch: " + relative + " expected=" + expectedBytes + " actual=" + actualBytes);
                     var expectedHash = ((string)part["sha256"] ?? string.Empty).ToLowerInvariant();
                     if (expectedHash.Length != 64) throw new InvalidDataException("Qwen3.5 shard SHA-256 is missing: " + relative);
-                    if (verifyHashes && !string.Equals(ComputeSha256(fullPath), expectedHash, StringComparison.Ordinal))
-                        throw new InvalidDataException("Qwen3.5 mobile shard SHA-256 mismatch: " + relative);
+                    if (verifyHashes)
+                    {
+                        var hashBase = completedHashBytes;
+                        var actualHash = ComputeSha256(
+                            fullPath,
+                            bytes => onHashProgress?.Invoke(hashBase + bytes, totalHashBytes, relative),
+                            cancellationToken);
+                        if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
+                            throw new InvalidDataException("Qwen3.5 mobile shard SHA-256 mismatch: " + relative);
+                        completedHashBytes = checked(completedHashBytes + actualBytes);
+                    }
                     entry.Parts.Add(new Part { Path = fullPath, Bytes = actualBytes, Sha256 = expectedHash });
                     entry.StoredBytes += actualBytes;
                 }
@@ -114,11 +141,34 @@ namespace NcnnCompute
             return full;
         }
 
-        private static string ComputeSha256(string path)
+        private static string ComputeSha256(
+            string path,
+            Action<long> onProgress,
+            CancellationToken cancellationToken)
         {
             using (var sha = SHA256.Create())
-            using (var stream = File.OpenRead(path))
-                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
+            using (var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                4 * 1024 * 1024,
+                FileOptions.SequentialScan))
+            {
+                var buffer = new byte[4 * 1024 * 1024];
+                long completed = 0;
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var read = stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0) break;
+                    sha.TransformBlock(buffer, 0, read, null, 0);
+                    completed += read;
+                    onProgress?.Invoke(completed);
+                }
+                sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
+            }
         }
     }
 

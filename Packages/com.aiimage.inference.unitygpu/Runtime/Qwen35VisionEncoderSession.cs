@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -55,6 +57,11 @@ namespace NcnnCompute
         private bool _disposed;
 
         public Qwen35VisionEncoderSession(string modelDirectory)
+            : this(modelDirectory, true)
+        {
+        }
+
+        private Qwen35VisionEncoderSession(string modelDirectory, bool loadSynchronously)
         {
             if (string.IsNullOrWhiteSpace(modelDirectory))
                 throw new ArgumentException("Model directory is empty.", nameof(modelDirectory));
@@ -68,13 +75,67 @@ namespace NcnnCompute
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_patch, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_position, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_encoder, modelDirectory);
-                Load(_patch, modelDirectory, "qwen3.5_vision_embed_patch.ncnn.param", "qwen3.5_vision_embed_patch.ncnn.bin");
-                Load(_position, modelDirectory, "qwen3.5_vision_embed_pos.ncnn.param", "qwen3.5_vision_embed_pos.ncnn.bin");
-                Load(_encoder, modelDirectory, "qwen3.5_vision_encoder.ncnn.param", "qwen3.5_vision_encoder.ncnn.bin");
+                if (loadSynchronously)
+                {
+                    Load(_patch, modelDirectory, "qwen3.5_vision_embed_patch.ncnn.param", "qwen3.5_vision_embed_patch.ncnn.bin");
+                    Load(_position, modelDirectory, "qwen3.5_vision_embed_pos.ncnn.param", "qwen3.5_vision_embed_pos.ncnn.bin");
+                    Load(_encoder, modelDirectory, "qwen3.5_vision_encoder.ncnn.param", "qwen3.5_vision_encoder.ncnn.bin");
+                }
             }
             catch
             {
                 Dispose();
+                throw;
+            }
+        }
+
+        public static async UniTask<Qwen35VisionEncoderSession> CreateAsync(
+            string modelDirectory,
+            CancellationToken cancellationToken = default,
+            Action<Qwen35Progress> onProgress = null)
+        {
+            var session = new Qwen35VisionEncoderSession(modelDirectory, false);
+            try
+            {
+                var networks = new[]
+                {
+                    new NetworkLoad("vision_embed_patch", "qwen3.5_vision_embed_patch.ncnn.param", "qwen3.5_vision_embed_patch.ncnn.bin", session._patch),
+                    new NetworkLoad("vision_embed_pos", "qwen3.5_vision_embed_pos.ncnn.param", "qwen3.5_vision_embed_pos.ncnn.bin", session._position),
+                    new NetworkLoad("vision_encoder", "qwen3.5_vision_encoder.ncnn.param", "qwen3.5_vision_encoder.ncnn.bin", session._encoder)
+                };
+                long totalBytes = 0;
+                for (var i = 0; i < networks.Length; i++)
+                {
+                    networks[i].StoredBytes = Math.Max(1, Qwen35ModelAssetResolver.GetStoredBytes(modelDirectory, networks[i].BinName));
+                    totalBytes = checked(totalBytes + networks[i].StoredBytes);
+                }
+
+                long completedBytes = 0;
+                for (var i = 0; i < networks.Length; i++)
+                {
+                    var network = networks[i];
+                    var start = totalBytes > 0 ? (float)((double)completedBytes / totalBytes) : 0f;
+                    var end = totalBytes > 0 ? (float)((double)(completedBytes + network.StoredBytes) / totalBytes) : 1f;
+                    await LoadAsync(
+                        network.Repro,
+                        modelDirectory,
+                        network.ParamName,
+                        network.BinName,
+                        progress => onProgress?.Invoke(new Qwen35Progress(
+                            "loading_vision",
+                            network.Name + " " + (progress.layerName ?? progress.stage),
+                            Mathf.Lerp(start, end, progress.progress01),
+                            progress.layerIndex,
+                            progress.layerCount)),
+                        cancellationToken);
+                    completedBytes += network.StoredBytes;
+                }
+                onProgress?.Invoke(new Qwen35Progress("loading_vision", "Vision networks ready", 1f));
+                return session;
+            }
+            catch
+            {
+                session.Dispose();
                 throw;
             }
         }
@@ -363,6 +424,40 @@ namespace NcnnCompute
             using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))
             using (var reader = new NcnnBinReader(stream))
                 repro.LoadModel(File.ReadAllText(Path.Combine(directory, paramName)), reader);
+        }
+
+        private static async UniTask LoadAsync(
+            NcnnRepro repro,
+            string directory,
+            string paramName,
+            string binName,
+            Action<NcnnRepro.LoadProgress> onProgress,
+            CancellationToken cancellationToken)
+        {
+            using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))
+            using (var reader = new NcnnBinReader(stream))
+                await repro.LoadModelAsync(
+                    File.ReadAllText(Path.Combine(directory, paramName)),
+                    reader,
+                    onProgress,
+                    cancellationToken);
+        }
+
+        private sealed class NetworkLoad
+        {
+            public readonly string Name;
+            public readonly string ParamName;
+            public readonly string BinName;
+            public readonly NcnnRepro Repro;
+            public long StoredBytes;
+
+            public NetworkLoad(string name, string paramName, string binName, NcnnRepro repro)
+            {
+                Name = name;
+                ParamName = paramName;
+                BinName = binName;
+                Repro = repro;
+            }
         }
 
         private static void DestroyUnityObject(UnityEngine.Object value)

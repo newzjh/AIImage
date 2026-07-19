@@ -148,7 +148,7 @@ namespace NcnnCompute
         public const float RopeTheta = 10000000f;
 
         private readonly NcnnOps _ops;
-        private readonly Qwen35SharedTokenEmbeddingWeights _sharedWeights;
+        private Qwen35SharedTokenEmbeddingWeights _sharedWeights;
         private readonly NcnnRepro _embed;
         private readonly NcnnRepro _decoder;
         private readonly NcnnRepro _projection;
@@ -162,6 +162,14 @@ namespace NcnnCompute
         public long SharedWeightBytes => _sharedWeights.ByteCount;
 
         public Qwen35DecoderSession(string modelDirectory, Qwen35ByteLevelBpeTokenizer tokenizer)
+            : this(modelDirectory, tokenizer, true)
+        {
+        }
+
+        private Qwen35DecoderSession(
+            string modelDirectory,
+            Qwen35ByteLevelBpeTokenizer tokenizer,
+            bool loadSynchronously)
         {
             if (string.IsNullOrWhiteSpace(modelDirectory))
                 throw new ArgumentException("Model directory is empty.", nameof(modelDirectory));
@@ -170,7 +178,6 @@ namespace NcnnCompute
             _ops = new NcnnOps();
             try
             {
-                _sharedWeights = Qwen35SharedTokenEmbeddingWeights.LoadModelAsset(modelDirectory);
                 _embed = CreateRepro();
                 _decoder = CreateRepro();
                 _projection = CreateRepro();
@@ -178,29 +185,104 @@ namespace NcnnCompute
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_decoder, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_projection, modelDirectory);
                 _decoder.AttentionKvCacheTextureCapacity = Mathf.Min(4096, Mathf.Max(1, SystemInfo.maxTextureSize));
-                _sharedWeights.Attach(_embed);
-                _sharedWeights.Attach(_projection);
-                Load(_embed, modelDirectory, "qwen3.5_embed_token.ncnn.param", "qwen3.5_embed_token.ncnn.bin");
-                Load(_decoder, modelDirectory, "qwen3.5_decoder.ncnn.param", "qwen3.5_decoder.ncnn.bin");
-                Load(_projection, modelDirectory, "qwen3.5_proj_out.ncnn.param", "qwen3.5_embed_token.ncnn.bin");
-
-                _decoderOutputs.Add("out0");
-                for (var i = 0; i < AttentionCacheCount; i++)
+                if (loadSynchronously)
                 {
-                    _decoderOutputs.Add("out_cache_k" + i);
-                    _decoderOutputs.Add("out_cache_v" + i);
+                    _sharedWeights = Qwen35SharedTokenEmbeddingWeights.LoadModelAsset(modelDirectory);
+                    AttachSharedWeights();
+                    Load(_embed, modelDirectory, "qwen3.5_embed_token.ncnn.param", "qwen3.5_embed_token.ncnn.bin");
+                    Load(_decoder, modelDirectory, "qwen3.5_decoder.ncnn.param", "qwen3.5_decoder.ncnn.bin");
+                    Load(_projection, modelDirectory, "qwen3.5_proj_out.ncnn.param", "qwen3.5_embed_token.ncnn.bin");
                 }
-                for (var i = 0; i < ConvCacheCount; i++)
-                {
-                    _decoderOutputs.Add("out_cache_conv" + i);
-                    _decoderOutputs.Add("out_cache_gdr" + i);
-                }
+                InitializeDecoderOutputs();
             }
             catch
             {
                 Dispose();
                 throw;
             }
+        }
+
+        public static async UniTask<Qwen35DecoderSession> CreateAsync(
+            string modelDirectory,
+            Qwen35ByteLevelBpeTokenizer tokenizer,
+            CancellationToken cancellationToken = default,
+            Action<Qwen35Progress> onProgress = null)
+        {
+            var session = new Qwen35DecoderSession(modelDirectory, tokenizer, false);
+            try
+            {
+                onProgress?.Invoke(new Qwen35Progress("loading_decoder", "Reading shared token weights", 0f));
+                session._sharedWeights = await Qwen35SharedTokenEmbeddingWeights.LoadModelAssetAsync(
+                    modelDirectory,
+                    cancellationToken: cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                session.AttachSharedWeights();
+                onProgress?.Invoke(new Qwen35Progress("loading_decoder", "Shared token weights ready", 0.12f));
+
+                await LoadAsync(
+                    session._embed,
+                    modelDirectory,
+                    "qwen3.5_embed_token.ncnn.param",
+                    "qwen3.5_embed_token.ncnn.bin",
+                    progress => onProgress?.Invoke(MapNetworkProgress("embed_token", progress, 0.12f, 0.16f)),
+                    cancellationToken);
+                await LoadAsync(
+                    session._decoder,
+                    modelDirectory,
+                    "qwen3.5_decoder.ncnn.param",
+                    "qwen3.5_decoder.ncnn.bin",
+                    progress => onProgress?.Invoke(MapNetworkProgress("decoder", progress, 0.16f, 0.96f)),
+                    cancellationToken);
+                await LoadAsync(
+                    session._projection,
+                    modelDirectory,
+                    "qwen3.5_proj_out.ncnn.param",
+                    "qwen3.5_embed_token.ncnn.bin",
+                    progress => onProgress?.Invoke(MapNetworkProgress("proj_out", progress, 0.96f, 1f)),
+                    cancellationToken);
+                onProgress?.Invoke(new Qwen35Progress("loading_decoder", "Decoder networks ready", 1f));
+                return session;
+            }
+            catch
+            {
+                session.Dispose();
+                throw;
+            }
+        }
+
+        private void AttachSharedWeights()
+        {
+            _sharedWeights.Attach(_embed);
+            _sharedWeights.Attach(_projection);
+        }
+
+        private void InitializeDecoderOutputs()
+        {
+            _decoderOutputs.Add("out0");
+            for (var i = 0; i < AttentionCacheCount; i++)
+            {
+                _decoderOutputs.Add("out_cache_k" + i);
+                _decoderOutputs.Add("out_cache_v" + i);
+            }
+            for (var i = 0; i < ConvCacheCount; i++)
+            {
+                _decoderOutputs.Add("out_cache_conv" + i);
+                _decoderOutputs.Add("out_cache_gdr" + i);
+            }
+        }
+
+        private static Qwen35Progress MapNetworkProgress(
+            string network,
+            NcnnRepro.LoadProgress progress,
+            float start,
+            float end)
+        {
+            return new Qwen35Progress(
+                "loading_decoder",
+                network + " " + (progress.layerName ?? progress.stage),
+                Mathf.Lerp(start, end, progress.progress01),
+                progress.layerIndex,
+                progress.layerCount);
         }
 
         public Action<string> DebugLog
@@ -534,7 +616,8 @@ namespace NcnnCompute
             Qwen35SamplingConfig sampling = null,
             CancellationToken cancellationToken = default,
             Action<int, string> onToken = null,
-            Action<int, int> onProgress = null)
+            Action<int, int> onProgress = null,
+            Action<Qwen35Progress> onPipelineProgress = null)
         {
             ThrowIfDisposed();
             if (promptTokenIds == null || promptTokenIds.Count < 2)
@@ -558,12 +641,16 @@ namespace NcnnCompute
             Qwen35OwnedTexture hidden = null;
             try
             {
+                onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "Creating texture-backed caches", 0f));
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
                 state = CreateInitialState();
+                onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "Embedding multimodal prompt", 0.12f));
                 var prefix = new int[promptTokenIds.Count - 1];
                 for (var i = 0; i < prefix.Length; i++) prefix[i] = promptTokenIds[i];
 
                 using (var embeddings = InjectImageEmbeddings(prefix, vision, out var imagePadIndex))
                 {
+                    onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "Building multimodal RoPE", 0.24f));
                     BuildVisionMrope(
                         embeddings.LogicalShape.h,
                         position,
@@ -584,6 +671,7 @@ namespace NcnnCompute
                     }
                 }
                 decoderRuns++;
+                onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "Image and prompt prefill complete", 0.82f));
                 hidden.Dispose();
                 hidden = null;
 
@@ -594,6 +682,7 @@ namespace NcnnCompute
                 var nextToken = sampler.Select(ProjectLogits(hidden));
                 hidden.Dispose();
                 hidden = null;
+                onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "First token ready", 1f));
 
                 for (var stepIndex = 0; stepIndex < maxNewTokens; stepIndex++)
                 {
@@ -1095,6 +1184,23 @@ namespace NcnnCompute
             using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))
             using (var reader = new NcnnBinReader(stream))
                 repro.LoadModel(File.ReadAllText(Path.Combine(directory, paramName)), reader);
+        }
+
+        private static async UniTask LoadAsync(
+            NcnnRepro repro,
+            string directory,
+            string paramName,
+            string binName,
+            Action<NcnnRepro.LoadProgress> onProgress,
+            CancellationToken cancellationToken)
+        {
+            using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))
+            using (var reader = new NcnnBinReader(stream))
+                await repro.LoadModelAsync(
+                    File.ReadAllText(Path.Combine(directory, paramName)),
+                    reader,
+                    onProgress,
+                    cancellationToken);
         }
 
         private static void DestroyUnityObject(UnityEngine.Object value)
