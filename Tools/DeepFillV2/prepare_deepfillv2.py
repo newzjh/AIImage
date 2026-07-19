@@ -62,6 +62,11 @@ def lower_extract_image_patches(model: onnx.ModelProto) -> int:
     initializers = set(initializer_values)
     rewritten: list[onnx.NodeProto] = []
     count = 0
+    packed_input_hw: tuple[int, int] | None = None
+    if model.graph.input:
+        input_shape = shapes.get(model.graph.input[0].name)
+        if input_shape and len(input_shape) == 4 and input_shape[1] > 0 and input_shape[2] > 0:
+            packed_input_hw = (input_shape[1], input_shape[2] // 2)
 
     for node in model.graph.node:
         # The TensorFlow export omits several intermediate shapes, but its
@@ -81,7 +86,16 @@ def lower_extract_image_patches(model: onnx.ModelProto) -> int:
         # the two attention branches unambiguous for this fixed 1920x1080
         # model.
         if not input_shape or not all(input_shape):
-            if node.name.endswith("ExtractImagePatches_1"):
+            if packed_input_hw and node.name == "inpaint_net/ExtractImagePatches":
+                height, width = packed_input_hw
+                input_shape = [1, height // 4, width // 4, 96]
+            elif packed_input_hw and node.name == "inpaint_net/ExtractImagePatches_1":
+                height, width = packed_input_hw
+                input_shape = [1, height // 8, width // 8, 96]
+            elif packed_input_hw and node.name == "inpaint_net/ExtractImagePatches_2":
+                height, width = packed_input_hw
+                input_shape = [1, height // 8, width // 8, 1]
+            elif node.name.endswith("ExtractImagePatches_1"):
                 input_shape = [1, 135, 240, 96]
             elif node.name.endswith("ExtractImagePatches_2"):
                 input_shape = [1, 135, 240, 1]

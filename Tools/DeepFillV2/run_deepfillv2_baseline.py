@@ -28,11 +28,13 @@ def main() -> None:
     parser.add_argument("--image", type=Path, default=root / "Documents/ClipCompareInput/03.jpg")
     parser.add_argument("--mask", type=Path, required=True, help="YOLO person mask: white denotes pixels to inpaint.")
     parser.add_argument("--output-dir", type=Path, default=root / "Tools/DeepFillV2/output/baseline_03")
+    parser.add_argument("--width", type=int, default=MODEL_WIDTH)
+    parser.add_argument("--height", type=int, default=MODEL_HEIGHT)
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    original = load_rgb(args.image, (MODEL_WIDTH, MODEL_HEIGHT), Image.Resampling.LANCZOS)
-    mask_rgb = load_rgb(args.mask, (MODEL_WIDTH, MODEL_HEIGHT), Image.Resampling.NEAREST)
+    original = load_rgb(args.image, (args.width, args.height), Image.Resampling.LANCZOS)
+    mask_rgb = load_rgb(args.mask, (args.width, args.height), Image.Resampling.NEAREST)
     binary_mask = np.where(mask_rgb.max(axis=2, keepdims=True) >= 128.0, 255.0, 0.0).astype(np.float32)
     packed = np.concatenate((original, np.repeat(binary_mask, 3, axis=2)), axis=1)[None, ...]
 
@@ -41,9 +43,9 @@ def main() -> None:
     output = session.run(None, {session.get_inputs()[0].name: packed})[0]
     elapsed_ms = round((time.perf_counter() - start) * 1000.0, 3)
     repaired = Image.fromarray(output[0].astype(np.uint8), "RGB")
-    repaired.save(args.output_dir / "03_deepfillv2_1920x1080.png")
+    repaired.save(args.output_dir / f"03_deepfillv2_{args.width}x{args.height}.png")
     repaired.resize(Image.open(args.image).size, Image.Resampling.LANCZOS).save(args.output_dir / "03_deepfillv2.png")
-    Image.fromarray(binary_mask[..., 0].astype(np.uint8), "L").save(args.output_dir / "03_yolo_mask_1920x1080.png")
+    Image.fromarray(binary_mask[..., 0].astype(np.uint8), "L").save(args.output_dir / f"03_yolo_mask_{args.width}x{args.height}.png")
     report = {
         "model": str(args.model.resolve()), "image": str(args.image.resolve()), "mask": str(args.mask.resolve()),
         "input_shape": list(packed.shape), "output_shape": list(output.shape), "elapsed_ms": elapsed_ms,

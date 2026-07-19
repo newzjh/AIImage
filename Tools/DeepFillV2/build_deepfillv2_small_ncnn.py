@@ -39,6 +39,9 @@ PATCH_LAYERS = {
     "padconv_6",
 }
 
+INTERP_COORDINATE_TRANSFORM_PARAM = 100
+INTERP_COORDINATE_TRANSFORM_ASYMMETRIC = "1"
+
 TAG_FP16 = 0x01306B47
 TAG_INT8 = 0x000D4B38
 TAG_FLOAT32_EXTRA_SCALE = 0x0002C056
@@ -212,6 +215,10 @@ def layer_weight_byte_count(layer: Layer, src: BinaryIO, dst: BinaryIO | None) -
 
 
 def rewrite_layer(layer: Layer) -> str:
+    if layer.typ == "Interp":
+        if INTERP_COORDINATE_TRANSFORM_PARAM in layer.params:
+            return layer.raw
+        return layer.raw + f" {INTERP_COORDINATE_TRANSFORM_PARAM}={INTERP_COORDINATE_TRANSFORM_ASYMMETRIC}"
     if layer.name not in PATCH_LAYERS:
         return layer.raw
     p = layer.params
@@ -353,6 +360,8 @@ def build_from_source_onnx(args: argparse.Namespace) -> None:
         "opset": opset,
         "conv_nodes": len(conv_nodes),
         "extract_image_patches_nodes": len(patch_nodes),
+        "interp_coordinate_transform": "asymmetric",
+        "interp_coordinate_transform_param": INTERP_COORDINATE_TRANSFORM_PARAM,
         "patch_layers": sorted(PATCH_LAYERS),
         "copied_total_bytes": sum(copied.values()),
         "output_bin_sha256": sha256(args.output_bin),
@@ -396,6 +405,8 @@ def build_from_standard_bin(args: argparse.Namespace) -> None:
         "output_bin_bytes": args.output_bin.stat().st_size,
         "output_param_bytes": args.output_param.stat().st_size,
         "patch_layers": sorted(PATCH_LAYERS),
+        "interp_coordinate_transform": "asymmetric",
+        "interp_coordinate_transform_param": INTERP_COORDINATE_TRANSFORM_PARAM,
         "skipped_weight_bytes": skipped,
         "skipped_total_bytes": sum(skipped.values()),
         "copied_total_bytes": sum(copied.values()),
