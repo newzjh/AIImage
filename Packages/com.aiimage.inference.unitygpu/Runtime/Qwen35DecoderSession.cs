@@ -168,10 +168,13 @@ namespace NcnnCompute
             _ops = new NcnnOps();
             try
             {
-                _sharedWeights = Qwen35SharedTokenEmbeddingWeights.Load(Path.Combine(modelDirectory, "qwen3.5_embed_token.ncnn.bin"));
+                _sharedWeights = Qwen35SharedTokenEmbeddingWeights.LoadModelAsset(modelDirectory);
                 _embed = CreateRepro();
                 _decoder = CreateRepro();
                 _projection = CreateRepro();
+                Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_embed, modelDirectory);
+                Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_decoder, modelDirectory);
+                Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_projection, modelDirectory);
                 _decoder.AttentionKvCacheTextureCapacity = Mathf.Min(4096, Mathf.Max(1, SystemInfo.maxTextureSize));
                 _sharedWeights.Attach(_embed);
                 _sharedWeights.Attach(_projection);
@@ -981,7 +984,7 @@ namespace NcnnCompute
 
         private static void Load(NcnnRepro repro, string directory, string paramName, string binName)
         {
-            using (var stream = File.OpenRead(Path.Combine(directory, binName)))
+            using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))
             using (var reader = new NcnnBinReader(stream))
                 repro.LoadModel(File.ReadAllText(Path.Combine(directory, paramName)), reader);
         }

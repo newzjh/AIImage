@@ -42,15 +42,22 @@ namespace NcnnCompute
                                             var bw = gp.transB ? gp.constantK : gp.constantN;
                                             var bh = gp.transB ? gp.constantN : gp.constantK;
                                             var weightCount = checked(bw * bh);
-                                            var useSharedWeights = owner.SharedTokenEmbeddingWeights != null
-                                                && owner.SharedTokenEmbeddingWeights.count == weightCount
+                                            var hasSharedFp32 = owner.SharedTokenEmbeddingWeights != null
                                                 && !owner.UsesQuantizedWeightsForLayer(layer)
                                                 && !owner.UsesFp16WeightStorage;
+                                            var hasSharedInt8 = owner.SharedTokenEmbeddingWeightsInt8Packed != null
+                                                && owner.SharedTokenEmbeddingWeightsInt8Scales != null
+                                                && owner.UsesInt8WeightOnlyForLayer(layer);
+                                            var useSharedWeights = owner.SharedTokenEmbeddingElementCount == weightCount
+                                                && (hasSharedFp32 || hasSharedInt8);
+                                            NcnnQ8PackedArray directQ8 = null;
 
                                             phaseSw.Restart();
                                             if (useSharedWeights)
                                                 br.SkipNcnnMat(bw, bh, 0, 0, 0);
-                                            else
+                                            else if (!(owner.UsesInt8WeightOnlyForLayer(layer)
+                                                && gp.transB
+                                                && br.TryReadQ8NcnnMatPacked(weightCount, gp.constantK, out directQ8)))
                                                 gp.bDataCpu = NcnnRepro.ReadClipMatAsFloat32(br, bw, bh, 0, 0, 0);
                                             if (gp.constantC && gp.broadcastTypeC != -1)
                                             {
@@ -76,8 +83,17 @@ namespace NcnnCompute
                                             phaseSw.Restart();
                                             if (useSharedWeights)
                                             {
-                                                gp.bData = owner.SharedTokenEmbeddingWeights;
-                                                gp.ownsBData = false;
+                                                if (hasSharedInt8)
+                                                {
+                                                    gp.bDataInt8Packed = owner.SharedTokenEmbeddingWeightsInt8Packed;
+                                                    gp.bDataInt8Scales = owner.SharedTokenEmbeddingWeightsInt8Scales;
+                                                    gp.ownsBDataInt8 = false;
+                                                }
+                                                else
+                                                {
+                                                    gp.bData = owner.SharedTokenEmbeddingWeights;
+                                                    gp.ownsBData = false;
+                                                }
                                             }
                                             else if (owner.UsesInt4WeightOnlyForLayer(layer))
                                             {
@@ -92,12 +108,17 @@ namespace NcnnCompute
                                             }
                                             else if (owner.UsesInt8WeightOnlyForLayer(layer))
                                             {
-                                                var quantized = NcnnRepro.NewInt8WeightOnlyUpload(
-                                                    gp.bDataCpu,
-                                                    gp.constantN,
-                                                    gp.constantK,
-                                                    outputChannelsAreContiguous: gp.transB,
-                                                    "NcnnRepro.GemmInt8WeightOnly:" + layer.name);
+                                                var quantized = directQ8 != null
+                                                    ? NcnnRepro.NewInt8WeightOnlyUpload(
+                                                        directQ8,
+                                                        gp.constantN,
+                                                        "NcnnRepro.GemmInt8WeightOnlyDirect:" + layer.name)
+                                                    : NcnnRepro.NewInt8WeightOnlyUpload(
+                                                        gp.bDataCpu,
+                                                        gp.constantN,
+                                                        gp.constantK,
+                                                        outputChannelsAreContiguous: gp.transB,
+                                                        "NcnnRepro.GemmInt8WeightOnly:" + layer.name);
                                                 gp.bDataInt8Packed = quantized.packedWeights;
                                                 gp.bDataInt8Scales = quantized.scales;
                                             }
@@ -109,6 +130,8 @@ namespace NcnnCompute
                                                 gp.bDataFp16 = NcnnRepro.NewFp16Buffer(gp.bDataCpu, "NcnnRepro.GemmWeightFp16:" + layer.name);
                                             if (gp.cDataCpu != null)
                                                 gp.cData = NcnnRepro.NewBuffer(gp.cDataCpu);
+                                            if (owner.UsesQuantizedWeightsForLayer(layer))
+                                                gp.bDataCpu = null;
                                             phaseSw.Stop();
                                             uploadMs += phaseSw.ElapsedMilliseconds;
                                         }

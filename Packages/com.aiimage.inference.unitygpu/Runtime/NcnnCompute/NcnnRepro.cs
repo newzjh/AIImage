@@ -400,6 +400,7 @@ namespace NcnnCompute
             public ComputeBuffer bDataInt4Scales;
             public ComputeBuffer cData;
             public bool ownsBData = true;
+            public bool ownsBDataInt8 = true;
             public float[] bDataCpu;
             public float[] cDataCpu;
             public ComputeBuffer TextureWeightBinding => bData ?? bDataInt8Packed ?? bDataInt4Packed;
@@ -408,8 +409,8 @@ namespace NcnnCompute
             {
                 try { if (ownsBData) { NcnnGpuResourceTracker.ReleaseBuffer(bData, "NcnnRepro.GemmPack.Dispose"); bData?.Dispose(); } } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataFp16, "NcnnRepro.GemmPack.Dispose"); bDataFp16?.Dispose(); } catch { }
-                try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Packed, "NcnnRepro.GemmPack.Dispose"); bDataInt8Packed?.Dispose(); } catch { }
-                try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Scales, "NcnnRepro.GemmPack.Dispose"); bDataInt8Scales?.Dispose(); } catch { }
+                try { if (ownsBDataInt8) { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Packed, "NcnnRepro.GemmPack.Dispose"); bDataInt8Packed?.Dispose(); } } catch { }
+                try { if (ownsBDataInt8) { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt8Scales, "NcnnRepro.GemmPack.Dispose"); bDataInt8Scales?.Dispose(); } } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt4Packed, "NcnnRepro.GemmPack.Dispose"); bDataInt4Packed?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(bDataInt4Scales, "NcnnRepro.GemmPack.Dispose"); bDataInt4Scales?.Dispose(); } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(cData, "NcnnRepro.GemmPack.Dispose"); cData?.Dispose(); } catch { }
@@ -465,12 +466,18 @@ namespace NcnnCompute
             public int biasTerm;
             public int weightSize;
             public ComputeBuffer w;
+            public ComputeBuffer wInt8Packed;
+            public ComputeBuffer wInt8Scales;
             public ComputeBuffer b;
             public bool ownsW = true;
+            public bool ownsWInt8 = true;
+            public ComputeBuffer WeightBinding => w ?? wInt8Packed;
 
             public void Dispose()
             {
                 try { if (ownsW) { NcnnGpuResourceTracker.ReleaseBuffer(w, "NcnnRepro.EmbedPack.Dispose"); w?.Dispose(); } } catch { }
+                try { if (ownsWInt8) { NcnnGpuResourceTracker.ReleaseBuffer(wInt8Packed, "NcnnRepro.EmbedPack.Dispose.Int8Packed"); wInt8Packed?.Dispose(); } } catch { }
+                try { if (ownsWInt8) { NcnnGpuResourceTracker.ReleaseBuffer(wInt8Scales, "NcnnRepro.EmbedPack.Dispose.Int8Scales"); wInt8Scales?.Dispose(); } } catch { }
                 try { NcnnGpuResourceTracker.ReleaseBuffer(b, "NcnnRepro.EmbedPack.Dispose"); b?.Dispose(); } catch { }
             }
         }
@@ -1187,6 +1194,7 @@ namespace NcnnCompute
                 view = null;
                 return false;
             }
+#endif
 
             public bool TryGetLogicalShape(string name, out int dims, out int w, out int h, out int d, out int c)
             {
@@ -1231,6 +1239,7 @@ namespace NcnnCompute
                 return false;
             }
 
+#if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
             public ComputeBuffer ExtractBuffer(string name)
             {
                 var buf = GetOrMaterializeBuffer(name);
@@ -1295,6 +1304,9 @@ namespace NcnnCompute
         public ModelLoadProfile LastLoadProfile { get; private set; }
         public bool ForceBufferBinaryOpAll { get; set; }
         public ComputeBuffer SharedTokenEmbeddingWeights { get; set; }
+        public ComputeBuffer SharedTokenEmbeddingWeightsInt8Packed { get; set; }
+        public ComputeBuffer SharedTokenEmbeddingWeightsInt8Scales { get; set; }
+        public int SharedTokenEmbeddingElementCount { get; set; }
         public bool ForceCpuGemmAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
         // Default false: some runners intentionally use the buffer GELU fallback as a GPU sync point via SetData.
@@ -5006,6 +5018,8 @@ namespace NcnnCompute
                     gp.bDataFp16 = NewFp16Buffer(gp.bDataCpu, "NcnnRepro.GemmWeightFp16:" + layer.name);
                 if (gp.cDataCpu != null)
                     gp.cData = NewBuffer(gp.cDataCpu);
+                if (UsesQuantizedWeightsForLayer(layer))
+                    gp.bDataCpu = null;
                 phaseSw.Stop();
                 uploadMs += phaseSw.ElapsedMilliseconds;
 
@@ -8180,6 +8194,28 @@ namespace NcnnCompute
             return upload;
         }
 
+        internal static Int8WeightOnlyUpload NewInt8WeightOnlyUpload(
+            NcnnQ8PackedArray data,
+            int expectedOutputChannels,
+            string label)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (expectedOutputChannels <= 0 || data.Scales == null || data.Scales.Length != expectedOutputChannels)
+                throw new ArgumentException("Direct Q8 upload must contain one scale per output channel.", nameof(data));
+            if (data.PackedValues == null || data.PackedValues.Length != Math.Max(1, (data.ElementCount + 3) / 4))
+                throw new ArgumentException("Direct Q8 packed payload size mismatch.", nameof(data));
+            var upload = new Int8WeightOnlyUpload
+            {
+                packedWeights = new ComputeBuffer(data.PackedValues.Length, sizeof(uint), ComputeBufferType.Structured),
+                scales = new ComputeBuffer(data.Scales.Length, sizeof(float), ComputeBufferType.Structured)
+            };
+            NcnnGpuResourceTracker.RegisterBuffer(upload.packedWeights, data.PackedValues.Length, sizeof(uint), (label ?? "NcnnRepro.Int8WeightOnly") + ".PackedInt8Direct");
+            NcnnGpuResourceTracker.RegisterBuffer(upload.scales, data.Scales.Length, sizeof(float), (label ?? "NcnnRepro.Int8WeightOnly") + ".PerOutputScaleDirect");
+            upload.packedWeights.SetData(data.PackedValues);
+            upload.scales.SetData(data.Scales);
+            return upload;
+        }
+
         // INT4 stores signed weights as eight two's-complement 4-bit values per uint.
         // It is an immutable upload selected by INT4Selective manifests; activations
         // and outputs remain texture-native Pack4 resources during inference.
@@ -8516,7 +8552,8 @@ namespace NcnnCompute
             else if (h != 0) count = checked(w * h);
             else if (w != 0) count = w;
             else count = 1;
-            return ReadClipArrayAsFloat32(br, count, loadType);
+            if (count == 0) return Array.Empty<float>();
+            return br.ReadNcnnMatAsFloat32(w, h, d, c, loadType);
         }
 
         internal static float[] ReadPackedOrRawWeightArray(NcnnBinReader br, int count, string layerName)

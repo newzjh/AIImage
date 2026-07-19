@@ -15,10 +15,13 @@ namespace NcnnCompute
 
         public static Qwen35MobileMemoryPolicy Evaluate(Qwen35ModelContract contract, string quantizationManifestPath = null)
         {
-            long bytes = 0;
-            foreach (var path in contract.Files.Values)
-                if (path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase)) bytes += new FileInfo(path).Length;
-            var quantized = false;
+            long bytes = contract.MobileAssets != null ? contract.MobileAssets.StoredWeightBytes : 0;
+            if (contract.MobileAssets == null)
+            {
+                foreach (var pair in contract.Files)
+                    if (pair.Key.EndsWith(".bin", StringComparison.OrdinalIgnoreCase)) bytes += new FileInfo(pair.Value).Length;
+            }
+            var quantized = contract.MobileAssets != null && contract.MobileAssets.WeightOnly;
             if (!string.IsNullOrWhiteSpace(quantizationManifestPath) && File.Exists(quantizationManifestPath))
                 quantized = (bool?)JObject.Parse(File.ReadAllText(quantizationManifestPath))["weight_only"] ?? false;
             var reasons = quantized && bytes <= 1610612736L

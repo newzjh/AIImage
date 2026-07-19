@@ -27,8 +27,8 @@ namespace NcnnCompute
                                         ep.weightSize = layer.GetInt(3, 0);
 
                                         phaseSw.Restart();
-                                        var useSharedWeights = owner.SharedTokenEmbeddingWeights != null
-                                            && owner.SharedTokenEmbeddingWeights.count == ep.weightSize;
+                                        var useSharedWeights = owner.SharedTokenEmbeddingElementCount == ep.weightSize
+                                            && (owner.SharedTokenEmbeddingWeights != null || owner.SharedTokenEmbeddingWeightsInt8Packed != null);
                                         float[] w = null;
                                         if (useSharedWeights)
                                             br.SkipNcnnMat(ep.weightSize, 0, 0, 0, 0);
@@ -44,7 +44,10 @@ namespace NcnnCompute
                                         if (useSharedWeights)
                                         {
                                             ep.w = owner.SharedTokenEmbeddingWeights;
+                                            ep.wInt8Packed = owner.SharedTokenEmbeddingWeightsInt8Packed;
+                                            ep.wInt8Scales = owner.SharedTokenEmbeddingWeightsInt8Scales;
                                             ep.ownsW = false;
+                                            ep.ownsWInt8 = false;
                                         }
                                         else
                                         {
@@ -85,14 +88,15 @@ namespace NcnnCompute
 
                         do
                         {
-                                                if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.w == null)
+                                                if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.WeightBinding == null)
                                                     throw new InvalidOperationException("Embed not found: " + layer.name);
                                                 if (!bufferBlobs.TryGetValue(layer.bottomNames[0], out var indicesBuf) || indicesBuf == null)
                                                     throw new InvalidOperationException("Embed input buffer not found: " + layer.bottomNames[0]);
 
                                                 var words = indicesBuf.count;
                                                 var outTensor = owner.RentTempTensorBuffer(2, ep.numOutput, words);
-                                                owner.Ops.Embed(indicesBuf, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outTensor.buffer);
+                                                owner.Ops.SetInt8EmbedWeights(ep.wInt8Packed, ep.wInt8Scales);
+                                                owner.Ops.Embed(indicesBuf, words, ep.WeightBinding, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outTensor.buffer);
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],
                                                     outTensor,
@@ -118,8 +122,9 @@ namespace NcnnCompute
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.w == null)
+            if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.WeightBinding == null)
                 throw new InvalidOperationException("Embed not found: " + layer.name);
+            owner.Ops.SetInt8EmbedWeights(ep.wInt8Packed, ep.wInt8Scales);
 
             var words = ResolveInputElementCount(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
             var logicalShape = new NcnnRepro.BufferShape(2, Mathf.Max(1, ep.numOutput), words, 1, 1);
@@ -128,7 +133,7 @@ namespace NcnnCompute
 
             if (bufferBlobs.TryGetValue(layer.bottomNames[0], out var indexBuffer) && indexBuffer != null)
             {
-                owner.Ops.EmbedTexture(indexBuffer, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
+                owner.Ops.EmbedTexture(indexBuffer, words, ep.WeightBinding, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
             }
             else if (textureBlobs.TryGetValue(layer.bottomNames[0], out var indexTexture) && indexTexture != null && indexTexture.texture != null)
             {
@@ -139,7 +144,7 @@ namespace NcnnCompute
                     throw new InvalidOperationException("Embed texture index input requires linear mat or texture array: " + layer.name);
                 if (!isLinear && indexShape.dims > 2)
                     throw new InvalidOperationException("Embed pack4 texture index input only supports dims<=2: " + layer.name);
-                owner.Ops.EmbedTexture(indexTexture.texture, isLinear, indexStorage.w, indexStorage.h, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
+                owner.Ops.EmbedTexture(indexTexture.texture, isLinear, indexStorage.w, indexStorage.h, words, ep.WeightBinding, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
             }
             else
             {
@@ -159,8 +164,9 @@ namespace NcnnCompute
             var remaining = context.remaining;
             var pinnedNames = context.pinnedNames;
 
-            if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.w == null)
+            if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.WeightBinding == null)
                 throw new InvalidOperationException("Embed not found: " + layer.name);
+            owner.Ops.SetInt8EmbedWeights(ep.wInt8Packed, ep.wInt8Scales);
 
             var srcShape = NcnnRepro.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var words = Mathf.Max(1, srcShape.w * srcShape.h * srcShape.d * srcShape.c);
@@ -175,7 +181,7 @@ namespace NcnnCompute
             if (!isLinear && srcShape.dims > 2)
                 throw new InvalidOperationException("Embed command-buffer pack4 index input only supports dims<=2: " + layer.name);
 
-            owner.Ops.EmbedTexture(cmd, src.texture, isLinear, srcStorage.w, srcStorage.h, words, ep.w, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
+            owner.Ops.EmbedTexture(cmd, src.texture, isLinear, srcStorage.w, srcStorage.h, words, ep.WeightBinding, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, output);
             blobs[layer.topNames[0]] = NcnnRepro.CreateCmdTensorRef(output, logicalShape, storageShape, owned: true);
             if (shapes != null)
                 shapes[layer.topNames[0]] = logicalShape;

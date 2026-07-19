@@ -14,18 +14,33 @@ namespace NcnnCompute
 
         private readonly Stream _stream;
         private readonly BinaryReader _br;
+        private readonly NcnnQ8ArchiveReader _q8Reader;
+        private readonly NcnnQ8ArchiveWriter _q8Capture;
 
         public long Position => _stream.CanSeek ? _stream.Position : 0;
 
         public NcnnBinReader(Stream stream)
+            : this(stream, null)
+        {
+        }
+
+        public NcnnBinReader(Stream stream, NcnnQ8ArchiveWriter q8Capture)
         {
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
             _br = new BinaryReader(_stream);
+            _q8Capture = q8Capture;
+            if (q8Capture == null && ProbeQ8Archive(stream))
+                _q8Reader = new NcnnQ8ArchiveReader(stream);
         }
+
+        public bool IsQ8Archive => _q8Reader != null;
 
         public int ReadInt32()
         {
-            return _br.ReadInt32();
+            if (_q8Reader != null) return BitConverter.ToInt32(_q8Reader.ReadRaw(sizeof(int)), 0);
+            var value = _br.ReadInt32();
+            _q8Capture?.WriteRaw(BitConverter.GetBytes(value));
+            return value;
         }
 
         public float[] ReadFloat32Array(int count)
@@ -35,16 +50,19 @@ namespace NcnnCompute
             if (count == 0)
                 return Array.Empty<float>();
 
+            if (_q8Reader != null) return _q8Reader.ReadArray(count, requireRaw: true);
             var bytes = ReadBytesChecked(checked(count * sizeof(float)));
             var a = new float[count];
             if (BitConverter.IsLittleEndian)
             {
                 Buffer.BlockCopy(bytes, 0, a, 0, bytes.Length);
+                _q8Capture?.WriteFloat32Array(a);
                 return a;
             }
 
             for (var i = 0; i < count; i++)
                 a[i] = BitConverter.ToSingle(bytes, i * sizeof(float));
+            _q8Capture?.WriteFloat32Array(a);
             return a;
         }
 
@@ -52,6 +70,7 @@ namespace NcnnCompute
         {
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
+            if (_q8Reader != null) return _q8Reader.ReadArray(count, requireRaw: false);
             var readCount = align4 ? Align4(count * 2) : count * 2;
             var bytes = ReadBytesChecked(readCount);
             var a = new float[count];
@@ -60,6 +79,7 @@ namespace NcnnCompute
                 var h = (ushort)(bytes[i * 2 + 0] | (bytes[i * 2 + 1] << 8));
                 a[i] = HalfToSingle(h);
             }
+            _q8Capture?.WriteNcnnArray(a);
             return a;
         }
 
@@ -75,7 +95,10 @@ namespace NcnnCompute
             else if (w != 0) count = w;
             else count = 1;
 
-            return ReadNcnnArrayAsFloat32(count, loadType);
+            var values = ReadNcnnArrayAsFloat32(count, loadType);
+            var captureBlockSize = loadType == 0 && h > 0 && d == 0 && c == 0 ? w : 0;
+            _q8Capture?.WriteNcnnArray(values, captureBlockSize, forceFp32: loadType == 1);
+            return values;
         }
 
         public void SkipNcnnMat(int w, int h, int d, int c, int loadType)
@@ -98,6 +121,19 @@ namespace NcnnCompute
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
 
+            if (_q8Reader != null)
+            {
+                _q8Reader.SkipRecord(count);
+                return;
+            }
+
+            if (_q8Capture != null)
+            {
+                var values = ReadNcnnArrayAsFloat32(count, loadType);
+                _q8Capture.WriteNcnnArray(values, forceFp32: loadType == 1);
+                return;
+            }
+
             if (loadType == 1)
             {
                 Skip((long)count * 4);
@@ -107,7 +143,7 @@ namespace NcnnCompute
             if (loadType != 0)
                 throw new NotSupportedException("unsupported loadType: " + loadType);
 
-            var flag = ReadUInt32();
+            var flag = _br.ReadUInt32();
             var f0 = (byte)(flag & 0xFF);
             var f1 = (byte)((flag >> 8) & 0xFF);
             var f2 = (byte)((flag >> 16) & 0xFF);
@@ -150,7 +186,10 @@ namespace NcnnCompute
         {
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
-            return _br.ReadBytes(count);
+            if (_q8Reader != null) return _q8Reader.ReadRaw(count);
+            var bytes = _br.ReadBytes(count);
+            _q8Capture?.WriteRaw(bytes);
+            return bytes;
         }
 
         public void Skip(long byteCount)
@@ -159,6 +198,18 @@ namespace NcnnCompute
                 throw new ArgumentOutOfRangeException(nameof(byteCount));
             if (byteCount == 0)
                 return;
+            if (byteCount > int.MaxValue) throw new NotSupportedException("A single Q8 raw record cannot exceed Int32.MaxValue bytes.");
+            if (_q8Reader != null)
+            {
+                _q8Reader.SkipRecord((int)byteCount);
+                return;
+            }
+            if (_q8Capture != null)
+            {
+                var bytes = ReadBytesChecked((int)byteCount);
+                _q8Capture.WriteRaw(bytes);
+                return;
+            }
             if (_stream.CanSeek)
                 _stream.Seek(byteCount, SeekOrigin.Current);
             else
@@ -228,13 +279,16 @@ namespace NcnnCompute
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
 
+            if (_q8Reader != null)
+                return _q8Reader.ReadArray(count, requireRaw: loadType == 1);
+
             if (loadType == 1)
-                return ReadFloat32Array(count);
+                return ReadFloat32ArraySource(count);
 
             if (loadType != 0)
                 throw new NotSupportedException("unsupported loadType: " + loadType);
 
-            var flag = ReadUInt32();
+            var flag = _br.ReadUInt32();
             var f0 = (byte)(flag & 0xFF);
             var f1 = (byte)((flag >> 8) & 0xFF);
             var f2 = (byte)((flag >> 16) & 0xFF);
@@ -266,12 +320,12 @@ namespace NcnnCompute
 
             if (flag == TagFloat32ExtraScale)
             {
-                return ReadFloat32Array(count);
+                return ReadFloat32ArraySource(count);
             }
 
             if (sum != 0)
             {
-                var table = ReadFloat32Array(256);
+                var table = ReadFloat32ArraySource(256);
                 var idxBytes = ReadBytesChecked(Align4(count));
                 var a = new float[count];
                 for (var i = 0; i < count; i++)
@@ -280,14 +334,33 @@ namespace NcnnCompute
             }
 
             if (f0 == 0)
-                return ReadFloat32Array(count);
+                return ReadFloat32ArraySource(count);
 
             throw new InvalidDataException("unsupported ncnn weight encoding flag: 0x" + flag.ToString("X8"));
         }
 
         public uint ReadUInt32()
         {
-            return _br.ReadUInt32();
+            if (_q8Reader != null) return BitConverter.ToUInt32(_q8Reader.ReadRaw(sizeof(uint)), 0);
+            var value = _br.ReadUInt32();
+            _q8Capture?.WriteRaw(BitConverter.GetBytes(value));
+            return value;
+        }
+
+        public NcnnQ8PackedArray ReadQ8NcnnMatPacked(int count, int expectedBlockSize)
+        {
+            if (_q8Reader == null) throw new InvalidOperationException("Packed Q8 reads require an AIImage Q8 archive.");
+            return _q8Reader.ReadPackedArray(count, expectedBlockSize);
+        }
+
+        public bool TryReadQ8NcnnMatPacked(int count, int expectedBlockSize, out NcnnQ8PackedArray packed)
+        {
+            if (_q8Reader == null)
+            {
+                packed = null;
+                return false;
+            }
+            return _q8Reader.TryReadPackedArray(count, expectedBlockSize, out packed);
         }
 
         public void Seek(long position)
@@ -303,6 +376,29 @@ namespace NcnnCompute
             if (b.Length != count)
                 throw new EndOfStreamException("ReadBytes(" + count + ") got " + b.Length);
             return b;
+        }
+
+        private float[] ReadFloat32ArraySource(int count)
+        {
+            var bytes = ReadBytesChecked(checked(count * sizeof(float)));
+            var result = new float[count];
+            if (BitConverter.IsLittleEndian)
+            {
+                Buffer.BlockCopy(bytes, 0, result, 0, bytes.Length);
+                return result;
+            }
+            for (var i = 0; i < count; i++) result[i] = BitConverter.ToSingle(bytes, i * sizeof(float));
+            return result;
+        }
+
+        private static bool ProbeQ8Archive(Stream stream)
+        {
+            if (!stream.CanSeek || stream.Length - stream.Position < sizeof(ulong)) return false;
+            var position = stream.Position;
+            var bytes = new byte[sizeof(ulong)];
+            NcnnQ8ArchiveWriter.ReadFully(stream, bytes, 0, bytes.Length);
+            stream.Seek(position, SeekOrigin.Begin);
+            return BitConverter.ToUInt64(bytes, 0) == NcnnQ8ArchiveWriter.Magic;
         }
 
         private static int Align4(int bytes)

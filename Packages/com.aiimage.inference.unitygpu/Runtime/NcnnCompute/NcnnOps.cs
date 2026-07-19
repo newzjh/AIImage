@@ -524,6 +524,8 @@ namespace NcnnCompute
         private ComputeBuffer _int8ConvWeightScales;
         private ComputeBuffer _int8GemmWeights;
         private ComputeBuffer _int8GemmWeightScales;
+        private ComputeBuffer _int8EmbedWeights;
+        private ComputeBuffer _int8EmbedWeightScales;
         private ComputeBuffer _int4ConvWeights;
         private ComputeBuffer _int4ConvWeightScales;
         private ComputeBuffer _int4GemmWeights;
@@ -565,6 +567,14 @@ namespace NcnnCompute
                 throw new ArgumentException("INT8 Gemm weights and per-output scales must be configured together.");
             _int8GemmWeights = packedWeights;
             _int8GemmWeightScales = perOutputScales;
+        }
+
+        public void SetInt8EmbedWeights(ComputeBuffer packedWeights, ComputeBuffer perTokenScales)
+        {
+            if ((packedWeights == null) != (perTokenScales == null))
+                throw new ArgumentException("INT8 embedding weights and per-token scales must be configured together.");
+            _int8EmbedWeights = packedWeights;
+            _int8EmbedWeightScales = perTokenScales;
         }
 
         public void SetInt4ConvWeights(ComputeBuffer packedWeights, ComputeBuffer perOutputScales)
@@ -8758,7 +8768,7 @@ namespace NcnnCompute
             _cs.SetInt("_EmbedInputDim", inputDim);
             _cs.SetInt("_EmbedBiasTerm", biasTerm ? 1 : 0);
             _cs.SetBuffer(_kEmbed, "_EmbedIdx", indices);
-            _cs.SetBuffer(_kEmbed, "_EmbedW", weight);
+            SetEmbedWeights(_kEmbed, weight);
             _cs.SetBuffer(_kEmbed, "_EmbedB", biasTerm ? bias : weight);
             _cs.SetBuffer(_kEmbed, "_EmbedOut", output);
             Dispatch2D(_cs, _kEmbed, numOutput, words, 8, 8);
@@ -8789,7 +8799,7 @@ namespace NcnnCompute
             _cs.SetInt("_EmbedIndexTextureMode", indexTextureMode);
             _cs.SetInt("_EmbedIndexStorageW", Mathf.Max(1, indexStorageW));
             _cs.SetInt("_EmbedIndexStorageH", Mathf.Max(1, indexStorageH));
-            _cs.SetBuffer(kernel, "_EmbedW", weight);
+            SetEmbedWeights(kernel, weight);
             _cs.SetBuffer(kernel, "_EmbedB", biasTerm ? bias : weight);
         }
 
@@ -8820,8 +8830,24 @@ namespace NcnnCompute
             cmd.SetComputeIntParam(_cs, "_EmbedIndexTextureMode", indexTextureMode);
             cmd.SetComputeIntParam(_cs, "_EmbedIndexStorageW", Mathf.Max(1, indexStorageW));
             cmd.SetComputeIntParam(_cs, "_EmbedIndexStorageH", Mathf.Max(1, indexStorageH));
-            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedW", weight);
+            SetEmbedWeights(cmd, kernel, weight);
             cmd.SetComputeBufferParam(_cs, kernel, "_EmbedB", biasTerm ? bias : weight);
+        }
+
+        private void SetEmbedWeights(int kernel, ComputeBuffer fallback)
+        {
+            _cs.SetBuffer(kernel, "_EmbedW", fallback);
+            _cs.SetBuffer(kernel, "_EmbedWInt8Packed", _int8EmbedWeights ?? fallback);
+            _cs.SetBuffer(kernel, "_EmbedWInt8Scales", _int8EmbedWeightScales ?? fallback);
+            _cs.SetInt("_UseInt8EmbedWeights", _int8EmbedWeights != null ? 1 : 0);
+        }
+
+        private void SetEmbedWeights(CommandBuffer cmd, int kernel, ComputeBuffer fallback)
+        {
+            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedW", fallback);
+            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedWInt8Packed", _int8EmbedWeights ?? fallback);
+            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedWInt8Scales", _int8EmbedWeightScales ?? fallback);
+            cmd.SetComputeIntParam(_cs, "_UseInt8EmbedWeights", _int8EmbedWeights != null ? 1 : 0);
         }
 
         public void EmbedTexture(ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, RenderTexture output)

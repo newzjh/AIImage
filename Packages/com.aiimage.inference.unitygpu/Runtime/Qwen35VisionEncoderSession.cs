@@ -65,6 +65,9 @@ namespace NcnnCompute
                 _patch = CreateRepro();
                 _position = CreateRepro();
                 _encoder = CreateRepro();
+                Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_patch, modelDirectory);
+                Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_position, modelDirectory);
+                Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_encoder, modelDirectory);
                 Load(_patch, modelDirectory, "qwen3.5_vision_embed_patch.ncnn.param", "qwen3.5_vision_embed_patch.ncnn.bin");
                 Load(_position, modelDirectory, "qwen3.5_vision_embed_pos.ncnn.param", "qwen3.5_vision_embed_pos.ncnn.bin");
                 Load(_encoder, modelDirectory, "qwen3.5_vision_encoder.ncnn.param", "qwen3.5_vision_encoder.ncnn.bin");
@@ -357,7 +360,7 @@ namespace NcnnCompute
 
         private static void Load(NcnnRepro repro, string directory, string paramName, string binName)
         {
-            using (var stream = File.OpenRead(Path.Combine(directory, binName)))
+            using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))
             using (var reader = new NcnnBinReader(stream))
                 repro.LoadModel(File.ReadAllText(Path.Combine(directory, paramName)), reader);
         }

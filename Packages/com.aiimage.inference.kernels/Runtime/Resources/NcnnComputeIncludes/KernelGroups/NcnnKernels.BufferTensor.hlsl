@@ -8,7 +8,19 @@ void NcnnEmbed_Impl(uint3 id)
 
     int word_index = _EmbedIdx[q];
     word_index = clamp(word_index, 0, _EmbedInputDim - 1);
-    float v = _EmbedW[word_index * _EmbedNumOutput + p];
+    int weightIndex = word_index * _EmbedNumOutput + p;
+    float v;
+    if (_UseInt8EmbedWeights != 0)
+    {
+        uint packed = _EmbedWInt8Packed[weightIndex >> 2];
+        uint raw = (packed >> ((weightIndex & 3) * 8)) & 0xffu;
+        int signedValue = raw >= 128u ? (int)raw - 256 : (int)raw;
+        v = (float)signedValue * _EmbedWInt8Scales[word_index];
+    }
+    else
+    {
+        v = _EmbedW[weightIndex];
+    }
     if (_EmbedBiasTerm != 0)
         v += _EmbedB[p];
     _EmbedOut[q * _EmbedNumOutput + p] = v;
@@ -17,7 +29,19 @@ void NcnnEmbed_Impl(uint3 id)
 float NcnnEmbedValue(int wordIndex, int p)
 {
     wordIndex = clamp(wordIndex, 0, _EmbedInputDim - 1);
-    float v = _EmbedW[wordIndex * _EmbedNumOutput + p];
+    int weightIndex = wordIndex * _EmbedNumOutput + p;
+    float v;
+    if (_UseInt8EmbedWeights != 0)
+    {
+        uint packed = _EmbedWInt8Packed[weightIndex >> 2];
+        uint raw = (packed >> ((weightIndex & 3) * 8)) & 0xffu;
+        int signedValue = raw >= 128u ? (int)raw - 256 : (int)raw;
+        v = (float)signedValue * _EmbedWInt8Scales[wordIndex];
+    }
+    else
+    {
+        v = _EmbedW[weightIndex];
+    }
     if (_EmbedBiasTerm != 0)
         v += _EmbedB[p];
     return v;

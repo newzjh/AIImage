@@ -10,6 +10,7 @@ namespace NcnnCompute
     {
         public readonly Qwen35ModelContract Contract;
         public readonly Qwen35ByteLevelBpeTokenizer Tokenizer;
+        public readonly Qwen35DeviceCompatibility DeviceCompatibility;
         public readonly int MaxNewTokens;
         public bool IsReady => Contract != null && Contract.IsValid && Tokenizer != null;
 
@@ -30,7 +31,8 @@ namespace NcnnCompute
             }
             Tokenizer = new Qwen35ByteLevelBpeTokenizer(Path.Combine(modelDirectory, "vocab.txt"), Path.Combine(modelDirectory, "merges.txt"), specials);
             MaxNewTokens = Mathf.Clamp(maxNewTokens, 1, 4096);
-            ValidateDeviceForTextureInference();
+            DeviceCompatibility = Qwen35DeviceCompatibility.Evaluate(Contract);
+            DeviceCompatibility.ThrowIfUnsupported();
         }
 
         public string BuildImagePrompt(string userText)
@@ -106,9 +108,7 @@ namespace NcnnCompute
 
         public void ValidateDeviceForTextureInference()
         {
-            if (!SystemInfo.supportsComputeShaders) throw new NotSupportedException("Qwen3.5 requires ComputeShader support for texture-backed inference.");
-            if (!SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBFloat)) throw new NotSupportedException("Qwen3.5 requires RGBAFloat texture support; device is unsupported.");
-            if (SystemInfo.maxTextureSize < 2048) throw new NotSupportedException("Qwen3.5 requires maxTextureSize >= 2048 for mobile texture-backed tensors.");
+            (DeviceCompatibility ?? Qwen35DeviceCompatibility.Evaluate(Contract)).ThrowIfUnsupported();
         }
 
         public void Dispose() { }

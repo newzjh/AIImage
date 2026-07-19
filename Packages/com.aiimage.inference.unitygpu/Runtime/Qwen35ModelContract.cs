@@ -12,6 +12,7 @@ namespace NcnnCompute
         public readonly string ModelDirectory;
         public readonly Dictionary<string, string> Files = new Dictionary<string, string>(StringComparer.Ordinal);
         public readonly List<string> Errors = new List<string>();
+        public Qwen35MobileAssetSet MobileAssets { get; private set; }
         public int DecoderLayerCount { get; private set; }
         public int DecoderBlobCount { get; private set; }
         public int ShortConvCount { get; private set; }
@@ -24,6 +25,8 @@ namespace NcnnCompute
         {
             var contract = new Qwen35ModelContract(Path.GetFullPath(directory ?? string.Empty));
             if (!Directory.Exists(contract.ModelDirectory)) { contract.Errors.Add("model directory missing: " + contract.ModelDirectory); return contract; }
+            try { contract.MobileAssets = Qwen35MobileAssetSet.TryLoad(contract.ModelDirectory, verifyHashes: true); }
+            catch (Exception error) { contract.Errors.Add("mobile asset manifest invalid: " + error.Message); }
             var modelJsonPath = Path.Combine(contract.ModelDirectory, "model.json");
             if (!File.Exists(modelJsonPath)) { contract.Errors.Add("model.json missing"); return contract; }
             var root = JObject.Parse(File.ReadAllText(modelJsonPath));
@@ -32,6 +35,11 @@ namespace NcnnCompute
             foreach (var file in files)
             {
                 var path = Path.Combine(contract.ModelDirectory, file);
+                if (file.EndsWith(".bin", StringComparison.Ordinal) && contract.MobileAssets != null && contract.MobileAssets.Contains(file))
+                {
+                    contract.Files[file] = contract.MobileAssets.ManifestPath;
+                    continue;
+                }
                 if (!File.Exists(path)) { if (requireWeights || !file.EndsWith(".bin", StringComparison.Ordinal)) contract.Errors.Add("missing asset: " + file); continue; }
                 contract.Files[file] = path;
                 if (ExpectedSizes.TryGetValue(file, out var expectedBytes) && new FileInfo(path).Length != expectedBytes)
@@ -74,6 +82,17 @@ namespace NcnnCompute
             var files = new JObject();
             foreach (var kv in Files)
             {
+                if (kv.Key.EndsWith(".bin", StringComparison.Ordinal) && MobileAssets != null && MobileAssets.Contains(kv.Key))
+                {
+                    files[kv.Key] = new JObject
+                    {
+                        ["path"] = MobileAssets.ManifestPath,
+                        ["bytes"] = MobileAssets.GetStoredBytes(kv.Key),
+                        ["mobile_q8_sharded"] = true,
+                        ["hashes_verified"] = true
+                    };
+                    continue;
+                }
                 var item = new JObject { ["path"] = kv.Value, ["bytes"] = new FileInfo(kv.Value).Length };
                 if (includeHashes) using (var sha = SHA256.Create()) using (var stream = File.OpenRead(kv.Value)) item["sha256"] = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
                 files[kv.Key] = item;

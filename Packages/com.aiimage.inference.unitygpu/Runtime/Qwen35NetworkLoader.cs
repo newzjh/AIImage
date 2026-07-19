@@ -39,14 +39,28 @@ namespace NcnnCompute
             try
             {
                 var paramText = File.ReadAllText(asset.ParamPath);
-                using (var stream = File.OpenRead(asset.BinPath))
+                using (var stream = asset.OpenBinRead())
                 using (var reader = new NcnnBinReader(stream))
                 using (var repro = new NcnnRepro(_ops))
                 {
-                    repro.LoadModel(paramText, reader, progress);
+                    Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(repro, asset.ModelDirectory);
+                    Qwen35SharedTokenEmbeddingWeights shared = null;
+                    try
+                    {
+                        if (string.Equals(asset.LogicalBinName, "qwen3.5_embed_token.ncnn.bin", StringComparison.Ordinal))
+                        {
+                            shared = Qwen35SharedTokenEmbeddingWeights.LoadModelAsset(asset.ModelDirectory);
+                            shared.Attach(repro);
+                        }
+                        repro.LoadModel(paramText, reader, progress);
+                    }
+                    finally
+                    {
+                        shared?.Dispose();
+                    }
                     result.LayerCount = repro.Model != null ? repro.Model.layers.Count : 0;
                     result.BlobCount = repro.Model != null ? repro.Model.blobCount : 0;
-                    result.WeightBytes = new FileInfo(asset.BinPath).Length;
+                    result.WeightBytes = asset.StoredWeightBytes;
                 }
             }
             catch (Exception error)

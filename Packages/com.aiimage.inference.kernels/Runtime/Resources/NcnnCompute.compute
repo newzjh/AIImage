@@ -2168,6 +2168,8 @@ int _SoftmaxAxis;
 
 StructuredBuffer<int> _EmbedIdx;
 StructuredBuffer<float> _EmbedW;
+StructuredBuffer<uint> _EmbedWInt8Packed;
+StructuredBuffer<float> _EmbedWInt8Scales;
 StructuredBuffer<float> _EmbedB;
 RWStructuredBuffer<float> _EmbedOut;
 int _EmbedWords;
@@ -2177,6 +2179,7 @@ int _EmbedBiasTerm;
 int _EmbedIndexTextureMode;
 int _EmbedIndexStorageW;
 int _EmbedIndexStorageH;
+int _UseInt8EmbedWeights;
 
 StructuredBuffer<float> _PermuteIn;
 RWStructuredBuffer<float> _PermuteOut;
