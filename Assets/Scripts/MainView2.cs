@@ -520,7 +520,12 @@ public sealed class MainView2 : BasePageView
         try
         {
             await UniTask.Yield(PlayerLoopTiming.Update, token);
-            using (var runner = new Qwen35Runner(modelDirectory, Qwen35AnalysisMaxNewTokens))
+            using (var runner = await Qwen35Runner.CreateAsync(
+                modelDirectory,
+                Qwen35AnalysisMaxNewTokens,
+                true,
+                token,
+                progress => SetQwenPipelineProgress(progress, 0f, 10f)))
             {
                 var result = await runner.GenerateImageAsync(
                     source,
@@ -536,10 +541,11 @@ public sealed class MainView2 : BasePageView
                     },
                     (completed, total) =>
                     {
-                        var progress = 20f + 80f * completed / Mathf.Max(1, total);
+                        var progress = 86f + 14f * completed / Mathf.Max(1, total);
                         SetQwenAnalysisProgress(progress, "正在生成 " + completed + " / " + total);
                     },
-                    SetQwenAnalysisStage);
+                    null,
+                    progress => SetQwenPipelineProgress(progress, 10f, 100f));
 
                 var finalText = string.IsNullOrWhiteSpace(result.Text)
                     ? streamedText.ToString().Trim()
@@ -604,9 +610,32 @@ public sealed class MainView2 : BasePageView
         }
     }
 
+    private void SetQwenPipelineProgress(Qwen35Progress progress, float start, float end)
+    {
+        var value = Mathf.Lerp(start, end, progress.Progress01);
+        string status;
+        switch (progress.Stage)
+        {
+            case "validating_assets": status = "正在校验模型文件"; break;
+            case "validating_contract": status = "正在校验模型结构"; break;
+            case "loading_tokenizer": status = "正在加载分词器"; break;
+            case "loading_vision": status = "正在加载视觉模型"; break;
+            case "encoding_image": status = "正在编码图像"; break;
+            case "loading_decoder": status = "正在加载语言模型"; break;
+            case "prefill": status = "正在处理图像与提示词"; break;
+            case "generating": status = "正在生成分析"; break;
+            default: status = "正在准备 Qwen3.5"; break;
+        }
+        if (!string.IsNullOrWhiteSpace(progress.Detail))
+            status += " · " + progress.Detail;
+        SetQwenAnalysisProgress(value, status);
+    }
+
     private void SetQwenAnalysisProgress(float progress, string status)
     {
         var value = Mathf.Clamp(progress, 0f, 100f);
+        if (_qwenAnalysisRunning && _qwenAnalysisProgress != null)
+            value = Mathf.Max(value, _qwenAnalysisProgress.value);
         _qwenAnalysisProgress.value = value;
         _qwenAnalysisProgress.title = Mathf.RoundToInt(value) + "%";
         _qwenAnalysisStatus.text = status ?? string.Empty;

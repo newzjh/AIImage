@@ -2860,6 +2860,8 @@ public static class NcnnDebugRunner
             maxNewTokens = Mathf.Clamp(configuredMax, 1, 512);
 
         var stageCallbacks = new JArray();
+        var initializationProgressCallbacks = new JArray();
+        var pipelineProgressCallbacks = new JArray();
         var progressCallbacks = new JArray();
         var streamedTokenIds = new JArray();
         var streamedText = new System.Text.StringBuilder();
@@ -2868,6 +2870,11 @@ public static class NcnnDebugRunner
         var progressMonotonic = true;
         var previousCompleted = 0;
         var progressTotalConsistent = true;
+        var initializationProgressMonotonic = true;
+        var pipelineProgressMonotonic = true;
+        var previousInitializationProgress = -1f;
+        var previousPipelineProgress = -1f;
+        var pipelineStages = new HashSet<string>(StringComparer.Ordinal);
         var finalCacheTextureCount = 0;
         var decoderRuns = 0L;
         var promptTokenCount = 0;
@@ -2884,7 +2891,18 @@ public static class NcnnDebugRunner
             if (image == null)
                 throw new FileNotFoundException("Failed to load Qwen3.5 async smoke image.", imagePath);
 
-            using (var runner = new Qwen35Runner(modelDir, maxNewTokens))
+            using (var runner = await Qwen35Runner.CreateAsync(
+                modelDir,
+                maxNewTokens,
+                true,
+                CancellationToken.None,
+                progress =>
+                {
+                    if (progress.Progress01 + 1e-6f < previousInitializationProgress)
+                        initializationProgressMonotonic = false;
+                    previousInitializationProgress = progress.Progress01;
+                    initializationProgressCallbacks.Add(Qwen35ProgressToJson(progress));
+                }))
             {
                 var generated = await runner.GenerateImageAsync(
                     image,
@@ -2910,7 +2928,15 @@ public static class NcnnDebugRunner
                             ["total"] = total
                         });
                     },
-                    stage => stageCallbacks.Add(stage ?? string.Empty));
+                    stage => stageCallbacks.Add(stage ?? string.Empty),
+                    progress =>
+                    {
+                        if (progress.Progress01 + 1e-6f < previousPipelineProgress)
+                            pipelineProgressMonotonic = false;
+                        previousPipelineProgress = progress.Progress01;
+                        pipelineStages.Add(progress.Stage ?? string.Empty);
+                        pipelineProgressCallbacks.Add(Qwen35ProgressToJson(progress));
+                    });
 
                 generatedText = generated.Text ?? string.Empty;
                 promptTokenCount = generated.PromptTokenCount;
@@ -2930,10 +2956,29 @@ public static class NcnnDebugRunner
                     && generated.TokenIds.Count == progressCallbacks.Count;
                 var firstTokenMatches = generated.TokenIds.Count > 0
                     && generated.TokenIds[0] == runner.Tokenizer.IdOf("<think>");
+                var detailedProgressStages = new[]
+                {
+                    "loading_vision",
+                    "encoding_image",
+                    "loading_decoder",
+                    "prefill",
+                    "generating",
+                    "complete"
+                };
+                var detailedProgressStagesCovered = true;
+                for (var i = 0; i < detailedProgressStages.Length; i++)
+                    detailedProgressStagesCovered &= pipelineStages.Contains(detailedProgressStages[i]);
                 valid = stageSequenceMatches
                     && callbackCountsMatch
                     && progressMonotonic
                     && progressTotalConsistent
+                    && initializationProgressMonotonic
+                    && pipelineProgressMonotonic
+                    && initializationProgressCallbacks.Count >= 20
+                    && pipelineProgressCallbacks.Count >= 100
+                    && previousInitializationProgress >= 0.999f
+                    && previousPipelineProgress >= 0.999f
+                    && detailedProgressStagesCovered
                     && previousCompleted == generated.TokenIds.Count
                     && firstTokenMatches
                     && !string.IsNullOrWhiteSpace(generatedText)
@@ -2965,9 +3010,15 @@ public static class NcnnDebugRunner
             ["prompt"] = prompt,
             ["max_new_tokens"] = maxNewTokens,
             ["stage_callbacks"] = stageCallbacks,
+            ["initialization_progress_callbacks"] = initializationProgressCallbacks,
+            ["pipeline_progress_callbacks"] = pipelineProgressCallbacks,
             ["progress_callbacks"] = progressCallbacks,
             ["progress_monotonic"] = progressMonotonic,
             ["progress_total_consistent"] = progressTotalConsistent,
+            ["initialization_progress_monotonic"] = initializationProgressMonotonic,
+            ["pipeline_progress_monotonic"] = pipelineProgressMonotonic,
+            ["initialization_progress_callback_count"] = initializationProgressCallbacks.Count,
+            ["pipeline_progress_callback_count"] = pipelineProgressCallbacks.Count,
             ["streamed_token_ids"] = streamedTokenIds,
             ["streamed_text"] = streamedText.ToString(),
             ["generated_token_ids"] = generatedTokenIds,
@@ -2992,6 +3043,18 @@ public static class NcnnDebugRunner
         Debug.Log("[Qwen35] async multimodal generation report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen3.5 async multimodal generation failed; see " + outputPath);
+    }
+
+    private static JObject Qwen35ProgressToJson(Qwen35Progress progress)
+    {
+        return new JObject
+        {
+            ["stage"] = progress.Stage ?? string.Empty,
+            ["detail"] = progress.Detail ?? string.Empty,
+            ["progress01"] = progress.Progress01,
+            ["completed"] = progress.Completed,
+            ["total"] = progress.Total
+        };
     }
 
     public static void RunQwen35ContractBatch()
