@@ -2804,6 +2804,7 @@ public static class NcnnDebugRunner
             ["strict_texture_execution"] = true,
             ["activation_storage"] = "texture-backed",
             ["compute_buffer_fallback"] = false,
+            ["exit_code"] = valid && string.IsNullOrEmpty(error) ? 0 : 1,
             ["error"] = error ?? string.Empty,
             ["elapsed_ms"] = start.ElapsedMilliseconds,
             ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35MultimodalGenerationBatch",
@@ -4002,7 +4003,7 @@ public static class NcnnDebugRunner
         if (string.IsNullOrWhiteSpace(reportPath))
             reportPath = Path.Combine(outputRoot, "unity_full_audit_report.json");
 
-        var allNetworkNames = new[] { "embed_token", "proj_out", "vision_embed_patch", "vision_embed_pos", "vision_encoder" };
+        var allNetworkNames = new[] { "embed_token", "decoder", "proj_out", "vision_embed_patch", "vision_embed_pos", "vision_encoder" };
         var configuredNetworks = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_AUDIT_NETWORKS");
         var networkNames = string.IsNullOrWhiteSpace(configuredNetworks)
             ? allNetworkNames
@@ -4043,7 +4044,10 @@ public static class NcnnDebugRunner
                 return;
             var directory = Path.Combine(outputRoot, network);
             Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, "unity.blob_" + blobName + ".f32");
+            var fileName = string.Equals(network, "decoder", StringComparison.Ordinal)
+                ? "unity.decode1.blob_" + blobName + ".f32"
+                : "unity.blob_" + blobName + ".f32";
+            var path = Path.Combine(directory, fileName);
             using (var stream = File.Create(path))
             using (var writer = new BinaryWriter(stream))
                 for (var i = 0; i < values.Length; i++) writer.Write(values[i]);
@@ -4068,7 +4072,9 @@ public static class NcnnDebugRunner
                         using (var encoding = vision.EncodeFile(imagePath)) { }
                     }
                 }
-                if (networkNames.Contains("embed_token", StringComparer.Ordinal) || networkNames.Contains("proj_out", StringComparer.Ordinal))
+                if (networkNames.Contains("embed_token", StringComparer.Ordinal)
+                    || networkNames.Contains("decoder", StringComparer.Ordinal)
+                    || networkNames.Contains("proj_out", StringComparer.Ordinal))
                 {
                     using (var decoder = runner.CreateDecoderSession())
                     {
@@ -4078,17 +4084,41 @@ public static class NcnnDebugRunner
                             blobSets.TryGetValue("embed_token", out var embedBlobs) ? embedBlobs : null,
                             blobSets.TryGetValue("proj_out", out var projectionBlobs) ? projectionBlobs : null,
                             writeCheckpoint);
-                        Qwen35OwnedTexture hidden = null;
+                        Qwen35OwnedTexture auxiliaryHidden = null;
+                        Qwen35DecoderStep decoderStep = null;
+                        Qwen35DecoderState warmState = null;
                         try
                         {
-                            if (networkNames.Contains("embed_token", StringComparer.Ordinal) || networkNames.Contains("proj_out", StringComparer.Ordinal))
-                                hidden = decoder.EmbedTokens(new[] { 0 });
-                            if (networkNames.Contains("proj_out", StringComparer.Ordinal))
-                                decoder.ProjectLogits(hidden);
+                            if (networkNames.Contains("embed_token", StringComparer.Ordinal)
+                                || networkNames.Contains("proj_out", StringComparer.Ordinal))
+                            {
+                                auxiliaryHidden = decoder.EmbedTokens(new[] { 0 });
+                                if (networkNames.Contains("proj_out", StringComparer.Ordinal))
+                                    decoder.ProjectLogits(auxiliaryHidden);
+                                auxiliaryHidden.Dispose();
+                                auxiliaryHidden = null;
+                                decoder.ConfigureDebugAuxiliaryReadback(null, null, null);
+                            }
+                            if (networkNames.Contains("decoder", StringComparer.Ordinal))
+                            {
+                                var prefix = new[] { 248045, 846, 198, 9419, 248046, 198, 248045, 74455 };
+                                using (var prefixHidden = decoder.EmbedTokens(prefix))
+                                using (var initialState = decoder.CreateInitialState())
+                                using (var warmupStep = decoder.Decode(prefixHidden, 0, initialState))
+                                    warmState = warmupStep.DetachState();
+
+                                decoder.ConfigureDebugLayerReadback(
+                                    blobSets.TryGetValue("decoder", out var decoderBlobs) ? decoderBlobs : null,
+                                    (layerIndex, layerName, blobName, values) => writeCheckpoint("decoder", layerName, blobName, values));
+                                using (var inputHidden = decoder.EmbedTokens(new[] { 198 }))
+                                    decoderStep = decoder.Decode(inputHidden, 8, warmState);
+                            }
                         }
                         finally
                         {
-                            hidden?.Dispose();
+                            decoderStep?.Dispose();
+                            warmState?.Dispose();
+                            auxiliaryHidden?.Dispose();
                         }
                     }
                 }
