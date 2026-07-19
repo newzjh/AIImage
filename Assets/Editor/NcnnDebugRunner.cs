@@ -12,6 +12,7 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Profiling;
+using NcnnCompute;
 using Debug = UnityEngine.Debug;
 
 public static class NcnnDebugRunner
@@ -292,6 +293,42 @@ public static class NcnnDebugRunner
                 return;
             case nameof(RunMonaiDebugBatch):
                 RunMonaiDebugBatch();
+                return;
+            case nameof(RunQwen35ContractBatch):
+                RunQwen35ContractBatch();
+                return;
+            case nameof(RunQwen35NetworkLoadBatch):
+                RunQwen35NetworkLoadBatch();
+                return;
+            case nameof(RunQwen35EmbedProbeBatch):
+                RunQwen35EmbedProbeBatch();
+                return;
+            case nameof(RunQwen35TokenizerContractBatch):
+                RunQwen35TokenizerContractBatch();
+                return;
+            case nameof(RunQwen35TextGenerationBatch):
+                RunQwen35TextGenerationBatch();
+                return;
+            case nameof(RunQwen35MultimodalGenerationBatch):
+                RunQwen35MultimodalGenerationBatch();
+                return;
+            case nameof(RunQwen35DecoderPrefixProbeBatch):
+                RunQwen35DecoderPrefixProbeBatch();
+                return;
+            case nameof(RunQwen35VisionPatchProbeBatch):
+                RunQwen35VisionPatchProbeBatch();
+                return;
+            case nameof(RunQwen35VisionPositionProbeBatch):
+                RunQwen35VisionPositionProbeBatch();
+                return;
+            case nameof(RunQwen35VisionPatchAtlasProbeBatch):
+                RunQwen35VisionPatchAtlasProbeBatch();
+                return;
+            case nameof(RunQwen35VisionEncoderPrefixProbeBatch):
+                RunQwen35VisionEncoderPrefixProbeBatch();
+                return;
+            case nameof(RunQwen35FullCheckpointAuditBatch):
+                RunQwen35FullCheckpointAuditBatch();
                 return;
             case nameof(RunDesignViewCompositeDebugBatch):
                 RunDesignViewCompositeDebugBatch();
@@ -2412,6 +2449,1904 @@ public static class NcnnDebugRunner
     public static void RunReproSuiteStressBatch() => RunBatchBlocking(nameof(RunReproSuiteStressBatch), RunReproSuiteStressInternal, TimeSpan.FromHours(2));
 
     public static void RunMonaiDebugBatch() => RunBatchBlocking(nameof(RunMonaiDebugBatch), () => RunMonaiDebugInternal(), TimeSpan.FromMinutes(10));
+
+    public static void RunQwen35TokenizerContractBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TOKENIZER_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_tokenizer_contract.json");
+
+        string error = null;
+        var valid = false;
+        var ids = new JArray();
+        var decoded = string.Empty;
+        var vocabularySize = 0;
+        var specialIds = new JObject();
+        const string text = "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|><|im_end|>";
+        try
+        {
+            using (var runner = new Qwen35Runner(modelDir, 1))
+            {
+                vocabularySize = runner.Tokenizer.VocabularySize;
+                var encoded = runner.Tokenizer.Encode(text);
+                for (var i = 0; i < encoded.Count; i++) ids.Add(encoded[i]);
+                decoded = runner.Tokenizer.Decode(encoded, false);
+                specialIds["im_start"] = runner.Tokenizer.IdOf("<|im_start|>");
+                specialIds["im_end"] = runner.Tokenizer.IdOf("<|im_end|>");
+                specialIds["vision_start"] = runner.Tokenizer.IdOf("<|vision_start|>");
+                specialIds["image_pad"] = runner.Tokenizer.IdOf("<|image_pad|>");
+                specialIds["vision_end"] = runner.Tokenizer.IdOf("<|vision_end|>");
+                valid = vocabularySize == 248077
+                    && decoded == text
+                    && (int)specialIds["im_start"] == 248045
+                    && (int)specialIds["im_end"] == 248046
+                    && (int)specialIds["vision_start"] == 248053
+                    && (int)specialIds["image_pad"] == 248056
+                    && (int)specialIds["vision_end"] == 248054;
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.tokenizer-contract/v1",
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["vocabulary_size"] = vocabularySize,
+            ["text"] = text,
+            ["token_ids"] = ids,
+            ["decoded"] = decoded,
+            ["special_ids"] = specialIds,
+            ["error"] = error ?? string.Empty,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35TokenizerContractBatch"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] tokenizer contract report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen3.5 tokenizer contract failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35TextGenerationBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TEXT_GENERATION_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_text_generation.json");
+        var prompt = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TEXT_PROMPT");
+        if (string.IsNullOrEmpty(prompt))
+            prompt = "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n";
+        var maxNewTokens = 1;
+        if (int.TryParse(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MAX_NEW_TOKENS"), out var configuredMax))
+            maxNewTokens = Mathf.Clamp(configuredMax, 1, 256);
+
+        string error = null;
+        var valid = false;
+        var entryPoint = string.Empty;
+        var promptIds = new JArray();
+        var generatedIds = new JArray();
+        var generatedText = string.Empty;
+        var finalPosition = 0;
+        var cacheTextures = 0;
+        long decoderRuns = 0;
+        long sharedWeightBytes = 0;
+        long peakWorkingSetBytes = 0;
+        var dumpPrefix = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TEXT_DUMP_PREFIX");
+        var dumpFiles = new JObject();
+        try
+        {
+            using (var runner = new Qwen35Runner(modelDir, maxNewTokens))
+            {
+                entryPoint = runner.RequireInferenceEntryPoint();
+                var encoded = runner.Tokenizer.Encode(prompt);
+                for (var i = 0; i < encoded.Count; i++) promptIds.Add(encoded[i]);
+                using (var session = runner.CreateDecoderSession())
+                {
+                    sharedWeightBytes = session.SharedWeightBytes;
+                    if (string.Equals(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_DECODER_LAYER_LOG"), "1", StringComparison.Ordinal))
+                        session.DebugLog = line => Debug.Log("[Qwen35][DecoderSession] " + line);
+                    if (!string.IsNullOrWhiteSpace(dumpPrefix))
+                    {
+                        session.DebugTextureReadback = (name, values) =>
+                        {
+                            var dumpPath = dumpPrefix + "." + name + ".f32";
+                            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dumpPath)));
+                            using (var stream = File.Create(dumpPath))
+                            using (var writer = new BinaryWriter(stream))
+                                for (var valueIndex = 0; valueIndex < values.Length; valueIndex++) writer.Write(values[valueIndex]);
+                            dumpFiles[name] = dumpPath;
+                        };
+                    }
+                    var checkpointText = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_DECODER_CHECKPOINT_BLOBS");
+                    if (!string.IsNullOrWhiteSpace(checkpointText) && !string.IsNullOrWhiteSpace(dumpPrefix))
+                    {
+                        var checkpointBlobs = new HashSet<string>(
+                            checkpointText.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(value => value.Trim()),
+                            StringComparer.Ordinal);
+                        session.ConfigureDebugLayerReadback(checkpointBlobs, (decodeIndex, layerName, blobName, values) =>
+                        {
+                            var dumpPath = dumpPrefix + ".decode" + decodeIndex + ".blob_" + blobName + ".f32";
+                            using (var stream = File.Create(dumpPath))
+                            using (var writer = new BinaryWriter(stream))
+                                for (var valueIndex = 0; valueIndex < values.Length; valueIndex++) writer.Write(values[valueIndex]);
+                            dumpFiles["decode" + decodeIndex + "/" + blobName] = dumpPath;
+                        });
+                    }
+                    var generated = session.Generate(encoded, maxNewTokens, Qwen35SamplingConfig.Greedy());
+                    generatedText = generated.Text;
+                    finalPosition = generated.FinalPosition;
+                    cacheTextures = generated.FinalCacheTextureCount;
+                    decoderRuns = generated.DecoderStepCount;
+                    for (var i = 0; i < generated.TokenIds.Count; i++) generatedIds.Add(generated.TokenIds[i]);
+                    var expectedFinalPosition = encoded.Count + Mathf.Max(0, generated.TokenIds.Count - 1);
+                    valid = generated.TokenIds.Count > 0
+                        && cacheTextures == 48
+                        && decoderRuns > 0
+                        && finalPosition == expectedFinalPosition;
+                }
+            }
+            peakWorkingSetBytes = Process.GetCurrentProcess().PeakWorkingSet64;
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+            try { peakWorkingSetBytes = Process.GetCurrentProcess().PeakWorkingSet64; } catch { }
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.text-generation/v1",
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["model_directory"] = modelDir,
+            ["entry_point"] = entryPoint,
+            ["prompt"] = prompt,
+            ["prompt_token_ids"] = promptIds,
+            ["generated_token_ids"] = generatedIds,
+            ["generated_text"] = generatedText,
+            ["final_position"] = finalPosition,
+            ["decoder_runs"] = decoderRuns,
+            ["cache_texture_count"] = cacheTextures,
+            ["shared_weight_bytes"] = sharedWeightBytes,
+            ["peak_working_set_bytes"] = peakWorkingSetBytes,
+            ["debug_dump_files"] = dumpFiles,
+            ["strict_texture_execution"] = true,
+            ["compute_buffer_fallback"] = false,
+            ["error"] = error ?? string.Empty,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_text_generation.log",
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35TextGenerationBatch"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] text generation report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen3.5 text generation failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35MultimodalGenerationBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MULTIMODAL_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_multimodal_generation.json");
+        var referencePath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "reference_cli_validation.json");
+        var reference = JObject.Parse(File.ReadAllText(referencePath));
+        var prompt = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE_PROMPT");
+        if (string.IsNullOrWhiteSpace(prompt))
+            prompt = (string)reference["prompt"];
+        var maxNewTokens = 1;
+        if (int.TryParse(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MAX_NEW_TOKENS"), out var configuredMax))
+            maxNewTokens = Mathf.Clamp(configuredMax, 1, 512);
+        var requireOcrMarkers = string.Equals(
+            Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_REQUIRE_OCR_MARKERS"),
+            "1",
+            StringComparison.Ordinal);
+
+        var valid = false;
+        string error = null;
+        var generatedIds = new JArray();
+        var generatedText = string.Empty;
+        var markerHits = new JArray();
+        var markerGroupCount = 0;
+        var markerHitCount = 0;
+        var sourceWidth = 0;
+        var sourceHeight = 0;
+        var targetWidth = 0;
+        var targetHeight = 0;
+        var gridWidth = 0;
+        var gridHeight = 0;
+        var visionTokenCount = 0;
+        var promptTokenCount = 0;
+        var expandedPromptTokenCount = 0;
+        var finalPosition = 0;
+        var cacheTextureCount = 0;
+        long decoderRuns = 0;
+        long peakWorkingSetBytes = 0;
+        long peakPrivateBytes = 0;
+        Action sampleMemory = () =>
+        {
+            try
+            {
+                using (var process = Process.GetCurrentProcess())
+                {
+                    peakWorkingSetBytes = Math.Max(peakWorkingSetBytes, process.WorkingSet64);
+                    peakPrivateBytes = Math.Max(peakPrivateBytes, process.PrivateMemorySize64);
+                }
+            }
+            catch { }
+        };
+        sampleMemory();
+        try
+        {
+            using (var runner = new Qwen35Runner(modelDir, maxNewTokens))
+            using (var visionSession = runner.CreateVisionEncoderSession())
+            using (var vision = visionSession.EncodeFile(imagePath))
+            using (var decoder = runner.CreateDecoderSession())
+            {
+                sourceWidth = vision.SourceWidth;
+                sourceHeight = vision.SourceHeight;
+                targetWidth = vision.TargetWidth;
+                targetHeight = vision.TargetHeight;
+                gridWidth = vision.GridWidth;
+                gridHeight = vision.GridHeight;
+                visionTokenCount = vision.EmbeddingCount;
+                sampleMemory();
+                var promptIds = runner.EncodeImagePrompt(prompt);
+                promptTokenCount = promptIds.Count;
+                var generated = decoder.GenerateMultimodal(
+                    promptIds,
+                    vision,
+                    maxNewTokens,
+                    Qwen35SamplingConfig.Greedy(),
+                    (tokenId, piece) => sampleMemory());
+                sampleMemory();
+                generatedText = generated.Text;
+                expandedPromptTokenCount = generated.ExpandedPromptTokenCount;
+                finalPosition = generated.FinalPosition;
+                cacheTextureCount = generated.FinalCacheTextureCount;
+                decoderRuns = generated.DecoderStepCount;
+                for (var i = 0; i < generated.TokenIds.Count; i++)
+                    generatedIds.Add(generated.TokenIds[i]);
+
+                if (reference["marker_group_hits"] is JArray groups)
+                {
+                    markerGroupCount = groups.Count;
+                    for (var groupIndex = 0; groupIndex < groups.Count; groupIndex++)
+                    {
+                        var groupResult = new JObject { ["matched"] = false, ["variants"] = new JArray() };
+                        var matched = false;
+                        if (groups[groupIndex] is JArray variants)
+                        {
+                            for (var variantIndex = 0; variantIndex < variants.Count; variantIndex++)
+                            {
+                                var variant = (string)variants[variantIndex] ?? string.Empty;
+                                ((JArray)groupResult["variants"]).Add(variant);
+                                if (!string.IsNullOrEmpty(variant) && generatedText.Contains(variant))
+                                    matched = true;
+                            }
+                        }
+                        groupResult["matched"] = matched;
+                        if (matched) markerHitCount++;
+                        markerHits.Add(groupResult);
+                    }
+                }
+
+                var firstTokenMatches = generated.TokenIds.Count > 0
+                    && generated.TokenIds[0] == runner.Tokenizer.IdOf("<think>");
+                valid = firstTokenMatches
+                    && cacheTextureCount == 48
+                    && decoderRuns > 0
+                    && visionTokenCount == (gridWidth / 2) * (gridHeight / 2)
+                    && expandedPromptTokenCount == promptTokenCount - 1 + visionTokenCount
+                    && (!requireOcrMarkers || markerHitCount == markerGroupCount);
+            }
+            sampleMemory();
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+            sampleMemory();
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.multimodal-generation/v1",
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["model_directory"] = modelDir,
+            ["image"] = imagePath,
+            ["image_sha256"] = File.Exists(imagePath) ? ComputeQwen35Sha256(imagePath) : string.Empty,
+            ["prompt"] = prompt,
+            ["max_new_tokens"] = maxNewTokens,
+            ["require_ocr_markers"] = requireOcrMarkers,
+            ["generated_token_ids"] = generatedIds,
+            ["generated_text"] = generatedText,
+            ["marker_group_count"] = markerGroupCount,
+            ["marker_hit_count"] = markerHitCount,
+            ["marker_hits"] = markerHits,
+            ["source_width"] = sourceWidth,
+            ["source_height"] = sourceHeight,
+            ["target_width"] = targetWidth,
+            ["target_height"] = targetHeight,
+            ["grid_width"] = gridWidth,
+            ["grid_height"] = gridHeight,
+            ["vision_token_count"] = visionTokenCount,
+            ["prompt_token_count"] = promptTokenCount,
+            ["expanded_prompt_token_count"] = expandedPromptTokenCount,
+            ["final_position"] = finalPosition,
+            ["decoder_runs"] = decoderRuns,
+            ["cache_texture_count"] = cacheTextureCount,
+            ["peak_working_set_bytes"] = peakWorkingSetBytes,
+            ["peak_private_bytes"] = peakPrivateBytes,
+            ["strict_texture_execution"] = true,
+            ["activation_storage"] = "texture-backed",
+            ["compute_buffer_fallback"] = false,
+            ["error"] = error ?? string.Empty,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35MultimodalGenerationBatch",
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_multimodal_generation.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] multimodal generation report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen3.5 multimodal generation failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35ContractBatch()
+    {
+        var validationStart = Stopwatch.StartNew();
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_CONTRACT_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_contract_validation.json");
+        var contract = Qwen35ModelContract.Validate(modelDir, requireWeights: true);
+        var registration = NcnnLayerFactoryRepro.IsRegistered(NcnnLayerTypes.ShortConv)
+            && NcnnLayerFactoryRepro.IsRegistered(NcnnLayerTypes.GatedDeltaRule);
+        var shaderKernels = false;
+        try
+        {
+            using (var ops = new NcnnOps())
+                shaderKernels = true;
+        }
+        catch (Exception shaderError)
+        {
+            contract.Errors.Add("Qwen35 compute shader kernel load failed: " + shaderError.Message);
+        }
+        var includeHashes = string.Equals(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_CONTRACT_HASHES"), "1", StringComparison.Ordinal);
+        var report = contract.ToJson(includeHashes: includeHashes);
+        report["hashes_skipped"] = !includeHashes;
+        report["custom_layer_registration"] = registration;
+        report["shader_kernel_registration"] = shaderKernels;
+        report["strict_texture_execution"] = true;
+        report["native_fallback"] = false;
+        var manifestPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "qwen35_0_8b_compare_manifest.json");
+        var compareManifest = Qwen35CompareManifest.Load(manifestPath);
+        report["compare_manifest"] = compareManifest.ToJson();
+        var catalog = Qwen35NetworkAssetCatalog.Create(contract);
+        var catalogErrors = catalog.ValidateFiles();
+        report["network_asset_catalog"] = new JObject
+        {
+            ["network_count"] = catalog.Networks.Length,
+            ["single_shared_token_bin"] = catalog.UsesSingleTokenEmbeddingBin,
+            ["errors"] = new JArray(catalogErrors)
+        };
+        var quantManifest = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_QUANT_MANIFEST");
+        report["mobile_memory_policy"] = Qwen35MobileMemoryPolicy.Evaluate(contract, quantManifest).ToJson();
+        validationStart.Stop();
+        report["validation"] = new JObject
+        {
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35ContractBatch",
+            ["exit_code"] = 0,
+            ["elapsed_ms"] = validationStart.ElapsedMilliseconds,
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_final_contract.log",
+            ["stdout"] = "Unity log",
+            ["stderr"] = "Unity log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] contract report: " + outputPath + " valid=" + (contract.IsValid && registration));
+        if (!contract.IsValid || !registration || !shaderKernels || !compareManifest.IsContractValid || catalogErrors.Count != 0)
+            throw new InvalidOperationException("Qwen35 contract validation failed: " + string.Join("; ", contract.Errors));
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35NetworkLoadBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_NETWORK_LOAD_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_network_load_validation.json");
+
+        var contract = Qwen35ModelContract.Validate(modelDir, requireWeights: true);
+        var report = contract.ToJson(includeHashes: string.Equals(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_CONTRACT_HASHES"), "1", StringComparison.Ordinal));
+        var catalog = Qwen35NetworkAssetCatalog.Create(contract);
+        var catalogErrors = catalog.ValidateFiles();
+        report["network_asset_catalog"] = new JObject
+        {
+            ["network_count"] = catalog.Networks.Length,
+            ["single_shared_token_bin"] = catalog.UsesSingleTokenEmbeddingBin,
+            ["errors"] = new JArray(catalogErrors)
+        };
+
+        var results = new JArray();
+        var loadValid = contract.IsValid && catalogErrors.Count == 0;
+        if (loadValid)
+        {
+            using (var loader = new Qwen35NetworkLoader())
+            {
+                var loaded = loader.ValidateAllSequential(catalog, (network, progress) =>
+                {
+                    if (progress.stage == "layer" && (progress.layerIndex == 1 || progress.layerIndex == progress.layerCount || progress.layerIndex % 100 == 0))
+                        Debug.Log("[Qwen35] load " + network + " " + progress.layerIndex + "/" + progress.layerCount + " " + progress.layerType + " " + progress.layerName);
+                });
+                for (var i = 0; i < loaded.Count; i++)
+                {
+                    var item = loaded[i];
+                    var expected = NcnnParamParser.Parse(File.ReadAllText(catalog.Networks[i].ParamPath));
+                    var exactShape = item.Success && item.LayerCount == expected.layerCount && item.BlobCount == expected.blobCount;
+                    if (!exactShape)
+                        loadValid = false;
+                    results.Add(new JObject
+                    {
+                        ["name"] = item.Name,
+                        ["success"] = item.Success,
+                        ["layer_count"] = item.LayerCount,
+                        ["blob_count"] = item.BlobCount,
+                        ["expected_layer_count"] = expected.layerCount,
+                        ["expected_blob_count"] = expected.blobCount,
+                        ["exact_param_contract"] = exactShape,
+                        ["weight_bytes"] = item.WeightBytes,
+                        ["elapsed_ms"] = item.ElapsedMilliseconds,
+                        ["error"] = item.Error ?? string.Empty
+                    });
+                    Debug.Log("[Qwen35] network=" + item.Name + " success=" + item.Success + " layers=" + item.LayerCount + " blobs=" + item.BlobCount + " elapsed_ms=" + item.ElapsedMilliseconds + (item.Success ? string.Empty : " error=" + item.Error));
+                }
+            }
+        }
+        else
+        {
+            loadValid = false;
+        }
+
+        start.Stop();
+        report["network_load"] = new JObject
+        {
+            ["valid"] = loadValid,
+            ["sequential_release"] = true,
+            ["results"] = results
+        };
+        report["validation"] = new JObject
+        {
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35NetworkLoadBatch",
+            ["exit_code"] = loadValid ? 0 : 1,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_network_load.log",
+            ["stdout"] = "Unity log",
+            ["stderr"] = "Unity log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] network load report: " + outputPath + " valid=" + loadValid);
+        if (!loadValid)
+            throw new InvalidOperationException("Qwen35 network load validation failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35EmbedProbeBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_EMBED_PROBE_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_embed_probe.json");
+        var paramPath = Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.param");
+        var binPath = Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin");
+        var tokenId = 0;
+        if (int.TryParse(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_PROBE_TOKEN"), out var parsedToken))
+            tokenId = parsedToken;
+
+        var values = Array.Empty<float>();
+        var valid = false;
+        string error = null;
+        try
+        {
+            using (var ops = new NcnnOps())
+            using (var repro = new NcnnRepro(ops))
+            using (var indices = new NcnnTensorBuffer(1, 1))
+            {
+                repro.ExecutionMode = NcnnInferenceExecutionMode.ProductionTextureOnly;
+                repro.DisallowInferenceTempComputeBuffers = true;
+                repro.DisallowBufferToTextureMaterialization = true;
+                indices.buffer.SetData(new[] { tokenId });
+                using (var stream = File.OpenRead(binPath))
+                using (var reader = new NcnnBinReader(stream))
+                {
+                    repro.LoadModel(File.ReadAllText(paramPath), reader);
+                }
+                using (var result = repro.InferWithMultiInputs(
+                    null,
+                    new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { ["in0"] = indices }))
+                {
+                    values = result.ReadTextureDataForOutput("out0");
+                    valid = values != null && values.Length >= 1024;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            error = e.ToString();
+        }
+
+        start.Stop();
+        var preview = new JArray();
+        for (var i = 0; i < Math.Min(16, values.Length); i++)
+            preview.Add(values[i]);
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.embed-probe/v1",
+            ["model_directory"] = modelDir,
+            ["token_id"] = tokenId,
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["output_count"] = values.Length,
+            ["preview"] = preview,
+            ["error"] = error ?? string.Empty,
+            ["strict_texture_execution"] = true,
+            ["temporary_compute_buffer_execution"] = false,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_embed_probe.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] embed probe report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen35 embed probe failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35DecoderPrefixProbeBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_DECODER_PROBE_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_decoder_prefix_probe.json");
+        var stopAfter = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_DECODER_STOP_AFTER");
+        if (string.IsNullOrWhiteSpace(stopAfter))
+            stopAfter = "out_cache_gdr2";
+        var runProjOut = string.Equals(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_RUN_PROJ_OUT"), "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_RUN_PROJ_OUT"), "true", StringComparison.OrdinalIgnoreCase);
+
+        var valid = false;
+        string error = null;
+        var outputCount = 0;
+        var outputMaxAbs = 0f;
+        var outputNonFiniteCount = 0;
+        var greedyToken = -1;
+        var logitsWidth = 0;
+        var logitsHeight = 0;
+        long sharedWeightBytes = 0;
+        var preview = new JArray();
+        try
+        {
+            using (var shared = Qwen35SharedTokenEmbeddingWeights.Load(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin")))
+            using (var ops = new NcnnOps())
+            using (var embed = new NcnnRepro(ops))
+            using (var decoder = new NcnnRepro(ops))
+            using (var indices = new NcnnTensorBuffer(1, 1))
+            {
+                ConfigureQwen35StrictRepro(embed);
+                ConfigureQwen35StrictRepro(decoder);
+                if (string.Equals(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_DECODER_LAYER_LOG"), "1", StringComparison.Ordinal))
+                    decoder.DebugLog = line => Debug.Log("[Qwen35][DecoderPrefix] " + line);
+                shared.Attach(embed);
+                sharedWeightBytes = shared.ByteCount;
+                embed.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                decoder.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                indices.buffer.SetData(new[] { 0 });
+
+                using (var embedStream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin")))
+                using (var embedReader = new NcnnBinReader(embedStream))
+                    embed.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.param")), embedReader);
+
+                RenderTexture embedding;
+                using (var embeddingResult = embed.InferWithMultiInputs(
+                    null,
+                    new Dictionary<string, NcnnTensorBuffer>(StringComparer.Ordinal) { ["in0"] = indices }))
+                {
+                    embedding = embeddingResult.ExtractTexture("out0");
+                }
+
+                using (var decoderStream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_decoder.ncnn.bin")))
+                using (var decoderReader = new NcnnBinReader(decoderStream))
+                    decoder.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_decoder.ncnn.param")), decoderReader);
+
+                var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+                {
+                    ["in0"] = embedding,
+                    ["in1"] = CreateQwen35ZeroTexture(decoder, ops, 1, 1, 1),
+                    ["in2"] = CreateQwen35CosSinTexture(decoder, ops, 32, 1f),
+                    ["in3"] = CreateQwen35CosSinTexture(decoder, ops, 32, 0f),
+                    ["cache_conv0"] = CreateQwen35ZeroTexture(decoder, ops, 1536, 4, 1),
+                    ["cache_conv1"] = CreateQwen35ZeroTexture(decoder, ops, 1536, 4, 1),
+                    ["cache_conv2"] = CreateQwen35ZeroTexture(decoder, ops, 1536, 4, 1),
+                    ["cache_gdr0"] = CreateQwen35ZeroTexture(decoder, ops, 32, 128, 16),
+                    ["cache_gdr1"] = CreateQwen35ZeroTexture(decoder, ops, 32, 128, 16),
+                    ["cache_gdr2"] = CreateQwen35ZeroTexture(decoder, ops, 32, 128, 16)
+                };
+                var textureShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                {
+                    ["in0"] = new NcnnRepro.BufferShape(2, 1024, 1, 1, 1),
+                    ["in1"] = new NcnnRepro.BufferShape(2, 1, 1, 1, 1),
+                    ["in2"] = new NcnnRepro.BufferShape(3, 32, 1, 1, 1),
+                    ["in3"] = new NcnnRepro.BufferShape(3, 32, 1, 1, 1),
+                    ["cache_conv0"] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1),
+                    ["cache_conv1"] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1),
+                    ["cache_conv2"] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1),
+                    // GDR state is stored as value_dim/4 texture columns; the custom layer
+                    // addresses it in this packed storage shape directly.
+                    ["cache_gdr0"] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16),
+                    ["cache_gdr1"] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16),
+                    ["cache_gdr2"] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16)
+                };
+                for (var cacheIndex = 3; cacheIndex < 18; cacheIndex++)
+                {
+                    var convName = "cache_conv" + cacheIndex;
+                    var gdrName = "cache_gdr" + cacheIndex;
+                    textureInputs[convName] = CreateQwen35ZeroTexture(decoder, ops, 1536, 4, 1);
+                    textureInputs[gdrName] = CreateQwen35ZeroTexture(decoder, ops, 32, 128, 16);
+                    textureShapes[convName] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1);
+                    textureShapes[gdrName] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16);
+                }
+
+                RenderTexture decoderOutput = null;
+                using (var result = decoder.InferWithMultiInputs(
+                    textureInputs,
+                    null,
+                    null,
+                    textureShapes,
+                    stopAfter))
+                {
+                    if (runProjOut)
+                    {
+                        if (!string.Equals(stopAfter, "out0", StringComparison.Ordinal))
+                            throw new InvalidOperationException("proj_out chaining requires decoder stop blob out0");
+                        decoderOutput = result.ExtractTexture(stopAfter);
+                    }
+                    else
+                    {
+                        var output = result.ReadTextureDataForOutput(stopAfter);
+                        outputCount = output != null ? output.Length : 0;
+                        for (var i = 0; i < outputCount; i++)
+                        {
+                            if (float.IsNaN(output[i]) || float.IsInfinity(output[i]))
+                                outputNonFiniteCount++;
+                            else
+                                outputMaxAbs = Mathf.Max(outputMaxAbs, Mathf.Abs(output[i]));
+                            if (i < 16)
+                                preview.Add(output[i]);
+                        }
+                        valid = outputCount > 0 && outputNonFiniteCount == 0 && outputMaxAbs > 0f;
+                    }
+                }
+                if (runProjOut)
+                {
+                    using (var proj = new NcnnRepro(ops))
+                    {
+                        ConfigureQwen35StrictRepro(proj);
+                        shared.Attach(proj);
+                        proj.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                        using (var projStream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin")))
+                        using (var projReader = new NcnnBinReader(projStream))
+                            proj.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_proj_out.ncnn.param")), projReader);
+                        using (var projResult = proj.InferWithMultiInputs(
+                            new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = decoderOutput },
+                            null,
+                            null,
+                            new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                            {
+                                ["in0"] = new NcnnRepro.BufferShape(2, 1024, 1, 1, 1)
+                            }))
+                        {
+                            var logitsTexture = projResult.GetTexture("out0");
+                            logitsWidth = logitsTexture.width;
+                            logitsHeight = logitsTexture.height;
+                            var logits = projResult.ReadTextureDataForOutput("out0");
+                            outputCount = logits != null ? logits.Length : 0;
+                            var bestValue = float.NegativeInfinity;
+                            for (var i = 0; i < outputCount; i++)
+                            {
+                                if (!float.IsNaN(logits[i]) && logits[i] > bestValue)
+                                {
+                                    bestValue = logits[i];
+                                    greedyToken = i;
+                                }
+                            }
+                            for (var i = 0; i < Math.Min(16, outputCount); i++)
+                                preview.Add(logits[i]);
+                            valid = outputCount == 248320 && greedyToken >= 0;
+                        }
+                    }
+                    if (decoderOutput != null)
+                    {
+                        RenderTexture.ReleaseTemporary(decoderOutput);
+                        decoderOutput = null;
+                    }
+                }
+                foreach (var texture in textureInputs.Values)
+                {
+                    if (texture != null && texture != embedding)
+                        decoder.ReturnTempArray(texture);
+                }
+                if (embedding != null)
+                    RenderTexture.ReleaseTemporary(embedding);
+            }
+        }
+        catch (Exception e)
+        {
+            error = e.ToString();
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.decoder-prefix-probe/v1",
+            ["model_directory"] = modelDir,
+            ["stop_after"] = stopAfter,
+            ["run_proj_out"] = runProjOut,
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["output_count"] = outputCount,
+            ["output_max_abs"] = outputMaxAbs,
+            ["output_nonfinite_count"] = outputNonFiniteCount,
+            ["greedy_token"] = greedyToken,
+            ["logits_texture_width"] = logitsWidth,
+            ["logits_texture_height"] = logitsHeight,
+            ["shared_weight_bytes"] = sharedWeightBytes,
+            ["shared_gpu_weight_instances"] = 1,
+            ["preview"] = preview,
+            ["error"] = error ?? string.Empty,
+            ["strict_texture_execution"] = true,
+            ["compute_buffer_fallback"] = false,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_decoder_prefix_probe.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] decoder prefix probe report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen35 decoder prefix probe failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35ProjOutProbeBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_PROJ_PROBE_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_proj_out_probe.json");
+
+        var valid = false;
+        string error = null;
+        var logitsCount = 0;
+        var greedyToken = -1;
+        var logitsWidth = 0;
+        var logitsHeight = 0;
+        var maxAbsLogit = 0f;
+        long sharedWeightBytes = 0;
+        long sharedLoadMs = 0;
+        var preview = new JArray();
+        try
+        {
+            using (var shared = Qwen35SharedTokenEmbeddingWeights.Load(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin")))
+            using (var ops = new NcnnOps())
+            using (var proj = new NcnnRepro(ops))
+            {
+                sharedWeightBytes = shared.ByteCount;
+                sharedLoadMs = shared.LoadMilliseconds;
+                shared.Attach(proj);
+                ConfigureQwen35StrictRepro(proj);
+                proj.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+
+                using (var stream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin")))
+                using (var reader = new NcnnBinReader(stream))
+                    proj.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_proj_out.ncnn.param")), reader);
+
+                var hidden = CreateQwen35ZeroTexture(proj, ops, 256, 1, 1);
+                ops.FillScalarTexture(new[] { 1f }, hidden);
+                using (var result = proj.InferWithMultiInputs(
+                    new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = hidden },
+                    null,
+                    null,
+                    new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["in0"] = new NcnnRepro.BufferShape(2, 1024, 1, 1, 1)
+                    }))
+                {
+                    var logitsTexture = result.GetTexture("out0");
+                    logitsWidth = logitsTexture.width;
+                    logitsHeight = logitsTexture.height;
+                    var logits = result.ReadTextureDataForOutput("out0");
+                    logitsCount = logits != null ? logits.Length : 0;
+                    var bestValue = float.NegativeInfinity;
+                    for (var i = 0; i < logitsCount; i++)
+                    {
+                        if (!float.IsNaN(logits[i]) && logits[i] > bestValue)
+                        {
+                            bestValue = logits[i];
+                            greedyToken = i;
+                        }
+                        if (!float.IsNaN(logits[i]) && !float.IsInfinity(logits[i]))
+                            maxAbsLogit = Mathf.Max(maxAbsLogit, Mathf.Abs(logits[i]));
+                    }
+                    for (var i = 0; i < Math.Min(16, logitsCount); i++)
+                        preview.Add(logits[i]);
+                    valid = logitsCount == 248320
+                        && greedyToken >= 0
+                        && maxAbsLogit > 0f
+                        && logitsWidth <= SystemInfo.maxTextureSize
+                        && logitsHeight <= SystemInfo.maxTextureSize;
+                }
+                proj.ReturnTempArray(hidden);
+            }
+        }
+        catch (Exception e)
+        {
+            error = e.ToString();
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.proj-out-probe/v1",
+            ["model_directory"] = modelDir,
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["logits_count"] = logitsCount,
+            ["greedy_token"] = greedyToken,
+            ["logits_texture_width"] = logitsWidth,
+            ["logits_texture_height"] = logitsHeight,
+            ["max_abs_logit"] = maxAbsLogit,
+            ["shared_weight_bytes"] = sharedWeightBytes,
+            ["shared_gpu_weight_instances"] = 1,
+            ["shared_weight_load_ms"] = sharedLoadMs,
+            ["preview"] = preview,
+            ["error"] = error ?? string.Empty,
+            ["strict_texture_execution"] = true,
+            ["compute_buffer_fallback"] = false,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_proj_out_probe.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] proj_out probe report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen35 proj_out probe failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35VisionPatchProbeBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_PATCH_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_patch_probe.json");
+
+        var valid = false;
+        string error = null;
+        var sourceWidth = 0;
+        var sourceHeight = 0;
+        var targetWidth = 0;
+        var targetHeight = 0;
+        var patchCount = 0;
+        var outputCount = 0;
+        var finiteCount = 0;
+        var nonZeroCount = 0;
+        var maxAbs = 0f;
+        var inputPreview = new JArray();
+        var outputPreview = new JArray();
+        var patchValues = Array.Empty<float>();
+        var outputValues = Array.Empty<float>();
+        Texture2D image = null;
+        try
+        {
+            var imageBytes = File.ReadAllBytes(imagePath);
+            image = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
+            if (!ImageConversion.LoadImage(image, imageBytes, false))
+                throw new InvalidDataException("Unity failed to decode Qwen3.5 probe image: " + imagePath);
+            sourceWidth = image.width;
+            sourceHeight = image.height;
+            var target = Qwen35VisionPreprocessor.TargetImageSize(sourceHeight, sourceWidth);
+            targetWidth = target.x;
+            targetHeight = target.y;
+            var normalized = Qwen35VisionPreprocessor.ResizeNormalize(image, targetWidth, targetHeight);
+            var patches = Qwen35VisionPreprocessor.BuildDuplicatedPatches(normalized, targetWidth, targetHeight);
+            patchCount = (targetWidth / 16) * (targetHeight / 16);
+            var patch = new float[16 * 16 * 2 * 3];
+            Array.Copy(patches, patch, patch.Length);
+            patchValues = patch;
+            for (var i = 0; i < Math.Min(16, patch.Length); i++)
+                inputPreview.Add(patch[i]);
+
+            using (var ops = new NcnnOps())
+            using (var repro = new NcnnRepro(ops))
+            {
+                ConfigureQwen35StrictRepro(repro);
+                repro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                using (var stream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_vision_embed_patch.ncnn.bin")))
+                using (var reader = new NcnnBinReader(stream))
+                    repro.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_vision_embed_patch.ncnn.param")), reader);
+
+                var patchTexture = CreateQwen35Pack4TextureFromCdhw(repro, patch, 16, 16, 2, 3);
+                try
+                {
+                    using (var result = repro.InferWithMultiInputs(
+                        new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = patchTexture },
+                        null,
+                        null,
+                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        {
+                            ["in0"] = new NcnnRepro.BufferShape(4, 16, 16, 2, 3)
+                        }))
+                    {
+                        var values = result.ReadTextureDataForOutput("out0") ?? Array.Empty<float>();
+                        outputValues = values;
+                        outputCount = values.Length;
+                        for (var i = 0; i < values.Length; i++)
+                        {
+                            var value = values[i];
+                            if (!float.IsNaN(value) && !float.IsInfinity(value)) finiteCount++;
+                            if (value != 0f) nonZeroCount++;
+                            maxAbs = Mathf.Max(maxAbs, Mathf.Abs(value));
+                        }
+                        for (var i = 0; i < Math.Min(16, values.Length); i++)
+                            outputPreview.Add(values[i]);
+                        valid = outputCount == 768 && finiteCount == outputCount && nonZeroCount > 0;
+                    }
+                }
+                finally
+                {
+                    repro.ReturnTempArray(patchTexture);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+        }
+        finally
+        {
+            if (image != null) UnityEngine.Object.DestroyImmediate(image);
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.vision-patch-probe/v1",
+            ["model_directory"] = modelDir,
+            ["image"] = imagePath,
+            ["image_sha256"] = File.Exists(imagePath) ? ComputeQwen35Sha256(imagePath) : string.Empty,
+            ["source_width"] = sourceWidth,
+            ["source_height"] = sourceHeight,
+            ["target_width"] = targetWidth,
+            ["target_height"] = targetHeight,
+            ["patch_count"] = patchCount,
+            ["patch_index"] = 0,
+            ["patch_input_count"] = 16 * 16 * 2 * 3,
+            ["input_preview"] = inputPreview,
+            ["input_values"] = new JArray(patchValues),
+            ["output_count"] = outputCount,
+            ["finite_count"] = finiteCount,
+            ["nonzero_count"] = nonZeroCount,
+            ["max_abs"] = maxAbs,
+            ["output_preview"] = outputPreview,
+            ["output_values"] = new JArray(outputValues),
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["error"] = error ?? string.Empty,
+            ["strict_texture_execution"] = true,
+            ["fixed_input_texture_upload"] = "Texture2DArray.CopyTexture",
+            ["compute_buffer_fallback"] = false,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35VisionPatchProbeBatch",
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_patch_probe.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] vision patch probe report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen35 vision patch probe failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35VisionPositionProbeBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_POSITION_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_position_probe.json");
+        var dumpPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_POSITION_DUMP");
+        if (string.IsNullOrWhiteSpace(dumpPath))
+            dumpPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_position_probe.f32");
+
+        var valid = false;
+        string error = null;
+        var outputCount = 0;
+        var finiteCount = 0;
+        var nonZeroCount = 0;
+        var maxAbs = 0f;
+        var preview = new JArray();
+        try
+        {
+            using (var ops = new NcnnOps())
+            using (var repro = new NcnnRepro(ops))
+            {
+                ConfigureQwen35StrictRepro(repro);
+                repro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                using (var stream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_vision_embed_pos.ncnn.bin")))
+                using (var reader = new NcnnBinReader(stream))
+                    repro.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_vision_embed_pos.ncnn.param")), reader);
+
+                var grid = CreateQwen35ZeroLinearTexture(repro, ops, 64, 48);
+                try
+                {
+                    using (var result = repro.InferWithMultiInputs(
+                        new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = grid },
+                        null,
+                        null,
+                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        {
+                            ["in0"] = new NcnnRepro.BufferShape(2, 64, 48, 1, 1)
+                        }))
+                    {
+                        var values = result.ReadTextureDataForOutput("out0") ?? Array.Empty<float>();
+                        outputCount = values.Length;
+                        var dumpBytes = new byte[values.Length * sizeof(float)];
+                        Buffer.BlockCopy(values, 0, dumpBytes, 0, dumpBytes.Length);
+                        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dumpPath)));
+                        File.WriteAllBytes(dumpPath, dumpBytes);
+                        for (var i = 0; i < values.Length; i++)
+                        {
+                            var value = values[i];
+                            if (!float.IsNaN(value) && !float.IsInfinity(value)) finiteCount++;
+                            if (value != 0f) nonZeroCount++;
+                            maxAbs = Mathf.Max(maxAbs, Mathf.Abs(value));
+                        }
+                        for (var i = 0; i < Math.Min(32, values.Length); i++) preview.Add(values[i]);
+                        valid = outputCount == 768 * 3072 && finiteCount == outputCount && nonZeroCount > 0;
+                    }
+                }
+                finally
+                {
+                    RenderTexture.ReleaseTemporary(grid);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.vision-position-probe/v1",
+            ["model_directory"] = modelDir,
+            ["grid_width"] = 64,
+            ["grid_height"] = 48,
+            ["output_count"] = outputCount,
+            ["finite_count"] = finiteCount,
+            ["nonzero_count"] = nonZeroCount,
+            ["max_abs"] = maxAbs,
+            ["preview"] = preview,
+            ["fp32_dump"] = dumpPath,
+            ["fp32_dump_sha256"] = File.Exists(dumpPath) ? ComputeQwen35Sha256(dumpPath) : string.Empty,
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["error"] = error ?? string.Empty,
+            ["strict_texture_execution"] = true,
+            ["memory_data_storage"] = "load-time pack4 RenderTexture",
+            ["compute_buffer_fallback"] = false,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35VisionPositionProbeBatch",
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_position_probe.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] vision position probe report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen35 vision position probe failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35VisionPatchAtlasProbeBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_PATCH_ATLAS_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_patch_atlas_probe.json");
+        var dumpPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_PATCH_ATLAS_DUMP");
+        if (string.IsNullOrWhiteSpace(dumpPath))
+            dumpPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_patch_atlas_probe.f32");
+
+        var valid = false;
+        string error = null;
+        var sourceWidth = 0;
+        var sourceHeight = 0;
+        var targetWidth = 0;
+        var targetHeight = 0;
+        var patchCount = 0;
+        var outputCount = 0;
+        var finiteCount = 0;
+        var nonZeroCount = 0;
+        var maxAbs = 0f;
+        var selected = new JObject();
+        Texture2D image = null;
+        try
+        {
+            image = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
+            if (!ImageConversion.LoadImage(image, File.ReadAllBytes(imagePath), false))
+                throw new InvalidDataException("Unity failed to decode Qwen3.5 atlas image: " + imagePath);
+            sourceWidth = image.width;
+            sourceHeight = image.height;
+            var target = Qwen35VisionPreprocessor.TargetImageSize(sourceHeight, sourceWidth);
+            targetWidth = target.x;
+            targetHeight = target.y;
+            var normalized = Qwen35VisionPreprocessor.ResizeNormalize(image, targetWidth, targetHeight);
+            var patches = Qwen35VisionPreprocessor.BuildDuplicatedPatches(normalized, targetWidth, targetHeight);
+            patchCount = (targetWidth / 16) * (targetHeight / 16);
+
+            using (var ops = new NcnnOps())
+            using (var patchRepro = new NcnnRepro(ops))
+            {
+                ConfigureQwen35StrictRepro(patchRepro);
+                patchRepro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                using (var stream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_vision_embed_patch.ncnn.bin")))
+                using (var reader = new NcnnBinReader(stream))
+                    patchRepro.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_vision_embed_patch.ncnn.param")), reader);
+
+                var atlas = CreateQwen35PatchAtlasTexture(patchRepro, patches, targetWidth, targetHeight, 16, 2, 3);
+                RenderTexture spatialOutput = null;
+                RenderTexture linearOutput = null;
+                try
+                {
+                    using (var result = patchRepro.InferWithMultiInputs(
+                        new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = atlas },
+                        null,
+                        null,
+                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        {
+                            ["in0"] = new NcnnRepro.BufferShape(4, targetWidth, targetHeight, 2, 3)
+                        }))
+                    {
+                        spatialOutput = result.ExtractTexture("out0");
+                    }
+
+                    linearOutput = patchRepro.RentTempArray(768 / 4, patchCount, 1, RenderTextureFormat.ARGBFloat);
+                    ops.Pack4SpatialToPack4Linear(spatialOutput, linearOutput);
+
+                    const string identityParam = "7767517\n2 2\nInput in0 0 1 in0\nNoop copy 1 1 in0 out0\n";
+                    using (var viewRepro = new NcnnRepro(ops))
+                    using (var emptyStream = new MemoryStream())
+                    using (var emptyReader = new NcnnBinReader(emptyStream))
+                    {
+                        ConfigureQwen35StrictRepro(viewRepro);
+                        viewRepro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                        viewRepro.LoadModel(identityParam, emptyReader);
+                        using (var result = viewRepro.InferWithMultiInputs(
+                            new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = linearOutput },
+                            null,
+                            null,
+                            new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                            {
+                                ["in0"] = new NcnnRepro.BufferShape(2, 768, patchCount, 1, 1)
+                            }))
+                        {
+                            var values = result.ReadTextureDataForOutput("out0") ?? Array.Empty<float>();
+                            outputCount = values.Length;
+                            var dumpBytes = new byte[values.Length * sizeof(float)];
+                            Buffer.BlockCopy(values, 0, dumpBytes, 0, dumpBytes.Length);
+                            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dumpPath)));
+                            File.WriteAllBytes(dumpPath, dumpBytes);
+                            for (var i = 0; i < values.Length; i++)
+                            {
+                                var value = values[i];
+                                if (!float.IsNaN(value) && !float.IsInfinity(value)) finiteCount++;
+                                if (value != 0f) nonZeroCount++;
+                                maxAbs = Mathf.Max(maxAbs, Mathf.Abs(value));
+                            }
+                            var selectedIndices = new[] { 0, 1, 2, 3, 1024, patchCount - 1 };
+                            for (var index = 0; index < selectedIndices.Length; index++)
+                            {
+                                var patchIndex = selectedIndices[index];
+                                var row = new JArray();
+                                for (var feature = 0; feature < 16; feature++)
+                                    row.Add(values[patchIndex * 768 + feature]);
+                                selected[patchIndex.ToString(CultureInfo.InvariantCulture)] = row;
+                            }
+                            valid = outputCount == patchCount * 768 && finiteCount == outputCount && nonZeroCount > 0;
+                        }
+                    }
+                }
+                finally
+                {
+                    patchRepro.ReturnTempArray(atlas);
+                    if (spatialOutput != null) patchRepro.ReturnTempArray(spatialOutput);
+                    if (linearOutput != null) patchRepro.ReturnTempArray(linearOutput);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+        }
+        finally
+        {
+            if (image != null) UnityEngine.Object.DestroyImmediate(image);
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.vision-patch-atlas-probe/v1",
+            ["model_directory"] = modelDir,
+            ["image"] = imagePath,
+            ["image_sha256"] = File.Exists(imagePath) ? ComputeQwen35Sha256(imagePath) : string.Empty,
+            ["source_width"] = sourceWidth,
+            ["source_height"] = sourceHeight,
+            ["target_width"] = targetWidth,
+            ["target_height"] = targetHeight,
+            ["patch_count"] = patchCount,
+            ["output_count"] = outputCount,
+            ["finite_count"] = finiteCount,
+            ["nonzero_count"] = nonZeroCount,
+            ["max_abs"] = maxAbs,
+            ["selected_patch_previews"] = selected,
+            ["fp32_dump"] = dumpPath,
+            ["fp32_dump_sha256"] = File.Exists(dumpPath) ? ComputeQwen35Sha256(dumpPath) : string.Empty,
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["error"] = error ?? string.Empty,
+            ["strict_texture_execution"] = true,
+            ["patch_execution"] = "single Convolution3D atlas dispatch",
+            ["layout_transform"] = "Pack4SpatialToPack4Linear",
+            ["compute_buffer_fallback"] = false,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35VisionPatchAtlasProbeBatch",
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_patch_atlas_probe.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] vision patch atlas probe report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen35 vision patch atlas probe failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35VisionEncoderPrefixProbeBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var stopAfter = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_ENCODER_STOP_AFTER");
+        if (string.IsNullOrWhiteSpace(stopAfter)) stopAfter = "52";
+        var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_ENCODER_REPORT");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_encoder_prefix_probe.json");
+        var dumpPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_ENCODER_DUMP");
+        if (string.IsNullOrWhiteSpace(dumpPath))
+            dumpPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_encoder_prefix_probe.f32");
+
+        var valid = false;
+        string error = null;
+        var outputCount = 0;
+        var finiteCount = 0;
+        var nonZeroCount = 0;
+        var maxAbs = 0f;
+        var patchTextureShape = string.Empty;
+        var positionTextureShape = string.Empty;
+        var ropeTextureShape = string.Empty;
+        var preview = new JArray();
+        Texture2D image = null;
+        try
+        {
+            image = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
+            if (!ImageConversion.LoadImage(image, File.ReadAllBytes(imagePath), false))
+                throw new InvalidDataException("Unity failed to decode Qwen3.5 encoder image: " + imagePath);
+            var target = Qwen35VisionPreprocessor.TargetImageSize(image.height, image.width);
+            var gridWidth = target.x / 16;
+            var gridHeight = target.y / 16;
+            var patchCount = gridWidth * gridHeight;
+            var normalized = Qwen35VisionPreprocessor.ResizeNormalize(image, target.x, target.y);
+            var patches = Qwen35VisionPreprocessor.BuildDuplicatedPatches(normalized, target.x, target.y);
+            Qwen35VisionPreprocessor.BuildVisionRope2D(gridHeight, gridWidth, out var ropeCos, out var ropeSin);
+
+            using (var ops = new NcnnOps())
+            using (var patchRepro = new NcnnRepro(ops))
+            using (var positionRepro = new NcnnRepro(ops))
+            using (var encoderRepro = new NcnnRepro(ops))
+            {
+                ConfigureQwen35StrictRepro(patchRepro);
+                ConfigureQwen35StrictRepro(positionRepro);
+                ConfigureQwen35StrictRepro(encoderRepro);
+                patchRepro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                positionRepro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                encoderRepro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+                if (ResolveBoolEnv("AIIMAGE_QWEN35_VISION_ENCODER_LAYER_LOG", false))
+                {
+                    encoderRepro.DebugLog = line => Debug.Log("[Qwen35][VisionEncoder] " + line);
+                    encoderRepro.DebugLogAllLayerOutputs = true;
+                    encoderRepro.DebugLogAllLayerHeartbeats = true;
+                }
+
+                using (var stream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_vision_embed_patch.ncnn.bin")))
+                using (var reader = new NcnnBinReader(stream))
+                    patchRepro.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_vision_embed_patch.ncnn.param")), reader);
+                using (var stream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_vision_embed_pos.ncnn.bin")))
+                using (var reader = new NcnnBinReader(stream))
+                    positionRepro.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_vision_embed_pos.ncnn.param")), reader);
+                using (var stream = File.OpenRead(Path.Combine(modelDir, "qwen3.5_vision_encoder.ncnn.bin")))
+                using (var reader = new NcnnBinReader(stream))
+                    encoderRepro.LoadModel(File.ReadAllText(Path.Combine(modelDir, "qwen3.5_vision_encoder.ncnn.param")), reader);
+
+                RenderTexture atlas = null;
+                RenderTexture patchSpatial = null;
+                RenderTexture patchLinear = null;
+                RenderTexture positionGrid = null;
+                RenderTexture positionRaw = null;
+                RenderTexture positionMerged = null;
+                RenderTexture cosTexture = null;
+                RenderTexture sinTexture = null;
+                try
+                {
+                    atlas = CreateQwen35PatchAtlasTexture(patchRepro, patches, target.x, target.y, 16, 2, 3);
+                    using (var result = patchRepro.InferWithMultiInputs(
+                        new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = atlas },
+                        null,
+                        null,
+                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        {
+                            ["in0"] = new NcnnRepro.BufferShape(4, target.x, target.y, 2, 3)
+                        }))
+                    {
+                        patchSpatial = result.ExtractTexture("out0");
+                    }
+                    patchLinear = patchRepro.RentTempArray(768 / 4, patchCount, 1, RenderTextureFormat.ARGBFloat);
+                    ops.Pack4SpatialToPack4Linear(patchSpatial, patchLinear);
+                    patchTextureShape = patchLinear.width + "x" + patchLinear.height + "x" + patchLinear.volumeDepth;
+
+                    positionGrid = CreateQwen35ZeroLinearTexture(positionRepro, ops, gridWidth, gridHeight);
+                    using (var result = positionRepro.InferWithMultiInputs(
+                        new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = positionGrid },
+                        null,
+                        null,
+                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        {
+                            ["in0"] = new NcnnRepro.BufferShape(2, gridWidth, gridHeight, 1, 1)
+                        }))
+                    {
+                        positionRaw = result.ExtractTexture("out0");
+                    }
+                    if (positionRaw.dimension != UnityEngine.Rendering.TextureDimension.Tex2D || positionRaw.width != 768 || positionRaw.height != patchCount)
+                        throw new InvalidOperationException("Qwen3.5 position output has unexpected texture layout: " + positionRaw.width + "x" + positionRaw.height + "x" + positionRaw.volumeDepth);
+                    positionMerged = positionRepro.RentTempMat(positionRaw.width, positionRaw.height, positionRaw.format);
+                    ops.LinearMatReorderMergeRows(positionRaw, positionMerged, gridWidth, gridHeight, 2);
+                    positionTextureShape = positionMerged.width + "x" + positionMerged.height + "x" + positionMerged.volumeDepth;
+
+                    cosTexture = CreateQwen35ScalarRowsTexture(encoderRepro, ropeCos, 64, 32, patchCount);
+                    sinTexture = CreateQwen35ScalarRowsTexture(encoderRepro, ropeSin, 64, 32, patchCount);
+                    ropeTextureShape = cosTexture.width + "x" + cosTexture.height + "x" + cosTexture.volumeDepth;
+
+                    var encoderInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+                    {
+                        ["in0"] = patchLinear,
+                        ["in1"] = positionMerged,
+                        ["in2"] = cosTexture,
+                        ["in3"] = sinTexture
+                    };
+                    var encoderShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["in0"] = new NcnnRepro.BufferShape(2, 768, patchCount, 1, 1),
+                        ["in1"] = new NcnnRepro.BufferShape(2, 768, patchCount, 1, 1),
+                        ["in2"] = new NcnnRepro.BufferShape(3, 32, patchCount, 1, 1),
+                        ["in3"] = new NcnnRepro.BufferShape(3, 32, patchCount, 1, 1)
+                    };
+                    using (var result = encoderRepro.InferWithMultiInputs(encoderInputs, null, null, encoderShapes, stopAfter))
+                    {
+                        var values = result.ReadTextureDataForOutput(stopAfter) ?? Array.Empty<float>();
+                        outputCount = values.Length;
+                        var dumpBytes = new byte[values.Length * sizeof(float)];
+                        Buffer.BlockCopy(values, 0, dumpBytes, 0, dumpBytes.Length);
+                        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dumpPath)));
+                        File.WriteAllBytes(dumpPath, dumpBytes);
+                        for (var i = 0; i < values.Length; i++)
+                        {
+                            var value = values[i];
+                            if (!float.IsNaN(value) && !float.IsInfinity(value)) finiteCount++;
+                            if (value != 0f) nonZeroCount++;
+                            maxAbs = Mathf.Max(maxAbs, Mathf.Abs(value));
+                        }
+                        for (var i = 0; i < Math.Min(32, values.Length); i++) preview.Add(values[i]);
+                        valid = outputCount > 0 && finiteCount == outputCount && nonZeroCount > 0;
+                    }
+                }
+                finally
+                {
+                    if (atlas != null) patchRepro.ReturnTempArray(atlas);
+                    if (patchSpatial != null) patchRepro.ReturnTempArray(patchSpatial);
+                    if (patchLinear != null) patchRepro.ReturnTempArray(patchLinear);
+                    if (positionGrid != null) RenderTexture.ReleaseTemporary(positionGrid);
+                    if (positionRaw != null) RenderTexture.ReleaseTemporary(positionRaw);
+                    if (positionMerged != null) RenderTexture.ReleaseTemporary(positionMerged);
+                    if (cosTexture != null) encoderRepro.ReturnTempArray(cosTexture);
+                    if (sinTexture != null) encoderRepro.ReturnTempArray(sinTexture);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+        }
+        finally
+        {
+            if (image != null) UnityEngine.Object.DestroyImmediate(image);
+        }
+
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.vision-encoder-prefix-probe/v1",
+            ["model_directory"] = modelDir,
+            ["image"] = imagePath,
+            ["image_sha256"] = File.Exists(imagePath) ? ComputeQwen35Sha256(imagePath) : string.Empty,
+            ["stop_after"] = stopAfter,
+            ["output_count"] = outputCount,
+            ["finite_count"] = finiteCount,
+            ["nonzero_count"] = nonZeroCount,
+            ["max_abs"] = maxAbs,
+            ["preview"] = preview,
+            ["patch_texture_shape"] = patchTextureShape,
+            ["position_texture_shape"] = positionTextureShape,
+            ["rope_texture_shape"] = ropeTextureShape,
+            ["fp32_dump"] = dumpPath,
+            ["fp32_dump_sha256"] = File.Exists(dumpPath) ? ComputeQwen35Sha256(dumpPath) : string.Empty,
+            ["valid"] = valid && string.IsNullOrEmpty(error),
+            ["error"] = error ?? string.Empty,
+            ["strict_texture_execution"] = true,
+            ["position_reorder"] = "Pack4ReorderMergeRows(grid=64x48,merge=2)",
+            ["rope_generation"] = "C# vision RoPE 2D theta=10000 section=(16,16)",
+            ["compute_buffer_fallback"] = false,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35VisionEncoderPrefixProbeBatch",
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_encoder_prefix_probe.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
+        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] vision encoder prefix probe report: " + outputPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen35 vision encoder prefix probe failed; see " + outputPath);
+        EditorApplication.Exit(0);
+    }
+
+    public static void RunQwen35FullCheckpointAuditBatch()
+    {
+        var start = Stopwatch.StartNew();
+        var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (string.IsNullOrWhiteSpace(modelDir))
+            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var manifestPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_COMPARE_MANIFEST");
+        if (string.IsNullOrWhiteSpace(manifestPath))
+            manifestPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "qwen35_0_8b_compare_manifest.json");
+        var outputRoot = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_AUDIT_OUTPUT_ROOT");
+        if (string.IsNullOrWhiteSpace(outputRoot))
+            outputRoot = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "full_checkpoint_audit");
+        var reportPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_AUDIT_REPORT");
+        if (string.IsNullOrWhiteSpace(reportPath))
+            reportPath = Path.Combine(outputRoot, "unity_full_audit_report.json");
+
+        var allNetworkNames = new[] { "embed_token", "proj_out", "vision_embed_patch", "vision_embed_pos", "vision_encoder" };
+        var configuredNetworks = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_AUDIT_NETWORKS");
+        var networkNames = string.IsNullOrWhiteSpace(configuredNetworks)
+            ? allNetworkNames
+            : configuredNetworks.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => value.Trim())
+                .Where(value => allNetworkNames.Contains(value, StringComparer.Ordinal))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        if (networkNames.Length == 0)
+            throw new InvalidDataException("AIIMAGE_QWEN35_AUDIT_NETWORKS did not select a known network.");
+        var blobSets = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var expectedCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var manifest = JObject.Parse(File.ReadAllText(manifestPath));
+        foreach (var network in networkNames)
+        {
+            var blobs = new HashSet<string>(StringComparer.Ordinal);
+            var layers = manifest["networks"]?[network]?["layers"] as JArray;
+            if (layers == null)
+                throw new InvalidDataException("Compare manifest network is missing: " + network);
+            foreach (var layer in layers)
+            {
+                var type = (string)layer["type"] ?? string.Empty;
+                if (type == "Input" || type == "MemoryData")
+                    continue;
+                if (layer["tops"] is JArray tops)
+                    foreach (var top in tops)
+                        if (!string.IsNullOrWhiteSpace((string)top)) blobs.Add((string)top);
+            }
+            blobSets[network] = blobs;
+            expectedCounts[network] = blobs.Count;
+        }
+
+        var files = new JObject();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        Action<string, string, string, float[]> writeCheckpoint = (network, layerName, blobName, values) =>
+        {
+            if (!blobSets.TryGetValue(network, out var requested) || !requested.Contains(blobName))
+                return;
+            var directory = Path.Combine(outputRoot, network);
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "unity.blob_" + blobName + ".f32");
+            using (var stream = File.Create(path))
+            using (var writer = new BinaryWriter(stream))
+                for (var i = 0; i < values.Length; i++) writer.Write(values[i]);
+            files[network + "/" + blobName] = path;
+            seen.Add(network + "/" + blobName);
+        };
+
+        string error = null;
+        try
+        {
+            using (var runner = new Qwen35Runner(modelDir, 1))
+            {
+                if (networkNames.Any(value => value.StartsWith("vision_", StringComparison.Ordinal)))
+                {
+                    using (var vision = runner.CreateVisionEncoderSession())
+                    {
+                        vision.ConfigureDebugLayerReadback(
+                            blobSets.TryGetValue("vision_embed_patch", out var patchBlobs) ? patchBlobs : null,
+                            blobSets.TryGetValue("vision_embed_pos", out var positionBlobs) ? positionBlobs : null,
+                            blobSets.TryGetValue("vision_encoder", out var encoderBlobs) ? encoderBlobs : null,
+                            writeCheckpoint);
+                        using (var encoding = vision.EncodeFile(imagePath)) { }
+                    }
+                }
+                if (networkNames.Contains("embed_token", StringComparer.Ordinal) || networkNames.Contains("proj_out", StringComparer.Ordinal))
+                {
+                    using (var decoder = runner.CreateDecoderSession())
+                    {
+                        if (string.Equals(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_DECODER_LAYER_LOG"), "1", StringComparison.Ordinal))
+                            decoder.DebugLog = line => Debug.Log("[Qwen35][FullAudit] " + line);
+                        decoder.ConfigureDebugAuxiliaryReadback(
+                            blobSets.TryGetValue("embed_token", out var embedBlobs) ? embedBlobs : null,
+                            blobSets.TryGetValue("proj_out", out var projectionBlobs) ? projectionBlobs : null,
+                            writeCheckpoint);
+                        Qwen35OwnedTexture hidden = null;
+                        try
+                        {
+                            if (networkNames.Contains("embed_token", StringComparer.Ordinal) || networkNames.Contains("proj_out", StringComparer.Ordinal))
+                                hidden = decoder.EmbedTokens(new[] { 0 });
+                            if (networkNames.Contains("proj_out", StringComparer.Ordinal))
+                                decoder.ProjectLogits(hidden);
+                        }
+                        finally
+                        {
+                            hidden?.Dispose();
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            error = exception.ToString();
+        }
+
+        var missing = new JArray();
+        foreach (var network in networkNames)
+            foreach (var blob in blobSets[network])
+                if (!seen.Contains(network + "/" + blob)) missing.Add(network + "/" + blob);
+        start.Stop();
+        var report = new JObject
+        {
+            ["schema"] = "qwen35.unity.full-checkpoint-audit/v1",
+            ["model_directory"] = modelDir,
+            ["image"] = imagePath,
+            ["manifest"] = manifestPath,
+            ["output_root"] = outputRoot,
+            ["expected_numeric_checkpoint_count"] = expectedCounts.Values.Sum(),
+            ["dumped_numeric_checkpoint_count"] = seen.Count,
+            ["missing_numeric_checkpoints"] = missing,
+            ["dump_files"] = files,
+            ["valid"] = string.IsNullOrEmpty(error) && missing.Count == 0,
+            ["strict_texture_execution"] = true,
+            ["compute_buffer_fallback"] = false,
+            ["error"] = error ?? string.Empty,
+            ["elapsed_ms"] = start.ElapsedMilliseconds,
+            ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35FullCheckpointAuditBatch",
+            ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_full_checkpoint_audit.log"
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath)));
+        File.WriteAllText(reportPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        Debug.Log("[Qwen35] full checkpoint audit report: " + reportPath + " valid=" + report["valid"]);
+        if (!(bool)report["valid"])
+            throw new InvalidOperationException("Qwen3.5 full checkpoint audit dump failed; see " + reportPath);
+        EditorApplication.Exit(0);
+    }
+
+    private static void ConfigureQwen35StrictRepro(NcnnRepro repro)
+    {
+        repro.ExecutionMode = NcnnInferenceExecutionMode.ProductionTextureOnly;
+        repro.DisallowInferenceTempComputeBuffers = true;
+        repro.DisallowBufferToTextureMaterialization = true;
+        repro.DisallowBufferOutputs = true;
+        repro.EnableAttentionMatMulPack4Specializations = true;
+        repro.EnableConv1x1TextureConvolution = true;
+        repro.EnableDepthWiseTextureConvolution = true;
+    }
+
+    private static RenderTexture CreateQwen35ZeroTexture(NcnnRepro repro, NcnnOps ops, int width, int height, int depth)
+    {
+        var texture = repro.RentTempArray(width, height, depth, RenderTextureFormat.ARGBFloat);
+        ops.FillScalarTexture(new[] { 0f }, texture);
+        return texture;
+    }
+
+    private static RenderTexture CreateQwen35ScalarRowsTexture(NcnnRepro repro, float[] values, int sourceRowWidth, int outputWidth, int rows)
+    {
+        if (values == null || values.Length != sourceRowWidth * rows)
+            throw new ArgumentException("Qwen3.5 scalar-row upload value count mismatch", nameof(values));
+        if (outputWidth <= 0 || outputWidth > sourceRowWidth || rows <= 0)
+            throw new ArgumentOutOfRangeException(nameof(outputWidth));
+        var texture = repro.RentTempArray(outputWidth, rows, 1, RenderTextureFormat.ARGBFloat);
+        var upload = new Texture2DArray(outputWidth, rows, 1, TextureFormat.RGBAFloat, false, true)
+        {
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp,
+            anisoLevel = 0,
+            name = "Qwen35ScalarRowsUpload"
+        };
+        try
+        {
+            var pixels = new Color[outputWidth * rows];
+            for (var row = 0; row < rows; row++)
+            for (var x = 0; x < outputWidth; x++)
+                pixels[row * outputWidth + x] = new Color(values[row * sourceRowWidth + x], 0f, 0f, 0f);
+            upload.SetPixels(pixels, 0, 0);
+            upload.Apply(false, true);
+            Graphics.CopyTexture(upload, 0, 0, texture, 0, 0);
+            return texture;
+        }
+        catch
+        {
+            repro.ReturnTempArray(texture);
+            throw;
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(upload);
+        }
+    }
+
+    private static RenderTexture CreateQwen35ZeroLinearTexture(NcnnRepro repro, NcnnOps ops, int width, int height)
+    {
+        var texture = repro.RentTempMat(width, height, RenderTextureFormat.ARGBFloat);
+        ops.FillScalarTexture(new[] { 0f }, texture);
+        return texture;
+    }
+
+    private static RenderTexture CreateQwen35CosSinTexture(NcnnRepro repro, NcnnOps ops, int width, float value)
+    {
+        var texture = repro.RentTempArray(width, 1, 1, RenderTextureFormat.ARGBFloat);
+        var values = new float[width];
+        if (!Mathf.Approximately(value, 0f))
+            for (var i = 0; i < values.Length; i++) values[i] = value;
+        using (var buffer = new ComputeBuffer(values.Length, sizeof(float), ComputeBufferType.Structured))
+        {
+            buffer.SetData(values);
+            ops.FillPack4FromBufferCHW(buffer, width, 1, 1, texture);
+        }
+        return texture;
+    }
+
+    private static RenderTexture CreateQwen35Pack4TextureFromCdhw(
+        NcnnRepro repro,
+        float[] values,
+        int width,
+        int height,
+        int depth,
+        int channels)
+    {
+        var expected = width * height * depth * channels;
+        if (values == null || values.Length != expected)
+            throw new ArgumentException("Qwen3.5 CDHW upload shape mismatch", nameof(values));
+        var packs = Mathf.Max(1, (channels + 3) / 4);
+        var slices = depth * packs;
+        var texture = repro.RentTempArray(width, height, slices, RenderTextureFormat.ARGBFloat);
+        var upload = new Texture2DArray(width, height, slices, TextureFormat.RGBAFloat, false, true)
+        {
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp,
+            anisoLevel = 0,
+            name = "Qwen35FixedInputCdhwUpload"
+        };
+        try
+        {
+            var pixelCount = width * height;
+            for (var z = 0; z < depth; z++)
+            {
+                for (var pack = 0; pack < packs; pack++)
+                {
+                    var pixels = new Color[pixelCount];
+                    for (var y = 0; y < height; y++)
+                    {
+                        for (var x = 0; x < width; x++)
+                        {
+                            var spatial = y * width + x;
+                            var channel0 = pack * 4;
+                            var r = channel0 < channels ? values[((channel0 * depth + z) * height + y) * width + x] : 0f;
+                            var g = channel0 + 1 < channels ? values[(((channel0 + 1) * depth + z) * height + y) * width + x] : 0f;
+                            var b = channel0 + 2 < channels ? values[(((channel0 + 2) * depth + z) * height + y) * width + x] : 0f;
+                            var a = channel0 + 3 < channels ? values[(((channel0 + 3) * depth + z) * height + y) * width + x] : 0f;
+                            pixels[spatial] = new Color(r, g, b, a);
+                        }
+                    }
+                    var slice = z * packs + pack;
+                    upload.SetPixels(pixels, slice, 0);
+                }
+            }
+            upload.Apply(false, true);
+            for (var slice = 0; slice < slices; slice++)
+                Graphics.CopyTexture(upload, slice, 0, texture, slice, 0);
+            return texture;
+        }
+        catch
+        {
+            repro.ReturnTempArray(texture);
+            throw;
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(upload);
+        }
+    }
+
+    private static RenderTexture CreateQwen35PatchAtlasTexture(
+        NcnnRepro repro,
+        float[] patches,
+        int atlasWidth,
+        int atlasHeight,
+        int patchSize,
+        int depth,
+        int channels)
+    {
+        var patchGridWidth = atlasWidth / patchSize;
+        var patchGridHeight = atlasHeight / patchSize;
+        var patchCount = patchGridWidth * patchGridHeight;
+        var patchElements = patchSize * patchSize * depth * channels;
+        if (atlasWidth % patchSize != 0 || atlasHeight % patchSize != 0)
+            throw new ArgumentException("Qwen3.5 patch atlas must be patch aligned.");
+        if (patches == null || patches.Length != patchCount * patchElements)
+            throw new ArgumentException("Qwen3.5 patch atlas value count mismatch.", nameof(patches));
+
+        var packs = Mathf.Max(1, (channels + 3) / 4);
+        var slices = depth * packs;
+        var texture = repro.RentTempArray(atlasWidth, atlasHeight, slices, RenderTextureFormat.ARGBFloat);
+        var upload = new Texture2DArray(atlasWidth, atlasHeight, slices, TextureFormat.RGBAFloat, false, true)
+        {
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp,
+            anisoLevel = 0,
+            name = "Qwen35PatchAtlasUpload"
+        };
+        try
+        {
+            for (var z = 0; z < depth; z++)
+            {
+                for (var pack = 0; pack < packs; pack++)
+                {
+                    var pixels = new Color[atlasWidth * atlasHeight];
+                    for (var y = 0; y < atlasHeight; y++)
+                    {
+                        var patchY = y / patchSize;
+                        var localY = y - patchY * patchSize;
+                        for (var x = 0; x < atlasWidth; x++)
+                        {
+                            var patchX = x / patchSize;
+                            var localX = x - patchX * patchSize;
+                            var patchIndex = patchY * patchGridWidth + patchX;
+                            var channel = pack * 4;
+                            var patchBase = patchIndex * patchElements;
+                            float Read(int c)
+                            {
+                                if (c >= channels) return 0f;
+                                return patches[patchBase + (((c * depth + z) * patchSize + localY) * patchSize + localX)];
+                            }
+                            pixels[y * atlasWidth + x] = new Color(Read(channel), Read(channel + 1), Read(channel + 2), Read(channel + 3));
+                        }
+                    }
+                    upload.SetPixels(pixels, z * packs + pack, 0);
+                }
+            }
+            upload.Apply(false, true);
+            for (var slice = 0; slice < slices; slice++)
+                Graphics.CopyTexture(upload, slice, 0, texture, slice, 0);
+            return texture;
+        }
+        catch
+        {
+            repro.ReturnTempArray(texture);
+            throw;
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(upload);
+        }
+    }
+
+    private static string ComputeQwen35Sha256(string path)
+    {
+        using (var stream = File.OpenRead(path))
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+            return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty).ToLowerInvariant();
+    }
 
     private static string FindLatestMonaiOutputDir()
     {
