@@ -1,0 +1,14 @@
+{
+  "name": "Aexis.Editor",
+  "rootNamespace": "Aexis.Editor",
+  "references": ["Aexis", "Aexis.Onnx", "Aexis.Ncnn", "Aexis.Execution"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

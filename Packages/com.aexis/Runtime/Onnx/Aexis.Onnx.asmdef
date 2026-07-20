@@ -1,0 +1,14 @@
+{
+  "name": "Aexis.Onnx",
+  "rootNamespace": "Aexis.Onnx",
+  "references": ["Aexis"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}

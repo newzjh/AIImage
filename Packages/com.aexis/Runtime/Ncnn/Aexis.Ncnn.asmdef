@@ -1,0 +1,14 @@
+{
+  "name": "Aexis.Ncnn",
+  "rootNamespace": "Aexis.Ncnn",
+  "references": ["Aexis", "Aexis.Async", "Aexis.Onnx", "UniTask"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

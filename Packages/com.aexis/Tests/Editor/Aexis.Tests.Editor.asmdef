@@ -1,0 +1,15 @@
+{
+  "name": "Aexis.Tests.Editor",
+  "rootNamespace": "Aexis.Tests.Editor",
+  "references": ["Aexis", "Aexis.Onnx", "Aexis.Ncnn", "Aexis.Execution", "Aexis.Editor"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": ["TestAssemblies"]
+}

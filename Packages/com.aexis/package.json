@@ -1,0 +1,25 @@
+{
+  "name": "com.aexis",
+  "displayName": "Aexis",
+  "version": "0.1.0-pre.1",
+  "unity": "6000.2",
+  "description": "A self-contained Unity on-device inference engine with ONNX and NCNN model-format support.",
+  "keywords": ["aexis", "inference", "onnx", "ncnn", "gpu", "edge"],
+  "author": { "name": "Aexis" },
+  "license": "SEE LICENSE IN LICENSE.md",
+  "dependencies": {
+    "com.cysharp.unitask": "2.5.4"
+  },
+  "samples": [
+    {
+      "displayName": "Core contracts",
+      "description": "Minimal reference for Aexis public contracts.",
+      "path": "Samples~/CoreContracts"
+    },
+    {
+      "displayName": "NCNN runtime integration",
+      "description": "Reference integration notes for the self-contained NCNN runtime.",
+      "path": "Samples~/RunnerIntegration"
+    }
+  ]
+}
