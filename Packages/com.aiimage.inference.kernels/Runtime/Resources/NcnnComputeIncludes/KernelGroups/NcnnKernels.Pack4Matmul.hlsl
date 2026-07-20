@@ -526,6 +526,49 @@ void NcnnArgmaxUpdatePack4CDHW_Impl(uint3 id)
     _ArgmaxBestLabelArr[int3((int)id.x, (int)id.y, z)] = float4(bestLabel, 0.0, 0.0, 0.0);
 }
 
+void NcnnArgMaxPack4LinearMat_Impl(uint3 id)
+{
+    int row = (int)id.y;
+    if (id.x != 0 || row < 0 || row >= _ArgmaxLogicalHeight)
+        return;
+
+    uint storageWidth, storageHeight, storageSlices;
+    _ArgmaxPack4InArr.GetDimensions(storageWidth, storageHeight, storageSlices);
+    int inputWidth = max(1, (int)storageWidth);
+    int tileRows = max(1, _ArgmaxTileRowsPerMatrix);
+    int packCount = max(1, (_ArgmaxLogicalWidth + 3) / 4);
+    int bestIndex = 0;
+    float bestValue = 0.0;
+
+    [loop]
+    for (int pack = 0; pack < packCount; pack++)
+    {
+        int tile = pack / inputWidth;
+        int x = pack - tile * inputWidth;
+        int y = tileRows > 1 ? row * tileRows + tile : row;
+        int slice = tileRows > 1 ? 0 : tile;
+        if (y < 0 || y >= (int)storageHeight || slice < 0 || slice >= (int)storageSlices)
+            continue;
+
+        float4 values = _ArgmaxPack4InArr[int3(x, y, slice)];
+        [unroll]
+        for (int lane = 0; lane < 4; lane++)
+        {
+            int index = pack * 4 + lane;
+            if (index >= _ArgmaxLogicalWidth)
+                break;
+            float value = NcnnReadLane(values, lane);
+            if (index == 0 || value > bestValue)
+            {
+                bestValue = value;
+                bestIndex = index;
+            }
+        }
+    }
+
+    _LinearOut0[int2(0, row)] = (float)bestIndex;
+}
+
 float NcnnResolveGemm2DBias(int row, int col)
 {
     float sum = 0.0;
@@ -584,6 +627,47 @@ float4 NcnnGemm2DReadB4(int baseCol, int kk)
     if (baseCol + 2 < _MatN) b.z = NcnnGemm2DReadB(baseCol + 2, kk);
     if (baseCol + 3 < _MatN) b.w = NcnnGemm2DReadB(baseCol + 3, kk);
     return b;
+}
+
+bool NcnnCanReadPackedInt8TransB4()
+{
+    return _UseInt8GemmWeights != 0
+        && _MatTransB != 0
+        && (_MatK & 3) == 0;
+}
+
+uint4 NcnnLoadPackedInt8TransB4(int baseCol, int kkBase)
+{
+    return uint4(
+        _MatBInt8Packed[(baseCol * _MatK + kkBase) >> 2],
+        _MatBInt8Packed[((baseCol + 1) * _MatK + kkBase) >> 2],
+        _MatBInt8Packed[((baseCol + 2) * _MatK + kkBase) >> 2],
+        _MatBInt8Packed[((baseCol + 3) * _MatK + kkBase) >> 2]);
+}
+
+float NcnnDecodePackedInt8Weight(uint packed, int shift)
+{
+    uint raw = (packed >> shift) & 0xffu;
+    return (float)(raw >= 128u ? (int)raw - 256 : (int)raw);
+}
+
+float4 NcnnReadPackedInt8Scales4(int baseCol)
+{
+    return float4(
+        _MatBInt8Scales[baseCol],
+        _MatBInt8Scales[baseCol + 1],
+        _MatBInt8Scales[baseCol + 2],
+        _MatBInt8Scales[baseCol + 3]);
+}
+
+float4 NcnnDecodePackedInt8TransB4(uint4 packed, int kLane, float4 scales)
+{
+    int shift = kLane << 3;
+    return float4(
+        NcnnDecodePackedInt8Weight(packed.x, shift),
+        NcnnDecodePackedInt8Weight(packed.y, shift),
+        NcnnDecodePackedInt8Weight(packed.z, shift),
+        NcnnDecodePackedInt8Weight(packed.w, shift)) * scales;
 }
 
 float NcnnQuantizeGemmActivationForInt8(float value)
@@ -852,13 +936,46 @@ void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
     float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
     float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
 
-    [loop]
-    for (int kk = 0; kk < _MatK; kk++)
+    bool usePackedInt8 = NcnnCanReadPackedInt8TransB4()
+        && baseCol0 + 3 < _MatN
+        && (!writeSecondPack || baseCol1 + 3 < _MatN);
+    if (usePackedInt8)
     {
-        float a = NcnnGemm2DPack4LinearTextureAReadLinear(row, kk);
-        acc0 += a * NcnnGemm2DReadB4(baseCol0, kk);
-        if (writeSecondPack)
-            acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);
+        [loop]
+        for (int kk = 0; kk < _MatK; kk += 4)
+        {
+            float4 a = float4(
+                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk),
+                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk + 1),
+                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk + 2),
+                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk + 3));
+            uint4 packed0 = NcnnLoadPackedInt8TransB4(baseCol0, kk);
+            float4 scales0 = NcnnReadPackedInt8Scales4(baseCol0);
+            acc0 += a.x * NcnnDecodePackedInt8TransB4(packed0, 0, scales0);
+            acc0 += a.y * NcnnDecodePackedInt8TransB4(packed0, 1, scales0);
+            acc0 += a.z * NcnnDecodePackedInt8TransB4(packed0, 2, scales0);
+            acc0 += a.w * NcnnDecodePackedInt8TransB4(packed0, 3, scales0);
+            if (writeSecondPack)
+            {
+                uint4 packed1 = NcnnLoadPackedInt8TransB4(baseCol1, kk);
+                float4 scales1 = NcnnReadPackedInt8Scales4(baseCol1);
+                acc1 += a.x * NcnnDecodePackedInt8TransB4(packed1, 0, scales1);
+                acc1 += a.y * NcnnDecodePackedInt8TransB4(packed1, 1, scales1);
+                acc1 += a.z * NcnnDecodePackedInt8TransB4(packed1, 2, scales1);
+                acc1 += a.w * NcnnDecodePackedInt8TransB4(packed1, 3, scales1);
+            }
+        }
+    }
+    else
+    {
+        [loop]
+        for (int kk = 0; kk < _MatK; kk++)
+        {
+            float a = NcnnGemm2DPack4LinearTextureAReadLinear(row, kk);
+            acc0 += a * NcnnGemm2DReadB4(baseCol0, kk);
+            if (writeSecondPack)
+                acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);
+        }
     }
 
     _GemmTexOutArr[int3(outPackX, row, 0)] = acc0 * _MatAlpha;
@@ -884,6 +1001,9 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
     bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
     float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
     float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
+    bool usePackedInt8 = NcnnCanReadPackedInt8TransB4()
+        && baseCol0 + 3 < _MatN
+        && (!writeSecondPack || baseCol1 + 3 < _MatN);
 
     uint inputWidth, inputHeight, inputSlices;
     _GemmTexAInArr.GetDimensions(inputWidth, inputHeight, inputSlices);
@@ -896,6 +1016,25 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
             break;
         int kkBase = logicalPack << 2;
         float4 a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, packSlice)]);
+        if (usePackedInt8 && kkBase + 3 < _MatK)
+        {
+            uint4 packed0 = NcnnLoadPackedInt8TransB4(baseCol0, kkBase);
+            float4 scales0 = NcnnReadPackedInt8Scales4(baseCol0);
+            acc0 += a.x * NcnnDecodePackedInt8TransB4(packed0, 0, scales0);
+            acc0 += a.y * NcnnDecodePackedInt8TransB4(packed0, 1, scales0);
+            acc0 += a.z * NcnnDecodePackedInt8TransB4(packed0, 2, scales0);
+            acc0 += a.w * NcnnDecodePackedInt8TransB4(packed0, 3, scales0);
+            if (writeSecondPack)
+            {
+                uint4 packed1 = NcnnLoadPackedInt8TransB4(baseCol1, kkBase);
+                float4 scales1 = NcnnReadPackedInt8Scales4(baseCol1);
+                acc1 += a.x * NcnnDecodePackedInt8TransB4(packed1, 0, scales1);
+                acc1 += a.y * NcnnDecodePackedInt8TransB4(packed1, 1, scales1);
+                acc1 += a.z * NcnnDecodePackedInt8TransB4(packed1, 2, scales1);
+                acc1 += a.w * NcnnDecodePackedInt8TransB4(packed1, 3, scales1);
+            }
+            continue;
+        }
         if (kkBase + 3 < _MatK)
         {
             acc0 += a.x * NcnnGemm2DReadB4(baseCol0, kkBase);

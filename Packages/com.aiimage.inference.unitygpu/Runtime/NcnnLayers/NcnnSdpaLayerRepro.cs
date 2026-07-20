@@ -284,6 +284,7 @@ namespace NcnnCompute
             RenderTexture output = null;
             RenderTexture keyCache = null;
             RenderTexture valueCache = null;
+            var inPlaceKvCache = false;
 
             try
             {
@@ -291,14 +292,38 @@ namespace NcnnCompute
                 var valueInput = plan.value.texture;
                 if (plan.hasPastCache)
                 {
+                    if (CanAppendInPlace(owner, plan))
+                    {
+                        owner.Ops.AppendSequencePack4Cdhw(plan.key.texture, plan.pastKeyShape.h, plan.keyCurrentShape.h, plan.pastKey.texture);
+                        owner.Ops.AppendSequencePack4Cdhw(plan.value.texture, plan.pastValueShape.h, plan.valueCurrentShape.h, plan.pastValue.texture);
+                        keyInput = plan.pastKey.texture;
+                        valueInput = plan.pastValue.texture;
+                        inPlaceKvCache = true;
+                    }
+                    else
+                    {
+                        var keySlices = Mathf.Max(1, plan.keyShape.d * Mathf.CeilToInt(plan.keyShape.c / 4f));
+                        var valueSlices = Mathf.Max(1, plan.valueShape.d * Mathf.CeilToInt(plan.valueShape.c / 4f));
+                        var keyStorageHeight = Mathf.Max(plan.keyShape.h, owner.AttentionKvCacheTextureCapacity);
+                        var valueStorageHeight = Mathf.Max(plan.valueShape.h, owner.AttentionKvCacheTextureCapacity);
+                        keyCache = owner.RentTempArray(plan.keyShape.w, keyStorageHeight, keySlices, plan.pack4TextureFormat);
+                        valueCache = owner.RentTempArray(plan.valueShape.w, valueStorageHeight, valueSlices, plan.pack4TextureFormat);
+                        owner.Ops.ConcatSequencePack4Cdhw(plan.pastKey.texture, plan.key.texture, plan.pastKeyShape.h, plan.keyCurrentShape.h, keyCache);
+                        owner.Ops.ConcatSequencePack4Cdhw(plan.pastValue.texture, plan.value.texture, plan.pastValueShape.h, plan.valueCurrentShape.h, valueCache);
+                        keyInput = keyCache;
+                        valueInput = valueCache;
+                    }
+                }
+                else if (owner.EnableInPlaceAttentionKvCache)
+                {
                     var keySlices = Mathf.Max(1, plan.keyShape.d * Mathf.CeilToInt(plan.keyShape.c / 4f));
                     var valueSlices = Mathf.Max(1, plan.valueShape.d * Mathf.CeilToInt(plan.valueShape.c / 4f));
                     var keyStorageHeight = Mathf.Max(plan.keyShape.h, owner.AttentionKvCacheTextureCapacity);
                     var valueStorageHeight = Mathf.Max(plan.valueShape.h, owner.AttentionKvCacheTextureCapacity);
                     keyCache = owner.RentTempArray(plan.keyShape.w, keyStorageHeight, keySlices, plan.pack4TextureFormat);
                     valueCache = owner.RentTempArray(plan.valueShape.w, valueStorageHeight, valueSlices, plan.pack4TextureFormat);
-                    owner.Ops.ConcatSequencePack4Cdhw(plan.pastKey.texture, plan.key.texture, plan.pastKeyShape.h, plan.keyCurrentShape.h, keyCache);
-                    owner.Ops.ConcatSequencePack4Cdhw(plan.pastValue.texture, plan.value.texture, plan.pastValueShape.h, plan.valueCurrentShape.h, valueCache);
+                    owner.Ops.AppendSequencePack4Cdhw(plan.key.texture, 0, plan.keyCurrentShape.h, keyCache);
+                    owner.Ops.AppendSequencePack4Cdhw(plan.value.texture, 0, plan.valueCurrentShape.h, valueCache);
                     keyInput = keyCache;
                     valueInput = valueCache;
                 }
@@ -323,7 +348,7 @@ namespace NcnnCompute
 
                     NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
                     output = null;
-                    PublishKvCache(owner, layer, context, plan, ref keyCache, ref valueCache);
+                    PublishKvCache(owner, layer, context, plan, inPlaceKvCache, ref keyCache, ref valueCache);
 
                     owner.Consume(
                         context.textureBlobs,
@@ -398,7 +423,7 @@ namespace NcnnCompute
 
                 NcnnRepro.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
                 output = null;
-                PublishKvCache(owner, layer, context, plan, ref keyCache, ref valueCache);
+                PublishKvCache(owner, layer, context, plan, inPlaceKvCache, ref keyCache, ref valueCache);
 
                 owner.Consume(
                     context.textureBlobs,
@@ -602,13 +627,25 @@ namespace NcnnCompute
             NcnnParamModel.Layer layer,
             NcnnLayerBufferContext context,
             in SdpaRtPlan plan,
+            bool inPlaceKvCache,
             ref RenderTexture keyCache,
             ref RenderTexture valueCache)
         {
             if (layer.topNames == null || layer.topNames.Length < 3)
                 return;
 
-            if (plan.hasPastCache)
+            if (inPlaceKvCache)
+            {
+                var inPlaceKeyStorageShape = NcnnRepro.GetTextureStorageShape(plan.pastKey, plan.keyShape);
+                var inPlaceValueStorageShape = NcnnRepro.GetTextureStorageShape(plan.pastValue, plan.valueShape);
+                context.textureBlobs[layer.topNames[1]] = NcnnRepro.CreateTextureAlias(plan.pastKey, plan.keyShape, inPlaceKeyStorageShape);
+                context.textureBlobs[layer.topNames[2]] = NcnnRepro.CreateTextureAlias(plan.pastValue, plan.valueShape, inPlaceValueStorageShape);
+                context.textureShapes[layer.topNames[1]] = plan.keyShape;
+                context.textureShapes[layer.topNames[2]] = plan.valueShape;
+                return;
+            }
+
+            if (keyCache != null && valueCache != null)
             {
                 var keyCapacityStorageShape = new NcnnRepro.BufferShape(3, plan.keyShape.w, keyCache.height, plan.keyShape.d, plan.keyShape.c);
                 var valueCapacityStorageShape = new NcnnRepro.BufferShape(3, plan.valueShape.w, valueCache.height, plan.valueShape.d, plan.valueShape.c);
@@ -625,6 +662,20 @@ namespace NcnnCompute
             context.textureBlobs[layer.topNames[2]] = NcnnRepro.CreateTextureAlias(plan.value, plan.valueShape, valueStorageShape);
             context.textureShapes[layer.topNames[1]] = plan.keyShape;
             context.textureShapes[layer.topNames[2]] = plan.valueShape;
+        }
+
+        private static bool CanAppendInPlace(NcnnRepro owner, in SdpaRtPlan plan)
+        {
+            if (!owner.EnableInPlaceAttentionKvCache || !plan.hasPastCache)
+                return false;
+            if (plan.pastKey?.texture == null || plan.pastValue?.texture == null)
+                return false;
+            return plan.pastKey.texture.width == plan.key.texture.width
+                && plan.pastValue.texture.width == plan.value.texture.width
+                && plan.pastKey.texture.volumeDepth == plan.key.texture.volumeDepth
+                && plan.pastValue.texture.volumeDepth == plan.value.texture.volumeDepth
+                && plan.pastKey.texture.height >= plan.keyShape.h
+                && plan.pastValue.texture.height >= plan.valueShape.h;
         }
 
         private static void PublishKvCache(

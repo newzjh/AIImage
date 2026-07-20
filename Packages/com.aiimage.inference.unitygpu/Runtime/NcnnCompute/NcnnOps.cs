@@ -320,6 +320,7 @@ namespace NcnnCompute
         private readonly int _kCopyPack4;
         private readonly int _kConcatPack4Cdhw;
         private readonly int _kConcatSequencePack4Cdhw;
+        private readonly int _kAppendSequencePack4Cdhw;
         private readonly int _kBuildSdInpaintInput9Pack4;
         private readonly int _kInterpPack4;
         private readonly int _kInterpPack4Nearest;
@@ -417,6 +418,7 @@ namespace NcnnCompute
         private readonly int _kVistaTailPromptDotPack4;
         private readonly int _kVistaTailPromptDotPack4Tex;
         private readonly int _kArgmaxUpdatePack4Cdhw;
+        private readonly int _kArgMaxPack4LinearMat;
         private readonly int _kGemm2DTextureA;
         private readonly int _kGemm2DLinearTextureA;
         private readonly int _kGemm2DPack4LinearTextureA;
@@ -784,6 +786,7 @@ namespace NcnnCompute
             _kCopyPack4 = _cs.FindKernel("NcnnCopyPack4");
             _kConcatPack4Cdhw = _cs.FindKernel("NcnnConcatPack4CDHW");
             _kConcatSequencePack4Cdhw = _cs.FindKernel("NcnnConcatSequencePack4CDHW");
+            _kAppendSequencePack4Cdhw = _cs.FindKernel("NcnnAppendSequencePack4CDHW");
             _kBuildSdInpaintInput9Pack4 = _cs.FindKernel("NcnnBuildSdInpaintInput9Pack4");
             _kInterpPack4 = _cs.FindKernel("NcnnInterpPack4");
             _kInterpPack4Nearest = _cs.FindKernel("NcnnInterpPack4Nearest");
@@ -881,6 +884,7 @@ namespace NcnnCompute
             _kVistaTailPromptDotPack4 = _cs.FindKernel("NcnnVistaTailPromptDotPack4");
             _kVistaTailPromptDotPack4Tex = _cs.FindKernel("NcnnVistaTailPromptDotPack4Tex");
             _kArgmaxUpdatePack4Cdhw = _cs.FindKernel("NcnnArgmaxUpdatePack4CDHW");
+            _kArgMaxPack4LinearMat = _cs.FindKernel("NcnnArgMaxPack4LinearMat");
             _kGemm2DTextureA = _cs.FindKernel("NcnnGemm2DTextureA");
             _kGemm2DLinearTextureA = _cs.FindKernel("NcnnGemm2DLinearTextureA");
             _kGemm2DPack4LinearTextureA = _cs.FindKernel("NcnnGemm2DPack4LinearTextureA");
@@ -5034,6 +5038,27 @@ namespace NcnnCompute
             Dispatch3D(cmd, _kConcatSequencePack4Cdhw, output.width, output.height, output.depth, 8, 8);
         }
 
+        public void AppendSequencePack4Cdhw(
+            RenderTexture current,
+            int destinationOffset,
+            int currentHeight,
+            RenderTexture output)
+        {
+            if (current == null) throw new ArgumentNullException(nameof(current));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (destinationOffset < 0) throw new ArgumentOutOfRangeException(nameof(destinationOffset));
+            if (currentHeight <= 0 || currentHeight > current.height) throw new ArgumentOutOfRangeException(nameof(currentHeight));
+            if (current.width != output.width || current.volumeDepth != output.volumeDepth)
+                throw new InvalidOperationException("AppendSequencePack4Cdhw requires matching width/depth textures.");
+            if (destinationOffset + currentHeight > output.height)
+                throw new InvalidOperationException("AppendSequencePack4Cdhw output height is too small.");
+
+            _cs.SetInt("_AppendSequencePack4CDHWOffset", destinationOffset);
+            _cs.SetTexture(_kAppendSequencePack4Cdhw, "_TexIn0Arr", current);
+            _cs.SetTexture(_kAppendSequencePack4Cdhw, "_TexOut0Arr", output);
+            Dispatch3D(_kAppendSequencePack4Cdhw, current.width, currentHeight, Mathf.Max(1, current.volumeDepth), 8, 8);
+        }
+
         public void BuildSdInpaintInput9Pack4(RenderTexture latents, RenderTexture mask, RenderTexture maskedLatents, RenderTexture output)
         {
             if (latents == null) throw new ArgumentNullException(nameof(latents));
@@ -8108,6 +8133,31 @@ namespace NcnnCompute
                 ResolveRenderTextureDispatchDepth(bestValue, Mathf.Max(1, inputDepth)),
                 8,
                 8);
+        }
+
+        public void ArgMaxPack4LinearMat(
+            RenderTexture input,
+            int logicalWidth,
+            int logicalHeight,
+            int tileRowsPerMatrix,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (logicalWidth <= 0) throw new ArgumentOutOfRangeException(nameof(logicalWidth));
+            if (logicalHeight <= 0) throw new ArgumentOutOfRangeException(nameof(logicalHeight));
+            if (tileRowsPerMatrix <= 0) throw new ArgumentOutOfRangeException(nameof(tileRowsPerMatrix));
+            if (input.dimension != TextureDimension.Tex2DArray)
+                throw new ArgumentException("Pack4 LinearMat ArgMax requires a Texture2DArray input.", nameof(input));
+            if (output.dimension != TextureDimension.Tex2D || output.width != 1 || output.height < logicalHeight)
+                throw new ArgumentException("Pack4 LinearMat ArgMax requires a 1 x logicalHeight Texture2D output.", nameof(output));
+
+            _cs.SetInt("_ArgmaxLogicalWidth", logicalWidth);
+            _cs.SetInt("_ArgmaxLogicalHeight", logicalHeight);
+            _cs.SetInt("_ArgmaxTileRowsPerMatrix", tileRowsPerMatrix);
+            _cs.SetTexture(_kArgMaxPack4LinearMat, "_ArgmaxPack4InArr", input);
+            _cs.SetTexture(_kArgMaxPack4LinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kArgMaxPack4LinearMat, 1, logicalHeight, 1, 8);
         }
 
         public void InnerProduct(ComputeBuffer input, int inFeatures, ComputeBuffer weights, ComputeBuffer bias, int outFeatures, ComputeBuffer output)

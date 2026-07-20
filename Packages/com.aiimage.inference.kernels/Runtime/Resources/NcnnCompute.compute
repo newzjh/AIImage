@@ -35,6 +35,7 @@
 #pragma kernel NcnnCopyPack4
 #pragma kernel NcnnConcatPack4CDHW
 #pragma kernel NcnnConcatSequencePack4CDHW
+#pragma kernel NcnnAppendSequencePack4CDHW
 #pragma kernel NcnnBuildSdInpaintInput9Pack4
 #pragma kernel NcnnInterpPack4
 #pragma kernel NcnnInterpPack4Nearest
@@ -132,6 +133,7 @@
 #pragma kernel NcnnVistaTailPromptDotPack4
 #pragma kernel NcnnVistaTailPromptDotPack4Tex
 #pragma kernel NcnnArgmaxUpdatePack4CDHW
+#pragma kernel NcnnArgMaxPack4LinearMat
 #pragma kernel NcnnGemm2DTextureA
 #pragma kernel NcnnGemm2DLinearTextureA
 #pragma kernel NcnnGemm2DPack4LinearTextureA
@@ -518,6 +520,7 @@ void NcnnAddPack4_Impl(uint3 id);
 void NcnnCopyPack4_Impl(uint3 id);
 void NcnnConcatPack4CDHW_Impl(uint3 id);
 void NcnnConcatSequencePack4CDHW_Impl(uint3 id);
+void NcnnAppendSequencePack4CDHW_Impl(uint3 id);
 void NcnnBuildSdInpaintInput9Pack4_Impl(uint3 id);
 void NcnnInterpPack4CDHW_Impl(uint3 id);
 void NcnnInterpPack4_Impl(uint3 id);
@@ -577,6 +580,7 @@ void NcnnPack4SpatialToPack4Linear_Impl(uint3 id);
 void NcnnPack4ReorderMergeRows_Impl(uint3 id);
 void NcnnLinearMatReorderMergeRows_Impl(uint3 id);
 void NcnnArgmaxUpdatePack4CDHW_Impl(uint3 id);
+void NcnnArgMaxPack4LinearMat_Impl(uint3 id);
 void NcnnDeconvolution3dPack4CDHW_Impl(uint3 id);
 void NcnnDeconvolutionBuf_Impl(uint3 id);
 void NcnnDeconvolution3dBuf_Impl(uint3 id);
@@ -808,6 +812,9 @@ int _ArgmaxInD;
 int _ArgmaxInC;
 int _ArgmaxChannelOffset;
 int _ArgmaxInitialize;
+int _ArgmaxLogicalWidth;
+int _ArgmaxLogicalHeight;
+int _ArgmaxTileRowsPerMatrix;
 
 [numthreads(32,32,1)]
 void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
@@ -1003,6 +1010,7 @@ int _ConcatPack4CDHWBC;
 int _ConcatPack4CDHWOutC;
 int _ConcatSequencePack4CDHWAH;
 int _ConcatSequencePack4CDHWBH;
+int _AppendSequencePack4CDHWOffset;
 
 [numthreads(8,8,1)]
 void NcnnConcatPack4CDHW(uint3 id : SV_DispatchThreadID)
@@ -1014,6 +1022,12 @@ void NcnnConcatPack4CDHW(uint3 id : SV_DispatchThreadID)
 void NcnnConcatSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
     NcnnConcatSequencePack4CDHW_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnAppendSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    NcnnAppendSequencePack4CDHW_Impl(id);
 }
 
 
@@ -1698,6 +1712,12 @@ void NcnnLinearMatReorderMergeRows(uint3 id : SV_DispatchThreadID)
 void NcnnArgmaxUpdatePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
     NcnnArgmaxUpdatePack4CDHW_Impl(id);
+}
+
+[numthreads(1,8,1)]
+void NcnnArgMaxPack4LinearMat(uint3 id : SV_DispatchThreadID)
+{
+    NcnnArgMaxPack4LinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]

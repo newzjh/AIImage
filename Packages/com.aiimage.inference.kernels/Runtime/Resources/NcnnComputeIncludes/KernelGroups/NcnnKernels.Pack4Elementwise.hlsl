@@ -80,6 +80,23 @@ void NcnnConcatSequencePack4CDHW_Impl(uint3 id)
     _ConcatSequenceOutArr[int3(id.x, id.y, id.z)] = value;
 }
 
+// Writes only the newly generated sequence into a capacity-backed cache.
+void NcnnAppendSequencePack4CDHW_Impl(uint3 id)
+{
+    uint w, h, d;
+    _AppendSequenceInArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    uint outW, outH, outD;
+    _AppendSequenceOutArr.GetDimensions(outW, outH, outD);
+    int destinationY = _AppendSequencePack4CDHWOffset + (int)id.y;
+    if (id.x >= outW || destinationY < 0 || destinationY >= (int)outH || id.z >= outD)
+        return;
+
+    _AppendSequenceOutArr[int3(id.x, destinationY, id.z)] = _AppendSequenceInArr[int3(id.x, id.y, id.z)];
+}
+
 void NcnnBuildSdInpaintInput9Pack4_Impl(uint3 id)
 {
     uint w, h, d;

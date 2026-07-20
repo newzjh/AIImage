@@ -24,6 +24,8 @@ RWTexture2D<float> _LinearOut1;
 #define _ConcatSequenceAInArr _TexIn0Arr
 #define _ConcatSequenceBInArr _TexIn1Arr
 #define _ConcatSequenceOutArr _TexOut0Arr
+#define _AppendSequenceInArr _TexIn0Arr
+#define _AppendSequenceOutArr _TexOut0Arr
 #define _SdInpaintLatentsArr _TexIn0Arr
 #define _SdInpaintMaskArr _TexIn1Arr
 #define _SdInpaintMaskedLatentsArr _TexIn2Arr

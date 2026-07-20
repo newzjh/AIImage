@@ -907,6 +907,28 @@ namespace NcnnCompute
                 return false;
             }
 
+            public bool TryGetExistingTextureDescriptor(
+                string name,
+                out BufferShape logicalShape,
+                out BufferShape storageShape)
+            {
+                logicalShape = default;
+                storageShape = default;
+                if (!TryGetExistingTextureContract(
+                        _textureBlobs,
+                        _textureShapes,
+                        name,
+                        out _,
+                        out var contract))
+                {
+                    return false;
+                }
+
+                logicalShape = contract.LogicalShape;
+                storageShape = contract.StorageShape;
+                return true;
+            }
+
             public bool TryGetExistingTextureData(string name, out float[] data)
             {
                 data = null;
@@ -1459,6 +1481,8 @@ namespace NcnnCompute
         }
         public long TemporaryTextureBudgetBytes { get; set; }
         public int AttentionKvCacheTextureCapacity { get; set; }
+        // Opt-in only: some graphs require functional rather than mutable cache tensors.
+        public bool EnableInPlaceAttentionKvCache { get; set; }
         public NcnnInferenceExecutionMode ExecutionMode { get; set; } = NcnnInferenceExecutionMode.ProductionTextureOnly;
         // Production CommandBuffer execution is always planned strictly. DebugOracle is the
         // only explicit relaxation path and remains unavailable in non-debug builds.
@@ -1496,6 +1520,7 @@ namespace NcnnCompute
         public bool LayerRuntimeProfileSyncGpu { get; set; }
         public string LayerRuntimeProfilePathKindOverride { get; set; }
         public LayerRuntimeProfile LastRuntimeProfile { get; private set; }
+        public long ManagedLoadGarbageCollectionIntervalBytes { get; set; }
         public string TimingSplitSyncAfterTopName { get; set; }
         public Action<string, double> OnTimingSplitSyncPoint { get; set; }
         public event Action<string, string, int, int, int, int, double> OnConvComplete;
@@ -4672,6 +4697,7 @@ namespace NcnnCompute
             yield return new LoadProgress("build-blobs", 0, profile.layerCount, null, null, 0.05f);
 
             var totalLayers = Model?.layers?.Count ?? 0;
+            long managedBytesSinceCollection = 0;
             for (var i = 0; i < totalLayers; i++)
             {
                 var layer = Model.layers[i];
@@ -4682,6 +4708,18 @@ namespace NcnnCompute
                 totalLoadMs += layerSw.ElapsedMilliseconds;
 
                 AccumulateLayerProfile(profile, layer?.typeName, metrics, layerSw.ElapsedMilliseconds);
+                managedBytesSinceCollection = checked(managedBytesSinceCollection + Math.Max(0L, metrics.bytesRead));
+                if (ManagedLoadGarbageCollectionIntervalBytes > 0
+                    && managedBytesSinceCollection >= ManagedLoadGarbageCollectionIntervalBytes)
+                {
+                    var cleanupSw = Stopwatch.StartNew();
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, false);
+                    cleanupSw.Stop();
+                    profile.managedCleanupCount++;
+                    profile.managedCleanupMs += cleanupSw.ElapsedMilliseconds;
+                    totalLoadMs += cleanupSw.ElapsedMilliseconds;
+                    managedBytesSinceCollection = 0;
+                }
 
                 var progress01 = totalLayers > 0
                     ? 0.05f + 0.94f * ((float)(i + 1) / totalLayers)
@@ -7723,6 +7761,8 @@ namespace NcnnCompute
             public long buildBlobUseCountMs;
             public long totalMs;
             public long totalBytesRead;
+            public int managedCleanupCount;
+            public long managedCleanupMs;
             public readonly Dictionary<string, LayerTypeLoadProfile> layerTypes = new Dictionary<string, LayerTypeLoadProfile>(StringComparer.Ordinal);
         }
 
@@ -8114,6 +8154,31 @@ namespace NcnnCompute
                 try { NcnnGpuResourceTracker.ReleaseBuffer(buf, label + ".UploadFailure"); } catch { }
                 buf.Dispose();
                 throw;
+            }
+        }
+
+        public static float ReadScalarTexture(RenderTexture texture)
+        {
+            if (texture == null)
+                throw new ArgumentNullException(nameof(texture));
+            if (texture.dimension != TextureDimension.Tex2D || texture.width < 1 || texture.height < 1)
+                throw new ArgumentException("Scalar readback requires a non-empty Texture2D.", nameof(texture));
+
+            var previousActive = RenderTexture.active;
+            Texture2D readback = null;
+            try
+            {
+                readback = new Texture2D(1, 1, TextureFormat.RFloat, false, true);
+                RenderTexture.active = texture;
+                readback.ReadPixels(new Rect(0, 0, 1, 1), 0, 0, false);
+                readback.Apply(false, false);
+                return readback.GetPixel(0, 0).r;
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                if (readback != null)
+                    UnityEngine.Object.DestroyImmediate(readback);
             }
         }
 
