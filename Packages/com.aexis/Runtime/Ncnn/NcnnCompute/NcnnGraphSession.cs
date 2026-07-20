@@ -11,7 +11,6 @@ using System.Threading.Tasks;
 using System.Collections;
 using Aexis;
 using Aexis.Async;
-using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -4620,7 +4619,7 @@ namespace Aexis.Ncnn
             return NcnnParamParser.MergeStringParamsByLayerName(Model, pnnxModel, overwriteExisting);
         }
 
-        public async UniTask LoadModelAsync(
+        public async Awaitable LoadModelAsync(
             string paramText,
             NcnnBinReader br,
             Action<LoadProgress> onProgress = null,

@@ -1,13 +1,14 @@
-using Cysharp.Threading.Tasks;
+using UnityEngine;
 
 namespace Aexis.Async
 {
-    /// <summary>Centralizes the engine's UniTask scheduling policy.</summary>
+    /// <summary>Centralizes the engine's frame scheduling policy without third-party async dependencies.</summary>
     public static class AexisAsync
     {
-        public static UniTask YieldFrame()
+        /// <summary>Completes after Unity advances to the next frame.</summary>
+        public static Awaitable YieldFrame()
         {
-            return UniTask.NextFrame();
+            return Awaitable.NextFrameAsync();
         }
     }
 }
