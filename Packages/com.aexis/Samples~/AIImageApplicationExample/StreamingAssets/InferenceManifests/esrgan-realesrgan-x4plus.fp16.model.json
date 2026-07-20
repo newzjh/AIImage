@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "aiimage.model-manifest/v1",
+  "modelId": "realesrgan-x4plus",
+  "precision": {
+    "activationDtype": "FP16",
+    "weightDtype": "FP16",
+    "sensitiveOutputDtype": "FP32",
+    "requireStrictTexturePlan": true
+  }
+}

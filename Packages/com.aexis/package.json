@@ -9,7 +9,12 @@
   "license": "MIT",
   "dependencies": {
     "com.unity.modules.imageconversion": "1.0.0",
-    "com.unity.modules.unitywebrequest": "1.0.0"
+    "com.unity.modules.ui": "1.0.0",
+    "com.unity.modules.uielements": "1.0.0",
+    "com.unity.modules.unitywebrequest": "1.0.0",
+    "com.unity.modules.unitywebrequesttexture": "1.0.0",
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
+    "com.unity.test-framework": "1.6.0"
   },
   "samples": [
     {
@@ -23,9 +28,9 @@
       "path": "Samples~/RunnerIntegration"
     },
     {
-      "displayName": "Aexis Runner Samples",
-      "description": "Importable StreamingAssets installers, generic NCNN loader, ONNX inspector, and permitted default model files.",
-      "path": "Samples~/AexisRunnerSamples"
+      "displayName": "AIImage Main2 Application Example",
+      "description": "Complete Main2 scene, application pages, all runners, editor tools, and permitted default models in one importable example.",
+      "path": "Samples~/AIImageApplicationExample"
     }
   ]
 }

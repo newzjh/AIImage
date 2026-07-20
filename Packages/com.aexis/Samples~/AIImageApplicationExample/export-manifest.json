@@ -1,0 +1,14 @@
+{
+    "scene": "Scenes/Main2.unity",
+    "copiedAssetCount": 121,
+    "skippedDependencies": [
+        "Assets/Scripts/AIImagePageHost.cs",
+        "Assets/Scripts/Base/ConsoleLogToFile.cs",
+        "Assets/Scripts/FaceMaskGenerator.cs",
+        "Assets/Scripts/GpuSharpenRunner.cs",
+        "Assets/Scripts/Image2ImageAI.cs",
+        "Assets/Scripts/MainView.cs",
+        "Assets/Scripts/PseudoGANPrior.cs"
+    ],
+    "generatedUtc": "2026-07-20T14:54:17.3098126Z"
+}

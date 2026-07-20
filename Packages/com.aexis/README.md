@@ -9,7 +9,7 @@
 | Unity | 6000.2.7f2 or newer Unity 6.2 patch release |
 | Script runtime | Unity .NET profile supplied by Unity 6 |
 | GPU path | Compute-shader-capable graphics API with RenderTexture support |
-| Package dependencies | Unity built-in `com.unity.modules.imageconversion` and `com.unity.modules.unitywebrequest` for samples; no third-party package |
+| Package dependencies | Unity built-in `com.unity.modules.imageconversion`, `com.unity.modules.unitywebrequest`, and `com.unity.modules.unitywebrequesttexture` for samples; no third-party package |
 | Runtime namespaces | `Aexis`, `Aexis.Async`, `Aexis.Onnx`, `Aexis.Ncnn`, `Aexis.Execution` |
 
 `Aexis.Async` uses Unity's built-in `Awaitable`; it does not ship, vendor, or reference UniTask. This prevents package-level conflicts when a host project uses its own UniTask version or distribution.
@@ -59,11 +59,11 @@ session.Release();
 
 See [API manual](Documentation~/api-manual.md) for input/output ownership and [runner samples](Documentation~/runner-samples.md) for an importable component.
 
-## Samples and model files
+## Application example and model files
 
-Import **Aexis Runner Samples** from Package Manager, then run `Aexis/Samples/Install Runner Sample StreamingAssets`. The command copies the model payload to `Assets/StreamingAssets/AexisRunners`, the conventional Unity location included in a player build. The sample's default paths use that location.
+Import **AIImage Main2 Application Example** from Package Manager, then run `Aexis/Examples/Install Main2 Application StreamingAssets`. This is the single full example: it combines `Main2`, MainView2, DesignView, LibraryView, UI/application code, all runners including GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN, plus editor tests and debug tools.
 
-The sample payload includes default model files for Clip, CodeFormer, DeepFillV2, Matting, RealESRGAN, and YOLO. GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN model files are intentionally excluded because of package-size limits. See [model distribution](Documentation~/model-distribution.md) before redistributing any sample model.
+Its installer copies the complete sample payload to `Assets/StreamingAssets`, the Unity Player-included location. The reusable runner catalog uses `Clip/...`, `CodeFormer/...`, `DeepFileV2/...`, `Matting/...`, `RealESRGAN/...`, and `Yolo/...` paths below that root. Default model files are included only for those six model families. GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN weights are deliberately excluded because of package-size and redistribution constraints. See [model distribution](Documentation~/model-distribution.md) before redistributing any sample model.
 
 ## Scope and licensing
 
