@@ -52,6 +52,7 @@ namespace AIImage.Qwen35
 
         public Qwen35Runner(string modelDirectory, int maxNewTokens = 32, bool requireWeights = true)
         {
+            ConfigureAssetValidationCache();
             Contract = Qwen35ModelContract.Validate(modelDirectory, requireWeights);
             if (!Contract.IsValid) throw new InvalidOperationException("Qwen3.5 model contract failed:\n" + string.Join("\n", Contract.Errors));
             Tokenizer = LoadTokenizer(modelDirectory);
@@ -80,6 +81,7 @@ namespace AIImage.Qwen35
             CancellationToken cancellationToken = default,
             Action<Qwen35Progress> onProgress = null)
         {
+            ConfigureAssetValidationCache();
             cancellationToken.ThrowIfCancellationRequested();
             var progressQueue = new ConcurrentQueue<Qwen35Progress>();
             var validationTask = UniTask.RunOnThreadPool(
@@ -128,6 +130,12 @@ namespace AIImage.Qwen35
                 Path.Combine(modelDirectory, "vocab.txt"),
                 Path.Combine(modelDirectory, "merges.txt"),
                 specials);
+        }
+
+        private static void ConfigureAssetValidationCache()
+        {
+            Qwen35MobileAssetSet.ConfigureValidationCacheRoot(
+                Path.Combine(Application.persistentDataPath, "Qwen35ValidationCache"));
         }
 
         public string BuildImagePrompt(string userText)
@@ -191,8 +199,11 @@ namespace AIImage.Qwen35
             Action<int, string> onToken = null)
         {
             if (image == null) throw new ArgumentNullException(nameof(image));
+            Qwen35VisionEncoding vision;
             using (var visionSession = CreateVisionEncoderSession())
-            using (var vision = visionSession.Encode(image))
+            using (var encoded = visionSession.Encode(image))
+                vision = encoded.CloneStandalone();
+            using (vision)
             using (var decoder = CreateDecoderSession())
                 return decoder.GenerateMultimodal(
                     EncodeImagePrompt(userText),
@@ -218,6 +229,7 @@ namespace AIImage.Qwen35
             onStage?.Invoke("loading_vision");
             onPipelineProgress?.Invoke(new Qwen35Progress("loading_vision", "Preparing vision networks", 0f));
             await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+            Qwen35VisionEncoding standaloneVision = null;
             using (var visionSession = await CreateVisionEncoderSessionAsync(
                 cancellationToken,
                 progress => onPipelineProgress?.Invoke(progress.Map(0f, 0.2f))))
@@ -226,45 +238,51 @@ namespace AIImage.Qwen35
                 onStage?.Invoke("encoding_image");
                 onPipelineProgress?.Invoke(new Qwen35Progress("encoding_image", "Preprocessing image", 0.2f));
                 await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-                using (var vision = visionSession.Encode(image))
+                using (var encoded = visionSession.Encode(image))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    standaloneVision = encoded.CloneStandalone();
                     onPipelineProgress?.Invoke(new Qwen35Progress("encoding_image", "Vision encoding ready", 0.4f));
-                    onStage?.Invoke("loading_decoder");
-                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-                    using (var decoder = await CreateDecoderSessionAsync(
+                }
+            }
+
+            using (standaloneVision)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                onStage?.Invoke("loading_decoder");
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                using (var decoder = await CreateDecoderSessionAsync(
+                    cancellationToken,
+                    progress => onPipelineProgress?.Invoke(progress.Map(0.4f, 0.76f))))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    onStage?.Invoke("generating");
+                    var generated = await decoder.GenerateMultimodalAsync(
+                        EncodeImagePrompt(userText),
+                        standaloneVision,
+                        MaxNewTokens,
+                        sampling ?? Qwen35SamplingConfig.Greedy(),
                         cancellationToken,
-                        progress => onPipelineProgress?.Invoke(progress.Map(0.4f, 0.76f))))
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        onStage?.Invoke("generating");
-                        var generated = await decoder.GenerateMultimodalAsync(
-                            EncodeImagePrompt(userText),
-                            vision,
-                            MaxNewTokens,
-                            sampling ?? Qwen35SamplingConfig.Greedy(),
-                            cancellationToken,
-                            onToken,
-                            (completed, total) =>
-                            {
-                                onProgress?.Invoke(completed, total);
-                                var progress = total > 0 ? completed / (float)total : 1f;
-                                onPipelineProgress?.Invoke(new Qwen35Progress(
-                                    "generating",
-                                    "Generating token " + completed + "/" + total,
-                                    Mathf.Lerp(0.84f, 1f, progress),
-                                    completed,
-                                    total));
-                            },
-                            progress => onPipelineProgress?.Invoke(progress.Map(0.76f, 0.84f)));
-                        onPipelineProgress?.Invoke(new Qwen35Progress(
-                            "complete",
-                            "Generation complete",
-                            1f,
-                            generated.TokenIds.Count,
-                            MaxNewTokens));
-                        return generated;
-                    }
+                        onToken,
+                        (completed, total) =>
+                        {
+                            onProgress?.Invoke(completed, total);
+                            var progress = total > 0 ? completed / (float)total : 1f;
+                            onPipelineProgress?.Invoke(new Qwen35Progress(
+                                "generating",
+                                "Generating token " + completed + "/" + total,
+                                Mathf.Lerp(0.84f, 1f, progress),
+                                completed,
+                                total));
+                        },
+                        progress => onPipelineProgress?.Invoke(progress.Map(0.76f, 0.84f)));
+                    onPipelineProgress?.Invoke(new Qwen35Progress(
+                        "complete",
+                        "Generation complete",
+                        1f,
+                        generated.TokenIds.Count,
+                        MaxNewTokens));
+                    return generated;
                 }
             }
         }
@@ -275,8 +293,11 @@ namespace AIImage.Qwen35
             Qwen35SamplingConfig sampling = null,
             Action<int, string> onToken = null)
         {
+            Qwen35VisionEncoding vision;
             using (var visionSession = CreateVisionEncoderSession())
-            using (var vision = visionSession.EncodeFile(imagePath))
+            using (var encoded = visionSession.EncodeFile(imagePath))
+                vision = encoded.CloneStandalone();
+            using (vision)
             using (var decoder = CreateDecoderSession())
                 return decoder.GenerateMultimodal(
                     EncodeImagePrompt(userText),

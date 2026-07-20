@@ -5,9 +5,121 @@ using NcnnCompute;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using AIImage.Qwen35;
+using UnityEngine;
 
 public sealed class Qwen35Q8ArchiveTests
 {
+    [Test]
+    public void TextureArgMaxReducesVocabularyAxis()
+    {
+        const int vocabularySize = 17;
+        const int expectedToken = 13;
+        var source = new Texture2D(vocabularySize, 1, TextureFormat.RFloat, false, true);
+        var logits = new RenderTexture(vocabularySize, 1, 0, RenderTextureFormat.RFloat, RenderTextureReadWrite.Linear)
+        {
+            enableRandomWrite = true
+        };
+        var output = new RenderTexture(1, 1, 0, RenderTextureFormat.RFloat, RenderTextureReadWrite.Linear)
+        {
+            enableRandomWrite = true
+        };
+        try
+        {
+            var pixels = new Color[vocabularySize];
+            for (var i = 0; i < pixels.Length; i++) pixels[i].r = -i;
+            pixels[expectedToken].r = 100f;
+            source.SetPixels(pixels);
+            source.Apply(false, false);
+            Assert.That(logits.Create(), Is.True);
+            Assert.That(output.Create(), Is.True);
+            Graphics.CopyTexture(source, logits);
+
+            using var ops = new NcnnOps();
+            var inputShape = new NcnnRepro.BufferShape(2, vocabularySize, 1, 1, 1);
+            var outputShape = new NcnnRepro.BufferShape(2, 1, 1, 1, 1);
+            ops.SentisArgReduceLinearMat(
+                logits,
+                inputShape,
+                inputShape,
+                inputShape.dims - 1,
+                true,
+                false,
+                true,
+                outputShape,
+                outputShape,
+                output);
+
+            Assert.That(Mathf.RoundToInt(NcnnRepro.ReadScalarTexture(output)), Is.EqualTo(expectedToken));
+        }
+        finally
+        {
+            logits.Release();
+            output.Release();
+            UnityEngine.Object.DestroyImmediate(logits);
+            UnityEngine.Object.DestroyImmediate(output);
+            UnityEngine.Object.DestroyImmediate(source);
+        }
+    }
+
+    [Test]
+    public void TextureArgMaxReducesTiledPack4Vocabulary()
+    {
+        const int vocabularySize = 37;
+        const int expectedToken = 34;
+        const int tileWidth = 4;
+        var packCount = (vocabularySize + 3) / 4;
+        var tileRows = Mathf.CeilToInt(packCount / (float)tileWidth);
+        var source = new Texture2DArray(tileWidth, tileRows, 1, TextureFormat.RGBAFloat, false, true);
+        var descriptor = new RenderTextureDescriptor(tileWidth, tileRows, RenderTextureFormat.ARGBFloat, 0)
+        {
+            dimension = UnityEngine.Rendering.TextureDimension.Tex2DArray,
+            volumeDepth = 1,
+            enableRandomWrite = true,
+            msaaSamples = 1
+        };
+        var logits = new RenderTexture(descriptor);
+        var output = new RenderTexture(1, 1, 0, RenderTextureFormat.RFloat, RenderTextureReadWrite.Linear)
+        {
+            enableRandomWrite = true
+        };
+        try
+        {
+            var pixels = new Color[tileWidth * tileRows];
+            for (var pack = 0; pack < packCount; pack++)
+            {
+                var values = new Color(
+                    -(pack * 4 + 1),
+                    -(pack * 4 + 2),
+                    -(pack * 4 + 3),
+                    -(pack * 4 + 4));
+                pixels[pack] = values;
+            }
+            var expectedPack = expectedToken / 4;
+            var expectedLane = expectedToken % 4;
+            var expectedValues = pixels[expectedPack];
+            expectedValues[expectedLane] = 100f;
+            pixels[expectedPack] = expectedValues;
+            source.SetPixels(pixels, 0);
+            source.Apply(false, false);
+            Assert.That(logits.Create(), Is.True);
+            Assert.That(output.Create(), Is.True);
+            Graphics.CopyTexture(source, logits);
+
+            using var ops = new NcnnOps();
+            ops.ArgMaxPack4LinearMat(logits, vocabularySize, 1, tileRows, output);
+
+            Assert.That(Mathf.RoundToInt(NcnnRepro.ReadScalarTexture(output)), Is.EqualTo(expectedToken));
+        }
+        finally
+        {
+            logits.Release();
+            output.Release();
+            UnityEngine.Object.DestroyImmediate(logits);
+            UnityEngine.Object.DestroyImmediate(output);
+            UnityEngine.Object.DestroyImmediate(source);
+        }
+    }
+
     [Test]
     public void CaptureRoundTripPreservesRecordBoundariesAndTolerance()
     {

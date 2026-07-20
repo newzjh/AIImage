@@ -22,6 +22,25 @@ public sealed class Qwen35DeviceCompatibilityTests
     }
 
     [Test]
+    public void AndroidWithEightGigabytesIsRejectedUntilLowerTierIsQualified()
+    {
+        var probe = new Qwen35DeviceCapabilities(
+            RuntimePlatform.Android,
+            GraphicsDeviceType.Vulkan,
+            8192,
+            2048,
+            8192,
+            2048,
+            268435456,
+            50,
+            true,
+            true);
+        var result = Qwen35DeviceCompatibility.EvaluateCapabilities(true, probe);
+        Assert.That(result.Supported, Is.False);
+        Assert.That(result.UnsupportedReasons, Has.Some.Contains("system memory"));
+    }
+
+    [Test]
     public void AndroidRejectsNonVulkanGraphicsApi()
     {
         var probe = SupportedAndroid(GraphicsDeviceType.OpenGLES3);
@@ -45,7 +64,7 @@ public sealed class Qwen35DeviceCompatibilityTests
         var probe = new Qwen35DeviceCapabilities(
             RuntimePlatform.Android,
             GraphicsDeviceType.Vulkan,
-            8192,
+            Qwen35DeviceCompatibility.MinimumSystemMemoryMb,
             2048,
             8192,
             2048,
@@ -108,7 +127,7 @@ public sealed class Qwen35DeviceCompatibilityTests
         return new Qwen35DeviceCapabilities(
             platform,
             api,
-            8192,
+            Qwen35DeviceCompatibility.MinimumSystemMemoryMb,
             2048,
             8192,
             2048,

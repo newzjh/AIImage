@@ -116,7 +116,8 @@ namespace AIImage.Qwen35
                         ["path"] = MobileAssets.ManifestPath,
                         ["bytes"] = MobileAssets.GetStoredBytes(kv.Key),
                         ["mobile_q8_sharded"] = true,
-                        ["hashes_verified"] = true
+                        ["hashes_verified"] = true,
+                        ["hashes_verified_from_cache"] = MobileAssets.HashesVerifiedFromCache
                     };
                     continue;
                 }

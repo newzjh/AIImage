@@ -43,6 +43,50 @@ namespace AIImage.Qwen35
             Embeddings?.Dispose();
             Embeddings = null;
         }
+
+        public Qwen35VisionEncoding CloneStandalone()
+        {
+            if (Embeddings == null || Embeddings.Texture == null)
+                throw new ObjectDisposedException(nameof(Qwen35VisionEncoding));
+
+            var source = Embeddings.Texture;
+            var descriptor = source.descriptor;
+            descriptor.enableRandomWrite = true;
+            descriptor.msaaSamples = 1;
+            var copy = new RenderTexture(descriptor)
+            {
+                name = "Qwen35VisionEmbeddingStandalone"
+            };
+            try
+            {
+                if (!copy.Create())
+                    throw new InvalidOperationException("Failed to allocate standalone Qwen3.5 vision embedding texture.");
+                NcnnGpuResourceTracker.RegisterTexture(copy, copy.name);
+                Graphics.CopyTexture(source, copy);
+                return new Qwen35VisionEncoding(
+                    new Qwen35OwnedTexture(copy, Embeddings.LogicalShape, ReleaseStandaloneTexture),
+                    SourceWidth,
+                    SourceHeight,
+                    TargetWidth,
+                    TargetHeight,
+                    GridWidth,
+                    GridHeight);
+            }
+            catch
+            {
+                ReleaseStandaloneTexture(copy);
+                throw;
+            }
+        }
+
+        private static void ReleaseStandaloneTexture(RenderTexture texture)
+        {
+            if (texture == null) return;
+            NcnnGpuResourceTracker.ReleaseTexture(texture, "Qwen35VisionEmbeddingStandalone.Dispose");
+            try { texture.Release(); } catch { }
+            if (Application.isPlaying) UnityEngine.Object.Destroy(texture);
+            else UnityEngine.Object.DestroyImmediate(texture);
+        }
     }
 
     public sealed class Qwen35VisionEncoderSession : IDisposable
@@ -57,6 +101,10 @@ namespace AIImage.Qwen35
         private readonly NcnnRepro _encoder;
         private bool _disposed;
 
+        public NcnnRepro.ModelLoadProfile PatchEmbeddingLoadProfile => _patch.LastLoadProfile;
+        public NcnnRepro.ModelLoadProfile PositionEmbeddingLoadProfile => _position.LastLoadProfile;
+        public NcnnRepro.ModelLoadProfile EncoderLoadProfile => _encoder.LastLoadProfile;
+
         public Qwen35VisionEncoderSession(string modelDirectory)
             : this(modelDirectory, true)
         {
@@ -70,9 +118,9 @@ namespace AIImage.Qwen35
             _ops = new NcnnOps();
             try
             {
-                _patch = CreateRepro();
-                _position = CreateRepro();
-                _encoder = CreateRepro();
+                _patch = CreateRepro(modelDirectory);
+                _position = CreateRepro(modelDirectory);
+                _encoder = CreateRepro(modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_patch, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_position, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_encoder, modelDirectory);
@@ -405,7 +453,7 @@ namespace AIImage.Qwen35
             }
         }
 
-        private NcnnRepro CreateRepro()
+        private NcnnRepro CreateRepro(string modelDirectory)
         {
             return new NcnnRepro(_ops)
             {
@@ -416,7 +464,8 @@ namespace AIImage.Qwen35
                 EnableAttentionMatMulPack4Specializations = true,
                 EnableConv1x1TextureConvolution = true,
                 EnableDepthWiseTextureConvolution = true,
-                TensorTextureFormat = RenderTextureFormat.ARGBFloat
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                ManagedLoadGarbageCollectionIntervalBytes = Qwen35RuntimeTuning.ResolveManagedLoadGarbageCollectionIntervalBytes(modelDirectory)
             };
         }
 

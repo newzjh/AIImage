@@ -61,7 +61,10 @@ namespace AIImage.Qwen35
 
     public sealed class Qwen35DeviceCompatibility
     {
-        public const int MinimumSystemMemoryMb = 6144;
+        // Desktop Q8 runs peak near 4.7 GiB private memory plus substantial
+        // texture/driver residency. Do not start the mobile pipeline on 6-8 GiB
+        // devices until a lower on-device tier is measured and qualified.
+        public const int MinimumSystemMemoryMb = 12288;
         public const int MinimumTextureSize = 4096;
         public const int MinimumTextureArraySlices = 256;
         public const long MinimumGraphicsBufferBytes = 254279680L;

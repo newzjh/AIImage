@@ -2668,6 +2668,19 @@ public static class NcnnDebugRunner
             Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_REQUIRE_OCR_MARKERS"),
             "1",
             StringComparison.Ordinal);
+        var expectedTokenIdsText = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS");
+        var expectedTokenIds = new JArray();
+        if (!string.IsNullOrWhiteSpace(expectedTokenIdsText))
+        {
+            foreach (var value in expectedTokenIdsText.Split(','))
+            {
+                if (!int.TryParse(value.Trim(), out var tokenId))
+                    throw new ArgumentException("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS contains a non-integer token: " + value);
+                expectedTokenIds.Add(tokenId);
+            }
+            if (expectedTokenIds.Count == 0)
+                throw new ArgumentException("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS did not contain any tokens.");
+        }
 
         var valid = false;
         string error = null;
@@ -2676,6 +2689,7 @@ public static class NcnnDebugRunner
         var markerHits = new JArray();
         var markerGroupCount = 0;
         var markerHitCount = 0;
+        var expectedTokenIdsMatched = false;
         var sourceWidth = 0;
         var sourceHeight = 0;
         var targetWidth = 0;
@@ -2687,10 +2701,24 @@ public static class NcnnDebugRunner
         var expandedPromptTokenCount = 0;
         var finalPosition = 0;
         var cacheTextureCount = 0;
+        var contextTextureCapacity = 0;
         long decoderRuns = 0;
         long peakWorkingSetBytes = 0;
         long peakPrivateBytes = 0;
-        Action sampleMemory = () =>
+        long runnerInitializationMs = 0;
+        long visionLoadMs = 0;
+        long visionEncodeMs = 0;
+        long decoderLoadMs = 0;
+        long generationMs = 0;
+        var memorySamples = new JArray();
+        var visionLoadProfiles = new JObject();
+        var decoderLoadProfiles = new JObject();
+        var decoderRuntimeProfiles = new JObject();
+        var decoderRuntimeProfileEnabled = ResolveBoolEnv("AIIMAGE_QWEN35_DECODER_LAYER_PROFILE", false);
+        var decoderRuntimeProfileSyncGpu = decoderRuntimeProfileEnabled
+            && ResolveBoolEnv("AIIMAGE_QWEN35_DECODER_LAYER_PROFILE_SYNC_GPU", false);
+        NcnnGpuResourceTracker.Reset("Qwen35MultimodalGenerationBatch");
+        Action<string> sampleMemory = stage =>
         {
             try
             {
@@ -2698,42 +2726,101 @@ public static class NcnnDebugRunner
                 {
                     peakWorkingSetBytes = Math.Max(peakWorkingSetBytes, process.WorkingSet64);
                     peakPrivateBytes = Math.Max(peakPrivateBytes, process.PrivateMemorySize64);
+                    var gpu = NcnnGpuResourceTracker.GetStatsSnapshot();
+                    memorySamples.Add(new JObject
+                    {
+                        ["stage"] = stage ?? string.Empty,
+                        ["elapsed_ms"] = start.ElapsedMilliseconds,
+                        ["working_set_bytes"] = process.WorkingSet64,
+                        ["private_bytes"] = process.PrivateMemorySize64,
+                        ["tracked_gpu_buffer_bytes"] = gpu.currentBufferBytes,
+                        ["tracked_gpu_texture_bytes"] = gpu.currentTextureBytes,
+                        ["tracked_gpu_total_bytes"] = gpu.currentBufferBytes + gpu.currentTextureBytes,
+                        ["tracked_gpu_peak_bytes"] = gpu.peakTotalBytes,
+                        ["tracked_gpu_peak_temporary_texture_bytes"] = gpu.peakTemporaryTextureBytes
+                    });
                 }
             }
             catch { }
         };
-        sampleMemory();
+        sampleMemory("start");
         try
         {
+            var stageTimer = Stopwatch.StartNew();
             using (var runner = new Qwen35Runner(modelDir, maxNewTokens))
-            using (var visionSession = runner.CreateVisionEncoderSession())
-            using (var vision = visionSession.EncodeFile(imagePath))
-            using (var decoder = runner.CreateDecoderSession())
             {
-                sourceWidth = vision.SourceWidth;
-                sourceHeight = vision.SourceHeight;
-                targetWidth = vision.TargetWidth;
-                targetHeight = vision.TargetHeight;
-                gridWidth = vision.GridWidth;
-                gridHeight = vision.GridHeight;
-                visionTokenCount = vision.EmbeddingCount;
-                sampleMemory();
-                var promptIds = runner.EncodeImagePrompt(prompt);
-                promptTokenCount = promptIds.Count;
-                var generated = decoder.GenerateMultimodal(
-                    promptIds,
-                    vision,
-                    maxNewTokens,
-                    Qwen35SamplingConfig.Greedy(),
-                    (tokenId, piece) => sampleMemory());
-                sampleMemory();
-                generatedText = generated.Text;
-                expandedPromptTokenCount = generated.ExpandedPromptTokenCount;
-                finalPosition = generated.FinalPosition;
-                cacheTextureCount = generated.FinalCacheTextureCount;
-                decoderRuns = generated.DecoderStepCount;
-                for (var i = 0; i < generated.TokenIds.Count; i++)
-                    generatedIds.Add(generated.TokenIds[i]);
+                runnerInitializationMs = stageTimer.ElapsedMilliseconds;
+                sampleMemory("runner_ready");
+
+                Qwen35VisionEncoding vision = null;
+                stageTimer.Restart();
+                using (var visionSession = runner.CreateVisionEncoderSession())
+                {
+                    visionLoadMs = stageTimer.ElapsedMilliseconds;
+                    visionLoadProfiles["patch_embedding"] = Qwen35LoadProfileToJson(visionSession.PatchEmbeddingLoadProfile);
+                    visionLoadProfiles["position_embedding"] = Qwen35LoadProfileToJson(visionSession.PositionEmbeddingLoadProfile);
+                    visionLoadProfiles["encoder"] = Qwen35LoadProfileToJson(visionSession.EncoderLoadProfile);
+                    sampleMemory("vision_loaded");
+                    stageTimer.Restart();
+                    using (var encoded = visionSession.EncodeFile(imagePath))
+                        vision = encoded.CloneStandalone();
+                    sourceWidth = vision.SourceWidth;
+                    sourceHeight = vision.SourceHeight;
+                    targetWidth = vision.TargetWidth;
+                    targetHeight = vision.TargetHeight;
+                    gridWidth = vision.GridWidth;
+                    gridHeight = vision.GridHeight;
+                    visionTokenCount = vision.EmbeddingCount;
+                    visionEncodeMs = stageTimer.ElapsedMilliseconds;
+                    sampleMemory("vision_encoded");
+                }
+                sampleMemory("vision_released");
+
+                using (vision)
+                {
+                    stageTimer.Restart();
+                    using (var decoder = runner.CreateDecoderSession())
+                    {
+                        if (decoderRuntimeProfileEnabled)
+                            decoder.ConfigureDecoderRuntimeProfiling(true, decoderRuntimeProfileSyncGpu);
+                        decoderLoadMs = stageTimer.ElapsedMilliseconds;
+                        decoderLoadProfiles["token_embedding"] = Qwen35LoadProfileToJson(decoder.TokenEmbeddingLoadProfile);
+                        decoderLoadProfiles["decoder"] = Qwen35LoadProfileToJson(decoder.DecoderLoadProfile);
+                        decoderLoadProfiles["projection"] = Qwen35LoadProfileToJson(decoder.ProjectionLoadProfile);
+                        sampleMemory("decoder_loaded");
+                        var promptIds = runner.EncodeImagePrompt(prompt);
+                        promptTokenCount = promptIds.Count;
+                        stageTimer.Restart();
+                        var sampledTokens = 0;
+                        var generated = decoder.GenerateMultimodal(
+                            promptIds,
+                            vision,
+                            maxNewTokens,
+                            Qwen35SamplingConfig.Greedy(),
+                            (tokenId, piece) =>
+                            {
+                                sampledTokens++;
+                                if ((sampledTokens & 7) == 0)
+                                    sampleMemory("token_" + sampledTokens);
+                            });
+                        generationMs = stageTimer.ElapsedMilliseconds;
+                        sampleMemory("generation_complete");
+                        generatedText = generated.Text;
+                        expandedPromptTokenCount = generated.ExpandedPromptTokenCount;
+                        finalPosition = generated.FinalPosition;
+                        cacheTextureCount = generated.FinalCacheTextureCount;
+                        contextTextureCapacity = generated.ContextTextureCapacity;
+                        decoderRuns = generated.DecoderStepCount;
+                        if (decoderRuntimeProfileEnabled)
+                        {
+                            decoderRuntimeProfiles["prefill"] = Qwen35RuntimeProfileToJson(decoder.PrefillDecoderRuntimeProfile);
+                            decoderRuntimeProfiles["first_decode"] = Qwen35RuntimeProfileToJson(decoder.FirstDecodeRuntimeProfile);
+                            decoderRuntimeProfiles["last_decode"] = Qwen35RuntimeProfileToJson(decoder.LastDecodeRuntimeProfile);
+                        }
+                        for (var i = 0; i < generated.TokenIds.Count; i++)
+                            generatedIds.Add(generated.TokenIds[i]);
+                    }
+                }
 
                 if (reference["marker_group_hits"] is JArray groups)
                 {
@@ -2758,24 +2845,38 @@ public static class NcnnDebugRunner
                     }
                 }
 
-                var firstTokenMatches = generated.TokenIds.Count > 0
-                    && generated.TokenIds[0] == runner.Tokenizer.IdOf("<think>");
+                var firstTokenMatches = generatedIds.Count > 0
+                    && (int)generatedIds[0] == runner.Tokenizer.IdOf("<think>");
+                expectedTokenIdsMatched = expectedTokenIds.Count == generatedIds.Count;
+                if (expectedTokenIdsMatched)
+                {
+                    for (var tokenIndex = 0; tokenIndex < expectedTokenIds.Count; tokenIndex++)
+                    {
+                        if ((int)expectedTokenIds[tokenIndex] != (int)generatedIds[tokenIndex])
+                        {
+                            expectedTokenIdsMatched = false;
+                            break;
+                        }
+                    }
+                }
                 valid = firstTokenMatches
                     && cacheTextureCount == 48
                     && decoderRuns > 0
                     && visionTokenCount == (gridWidth / 2) * (gridHeight / 2)
                     && expandedPromptTokenCount == promptTokenCount - 1 + visionTokenCount
-                    && (!requireOcrMarkers || markerHitCount == markerGroupCount);
+                    && (!requireOcrMarkers || markerHitCount == markerGroupCount)
+                    && (expectedTokenIds.Count == 0 || expectedTokenIdsMatched);
             }
-            sampleMemory();
+            sampleMemory("disposed");
         }
         catch (Exception exception)
         {
             error = exception.ToString();
-            sampleMemory();
+            sampleMemory("error");
         }
 
         start.Stop();
+        var gpuStats = NcnnGpuResourceTracker.GetStatsSnapshot();
         var report = new JObject
         {
             ["schema"] = "qwen35.unity.multimodal-generation/v1",
@@ -2787,6 +2888,8 @@ public static class NcnnDebugRunner
             ["max_new_tokens"] = maxNewTokens,
             ["require_ocr_markers"] = requireOcrMarkers,
             ["generated_token_ids"] = generatedIds,
+            ["expected_token_ids"] = expectedTokenIds,
+            ["expected_token_ids_matched"] = expectedTokenIds.Count == 0 || expectedTokenIdsMatched,
             ["generated_text"] = generatedText,
             ["marker_group_count"] = markerGroupCount,
             ["marker_hit_count"] = markerHitCount,
@@ -2803,8 +2906,28 @@ public static class NcnnDebugRunner
             ["final_position"] = finalPosition,
             ["decoder_runs"] = decoderRuns,
             ["cache_texture_count"] = cacheTextureCount,
+            ["context_texture_capacity"] = contextTextureCapacity,
             ["peak_working_set_bytes"] = peakWorkingSetBytes,
             ["peak_private_bytes"] = peakPrivateBytes,
+            ["tracked_gpu_peak_buffer_bytes"] = gpuStats.peakBufferBytes,
+            ["tracked_gpu_peak_texture_bytes"] = gpuStats.peakTextureBytes,
+            ["tracked_gpu_peak_total_bytes"] = gpuStats.peakTotalBytes,
+            ["tracked_gpu_peak_temporary_texture_bytes"] = gpuStats.peakTemporaryTextureBytes,
+            ["memory_samples"] = memorySamples,
+            ["stage_timings_ms"] = new JObject
+            {
+                ["runner_initialization"] = runnerInitializationMs,
+                ["vision_load"] = visionLoadMs,
+                ["vision_encode"] = visionEncodeMs,
+                ["decoder_load"] = decoderLoadMs,
+                ["generation"] = generationMs
+            },
+            ["vision_load_profiles"] = visionLoadProfiles,
+            ["decoder_load_profiles"] = decoderLoadProfiles,
+            ["decoder_runtime_profiles"] = decoderRuntimeProfiles,
+            ["decoder_runtime_profile_enabled"] = decoderRuntimeProfileEnabled,
+            ["decoder_runtime_profile_sync_gpu"] = decoderRuntimeProfileSyncGpu,
+            ["managed_load_gc_interval_mb"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_LOAD_GC_INTERVAL_MB") ?? "0",
             ["strict_texture_execution"] = true,
             ["activation_storage"] = "texture-backed",
             ["compute_buffer_fallback"] = false,
@@ -3055,6 +3178,83 @@ public static class NcnnDebugRunner
             ["progress01"] = progress.Progress01,
             ["completed"] = progress.Completed,
             ["total"] = progress.Total
+        };
+    }
+
+    private static JObject Qwen35LoadProfileToJson(NcnnRepro.ModelLoadProfile profile)
+    {
+        if (profile == null)
+            return new JObject { ["available"] = false };
+
+        var layerTypes = new JObject();
+        foreach (var pair in profile.layerTypes)
+        {
+            var metrics = pair.Value;
+            layerTypes[pair.Key] = new JObject
+            {
+                ["count"] = metrics.count,
+                ["total_ms"] = metrics.totalMs,
+                ["bytes_read"] = metrics.bytesRead,
+                ["read_ms"] = metrics.readMs,
+                ["upload_ms"] = metrics.uploadMs,
+                ["pack_ms"] = metrics.packMs
+            };
+        }
+        return new JObject
+        {
+            ["available"] = true,
+            ["layer_count"] = profile.layerCount,
+            ["release_ms"] = profile.releaseMs,
+            ["parse_param_ms"] = profile.parseParamMs,
+            ["build_blob_use_count_ms"] = profile.buildBlobUseCountMs,
+            ["total_ms"] = profile.totalMs,
+            ["total_bytes_read"] = profile.totalBytesRead,
+            ["managed_cleanup_count"] = profile.managedCleanupCount,
+            ["managed_cleanup_ms"] = profile.managedCleanupMs,
+            ["layer_types"] = layerTypes
+        };
+    }
+
+    private static JObject Qwen35RuntimeProfileToJson(NcnnRepro.LayerRuntimeProfile profile)
+    {
+        if (profile == null)
+            return new JObject { ["available"] = false };
+
+        var layerTypes = new JObject();
+        foreach (var pair in profile.layerTypes.OrderByDescending(pair => pair.Value.totalTicks))
+        {
+            var metrics = pair.Value;
+            layerTypes[pair.Key] = new JObject
+            {
+                ["count"] = metrics.count,
+                ["total_ms"] = metrics.totalMs,
+                ["average_ms"] = metrics.avgMs
+            };
+        }
+
+        var layers = new JArray();
+        foreach (var layer in profile.layers)
+        {
+            layers.Add(new JObject
+            {
+                ["index"] = layer.layerIndex,
+                ["name"] = layer.layerName ?? string.Empty,
+                ["type"] = layer.layerType ?? string.Empty,
+                ["path"] = layer.path ?? string.Empty,
+                ["elapsed_ms"] = layer.elapsedMs
+            });
+        }
+
+        return new JObject
+        {
+            ["available"] = true,
+            ["inference_index"] = profile.inferenceIndex,
+            ["path_kind"] = profile.pathKind ?? string.Empty,
+            ["synchronized_gpu"] = profile.syncGpu,
+            ["layer_count"] = profile.layers.Count,
+            ["total_ms"] = profile.totalMs,
+            ["layer_types"] = layerTypes,
+            ["layers"] = layers
         };
     }
 

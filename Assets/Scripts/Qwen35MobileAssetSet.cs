@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using NcnnCompute;
 using Newtonsoft.Json.Linq;
@@ -13,6 +14,11 @@ namespace AIImage.Qwen35
         public const string ManifestFileName = "qwen3.5_mobile_q8_assets.json";
         public const string ManifestSchema = "qwen35.mobile-q8-assets/v1";
         public const string PrecisionManifestFileName = "qwen3.5_mobile_q8.model.json";
+        public const string Int4GpuPrecisionManifestFileName = "qwen3.5_mobile_q4gpu.model.json";
+        public const string RuntimePrecisionEnvironmentVariable = "AIIMAGE_QWEN35_RUNTIME_PRECISION";
+        private const string ValidationCacheSchema = "qwen35.mobile-q8-validation-cache/v1";
+
+        private static string _validationCacheRoot;
 
         private readonly Dictionary<string, Entry> _entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
 
@@ -26,6 +32,14 @@ namespace AIImage.Qwen35
         public string ManifestPath { get; }
         public long StoredWeightBytes { get; private set; }
         public bool WeightOnly { get; private set; }
+        public bool HashesVerifiedFromCache { get; private set; }
+
+        public static void ConfigureValidationCacheRoot(string directory)
+        {
+            if (string.IsNullOrWhiteSpace(directory))
+                throw new ArgumentException("Qwen3.5 validation cache directory is empty.", nameof(directory));
+            _validationCacheRoot = Path.GetFullPath(directory);
+        }
 
         public static Qwen35MobileAssetSet TryLoad(
             string modelDirectory,
@@ -46,6 +60,8 @@ namespace AIImage.Qwen35
             };
             var logicalFiles = document["logical_files"] as JObject
                 ?? throw new InvalidDataException("Qwen3.5 mobile asset manifest has no logical_files object: " + path);
+            var useValidationCache = verifyHashes && IsValidationCacheCurrent(root, path, logicalFiles);
+            result.HashesVerifiedFromCache = useValidationCache;
             long totalHashBytes = 0;
             if (verifyHashes)
             {
@@ -82,13 +98,20 @@ namespace AIImage.Qwen35
                     if (expectedHash.Length != 64) throw new InvalidDataException("Qwen3.5 shard SHA-256 is missing: " + relative);
                     if (verifyHashes)
                     {
-                        var hashBase = completedHashBytes;
-                        var actualHash = ComputeSha256(
-                            fullPath,
-                            bytes => onHashProgress?.Invoke(hashBase + bytes, totalHashBytes, relative),
-                            cancellationToken);
-                        if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
-                            throw new InvalidDataException("Qwen3.5 mobile shard SHA-256 mismatch: " + relative);
+                        if (useValidationCache)
+                        {
+                            onHashProgress?.Invoke(completedHashBytes + actualBytes, totalHashBytes, "cached:" + relative);
+                        }
+                        else
+                        {
+                            var hashBase = completedHashBytes;
+                            var actualHash = ComputeSha256(
+                                fullPath,
+                                bytes => onHashProgress?.Invoke(hashBase + bytes, totalHashBytes, relative),
+                                cancellationToken);
+                            if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
+                                throw new InvalidDataException("Qwen3.5 mobile shard SHA-256 mismatch: " + relative);
+                        }
                         completedHashBytes = checked(completedHashBytes + actualBytes);
                     }
                     entry.Parts.Add(new Part { Path = fullPath, Bytes = actualBytes, Sha256 = expectedHash });
@@ -100,6 +123,8 @@ namespace AIImage.Qwen35
                 result._entries.Add(property.Name, entry);
                 result.StoredWeightBytes += entry.StoredBytes;
             }
+            if (verifyHashes && !useValidationCache)
+                WriteValidationCache(root, path, logicalFiles);
             return result;
         }
 
@@ -171,6 +196,106 @@ namespace AIImage.Qwen35
                 return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
             }
         }
+
+        private static bool IsValidationCacheCurrent(string root, string manifestPath, JObject logicalFiles)
+        {
+            try
+            {
+                var cachePath = GetValidationCachePath(root);
+                if (!File.Exists(cachePath)) return false;
+                var cache = JObject.Parse(File.ReadAllText(cachePath));
+                if (!string.Equals((string)cache["schema"], ValidationCacheSchema, StringComparison.Ordinal)
+                    || !string.Equals((string)cache["manifest_sha256"], ComputeSha256(manifestPath, null, default), StringComparison.Ordinal)
+                    || !(cache["parts"] is JObject cachedParts))
+                {
+                    return false;
+                }
+
+                foreach (var property in logicalFiles.Properties())
+                {
+                    if (!(property.Value is JObject item) || !(item["parts"] is JArray parts))
+                        return false;
+                    foreach (var token in parts)
+                    {
+                        if (!(token is JObject part)) return false;
+                        var relative = (string)part["file"];
+                        var expectedBytes = (long?)part["bytes"] ?? -1;
+                        var expectedHash = ((string)part["sha256"] ?? string.Empty).ToLowerInvariant();
+                        var fullPath = ResolveContainedPath(root, relative);
+                        if (!(cachedParts[relative] is JObject cached)
+                            || !File.Exists(fullPath)
+                            || new FileInfo(fullPath).Length != expectedBytes
+                            || (long?)cached["bytes"] != expectedBytes
+                            || (long?)cached["last_write_utc_ticks"] != File.GetLastWriteTimeUtc(fullPath).Ticks
+                            || !string.Equals((string)cached["sha256"], expectedHash, StringComparison.Ordinal))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void WriteValidationCache(string root, string manifestPath, JObject logicalFiles)
+        {
+            try
+            {
+                var partsDocument = new JObject();
+                foreach (var property in logicalFiles.Properties())
+                {
+                    if (!(property.Value is JObject item) || !(item["parts"] is JArray parts))
+                        continue;
+                    foreach (var token in parts)
+                    {
+                        if (!(token is JObject part)) continue;
+                        var relative = (string)part["file"];
+                        var fullPath = ResolveContainedPath(root, relative);
+                        partsDocument[relative] = new JObject
+                        {
+                            ["bytes"] = new FileInfo(fullPath).Length,
+                            ["last_write_utc_ticks"] = File.GetLastWriteTimeUtc(fullPath).Ticks,
+                            ["sha256"] = ((string)part["sha256"] ?? string.Empty).ToLowerInvariant()
+                        };
+                    }
+                }
+
+                var document = new JObject
+                {
+                    ["schema"] = ValidationCacheSchema,
+                    ["manifest_sha256"] = ComputeSha256(manifestPath, null, default),
+                    ["parts"] = partsDocument
+                };
+                var cachePath = GetValidationCachePath(root);
+                Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
+                var temporaryPath = cachePath + ".tmp";
+                File.WriteAllText(temporaryPath, document.ToString(Newtonsoft.Json.Formatting.None));
+                if (File.Exists(cachePath)) File.Delete(cachePath);
+                File.Move(temporaryPath, cachePath);
+            }
+            catch
+            {
+                // A read-only or unavailable cache must never invalidate otherwise valid assets.
+            }
+        }
+
+        private static string GetValidationCachePath(string root)
+        {
+            var cacheRoot = string.IsNullOrWhiteSpace(_validationCacheRoot)
+                ? Path.Combine(Path.GetTempPath(), "AIImage", "Qwen35ValidationCache")
+                : _validationCacheRoot;
+            string key;
+            using (var sha = SHA256.Create())
+            {
+                var bytes = Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToUpperInvariant());
+                key = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty).ToLowerInvariant();
+            }
+            return Path.Combine(cacheRoot, key + ".json");
+        }
     }
 
     public static class Qwen35ModelAssetResolver
@@ -195,9 +320,42 @@ namespace AIImage.Qwen35
             if (repro == null) throw new ArgumentNullException(nameof(repro));
             var mobile = Qwen35MobileAssetSet.TryLoad(modelDirectory);
             if (mobile == null) return;
-            var path = Path.Combine(modelDirectory, Qwen35MobileAssetSet.PrecisionManifestFileName);
+            var requestedPrecision = Environment.GetEnvironmentVariable(Qwen35MobileAssetSet.RuntimePrecisionEnvironmentVariable);
+            string manifestName;
+            if (string.IsNullOrWhiteSpace(requestedPrecision)
+                || string.Equals(requestedPrecision, "INT8", StringComparison.OrdinalIgnoreCase))
+            {
+                manifestName = Qwen35MobileAssetSet.PrecisionManifestFileName;
+            }
+            else if (string.Equals(requestedPrecision, "INT4", StringComparison.OrdinalIgnoreCase))
+            {
+                manifestName = Qwen35MobileAssetSet.Int4GpuPrecisionManifestFileName;
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    Qwen35MobileAssetSet.RuntimePrecisionEnvironmentVariable
+                    + " must be INT8 or INT4, but was " + requestedPrecision + ".");
+            }
+            var path = Path.Combine(modelDirectory, manifestName);
             if (!File.Exists(path)) throw new FileNotFoundException("Qwen3.5 mobile precision manifest is missing.", path);
             repro.ApplyModelManifest(NcnnModelManifestLoader.LoadFromFile(path));
+        }
+    }
+
+    internal static class Qwen35RuntimeTuning
+    {
+        private const long DefaultMobileLoadGcIntervalBytes = 0L;
+
+        public static long ResolveManagedLoadGarbageCollectionIntervalBytes(string modelDirectory)
+        {
+            if (Qwen35MobileAssetSet.TryLoad(modelDirectory) == null)
+                return 0L;
+
+            var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_LOAD_GC_INTERVAL_MB");
+            if (long.TryParse(configured, out var megabytes) && megabytes >= 0)
+                return checked(Math.Min(megabytes, 4096L) * 1024L * 1024L);
+            return DefaultMobileLoadGcIntervalBytes;
         }
     }
 
@@ -236,7 +394,8 @@ namespace AIImage.Qwen35
                 var partIndex = FindPart(_position);
                 EnsurePart(partIndex);
                 var local = _position - _offsets[partIndex];
-                _current.Position = local;
+                if (_current.Position != local)
+                    _current.Position = local;
                 var available = (int)Math.Min(count, _parts[partIndex].Bytes - local);
                 var read = _current.Read(buffer, offset, available);
                 if (read <= 0) throw new EndOfStreamException("Unexpected end of Qwen3.5 mobile shard: " + _parts[partIndex].Path);

@@ -167,7 +167,7 @@ public static class Qwen35MobilePlatformBuild
             throw new InvalidDataException("Validated q8 mobile assets are required: " + modelDirectory);
         var memoryPolicy = Qwen35MobileMemoryPolicy.Evaluate(contract);
         report["memory_policy"] = memoryPolicy.ToJson();
-        if (!memoryPolicy.BroadMobileSupported)
+        if (!memoryPolicy.DeliveryEligible)
             throw new NotSupportedException(string.Join("\n", memoryPolicy.UnsupportedReasons));
 
         var manifestPath = Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName);

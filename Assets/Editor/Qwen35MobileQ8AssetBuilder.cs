@@ -63,6 +63,25 @@ public static class Qwen35MobileQ8AssetBuilder
         }
     }
 
+    [MenuItem("AIImage/Qwen3.5/Build Mobile INT4 GPU Manifest")]
+    public static void BuildInt4GpuManifestInteractive()
+    {
+        BuildInt4GpuManifest(Environment.GetEnvironmentVariable(OutputModelVariable));
+    }
+
+    public static void BuildInt4GpuManifestBatch()
+    {
+        try
+        {
+            BuildInt4GpuManifest(Environment.GetEnvironmentVariable(OutputModelVariable));
+        }
+        catch (Exception error)
+        {
+            UnityEngine.Debug.LogError("QWEN35_INT4_GPU_MANIFEST_BUILD_FAILED\n" + error);
+            throw;
+        }
+    }
+
     private static void Build(string sourceModel, string outputModel, int shardBytes)
     {
         if (string.IsNullOrWhiteSpace(sourceModel)) throw new ArgumentException(SourceModelVariable + " is required.");
@@ -85,6 +104,9 @@ public static class Qwen35MobileQ8AssetBuilder
 
         var precisionManifest = BuildPrecisionManifest();
         File.WriteAllText(Path.Combine(output, Qwen35MobileAssetSet.PrecisionManifestFileName), precisionManifest.ToString());
+        File.WriteAllText(
+            Path.Combine(output, Qwen35MobileAssetSet.Int4GpuPrecisionManifestFileName),
+            BuildInt4GpuPrecisionManifest().ToString());
         var runtimeManifest = NcnnModelManifestLoader.LoadFromJson(precisionManifest.ToString(), "Qwen3.5 mobile Q8 builder");
         var logicalFiles = new JObject();
         var sourceFiles = new JObject();
@@ -147,6 +169,19 @@ public static class Qwen35MobileQ8AssetBuilder
             ["elapsed_seconds"] = buildWatch.Elapsed.TotalSeconds
         }.ToString());
         UnityEngine.Debug.Log("QWEN35_Q8_BUILD_OK report=" + reportPath + " stored_bytes=" + storedBytes);
+        AssetDatabase.Refresh();
+    }
+
+    private static void BuildInt4GpuManifest(string outputModel)
+    {
+        if (string.IsNullOrWhiteSpace(outputModel)) throw new ArgumentException(OutputModelVariable + " is required.");
+        var output = Path.GetFullPath(outputModel);
+        var mobile = Qwen35MobileAssetSet.TryLoad(output, verifyHashes: true);
+        if (mobile == null || !mobile.WeightOnly)
+            throw new InvalidDataException("A validated Qwen3.5 Q8 mobile asset set is required before creating the INT4 GPU manifest.");
+        var path = Path.Combine(output, Qwen35MobileAssetSet.Int4GpuPrecisionManifestFileName);
+        File.WriteAllText(path, BuildInt4GpuPrecisionManifest().ToString());
+        UnityEngine.Debug.Log("QWEN35_INT4_GPU_MANIFEST_BUILD_OK path=" + path);
         AssetDatabase.Refresh();
     }
 
@@ -285,6 +320,37 @@ public static class Qwen35MobileQ8AssetBuilder
                 ["calibrationVersion"] = "qwen35-sdu-fp32-weight-absmax-v1",
                 ["calibrationMethod"] = "symmetric-weight-absmax-per-output-channel",
                 ["weightScheme"] = "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC",
+                ["outputChannelAxis"] = 0,
+                ["symmetric"] = true,
+                ["zeroPoint"] = 0,
+                ["accumulationDtype"] = "FP32",
+                ["activationQuantized"] = false,
+                ["quantizedOperators"] = new JArray("Gemm", "Convolution", "InnerProduct"),
+                ["nodePlans"] = new JArray(),
+                ["unquantizedWeightDtype"] = "FP32"
+            }
+        };
+    }
+
+    private static JObject BuildInt4GpuPrecisionManifest()
+    {
+        return new JObject
+        {
+            ["schemaVersion"] = "aiimage.model-manifest/v1",
+            ["modelId"] = "qwen3.5_0.8b",
+            ["precision"] = new JObject
+            {
+                ["activationDtype"] = "FP32",
+                ["weightDtype"] = "INT4",
+                ["sensitiveOutputDtype"] = "FP32",
+                ["requireStrictTexturePlan"] = true
+            },
+            ["quantization"] = new JObject
+            {
+                ["quantizationVersion"] = "aiimage.qwen35-mobile-q4gpu/v1",
+                ["calibrationVersion"] = "qwen35-q8-to-int4-weight-absmax-v1",
+                ["calibrationMethod"] = "symmetric-weight-absmax-per-output-channel",
+                ["weightScheme"] = "INT4_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC",
                 ["outputChannelAxis"] = 0,
                 ["symmetric"] = true,
                 ["zeroPoint"] = 0,

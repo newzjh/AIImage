@@ -10,26 +10,37 @@ namespace AIImage.Qwen35
 {
     public sealed class Qwen35OwnedTexture : IDisposable
     {
-        private NcnnRepro _owner;
+        private Action<RenderTexture> _release;
 
         public RenderTexture Texture { get; private set; }
         public NcnnRepro.BufferShape LogicalShape { get; }
 
         internal Qwen35OwnedTexture(NcnnRepro owner, RenderTexture texture, NcnnRepro.BufferShape logicalShape)
         {
-            _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+            if (owner == null) throw new ArgumentNullException(nameof(owner));
             Texture = texture ?? throw new ArgumentNullException(nameof(texture));
             LogicalShape = logicalShape;
+            _release = owner.ReturnTempArray;
+        }
+
+        internal Qwen35OwnedTexture(
+            RenderTexture texture,
+            NcnnRepro.BufferShape logicalShape,
+            Action<RenderTexture> release)
+        {
+            Texture = texture ?? throw new ArgumentNullException(nameof(texture));
+            LogicalShape = logicalShape;
+            _release = release ?? throw new ArgumentNullException(nameof(release));
         }
 
         public void Dispose()
         {
             var texture = Texture;
-            var owner = _owner;
+            var release = _release;
             Texture = null;
-            _owner = null;
-            if (texture != null && owner != null)
-                owner.ReturnTempArray(texture);
+            _release = null;
+            if (texture != null)
+                release?.Invoke(texture);
         }
     }
 
@@ -62,6 +73,16 @@ namespace AIImage.Qwen35
                 throw new ArgumentNullException(nameof(texture));
             _textures.Add(inputName, texture);
             _shapes.Add(inputName, shape);
+        }
+
+        internal void TransferTo(Qwen35DecoderState destination, string inputName, NcnnRepro.BufferShape nextShape)
+        {
+            if (destination == null) throw new ArgumentNullException(nameof(destination));
+            if (!_textures.TryGetValue(inputName, out var texture) || !_shapes.TryGetValue(inputName, out var shape))
+                throw new InvalidOperationException("Qwen3.5 decoder cache is missing: " + inputName);
+            _textures.Remove(inputName);
+            _shapes.Remove(inputName);
+            destination.Add(inputName, texture, nextShape);
         }
 
         public void Dispose()
@@ -137,6 +158,7 @@ namespace AIImage.Qwen35
         public bool StoppedOnEndOfTurn;
         public long DecoderStepCount;
         public int FinalCacheTextureCount;
+        public int ContextTextureCapacity;
     }
 
     public sealed class Qwen35DecoderSession : IDisposable
@@ -161,6 +183,13 @@ namespace AIImage.Qwen35
 
         public Qwen35ByteLevelBpeTokenizer Tokenizer { get; }
         public long SharedWeightBytes => _sharedWeights.ByteCount;
+        public NcnnRepro.ModelLoadProfile TokenEmbeddingLoadProfile => _embed.LastLoadProfile;
+        public NcnnRepro.ModelLoadProfile DecoderLoadProfile => _decoder.LastLoadProfile;
+        public NcnnRepro.ModelLoadProfile ProjectionLoadProfile => _projection.LastLoadProfile;
+        // Diagnostics only. Normal Qwen execution does not allocate or time layer profiles.
+        public NcnnRepro.LayerRuntimeProfile PrefillDecoderRuntimeProfile { get; private set; }
+        public NcnnRepro.LayerRuntimeProfile FirstDecodeRuntimeProfile { get; private set; }
+        public NcnnRepro.LayerRuntimeProfile LastDecodeRuntimeProfile { get; private set; }
 
         public Qwen35DecoderSession(string modelDirectory, Qwen35ByteLevelBpeTokenizer tokenizer)
             : this(modelDirectory, tokenizer, true)
@@ -179,9 +208,9 @@ namespace AIImage.Qwen35
             _ops = new NcnnOps();
             try
             {
-                _embed = CreateRepro();
-                _decoder = CreateRepro();
-                _projection = CreateRepro();
+                _embed = CreateRepro(modelDirectory);
+                _decoder = CreateRepro(modelDirectory);
+                _projection = CreateRepro(modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_embed, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_decoder, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_projection, modelDirectory);
@@ -190,6 +219,7 @@ namespace AIImage.Qwen35
                 {
                     _sharedWeights = Qwen35SharedTokenEmbeddingWeights.LoadModelAsset(modelDirectory);
                     AttachSharedWeights();
+                    CollectManagedLoadGarbage();
                     Load(_embed, modelDirectory, "qwen3.5_embed_token.ncnn.param", "qwen3.5_embed_token.ncnn.bin");
                     Load(_decoder, modelDirectory, "qwen3.5_decoder.ncnn.param", "qwen3.5_decoder.ncnn.bin");
                     Load(_projection, modelDirectory, "qwen3.5_proj_out.ncnn.param", "qwen3.5_embed_token.ncnn.bin");
@@ -218,6 +248,7 @@ namespace AIImage.Qwen35
                     cancellationToken: cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 session.AttachSharedWeights();
+                CollectManagedLoadGarbage();
                 onProgress?.Invoke(new Qwen35Progress("loading_decoder", "Shared token weights ready", 0.12f));
 
                 await LoadAsync(
@@ -309,6 +340,19 @@ namespace AIImage.Qwen35
             _decoder.DebugLayerTextureReadback = callback == null
                 ? null
                 : (layerName, blobName, values) => callback(_decodeInvocation, layerName, blobName, values);
+        }
+
+        public void ConfigureDecoderRuntimeProfiling(bool enabled, bool synchronizeGpu)
+        {
+            ThrowIfDisposed();
+            _decoder.LayerRuntimeProfileEnabled = enabled;
+            _decoder.LayerRuntimeProfileSyncGpu = enabled && synchronizeGpu;
+            if (!enabled)
+            {
+                PrefillDecoderRuntimeProfile = null;
+                FirstDecodeRuntimeProfile = null;
+                LastDecodeRuntimeProfile = null;
+            }
         }
 
         // Explicit audit-only hooks for the two small networks sharing the token weights.
@@ -466,10 +510,19 @@ namespace AIImage.Qwen35
                     DebugReadbackPackedCaches(result, currentDecodeInvocation);
                     hidden = new Qwen35OwnedTexture(_decoder, result.ExtractTexture("out0"), hiddenShape);
                     nextState = new Qwen35DecoderState(_decoder, state.SequenceLength + sequenceLength, nextPosition);
+                    var transferAttentionKv = _decoder.EnableInPlaceAttentionKvCache && state.Textures.ContainsKey("cache_k0");
                     for (var i = 0; i < AttentionCacheCount; i++)
                     {
-                        ExtractCache(result, nextState, "cache_k" + i, "out_cache_k" + i);
-                        ExtractCache(result, nextState, "cache_v" + i, "out_cache_v" + i);
+                        if (transferAttentionKv)
+                        {
+                            state.TransferTo(nextState, "cache_k" + i, GetShape(result, "out_cache_k" + i));
+                            state.TransferTo(nextState, "cache_v" + i, GetShape(result, "out_cache_v" + i));
+                        }
+                        else
+                        {
+                            ExtractCache(result, nextState, "cache_k" + i, "out_cache_k" + i);
+                            ExtractCache(result, nextState, "cache_v" + i, "out_cache_v" + i);
+                        }
                     }
                     for (var i = 0; i < ConvCacheCount; i++)
                     {
@@ -477,6 +530,7 @@ namespace AIImage.Qwen35
                         ExtractCache(result, nextState, "cache_gdr" + i, "out_cache_gdr" + i);
                     }
                 }
+                CaptureDecoderRuntimeProfile(state.SequenceLength, sequenceLength);
                 _decodeInvocation = currentDecodeInvocation + 1;
                 var step = new Qwen35DecoderStep(hidden, nextState);
                 hidden = null;
@@ -512,6 +566,83 @@ namespace AIImage.Qwen35
             }
         }
 
+        private int SelectNextToken(Qwen35OwnedTexture hidden, Qwen35Sampler sampler)
+        {
+            if (sampler == null) throw new ArgumentNullException(nameof(sampler));
+            if (!sampler.CanUseTextureArgMax || DebugTextureReadback != null)
+                return sampler.Select(ProjectLogits(hidden));
+
+            using (var result = _projection.InferWithMultiInputs(
+                new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = hidden.Texture },
+                null,
+                null,
+                new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape }))
+            {
+                if (!result.TryGetExistingTexture("out0", out var logits)
+                    || !result.TryGetExistingTextureDescriptor("out0", out var logicalShape, out var storageShape))
+                {
+                    throw new InvalidOperationException("LM head did not publish texture-backed logits for GPU ArgMax.");
+                }
+                if (logicalShape.w < Tokenizer.VocabularySize)
+                    throw new InvalidOperationException("LM head texture does not cover the tokenizer vocabulary.");
+
+                var outputShape = new NcnnRepro.BufferShape(logicalShape.dims, 1, 1, 1, 1);
+                var outputStorageShape = new NcnnRepro.BufferShape(2, 1, 1, 1, 1);
+                var vocabularyAxis = logicalShape.dims - 1;
+                var argMax = _projection.RentTempMat(1, 1, NcnnRepro.ResolveLinearMatTextureFormat());
+                try
+                {
+                    if (logits.dimension == UnityEngine.Rendering.TextureDimension.Tex2D)
+                    {
+                        _ops.SentisArgReduceLinearMat(
+                            logits,
+                            logicalShape,
+                            storageShape,
+                            vocabularyAxis,
+                            true,
+                            false,
+                            true,
+                            outputShape,
+                            outputStorageShape,
+                            argMax);
+                    }
+                    else if (logits.dimension == UnityEngine.Rendering.TextureDimension.Tex2DArray)
+                    {
+                        var packCount = (logicalShape.w + 3) / 4;
+                        var tileRows = Mathf.CeilToInt(packCount / (float)Mathf.Max(1, storageShape.w));
+                        if (logicalShape.dims != 2
+                            || logicalShape.h != 1
+                            || storageShape.dims != 3
+                            || storageShape.c != 4
+                            || storageShape.w != logits.width
+                            || storageShape.h != logits.height
+                            || storageShape.h != logicalShape.h * tileRows)
+                        {
+                            throw new InvalidOperationException(
+                                "Unsupported pack4 LM head texture contract"
+                                + " | logical=" + logicalShape
+                                + " | storage=" + storageShape
+                                + " | texture=" + logits.width + "x" + logits.height + "x" + logits.volumeDepth);
+                        }
+                        _ops.ArgMaxPack4LinearMat(logits, logicalShape.w, logicalShape.h, tileRows, argMax);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException(
+                            "Unsupported LM head texture dimension for GPU ArgMax: " + logits.dimension);
+                    }
+                    var token = Mathf.RoundToInt(NcnnRepro.ReadScalarTexture(argMax));
+                    if (token < 0 || token >= Tokenizer.VocabularySize)
+                        throw new InvalidOperationException("GPU ArgMax returned an invalid token id: " + token);
+                    return token;
+                }
+                finally
+                {
+                    _projection.ReturnTempArray(argMax);
+                }
+            }
+        }
+
         public Qwen35GenerationResult GenerateMultimodal(
             IReadOnlyList<int> promptTokenIds,
             Qwen35VisionEncoding vision,
@@ -534,6 +665,8 @@ namespace AIImage.Qwen35
                 VisionTokenCount = vision.EmbeddingCount
             };
             var sampler = new Qwen35Sampler(Tokenizer.VocabularySize, sampling);
+            var contextCapacity = ConfigureContextCapacity(
+                promptTokenIds.Count - 1 + vision.EmbeddingCount + maxNewTokens);
             var position = 0;
             long decoderRuns = 0;
             Qwen35DecoderState state = null;
@@ -571,7 +704,7 @@ namespace AIImage.Qwen35
 
                 RunTokens(new[] { promptTokenIds[promptTokenIds.Count - 1] }, ref position, ref state, out hidden);
                 decoderRuns++;
-                var nextToken = sampler.Select(ProjectLogits(hidden));
+                var nextToken = SelectNextToken(hidden, sampler);
                 hidden.Dispose();
                 hidden = null;
 
@@ -591,7 +724,7 @@ namespace AIImage.Qwen35
 
                     RunTokens(new[] { nextToken }, ref position, ref state, out hidden);
                     decoderRuns++;
-                    nextToken = sampler.Select(ProjectLogits(hidden));
+                    nextToken = SelectNextToken(hidden, sampler);
                     hidden.Dispose();
                     hidden = null;
                 }
@@ -601,6 +734,7 @@ namespace AIImage.Qwen35
                 output.FinalPosition = position;
                 output.DecoderStepCount = decoderRuns;
                 output.FinalCacheTextureCount = state.TextureCount;
+                output.ContextTextureCapacity = contextCapacity;
                 return output;
             }
             finally
@@ -636,6 +770,8 @@ namespace AIImage.Qwen35
                 VisionTokenCount = vision.EmbeddingCount
             };
             var sampler = new Qwen35Sampler(Tokenizer.VocabularySize, sampling);
+            var contextCapacity = ConfigureContextCapacity(
+                promptTokenIds.Count - 1 + vision.EmbeddingCount + maxNewTokens);
             var position = 0;
             long decoderRuns = 0;
             Qwen35DecoderState state = null;
@@ -680,7 +816,7 @@ namespace AIImage.Qwen35
                 await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
                 RunTokens(new[] { promptTokenIds[promptTokenIds.Count - 1] }, ref position, ref state, out hidden);
                 decoderRuns++;
-                var nextToken = sampler.Select(ProjectLogits(hidden));
+                var nextToken = SelectNextToken(hidden, sampler);
                 hidden.Dispose();
                 hidden = null;
                 onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "First token ready", 1f));
@@ -704,7 +840,7 @@ namespace AIImage.Qwen35
                     await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
                     RunTokens(new[] { nextToken }, ref position, ref state, out hidden);
                     decoderRuns++;
-                    nextToken = sampler.Select(ProjectLogits(hidden));
+                    nextToken = SelectNextToken(hidden, sampler);
                     hidden.Dispose();
                     hidden = null;
                 }
@@ -714,6 +850,7 @@ namespace AIImage.Qwen35
                 output.FinalPosition = position;
                 output.DecoderStepCount = decoderRuns;
                 output.FinalCacheTextureCount = state.TextureCount;
+                output.ContextTextureCapacity = contextCapacity;
                 return output;
             }
             finally
@@ -742,6 +879,7 @@ namespace AIImage.Qwen35
                 ExpandedPromptTokenCount = promptTokenIds.Count
             };
             var sampler = new Qwen35Sampler(Tokenizer.VocabularySize, sampling);
+            var contextCapacity = ConfigureContextCapacity(promptTokenIds.Count + maxNewTokens);
             var position = 0;
             long decoderRuns = 0;
             Qwen35DecoderState state = null;
@@ -761,7 +899,7 @@ namespace AIImage.Qwen35
 
                 RunTokens(new[] { promptTokenIds[promptTokenIds.Count - 1] }, ref position, ref state, out hidden);
                 decoderRuns++;
-                var nextToken = sampler.Select(ProjectLogits(hidden));
+                var nextToken = SelectNextToken(hidden, sampler);
                 hidden.Dispose();
                 hidden = null;
 
@@ -782,7 +920,7 @@ namespace AIImage.Qwen35
 
                     RunTokens(new[] { nextToken }, ref position, ref state, out hidden);
                     decoderRuns++;
-                    nextToken = sampler.Select(ProjectLogits(hidden));
+                    nextToken = SelectNextToken(hidden, sampler);
                     hidden.Dispose();
                     hidden = null;
                 }
@@ -791,6 +929,7 @@ namespace AIImage.Qwen35
                 output.FinalPosition = position;
                 output.DecoderStepCount = decoderRuns;
                 output.FinalCacheTextureCount = state.TextureCount;
+                output.ContextTextureCapacity = contextCapacity;
                 return output;
             }
             finally
@@ -798,6 +937,21 @@ namespace AIImage.Qwen35
                 hidden?.Dispose();
                 state?.Dispose();
             }
+        }
+
+        private int ConfigureContextCapacity(int requiredTokens)
+        {
+            var deviceLimit = Mathf.Min(4096, Mathf.Max(1, SystemInfo.maxTextureSize));
+            if (requiredTokens <= 0 || requiredTokens > deviceLimit)
+                throw new NotSupportedException(
+                    "Qwen3.5 context exceeds the device texture-backed KV capacity: requested="
+                    + requiredTokens + " capacity=" + deviceLimit);
+            // The texture kernels use the logical sequence length for bounds; no
+            // allocation alignment is required. Reserve only the requested prompt
+            // plus generation budget so long multimodal requests do not carry a
+            // 1-63 token KV cache tail on memory-constrained devices.
+            _decoder.AttentionKvCacheTextureCapacity = requiredTokens;
+            return _decoder.AttentionKvCacheTextureCapacity;
         }
 
         private void RunTokens(
@@ -1131,6 +1285,26 @@ namespace AIImage.Qwen35
             }
         }
 
+        private void CaptureDecoderRuntimeProfile(int pastSequenceLength, int sequenceLength)
+        {
+            if (!_decoder.LayerRuntimeProfileEnabled)
+                return;
+
+            var profile = _decoder.LastRuntimeProfile;
+            if (profile == null)
+                return;
+
+            if (pastSequenceLength == 0 && sequenceLength > 1)
+            {
+                PrefillDecoderRuntimeProfile = profile;
+                return;
+            }
+
+            if (FirstDecodeRuntimeProfile == null)
+                FirstDecodeRuntimeProfile = profile;
+            LastDecodeRuntimeProfile = profile;
+        }
+
         private RenderTexture UploadScalarPack4(float[] values, int width, int height, string uploadName)
         {
             if (values == null || values.Length != width * height)
@@ -1164,7 +1338,7 @@ namespace AIImage.Qwen35
             }
         }
 
-        private NcnnRepro CreateRepro()
+        private NcnnRepro CreateRepro(string modelDirectory)
         {
             var repro = new NcnnRepro(_ops)
             {
@@ -1173,11 +1347,21 @@ namespace AIImage.Qwen35
                 DisallowBufferToTextureMaterialization = true,
                 DisallowBufferOutputs = true,
                 EnableAttentionMatMulPack4Specializations = true,
+                EnableInPlaceAttentionKvCache = !string.Equals(
+                    Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_INPLACE_KV"),
+                    "0",
+                    StringComparison.Ordinal),
                 EnableConv1x1TextureConvolution = true,
                 EnableDepthWiseTextureConvolution = true,
-                TensorTextureFormat = RenderTextureFormat.ARGBFloat
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                ManagedLoadGarbageCollectionIntervalBytes = Qwen35RuntimeTuning.ResolveManagedLoadGarbageCollectionIntervalBytes(modelDirectory)
             };
             return repro;
+        }
+
+        private static void CollectManagedLoadGarbage()
+        {
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, false);
         }
 
         private static void Load(NcnnRepro repro, string directory, string paramName, string binName)
@@ -1241,6 +1425,10 @@ namespace AIImage.Qwen35
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _random = new System.Random(config.Seed);
         }
+
+        public bool CanUseTextureArgMax =>
+            (!_config.DoSample || _config.Temperature <= 0f)
+            && Mathf.Approximately(_config.RepetitionPenalty, 1f);
 
         public void AddHistory(int tokenId)
         {
