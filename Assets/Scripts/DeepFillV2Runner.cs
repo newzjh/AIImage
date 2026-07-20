@@ -5,7 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 
 public enum DeepFillV2Backend
@@ -51,7 +51,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     public string debugTensorBlobName = string.Empty;
 
     private NcnnOps _ops;
-    private NcnnRepro _repro;
+    private NcnnGraphSession _repro;
     private DeepFillV2Backend _loadedBackend;
     private string _loadedSignature = string.Empty;
     private bool _hasLoaded;
@@ -130,10 +130,10 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                 [MaskInputName] = maskPack4,
                 [ImageInputName] = sourcePack4
             };
-            var textureShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            var textureShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
             {
-                [MaskInputName] = new NcnnRepro.BufferShape(3, InputWidth, InputHeight, 1, 1),
-                [ImageInputName] = new NcnnRepro.BufferShape(3, InputWidth, InputHeight, 1, 3)
+                [MaskInputName] = new NcnnGraphSession.BufferShape(3, InputWidth, InputHeight, 1, 1),
+                [ImageInputName] = new NcnnGraphSession.BufferShape(3, InputWidth, InputHeight, 1, 3)
             };
             var pinned = new HashSet<string>(StringComparer.Ordinal) { OutputName };
             var debugTensorBlobs = ParseDebugTensorBlobNames(debugTensorBlobName);
@@ -289,7 +289,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         return info.FullName + "|" + info.Length.ToString(CultureInfo.InvariantCulture) + "|" + info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture);
     }
 
-    private static void TryWriteDebugTensorBlob(NcnnRepro.InferResult infer, string blobName, string dumpDir)
+    private static void TryWriteDebugTensorBlob(NcnnGraphSession.InferResult infer, string blobName, string dumpDir)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(dumpDir))
             return;
@@ -357,7 +357,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         return new string(chars);
     }
 
-    private void LogLoadProgress(string label, NcnnRepro.LoadProgress progress)
+    private void LogLoadProgress(string label, NcnnGraphSession.LoadProgress progress)
     {
         if (progress.stage == "complete")
             UnityEngine.Debug.Log("[DeepFillV2] LoadModel complete | backend=" + label + " | layers=" + progress.layerCount.ToString(CultureInfo.InvariantCulture));

@@ -5,7 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -119,8 +119,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro _encoderRepro;
-    private NcnnRepro _generatorRepro;
+    private NcnnGraphSession _encoderRepro;
+    private NcnnGraphSession _generatorRepro;
     private bool _encoderLoaded;
     private bool _generatorLoaded;
     private bool _loaded;
@@ -509,9 +509,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 { "style_feat", lqFeat }
             };
 
-            var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            var textureInputShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
             {
-                { "input", new NcnnRepro.BufferShape(2, 1024, 256, 1, 1) }
+                { "input", new NcnnGraphSession.BufferShape(2, 1024, 256, 1, 1) }
             };
 
             stage = "generator inference";
@@ -780,7 +780,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private async UniTask<Texture2D> RunGeneratorWithCommandBufferAsync(
         Dictionary<string, RenderTexture> textureInputs,
-        Dictionary<string, NcnnRepro.BufferShape> textureInputShapes,
+        Dictionary<string, NcnnGraphSession.BufferShape> textureInputShapes,
         ICollection<string> pinnedNames,
         string dumpDir,
         RenderTexture minEncodingTex,
@@ -807,7 +807,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
                 var logicalShape = textureInputShapes != null && textureInputShapes.TryGetValue(kv.Key, out var suppliedShape)
                     ? suppliedShape
-                    : new NcnnRepro.BufferShape(3, kv.Value.width, kv.Value.height, 1, Mathf.Max(1, (kv.Value.volumeDepth > 0 ? kv.Value.volumeDepth : 1) * 4));
+                    : new NcnnGraphSession.BufferShape(3, kv.Value.width, kv.Value.height, 1, Mathf.Max(1, (kv.Value.volumeDepth > 0 ? kv.Value.volumeDepth : 1) * 4));
                 var packs = logicalShape.dims == 4
                     ? Mathf.Max(1, Mathf.CeilToInt(logicalShape.c / 4f))
                     : Mathf.Max(1, kv.Value.volumeDepth > 0 ? kv.Value.volumeDepth : 1);
@@ -890,7 +890,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async UniTask DumpInferBlobAsync(NcnnRepro.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
+    private async UniTask DumpInferBlobAsync(NcnnGraphSession.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -906,7 +906,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async UniTask DumpInferBlobStatsAsync(NcnnRepro.InferResult inferResult, string dir, string blobName)
+    private async UniTask DumpInferBlobStatsAsync(NcnnGraphSession.InferResult inferResult, string dir, string blobName)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -1087,7 +1087,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async UniTask DumpBufferBlobAsNormalizedImageAsync(NcnnRepro.InferResult inferResult, string dir, string fileName, string blobName, int width, int height, CancellationToken ct)
+    private async UniTask DumpBufferBlobAsNormalizedImageAsync(NcnnGraphSession.InferResult inferResult, string dir, string fileName, string blobName, int width, int height, CancellationToken ct)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -2076,7 +2076,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private static void TryAppendInferBufferPreview(NcnnRepro.InferResult inferResult, string dir, string blobName, int maxCount = 16)
+    private static void TryAppendInferBufferPreview(NcnnGraphSession.InferResult inferResult, string dir, string blobName, int maxCount = 16)
     {
         if (inferResult == null || string.IsNullOrWhiteSpace(dir) || string.IsNullOrWhiteSpace(blobName))
             return;

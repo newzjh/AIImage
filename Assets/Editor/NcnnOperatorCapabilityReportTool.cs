@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEditor;
 using UnityEngine;
 
@@ -41,7 +41,7 @@ public static class NcnnOperatorCapabilityReportTool
             });
     }
 
-    // Unity batch entry point. It parses graph metadata only and never instantiates a runner or NcnnRepro.
+    // Unity batch entry point. It parses graph metadata only and never instantiates a runner or NcnnGraphSession.
     public static void RunFromCommandLine()
     {
         var arguments = Environment.GetCommandLineArgs();

@@ -1,4 +1,4 @@
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using AIImage.Qwen35;
 using UnityEngine;

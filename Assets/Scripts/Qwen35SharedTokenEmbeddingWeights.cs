@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 
 namespace AIImage.Qwen35
@@ -107,7 +107,7 @@ namespace AIImage.Qwen35
             {
                 return new Qwen35SharedTokenEmbeddingWeights
                 {
-                    Buffer = NcnnRepro.UploadImmutableFloatConstants(
+                    Buffer = NcnnGraphSession.UploadImmutableFloatConstants(
                         payload.Values,
                         "Qwen35SharedTokenEmbeddingWeights.Fp32"),
                     ElementCount = payload.ElementCount
@@ -139,7 +139,7 @@ namespace AIImage.Qwen35
             public int ElementCount;
         }
 
-        public void Attach(NcnnRepro repro)
+        public void Attach(NcnnGraphSession repro)
         {
             if (repro == null)
                 throw new ArgumentNullException(nameof(repro));

@@ -4,7 +4,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
-using NcnnCompute;
+using Aexis.Ncnn;
 using Newtonsoft.Json.Linq;
 
 namespace AIImage.Qwen35
@@ -315,7 +315,7 @@ namespace AIImage.Qwen35
             return File.Exists(path) ? new FileInfo(path).Length : 0;
         }
 
-        public static void ApplyMobilePrecisionManifest(NcnnRepro repro, string modelDirectory)
+        public static void ApplyMobilePrecisionManifest(NcnnGraphSession repro, string modelDirectory)
         {
             if (repro == null) throw new ArgumentNullException(nameof(repro));
             var mobile = Qwen35MobileAssetSet.TryLoad(modelDirectory);

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 
 namespace AIImage.Qwen35
@@ -32,7 +32,7 @@ namespace AIImage.Qwen35
             _ownsOps = ops == null;
         }
 
-        public Qwen35NetworkLoadResult LoadAndRelease(Qwen35NetworkAsset asset, Action<NcnnRepro.LoadProgress> progress = null)
+        public Qwen35NetworkLoadResult LoadAndRelease(Qwen35NetworkAsset asset, Action<NcnnGraphSession.LoadProgress> progress = null)
         {
             if (asset == null) throw new ArgumentNullException(nameof(asset));
             var result = new Qwen35NetworkLoadResult { Name = asset.Name };
@@ -42,7 +42,7 @@ namespace AIImage.Qwen35
                 var paramText = File.ReadAllText(asset.ParamPath);
                 using (var stream = asset.OpenBinRead())
                 using (var reader = new NcnnBinReader(stream))
-                using (var repro = new NcnnRepro(_ops))
+                using (var repro = new NcnnGraphSession(_ops))
                 {
                     Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(repro, asset.ModelDirectory);
                     Qwen35SharedTokenEmbeddingWeights shared = null;
@@ -76,7 +76,7 @@ namespace AIImage.Qwen35
             return result;
         }
 
-        public IReadOnlyList<Qwen35NetworkLoadResult> ValidateAllSequential(Qwen35NetworkAssetCatalog catalog, Action<string, NcnnRepro.LoadProgress> progress = null)
+        public IReadOnlyList<Qwen35NetworkLoadResult> ValidateAllSequential(Qwen35NetworkAssetCatalog catalog, Action<string, NcnnGraphSession.LoadProgress> progress = null)
         {
             if (catalog == null) throw new ArgumentNullException(nameof(catalog));
             var results = new List<Qwen35NetworkLoadResult>(catalog.Networks.Length);

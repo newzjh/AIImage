@@ -6,7 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -63,7 +63,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro _repro;
+    private NcnnGraphSession _repro;
     private bool _loaded;
     private bool _hasAppliedPrecisionMode;
     private NcnnPrecisionMode _appliedPrecisionMode;
@@ -283,7 +283,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             outputCmd = _repro.ForwardPack4(
                 cmd,
                 inputCmd,
-                new NcnnRepro.BufferShape(3, width, height, 1, 3),
+                new NcnnGraphSession.BufferShape(3, width, height, 1, 3),
                 out _,
                 "input");
             if (outputCmd == null)
@@ -530,7 +530,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         try { ProgressChanged?.Invoke(Mathf.Clamp01(progress01), text ?? string.Empty); } catch { }
     }
 
-    private void DumpPinnedBlobStats(NcnnRepro.InferResult infer, string dir, ICollection<string> blobNames)
+    private void DumpPinnedBlobStats(NcnnGraphSession.InferResult infer, string dir, ICollection<string> blobNames)
     {
         if (infer == null || string.IsNullOrWhiteSpace(dir) || blobNames == null || blobNames.Count == 0)
             return;

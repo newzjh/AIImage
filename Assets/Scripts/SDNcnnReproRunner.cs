@@ -7,7 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -362,10 +362,10 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro _clipRepro;
-    private NcnnRepro _unetRepro;
-    private NcnnRepro _decoderRepro;
-    private NcnnRepro _encoderRepro;
+    private NcnnGraphSession _clipRepro;
+    private NcnnGraphSession _unetRepro;
+    private NcnnGraphSession _decoderRepro;
+    private NcnnGraphSession _encoderRepro;
     private StableDiffusionSimpleTokenizer _tokenizer;
     private float[] _logSigmas;
     private ResolvedPaths? _resolvedPaths;
@@ -382,7 +382,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
     {
         public string name;
         public RenderTexture texture;
-        public NcnnRepro.BufferShape shape;
+        public NcnnGraphSession.BufferShape shape;
     }
 
     public string LastDumpDir => _lastDumpDir;
@@ -1527,10 +1527,10 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         {
             { "in0", latentTex }
         };
-        Dictionary<string, NcnnRepro.BufferShape> textureInputShapes = null;
+        Dictionary<string, NcnnGraphSession.BufferShape> textureInputShapes = null;
         if (reuseCache != null)
         {
-            textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal);
+            textureInputShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal);
             for (var i = 0; i < reuseCache.Count; i++)
             {
                 var blob = reuseCache[i];
@@ -1596,7 +1596,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private bool TryCaptureOfficialUnetCache(NcnnRepro.InferResult infer, List<UnetCacheBlob> dst)
+    private bool TryCaptureOfficialUnetCache(NcnnGraphSession.InferResult infer, List<UnetCacheBlob> dst)
     {
         if (infer == null || dst == null)
             return false;
@@ -1619,7 +1619,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 {
                     name = name,
                     texture = tex,
-                    shape = new NcnnRepro.BufferShape(dims, w, h, d, c)
+                    shape = new NcnnGraphSession.BufferShape(dims, w, h, d, c)
                 });
             }
 
@@ -1794,12 +1794,12 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         _hasAppliedPrecisionMode = true;
     }
 
-    private NcnnRepro CreateSession()
+    private NcnnGraphSession CreateSession()
     {
         return NcnnInferenceSessionFactory.Create(_ops, "stable-diffusion", precisionMode);
     }
 
-    private void ApplyCommonOptions(NcnnRepro repro)
+    private void ApplyCommonOptions(NcnnGraphSession repro)
     {
         if (repro == null)
             return;
@@ -2732,7 +2732,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void DumpLayerRuntimeProfile(NcnnRepro repro, string prefix)
+    private void DumpLayerRuntimeProfile(NcnnGraphSession repro, string prefix)
     {
         if (repro == null || repro.LastRuntimeProfile == null)
             return;
@@ -2759,7 +2759,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static void LogLoadProgress(string label, NcnnRepro.LoadProgress progress)
+    private static void LogLoadProgress(string label, NcnnGraphSession.LoadProgress progress)
     {
         if (string.IsNullOrWhiteSpace(label))
             label = "model";
@@ -2782,14 +2782,14 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         UnityEngine.Debug.Log("[SD] " + label + " load stage=" + progress.stage + " | " + progress.layerIndex.ToString(CultureInfo.InvariantCulture) + "/" + progress.layerCount.ToString(CultureInfo.InvariantCulture));
     }
 
-    private static void LogLoadProfile(string label, NcnnRepro.ModelLoadProfile profile)
+    private static void LogLoadProfile(string label, NcnnGraphSession.ModelLoadProfile profile)
     {
         if (profile == null)
             return;
         if (string.IsNullOrWhiteSpace(label))
             label = "model";
 
-        var items = new List<KeyValuePair<string, NcnnRepro.LayerTypeLoadProfile>>(profile.layerTypes);
+        var items = new List<KeyValuePair<string, NcnnGraphSession.LayerTypeLoadProfile>>(profile.layerTypes);
         items.Sort((a, b) => b.Value.totalMs.CompareTo(a.Value.totalMs));
         var top = new List<string>();
         for (var i = 0; i < Math.Min(6, items.Count); i++)
@@ -2984,7 +2984,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
         WriteFloatArray(path, data);
     }
 
-    private void TryDumpAnyBlob(NcnnRepro.InferResult infer, string blobName, string path, bool useUnetOwner = true, NcnnRepro ownerOverride = null)
+    private void TryDumpAnyBlob(NcnnGraphSession.InferResult infer, string blobName, string path, bool useUnetOwner = true, NcnnGraphSession ownerOverride = null)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;

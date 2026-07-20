@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
-using NcnnCompute;
+using Aexis.Ncnn;
 using Newtonsoft.Json.Linq;
 
 namespace AIImage.Qwen35

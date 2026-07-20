@@ -1,7 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.Linq;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -55,7 +55,7 @@ public sealed class NcnnConvCmdPack4GoldenTests
 
         foreach (var layer in layers)
         {
-            var path = System.IO.Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", layer);
+            var path = System.IO.Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", layer);
             var source = System.IO.File.ReadAllText(path);
             Assert.That(source, Does.Not.Contain("CmdPlaceholder"), layer);
             Assert.That(source, Does.Not.Contain("PublishCmdTensorLikeInput"), layer);
@@ -75,7 +75,7 @@ public sealed class NcnnConvCmdPack4GoldenTests
         var subgraphParam = "7767517\n2 2\n" + sourceLines[2] + "\n" + sourceLines[3] + "\n";
         using var stream = System.IO.File.OpenRead(binPath);
         using var reader = new NcnnBinReader(stream);
-        using var repro = new NcnnRepro(new NcnnOps())
+        using var repro = new NcnnGraphSession(new NcnnOps())
         {
             TensorTextureFormat = RenderTextureFormat.ARGBFloat,
             StrictTextureTargetDtype = "FP32",
@@ -95,12 +95,12 @@ public sealed class NcnnConvCmdPack4GoldenTests
             output = repro.ForwardPack4(
                 commandBuffer,
                 source,
-                new NcnnRepro.BufferShape(3, 16, 16, 1, 3),
+                new NcnnGraphSession.BufferShape(3, 16, 16, 1, 3),
                 out var outputShape,
                 "input");
 
             Assert.That(output, Is.Not.Null);
-            Assert.That(outputShape, Is.EqualTo(new NcnnRepro.BufferShape(3, 16, 16, 1, 64)));
+            Assert.That(outputShape, Is.EqualTo(new NcnnGraphSession.BufferShape(3, 16, 16, 1, 64)));
             var convNode = repro.LastTextureExecutionPlan.nodes.Single(node => node.layer == "Conv_0");
             Assert.That(repro.LastTextureExecutionPlan.strictEligible, Is.True);
             Assert.That(repro.LastTextureExecutionPlan.dispatchAllowed, Is.True);
@@ -146,7 +146,7 @@ public sealed class NcnnConvCmdPack4GoldenTests
         var expected = ReferenceOihw(profile, input, weights, bias, outputWidth, outputHeight);
         var outputPacks = Mathf.CeilToInt(profile.outputChannels / 4f);
 
-        var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         var persistentOutputs = new RenderTexture[outputPacks];
         for (var pack = 0; pack < outputPacks; pack++)
         {

@@ -1,8 +1,8 @@
 #if UNITY_EDITOR
 using System;
 using System.Linq;
-using AIImage.Inference.Core;
-using NcnnCompute;
+using Aexis;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -22,9 +22,9 @@ public sealed class NcnnInt8WeightOnlyGpuTests
         var input = new[] { 0.25f, -0.5f, 1f };
         var weights = new[] { -1f, 0.5f };
         var bias = new[] { 0.1f, -0.2f };
-        var upload = NcnnRepro.NewInt8WeightOnlyUpload(weights, 2, 1, true, "NcnnInt8WeightOnlyGpuTests.Conv");
+        var upload = NcnnGraphSession.NewInt8WeightOnlyUpload(weights, 2, 1, true, "NcnnInt8WeightOnlyGpuTests.Conv");
         using var ops = new NcnnOps();
-        using var repro = new NcnnRepro(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnInt8WeightOnlyGpuTests.Conv" };
         using var inputBuffer = NewFloatBuffer(input);
         using var biasBuffer = NewFloatBuffer(bias);
@@ -68,9 +68,9 @@ public sealed class NcnnInt8WeightOnlyGpuTests
         var input = new[] { 1f, -1f, 0.5f, 2f };
         var weights = new[] { 1f, -0.5f, 0.25f, 2f, 0.5f, 1f, -1f, 0.25f };
         var bias = new[] { 0.1f, -0.2f };
-        var upload = NcnnRepro.NewInt8WeightOnlyUpload(weights, 2, 4, true, "NcnnInt8WeightOnlyGpuTests.Gemm");
+        var upload = NcnnGraphSession.NewInt8WeightOnlyUpload(weights, 2, 4, true, "NcnnInt8WeightOnlyGpuTests.Gemm");
         using var ops = new NcnnOps();
-        using var repro = new NcnnRepro(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnInt8WeightOnlyGpuTests.Gemm" };
         using var inputBuffer = NewFloatBuffer(input);
         using var biasBuffer = NewFloatBuffer(bias);
@@ -115,9 +115,9 @@ public sealed class NcnnInt8WeightOnlyGpuTests
         var weights = new[] { 1f, -0.5f, 0.25f, 2f, 0.5f, 1f, -1f, 0.25f };
         var bias = new[] { 0.1f, -0.2f };
         const float activationScale = 0.5f;
-        var upload = NcnnRepro.NewInt8WeightOnlyUpload(weights, 2, 4, true, "NcnnInt8WeightOnlyGpuTests.GemmW8A8");
+        var upload = NcnnGraphSession.NewInt8WeightOnlyUpload(weights, 2, 4, true, "NcnnInt8WeightOnlyGpuTests.GemmW8A8");
         using var ops = new NcnnOps();
-        using var repro = new NcnnRepro(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnInt8WeightOnlyGpuTests.GemmW8A8" };
         using var inputBuffer = NewFloatBuffer(input);
         using var biasBuffer = NewFloatBuffer(bias);
@@ -227,7 +227,7 @@ public sealed class NcnnInt8WeightOnlyGpuTests
         UnityEngine.Object.DestroyImmediate(texture);
     }
 
-    private static void ReleaseUpload(NcnnRepro.Int8WeightOnlyUpload upload, string label)
+    private static void ReleaseUpload(NcnnGraphSession.Int8WeightOnlyUpload upload, string label)
     {
         if (upload?.packedWeights != null)
         {

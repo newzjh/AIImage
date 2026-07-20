@@ -2,7 +2,7 @@
 using System;
 using System.IO;
 using System.Linq;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -71,7 +71,7 @@ public sealed class NcnnC2CdhwCmdPack4Tests
             100f, 101f,
             110f, 111f
         };
-        var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         var persistentOutputs = new RenderTexture[3];
         for (var slice = 0; slice < persistentOutputs.Length; slice++)
         {
@@ -156,7 +156,7 @@ public sealed class NcnnC2CdhwCmdPack4Tests
     public void CdhwCommandLayersPublishDescriptorsAndAvoidCmdPlaceholders()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var layersDirectory = Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers");
+        var layersDirectory = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers");
         foreach (var file in new[]
         {
             "NcnnConvolution3DLayerRepro.cs",

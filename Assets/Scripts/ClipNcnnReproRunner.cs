@@ -6,7 +6,7 @@ using System.Threading;
 using System.Collections.Generic;
 using System.Text;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -109,9 +109,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro _imageRepro;
-    private NcnnRepro _textRepro;
-    private NcnnRepro _projectionRepro;
+    private NcnnGraphSession _imageRepro;
+    private NcnnGraphSession _textRepro;
+    private NcnnGraphSession _projectionRepro;
     private MobileClipSimpleTokenizer _tokenizer;
     private string _loadedModelKey;
     private string _lastTextEmbeddingSource;
@@ -409,7 +409,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void ApplyOptions(NcnnRepro repro)
+    private void ApplyOptions(NcnnGraphSession repro)
     {
         if (repro == null)
             return;
@@ -428,7 +428,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     }
 
     private static void ConfigureClipRepro(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         bool strictReference,
         bool allowGeneralTextureConvolution,
         bool allowAttentionMatMulPack4)
@@ -513,9 +513,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         long textLoadMs = 0;
         long projectionLoadMs = 0;
         long buildTextMs = 0;
-        NcnnRepro.ModelLoadProfile imageProfile = null;
-        NcnnRepro.ModelLoadProfile textProfile = null;
-        NcnnRepro.ModelLoadProfile projectionProfile = null;
+        NcnnGraphSession.ModelLoadProfile imageProfile = null;
+        NcnnGraphSession.ModelLoadProfile textProfile = null;
+        NcnnGraphSession.ModelLoadProfile projectionProfile = null;
 
         ReportProgress(0.02f, "Warm up CLIP");
         await UniTask.Yield();
@@ -679,7 +679,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     }
 
     private async UniTask LoadReproModelAsync(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         string paramPath,
         string binPath,
         string modelLabel,
@@ -1018,7 +1018,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void ReportLoadProgress(string modelLabel, float progressStart, float progressEnd, NcnnRepro.LoadProgress progress)
+    private void ReportLoadProgress(string modelLabel, float progressStart, float progressEnd, NcnnGraphSession.LoadProgress progress)
     {
         var progress01 = Mathf.Lerp(progressStart, progressEnd, Mathf.Clamp01(progress.progress01));
         string text;
@@ -1046,12 +1046,12 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ReportProgress(progress01, text);
     }
 
-    private static void LogLoadProfile(string label, NcnnRepro.ModelLoadProfile profile)
+    private static void LogLoadProfile(string label, NcnnGraphSession.ModelLoadProfile profile)
     {
         if (profile == null)
             return;
 
-        var items = new List<KeyValuePair<string, NcnnRepro.LayerTypeLoadProfile>>(profile.layerTypes);
+        var items = new List<KeyValuePair<string, NcnnGraphSession.LayerTypeLoadProfile>>(profile.layerTypes);
         items.Sort((a, b) => b.Value.totalMs.CompareTo(a.Value.totalMs));
         var top = new List<string>();
         for (var i = 0; i < Math.Min(4, items.Count); i++)
@@ -1239,7 +1239,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         DumpVector(dir, Path.GetFileName(path), logical);
     }
 
-    private void TryDumpAnyBlob(NcnnRepro.InferResult infer, string blobName, string path)
+    private void TryDumpAnyBlob(NcnnGraphSession.InferResult infer, string blobName, string path)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;
@@ -1317,7 +1317,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         return sb.ToString();
     }
 
-    private async UniTask<float[]> ReadImageEmbeddingAsync(NcnnRepro.InferResult infer, CancellationToken ct)
+    private async UniTask<float[]> ReadImageEmbeddingAsync(NcnnGraphSession.InferResult infer, CancellationToken ct)
     {
         if (infer == null)
             return null;
@@ -1330,7 +1330,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             {
                 var values = ReadTextureLogicalValues(
                     texture,
-                    new NcnnRepro.BufferShape(dims, w, h, d, c),
+                    new NcnnGraphSession.BufferShape(dims, w, h, d, c),
                     ct);
                 if (values != null && values.Length == EmbeddingSize)
                     return values;
@@ -1351,7 +1351,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
         var inputCmd = _imageRepro.RentTempArray(cmd, targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
         var outputCmd = default(ComputeTexture);
-        var outputLogicalShape = default(NcnnRepro.BufferShape);
+        var outputLogicalShape = default(NcnnGraphSession.BufferShape);
         RenderTexture outputReadbackRt = null;
         try
         {
@@ -1359,7 +1359,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             outputCmd = _imageRepro.ForwardPack4(
                 cmd,
                 inputCmd,
-                new NcnnRepro.BufferShape(3, targetSize, targetSize, 1, 3),
+                new NcnnGraphSession.BufferShape(3, targetSize, targetSize, 1, 3),
                 out outputLogicalShape,
                 InputBlobName);
             if (outputCmd == null)
@@ -1474,9 +1474,9 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { [InputBlobName] = immediateInput },
                 null,
                 null,
-                new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                 {
-                    [InputBlobName] = new NcnnRepro.BufferShape(3, targetSize, targetSize, 1, 3)
+                    [InputBlobName] = new NcnnGraphSession.BufferShape(3, targetSize, targetSize, 1, 3)
                 },
                 probeBlob))
             {
@@ -1490,7 +1490,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 commandOutput = _imageRepro.ForwardPack4(
                     commandBuffer,
                     commandInput,
-                    new NcnnRepro.BufferShape(3, targetSize, targetSize, 1, 3),
+                    new NcnnGraphSession.BufferShape(3, targetSize, targetSize, 1, 3),
                     out var commandShape,
                     InputBlobName,
                     null,
@@ -1573,7 +1573,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
     // The logical vector can be a scalar LinearMat or width-packed into a single half4 slice.
     // Always decode through its contract rather than assuming texture.width == logical width.
-    private static float[] ReadTextureLogicalValues(RenderTexture texture, NcnnRepro.BufferShape logicalShape, CancellationToken ct)
+    private static float[] ReadTextureLogicalValues(RenderTexture texture, NcnnGraphSession.BufferShape logicalShape, CancellationToken ct)
     {
         if (texture == null)
             return null;
@@ -1731,7 +1731,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         return merged.ToArray();
     }
 
-    private bool ShouldUseTextureReadbackForImageOutput(NcnnRepro.InferResult infer)
+    private bool ShouldUseTextureReadbackForImageOutput(NcnnGraphSession.InferResult infer)
     {
         if (infer == null)
             return false;

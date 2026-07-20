@@ -8,8 +8,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using AIImage.Inference.Core;
-using NcnnCompute;
+using Aexis;
+using Aexis.Ncnn;
 using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -184,10 +184,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro _textRepro;
-    private NcnnRepro _unetRepro;
-    private NcnnRepro _vaeRepro;
-    private NcnnRepro _vaeEncoderRepro;
+    private NcnnGraphSession _textRepro;
+    private NcnnGraphSession _unetRepro;
+    private NcnnGraphSession _vaeRepro;
+    private NcnnGraphSession _vaeEncoderRepro;
     private ClipBpeTokenizer _tokenizer;
     private ResolvedPaths? _resolvedPaths;
     private string _loadedModelKey;
@@ -357,7 +357,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     {
         public string name;
         public RenderTexture texture;
-        public NcnnRepro.BufferShape shape;
+        public NcnnGraphSession.BufferShape shape;
     }
 
     public string LastDumpDir => _lastDumpDir;
@@ -1011,7 +1011,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         texture = null;
     }
 
-    private static void ReleaseTempArrayFallback(ref RenderTexture texture, NcnnRepro owner, string label)
+    private static void ReleaseTempArrayFallback(ref RenderTexture texture, NcnnGraphSession owner, string label)
     {
         if (texture == null)
             return;
@@ -1158,7 +1158,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void ApplyCommonOptions(NcnnRepro repro)
+    private void ApplyCommonOptions(NcnnGraphSession repro)
     {
         if (repro == null)
             return;
@@ -1197,7 +1197,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return ResolveBoolEnv("AIIMAGE_SD_ATTENTION_PACK4", enableAttentionMatMulPack4Specializations);
     }
 
-    private void ApplySpatialModelOptions(NcnnRepro repro)
+    private void ApplySpatialModelOptions(NcnnGraphSession repro)
     {
         if (repro == null)
             return;
@@ -1447,7 +1447,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         _vaeRepro = null;
     }
 
-    private void AttachDebugLog(NcnnRepro repro, string key)
+    private void AttachDebugLog(NcnnGraphSession repro, string key)
     {
         if (repro == null)
             return;
@@ -1775,7 +1775,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         _loadedModelKey = modelKey;
     }
 
-    private async UniTask LoadModelAsync(NcnnRepro repro, string paramPath, string binPath, string label, CancellationToken ct)
+    private async UniTask LoadModelAsync(NcnnGraphSession repro, string paramPath, string binPath, string label, CancellationToken ct)
     {
         if (repro == null)
             throw new ArgumentNullException(nameof(repro));
@@ -2318,7 +2318,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private RenderTexture CreateLatentNoisePack4(NcnnRepro owner, INormalRng rng, bool temporary = true, string label = null)
+    private RenderTexture CreateLatentNoisePack4(NcnnGraphSession owner, INormalRng rng, bool temporary = true, string label = null)
     {
         if (owner == null)
             throw new ArgumentNullException(nameof(owner));
@@ -2369,7 +2369,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     }
 
     private static RenderTexture CreateTensorPack4Texture(
-        NcnnRepro owner,
+        NcnnGraphSession owner,
         float[] data,
         int dims,
         int width,
@@ -2566,7 +2566,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     }
 
     private static RenderTexture CreatePersistentTensorTexture(
-        NcnnRepro owner,
+        NcnnGraphSession owner,
         int width,
         int height,
         int sliceCount,
@@ -2821,11 +2821,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 { UnetTimestepBlobName, condTimestepCmd },
                 { UnetTextBlobName, condPromptCmd }
             };
-            var condShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            var condShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
             {
-                { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
-                { UnetTimestepBlobName, new NcnnRepro.BufferShape(1, 1, 1, 1, 1) },
-                { UnetTextBlobName, new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
+                { UnetInputBlobName, new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
+                { UnetTimestepBlobName, new NcnnGraphSession.BufferShape(1, 1, 1, 1, 1) },
+                { UnetTextBlobName, new NcnnGraphSession.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
             };
             condOutCmd = _unetRepro.ForwardPack4(
                 cmd,
@@ -2844,11 +2844,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 { UnetTimestepBlobName, uncondTimestepCmd },
                 { UnetTextBlobName, uncondPromptCmd }
             };
-            var uncondShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            var uncondShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
             {
-                { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
-                { UnetTimestepBlobName, new NcnnRepro.BufferShape(1, 1, 1, 1, 1) },
-                { UnetTextBlobName, new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
+                { UnetInputBlobName, new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
+                { UnetTimestepBlobName, new NcnnGraphSession.BufferShape(1, 1, 1, 1, 1) },
+                { UnetTextBlobName, new NcnnGraphSession.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
             };
             uncondOutCmd = _unetRepro.ForwardPack4(
                 cmd,
@@ -2946,7 +2946,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (texture == null)
             throw new ArgumentNullException(nameof(texture));
         if (_unetRepro == null)
-            throw new InvalidOperationException("UNet command-buffer texture binding requires an NcnnRepro owner.");
+            throw new InvalidOperationException("UNet command-buffer texture binding requires an NcnnGraphSession owner.");
 
         var bound = texture.dimension == TextureDimension.Tex2D
             ? _unetRepro.RentTempMat(cmd, texture.width, texture.height, texture.format)
@@ -2973,7 +2973,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             cmd.CopyTexture(source, slice, 0, destination.nameID, slice, 0);
     }
 
-    private static RenderTexture CloneTensorTexture(NcnnRepro owner, RenderTexture source, string label)
+    private static RenderTexture CloneTensorTexture(NcnnGraphSession owner, RenderTexture source, string label)
     {
         if (owner == null)
             throw new ArgumentNullException(nameof(owner));
@@ -2988,7 +2988,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return clone;
     }
 
-    private static RenderTexture CloneTensorTexturePersistent(NcnnRepro owner, RenderTexture source, string label)
+    private static RenderTexture CloneTensorTexturePersistent(NcnnGraphSession owner, RenderTexture source, string label)
     {
         if (owner == null)
             throw new ArgumentNullException(nameof(owner));
@@ -3114,9 +3114,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         {
             { UnetInputBlobName, inputTex }
         };
-        var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+        var textureInputShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
         {
-            { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) }
+            { UnetInputBlobName, new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) }
         };
         if (captureCache != null)
         {
@@ -3198,11 +3198,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             { UnetTimestepBlobName, timestepTex },
             { UnetTextBlobName, textTex }
         };
-        var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+        var textureInputShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
         {
-            { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
-            { UnetTimestepBlobName, new NcnnRepro.BufferShape(1, 1, 1, 1, 1) },
-            { UnetTextBlobName, new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
+            { UnetInputBlobName, new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) },
+            { UnetTimestepBlobName, new NcnnGraphSession.BufferShape(1, 1, 1, 1, 1) },
+            { UnetTextBlobName, new NcnnGraphSession.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1) }
         };
         if (captureCache != null)
         {
@@ -3323,14 +3323,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         {
             { UnetInputBlobName, inputTex }
         };
-        var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+        var textureInputShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
         {
-            { UnetInputBlobName, new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) }
+            { UnetInputBlobName, new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels) }
         };
         if (textTex != null)
         {
             textureInputs[UnetTextBlobName] = textTex;
-            textureInputShapes[UnetTextBlobName] = new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
+            textureInputShapes[UnetTextBlobName] = new NcnnGraphSession.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
         }
         if (captureCache != null)
         {
@@ -3425,7 +3425,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private bool TryCaptureOfficialUnetCache(NcnnRepro.InferResult infer, List<UnetCacheBlob> dst)
+    private bool TryCaptureOfficialUnetCache(NcnnGraphSession.InferResult infer, List<UnetCacheBlob> dst)
     {
         if (infer == null || dst == null)
             return false;
@@ -3448,7 +3448,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 {
                     name = name,
                     texture = tex,
-                    shape = new NcnnRepro.BufferShape(dims, w, h, d, c)
+                    shape = new NcnnGraphSession.BufferShape(dims, w, h, d, c)
                 });
             }
 
@@ -3624,11 +3624,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return result;
     }
 
-    private Dictionary<string, NcnnRepro.BufferShape> BuildReplayTextureInputShapes(
+    private Dictionary<string, NcnnGraphSession.BufferShape> BuildReplayTextureInputShapes(
         Dictionary<string, RenderTexture> textureInputs,
         Dictionary<string, ReplayBlobInput> inputs)
     {
-        var result = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal);
+        var result = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal);
         if (inputs != null)
         {
             foreach (var kv in inputs)
@@ -3645,7 +3645,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             {
                 if (result.ContainsKey(kv.Key))
                     continue;
-                result[kv.Key] = new NcnnRepro.BufferShape(3, kv.Value.width, kv.Value.height, 1, Mathf.Max(1, kv.Value.volumeDepth) * 4);
+                result[kv.Key] = new NcnnGraphSession.BufferShape(3, kv.Value.width, kv.Value.height, 1, Mathf.Max(1, kv.Value.volumeDepth) * 4);
             }
         }
 
@@ -3655,7 +3655,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
     private sealed class ReplayBlobInput
     {
         public float[] data;
-        public NcnnRepro.BufferShape shape;
+        public NcnnGraphSession.BufferShape shape;
         public string sourceBlobName;
         public string sourcePath;
     }
@@ -3712,7 +3712,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         string referenceDir,
         string promptKind,
         out float[] data,
-        out NcnnRepro.BufferShape shape,
+        out NcnnGraphSession.BufferShape shape,
         out string sourceBlobName,
         out string sourcePath)
     {
@@ -3783,7 +3783,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return current;
     }
 
-    private NcnnRepro.BufferShape ResolveReplayBlobShape(string blobName, int valueCount)
+    private NcnnGraphSession.BufferShape ResolveReplayBlobShape(string blobName, int valueCount)
     {
         if (TryResolveReplayBlobShapeFromModelGraph(blobName, out var graphShape))
         {
@@ -3796,32 +3796,32 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return knownShape;
 
         if (string.Equals(blobName, UnetInputBlobName, StringComparison.Ordinal))
-            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels);
+            return new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels);
         if (string.Equals(blobName, UnetTextBlobName, StringComparison.Ordinal))
-            return new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
+            return new NcnnGraphSession.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
         if (string.Equals(blobName, UnetTimestepBlobName, StringComparison.Ordinal))
-            return new NcnnRepro.BufferShape(1, 1, 1, 1, 1);
+            return new NcnnGraphSession.BufferShape(1, 1, 1, 1, 1);
         if (valueCount == LatentSize * LatentSize * LatentChannels)
-            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, LatentChannels);
+            return new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, LatentChannels);
         if (valueCount == LatentSize * LatentSize)
-            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, 1);
+            return new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, 1);
         if ((valueCount % (LatentSize * LatentSize)) == 0)
-            return new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, valueCount / (LatentSize * LatentSize));
+            return new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, valueCount / (LatentSize * LatentSize));
         if (valueCount == TokenCount * TextEmbeddingWidth)
-            return new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
+            return new NcnnGraphSession.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1);
         if (valueCount == 1)
-            return new NcnnRepro.BufferShape(1, 1, 1, 1, 1);
+            return new NcnnGraphSession.BufferShape(1, 1, 1, 1, 1);
 
         throw new InvalidOperationException("unable to infer replay blob shape for " + blobName + " | count=" + valueCount.ToString(CultureInfo.InvariantCulture));
     }
 
-    private static bool TryResolveKnownSdReplayBlobShape(string blobName, int valueCount, out NcnnRepro.BufferShape shape)
+    private static bool TryResolveKnownSdReplayBlobShape(string blobName, int valueCount, out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         if (string.IsNullOrWhiteSpace(blobName) || valueCount <= 0)
             return false;
 
-        static bool TryMatch(string candidate, string blobName, int valueCount, NcnnRepro.BufferShape candidateShape, out NcnnRepro.BufferShape resolved)
+        static bool TryMatch(string candidate, string blobName, int valueCount, NcnnGraphSession.BufferShape candidateShape, out NcnnGraphSession.BufferShape resolved)
         {
             resolved = default;
             if (!string.Equals(blobName, candidate, StringComparison.Ordinal))
@@ -3835,10 +3835,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return true;
         }
 
-        if (TryMatch("197", blobName, valueCount, new NcnnRepro.BufferShape(3, 320, 64, 1, 64), out shape))
+        if (TryMatch("197", blobName, valueCount, new NcnnGraphSession.BufferShape(3, 320, 64, 1, 64), out shape))
             return true;
 
-        var shape2d320x4096 = new NcnnRepro.BufferShape(2, 320, 4096, 1, 1);
+        var shape2d320x4096 = new NcnnGraphSession.BufferShape(2, 320, 4096, 1, 1);
         if (TryMatch("198", blobName, valueCount, shape2d320x4096, out shape)
             || TryMatch("199", blobName, valueCount, shape2d320x4096, out shape)
             || TryMatch("200", blobName, valueCount, shape2d320x4096, out shape)
@@ -3857,7 +3857,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return true;
         }
 
-        var shape3d40x4096x8 = new NcnnRepro.BufferShape(3, 40, 4096, 1, 8);
+        var shape3d40x4096x8 = new NcnnGraphSession.BufferShape(3, 40, 4096, 1, 8);
         if (TryMatch("209", blobName, valueCount, shape3d40x4096x8, out shape)
             || TryMatch("211", blobName, valueCount, shape3d40x4096x8, out shape)
             || TryMatch("213", blobName, valueCount, shape3d40x4096x8, out shape)
@@ -3866,7 +3866,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return true;
         }
 
-        var shape3d40x8x4096 = new NcnnRepro.BufferShape(3, 40, 8, 1, 4096);
+        var shape3d40x8x4096 = new NcnnGraphSession.BufferShape(3, 40, 8, 1, 4096);
         if (TryMatch("208", blobName, valueCount, shape3d40x8x4096, out shape)
             || TryMatch("210", blobName, valueCount, shape3d40x8x4096, out shape)
             || TryMatch("212", blobName, valueCount, shape3d40x8x4096, out shape)
@@ -3878,18 +3878,18 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return false;
     }
 
-    private bool TryResolveReplayBlobShapeFromModelGraph(string blobName, out NcnnRepro.BufferShape shape)
+    private bool TryResolveReplayBlobShapeFromModelGraph(string blobName, out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         var model = _unetRepro?.Model;
         if (model?.layers == null || model.layers.Count == 0 || string.IsNullOrWhiteSpace(blobName))
             return false;
 
-        var known = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+        var known = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
         {
-            [UnetInputBlobName] = new NcnnRepro.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels),
-            [UnetTextBlobName] = new NcnnRepro.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1),
-            [UnetTimestepBlobName] = new NcnnRepro.BufferShape(1, 1, 1, 1, 1)
+            [UnetInputBlobName] = new NcnnGraphSession.BufferShape(3, LatentSize, LatentSize, 1, UnetInputChannels),
+            [UnetTextBlobName] = new NcnnGraphSession.BufferShape(2, TextEmbeddingWidth, TokenCount, 1, 1),
+            [UnetTimestepBlobName] = new NcnnGraphSession.BufferShape(1, 1, 1, 1, 1)
         };
 
         for (var li = 0; li < model.layers.Count; li++)
@@ -3917,11 +3917,11 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return known.TryGetValue(blobName, out shape);
     }
 
-    private static List<NcnnRepro.BufferShape> BuildReplayBottomShapes(
+    private static List<NcnnGraphSession.BufferShape> BuildReplayBottomShapes(
         NcnnParamModel.Layer layer,
-        Dictionary<string, NcnnRepro.BufferShape> known)
+        Dictionary<string, NcnnGraphSession.BufferShape> known)
     {
-        var result = new List<NcnnRepro.BufferShape>();
+        var result = new List<NcnnGraphSession.BufferShape>();
         var bottomNames = layer?.bottomNames;
         if (bottomNames == null || known == null)
             return result;
@@ -3940,8 +3940,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private static bool TryResolveReplayLayerOutputShapes(
         NcnnParamModel.Layer layer,
-        IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
-        out List<NcnnRepro.BufferShape> topShapes)
+        IReadOnlyList<NcnnGraphSession.BufferShape> bottomShapes,
+        out List<NcnnGraphSession.BufferShape> topShapes)
     {
         topShapes = null;
         if (layer == null || layer.topNames == null || layer.topNames.Length == 0)
@@ -3965,7 +3965,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 return true;
 
             case var t when t == NcnnLayerTypes.PnnxExpression:
-                topShapes = RepeatShape(new NcnnRepro.BufferShape(1, 1, 1, 1, 1), layer.topNames.Length);
+                topShapes = RepeatShape(new NcnnGraphSession.BufferShape(1, 1, 1, 1, 1), layer.topNames.Length);
                 return true;
 
             case var t when t == NcnnLayerTypes.Convolution:
@@ -4005,7 +4005,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             case var t when t == NcnnLayerTypes.Reshape:
                 if (bottomShapes == null || bottomShapes.Count < 1)
                     return false;
-                var reshapeShape = NcnnRepro.ResolveReshapeShape(bottomShapes[0], layer, bottomShapes);
+                var reshapeShape = NcnnGraphSession.ResolveReshapeShape(bottomShapes[0], layer, bottomShapes);
                 topShapes = RepeatShape(reshapeShape, layer.topNames.Length);
                 return true;
 
@@ -4013,8 +4013,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 if (bottomShapes == null || bottomShapes.Count < 1)
                     return false;
                 var dims = Mathf.Clamp(bottomShapes[0].dims, 2, 4);
-                var axes = NcnnRepro.ResolvePermuteAxes(dims, layer.GetInt(0, 0), layer.name);
-                var permuteShape = NcnnRepro.ResolvePermuteShape(bottomShapes[0], dims, axes);
+                var axes = NcnnGraphSession.ResolvePermuteAxes(dims, layer.GetInt(0, 0), layer.name);
+                var permuteShape = NcnnGraphSession.ResolvePermuteShape(bottomShapes[0], dims, axes);
                 topShapes = RepeatShape(permuteShape, layer.topNames.Length);
                 return true;
 
@@ -4023,7 +4023,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     return false;
                 var queryShape = bottomShapes[0];
                 var valueShape = bottomShapes[2];
-                topShapes = RepeatShape(new NcnnRepro.BufferShape(3, valueShape.w, queryShape.h, 1, queryShape.c), layer.topNames.Length);
+                topShapes = RepeatShape(new NcnnGraphSession.BufferShape(3, valueShape.w, queryShape.h, 1, queryShape.c), layer.topNames.Length);
                 return true;
 
             case var t when t == NcnnLayerTypes.Slice:
@@ -4068,9 +4068,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static List<NcnnRepro.BufferShape> RepeatShape(NcnnRepro.BufferShape shape, int count)
+    private static List<NcnnGraphSession.BufferShape> RepeatShape(NcnnGraphSession.BufferShape shape, int count)
     {
-        var result = new List<NcnnRepro.BufferShape>(Mathf.Max(1, count));
+        var result = new List<NcnnGraphSession.BufferShape>(Mathf.Max(1, count));
         for (var i = 0; i < count; i++)
             result.Add(shape);
         return result;
@@ -4078,8 +4078,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private static bool TryResolveReplayConvOutputShape(
         NcnnParamModel.Layer layer,
-        NcnnRepro.BufferShape srcShape,
-        out NcnnRepro.BufferShape shape)
+        NcnnGraphSession.BufferShape srcShape,
+        out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         if (srcShape.dims < 3)
@@ -4099,13 +4099,13 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         var outW = Mathf.Max(1, ((srcShape.w + padLeft + padRight - (dilationW * (kernelW - 1) + 1)) / strideW) + 1);
         var outH = Mathf.Max(1, ((srcShape.h + padTop + padBottom - (dilationH * (kernelH - 1) + 1)) / strideH) + 1);
-        shape = new NcnnRepro.BufferShape(3, outW, outH, 1, outC);
+        shape = new NcnnGraphSession.BufferShape(3, outW, outH, 1, outC);
         return true;
     }
 
-    private static NcnnRepro.BufferShape ResolveReplayBinaryOutputShape(
-        NcnnRepro.BufferShape a,
-        NcnnRepro.BufferShape b)
+    private static NcnnGraphSession.BufferShape ResolveReplayBinaryOutputShape(
+        NcnnGraphSession.BufferShape a,
+        NcnnGraphSession.BufferShape b)
     {
         var aCount = a.w * a.h * a.d * a.c;
         var bCount = b.w * b.h * b.d * b.c;
@@ -4116,8 +4116,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private static bool TryResolveReplayInnerProductOutputShape(
         NcnnParamModel.Layer layer,
-        NcnnRepro.BufferShape srcShape,
-        out NcnnRepro.BufferShape shape)
+        NcnnGraphSession.BufferShape srcShape,
+        out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         var outFeatures = Mathf.Max(1, layer.GetInt(0, 0));
@@ -4126,19 +4126,19 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
         if (srcShape.dims <= 1)
         {
-            shape = new NcnnRepro.BufferShape(1, outFeatures, 1, 1, 1);
+            shape = new NcnnGraphSession.BufferShape(1, outFeatures, 1, 1, 1);
             return true;
         }
 
         var rows = Mathf.Max(1, srcShape.h);
-        shape = new NcnnRepro.BufferShape(2, outFeatures, rows, 1, 1);
+        shape = new NcnnGraphSession.BufferShape(2, outFeatures, rows, 1, 1);
         return true;
     }
 
     private static bool TryResolveReplayGemmOutputShape(
         NcnnParamModel.Layer layer,
-        NcnnRepro.BufferShape srcShape,
-        out NcnnRepro.BufferShape shape)
+        NcnnGraphSession.BufferShape srcShape,
+        out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         var n = Mathf.Max(1, layer.GetInt(8, 0));
@@ -4148,18 +4148,18 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         var m = srcShape.dims == 1 ? 1 : Mathf.Max(1, srcShape.h);
         if (srcShape.dims == 1)
         {
-            shape = new NcnnRepro.BufferShape(1, n, 1, 1, 1);
+            shape = new NcnnGraphSession.BufferShape(1, n, 1, 1, 1);
             return true;
         }
 
-        shape = new NcnnRepro.BufferShape(2, n, m, 1, 1);
+        shape = new NcnnGraphSession.BufferShape(2, n, m, 1, 1);
         return true;
     }
 
     private static bool TryResolveReplaySliceOutputShapes(
         NcnnParamModel.Layer layer,
-        NcnnRepro.BufferShape srcShape,
-        out List<NcnnRepro.BufferShape> shapes)
+        NcnnGraphSession.BufferShape srcShape,
+        out List<NcnnGraphSession.BufferShape> shapes)
     {
         shapes = null;
         if (layer == null || layer.topNames == null || layer.topNames.Length == 0)
@@ -4169,10 +4169,10 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         var ncnnAxis = layer.GetInt(1, 0);
         if (ncnnAxis < 0)
             ncnnAxis += srcShape.dims;
-        var axis = NcnnRepro.MapNcnnAxisToTensorAxis(srcShape.dims, ncnnAxis);
-        var axisSize = NcnnRepro.GetAxisSize(srcShape.dims, srcShape.w, srcShape.h, srcShape.d, srcShape.c, axis);
+        var axis = NcnnGraphSession.MapNcnnAxisToTensorAxis(srcShape.dims, ncnnAxis);
+        var axisSize = NcnnGraphSession.GetAxisSize(srcShape.dims, srcShape.w, srcShape.h, srcShape.d, srcShape.c, axis);
 
-        shapes = new List<NcnnRepro.BufferShape>(layer.topNames.Length);
+        shapes = new List<NcnnGraphSession.BufferShape>(layer.topNames.Length);
         var begin = 0;
         for (var i = 0; i < layer.topNames.Length; i++)
         {
@@ -4199,7 +4199,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                 case 3: c = size; break;
             }
 
-            shapes.Add(new NcnnRepro.BufferShape(srcShape.dims, Mathf.Max(1, w), Mathf.Max(1, h), Mathf.Max(1, d), Mathf.Max(1, c)));
+            shapes.Add(new NcnnGraphSession.BufferShape(srcShape.dims, Mathf.Max(1, w), Mathf.Max(1, h), Mathf.Max(1, d), Mathf.Max(1, c)));
             begin = end;
         }
 
@@ -4208,15 +4208,15 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 
     private static bool TryResolveReplayConcatOutputShape(
         NcnnParamModel.Layer layer,
-        IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
-        out NcnnRepro.BufferShape shape)
+        IReadOnlyList<NcnnGraphSession.BufferShape> bottomShapes,
+        out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         if (bottomShapes == null || bottomShapes.Count == 0)
             return false;
 
         var first = bottomShapes[0];
-        var axis = NcnnRepro.MapNcnnAxisToTensorAxis(first.dims, layer.GetInt(0, 0));
+        var axis = NcnnGraphSession.MapNcnnAxisToTensorAxis(first.dims, layer.GetInt(0, 0));
         var w = first.w;
         var h = first.h;
         var d = first.d;
@@ -4236,21 +4236,21 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             }
         }
 
-        shape = new NcnnRepro.BufferShape(first.dims, w, h, d, c);
+        shape = new NcnnGraphSession.BufferShape(first.dims, w, h, d, c);
         return true;
     }
 
     private static bool TryResolveReplayTileOutputShape(
         NcnnParamModel.Layer layer,
-        NcnnRepro.BufferShape srcShape,
-        out NcnnRepro.BufferShape shape)
+        NcnnGraphSession.BufferShape srcShape,
+        out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         var axis = layer.GetInt(0, 0);
         var tiles = Mathf.Max(1, layer.GetInt(1, 1));
         if (axis < 0)
             axis += srcShape.dims;
-        var tensorAxis = NcnnRepro.MapNcnnAxisToTensorAxis(srcShape.dims, axis);
+        var tensorAxis = NcnnGraphSession.MapNcnnAxisToTensorAxis(srcShape.dims, axis);
         var w = srcShape.w;
         var h = srcShape.h;
         var d = srcShape.d;
@@ -4266,14 +4266,14 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             case 3: c *= tiles; break;
         }
 
-        shape = new NcnnRepro.BufferShape(srcShape.dims, w, h, d, c);
+        shape = new NcnnGraphSession.BufferShape(srcShape.dims, w, h, d, c);
         return true;
     }
 
     private static bool TryResolveReplayExpandDimsOutputShape(
         NcnnParamModel.Layer layer,
-        NcnnRepro.BufferShape srcShape,
-        out NcnnRepro.BufferShape shape)
+        NcnnGraphSession.BufferShape srcShape,
+        out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         var axes = layer.GetInts(-23303, null);
@@ -4297,21 +4297,21 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
 
         if (dims.Count == 1)
-            shape = new NcnnRepro.BufferShape(1, dims[0], 1, 1, 1);
+            shape = new NcnnGraphSession.BufferShape(1, dims[0], 1, 1, 1);
         else if (dims.Count == 2)
-            shape = new NcnnRepro.BufferShape(2, dims[1], dims[0], 1, 1);
+            shape = new NcnnGraphSession.BufferShape(2, dims[1], dims[0], 1, 1);
         else if (dims.Count == 3)
-            shape = new NcnnRepro.BufferShape(3, dims[2], dims[1], 1, dims[0]);
+            shape = new NcnnGraphSession.BufferShape(3, dims[2], dims[1], 1, dims[0]);
         else
-            shape = new NcnnRepro.BufferShape(4, dims[3], dims[2], dims[1], dims[0]);
+            shape = new NcnnGraphSession.BufferShape(4, dims[3], dims[2], dims[1], dims[0]);
 
         return true;
     }
 
     private static bool TryResolveReplayInterpOutputShape(
         NcnnParamModel.Layer layer,
-        IReadOnlyList<NcnnRepro.BufferShape> bottomShapes,
-        out NcnnRepro.BufferShape shape)
+        IReadOnlyList<NcnnGraphSession.BufferShape> bottomShapes,
+        out NcnnGraphSession.BufferShape shape)
     {
         shape = default;
         if (bottomShapes == null || bottomShapes.Count == 0)
@@ -4320,7 +4320,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         var srcShape = bottomShapes[0];
         var outW = Mathf.Max(1, Mathf.RoundToInt(srcShape.w * layer.GetFloat(1, 1f)));
         var outH = Mathf.Max(1, Mathf.RoundToInt(srcShape.h * layer.GetFloat(2, 1f)));
-        shape = new NcnnRepro.BufferShape(srcShape.dims, outW, outH, srcShape.d, srcShape.c);
+        shape = new NcnnGraphSession.BufferShape(srcShape.dims, outW, outH, srcShape.d, srcShape.c);
         return true;
     }
 
@@ -4330,7 +4330,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         string promptKind,
         bool preferUnityPrefix,
         out float[] data,
-        out NcnnRepro.BufferShape shape)
+        out NcnnGraphSession.BufferShape shape)
     {
         data = null;
         shape = default;
@@ -4373,7 +4373,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return false;
     }
 
-    private NcnnRepro.BufferShape ResolveReplayBlobShape(string blobName, int valueCount, DebugMatDump dump)
+    private NcnnGraphSession.BufferShape ResolveReplayBlobShape(string blobName, int valueCount, DebugMatDump dump)
     {
         if (dump != null && dump.hasHeader)
         {
@@ -4383,12 +4383,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             var d = Mathf.Max(1, dump.d);
             var logicalC = Mathf.Max(1, dump.c) * Mathf.Max(1, dump.elempack);
             if (dims == 2)
-                return new NcnnRepro.BufferShape(2, w, h, 1, 1);
+                return new NcnnGraphSession.BufferShape(2, w, h, 1, 1);
             if (dims == 3)
-                return new NcnnRepro.BufferShape(3, w, h, 1, logicalC);
+                return new NcnnGraphSession.BufferShape(3, w, h, 1, logicalC);
             if (dims == 4)
-                return new NcnnRepro.BufferShape(4, w, h, d, logicalC);
-            return new NcnnRepro.BufferShape(1, w * Mathf.Max(1, dump.elempack), 1, 1, 1);
+                return new NcnnGraphSession.BufferShape(4, w, h, d, logicalC);
+            return new NcnnGraphSession.BufferShape(1, w * Mathf.Max(1, dump.elempack), 1, 1, 1);
         }
 
         return ResolveReplayBlobShape(blobName, valueCount);
@@ -4673,7 +4673,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void DumpLayerRuntimeProfile(NcnnRepro repro, string label)
+    private void DumpLayerRuntimeProfile(NcnnGraphSession repro, string label)
     {
         if (repro == null || !repro.LayerRuntimeProfileEnabled)
             return;
@@ -5973,7 +5973,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return result.Count > 0 ? result.ToArray() : Array.Empty<string>();
     }
 
-    private void TryDumpAnyBlob(NcnnRepro.InferResult infer, string blobName, string path)
+    private void TryDumpAnyBlob(NcnnGraphSession.InferResult infer, string blobName, string path)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;
@@ -6031,7 +6031,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static void DumpInferTextureContractSafe(NcnnRepro.InferResult infer, string blobName, string path)
+    private static void DumpInferTextureContractSafe(NcnnGraphSession.InferResult infer, string blobName, string path)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;
@@ -6091,7 +6091,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void DumpInferExistingTextureDataRawSafe(NcnnRepro.InferResult infer, string blobName, string path)
+    private void DumpInferExistingTextureDataRawSafe(NcnnGraphSession.InferResult infer, string blobName, string path)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;
@@ -6134,7 +6134,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static bool TryReadExistingInferBufferData(NcnnRepro.InferResult infer, string blobName, out float[] data)
+    private static bool TryReadExistingInferBufferData(NcnnGraphSession.InferResult infer, string blobName, out float[] data)
     {
 #if UNITY_EDITOR || AIIMAGE_INFERENCE_DEBUG_ORACLE
         data = null;
@@ -6169,7 +6169,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 #endif
     }
 
-    private NcnnRepro CreateSession(bool diffusionStatePrecisionGuard = false)
+    private NcnnGraphSession CreateSession(bool diffusionStatePrecisionGuard = false)
     {
         if (!diffusionStatePrecisionGuard
             || !useFp32DiffusionStateActivationsForFp16Sampling
@@ -6223,9 +6223,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             {
                 [VaeEncoderInputBlobName] = inputPack4
             };
-            var textureShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            var textureShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
             {
-                [VaeEncoderInputBlobName] = new NcnnRepro.BufferShape(3, inputPack4.width, inputPack4.height, 1, 3)
+                [VaeEncoderInputBlobName] = new NcnnGraphSession.BufferShape(3, inputPack4.width, inputPack4.height, 1, 3)
             };
             using var infer = _vaeEncoderRepro.InferWithMultiInputs(
                 textureInputs,
@@ -6242,7 +6242,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private float[] ExtractBlobDataByLogicalShape(NcnnRepro.InferResult infer, string blobName)
+    private float[] ExtractBlobDataByLogicalShape(NcnnGraphSession.InferResult infer, string blobName)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName))
             return null;
@@ -6586,7 +6586,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         return raw;
     }
 
-    private bool TryDumpTextureBlobByLogicalShape(NcnnRepro.InferResult infer, string blobName, string path)
+    private bool TryDumpTextureBlobByLogicalShape(NcnnGraphSession.InferResult infer, string blobName, string path)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return false;
@@ -6661,7 +6661,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static void LogLoadProgress(string label, NcnnRepro.LoadProgress progress)
+    private static void LogLoadProgress(string label, NcnnGraphSession.LoadProgress progress)
     {
         if (string.IsNullOrWhiteSpace(label))
             label = "model";
@@ -6687,7 +6687,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         UnityEngine.Debug.Log("[SDInpaint] " + label + " load stage=" + progress.stage);
     }
 
-    private void LogLoadProfile(string label, NcnnRepro.ModelLoadProfile profile)
+    private void LogLoadProfile(string label, NcnnGraphSession.ModelLoadProfile profile)
     {
         if (profile == null)
             return;

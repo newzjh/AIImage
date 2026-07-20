@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -153,8 +153,8 @@ public sealed class NcnnStrictTextureExecutionPlanTests
     public void ProductionRunners_KeepCommandBufferStrictPlanningAndDoNotEnableDebugOracle()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var repro = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute", "NcnnRepro.cs"));
-        var factory = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", "NcnnLayerFactoryRepro.cs"));
+        var repro = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "NcnnGraphSession.cs"));
+        var factory = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "NcnnLayerFactoryRepro.cs"));
         var overrides = Directory.EnumerateFiles(Path.Combine(root, "Assets", "Scripts"), "*.cs", SearchOption.AllDirectories)
             .Where(path => File.ReadAllText(path).Contains("ExecutionMode = NcnnInferenceExecutionMode.DebugOracle"))
             .ToArray();

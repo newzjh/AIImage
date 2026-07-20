@@ -8,7 +8,7 @@ using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using ICSharpCode.SharpZipLib.GZip;
-using NcnnCompute;
+using Aexis.Ncnn;
 using Newtonsoft.Json.Linq;
 using Unity.Collections;
 using UnityEngine;
@@ -226,7 +226,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro _repro;
+    private NcnnGraphSession _repro;
     private string _loadedModelKey;
     private bool _hasAppliedPrecisionMode;
     private NcnnPrecisionMode _appliedPrecisionMode;
@@ -235,9 +235,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
     private readonly List<string> _debugLines = new List<string>();
     private readonly List<string> _resourceSnapshotLines = new List<string>();
     private readonly Dictionary<string, long> _timingMs = new Dictionary<string, long>(StringComparer.Ordinal);
-    private NcnnRepro.LayerRuntimeProfile _lastLayerRuntimeProfile;
+    private NcnnGraphSession.LayerRuntimeProfile _lastLayerRuntimeProfile;
     private string _lastLayerRuntimeProfileText;
-    private NcnnRepro.TempResourceStatsSnapshot _lastInferenceTempResourceStats;
+    private NcnnGraphSession.TempResourceStatsSnapshot _lastInferenceTempResourceStats;
     private string _lastPathMode = string.Empty;
     private int _flushedDebugLineCount;
     private bool _loggedPatchInputTextureRoundtrip;
@@ -1122,7 +1122,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         public string featureBlobName;
         public int featureChannels;
         public int outputChannels;
-        public NcnnRepro.ConvPack conv;
+        public NcnnGraphSession.ConvPack conv;
         public bool hasRawWeights;
     }
 
@@ -1185,15 +1185,15 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
     private readonly struct PatchInferHandle : IDisposable
     {
-        public readonly NcnnRepro.InferResult infer;
+        public readonly NcnnGraphSession.InferResult infer;
         public readonly RenderTexture outputTexture;
         public readonly InferOutputShape? outputShape;
-        private readonly NcnnRepro _repro;
+        private readonly NcnnGraphSession _repro;
         private readonly RenderTexture _ownedInputTexture;
         private readonly CommandBuffer _ownedCommandBuffer;
         private readonly RenderTexture _ownedOutputTexture;
 
-        public PatchInferHandle(NcnnRepro.InferResult infer, NcnnRepro repro, RenderTexture ownedInputTexture)
+        public PatchInferHandle(NcnnGraphSession.InferResult infer, NcnnGraphSession repro, RenderTexture ownedInputTexture)
         {
             this.infer = infer;
             outputTexture = null;
@@ -1204,7 +1204,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             _ownedOutputTexture = null;
         }
 
-        public PatchInferHandle(CommandBuffer ownedCommandBuffer, NcnnRepro repro, RenderTexture ownedInputTexture, RenderTexture ownedOutputTexture, InferOutputShape ownedOutputShape)
+        public PatchInferHandle(CommandBuffer ownedCommandBuffer, NcnnGraphSession repro, RenderTexture ownedInputTexture, RenderTexture ownedOutputTexture, InferOutputShape ownedOutputShape)
         {
             infer = null;
             outputTexture = ownedOutputTexture;
@@ -1247,7 +1247,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         _lastPathMode = pathMode ?? string.Empty;
         _lastLayerRuntimeProfile = _repro?.LastRuntimeProfile;
         _lastLayerRuntimeProfileText = _lastLayerRuntimeProfile != null
-            ? NcnnRepro.FormatLayerRuntimeProfile(_lastLayerRuntimeProfile, 256)
+            ? NcnnGraphSession.FormatLayerRuntimeProfile(_lastLayerRuntimeProfile, 256)
             : null;
     }
 
@@ -2061,7 +2061,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
 
         var packCount = Mathf.Max(1, Mathf.CeilToInt(resolved.inputChannels / 4f));
         var sliceCount = checked(Mathf.Max(1, depth) * packCount);
-        var inputPack4 = _repro.RentTempArray(width, height, sliceCount, NcnnRepro.ResolveTensorTextureFormat(4));
+        var inputPack4 = _repro.RentTempArray(width, height, sliceCount, NcnnGraphSession.ResolveTensorTextureFormat(4));
         try
         {
             _ops.FillPack4FromBufferCDHW(inputTensor.buffer, width, height, depth, resolved.inputChannels, inputPack4);
@@ -2069,13 +2069,13 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             if (useCommandBufferForMonaiPatches)
             {
                 var cmd = new CommandBuffer { name = "MonaiPatchCommandBuffer" };
-                var cmdInput = _repro.RentTempArray(cmd, width, height, sliceCount, NcnnRepro.ResolveTensorTextureFormat(4));
+                var cmdInput = _repro.RentTempArray(cmd, width, height, sliceCount, NcnnGraphSession.ResolveTensorTextureFormat(4));
                 CopyTextureArrayAllSlices(cmd, inputPack4, cmdInput.nameID, sliceCount);
                 var targetBlobName = string.IsNullOrWhiteSpace(stopAfterTopName) ? resolved.outputBlobName : stopAfterTopName;
                 var cmdOutput = _repro.ForwardPack4(
                     cmd,
                     cmdInput,
-                    new NcnnRepro.BufferShape(4, width, height, depth, resolved.inputChannels),
+                    new NcnnGraphSession.BufferShape(4, width, height, depth, resolved.inputChannels),
                     out var cmdOutputShape,
                     resolved.inputBlobName,
                     pinnedBlobNames,
@@ -2098,9 +2098,9 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
             {
                 { resolved.inputBlobName, inputPack4 }
             };
-            var textureInputShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+            var textureInputShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
             {
-                { resolved.inputBlobName, new NcnnRepro.BufferShape(4, width, height, depth, resolved.inputChannels) }
+                { resolved.inputBlobName, new NcnnGraphSession.BufferShape(4, width, height, depth, resolved.inputChannels) }
             };
             var infer = _repro.InferWithMultiInputs(
                 textureInputs,
@@ -2284,7 +2284,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         }
     }
 
-    private InferOutputShape GetInferOutputShape(NcnnRepro.InferResult infer, string blobName, string missingPrefix)
+    private InferOutputShape GetInferOutputShape(NcnnGraphSession.InferResult infer, string blobName, string missingPrefix)
     {
         if (infer == null)
             throw new ArgumentNullException(nameof(infer));
@@ -2308,7 +2308,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return GetInferOutputShape(inferHandle.infer, blobName, missingPrefix);
     }
 
-    private float[] ExtractInferOutputData(NcnnRepro.InferResult infer, string blobName, InferOutputShape outputView)
+    private float[] ExtractInferOutputData(NcnnGraphSession.InferResult infer, string blobName, InferOutputShape outputView)
     {
         if (infer == null)
             throw new ArgumentNullException(nameof(infer));
@@ -2450,7 +2450,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
                 ct.ThrowIfCancellationRequested();
                 var activePackCount = Math.Min(chunkPackCount, outputPackCount - packOffset);
                 var activeChannels = Math.Min(outputChannels - packOffset * 4, activePackCount * 4);
-                logitsRt = _repro.RentTempArray(width, height, checked(depth * activePackCount), NcnnRepro.ResolveTensorTextureFormat(4));
+                logitsRt = _repro.RentTempArray(width, height, checked(depth * activePackCount), NcnnGraphSession.ResolveTensorTextureFormat(4));
                 _ops.Conv3dPack4CDHW(
                     featureTexture,
                     width,
@@ -5233,7 +5233,7 @@ public sealed class MONAINcnnReproRunner : MonoBehaviour
         return names.ToArray();
     }
 
-    private void DumpPinnedBlobOutputs(NcnnRepro.InferResult infer, string[] pinnedBlobNames)
+    private void DumpPinnedBlobOutputs(NcnnGraphSession.InferResult infer, string[] pinnedBlobNames)
     {
         if (infer == null || pinnedBlobNames == null || pinnedBlobNames.Length == 0 || string.IsNullOrWhiteSpace(_lastDumpDir))
             return;

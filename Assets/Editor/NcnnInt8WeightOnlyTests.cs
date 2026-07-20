@@ -2,8 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using AIImage.Inference.Core;
-using NcnnCompute;
+using Aexis;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -54,7 +54,7 @@ public sealed class NcnnInt8WeightOnlyTests
     public void WeightPacker_UsesPerOutputChannelSymmetricInt8WithoutFloatExpansion()
     {
         var source = new[] { -2f, -1f, 0f, 1f, 0.25f, -0.5f, 0.75f, -1f };
-        var upload = NcnnRepro.NewInt8WeightOnlyUpload(
+        var upload = NcnnGraphSession.NewInt8WeightOnlyUpload(
             source,
             outputChannels: 2,
             valuesPerOutputChannel: 4,
@@ -296,9 +296,9 @@ public sealed class NcnnInt8WeightOnlyTests
     public void Int8Kernels_ReadPackedWeightsAndAccumulateIntoFloatTextures()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Conv.hlsl"));
-        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl"));
-        var bindings = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnCompute.compute"));
+        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Conv.hlsl"));
+        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl"));
+        var bindings = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "AexisNcnn.compute"));
 
         Assert.That(conv, Does.Contain("NcnnReadRawConvWeight"));
         Assert.That(conv, Does.Contain("_ConvWInt8Packed"));

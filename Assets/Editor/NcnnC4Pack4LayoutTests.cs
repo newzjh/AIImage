@@ -2,7 +2,7 @@
 using System;
 using System.IO;
 using System.Linq;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -22,30 +22,30 @@ public sealed class NcnnC4Pack4LayoutTests
             format = RenderTextureFormat.ARGBFloat,
             trackerLabel = "c4-alias-source"
         };
-        var packed = new NcnnRepro.BufferShape(3, 3, 2, 1, 5);
-        var source = NcnnRepro.CreateCmdTensorRef(texture, packed, packed, owned: false, blobName: "source");
+        var packed = new NcnnGraphSession.BufferShape(3, 3, 2, 1, 5);
+        var source = NcnnGraphSession.CreateCmdTensorRef(texture, packed, packed, owned: false, blobName: "source");
 
-        var reshapeIdentity = NcnnRepro.CreateCmdTensorAlias(source, packed, packed);
-        var permuteIdentity = NcnnRepro.CreateCmdTensorAlias(source, packed, packed);
-        var tileIdentity = NcnnRepro.CreateCmdTensorAlias(source, packed, packed);
+        var reshapeIdentity = NcnnGraphSession.CreateCmdTensorAlias(source, packed, packed);
+        var permuteIdentity = NcnnGraphSession.CreateCmdTensorAlias(source, packed, packed);
+        var tileIdentity = NcnnGraphSession.CreateCmdTensorAlias(source, packed, packed);
         Assert.That(reshapeIdentity.texture, Is.SameAs(texture));
         Assert.That(permuteIdentity.Descriptor.AliasGroup, Is.EqualTo(source.Descriptor.AliasGroup));
         Assert.That(tileIdentity.Descriptor.Lifetime, Is.EqualTo(InferenceTensorLifetime.SharedAlias));
 
-        var cdhw = new NcnnRepro.BufferShape(4, 3, 2, 1, 5);
-        var squeeze = NcnnRepro.CreateCmdTensorAlias(source, cdhw, packed);
-        var expand = NcnnRepro.CreateCmdTensorAlias(squeeze, packed, packed);
+        var cdhw = new NcnnGraphSession.BufferShape(4, 3, 2, 1, 5);
+        var squeeze = NcnnGraphSession.CreateCmdTensorAlias(source, cdhw, packed);
+        var expand = NcnnGraphSession.CreateCmdTensorAlias(squeeze, packed, packed);
         Assert.That(squeeze.Descriptor.StorageShape, Is.EqualTo(source.Descriptor.StorageShape));
         Assert.That(expand.sharedTextureOwner, Is.SameAs(source));
 
-        Assert.Throws<TensorAliasTransformRequiredException>(() => NcnnRepro.CreateCmdTensorAlias(
+        Assert.Throws<TensorAliasTransformRequiredException>(() => NcnnGraphSession.CreateCmdTensorAlias(
             source,
-            new NcnnRepro.BufferShape(3, 2, 3, 1, 5),
-            new NcnnRepro.BufferShape(3, 2, 3, 1, 5)));
-        Assert.Throws<TensorAliasTransformRequiredException>(() => NcnnRepro.CreateCmdTensorAlias(
+            new NcnnGraphSession.BufferShape(3, 2, 3, 1, 5),
+            new NcnnGraphSession.BufferShape(3, 2, 3, 1, 5)));
+        Assert.Throws<TensorAliasTransformRequiredException>(() => NcnnGraphSession.CreateCmdTensorAlias(
             source,
-            new NcnnRepro.BufferShape(1, 30, 1, 1, 1),
-            new NcnnRepro.BufferShape(3, 30, 1, 1, 1)));
+            new NcnnGraphSession.BufferShape(1, 30, 1, 1, 1),
+            new NcnnGraphSession.BufferShape(3, 30, 1, 1, 1)));
     }
 
     [Test]
@@ -116,7 +116,7 @@ public sealed class NcnnC4Pack4LayoutTests
         const int width = 3;
         const int height = 2;
         const int channels = 5;
-        var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         try
         {
             for (var seed = 1; seed <= 4; seed++)
@@ -148,8 +148,8 @@ public sealed class NcnnC4Pack4LayoutTests
                     repro.Ops.TilePack4(
                         commandBuffer,
                         source,
-                        new NcnnRepro.BufferShape(3, width, height, 1, channels),
-                        new NcnnRepro.BufferShape(3, width * 2, height * 2, 1, channels * 2),
+                        new NcnnGraphSession.BufferShape(3, width, height, 1, channels),
+                        new NcnnGraphSession.BufferShape(3, width * 2, height * 2, 1, channels * 2),
                         new Vector4Int(2, 2, 1, 2),
                         tile);
 
@@ -226,7 +226,7 @@ public sealed class NcnnC4Pack4LayoutTests
     public void C4LayersPublishDescriptorsAndDoNotPublishCmdPlaceholders()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var layers = Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers");
+        var layers = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers");
         foreach (var file in new[]
         {
             "NcnnReshapeLayerRepro.cs", "NcnnFlattenLayerRepro.cs", "NcnnSqueezeLayerRepro.cs", "NcnnExpandDimsLayerRepro.cs",

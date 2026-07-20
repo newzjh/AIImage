@@ -1,6 +1,6 @@
 using System;
 using System.IO;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -14,7 +14,7 @@ public sealed class NcnnTemporaryRtLifecycleTests
         NcnnGpuResourceTracker.Enabled = true;
         NcnnGpuResourceTracker.Reset("cmd-temporary-rt-branch");
 
-        var repro = new NcnnRepro(new NcnnOps());
+        var repro = new NcnnGraphSession(new NcnnOps());
         using var cmd = new CommandBuffer { name = "NcnnTemporaryRtLifecycleTests" };
         try
         {
@@ -56,7 +56,7 @@ public sealed class NcnnTemporaryRtLifecycleTests
         NcnnGpuResourceTracker.Reset("temporary-rt-budget");
         try
         {
-            var shape = new NcnnRepro.BufferShape(3, 8, 8, 1, 4);
+            var shape = new NcnnGraphSession.BufferShape(3, 8, 8, 1, 4);
             var descriptor = new RenderTextureDescriptor(8, 8, RenderTextureFormat.ARGBHalf, 0)
             {
                 dimension = TextureDimension.Tex2DArray,
@@ -86,8 +86,8 @@ public sealed class NcnnTemporaryRtLifecycleTests
     public void TemporaryRtPaths_UseUnityApisAndContainNoPool()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var repro = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute", "NcnnRepro.cs"));
-        var tracker = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute", "NcnnGpuResourceTracker.cs"));
+        var repro = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "NcnnGraphSession.cs"));
+        var tracker = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "NcnnGpuResourceTracker.cs"));
 
         Assert.That(repro, Does.Contain("RenderTexture.GetTemporary(desc)"));
         Assert.That(repro, Does.Contain("RenderTexture.ReleaseTemporary(rt)"));
@@ -103,7 +103,7 @@ public sealed class NcnnTemporaryRtLifecycleTests
         Assert.That(tracker, Does.Contain("random_write="));
         Assert.That(tracker, Does.Not.Contain("ReuseTexture("));
         Assert.That(tracker, Does.Not.Contain("ReuseBuffer("));
-        Assert.That(File.Exists(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute", "NcnnTempComputeBufferPool.cs")), Is.False);
+        Assert.That(File.Exists(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "NcnnTempComputeBufferPool.cs")), Is.False);
     }
 
     public static void RunBatchValidation()

@@ -13,7 +13,7 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Profiling;
-using NcnnCompute;
+using Aexis.Ncnn;
 using Debug = UnityEngine.Debug;
 
 public static class NcnnDebugRunner
@@ -523,8 +523,8 @@ public static class NcnnDebugRunner
         var go = new GameObject("ClipDebugRunner");
         try
         {
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-            NcnnCompute.NcnnGpuResourceTracker.Reset("D1.Clip");
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Reset("D1.Clip");
             var runner = go.AddComponent<ClipNcnnReproRunner>();
             runner.modelLevel = ResolveClipModelLevel();
             ConfigureClipRunnerFromEnv(runner, defaultEnableDebugDump: true);
@@ -564,7 +564,7 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
             var configuredPrecision = ResolveStringEnv(GfpganPrecisionEnvVar, "Auto");
-            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+            if (!Enum.TryParse(configuredPrecision, true, out Aexis.Ncnn.NcnnPrecisionMode precisionMode))
                 throw new InvalidOperationException("Invalid " + GfpganPrecisionEnvVar + ": " + configuredPrecision);
             runner.precisionMode = precisionMode;
             ApplyGfpganPack4GuardFromEnv(runner);
@@ -671,12 +671,12 @@ public static class NcnnDebugRunner
         var go = new GameObject("MattingDebugRunner");
         try
         {
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-            NcnnCompute.NcnnGpuResourceTracker.Reset("D1.Matting");
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Reset("D1.Matting");
             var runner = go.AddComponent<MatterNcnnReproRunner>();
             runner.enableDebugDump = true;
             var configuredPrecision = ResolveStringEnv(MattingPrecisionEnvVar, "Auto");
-            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+            if (!Enum.TryParse(configuredPrecision, true, out Aexis.Ncnn.NcnnPrecisionMode precisionMode))
                 throw new InvalidOperationException("Invalid " + MattingPrecisionEnvVar + ": " + configuredPrecision);
             runner.precisionMode = precisionMode;
             runner.forceBufferConvolution = false;
@@ -761,7 +761,7 @@ public static class NcnnDebugRunner
             runner.modelVariant = YoloSegNcnnReproRunner.YoloSegModelVariant.YoloV8nSeg;
             runner.enableDebugDump = true;
             var configuredPrecision = ResolveStringEnv(YoloPrecisionEnvVar, "Auto");
-            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+            if (!Enum.TryParse(configuredPrecision, true, out Aexis.Ncnn.NcnnPrecisionMode precisionMode))
                 throw new InvalidOperationException("Invalid " + YoloPrecisionEnvVar + ": " + configuredPrecision);
             runner.precisionMode = precisionMode;
             runner.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, runner.forceBufferConvolution);
@@ -888,8 +888,8 @@ public static class NcnnDebugRunner
         }
 
         var go = new GameObject("MonaiDebugRunner");
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.MONAI");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.MONAI");
         string monaiOutputDir = null;
         try
         {
@@ -1000,7 +1000,7 @@ public static class NcnnDebugRunner
                 if (string.IsNullOrWhiteSpace(monaiOutputDir))
                     monaiOutputDir = FindLatestMonaiOutputDir();
                 if (!string.IsNullOrWhiteSpace(monaiOutputDir))
-                    NcnnCompute.NcnnGpuResourceTracker.WriteReport(monaiOutputDir, "gpu_resource_stats.txt");
+                    Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(monaiOutputDir, "gpu_resource_stats.txt");
             }
             catch
             {
@@ -1011,12 +1011,12 @@ public static class NcnnDebugRunner
             try
             {
                 if (!string.IsNullOrWhiteSpace(monaiOutputDir))
-                    NcnnCompute.NcnnGpuResourceTracker.WriteReport(monaiOutputDir, "gpu_resource_stats_after_release.txt");
+                    Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(monaiOutputDir, "gpu_resource_stats_after_release.txt");
             }
             catch
             {
             }
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
         }
     }
 
@@ -1264,8 +1264,8 @@ public static class NcnnDebugRunner
 
         var textureFormat = ResolveRenderTextureFormatEnv(MonaiPack4SelfTestFormatEnvVar, RenderTextureFormat.ARGBHalf);
         var go = new GameObject("MonaiPack4SelfTestRunner");
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.MONAI.Pack4SelfTest");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.MONAI.Pack4SelfTest");
         try
         {
             var runner = go.AddComponent<MONAINcnnReproRunner>();
@@ -1284,18 +1284,18 @@ public static class NcnnDebugRunner
                 "MONAI Pack4 SelfTest result"
                 + " | format=" + textureFormat
                 + " | dump=" + outputDir
-                + " | gpu=" + NcnnCompute.NcnnGpuResourceTracker.BuildSummary()
+                + " | gpu=" + Aexis.Ncnn.NcnnGpuResourceTracker.BuildSummary()
                 + " | summary=" + summary.Replace(Environment.NewLine, " | "));
         }
         finally
         {
             try { LogResourceSnapshot("monai_pack4_selftest_before_destroy"); } catch { }
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
             UnityEngine.Object.DestroyImmediate(go);
             await ReleaseGpuPressureAsync();
             try { LogResourceSnapshot("monai_pack4_selftest_after_release"); } catch { }
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats_after_release.txt"); } catch { }
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats_after_release.txt"); } catch { }
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
         }
     }
 
@@ -1491,8 +1491,8 @@ public static class NcnnDebugRunner
         var forcedUseCommandBuffer = ResolveOptionalBoolEnv(SdUseCommandBufferEnvVar);
         var runPack4Rt = !forcedUseCommandBuffer.HasValue || !forcedUseCommandBuffer.Value;
         var runCommandBuffer = !forcedUseCommandBuffer.HasValue || forcedUseCommandBuffer.Value;
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint");
         try
         {
             if (runPack4Rt)
@@ -1534,8 +1534,8 @@ public static class NcnnDebugRunner
         }
         finally
         {
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
         }
     }
 
@@ -1549,8 +1549,8 @@ public static class NcnnDebugRunner
             throw new InvalidOperationException("Failed to load DeepFillV2 debug input: " + inputPath);
 
         TryWriteTexturePng(tex, outputDir, "00_source.png");
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloDeepFillV2");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloDeepFillV2");
 
         var go = new GameObject("YoloAndDeepFillV2DebugRunner");
         YoloSegResult yoloResult = default;
@@ -1624,7 +1624,7 @@ public static class NcnnDebugRunner
                 {
                     runner.backend = backend;
                     runner.enableDebugDump = true;
-                    runner.precisionMode = NcnnCompute.NcnnPrecisionMode.Auto;
+                    runner.precisionMode = Aexis.Ncnn.NcnnPrecisionMode.Auto;
                     runner.useArgbFloatTensor = ResolveBoolEnv(DeepFillV2UseArgbFloatEnvVar, runner.useArgbFloatTensor);
                     runner.flipYInput = ResolveBoolEnv(DeepFillV2FlipYInputEnvVar, runner.flipYInput);
                     runner.flipYOutput = ResolveBoolEnv(DeepFillV2FlipYOutputEnvVar, runner.flipYOutput);
@@ -1709,8 +1709,8 @@ public static class NcnnDebugRunner
         }
         finally
         {
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
             if (yoloResult.texture != null) UnityEngine.Object.DestroyImmediate(yoloResult.texture);
             if (yoloResult.mask != null) UnityEngine.Object.DestroyImmediate(yoloResult.mask);
             if (yoloResult.overlay != null) UnityEngine.Object.DestroyImmediate(yoloResult.overlay);
@@ -1745,8 +1745,8 @@ public static class NcnnDebugRunner
             "reference=" + DefaultDeepFillV2Case1OutputPath,
             "preprocess=resize_full_image_to_400x512"
         };
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.DeepFillV2Case1");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.DeepFillV2Case1");
         try
         {
             var backends = ResolveDeepFillV2Backends();
@@ -1823,8 +1823,8 @@ public static class NcnnDebugRunner
         }
         finally
         {
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(source);
             UnityEngine.Object.DestroyImmediate(maskedExample);
@@ -1977,8 +1977,8 @@ public static class NcnnDebugRunner
         var go = new GameObject("SdUnetReplayRunner");
         try
         {
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-            NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.SDUnetReplay");
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.SDUnetReplay");
             var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
             var pack4OnlyGuard = ResolveBoolEnv(SdPack4OnlyGuardEnvVar, false);
             runner.enableDebugDump = true;
@@ -2015,8 +2015,8 @@ public static class NcnnDebugRunner
         }
         finally
         {
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(outputDir, "gpu_resource_stats.txt"); } catch { }
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
             UnityEngine.Object.DestroyImmediate(go);
         }
     }
@@ -2124,7 +2124,7 @@ public static class NcnnDebugRunner
         using var sw = new StreamWriter(summaryPath, false);
         sw.WriteLine("iter\tstage\tprivate_mb\tworking_set_mb\tmanaged_mb\tgfx_mb\trt_objects\tgpu_summary\toutput_dir");
 
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
         try
         {
             for (var i = 0; i < iterations; i++)
@@ -2133,7 +2133,7 @@ public static class NcnnDebugRunner
                 var iterationDir = Path.Combine(outputDir, "iter_" + iteration.ToString("00", CultureInfo.InvariantCulture));
                 Directory.CreateDirectory(iterationDir);
 
-                NcnnCompute.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint.Probe." + iteration.ToString(CultureInfo.InvariantCulture));
+                Aexis.Ncnn.NcnnGpuResourceTracker.Reset("NcnnDebugRunner.YoloInpaint.Probe." + iteration.ToString(CultureInfo.InvariantCulture));
                 LogResourceSnapshot("probe_iter_" + iteration.ToString(CultureInfo.InvariantCulture) + "_begin");
                 WriteResourceSummaryRow(sw, iteration, "begin", iterationDir);
 
@@ -2155,13 +2155,13 @@ public static class NcnnDebugRunner
                 await ReleaseGpuPressureAsync();
                 LogResourceSnapshot("probe_iter_" + iteration.ToString(CultureInfo.InvariantCulture) + "_after_release");
                 WriteResourceSummaryRow(sw, iteration, "after_release", iterationDir);
-                try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(iterationDir, "gpu_resource_stats.txt"); } catch { }
+                try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(iterationDir, "gpu_resource_stats.txt"); } catch { }
                 sw.Flush();
             }
         }
         finally
         {
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
         }
     }
 
@@ -2246,7 +2246,7 @@ public static class NcnnDebugRunner
             inpaintRunner.enableDebugDump = enableDump;
             inpaintRunner.ApplyPeopleRemovalPreset();
             var configuredInpaintPrecision = ResolveStringEnv(SdInpaintingPrecisionEnvVar, "Auto");
-            if (!Enum.TryParse(configuredInpaintPrecision, true, out NcnnCompute.NcnnPrecisionMode inpaintPrecisionMode))
+            if (!Enum.TryParse(configuredInpaintPrecision, true, out Aexis.Ncnn.NcnnPrecisionMode inpaintPrecisionMode))
                 throw new InvalidOperationException("Invalid " + SdInpaintingPrecisionEnvVar + ": " + configuredInpaintPrecision);
             inpaintRunner.precisionMode = inpaintPrecisionMode;
             inpaintRunner.useOfficialUnetCache = ResolveBoolEnv("AIIMAGE_SD_USE_OFFICIAL_UNET_CACHE", inpaintRunner.useOfficialUnetCache);
@@ -2357,7 +2357,7 @@ public static class NcnnDebugRunner
                 + " | managed_mb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
                 + " | gfx_mb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
                 + " | rt_objects=" + rtCount.ToString(CultureInfo.InvariantCulture)
-                + " | " + NcnnCompute.NcnnGpuResourceTracker.BuildSummary());
+                + " | " + Aexis.Ncnn.NcnnGpuResourceTracker.BuildSummary());
         }
         catch (Exception e)
         {
@@ -2381,7 +2381,7 @@ public static class NcnnDebugRunner
             + managedMb.ToString("F3", CultureInfo.InvariantCulture) + "\t"
             + gfxMb.ToString("F3", CultureInfo.InvariantCulture) + "\t"
             + rtCount.ToString(CultureInfo.InvariantCulture) + "\t"
-            + EscapeTsv(NcnnCompute.NcnnGpuResourceTracker.BuildSummary()) + "\t"
+            + EscapeTsv(Aexis.Ncnn.NcnnGpuResourceTracker.BuildSummary()) + "\t"
             + EscapeTsv(outputDir ?? string.Empty));
     }
 
@@ -3181,7 +3181,7 @@ public static class NcnnDebugRunner
         };
     }
 
-    private static JObject Qwen35LoadProfileToJson(NcnnRepro.ModelLoadProfile profile)
+    private static JObject Qwen35LoadProfileToJson(NcnnGraphSession.ModelLoadProfile profile)
     {
         if (profile == null)
             return new JObject { ["available"] = false };
@@ -3215,7 +3215,7 @@ public static class NcnnDebugRunner
         };
     }
 
-    private static JObject Qwen35RuntimeProfileToJson(NcnnRepro.LayerRuntimeProfile profile)
+    private static JObject Qwen35RuntimeProfileToJson(NcnnGraphSession.LayerRuntimeProfile profile)
     {
         if (profile == null)
             return new JObject { ["available"] = false };
@@ -3424,7 +3424,7 @@ public static class NcnnDebugRunner
         try
         {
             using (var ops = new NcnnOps())
-            using (var repro = new NcnnRepro(ops))
+            using (var repro = new NcnnGraphSession(ops))
             using (var indices = new NcnnTensorBuffer(1, 1))
             {
                 repro.ExecutionMode = NcnnInferenceExecutionMode.ProductionTextureOnly;
@@ -3505,8 +3505,8 @@ public static class NcnnDebugRunner
         {
             using (var shared = Qwen35SharedTokenEmbeddingWeights.Load(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin")))
             using (var ops = new NcnnOps())
-            using (var embed = new NcnnRepro(ops))
-            using (var decoder = new NcnnRepro(ops))
+            using (var embed = new NcnnGraphSession(ops))
+            using (var decoder = new NcnnGraphSession(ops))
             using (var indices = new NcnnTensorBuffer(1, 1))
             {
                 ConfigureQwen35StrictRepro(embed);
@@ -3548,20 +3548,20 @@ public static class NcnnDebugRunner
                     ["cache_gdr1"] = CreateQwen35ZeroTexture(decoder, ops, 32, 128, 16),
                     ["cache_gdr2"] = CreateQwen35ZeroTexture(decoder, ops, 32, 128, 16)
                 };
-                var textureShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                var textureShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                 {
-                    ["in0"] = new NcnnRepro.BufferShape(2, 1024, 1, 1, 1),
-                    ["in1"] = new NcnnRepro.BufferShape(2, 1, 1, 1, 1),
-                    ["in2"] = new NcnnRepro.BufferShape(3, 32, 1, 1, 1),
-                    ["in3"] = new NcnnRepro.BufferShape(3, 32, 1, 1, 1),
-                    ["cache_conv0"] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1),
-                    ["cache_conv1"] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1),
-                    ["cache_conv2"] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1),
+                    ["in0"] = new NcnnGraphSession.BufferShape(2, 1024, 1, 1, 1),
+                    ["in1"] = new NcnnGraphSession.BufferShape(2, 1, 1, 1, 1),
+                    ["in2"] = new NcnnGraphSession.BufferShape(3, 32, 1, 1, 1),
+                    ["in3"] = new NcnnGraphSession.BufferShape(3, 32, 1, 1, 1),
+                    ["cache_conv0"] = new NcnnGraphSession.BufferShape(2, 1536, 4, 1, 1),
+                    ["cache_conv1"] = new NcnnGraphSession.BufferShape(2, 1536, 4, 1, 1),
+                    ["cache_conv2"] = new NcnnGraphSession.BufferShape(2, 1536, 4, 1, 1),
                     // GDR state is stored as value_dim/4 texture columns; the custom layer
                     // addresses it in this packed storage shape directly.
-                    ["cache_gdr0"] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16),
-                    ["cache_gdr1"] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16),
-                    ["cache_gdr2"] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16)
+                    ["cache_gdr0"] = new NcnnGraphSession.BufferShape(3, 32, 128, 1, 16),
+                    ["cache_gdr1"] = new NcnnGraphSession.BufferShape(3, 32, 128, 1, 16),
+                    ["cache_gdr2"] = new NcnnGraphSession.BufferShape(3, 32, 128, 1, 16)
                 };
                 for (var cacheIndex = 3; cacheIndex < 18; cacheIndex++)
                 {
@@ -3569,8 +3569,8 @@ public static class NcnnDebugRunner
                     var gdrName = "cache_gdr" + cacheIndex;
                     textureInputs[convName] = CreateQwen35ZeroTexture(decoder, ops, 1536, 4, 1);
                     textureInputs[gdrName] = CreateQwen35ZeroTexture(decoder, ops, 32, 128, 16);
-                    textureShapes[convName] = new NcnnRepro.BufferShape(2, 1536, 4, 1, 1);
-                    textureShapes[gdrName] = new NcnnRepro.BufferShape(3, 32, 128, 1, 16);
+                    textureShapes[convName] = new NcnnGraphSession.BufferShape(2, 1536, 4, 1, 1);
+                    textureShapes[gdrName] = new NcnnGraphSession.BufferShape(3, 32, 128, 1, 16);
                 }
 
                 RenderTexture decoderOutput = null;
@@ -3605,7 +3605,7 @@ public static class NcnnDebugRunner
                 }
                 if (runProjOut)
                 {
-                    using (var proj = new NcnnRepro(ops))
+                    using (var proj = new NcnnGraphSession(ops))
                     {
                         ConfigureQwen35StrictRepro(proj);
                         shared.Attach(proj);
@@ -3617,9 +3617,9 @@ public static class NcnnDebugRunner
                             new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = decoderOutput },
                             null,
                             null,
-                            new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                            new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                             {
-                                ["in0"] = new NcnnRepro.BufferShape(2, 1024, 1, 1, 1)
+                                ["in0"] = new NcnnGraphSession.BufferShape(2, 1024, 1, 1, 1)
                             }))
                         {
                             var logitsTexture = projResult.GetTexture("out0");
@@ -3716,7 +3716,7 @@ public static class NcnnDebugRunner
         {
             using (var shared = Qwen35SharedTokenEmbeddingWeights.Load(Path.Combine(modelDir, "qwen3.5_embed_token.ncnn.bin")))
             using (var ops = new NcnnOps())
-            using (var proj = new NcnnRepro(ops))
+            using (var proj = new NcnnGraphSession(ops))
             {
                 sharedWeightBytes = shared.ByteCount;
                 sharedLoadMs = shared.LoadMilliseconds;
@@ -3734,9 +3734,9 @@ public static class NcnnDebugRunner
                     new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = hidden },
                     null,
                     null,
-                    new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                    new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                     {
-                        ["in0"] = new NcnnRepro.BufferShape(2, 1024, 1, 1, 1)
+                        ["in0"] = new NcnnGraphSession.BufferShape(2, 1024, 1, 1, 1)
                     }))
                 {
                     var logitsTexture = result.GetTexture("out0");
@@ -3851,7 +3851,7 @@ public static class NcnnDebugRunner
                 inputPreview.Add(patch[i]);
 
             using (var ops = new NcnnOps())
-            using (var repro = new NcnnRepro(ops))
+            using (var repro = new NcnnGraphSession(ops))
             {
                 ConfigureQwen35StrictRepro(repro);
                 repro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
@@ -3866,9 +3866,9 @@ public static class NcnnDebugRunner
                         new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = patchTexture },
                         null,
                         null,
-                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                         {
-                            ["in0"] = new NcnnRepro.BufferShape(4, 16, 16, 2, 3)
+                            ["in0"] = new NcnnGraphSession.BufferShape(4, 16, 16, 2, 3)
                         }))
                     {
                         var values = result.ReadTextureDataForOutput("out0") ?? Array.Empty<float>();
@@ -3964,7 +3964,7 @@ public static class NcnnDebugRunner
         try
         {
             using (var ops = new NcnnOps())
-            using (var repro = new NcnnRepro(ops))
+            using (var repro = new NcnnGraphSession(ops))
             {
                 ConfigureQwen35StrictRepro(repro);
                 repro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
@@ -3979,9 +3979,9 @@ public static class NcnnDebugRunner
                         new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = grid },
                         null,
                         null,
-                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                         {
-                            ["in0"] = new NcnnRepro.BufferShape(2, 64, 48, 1, 1)
+                            ["in0"] = new NcnnGraphSession.BufferShape(2, 64, 48, 1, 1)
                         }))
                     {
                         var values = result.ReadTextureDataForOutput("out0") ?? Array.Empty<float>();
@@ -4088,7 +4088,7 @@ public static class NcnnDebugRunner
             patchCount = (targetWidth / 16) * (targetHeight / 16);
 
             using (var ops = new NcnnOps())
-            using (var patchRepro = new NcnnRepro(ops))
+            using (var patchRepro = new NcnnGraphSession(ops))
             {
                 ConfigureQwen35StrictRepro(patchRepro);
                 patchRepro.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
@@ -4105,9 +4105,9 @@ public static class NcnnDebugRunner
                         new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = atlas },
                         null,
                         null,
-                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                         {
-                            ["in0"] = new NcnnRepro.BufferShape(4, targetWidth, targetHeight, 2, 3)
+                            ["in0"] = new NcnnGraphSession.BufferShape(4, targetWidth, targetHeight, 2, 3)
                         }))
                     {
                         spatialOutput = result.ExtractTexture("out0");
@@ -4117,7 +4117,7 @@ public static class NcnnDebugRunner
                     ops.Pack4SpatialToPack4Linear(spatialOutput, linearOutput);
 
                     const string identityParam = "7767517\n2 2\nInput in0 0 1 in0\nNoop copy 1 1 in0 out0\n";
-                    using (var viewRepro = new NcnnRepro(ops))
+                    using (var viewRepro = new NcnnGraphSession(ops))
                     using (var emptyStream = new MemoryStream())
                     using (var emptyReader = new NcnnBinReader(emptyStream))
                     {
@@ -4128,9 +4128,9 @@ public static class NcnnDebugRunner
                             new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = linearOutput },
                             null,
                             null,
-                            new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                            new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                             {
-                                ["in0"] = new NcnnRepro.BufferShape(2, 768, patchCount, 1, 1)
+                                ["in0"] = new NcnnGraphSession.BufferShape(2, 768, patchCount, 1, 1)
                             }))
                         {
                             var values = result.ReadTextureDataForOutput("out0") ?? Array.Empty<float>();
@@ -4257,9 +4257,9 @@ public static class NcnnDebugRunner
             Qwen35VisionPreprocessor.BuildVisionRope2D(gridHeight, gridWidth, out var ropeCos, out var ropeSin);
 
             using (var ops = new NcnnOps())
-            using (var patchRepro = new NcnnRepro(ops))
-            using (var positionRepro = new NcnnRepro(ops))
-            using (var encoderRepro = new NcnnRepro(ops))
+            using (var patchRepro = new NcnnGraphSession(ops))
+            using (var positionRepro = new NcnnGraphSession(ops))
+            using (var encoderRepro = new NcnnGraphSession(ops))
             {
                 ConfigureQwen35StrictRepro(patchRepro);
                 ConfigureQwen35StrictRepro(positionRepro);
@@ -4299,9 +4299,9 @@ public static class NcnnDebugRunner
                         new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = atlas },
                         null,
                         null,
-                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                         {
-                            ["in0"] = new NcnnRepro.BufferShape(4, target.x, target.y, 2, 3)
+                            ["in0"] = new NcnnGraphSession.BufferShape(4, target.x, target.y, 2, 3)
                         }))
                     {
                         patchSpatial = result.ExtractTexture("out0");
@@ -4315,9 +4315,9 @@ public static class NcnnDebugRunner
                         new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = positionGrid },
                         null,
                         null,
-                        new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                        new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                         {
-                            ["in0"] = new NcnnRepro.BufferShape(2, gridWidth, gridHeight, 1, 1)
+                            ["in0"] = new NcnnGraphSession.BufferShape(2, gridWidth, gridHeight, 1, 1)
                         }))
                     {
                         positionRaw = result.ExtractTexture("out0");
@@ -4339,12 +4339,12 @@ public static class NcnnDebugRunner
                         ["in2"] = cosTexture,
                         ["in3"] = sinTexture
                     };
-                    var encoderShapes = new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal)
+                    var encoderShapes = new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal)
                     {
-                        ["in0"] = new NcnnRepro.BufferShape(2, 768, patchCount, 1, 1),
-                        ["in1"] = new NcnnRepro.BufferShape(2, 768, patchCount, 1, 1),
-                        ["in2"] = new NcnnRepro.BufferShape(3, 32, patchCount, 1, 1),
-                        ["in3"] = new NcnnRepro.BufferShape(3, 32, patchCount, 1, 1)
+                        ["in0"] = new NcnnGraphSession.BufferShape(2, 768, patchCount, 1, 1),
+                        ["in1"] = new NcnnGraphSession.BufferShape(2, 768, patchCount, 1, 1),
+                        ["in2"] = new NcnnGraphSession.BufferShape(3, 32, patchCount, 1, 1),
+                        ["in3"] = new NcnnGraphSession.BufferShape(3, 32, patchCount, 1, 1)
                     };
                     using (var result = encoderRepro.InferWithMultiInputs(encoderInputs, null, null, encoderShapes, stopAfter))
                     {
@@ -4601,7 +4601,7 @@ public static class NcnnDebugRunner
         EditorApplication.Exit(0);
     }
 
-    private static void ConfigureQwen35StrictRepro(NcnnRepro repro)
+    private static void ConfigureQwen35StrictRepro(NcnnGraphSession repro)
     {
         repro.ExecutionMode = NcnnInferenceExecutionMode.ProductionTextureOnly;
         repro.DisallowInferenceTempComputeBuffers = true;
@@ -4612,14 +4612,14 @@ public static class NcnnDebugRunner
         repro.EnableDepthWiseTextureConvolution = true;
     }
 
-    private static RenderTexture CreateQwen35ZeroTexture(NcnnRepro repro, NcnnOps ops, int width, int height, int depth)
+    private static RenderTexture CreateQwen35ZeroTexture(NcnnGraphSession repro, NcnnOps ops, int width, int height, int depth)
     {
         var texture = repro.RentTempArray(width, height, depth, RenderTextureFormat.ARGBFloat);
         ops.FillScalarTexture(new[] { 0f }, texture);
         return texture;
     }
 
-    private static RenderTexture CreateQwen35ScalarRowsTexture(NcnnRepro repro, float[] values, int sourceRowWidth, int outputWidth, int rows)
+    private static RenderTexture CreateQwen35ScalarRowsTexture(NcnnGraphSession repro, float[] values, int sourceRowWidth, int outputWidth, int rows)
     {
         if (values == null || values.Length != sourceRowWidth * rows)
             throw new ArgumentException("Qwen3.5 scalar-row upload value count mismatch", nameof(values));
@@ -4655,14 +4655,14 @@ public static class NcnnDebugRunner
         }
     }
 
-    private static RenderTexture CreateQwen35ZeroLinearTexture(NcnnRepro repro, NcnnOps ops, int width, int height)
+    private static RenderTexture CreateQwen35ZeroLinearTexture(NcnnGraphSession repro, NcnnOps ops, int width, int height)
     {
         var texture = repro.RentTempMat(width, height, RenderTextureFormat.ARGBFloat);
         ops.FillScalarTexture(new[] { 0f }, texture);
         return texture;
     }
 
-    private static RenderTexture CreateQwen35CosSinTexture(NcnnRepro repro, NcnnOps ops, int width, float value)
+    private static RenderTexture CreateQwen35CosSinTexture(NcnnGraphSession repro, NcnnOps ops, int width, float value)
     {
         var texture = repro.RentTempArray(width, 1, 1, RenderTextureFormat.ARGBFloat);
         var values = new float[width];
@@ -4677,7 +4677,7 @@ public static class NcnnDebugRunner
     }
 
     private static RenderTexture CreateQwen35Pack4TextureFromCdhw(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         float[] values,
         int width,
         int height,
@@ -4739,7 +4739,7 @@ public static class NcnnDebugRunner
     }
 
     private static RenderTexture CreateQwen35PatchAtlasTexture(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         float[] patches,
         int atlasWidth,
         int atlasHeight,
@@ -4958,8 +4958,8 @@ public static class NcnnDebugRunner
         var outputDir = CreateGenericDumpDir("AIImage_ClipDirBatch");
         var summaryPath = Path.Combine(outputDir, "summary.tsv");
 
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("clip_dir_batch");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("clip_dir_batch");
 
         var go = new GameObject("ClipDirectoryDebugRunner");
         try
@@ -4988,7 +4988,7 @@ public static class NcnnDebugRunner
 
                     var result = await runner.ProcessAsync(tex, CancellationToken.None);
                     var top3 = FormatClipTopScores(result.scores, 3);
-                    var gpuSummary = NcnnCompute.NcnnGpuResourceTracker.BuildSummary();
+                    var gpuSummary = Aexis.Ncnn.NcnnGpuResourceTracker.BuildSummary();
                     var rtCount = Resources.FindObjectsOfTypeAll<RenderTexture>().Length;
                     var managedMb = Profiler.GetTotalAllocatedMemoryLong() / (1024f * 1024f);
                     var gfxMb = GetGraphicsDriverMemoryMb();
@@ -5024,12 +5024,12 @@ public static class NcnnDebugRunner
                 }
             }
 
-            NcnnCompute.NcnnGpuResourceTracker.WriteReport(outputDir);
+            Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(outputDir);
             Debug.Log("[CLIP-DIR] summary=" + summaryPath);
         }
         finally
         {
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
             UnityEngine.Object.DestroyImmediate(go);
         }
     }
@@ -5041,7 +5041,7 @@ public static class NcnnDebugRunner
 
         var pack4OnlyGuard = ResolveBoolEnv(ClipPack4OnlyGuardEnvVar, false);
         var configuredPrecision = ResolveStringEnv(ClipPrecisionEnvVar, "Auto");
-        if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+        if (!Enum.TryParse(configuredPrecision, true, out Aexis.Ncnn.NcnnPrecisionMode precisionMode))
             throw new InvalidOperationException("Invalid " + ClipPrecisionEnvVar + ": " + configuredPrecision);
         runner.precisionMode = precisionMode;
         runner.enableDebugDump = ResolveBoolEnv(ClipEnableDumpEnvVar, defaultEnableDebugDump);
@@ -5094,7 +5094,7 @@ public static class NcnnDebugRunner
             runner.enableDebugDump = ResolveBoolEnv(CodeFormerEnableDumpEnvVar, false);
             runner.enableFaceRegionDebugDump = ResolveBoolEnv(CodeFormerEnableFaceDumpEnvVar, runner.enableDebugDump);
             var configuredPrecision = ResolveStringEnv(CodeFormerPrecisionEnvVar, "Auto");
-            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+            if (!Enum.TryParse(configuredPrecision, true, out Aexis.Ncnn.NcnnPrecisionMode precisionMode))
                 throw new InvalidOperationException("Invalid " + CodeFormerPrecisionEnvVar + ": " + configuredPrecision);
             runner.precisionMode = precisionMode;
             runner.ProgressChanged += (value, message) =>
@@ -5127,7 +5127,7 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<GfpganNcnnReproRunner>();
             runner.enableFaceRegionDebugDump = true;
             var configuredPrecision = ResolveStringEnv(GfpganPrecisionEnvVar, "Auto");
-            if (!Enum.TryParse(configuredPrecision, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+            if (!Enum.TryParse(configuredPrecision, true, out Aexis.Ncnn.NcnnPrecisionMode precisionMode))
                 throw new InvalidOperationException("Invalid " + GfpganPrecisionEnvVar + ": " + configuredPrecision);
             runner.precisionMode = precisionMode;
             ApplyGfpganPack4GuardFromEnv(runner);
@@ -5164,8 +5164,8 @@ public static class NcnnDebugRunner
             "inputs=" + string.Join(" | ", inputPaths)
         };
 
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("CodeFormerStress");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("CodeFormerStress");
 
         var go = new GameObject("CodeFormerStressRunner");
         try
@@ -5198,7 +5198,7 @@ public static class NcnnDebugRunner
                         + " | private_mb=" + privateMb.ToString("F3", CultureInfo.InvariantCulture)
                         + " | managed_mb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
                         + " | gfx_mb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
-                        + " | " + NcnnCompute.NcnnGpuResourceTracker.BuildSummary());
+                        + " | " + Aexis.Ncnn.NcnnGpuResourceTracker.BuildSummary());
 
                     if (result.texture != null)
                         UnityEngine.Object.DestroyImmediate(result.texture);
@@ -5213,7 +5213,7 @@ public static class NcnnDebugRunner
         {
             try
             {
-                NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "stress_gpu_resources.txt");
+                Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(dumpDir, "stress_gpu_resources.txt");
             }
             catch
             {
@@ -5227,7 +5227,7 @@ public static class NcnnDebugRunner
             {
             }
 
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
             UnityEngine.Object.DestroyImmediate(go);
         }
     }
@@ -5251,7 +5251,7 @@ public static class NcnnDebugRunner
         };
         var failures = new List<string>();
 
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
         try
         {
             await RunRealEsrganStressAsync(tex, iterations, dumpDir, lines, failures);
@@ -5269,7 +5269,7 @@ public static class NcnnDebugRunner
 
             try { File.WriteAllLines(summaryPath, lines); } catch { }
 
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
             UnityEngine.Object.DestroyImmediate(tex);
         }
 
@@ -5301,8 +5301,8 @@ public static class NcnnDebugRunner
         var summaryPath = Path.Combine(dumpDir, "summary.tsv");
         var failures = new List<string>();
 
-        NcnnCompute.NcnnGpuResourceTracker.Enabled = true;
-        NcnnCompute.NcnnGpuResourceTracker.Reset("D1.RealESRGAN");
+        Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = true;
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset("D1.RealESRGAN");
         using var sw = new StreamWriter(summaryPath, false);
         sw.WriteLine("model\timage\tmode\tpath_kind\tstatus\telapsed_ms\twidth\theight\tmean_abs_rgb\tmax_abs_rgb\terror\toutput");
 
@@ -5342,7 +5342,7 @@ public static class NcnnDebugRunner
 
                             if (runImmediate)
                             {
-                                NcnnCompute.NcnnGpuResourceTracker.Reset("D1.RealESRGAN.Pack4Rt");
+                                Aexis.Ncnn.NcnnGpuResourceTracker.Reset("D1.RealESRGAN.Pack4Rt");
                                 var immediate = await RunRealEsrganSingleModeAsync(input, new RealEsrganValidationRunOptions
                                 {
                                     modelName = model,
@@ -5375,7 +5375,7 @@ public static class NcnnDebugRunner
 
                             if (runCommandBuffer)
                             {
-                                NcnnCompute.NcnnGpuResourceTracker.Reset("D1.RealESRGAN.CommandBuffer");
+                                Aexis.Ncnn.NcnnGpuResourceTracker.Reset("D1.RealESRGAN.CommandBuffer");
                                 var commandBuffer = await RunRealEsrganSingleModeAsync(input, new RealEsrganValidationRunOptions
                                 {
                                     modelName = model,
@@ -5433,8 +5433,8 @@ public static class NcnnDebugRunner
         }
         finally
         {
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "gpu_resource_stats.txt"); } catch { }
-            NcnnCompute.NcnnGpuResourceTracker.Enabled = false;
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(dumpDir, "gpu_resource_stats.txt"); } catch { }
+            Aexis.Ncnn.NcnnGpuResourceTracker.Enabled = false;
         }
     }
 
@@ -5660,7 +5660,7 @@ public static class NcnnDebugRunner
     private static async UniTask RunRealEsrganStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "ESRGAN";
-        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset(runnerName);
         var go = new GameObject("ReproSuiteStress_" + runnerName);
         RealEsrganNcnnReproRunner runner = null;
         try
@@ -5688,14 +5688,14 @@ public static class NcnnDebugRunner
             UnityEngine.Object.DestroyImmediate(go);
             await UniTask.Yield();
             AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "esrgan_gpu_resources.txt"); } catch { }
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(dumpDir, "esrgan_gpu_resources.txt"); } catch { }
         }
     }
 
     private static async UniTask RunYoloSegStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "YoloSeg";
-        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset(runnerName);
         var go = new GameObject("ReproSuiteStress_" + runnerName);
         YoloSegNcnnReproRunner runner = null;
         try
@@ -5732,14 +5732,14 @@ public static class NcnnDebugRunner
             UnityEngine.Object.DestroyImmediate(go);
             await UniTask.Yield();
             AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "yoloseg_gpu_resources.txt"); } catch { }
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(dumpDir, "yoloseg_gpu_resources.txt"); } catch { }
         }
     }
 
     private static async UniTask RunMattingStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "Matting";
-        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset(runnerName);
         var go = new GameObject("ReproSuiteStress_" + runnerName);
         MatterNcnnReproRunner runner = null;
         try
@@ -5769,14 +5769,14 @@ public static class NcnnDebugRunner
             UnityEngine.Object.DestroyImmediate(go);
             await UniTask.Yield();
             AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "matting_gpu_resources.txt"); } catch { }
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(dumpDir, "matting_gpu_resources.txt"); } catch { }
         }
     }
 
     private static async UniTask RunGfpganStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "GFPGAN";
-        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset(runnerName);
         var go = new GameObject("ReproSuiteStress_" + runnerName);
         GfpganNcnnReproRunner runner = null;
         try
@@ -5803,14 +5803,14 @@ public static class NcnnDebugRunner
             UnityEngine.Object.DestroyImmediate(go);
             await UniTask.Yield();
             AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "gfpgan_gpu_resources.txt"); } catch { }
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(dumpDir, "gfpgan_gpu_resources.txt"); } catch { }
         }
     }
 
     private static async UniTask RunCodeFormerStressAsync(Texture2D tex, int iterations, string dumpDir, List<string> lines, List<string> failures)
     {
         const string runnerName = "CodeFormer";
-        NcnnCompute.NcnnGpuResourceTracker.Reset(runnerName);
+        Aexis.Ncnn.NcnnGpuResourceTracker.Reset(runnerName);
         var go = new GameObject("ReproSuiteStress_" + runnerName);
         CodeFormerNcnnReproRunner2 runner = null;
         try
@@ -5838,7 +5838,7 @@ public static class NcnnDebugRunner
             UnityEngine.Object.DestroyImmediate(go);
             await UniTask.Yield();
             AppendStressMetrics(lines, runnerName, "post_destroy", 0, 0, null, null);
-            try { NcnnCompute.NcnnGpuResourceTracker.WriteReport(dumpDir, "codeformer_gpu_resources.txt"); } catch { }
+            try { Aexis.Ncnn.NcnnGpuResourceTracker.WriteReport(dumpDir, "codeformer_gpu_resources.txt"); } catch { }
         }
     }
 
@@ -5858,7 +5858,7 @@ public static class NcnnDebugRunner
             + " | managed_mb=" + managedMb.ToString("F3", CultureInfo.InvariantCulture)
             + " | gfx_mb=" + gfxMb.ToString("F3", CultureInfo.InvariantCulture)
             + " | rt_objects=" + rtCount.ToString(CultureInfo.InvariantCulture)
-            + " | " + NcnnCompute.NcnnGpuResourceTracker.BuildSummary();
+            + " | " + Aexis.Ncnn.NcnnGpuResourceTracker.BuildSummary();
         if (!string.IsNullOrWhiteSpace(extra))
             line += " | extra=" + extra.Replace("\r", " ").Replace("\n", " | ");
         lines.Add(line);
@@ -6760,25 +6760,25 @@ public static class NcnnDebugRunner
         string taskMetricValue,
         string taskMetricDetail)
     {
-        var manifestPath = Environment.GetEnvironmentVariable(NcnnCompute.NcnnModelManifestLoader.ManifestEnvironmentVariable);
-        AIImage.Inference.Core.ModelManifest manifest = null;
+        var manifestPath = Environment.GetEnvironmentVariable(Aexis.Ncnn.NcnnModelManifestLoader.ManifestEnvironmentVariable);
+        Aexis.ModelManifest manifest = null;
         try
         {
             if (!string.IsNullOrWhiteSpace(manifestPath))
-                manifest = NcnnCompute.NcnnModelManifestLoader.LoadFromFile(manifestPath);
+                manifest = Aexis.Ncnn.NcnnModelManifestLoader.LoadFromFile(manifestPath);
             else if (string.Equals(runner, "clip", StringComparison.Ordinal))
-                manifest = NcnnCompute.NcnnModelManifestLoader.ResolveRunnerManifest(
+                manifest = Aexis.Ncnn.NcnnModelManifestLoader.ResolveRunnerManifest(
                     "mobileclip_s0_export",
                     ResolveRunnerPrecision(ClipPrecisionEnvVar));
             else if (string.Equals(runner, "matting", StringComparison.Ordinal))
-                manifest = NcnnCompute.NcnnModelManifestLoader.ResolveRunnerManifest(
+                manifest = Aexis.Ncnn.NcnnModelManifestLoader.ResolveRunnerManifest(
                     "matting.ncnn",
                     ResolveRunnerPrecision(MattingPrecisionEnvVar));
             else
             {
                 manifestPath = ResolveD1DefaultManifestPath(runner);
                 if (!string.IsNullOrWhiteSpace(manifestPath))
-                    manifest = NcnnCompute.NcnnModelManifestLoader.LoadFromFile(manifestPath);
+                    manifest = Aexis.Ncnn.NcnnModelManifestLoader.LoadFromFile(manifestPath);
             }
         }
         catch (Exception e)
@@ -6786,7 +6786,7 @@ public static class NcnnDebugRunner
             error = string.IsNullOrWhiteSpace(error) ? "Benchmark manifest read failed: " + e.Message : error;
         }
 
-        var stats = NcnnCompute.NcnnGpuResourceTracker.GetStatsSnapshot();
+        var stats = Aexis.Ncnn.NcnnGpuResourceTracker.GetStatsSnapshot();
         var report = new D1RuntimeBenchmarkReport
         {
             runner = runner ?? string.Empty,
@@ -6837,10 +6837,10 @@ public static class NcnnDebugRunner
         return File.Exists(path) ? path : null;
     }
 
-    private static NcnnCompute.NcnnPrecisionMode ResolveRunnerPrecision(string environmentVariable)
+    private static Aexis.Ncnn.NcnnPrecisionMode ResolveRunnerPrecision(string environmentVariable)
     {
         var raw = ResolveStringEnv(environmentVariable, "Auto");
-        if (!Enum.TryParse(raw, true, out NcnnCompute.NcnnPrecisionMode precisionMode))
+        if (!Enum.TryParse(raw, true, out Aexis.Ncnn.NcnnPrecisionMode precisionMode))
             throw new InvalidOperationException("Invalid " + environmentVariable + ": " + raw);
         return precisionMode;
     }

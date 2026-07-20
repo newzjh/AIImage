@@ -2,7 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 
 // This file is deliberately Editor-only. It is an Oracle/Debug capture adapter,
@@ -37,9 +37,9 @@ public static class NcnnGoldenDebugOracleReadback
 {
     public const string Scope = "Debug/Oracle test only - texture-aware readback";
 
-    // The caller must retain each blob with NcnnRepro.Infer(..., pinnedNames) before capture.
+    // The caller must retain each blob with NcnnGraphSession.Infer(..., pinnedNames) before capture.
     public static NcnnGoldenTensorObservation CapturePinnedTexture(
-        NcnnRepro.InferResult inference,
+        NcnnGraphSession.InferResult inference,
         string caseId,
         string node,
         string blob,

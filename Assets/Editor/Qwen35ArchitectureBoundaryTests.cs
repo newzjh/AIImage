@@ -29,8 +29,7 @@ public sealed class Qwen35ArchitectureBoundaryTests
         var projectRoot = ProjectRoot();
         var packageRoots = new[]
         {
-            Path.Combine(projectRoot, "Packages", "com.aiimage.inference.unitygpu"),
-            Path.Combine(projectRoot, "Packages", "com.aiimage.inference.kernels")
+            Path.Combine(projectRoot, "Packages", "com.aexis")
         };
 
         foreach (var packageRoot in packageRoots)
@@ -61,10 +60,11 @@ public sealed class Qwen35ArchitectureBoundaryTests
         var runtimeRoot = Path.Combine(
             ProjectRoot(),
             "Packages",
-            "com.aiimage.inference.unitygpu",
-            "Runtime");
-        Assert.That(File.Exists(Path.Combine(runtimeRoot, "NcnnLayers", "NcnnShortConvLayerRepro.cs")), Is.True);
-        Assert.That(File.Exists(Path.Combine(runtimeRoot, "NcnnLayers", "NcnnGatedDeltaRuleLayerRepro.cs")), Is.True);
+            "com.aexis",
+            "Runtime",
+            "Ncnn");
+        Assert.That(File.Exists(Path.Combine(runtimeRoot, "Layers", "NcnnShortConvLayerRepro.cs")), Is.True);
+        Assert.That(File.Exists(Path.Combine(runtimeRoot, "Layers", "NcnnGatedDeltaRuleLayerRepro.cs")), Is.True);
     }
 
     private static string ProjectRoot()

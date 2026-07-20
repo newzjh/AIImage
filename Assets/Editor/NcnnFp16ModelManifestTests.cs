@@ -1,8 +1,8 @@
 #if UNITY_EDITOR
 using System;
 using System.IO;
-using AIImage.Inference.Core;
-using NcnnCompute;
+using Aexis;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -111,16 +111,16 @@ public sealed class NcnnFp16ModelManifestTests
     [Test]
     public void SensitiveOperators_DeclareFp32AccumulationWhileManifestControlsStorageCast()
     {
-        Assert.That(NcnnRepro.RequiresFp32AccumulatorOutput("LayerNorm"), Is.True);
-        Assert.That(NcnnRepro.RequiresFp32AccumulatorOutput("Softmax"), Is.True);
-        Assert.That(NcnnRepro.RequiresFp32AccumulatorOutput("Reduction"), Is.True);
-        Assert.That(NcnnRepro.RequiresFp32AccumulatorOutput("Convolution"), Is.False);
+        Assert.That(NcnnGraphSession.RequiresFp32AccumulatorOutput("LayerNorm"), Is.True);
+        Assert.That(NcnnGraphSession.RequiresFp32AccumulatorOutput("Softmax"), Is.True);
+        Assert.That(NcnnGraphSession.RequiresFp32AccumulatorOutput("Reduction"), Is.True);
+        Assert.That(NcnnGraphSession.RequiresFp32AccumulatorOutput("Convolution"), Is.False);
 
         var root = Path.GetDirectoryName(Application.dataPath);
-        var source = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4PointwiseNorm.hlsl"));
+        var source = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4PointwiseNorm.hlsl"));
         Assert.That(source, Does.Contain("float sumSquare = 0.0"));
 
-        var reproSource = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute", "NcnnRepro.cs"));
+        var reproSource = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "NcnnGraphSession.cs"));
         Assert.That(reproSource, Does.Contain("format = ResolveLinearTextureFormat(format);"));
         Assert.That(reproSource, Does.Not.Contain("format = format == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : format;"));
         Assert.That(reproSource, Does.Contain("Fp32ActivationStartLayerName"));
@@ -130,7 +130,7 @@ public sealed class NcnnFp16ModelManifestTests
         Assert.That(codeFormerRunner, Does.Contain("Fp32ActivationStartLayerName = _generatorRepro.UsesFp16ActivationStorage"));
         Assert.That(codeFormerRunner, Does.Contain("\"Resize_512\""));
 
-        var reshapeKernel = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnCompute.compute"));
+        var reshapeKernel = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "AexisNcnn.compute"));
         Assert.That(reshapeKernel, Does.Contain("linearIndex >> 2"));
         Assert.That(reshapeKernel, Does.Contain("linearIndex & 3"));
     }
@@ -139,9 +139,9 @@ public sealed class NcnnFp16ModelManifestTests
     public void Fp16WeightKernels_UsePackedHalfUploadsAndNoActivationBufferFallback()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Conv.hlsl"));
-        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources", "NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl"));
-        var convolutionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", "NcnnConvolutionLayerRepro.cs"));
+        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Conv.hlsl"));
+        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl"));
+        var convolutionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "NcnnConvolutionLayerRepro.cs"));
 
         Assert.That(conv, Does.Contain("_ConvW4Fp16"));
         Assert.That(conv, Does.Contain("_DwConvW4Fp16"));
@@ -151,11 +151,11 @@ public sealed class NcnnFp16ModelManifestTests
         Assert.That(gemm, Does.Contain("f16tof32"));
         Assert.That(convolutionLayer, Does.Contain("SetFp16ConvWeights"));
 
-        var innerProductLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", "NcnnInnerProductLayerRepro.cs"));
+        var innerProductLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "NcnnInnerProductLayerRepro.cs"));
         Assert.That(innerProductLayer, Does.Contain("wFp16"));
         Assert.That(innerProductLayer, Does.Contain("SetFp16GemmWeights"));
 
-        var multiHeadAttentionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", "NcnnMultiHeadAttentionLayerRepro.cs"));
+        var multiHeadAttentionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "NcnnMultiHeadAttentionLayerRepro.cs"));
         Assert.That(multiHeadAttentionLayer, Does.Contain("owner.Ops.SetFp16GemmWeights(null);"));
     }
 

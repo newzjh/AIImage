@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
-using NcnnCompute;
+using Aexis.Ncnn;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using AIImage.Qwen35;
@@ -221,7 +221,7 @@ public static class Qwen35MobileQ8AssetBuilder
         string paramName,
         string logicalName,
         int shardBytes,
-        AIImage.Inference.Core.ModelManifest runtimeManifest,
+        Aexis.ModelManifest runtimeManifest,
         JObject logicalFiles,
         JObject sourceFiles)
     {
@@ -233,7 +233,7 @@ public static class Qwen35MobileQ8AssetBuilder
         using (var writer = new NcnnQ8ArchiveWriter(archive, input.Length, defaultBlockSize: 256, fp32Threshold: 4096))
         using (var reader = new NcnnBinReader(input, writer))
         using (var ops = new NcnnOps())
-        using (var repro = new NcnnRepro(ops))
+        using (var repro = new NcnnGraphSession(ops))
         {
             repro.ApplyModelManifest(runtimeManifest);
             repro.LoadModel(File.ReadAllText(Path.Combine(source, paramName)), reader);

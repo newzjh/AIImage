@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 
 namespace AIImage.Qwen35
@@ -13,9 +13,9 @@ namespace AIImage.Qwen35
         private Action<RenderTexture> _release;
 
         public RenderTexture Texture { get; private set; }
-        public NcnnRepro.BufferShape LogicalShape { get; }
+        public NcnnGraphSession.BufferShape LogicalShape { get; }
 
-        internal Qwen35OwnedTexture(NcnnRepro owner, RenderTexture texture, NcnnRepro.BufferShape logicalShape)
+        internal Qwen35OwnedTexture(NcnnGraphSession owner, RenderTexture texture, NcnnGraphSession.BufferShape logicalShape)
         {
             if (owner == null) throw new ArgumentNullException(nameof(owner));
             Texture = texture ?? throw new ArgumentNullException(nameof(texture));
@@ -25,7 +25,7 @@ namespace AIImage.Qwen35
 
         internal Qwen35OwnedTexture(
             RenderTexture texture,
-            NcnnRepro.BufferShape logicalShape,
+            NcnnGraphSession.BufferShape logicalShape,
             Action<RenderTexture> release)
         {
             Texture = texture ?? throw new ArgumentNullException(nameof(texture));
@@ -46,13 +46,13 @@ namespace AIImage.Qwen35
 
     public sealed class Qwen35DecoderState : IDisposable
     {
-        private readonly NcnnRepro _owner;
+        private readonly NcnnGraphSession _owner;
         private readonly Dictionary<string, RenderTexture> _textures =
             new Dictionary<string, RenderTexture>(StringComparer.Ordinal);
-        private readonly Dictionary<string, NcnnRepro.BufferShape> _shapes =
-            new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal);
+        private readonly Dictionary<string, NcnnGraphSession.BufferShape> _shapes =
+            new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal);
 
-        internal Qwen35DecoderState(NcnnRepro owner, int sequenceLength, int positionId)
+        internal Qwen35DecoderState(NcnnGraphSession owner, int sequenceLength, int positionId)
         {
             _owner = owner ?? throw new ArgumentNullException(nameof(owner));
             SequenceLength = sequenceLength;
@@ -63,9 +63,9 @@ namespace AIImage.Qwen35
         public int PositionId { get; }
         public int TextureCount => _textures.Count;
         internal Dictionary<string, RenderTexture> Textures => _textures;
-        internal Dictionary<string, NcnnRepro.BufferShape> Shapes => _shapes;
+        internal Dictionary<string, NcnnGraphSession.BufferShape> Shapes => _shapes;
 
-        internal void Add(string inputName, RenderTexture texture, NcnnRepro.BufferShape shape)
+        internal void Add(string inputName, RenderTexture texture, NcnnGraphSession.BufferShape shape)
         {
             if (string.IsNullOrWhiteSpace(inputName))
                 throw new ArgumentException("Cache input name is empty.", nameof(inputName));
@@ -75,7 +75,7 @@ namespace AIImage.Qwen35
             _shapes.Add(inputName, shape);
         }
 
-        internal void TransferTo(Qwen35DecoderState destination, string inputName, NcnnRepro.BufferShape nextShape)
+        internal void TransferTo(Qwen35DecoderState destination, string inputName, NcnnGraphSession.BufferShape nextShape)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (!_textures.TryGetValue(inputName, out var texture) || !_shapes.TryGetValue(inputName, out var shape))
@@ -172,9 +172,9 @@ namespace AIImage.Qwen35
 
         private readonly NcnnOps _ops;
         private Qwen35SharedTokenEmbeddingWeights _sharedWeights;
-        private readonly NcnnRepro _embed;
-        private readonly NcnnRepro _decoder;
-        private readonly NcnnRepro _projection;
+        private readonly NcnnGraphSession _embed;
+        private readonly NcnnGraphSession _decoder;
+        private readonly NcnnGraphSession _projection;
         private readonly HashSet<string> _decoderOutputs = new HashSet<string>(StringComparer.Ordinal);
         private Action<int, string, string, float[]> _debugLayerReadback;
         private ISet<string> _debugLayerReadbackBlobs;
@@ -183,13 +183,13 @@ namespace AIImage.Qwen35
 
         public Qwen35ByteLevelBpeTokenizer Tokenizer { get; }
         public long SharedWeightBytes => _sharedWeights.ByteCount;
-        public NcnnRepro.ModelLoadProfile TokenEmbeddingLoadProfile => _embed.LastLoadProfile;
-        public NcnnRepro.ModelLoadProfile DecoderLoadProfile => _decoder.LastLoadProfile;
-        public NcnnRepro.ModelLoadProfile ProjectionLoadProfile => _projection.LastLoadProfile;
+        public NcnnGraphSession.ModelLoadProfile TokenEmbeddingLoadProfile => _embed.LastLoadProfile;
+        public NcnnGraphSession.ModelLoadProfile DecoderLoadProfile => _decoder.LastLoadProfile;
+        public NcnnGraphSession.ModelLoadProfile ProjectionLoadProfile => _projection.LastLoadProfile;
         // Diagnostics only. Normal Qwen execution does not allocate or time layer profiles.
-        public NcnnRepro.LayerRuntimeProfile PrefillDecoderRuntimeProfile { get; private set; }
-        public NcnnRepro.LayerRuntimeProfile FirstDecodeRuntimeProfile { get; private set; }
-        public NcnnRepro.LayerRuntimeProfile LastDecodeRuntimeProfile { get; private set; }
+        public NcnnGraphSession.LayerRuntimeProfile PrefillDecoderRuntimeProfile { get; private set; }
+        public NcnnGraphSession.LayerRuntimeProfile FirstDecodeRuntimeProfile { get; private set; }
+        public NcnnGraphSession.LayerRuntimeProfile LastDecodeRuntimeProfile { get; private set; }
 
         public Qwen35DecoderSession(string modelDirectory, Qwen35ByteLevelBpeTokenizer tokenizer)
             : this(modelDirectory, tokenizer, true)
@@ -305,7 +305,7 @@ namespace AIImage.Qwen35
 
         private static Qwen35Progress MapNetworkProgress(
             string network,
-            NcnnRepro.LoadProgress progress,
+            NcnnGraphSession.LoadProgress progress,
             float start,
             float end)
         {
@@ -382,11 +382,11 @@ namespace AIImage.Qwen35
                     state.Add(
                         "cache_conv" + i,
                         CreateZeroPack4Texture(1536, 4, 1),
-                        new NcnnRepro.BufferShape(2, 1536, 4, 1, 1));
+                        new NcnnGraphSession.BufferShape(2, 1536, 4, 1, 1));
                     state.Add(
                         "cache_gdr" + i,
                         CreateZeroPack4Texture(32, 128, 16),
-                        new NcnnRepro.BufferShape(3, 32, 128, 1, 16));
+                        new NcnnGraphSession.BufferShape(3, 32, 128, 1, 16));
                 }
                 return state;
             }
@@ -495,12 +495,12 @@ namespace AIImage.Qwen35
                     ["in2"] = cosine,
                     ["in3"] = sine
                 };
-                var shapes = new Dictionary<string, NcnnRepro.BufferShape>(state.Shapes, StringComparer.Ordinal)
+                var shapes = new Dictionary<string, NcnnGraphSession.BufferShape>(state.Shapes, StringComparer.Ordinal)
                 {
                     ["in0"] = embeddings.LogicalShape,
-                    ["in1"] = new NcnnRepro.BufferShape(2, state.SequenceLength + sequenceLength, sequenceLength, 1, 1),
-                    ["in2"] = new NcnnRepro.BufferShape(3, RopeHalfDimension, sequenceLength, 1, 1),
-                    ["in3"] = new NcnnRepro.BufferShape(3, RopeHalfDimension, sequenceLength, 1, 1)
+                    ["in1"] = new NcnnGraphSession.BufferShape(2, state.SequenceLength + sequenceLength, sequenceLength, 1, 1),
+                    ["in2"] = new NcnnGraphSession.BufferShape(3, RopeHalfDimension, sequenceLength, 1, 1),
+                    ["in3"] = new NcnnGraphSession.BufferShape(3, RopeHalfDimension, sequenceLength, 1, 1)
                 };
 
                 using (var result = _decoder.InferWithMultiInputs(textureInputs, null, _decoderOutputs, shapes))
@@ -558,7 +558,7 @@ namespace AIImage.Qwen35
                 new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = hidden.Texture },
                 null,
                 null,
-                new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape }))
+                new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape }))
             {
                 var logits = result.ReadTextureDataForOutput("out0");
                 DebugTextureReadback?.Invoke("logits", logits);
@@ -576,7 +576,7 @@ namespace AIImage.Qwen35
                 new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = hidden.Texture },
                 null,
                 null,
-                new Dictionary<string, NcnnRepro.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape }))
+                new Dictionary<string, NcnnGraphSession.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape }))
             {
                 if (!result.TryGetExistingTexture("out0", out var logits)
                     || !result.TryGetExistingTextureDescriptor("out0", out var logicalShape, out var storageShape))
@@ -586,10 +586,10 @@ namespace AIImage.Qwen35
                 if (logicalShape.w < Tokenizer.VocabularySize)
                     throw new InvalidOperationException("LM head texture does not cover the tokenizer vocabulary.");
 
-                var outputShape = new NcnnRepro.BufferShape(logicalShape.dims, 1, 1, 1, 1);
-                var outputStorageShape = new NcnnRepro.BufferShape(2, 1, 1, 1, 1);
+                var outputShape = new NcnnGraphSession.BufferShape(logicalShape.dims, 1, 1, 1, 1);
+                var outputStorageShape = new NcnnGraphSession.BufferShape(2, 1, 1, 1, 1);
                 var vocabularyAxis = logicalShape.dims - 1;
-                var argMax = _projection.RentTempMat(1, 1, NcnnRepro.ResolveLinearMatTextureFormat());
+                var argMax = _projection.RentTempMat(1, 1, NcnnGraphSession.ResolveLinearMatTextureFormat());
                 try
                 {
                     if (logits.dimension == UnityEngine.Rendering.TextureDimension.Tex2D)
@@ -631,7 +631,7 @@ namespace AIImage.Qwen35
                         throw new InvalidOperationException(
                             "Unsupported LM head texture dimension for GPU ArgMax: " + logits.dimension);
                     }
-                    var token = Mathf.RoundToInt(NcnnRepro.ReadScalarTexture(argMax));
+                    var token = Mathf.RoundToInt(NcnnGraphSession.ReadScalarTexture(argMax));
                     if (token < 0 || token >= Tokenizer.VocabularySize)
                         throw new InvalidOperationException("GPU ArgMax returned an invalid token id: " + token);
                     return token;
@@ -1013,7 +1013,7 @@ namespace AIImage.Qwen35
                         && imageTexture.height == vision.EmbeddingCount
                         && imageTexture.volumeDepth == 1)
                     {
-                        imageLinear = _decoder.RentTempMat(HiddenSize, vision.EmbeddingCount, NcnnRepro.ResolveLinearMatTextureFormat());
+                        imageLinear = _decoder.RentTempMat(HiddenSize, vision.EmbeddingCount, NcnnGraphSession.ResolveLinearMatTextureFormat());
                         _ops.ReshapePack4ToLinearMat(
                             imageTexture,
                             HiddenSize,
@@ -1032,7 +1032,7 @@ namespace AIImage.Qwen35
                     }
 
                     var expandedRows = checked(prefixTokenIds.Count - 1 + vision.EmbeddingCount);
-                    merged = _decoder.RentTempMat(HiddenSize, expandedRows, NcnnRepro.ResolveLinearMatTextureFormat());
+                    merged = _decoder.RentTempMat(HiddenSize, expandedRows, NcnnGraphSession.ResolveLinearMatTextureFormat());
                     if (imagePadIndex > 0)
                         CopyLinearRows(text.Texture, 0, merged, 0, imagePadIndex);
                     CopyLinearRows(imageLinear, 0, merged, imagePadIndex, vision.EmbeddingCount);
@@ -1044,7 +1044,7 @@ namespace AIImage.Qwen35
                     var result = new Qwen35OwnedTexture(
                         _decoder,
                         merged,
-                        new NcnnRepro.BufferShape(2, HiddenSize, expandedRows, 1, 1));
+                        new NcnnGraphSession.BufferShape(2, HiddenSize, expandedRows, 1, 1));
                     merged = null;
                     return result;
                 }
@@ -1151,7 +1151,7 @@ namespace AIImage.Qwen35
         }
 
         private static void ExtractCache(
-            NcnnRepro.InferResult result,
+            NcnnGraphSession.InferResult result,
             Qwen35DecoderState state,
             string inputName,
             string outputName)
@@ -1159,7 +1159,7 @@ namespace AIImage.Qwen35
             state.Add(inputName, result.ExtractTexture(outputName), GetShape(result, outputName));
         }
 
-        private void DebugReadbackPackedCaches(NcnnRepro.InferResult result, int decodeInvocation)
+        private void DebugReadbackPackedCaches(NcnnGraphSession.InferResult result, int decodeInvocation)
         {
             if (_debugLayerReadback == null || _debugLayerReadbackBlobs == null)
                 return;
@@ -1232,11 +1232,11 @@ namespace AIImage.Qwen35
             }
         }
 
-        private static NcnnRepro.BufferShape GetShape(NcnnRepro.InferResult result, string name)
+        private static NcnnGraphSession.BufferShape GetShape(NcnnGraphSession.InferResult result, string name)
         {
             if (!result.TryGetLogicalShape(name, out var dims, out var w, out var h, out var d, out var c))
                 throw new InvalidOperationException("Texture logical shape is unavailable: " + name);
-            return new NcnnRepro.BufferShape(dims, w, h, d, c);
+            return new NcnnGraphSession.BufferShape(dims, w, h, d, c);
         }
 
         private RenderTexture CreateZeroPack4Texture(int width, int height, int slices)
@@ -1338,9 +1338,9 @@ namespace AIImage.Qwen35
             }
         }
 
-        private NcnnRepro CreateRepro(string modelDirectory)
+        private NcnnGraphSession CreateRepro(string modelDirectory)
         {
-            var repro = new NcnnRepro(_ops)
+            var repro = new NcnnGraphSession(_ops)
             {
                 ExecutionMode = NcnnInferenceExecutionMode.ProductionTextureOnly,
                 DisallowInferenceTempComputeBuffers = true,
@@ -1364,7 +1364,7 @@ namespace AIImage.Qwen35
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, false);
         }
 
-        private static void Load(NcnnRepro repro, string directory, string paramName, string binName)
+        private static void Load(NcnnGraphSession repro, string directory, string paramName, string binName)
         {
             using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))
             using (var reader = new NcnnBinReader(stream))
@@ -1372,11 +1372,11 @@ namespace AIImage.Qwen35
         }
 
         private static async UniTask LoadAsync(
-            NcnnRepro repro,
+            NcnnGraphSession repro,
             string directory,
             string paramName,
             string binName,
-            Action<NcnnRepro.LoadProgress> onProgress,
+            Action<NcnnGraphSession.LoadProgress> onProgress,
             CancellationToken cancellationToken)
         {
             using (var stream = Qwen35ModelAssetResolver.OpenBin(directory, binName))

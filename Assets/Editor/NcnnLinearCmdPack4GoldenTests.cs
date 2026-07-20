@@ -1,6 +1,6 @@
 #if UNITY_EDITOR
 using System;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -27,7 +27,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         var outputPacks = Mathf.CeilToInt(n / 4f);
 
         NcnnGpuResourceTracker.Reset("NcnnLinearCmdPack4GoldenTests.linear-projection");
-        using var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnLinearCmdPack4Golden:linear-projection" };
         using var inputBuffer = CreateBuffer(input);
         using var weightBuffer = CreateBuffer(weights);
@@ -104,7 +104,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         var expected = ReferenceSdpa(query, key, value, mask, sequence, embed, heads, 1f / Mathf.Sqrt(embed), causal: true);
 
         NcnnGpuResourceTracker.Reset("NcnnLinearCmdPack4GoldenTests.Sdpa");
-        using var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnLinearCmdPack4Golden:sdpa-mask-causal" };
         using var queryBuffer = CreateBuffer(query);
         using var keyBuffer = CreateBuffer(key);
@@ -190,7 +190,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
 
         foreach (var layer in layers)
         {
-            var path = System.IO.Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers", layer);
+            var path = System.IO.Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", layer);
             var source = System.IO.File.ReadAllText(path);
             Assert.That(source, Does.Not.Contain("PublishCmdPlaceholder"), layer);
             Assert.That(source, Does.Not.Contain("[CmdPlaceholder]"), layer);
@@ -224,7 +224,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         var outPacks = Mathf.CeilToInt(outC / 4f);
 
         NcnnGpuResourceTracker.Reset("NcnnLinearCmdPack4GoldenTests." + name);
-        using var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnLinearCmdPack4Golden:" + name };
         using var aBuffer = CreateBuffer(a);
         using var bBuffer = CreateBuffer(b);
@@ -274,7 +274,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         var name = "softmax-axis-" + axis;
 
         NcnnGpuResourceTracker.Reset("NcnnLinearCmdPack4GoldenTests." + name);
-        using var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnLinearCmdPack4Golden:" + name };
         using var inputBuffer = CreateBuffer(input);
         var persistent = CreatePersistentSlices(w, h, d * packs);
@@ -319,7 +319,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         var name = "layernorm-width-" + dtype.ToLowerInvariant();
 
         NcnnGpuResourceTracker.Reset("NcnnLinearCmdPack4GoldenTests." + name);
-        using var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = textureFormat };
+        using var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = textureFormat };
         using var commandBuffer = new CommandBuffer { name = "NcnnLinearCmdPack4Golden:" + name };
         using var inputBuffer = CreateBuffer(input);
         using var gammaBuffer = CreateBuffer(gamma);
@@ -364,7 +364,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         var name = "reduction-sum-axis-" + axis;
 
         NcnnGpuResourceTracker.Reset("NcnnLinearCmdPack4GoldenTests." + name);
-        using var repro = new NcnnRepro(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+        using var repro = new NcnnGraphSession(new NcnnOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
         using var commandBuffer = new CommandBuffer { name = "NcnnLinearCmdPack4Golden:" + name };
         using var inputBuffer = CreateBuffer(input);
         var persistent = CreatePersistentSlices(outputW, outputH, 1);
@@ -709,7 +709,7 @@ public sealed class NcnnLinearCmdPack4GoldenTests
         return (((channel * d + z) * h + y) * w) + x;
     }
 
-    private static void Return(NcnnRepro repro, CommandBuffer commandBuffer, ref ComputeTexture texture)
+    private static void Return(NcnnGraphSession repro, CommandBuffer commandBuffer, ref ComputeTexture texture)
     {
         if (texture == null)
             return;

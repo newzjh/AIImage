@@ -3,8 +3,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using AIImage.Inference.Core;
-using NcnnCompute;
+using Aexis;
+using Aexis.Ncnn;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -157,7 +157,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         var weights = new float[weightCount];
         var bias = new float[outChannels];
         using (var ops = new NcnnOps())
-        using (var session = new NcnnRepro(ops))
+        using (var session = new NcnnGraphSession(ops))
         using (var stream = File.OpenRead(Path.Combine(modelDirectory, "matting.bin")))
         using (var reader = new NcnnBinReader(stream))
         {
@@ -222,7 +222,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         var inputChannels = weightCount / Math.Max(1, outChannels * kernel * kernel);
         using var stream = File.OpenRead(Path.Combine(modelDirectory, "yolov8n_seg.ncnn.bin"));
         using var reader = new NcnnBinReader(stream);
-        var weights = NcnnRepro.ReadPackedOrRawWeightArray(reader, weightCount, layer.name);
+        var weights = NcnnGraphSession.ReadPackedOrRawWeightArray(reader, weightCount, layer.name);
         var bias = layer.GetInt(5, 0) != 0 ? reader.ReadFloat32Array(outChannels) : new float[outChannels];
 
         const int inputWidth = 64;
@@ -271,7 +271,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
     {
         var paramText = File.ReadAllText(Path.Combine(modelDirectory, "image_encoder.ncnn.param"));
         using var ops = new NcnnOps();
-        using var session = new NcnnRepro(ops);
+        using var session = new NcnnGraphSession(ops);
         using var stream = File.OpenRead(Path.Combine(modelDirectory, "image_encoder.ncnn.bin"));
         using var reader = new NcnnBinReader(stream);
         session.LoadModel(paramText, reader);
@@ -362,23 +362,23 @@ public static class NcnnInt8WeightOnlyRegressionTool
         if (!CanRunGpuTiming(out var unavailableReason))
             return CreateUnavailableGpuTiming(unavailableReason);
 
-        NcnnRepro.Int8WeightOnlyUpload int8 = null;
+        NcnnGraphSession.Int8WeightOnlyUpload int8 = null;
         ComputeBuffer fp16 = null;
         try
         {
             var inputPacks = (inputChannels + 3) / 4;
             var outputPacks = (outputChannels + 3) / 4;
-            var packedWeights = NcnnRepro.PackWeightsToO4I4K(weights, outputChannels, inputChannels, kernel, outputPacks, inputPacks);
-            var packedBias = NcnnRepro.PackBiasToO4(bias, outputChannels, outputPacks);
+            var packedWeights = NcnnGraphSession.PackWeightsToO4I4K(weights, outputChannels, inputChannels, kernel, outputPacks, inputPacks);
+            var packedBias = NcnnGraphSession.PackBiasToO4(bias, outputChannels, outputPacks);
             using var ops = new NcnnOps();
-            using var repro = new NcnnRepro(ops);
+            using var repro = new NcnnGraphSession(ops);
             using var packedWeightBuffer = new ComputeBuffer(packedWeights.Length, sizeof(float) * 4, ComputeBufferType.Structured);
             using var packedBiasBuffer = new ComputeBuffer(packedBias.Length, sizeof(float) * 4, ComputeBufferType.Structured);
             using var rawBiasBuffer = NewFloatBuffer(bias);
             packedWeightBuffer.SetData(packedWeights);
             packedBiasBuffer.SetData(packedBias);
-            fp16 = NcnnRepro.NewFp16Vector4Buffer(packedWeights, "NcnnInt8WeightOnlyRegressionTool.MattingFp16");
-            int8 = NcnnRepro.NewInt8WeightOnlyUpload(
+            fp16 = NcnnGraphSession.NewFp16Vector4Buffer(packedWeights, "NcnnInt8WeightOnlyRegressionTool.MattingFp16");
+            int8 = NcnnGraphSession.NewInt8WeightOnlyUpload(
                 weights,
                 outputChannels,
                 weights.Length / outputChannels,
@@ -414,7 +414,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
     }
 
     private static NcnnInt8GpuModeMeasurement MeasureMattingGpuMode(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         NcnnOps ops,
         float[] input,
         int inputWidth,
@@ -430,7 +430,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         ComputeBuffer packedBias,
         ComputeBuffer rawBias,
         ComputeBuffer fp16Weights,
-        NcnnRepro.Int8WeightOnlyUpload int8Weights,
+        NcnnGraphSession.Int8WeightOnlyUpload int8Weights,
         NcnnPrecisionMode precision,
         float activationScale = 0f)
     {
@@ -504,17 +504,17 @@ public static class NcnnInt8WeightOnlyRegressionTool
         if (!CanRunGpuTiming(out var unavailableReason))
             return CreateUnavailableGpuTiming(unavailableReason);
 
-        NcnnRepro.Int8WeightOnlyUpload int8 = null;
+        NcnnGraphSession.Int8WeightOnlyUpload int8 = null;
         ComputeBuffer fp16 = null;
         try
         {
             using var ops = new NcnnOps();
-            using var repro = new NcnnRepro(ops);
+            using var repro = new NcnnGraphSession(ops);
             using var fp32 = NewFloatBuffer(weights);
             using var biasBuffer = NewFloatBuffer(bias);
             using var unusedWeightBinding = new ComputeBuffer(1, sizeof(float), ComputeBufferType.Structured);
-            fp16 = NcnnRepro.NewFp16Buffer(weights, "NcnnInt8WeightOnlyRegressionTool.ClipFp16");
-            int8 = NcnnRepro.NewInt8WeightOnlyUpload(
+            fp16 = NcnnGraphSession.NewFp16Buffer(weights, "NcnnInt8WeightOnlyRegressionTool.ClipFp16");
+            int8 = NcnnGraphSession.NewInt8WeightOnlyUpload(
                 weights,
                 outputFeatures,
                 inputFeatures,
@@ -557,7 +557,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
     }
 
     private static NcnnInt8GpuModeMeasurement MeasureFrozenClipGpuMode(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         NcnnOps ops,
         float[] input,
         int outputFeatures,
@@ -566,7 +566,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         ComputeBuffer fp32Weights,
         ComputeBuffer bias,
         ComputeBuffer fp16Weights,
-        NcnnRepro.Int8WeightOnlyUpload int8Weights,
+        NcnnGraphSession.Int8WeightOnlyUpload int8Weights,
         ComputeBuffer unusedWeightBinding,
         NcnnPrecisionMode precision,
         float activationScale = 0f)
@@ -617,7 +617,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
     }
 
     private static double DispatchMattingConv(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         NcnnOps ops,
         Texture2DArray input,
         int inputPacks,
@@ -680,7 +680,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
     }
 
     private static double DispatchFrozenClipProjection(
-        NcnnRepro repro,
+        NcnnGraphSession repro,
         NcnnOps ops,
         Texture2DArray input,
         int inputFeatures,
@@ -813,7 +813,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         ComputeBuffer packedBias,
         ComputeBuffer rawBias,
         ComputeBuffer fp16Weights,
-        NcnnRepro.Int8WeightOnlyUpload int8Weights)
+        NcnnGraphSession.Int8WeightOnlyUpload int8Weights)
     {
         if (precision == NcnnPrecisionMode.FP32)
         {
@@ -839,7 +839,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
         ComputeBuffer fp32Weights,
         ComputeBuffer bias,
         ComputeBuffer fp16Weights,
-        NcnnRepro.Int8WeightOnlyUpload int8Weights,
+        NcnnGraphSession.Int8WeightOnlyUpload int8Weights,
         ComputeBuffer unusedWeightBinding)
     {
         RegisterModeBuffer(bias, "NcnnInt8SelectiveRegression.Gemm.Bias");

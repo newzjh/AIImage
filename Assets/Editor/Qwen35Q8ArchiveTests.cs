@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 using System.Security.Cryptography;
-using NcnnCompute;
+using Aexis.Ncnn;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using AIImage.Qwen35;
@@ -35,8 +35,8 @@ public sealed class Qwen35Q8ArchiveTests
             Graphics.CopyTexture(source, logits);
 
             using var ops = new NcnnOps();
-            var inputShape = new NcnnRepro.BufferShape(2, vocabularySize, 1, 1, 1);
-            var outputShape = new NcnnRepro.BufferShape(2, 1, 1, 1, 1);
+            var inputShape = new NcnnGraphSession.BufferShape(2, vocabularySize, 1, 1, 1);
+            var outputShape = new NcnnGraphSession.BufferShape(2, 1, 1, 1, 1);
             ops.SentisArgReduceLinearMat(
                 logits,
                 inputShape,
@@ -49,7 +49,7 @@ public sealed class Qwen35Q8ArchiveTests
                 outputShape,
                 output);
 
-            Assert.That(Mathf.RoundToInt(NcnnRepro.ReadScalarTexture(output)), Is.EqualTo(expectedToken));
+            Assert.That(Mathf.RoundToInt(NcnnGraphSession.ReadScalarTexture(output)), Is.EqualTo(expectedToken));
         }
         finally
         {
@@ -108,7 +108,7 @@ public sealed class Qwen35Q8ArchiveTests
             using var ops = new NcnnOps();
             ops.ArgMaxPack4LinearMat(logits, vocabularySize, 1, tileRows, output);
 
-            Assert.That(Mathf.RoundToInt(NcnnRepro.ReadScalarTexture(output)), Is.EqualTo(expectedToken));
+            Assert.That(Mathf.RoundToInt(NcnnGraphSession.ReadScalarTexture(output)), Is.EqualTo(expectedToken));
         }
         finally
         {

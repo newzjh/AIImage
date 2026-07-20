@@ -6,7 +6,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -186,7 +186,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public event Action<float, string> ProgressChanged;
 
     private NcnnOps _ops;
-    private NcnnRepro _repro;
+    private NcnnGraphSession _repro;
     private string _loadedModelKey;
     private bool _hasAppliedPrecisionMode;
     private NcnnPrecisionMode _appliedPrecisionMode;
@@ -663,7 +663,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         Release();
     }
 
-    private BlobData ReadBlobData(NcnnRepro.InferResult infer, string blobName)
+    private BlobData ReadBlobData(NcnnGraphSession.InferResult infer, string blobName)
     {
         if (infer == null)
             throw new ArgumentNullException(nameof(infer));
@@ -1417,7 +1417,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         return sb.ToString();
     }
 
-    private void TryDumpBlobSummary(NcnnRepro.InferResult infer, string blobName, string path)
+    private void TryDumpBlobSummary(NcnnGraphSession.InferResult infer, string blobName, string path)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName) || string.IsNullOrWhiteSpace(path))
             return;
@@ -1465,7 +1465,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private void TryDumpBlobFloatArray(NcnnRepro.InferResult infer, string blobName, string dir, string fileName)
+    private void TryDumpBlobFloatArray(NcnnGraphSession.InferResult infer, string blobName, string dir, string fileName)
     {
         if (infer == null || string.IsNullOrWhiteSpace(blobName))
             return;

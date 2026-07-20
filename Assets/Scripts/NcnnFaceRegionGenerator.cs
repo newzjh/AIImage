@@ -5,7 +5,7 @@ using System.IO;
 using System.Diagnostics;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Debug = UnityEngine.Debug;
@@ -140,7 +140,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     [Range(0.2f, 3f)] public float maxFaceAspectRatio = 1.6f;
 
     private NcnnOps _ops;
-    private NcnnRepro _repro;
+    private NcnnGraphSession _repro;
     private bool _loaded;
     private bool _hasAppliedPrecisionMode;
     private NcnnPrecisionMode _appliedPrecisionMode;
@@ -964,7 +964,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         return "[" + string.Join(" ", parts) + "]";
     }
 
-    private void AppendBlobPreview(NcnnRepro.InferResult infer, List<string> lines, string blobName, int previewCount)
+    private void AppendBlobPreview(NcnnGraphSession.InferResult infer, List<string> lines, string blobName, int previewCount)
     {
         if (infer == null || lines == null || string.IsNullOrWhiteSpace(blobName))
             return;
@@ -1008,7 +1008,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         }
     }
 
-    private float[] ReadInferBlobData(NcnnRepro.InferResult infer, string blobName, out string sourceKind)
+    private float[] ReadInferBlobData(NcnnGraphSession.InferResult infer, string blobName, out string sourceKind)
     {
         sourceKind = "none";
         if (infer == null || string.IsNullOrWhiteSpace(blobName))

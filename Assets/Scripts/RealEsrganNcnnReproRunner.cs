@@ -7,7 +7,7 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -30,7 +30,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     public event Action<float, string> ProgressChanged;
 
-    private NcnnRepro _repro;
+    private NcnnGraphSession _repro;
     private bool _loaded;
     private string _loadedModelName;
     private bool _hasAppliedPrecisionMode;

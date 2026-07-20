@@ -1,6 +1,6 @@
 using System;
 using System.Linq;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 

@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
-using NcnnCompute;
+using Aexis.Ncnn;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using AIImage.Qwen35;
@@ -195,7 +195,7 @@ public static class Qwen35MobilePlatformBuild
     private static JObject DescribeInferenceShader()
     {
         var path = Path.Combine(ProjectRoot,
-            "Packages/com.aiimage.inference.kernels/Runtime/Resources/NcnnCompute.compute".Replace('/', Path.DirectorySeparatorChar));
+            "Packages/com.aexis/Runtime/Resources/Aexis/Ncnn/AexisNcnn.compute".Replace('/', Path.DirectorySeparatorChar));
         if (!File.Exists(path)) throw new FileNotFoundException("NCNN ComputeShader is missing.", path);
         var source = File.ReadAllText(path);
         return new JObject

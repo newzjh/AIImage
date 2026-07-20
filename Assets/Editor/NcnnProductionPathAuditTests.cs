@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using NcnnCompute;
+using Aexis.Ncnn;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -38,7 +38,7 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void InferResult_DoesNotExposeProductionBufferReadback()
     {
-        var source = ReadPackageSource("NcnnCompute", "NcnnRepro.cs");
+        var source = ReadPackageSource("NcnnCompute", "NcnnGraphSession.cs");
         foreach (var api in ForbiddenPublicReadbackApis)
             Assert.That(source, Does.Not.Contain(api), "Production InferResult must not expose " + api);
 
@@ -51,12 +51,12 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void ProductionBoundary_AllowsFixedBufferInputsAndRejectsIntermediateMaterializationWithTensorContract()
     {
-        var repro = ReadPackageSource("NcnnCompute", "NcnnRepro.cs");
-        var factory = ReadPackageSource("NcnnLayers", "NcnnLayerFactoryRepro.cs");
-        var reshape = ReadPackageSource("NcnnLayers", "NcnnReshapeLayerRepro.cs");
-        var embed = ReadPackageSource("NcnnLayers", "NcnnEmbedLayerRepro.cs");
-        var innerProduct = ReadPackageSource("NcnnLayers", "NcnnInnerProductLayerRepro.cs");
-        var permute = ReadPackageSource("NcnnLayers", "NcnnPermuteLayerRepro.cs");
+        var repro = ReadPackageSource("NcnnCompute", "NcnnGraphSession.cs");
+        var factory = ReadPackageSource("Layers", "NcnnLayerFactoryRepro.cs");
+        var reshape = ReadPackageSource("Layers", "NcnnReshapeLayerRepro.cs");
+        var embed = ReadPackageSource("Layers", "NcnnEmbedLayerRepro.cs");
+        var innerProduct = ReadPackageSource("Layers", "NcnnInnerProductLayerRepro.cs");
+        var permute = ReadPackageSource("Layers", "NcnnPermuteLayerRepro.cs");
         var inpainting = ReadAssetSource("Scripts/SDInpaintingNcnnReproRunner.cs");
 
         Assert.That(repro, Does.Contain("if (!IsDebugOracleExecution)\n                return true;"));
@@ -69,7 +69,7 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(factory, Does.Contain("if (IsDebugOracleExecution && !textureBlobs.ContainsKey(kv.Key))"));
         Assert.That(factory, Does.Contain("fixed Buffer input is a valid graph boundary"));
         Assert.That(factory, Does.Contain("SetCurrentBufferExecutionContext(context)"));
-        var input = ReadPackageSource("NcnnLayers", "NcnnInputLayerRepro.cs");
+        var input = ReadPackageSource("Layers", "NcnnInputLayerRepro.cs");
         Assert.That(input, Does.Contain("Input is a graph-boundary alias"));
         Assert.That(input, Does.Contain("context.bufferBlobs[topName] = inputBuffer"));
         Assert.That(input, Does.Not.Contain("Materialize"));
@@ -80,11 +80,11 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(innerProduct, Does.Contain("Gemm2DAttentionPack4ToLinearTextureA"));
         Assert.That(innerProduct, Does.Contain("TryResolveAttentionPack4ToLinearInput"));
         Assert.That(permute, Does.Contain("HasSingleContextFlattenConsumer"));
-        var binaryOp = ReadPackageSource("NcnnLayers", "NcnnBinaryOpLayerRepro.cs");
-        var slice = ReadPackageSource("NcnnLayers", "NcnnSliceLayerRepro.cs");
+        var binaryOp = ReadPackageSource("Layers", "NcnnBinaryOpLayerRepro.cs");
+        var slice = ReadPackageSource("Layers", "NcnnSliceLayerRepro.cs");
         var ops = ReadPackageSource("NcnnCompute", "NcnnOps.cs");
-        var computeShader = ReadKernelSource("NcnnCompute.compute");
-        var matmulKernels = ReadKernelSource("NcnnComputeIncludes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl");
+        var computeShader = ReadKernelSource("AexisNcnn.compute");
+        var matmulKernels = ReadKernelSource("Includes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl");
         Assert.That(binaryOp, Does.Contain("broadcastMode = 4"));
         Assert.That(binaryOp, Does.Contain("bShape.c == 1"));
         Assert.That(binaryOp, Does.Contain("IsStrictLinearMatTexture(scalarTexture)"));
@@ -105,8 +105,8 @@ public sealed class NcnnProductionPathAuditTests
         var root = Path.GetDirectoryName(Application.dataPath);
         var allowedRoots = new[]
         {
-            Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnCompute"),
-            Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime", "NcnnLayers")
+            Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute"),
+            Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers")
         };
         var violations = new List<string>();
 
@@ -147,7 +147,7 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void ProductionAuditLog_StatesThatIntermediateBufferMaterializationIsZero()
     {
-        var source = ReadPackageSource("NcnnCompute", "NcnnRepro.cs");
+        var source = ReadPackageSource("NcnnCompute", "NcnnGraphSession.cs");
         Assert.That(source, Does.Contain("[InferencePathAudit] mode=ProductionTextureOnly"));
         Assert.That(source, Does.Contain("intermediate_buffer_materializations=0"));
     }
@@ -158,21 +158,21 @@ public sealed class NcnnProductionPathAuditTests
         var texture = new RenderTexture(4, 4, 0, RenderTextureFormat.ARGBHalf);
         try
         {
-            var storage = new NcnnRepro.BufferShape(3, 4, 4, 1, 8);
-            var source = NcnnRepro.CreateTextureRef(texture, storage, storage, owned: false, blobName: "source");
+            var storage = new NcnnGraphSession.BufferShape(3, 4, 4, 1, 8);
+            var source = NcnnGraphSession.CreateTextureRef(texture, storage, storage, owned: false, blobName: "source");
             var descriptor = source.Descriptor;
 
-            var reshape = NcnnRepro.CreateTextureAlias(
+            var reshape = NcnnGraphSession.CreateTextureAlias(
                 source,
-                new NcnnRepro.BufferShape(2, 16, 8, 1, 1),
+                new NcnnGraphSession.BufferShape(2, 16, 8, 1, 1),
                 storage);
-            var squeeze = NcnnRepro.CreateTextureAlias(
+            var squeeze = NcnnGraphSession.CreateTextureAlias(
                 source,
-                new NcnnRepro.BufferShape(2, 16, 8, 1, 1),
+                new NcnnGraphSession.BufferShape(2, 16, 8, 1, 1),
                 storage);
-            var flatten = NcnnRepro.CreateTextureAlias(
+            var flatten = NcnnGraphSession.CreateTextureAlias(
                 source,
-                new NcnnRepro.BufferShape(1, 128, 1, 1, 1),
+                new NcnnGraphSession.BufferShape(1, 128, 1, 1, 1),
                 storage);
 
             Assert.That(reshape.texture, Is.SameAs(texture));
@@ -183,8 +183,8 @@ public sealed class NcnnProductionPathAuditTests
             Assert.That(source.refs, Is.EqualTo(4));
             Assert.That(flatten.Descriptor.AliasGroup, Is.EqualTo(descriptor.AliasGroup));
 
-            source.logicalShape = new NcnnRepro.BufferShape(3, 1, 1, 1, 1);
-            source.storageShape = new NcnnRepro.BufferShape(3, 1, 1, 1, 1);
+            source.logicalShape = new NcnnGraphSession.BufferShape(3, 1, 1, 1, 1);
+            source.storageShape = new NcnnGraphSession.BufferShape(3, 1, 1, 1, 1);
             Assert.That(source.Descriptor, Is.SameAs(descriptor));
             Assert.That(source.Descriptor.LogicalShape, Is.EqualTo(storage));
             Assert.That(source.Descriptor.StorageShape, Is.EqualTo(storage));
@@ -205,13 +205,13 @@ public sealed class NcnnProductionPathAuditTests
         var texture = new RenderTexture(4, 4, 0, RenderTextureFormat.ARGBHalf);
         try
         {
-            var sourceStorage = new NcnnRepro.BufferShape(3, 4, 4, 1, 8);
-            var source = NcnnRepro.CreateTextureRef(texture, sourceStorage, sourceStorage, owned: false, blobName: "source");
-            var targetLogical = new NcnnRepro.BufferShape(3, 8, 2, 1, 8);
-            var targetStorage = new NcnnRepro.BufferShape(3, 8, 2, 1, 8);
+            var sourceStorage = new NcnnGraphSession.BufferShape(3, 4, 4, 1, 8);
+            var source = NcnnGraphSession.CreateTextureRef(texture, sourceStorage, sourceStorage, owned: false, blobName: "source");
+            var targetLogical = new NcnnGraphSession.BufferShape(3, 8, 2, 1, 8);
+            var targetStorage = new NcnnGraphSession.BufferShape(3, 8, 2, 1, 8);
 
             var error = Assert.Throws<TensorAliasTransformRequiredException>(
-                () => NcnnRepro.CreateTextureAlias(source, targetLogical, targetStorage));
+                () => NcnnGraphSession.CreateTextureAlias(source, targetLogical, targetStorage));
 
             Assert.That(error.Message, Does.Contain("source_logical=dims=3 w=4 h=4 d=1 c=8"));
             Assert.That(error.Message, Does.Contain("source_storage=dims=3 w=4 h=4 d=1 c=8"));
@@ -240,11 +240,11 @@ public sealed class NcnnProductionPathAuditTests
             format = RenderTextureFormat.ARGBHalf,
             trackerLabel = "cmd-source"
         };
-        var storage = new NcnnRepro.BufferShape(3, 4, 4, 1, 8);
-        var source = NcnnRepro.CreateCmdTensorRef(texture, storage, storage, owned: false, blobName: "cmd-source");
-        var alias = NcnnRepro.CreateCmdTensorAlias(
+        var storage = new NcnnGraphSession.BufferShape(3, 4, 4, 1, 8);
+        var source = NcnnGraphSession.CreateCmdTensorRef(texture, storage, storage, owned: false, blobName: "cmd-source");
+        var alias = NcnnGraphSession.CreateCmdTensorAlias(
             source,
-            new NcnnRepro.BufferShape(1, 128, 1, 1, 1),
+            new NcnnGraphSession.BufferShape(1, 128, 1, 1, 1),
             storage);
 
         Assert.That(alias.texture, Is.SameAs(texture));
@@ -275,7 +275,7 @@ public sealed class NcnnProductionPathAuditTests
     private static string ReadPackageSource(params string[] relativePath)
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var path = Path.Combine(root, "Packages", "com.aiimage.inference.unitygpu", "Runtime");
+        var path = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn");
         foreach (var segment in relativePath)
             path = Path.Combine(path, segment);
         return File.ReadAllText(path);
@@ -284,7 +284,7 @@ public sealed class NcnnProductionPathAuditTests
     private static string ReadKernelSource(params string[] relativePath)
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var path = Path.Combine(root, "Packages", "com.aiimage.inference.kernels", "Runtime", "Resources");
+        var path = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn");
         foreach (var segment in relativePath)
             path = Path.Combine(path, segment);
         return File.ReadAllText(path);

@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using NcnnCompute;
+using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -59,7 +59,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private NcnnRepro _repro;
+    private NcnnGraphSession _repro;
     private StyleConvWeights[] _styleConv;
     private ToRgbWeights[] _toRgb;
     private float[] _constInput;
@@ -425,7 +425,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private float[] ReadInferBlobData(NcnnRepro.InferResult result, string blobName)
+    private float[] ReadInferBlobData(NcnnGraphSession.InferResult result, string blobName)
     {
         if (result == null || string.IsNullOrWhiteSpace(blobName))
             return Array.Empty<float>();
