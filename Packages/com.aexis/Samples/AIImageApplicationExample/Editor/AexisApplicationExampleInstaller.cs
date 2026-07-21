@@ -2,12 +2,14 @@
 using System;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 
-internal static class AexisApplicationExampleInstaller
+public static class AexisApplicationExampleInstaller
 {
     private const string Destination = "Assets/StreamingAssets";
+    private const string WindowsBuildOutputEnvironmentVariable = "AEXIS_MAIN2_WINDOWS_BUILD_OUTPUT";
 
     [MenuItem("Aexis/Examples/Install Main2 Application StreamingAssets")]
     private static void InstallStreamingAssets()
@@ -22,6 +24,26 @@ internal static class AexisApplicationExampleInstaller
     private static void OpenMain2Scene()
     {
         EditorSceneManager.OpenScene(AexisApplicationExamplePaths.Main2SceneAssetPath, OpenSceneMode.Single);
+    }
+
+    [MenuItem("Aexis/Examples/Build Main2 Windows Player")]
+    public static void BuildMain2Windows64()
+    {
+        BuildMain2Windows64Internal();
+    }
+
+    public static void BuildMain2Windows64Batch()
+    {
+        try
+        {
+            BuildMain2Windows64Internal();
+            EditorApplication.Exit(0);
+        }
+        catch (Exception exception)
+        {
+            Debug.LogException(exception);
+            EditorApplication.Exit(1);
+        }
     }
 
     internal static void EnsureStreamingAssetsInstalled()
@@ -41,6 +63,36 @@ internal static class AexisApplicationExampleInstaller
 
         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         Debug.Log("Installed " + copiedFiles + " missing AIImage application StreamingAssets files to " + Destination + ".");
+    }
+
+    private static void BuildMain2Windows64Internal()
+    {
+        const BuildTarget target = BuildTarget.StandaloneWindows64;
+        var output = Environment.GetEnvironmentVariable(WindowsBuildOutputEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            output = Path.Combine(projectRoot, "Builds", "AexisMain2", "AexisMain2.exe");
+        }
+        output = Path.GetFullPath(output);
+        Directory.CreateDirectory(Path.GetDirectoryName(output));
+
+        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+        {
+            scenes = new[] { AexisApplicationExamplePaths.Main2SceneAssetPath },
+            locationPathName = output,
+            target = target,
+            options = BuildOptions.None
+        });
+        if (report.summary.result != BuildResult.Succeeded || report.summary.totalErrors != 0)
+        {
+            throw new InvalidOperationException(
+                "Main2 Windows Player build failed: result=" + report.summary.result
+                + " errors=" + report.summary.totalErrors
+                + " output=" + output);
+        }
+
+        Debug.Log("Built Main2 Windows Player: " + output);
     }
 
     private static string ResolveSampleRoot()

@@ -6,6 +6,8 @@ using System.Security.Cryptography;
 using Aexis.Ncnn;
 using Aexis.Samples.Json.Linq;
 using UnityEditor;
+using UnityEditor.Build;
+using UnityEditor.Build.Reporting;
 using AIImage.Qwen35;
 using UnityEngine;
 using Aexis.Execution;
@@ -16,6 +18,7 @@ public static class Qwen35MobileQ8AssetBuilder
     private const string OutputModelVariable = "AIIMAGE_QWEN35_Q8_OUTPUT";
     private const string ShardBytesVariable = "AIIMAGE_QWEN35_Q8_SHARD_BYTES";
     private const string RebuildLogicalFilesVariable = "AIIMAGE_QWEN35_Q8_REBUILD_LOGICAL_FILES";
+    private const string PlayerQ8ModelVariable = "AIIMAGE_QWEN35_Q8_MODEL_DIR";
     private const int DefaultShardBytes = 256 * 1024 * 1024;
 
     private static readonly (string Param, string Bin)[] QuantizedNetworks =
@@ -81,6 +84,30 @@ public static class Qwen35MobileQ8AssetBuilder
             UnityEngine.Debug.LogError("QWEN35_INT4_GPU_MANIFEST_BUILD_FAILED\n" + error);
             throw;
         }
+    }
+
+    internal static bool StageQ8PayloadForPlayer()
+    {
+        var source = ResolveQ8SourceDirectory();
+        if (source == null)
+        {
+            var standardSource = Path.Combine(Application.dataPath, "StreamingAssets", "QWEN35");
+            if (!HasStandardPayload(standardSource))
+                return false;
+
+            source = Path.Combine(Application.temporaryCachePath, "AexisQwen35", "qwen3.5_0.8b_mobile_q8");
+            if (Qwen35MobileAssetSet.TryLoad(source, verifyHashes: false) == null)
+                Build(standardSource, source, DefaultShardBytes);
+        }
+
+        var destination = Path.Combine(Application.dataPath, "StreamingAssets", "QWEN35");
+        var copied = CopyMissingFiles(source, destination);
+        if (copied == 0)
+            return true;
+
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        UnityEngine.Debug.Log("[Aexis.Editor] Staged " + copied + " Qwen3.5 q8 Player files from " + source + ".");
+        return true;
     }
 
     private static void Build(string sourceModel, string outputModel, int shardBytes)
@@ -171,6 +198,75 @@ public static class Qwen35MobileQ8AssetBuilder
         }.ToString());
         UnityEngine.Debug.Log("QWEN35_Q8_BUILD_OK report=" + reportPath + " stored_bytes=" + storedBytes);
         AssetDatabase.Refresh();
+    }
+
+    private static string ResolveQ8SourceDirectory()
+    {
+        var configured = Environment.GetEnvironmentVariable(PlayerQ8ModelVariable);
+        if (!string.IsNullOrWhiteSpace(configured)
+            && Qwen35MobileAssetSet.TryLoad(Path.GetFullPath(configured), verifyHashes: false) != null)
+        {
+            return Path.GetFullPath(configured);
+        }
+
+        var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        var projectQ8 = Path.Combine(
+            projectRoot,
+            "Tools",
+            "Qwen35NcnnBaseline",
+            "_models",
+            "qwen3.5_0.8b_mobile_q8");
+        return Qwen35MobileAssetSet.TryLoad(projectQ8, verifyHashes: false) != null ? projectQ8 : null;
+    }
+
+    private static bool HasStandardPayload(string directory)
+    {
+        if (!Directory.Exists(directory))
+            return false;
+
+        var files = new[]
+        {
+            "model.json",
+            "vocab.txt",
+            "merges.txt",
+            "qwen3.5_decoder.ncnn.param",
+            "qwen3.5_decoder.ncnn.bin",
+            "qwen3.5_embed_token.ncnn.param",
+            "qwen3.5_embed_token.ncnn.bin",
+            "qwen3.5_proj_out.ncnn.param",
+            "qwen3.5_vision_embed_patch.ncnn.param",
+            "qwen3.5_vision_embed_patch.ncnn.bin",
+            "qwen3.5_vision_embed_pos.ncnn.param",
+            "qwen3.5_vision_embed_pos.ncnn.bin",
+            "qwen3.5_vision_encoder.ncnn.param",
+            "qwen3.5_vision_encoder.ncnn.bin"
+        };
+
+        for (var index = 0; index < files.Length; index++)
+        {
+            if (!File.Exists(Path.Combine(directory, files[index])))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static int CopyMissingFiles(string source, string destination)
+    {
+        var copied = 0;
+        foreach (var sourceFile in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var relative = sourceFile.Substring(source.Length + 1);
+            var destinationFile = Path.Combine(destination, relative);
+            if (File.Exists(destinationFile))
+                continue;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationFile));
+            File.Copy(sourceFile, destinationFile, false);
+            copied++;
+        }
+
+        return copied;
     }
 
     private static void BuildInt4GpuManifest(string outputModel)
@@ -399,4 +495,22 @@ public static class Qwen35MobileQ8AssetBuilder
     }
 
     private static string NormalizeRelativePath(string path) => path.Replace(Path.DirectorySeparatorChar, '/');
+}
+
+public sealed class Qwen35PlayerBuildPreprocessor : IPreprocessBuildWithReport
+{
+    public int callbackOrder => -900;
+
+    public void OnPreprocessBuild(BuildReport report)
+    {
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("AEXIS_SKIP_SAMPLE_STREAMING_ASSETS_STAGING"),
+                "1",
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Qwen35MobileQ8AssetBuilder.StageQ8PayloadForPlayer();
+    }
 }

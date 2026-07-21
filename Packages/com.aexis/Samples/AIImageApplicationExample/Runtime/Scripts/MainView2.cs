@@ -502,7 +502,7 @@ public sealed class MainView2 : BasePageView
         var modelDirectory = ResolveQwen35ModelDirectory();
         if (!HasQwen35ModelPayload(modelDirectory))
         {
-            ShowToast("Qwen3.5 q8 模型未安装: " + modelDirectory, 5000);
+            ShowToast("Qwen3.5 模型文件不完整: " + modelDirectory, 5000);
             return;
         }
 
