@@ -18,6 +18,7 @@ public static class Qwen35MobilePlatformBuild
     private const string BuildOutputEnvironmentVariable = "AIIMAGE_QWEN35_BUILD_OUTPUT";
     private const string BuildReportEnvironmentVariable = "AIIMAGE_QWEN35_BUILD_REPORT";
     private const string IncludeStreamingAssetsEnvironmentVariable = "AIIMAGE_QWEN35_INCLUDE_EXISTING_STREAMING_ASSETS";
+    private const string SkipSampleStreamingAssetsStagingEnvironmentVariable = "AEXIS_SKIP_SAMPLE_STREAMING_ASSETS_STAGING";
 
     public static void RunDeviceCompatibilityReportBatch()
     {
@@ -111,15 +112,24 @@ public static class Qwen35MobilePlatformBuild
                 ["qwen_model_bundled_in_player"] = false
             };
 
+            var previousSampleStaging = Environment.GetEnvironmentVariable(SkipSampleStreamingAssetsStagingEnvironmentVariable);
             using (ExcludeUnrelatedStreamingAssets(root))
             {
-                buildReport = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+                try
                 {
-                    scenes = new[] { scene },
-                    locationPathName = output,
-                    target = target,
-                    options = BuildOptions.Development | BuildOptions.CompressWithLz4 | BuildOptions.CleanBuildCache
-                });
+                    Environment.SetEnvironmentVariable(SkipSampleStreamingAssetsStagingEnvironmentVariable, "1");
+                    buildReport = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+                    {
+                        scenes = new[] { scene },
+                        locationPathName = output,
+                        target = target,
+                        options = BuildOptions.Development | BuildOptions.CompressWithLz4 | BuildOptions.CleanBuildCache
+                    });
+                }
+                finally
+                {
+                    Environment.SetEnvironmentVariable(SkipSampleStreamingAssetsStagingEnvironmentVariable, previousSampleStaging);
+                }
             }
             root["build"] = SerializeBuildReport(buildReport);
             root["valid"] = buildReport.summary.result == BuildResult.Succeeded

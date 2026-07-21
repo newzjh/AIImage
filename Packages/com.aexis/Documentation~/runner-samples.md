@@ -8,7 +8,7 @@
 4. Open `Scenes/Main2.unity`, or choose `Aexis/Examples/Open Main2 Application Scene`.
 5. Add a runner component to a suitable GameObject, then use paths relative to `Application.streamingAssetsPath`.
 
-This is the only application/runner sample. Its installer copies the sample's complete `StreamingAssets` tree to `Assets/StreamingAssets`. This keeps UPM package contents immutable and makes player-included assets explicit.
+This is the only application/runner sample. Its installer copies the sample's complete `StreamingAssets` tree to `Assets/StreamingAssets`. This keeps UPM package contents immutable and makes player-included assets explicit. Every Player build also stages any missing sample payload files before Unity collects Player data, so package-default `.param`, `.bin`, ONNX, tokenizer, and inference-manifest files are included even when the installer was not run manually. Existing project files are preserved.
 
 ## Included reusable runners
 

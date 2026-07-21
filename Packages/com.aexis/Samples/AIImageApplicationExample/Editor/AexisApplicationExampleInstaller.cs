@@ -13,9 +13,9 @@ internal static class AexisApplicationExampleInstaller
     private static void InstallStreamingAssets()
     {
         var root = ResolveSampleRoot();
-        CopyDirectory(Path.Combine(root, "StreamingAssets"), Path.GetFullPath(Destination), overwrite: true);
+        var copiedFiles = CopyDirectory(Path.Combine(root, "StreamingAssets"), Path.GetFullPath(Destination), overwrite: true);
         AssetDatabase.Refresh();
-        Debug.Log("Installed AIImage application configuration and permitted default models to " + Destination + ".");
+        Debug.Log("Installed " + copiedFiles + " AIImage application StreamingAssets files to " + Destination + ".");
     }
 
     [MenuItem("Aexis/Examples/Open Main2 Application Scene")]
@@ -31,12 +31,16 @@ internal static class AexisApplicationExampleInstaller
         var destination = Path.GetFullPath(Destination);
         if (!Directory.Exists(source))
             throw new DirectoryNotFoundException("AIImage application sample StreamingAssets are missing: " + source);
-        if (HasDefaultModelPayload(destination))
+
+        // Player builds can only read Assets/StreamingAssets. The editor resolver may
+        // fall back to the package payload, so copy every missing file instead of
+        // checking a small sentinel subset of model binaries.
+        var copiedFiles = CopyDirectory(source, destination, overwrite: false);
+        if (copiedFiles == 0)
             return;
 
-        CopyDirectory(source, destination, overwrite: false);
-        AssetDatabase.Refresh();
-        Debug.Log("Installed missing AIImage application configuration and permitted default models to " + Destination + ".");
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        Debug.Log("Installed " + copiedFiles + " missing AIImage application StreamingAssets files to " + Destination + ".");
     }
 
     private static string ResolveSampleRoot()
@@ -44,20 +48,12 @@ internal static class AexisApplicationExampleInstaller
         return AexisApplicationExamplePaths.SampleRootAbsolutePath;
     }
 
-    private static bool HasDefaultModelPayload(string root)
-    {
-        return File.Exists(Path.Combine(root, "Clip", "mobileclip_s0_export", "image_encoder.ncnn.bin"))
-            && File.Exists(Path.Combine(root, "CodeFormer", "models", "generator.bin"))
-            && File.Exists(Path.Combine(root, "DeepFileV2", "deepfillv2_case1.ncnn.bin"))
-            && File.Exists(Path.Combine(root, "Matting", "matting.bin"))
-            && File.Exists(Path.Combine(root, "RealESRGAN", "models", "realesrgan-x4plus.bin"))
-            && File.Exists(Path.Combine(root, "Yolo", "yolov8n_seg.ncnn.bin"));
-    }
-
-    private static void CopyDirectory(string source, string destination, bool overwrite)
+    private static int CopyDirectory(string source, string destination, bool overwrite)
     {
         if (!Directory.Exists(source))
-            return;
+            return 0;
+
+        var copiedFiles = 0;
         Directory.CreateDirectory(destination);
         foreach (var directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
             Directory.CreateDirectory(directory.Replace(source, destination));
@@ -67,8 +63,13 @@ internal static class AexisApplicationExampleInstaller
                 continue;
             var target = file.Replace(source, destination);
             if (overwrite || !File.Exists(target))
+            {
                 File.Copy(file, target, true);
+                copiedFiles++;
+            }
         }
+
+        return copiedFiles;
     }
 }
 
