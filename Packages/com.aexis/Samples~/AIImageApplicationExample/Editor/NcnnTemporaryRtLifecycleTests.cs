@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using System;
 using System.IO;
 using Aexis.Ncnn;
@@ -127,3 +128,4 @@ public sealed class NcnnTemporaryRtLifecycleTests
         return count;
     }
 }
+#endif

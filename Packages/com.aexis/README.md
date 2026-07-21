@@ -6,13 +6,13 @@
 
 | Item | Supported release baseline |
 | --- | --- |
-| Unity | 6000.2.7f2 or newer Unity 6.2 patch release |
-| Script runtime | Unity .NET profile supplied by Unity 6 |
+| Unity | 2022.3 LTS through Unity 6000.3 |
+| Script runtime | Unity-supported .NET profile for the installed editor |
 | GPU path | Compute-shader-capable graphics API with RenderTexture support |
-| Package dependencies | Unity built-in `com.unity.modules.imageconversion`, `com.unity.modules.unitywebrequest`, and `com.unity.modules.unitywebrequesttexture` for samples; no third-party package |
+| Package dependencies | Unity modules plus `com.unity.nuget.newtonsoft-json` for optional sample/editor JSON tooling |
 | Runtime namespaces | `Aexis`, `Aexis.Async`, `Aexis.Onnx`, `Aexis.Ncnn`, `Aexis.Execution` |
 
-`Aexis.Async` uses Unity's built-in `Awaitable`; it does not ship, vendor, or reference UniTask. This prevents package-level conflicts when a host project uses its own UniTask version or distribution.
+`Aexis.Async` exposes BCL `Task` and does not ship, vendor, or reference UniTask. This keeps the engine compatible with Unity 2022.3 and prevents package-level conflicts when a host project uses its own UniTask version or distribution.
 
 ## Install
 
@@ -65,9 +65,15 @@ Import **AIImage Main2 Application Example** from Package Manager, then run `Aex
 
 Its installer copies the complete sample payload to `Assets/StreamingAssets`, the Unity Player-included location. The reusable runner catalog uses `Clip/...`, `CodeFormer/...`, `DeepFileV2/...`, `Matting/...`, `RealESRGAN/...`, and `Yolo/...` paths below that root. Default model files are included only for those six model families. GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN weights are deliberately excluded because of package-size and redistribution constraints. See [model distribution](Documentation~/model-distribution.md) before redistributing any sample model.
 
+The complete sample retains its Editor NUnit sources. A default UnityPackage import excludes them through `AEXIS_INCLUDE_EDITOR_TESTS`; install Unity Test Framework and add that define symbol when running the included test suite.
+
 ## Scope and licensing
 
 The source implementation is released under the MIT license in [LICENSE.md](LICENSE.md). Aexis does not include Unity Sentis, Tencent ncnn, ONNX Runtime, MNN, MONAI, or VISTA source/binaries as runtime dependencies. Compatibility targets do not imply affiliation or use of upstream code.
+
+The complete application sample uses Newtonsoft.Json in fourteen source files for dynamic JSON documents, token traversal, and editor diagnostics. These uses are not DTO-only configuration payloads, so Unity `JsonUtility` is not a compatible replacement. The UPM package resolves Unity's maintained `com.unity.nuget.newtonsoft-json` dependency. The standalone UnityPackage carries the same Unity-provided DLL only for projects that do not use UPM; its bundled license and notice must remain with that export.
+
+The sample's shaded `Aexis.Samples.SharpZipLib` source is required by `StandardImageIO` and the MONAI runner for compressed input. It is intentionally namespaced away from `ICSharpCode.SharpZipLib` and must not be removed as unused code.
 
 Models are separate artifacts with their own licenses and redistribution conditions. A release manager must complete the provenance table in `Documentation~/model-distribution.md` before publishing a package archive containing sample models. Do not place medical data, private goldens, checkpoints, or application-specific tooling in this package.
 

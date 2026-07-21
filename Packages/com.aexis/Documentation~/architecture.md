@@ -7,13 +7,13 @@
 | Assembly | References | Responsibility |
 | --- | --- | --- |
 | `Aexis` | none | Contracts shared by every backend |
-| `Aexis.Async` | UnityEngine | Unity `Awaitable` scheduling only |
+| `Aexis.Async` | UnityEngine | BCL `Task` frame scheduling, compatible with Unity 2022.3 |
 | `Aexis.Onnx` | `Aexis` | ONNX parsing and execution planning |
 | `Aexis.Ncnn` | `Aexis`, `Aexis.Async`, `Aexis.Onnx` | NCNN loading and texture-native execution |
 | `Aexis.Execution` | `Aexis`, `Aexis.Onnx` | Shape/index GPU operators |
 | `Aexis.Editor` | Runtime assemblies | Editor-only tooling |
 
-No Runtime assembly may reference `AIImage`, UniTask, Unity Sentis, ONNX Runtime, Tencent ncnn, MNN, or a native plugin. `com.unity.modules.imageconversion` and `com.unity.modules.unitywebrequest` are Unity built-in dependencies used only by sample PNG diagnostics and cross-platform StreamingAssets loading.
+No Runtime assembly may reference `AIImage`, UniTask, Unity Sentis, ONNX Runtime, Tencent ncnn, MNN, or a native plugin. `com.unity.modules.imageconversion` and `com.unity.modules.unitywebrequest` are Unity built-in dependencies used only by sample PNG diagnostics and cross-platform StreamingAssets loading. Newtonsoft.Json is confined to optional sample/editor tooling; it is needed for dynamic JSON documents and must not enter Runtime.
 
 ## Model formats
 

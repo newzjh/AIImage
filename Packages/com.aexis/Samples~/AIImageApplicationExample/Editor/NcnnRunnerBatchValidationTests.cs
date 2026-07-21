@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using System;
 using System.Collections;
 using System.IO;
@@ -331,3 +332,4 @@ public sealed class NcnnRunnerBatchValidationTests
         return maskedPixels > 0 ? (float)(sumAbs / (maskedPixels * 3d)) : 0f;
     }
 }
+#endif

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 
 namespace Aexis.Samples
@@ -27,13 +28,13 @@ namespace Aexis.Samples
         public NcnnGraphSession Session { get; private set; }
         public bool IsLoaded => Session != null && Session.Model != null;
 
-        private async Awaitable Start()
+        private async UniTask Start()
         {
             if (loadOnStart)
                 await LoadAsync();
         }
 
-        public async Awaitable LoadAsync(CancellationToken cancellationToken = default)
+        public async UniTask LoadAsync(CancellationToken cancellationToken = default)
         {
             Release();
             try

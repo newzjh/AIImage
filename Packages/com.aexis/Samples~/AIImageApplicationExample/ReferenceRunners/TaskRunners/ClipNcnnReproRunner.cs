@@ -6,6 +6,7 @@ using System.Threading;
 using System.Collections.Generic;
 using System.Text;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -138,7 +139,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         Release();
     }
 
-    public async Awaitable<ClipClassificationResult> ProcessAsync(Texture2D src, CancellationToken ct)
+    public async UniTask<ClipClassificationResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
         if (src == null)
             return default;
@@ -173,7 +174,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
             var targetSize = ResolveInputSize();
             ReportProgress(0.72f, "Prepare input");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
             ct.ThrowIfCancellationRequested();
 
             resized = ResizeTextureBilinear(src, targetSize, targetSize);
@@ -181,7 +182,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 return Finish(new ClipClassificationResult { error = "Resize input failed" });
 
             ReportProgress(0.84f, "Encode image");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
             ct.ThrowIfCancellationRequested();
 
             float[] imageEmbedding;
@@ -243,7 +244,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 DumpVector(_lastDumpDir, "image_embedding.txt", imageEmbedding);
 
             ReportProgress(0.96f, "Score labels");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
             ct.ThrowIfCancellationRequested();
 
             var scoreSw = Stopwatch.StartNew();
@@ -493,7 +494,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         return sb.ToString();
     }
 
-    private async Awaitable EnsureLoaded(CancellationToken ct)
+    private async UniTask EnsureLoaded(CancellationToken ct)
     {
         var modelKey = ResolveModelKey();
         if (string.Equals(_loadedModelKey, modelKey, StringComparison.Ordinal)
@@ -520,7 +521,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         NcnnGraphSession.ModelLoadProfile projectionProfile = null;
 
         ReportProgress(0.02f, "Warm up CLIP");
-        await Awaitable.NextFrameAsync();
+        await UniTask.NextFrame();
         ct.ThrowIfCancellationRequested();
 
         var stageSw = Stopwatch.StartNew();
@@ -605,7 +606,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ReportProgress(0.62f, "CLIP warmup ready");
     }
 
-    private async Awaitable BuildTextEmbeddingsAsync(float progressStart, float progressSpan, CancellationToken ct)
+    private async UniTask BuildTextEmbeddingsAsync(float progressStart, float progressSpan, CancellationToken ct)
     {
         if (labelDefinitions == null || labelDefinitions.Length < 8)
             throw new InvalidOperationException("CLIP labelDefinitions must contain at least 8 labels.");
@@ -620,7 +621,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 throw new InvalidOperationException("CLIP label definition is incomplete at index " + i);
 
             ReportProgress(progressStart + progressSpan * ((float)i / Math.Max(1, labelDefinitions.Length)), "Encode text " + (i + 1) + "/" + labelDefinitions.Length);
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
             _cachedTextScores[i] = new ClipLabelScore { label = def.label.Trim(), prompt = def.prompt.Trim() };
             _cachedTextEmbeddings[i] = await EncodeTextAsync(def.prompt.Trim(), ct);
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
@@ -630,7 +631,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ReportProgress(progressStart + progressSpan, "Text embeddings ready");
     }
 
-    private async Awaitable<float[]> EncodeTextAsync(string prompt, CancellationToken ct)
+    private async UniTask<float[]> EncodeTextAsync(string prompt, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var tokens = _tokenizer.Tokenize(prompt);
@@ -676,11 +677,11 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         if (embedding == null || embedding.Length != EmbeddingSize)
             throw new InvalidOperationException("Projection output invalid for prompt: " + prompt);
         NormalizeInPlace(embedding);
-        await Awaitable.NextFrameAsync();
+        await UniTask.NextFrame();
         return embedding;
     }
 
-    private async Awaitable LoadReproModelAsync(
+    private async UniTask LoadReproModelAsync(
         NcnnGraphSession repro,
         string paramPath,
         string binPath,
@@ -701,7 +702,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         ct.ThrowIfCancellationRequested();
 
         ReportProgress(Mathf.Min(progressEnd, progressStart + 0.002f), "Prepare " + modelLabel);
-        await Awaitable.NextFrameAsync();
+        await UniTask.NextFrame();
 
         using var fs = new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, false);
         using var br = new NcnnBinReader(fs);
@@ -1319,7 +1320,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         return sb.ToString();
     }
 
-    private async Awaitable<float[]> ReadImageEmbeddingAsync(NcnnGraphSession.InferResult infer, CancellationToken ct)
+    private async UniTask<float[]> ReadImageEmbeddingAsync(NcnnGraphSession.InferResult infer, CancellationToken ct)
     {
         if (infer == null)
             return null;
@@ -1342,7 +1343,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         return infer.ReadTextureDataForOutput(OutputBlobName);
     }
 
-    private async Awaitable<float[]> EncodeImageWithCommandBufferAsync(Texture resizedInput, int targetSize, CancellationToken ct)
+    private async UniTask<float[]> EncodeImageWithCommandBufferAsync(Texture resizedInput, int targetSize, CancellationToken ct)
     {
         if (resizedInput == null)
             return null;
@@ -1403,7 +1404,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private async Awaitable<float[]> EncodeImageWithImmediateTextureAsync(Texture resizedInput, int targetSize, CancellationToken ct)
+    private async UniTask<float[]> EncodeImageWithImmediateTextureAsync(Texture resizedInput, int targetSize, CancellationToken ct)
     {
         var inputPack4 = _imageRepro.RentTempArray(targetSize, targetSize, 1, RenderTextureFormat.ARGBHalf);
         try
@@ -1454,7 +1455,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private async Awaitable VerifyCommandBufferProbeBlobParityAsync(
+    private async UniTask VerifyCommandBufferProbeBlobParityAsync(
         Texture resizedInput,
         int targetSize,
         string probeBlob,
@@ -1747,10 +1748,10 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             && c == 1;
     }
 
-    private static Awaitable<float[]> ReadWidthVectorTextureAsync(RenderTexture texture, int width, CancellationToken ct)
+    private static UniTask<float[]> ReadWidthVectorTextureAsync(RenderTexture texture, int width, CancellationToken ct)
     {
         if (texture == null || width <= 0)
-            return AexisSampleAwaitable.FromResult<float[]>(null);
+            return AexisSampleUniTask.FromResult<float[]>(null);
 
         var prevActive = RenderTexture.active;
         Texture2D readbackTex = null;
@@ -1813,7 +1814,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             if (Application.isBatchMode)
                 UnityEngine.Debug.Log("[CLIP] image embedding readback done | values=" + values.Length);
 
-            return AexisSampleAwaitable.FromResult(values);
+            return AexisSampleUniTask.FromResult(values);
         }
         finally
         {

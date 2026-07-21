@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using Aexis.Ncnn;
 using NUnit.Framework;
 using AIImage.Qwen35;
@@ -137,3 +138,4 @@ public sealed class Qwen35DeviceCompatibilityTests
             true);
     }
 }
+#endif

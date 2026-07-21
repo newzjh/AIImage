@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Threading;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -8,7 +9,7 @@ namespace Aexis.Samples
 {
     public static class AexisSampleStreamingAssets
     {
-        public static async Awaitable<byte[]> ReadBytesAsync(string relativePath, CancellationToken cancellationToken = default)
+        public static async UniTask<byte[]> ReadBytesAsync(string relativePath, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(relativePath))
                 throw new ArgumentException("A StreamingAssets-relative path is required.", nameof(relativePath));
@@ -20,7 +21,7 @@ namespace Aexis.Samples
             while (!operation.isDone)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await Awaitable.NextFrameAsync();
+                await UniTask.NextFrame();
             }
 
             if (request.result != UnityWebRequest.Result.Success)
@@ -28,7 +29,7 @@ namespace Aexis.Samples
             return request.downloadHandler.data;
         }
 
-        public static async Awaitable<string> ReadTextAsync(string relativePath, CancellationToken cancellationToken = default)
+        public static async UniTask<string> ReadTextAsync(string relativePath, CancellationToken cancellationToken = default)
         {
             var bytes = await ReadBytesAsync(relativePath, cancellationToken);
             return System.Text.Encoding.UTF8.GetString(bytes);

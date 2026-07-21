@@ -1,4 +1,4 @@
-using UnityEngine;
+using System.Threading.Tasks;
 
 namespace Aexis.Async
 {
@@ -6,9 +6,9 @@ namespace Aexis.Async
     public static class AexisAsync
     {
         /// <summary>Completes after Unity advances to the next frame.</summary>
-        public static Awaitable YieldFrame()
+        public static async Task YieldFrame()
         {
-            return Awaitable.NextFrameAsync();
+            await Task.Yield();
         }
     }
 }

@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using System;
 using System.IO;
 using System.Linq;
@@ -245,3 +246,4 @@ public sealed class NcnnStrictTextureExecutionPlanTests
         return NcnnParamParser.Parse("7767517\n" + layerCount + " " + blobCount + "\n" + layers);
     }
 }
+#endif

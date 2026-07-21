@@ -7,6 +7,7 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -566,10 +567,13 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                || t == GraphicsDeviceType.Direct3D11
                || t == GraphicsDeviceType.Direct3D12
                || t == GraphicsDeviceType.Metal
-               || t == GraphicsDeviceType.WebGPU;
+#if UNITY_6000_0_OR_NEWER
+               || t == GraphicsDeviceType.WebGPU
+#endif
+            ;
     }
 
-    public async Awaitable<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
+    public async UniTask<RealEsrganResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
         if (src == null)
             return default;
@@ -658,7 +662,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         return Finish(new RealEsrganResult { error = lastErr != null ? lastErr.Message : "unknown error" });
     }
 
-    private async Awaitable<RealEsrganResult> ProcessOnceAsync(Texture2D src, CancellationToken ct, int originalW, int originalH, int runInW, int runInH, int runFactor, int effectiveTileSize, int effectiveTilePad)
+    private async UniTask<RealEsrganResult> ProcessOnceAsync(Texture2D src, CancellationToken ct, int originalW, int originalH, int runInW, int runInH, int runFactor, int effectiveTileSize, int effectiveTilePad)
     {
         TryInitGpuLayerProfiling();
         TryInitSelectiveWinogradGapDebug();
@@ -1112,7 +1116,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private async Awaitable EnsureLoaded()
+    private async UniTask EnsureLoaded()
     {
         var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
         if (_loaded && !string.Equals(_loadedModelName, model, StringComparison.Ordinal))
@@ -1316,7 +1320,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     }
 
     
-    private async Awaitable<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
+    private async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
         if (Application.isBatchMode)
         {
@@ -1338,7 +1342,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
         }
 
-        var r = await AexisSampleAwaitable.RequestReadbackAsync(rt, TextureFormat.RGBA32, ct);
+        var r = await AexisSampleUniTask.RequestReadbackAsync(rt, TextureFormat.RGBA32, ct);
         ct.ThrowIfCancellationRequested();
         if (r.hasError)
             return null;
@@ -1418,15 +1422,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         try { ProgressChanged?.Invoke(Mathf.Clamp01(p), t ?? ""); } catch { }
     }
 
-    private static async Awaitable YieldIfNeeded()
+    private static async UniTask YieldIfNeeded()
     {
         if (!Application.isBatchMode)
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
     }
 
-    private static async Awaitable YieldForGpuProgressAsync()
+    private static async UniTask YieldForGpuProgressAsync()
     {
-        await Awaitable.NextFrameAsync();
+        await UniTask.NextFrame();
     }
 
     private static int AutoTileSize()

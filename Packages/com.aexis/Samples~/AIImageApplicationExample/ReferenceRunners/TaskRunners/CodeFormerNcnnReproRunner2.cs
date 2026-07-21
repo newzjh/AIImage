@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -143,7 +144,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         Release();
     }
 
-    public async Awaitable<CodeFormerResult> ProcessAsync(Texture2D src, CancellationToken ct)
+    public async UniTask<CodeFormerResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
         if (src == null)
             return default;
@@ -188,7 +189,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             var limit = Mathf.Max(256, maxInputLongSide);
 
             ReportProgress(0f, "Prepare input");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
 
             NcnnFaceRegionGenerator faceRegion = null;
             Texture2D scaled = null;
@@ -200,7 +201,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 if (maxSide > limit)
                 {
                     ReportProgress(0.02f, "Scale down");
-                    await Awaitable.NextFrameAsync();
+                    await UniTask.NextFrame();
                     scaleDown = (float)limit / maxSide;
                     var sw = Mathf.Max(1, Mathf.RoundToInt(originalW * scaleDown));
                     var sh = Mathf.Max(1, Mathf.RoundToInt(originalH * scaleDown));
@@ -211,7 +212,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 }
 
                 ReportProgress(0.06f, "Detect face area");
-                await Awaitable.NextFrameAsync();
+                await UniTask.NextFrame();
                 faceRegion = GetComponent<NcnnFaceRegionGenerator>();
                 if (faceRegion == null)
                     faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
@@ -244,7 +245,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     ct.ThrowIfCancellationRequested();
                     var face = faces[i];
                     ReportProgress(0.12f + 0.70f * ((float)i / Mathf.Max(1, faces.Length)), "Restore face " + (i + 1) + "/" + faces.Length);
-                    await Awaitable.NextFrameAsync();
+                    await UniTask.NextFrame();
 
                     Texture2D alignedFaceTex = null;
                     RenderTexture alignedFaceRt = null;
@@ -295,7 +296,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 if (Mathf.Abs(scaleDown - 1f) > 1e-6f)
                 {
                     ReportProgress(0.95f, "Restore original size");
-                    await Awaitable.NextFrameAsync();
+                    await UniTask.NextFrame();
                     var resized = ResizeTextureBilinear(finalTex, originalW, originalH);
                     DestroyObjectSafe(finalTex);
                     finalTex = resized;
@@ -307,7 +308,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 finalTex.filterMode = FilterMode.Bilinear;
                 finalTex.name = "CodeFormer_Repro2";
                 ReportProgress(1f, "Done");
-                await Awaitable.NextFrameAsync();
+                await UniTask.NextFrame();
                 return Finish(new CodeFormerResult { texture = finalTex });
             }
             finally
@@ -324,7 +325,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable<CodeFormer512RunResult> RunCodeFormer512Async(RenderTexture face512, CancellationToken ct)
+    private async UniTask<CodeFormer512RunResult> RunCodeFormer512Async(RenderTexture face512, CancellationToken ct)
     {
         if (face512 == null || face512.width != 512 || face512.height != 512)
             return new CodeFormer512RunResult { error = "Invalid face input: expected 512x512 render texture" };
@@ -346,7 +347,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
             stage = "prepare encoder input";
             ReportProgress(0.18f, "Run encoder");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
 
             encoderInput = _encoderRepro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
             NcnnGpuResourceTracker.UpdateTextureLabel(encoderInput, "CodeFormer.encoderInput");
@@ -499,7 +500,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
             stage = "prepare generator inputs";
             ReportProgress(0.4f, "Run generator");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
 
             var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
@@ -780,7 +781,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         return rt;
     }
 
-    private async Awaitable<Texture2D> RunGeneratorWithCommandBufferAsync(
+    private async UniTask<Texture2D> RunGeneratorWithCommandBufferAsync(
         Dictionary<string, RenderTexture> textureInputs,
         Dictionary<string, NcnnGraphSession.BufferShape> textureInputShapes,
         ICollection<string> pinnedNames,
@@ -892,7 +893,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable DumpInferBlobAsync(NcnnGraphSession.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
+    private async UniTask DumpInferBlobAsync(NcnnGraphSession.InferResult inferResult, string dir, string fileName, string blobName, CancellationToken ct)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -908,7 +909,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable DumpInferBlobStatsAsync(NcnnGraphSession.InferResult inferResult, string dir, string blobName)
+    private async UniTask DumpInferBlobStatsAsync(NcnnGraphSession.InferResult inferResult, string dir, string blobName)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -959,7 +960,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable DumpPack4TextureAsync(string dir, string fileName, RenderTexture pack4Tex, CancellationToken ct)
+    private async UniTask DumpPack4TextureAsync(string dir, string fileName, RenderTexture pack4Tex, CancellationToken ct)
     {
         if (!enableDebugDump || pack4Tex == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -976,12 +977,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable AppendPack4TextureStatsAsync(string dir, string blobName, RenderTexture pack4Tex)
+    private async UniTask AppendPack4TextureStatsAsync(string dir, string blobName, RenderTexture pack4Tex)
     {
         await AppendPack4TextureStatsAsync(dir, blobName, pack4Tex, 3, pack4Tex.width, pack4Tex.height, 1, (pack4Tex.volumeDepth > 0 ? pack4Tex.volumeDepth : 1) * 4);
     }
 
-    private async Awaitable AppendPack4TextureStatsAsync(string dir, string blobName, RenderTexture pack4Tex, int dims, int logicalW, int logicalH, int logicalD, int logicalC)
+    private async UniTask AppendPack4TextureStatsAsync(string dir, string blobName, RenderTexture pack4Tex, int dims, int logicalW, int logicalH, int logicalD, int logicalC)
     {
         if (!enableDebugDump || pack4Tex == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -1019,7 +1020,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable DumpRgbTextureAsync(string dir, string fileName, Texture texture, CancellationToken ct)
+    private async UniTask DumpRgbTextureAsync(string dir, string fileName, Texture texture, CancellationToken ct)
     {
         if (!enableDebugDump || texture == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -1062,7 +1063,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable DumpBinaryTensorAsImageAsync(string dir, string fileName, NcnnTensorBuffer tensor, int width, int height, CancellationToken ct)
+    private async UniTask DumpBinaryTensorAsImageAsync(string dir, string fileName, NcnnTensorBuffer tensor, int width, int height, CancellationToken ct)
     {
         if (!enableDebugDump || tensor == null || tensor.buffer == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -1089,7 +1090,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable DumpBufferBlobAsNormalizedImageAsync(NcnnGraphSession.InferResult inferResult, string dir, string fileName, string blobName, int width, int height, CancellationToken ct)
+    private async UniTask DumpBufferBlobAsNormalizedImageAsync(NcnnGraphSession.InferResult inferResult, string dir, string fileName, string blobName, int width, int height, CancellationToken ct)
     {
         if (!enableDebugDump || inferResult == null || string.IsNullOrWhiteSpace(dir))
             return;
@@ -1108,7 +1109,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable DumpFloatArrayAsNormalizedImageAsync(string dir, string fileName, float[] data, int width, int height, CancellationToken ct)
+    private async UniTask DumpFloatArrayAsNormalizedImageAsync(string dir, string fileName, float[] data, int width, int height, CancellationToken ct)
     {
         if (!enableDebugDump || string.IsNullOrWhiteSpace(dir) || data == null || data.Length < width * height)
             return;
@@ -1483,7 +1484,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private static async Awaitable<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
+    private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
         if (Application.isBatchMode)
         {
@@ -1505,7 +1506,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
         }
 
-        var request = await AexisSampleAwaitable.RequestReadbackAsync(rt, TextureFormat.RGBA32, ct);
+        var request = await AexisSampleUniTask.RequestReadbackAsync(rt, TextureFormat.RGBA32, ct);
         if (request.hasError)
             return null;
 
@@ -1518,7 +1519,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         return tex;
     }
 
-    private static async Awaitable WriteAllBytesCompatAsync(string path, byte[] bytes, CancellationToken ct)
+    private static async UniTask WriteAllBytesCompatAsync(string path, byte[] bytes, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(path) || bytes == null)
             return;
@@ -1660,7 +1661,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                || t == GraphicsDeviceType.Direct3D11
                || t == GraphicsDeviceType.Direct3D12
                || t == GraphicsDeviceType.Metal
-               || t == GraphicsDeviceType.WebGPU;
+#if UNITY_6000_0_OR_NEWER
+               || t == GraphicsDeviceType.WebGPU
+#endif
+            ;
     }
 
     private static void CopyTextureArrayAllSlices(CommandBuffer cmd, RenderTexture src, int dstNameId, int sliceCount)
@@ -1710,7 +1714,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private async Awaitable EnsureLoaded()
+    private async UniTask EnsureLoaded()
     {
         if (_loaded)
             return;
@@ -1720,7 +1724,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _loaded = true;
     }
 
-    private async Awaitable LoadEncoderAsync()
+    private async UniTask LoadEncoderAsync()
     {
         if (_encoderLoaded)
             return;
@@ -1734,7 +1738,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             throw new InvalidOperationException("Missing encoder bin: " + binPath);
 
         ReportProgress(0.02f, "Load encoder");
-        await Awaitable.NextFrameAsync();
+        await UniTask.NextFrame();
 
         string paramText;
         byte[] bytes;
@@ -1756,7 +1760,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _encoderLoaded = true;
     }
 
-    private async Awaitable LoadGeneratorAsync()
+    private async UniTask LoadGeneratorAsync()
     {
         if (_generatorLoaded)
             return;
@@ -1770,7 +1774,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             throw new InvalidOperationException("Missing generator bin: " + binPath);
 
         ReportProgress(0.08f, "Load generator");
-        await Awaitable.NextFrameAsync();
+        await UniTask.NextFrame();
 
         string paramText;
         byte[] bytes;

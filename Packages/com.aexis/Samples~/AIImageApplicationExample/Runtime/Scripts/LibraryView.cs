@@ -369,7 +369,9 @@ public sealed class LibraryView : BasePageView
             label.text = data.displayName;
             label.style.color = Color.white;
         };
+#if UNITY_6000_0_OR_NEWER
         _directoryTree.itemExpandedChanged += OnDirectoryExpandedChanged;
+#endif
         _directoryTree.selectionChanged += OnDirectorySelectionChanged;
         pane.Add(_directoryTree);
 
@@ -845,6 +847,7 @@ public sealed class LibraryView : BasePageView
         });
     }
 
+#if UNITY_6000_0_OR_NEWER
     private void OnDirectoryExpandedChanged(TreeViewExpansionChangedArgs args)
     {
         if (!_directoryTree.IsExpanded(args.id))
@@ -856,6 +859,19 @@ public sealed class LibraryView : BasePageView
 
         EnsureDirectoryChildrenLoaded(args.id, data.path);
     }
+#else
+    private void OnDirectoryExpandedChanged(int id, bool isExpanded)
+    {
+        if (!isExpanded)
+            return;
+
+        var data = _directoryTree.GetItemDataForId<DirectoryEntryData>(id);
+        if (data == null || string.IsNullOrWhiteSpace(data.path))
+            return;
+
+        EnsureDirectoryChildrenLoaded(id, data.path);
+    }
+#endif
 
     private void EnsureDirectoryChildrenLoaded(int parentId, string directoryPath)
     {

@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -307,3 +308,4 @@ public sealed class NcnnProductionPathAuditTests
         return count;
     }
 }
+#endif

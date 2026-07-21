@@ -30,3 +30,7 @@ The catalog exposes default paths under `Clip`, `CodeFormer`, `DeepFileV2`, `Mat
 The example contains the `Main2` scene, MainView2, DesignView, LibraryView, every original AIImage runner, QWEN sessions, MONAI/VISTA code, UI Toolkit assets, shaded SharpZip source, shaded async source, and copied Editor tests/debug tools. GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN runner configuration is present, but their model weights are not included.
 
 The sample uses `Aexis.Samples.Async` and `Aexis.Samples.SharpZipLib` for its isolated source dependencies. It neither imports nor declares `Cysharp.Threading.Tasks` or `ICSharpCode.SharpZipLib`, so the sample does not collide with those libraries in a consuming Unity project.
+
+Newtonsoft.Json is used by fourteen runner and editor-support files for nested token traversal and diagnostic JSON reports. These dynamic JSON workflows cannot be represented by `JsonUtility`; UPM installations resolve `com.unity.nuget.newtonsoft-json`. The standalone UnityPackage includes the Unity-provided Newtonsoft DLL and its notices solely so a default project can compile on first import.
+
+Editor NUnit sources remain in the example but are excluded from a default UnityPackage import. To compile and run them, install Unity Test Framework and add `AEXIS_INCLUDE_EDITOR_TESTS` to the Editor scripting define symbols. This keeps a new project's first import compilable without discarding validation coverage.

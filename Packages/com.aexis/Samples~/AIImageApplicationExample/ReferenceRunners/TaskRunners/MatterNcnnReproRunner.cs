@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -82,7 +83,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         Release();
     }
 
-    public async Awaitable<MattingResult> ProcessAsync(Texture2D src, CancellationToken ct)
+    public async UniTask<MattingResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
         if (src == null)
             return default;
@@ -115,7 +116,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
             ct.ThrowIfCancellationRequested();
             ReportProgress(0.05f, "Prepare input");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
 
             var (inputW, inputH) = ComputeModelInputSize(originalW, originalH, refSize, preserveAspectRatioInput);
             resizedInput = ResizeTextureBilinear(src, inputW, inputH);
@@ -129,7 +130,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             }
 
             ReportProgress(0.30f, "Run matting");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
 
             HashSet<string> pinned = null;
             if (enableDebugDump && debugBlobNames != null && debugBlobNames.Length > 0)
@@ -200,7 +201,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 return Finish(new MattingResult { error = "Matting output missing" });
 
             ReportProgress(0.65f, "Resize alpha");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
 
             matteFullResPack4 = mattePack4;
             mattePack4 = null;
@@ -215,7 +216,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             }
 
             ReportProgress(0.82f, "Read back alpha");
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
 
             var alpha = ReadbackSingleChannel(matteFullResPack4, originalW, originalH);
             if (alpha == null || alpha.Length != originalW * originalH)
@@ -264,7 +265,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private Awaitable<RenderTexture> ForwardMattingWithCommandBufferAsync(Texture resizedInput, int width, int height, CancellationToken ct)
+    private UniTask<RenderTexture> ForwardMattingWithCommandBufferAsync(Texture resizedInput, int width, int height, CancellationToken ct)
     {
         if (resizedInput == null)
             throw new ArgumentNullException(nameof(resizedInput));
@@ -309,7 +310,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 Graphics.ExecuteCommandBuffer(cmd);
             _ops.DebugSyncGpu();
             ct.ThrowIfCancellationRequested();
-            return AexisSampleAwaitable.FromResult(output);
+            return AexisSampleUniTask.FromResult(output);
         }
         catch
         {

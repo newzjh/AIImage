@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using Aexis.Onnx;
+using Aexis.Samples.Async;
 using UnityEngine;
 
 namespace Aexis.Samples
@@ -14,7 +15,7 @@ namespace Aexis.Samples
 
         public OnnxModel Model { get; private set; }
 
-        public async Awaitable InspectAsync(CancellationToken cancellationToken = default)
+        public async UniTask InspectAsync(CancellationToken cancellationToken = default)
         {
             try
             {

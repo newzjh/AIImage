@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using System;
 using System.IO;
 using System.Security.Cryptography;
@@ -254,3 +255,4 @@ public sealed class Qwen35Q8ArchiveTests
         return new JObject { ["file"] = relative, ["bytes"] = new FileInfo(path).Length, ["sha256"] = hash };
     }
 }
+#endif

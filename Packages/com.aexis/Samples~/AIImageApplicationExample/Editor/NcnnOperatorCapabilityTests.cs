@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using System;
 using System.Linq;
 using Aexis.Ncnn;
@@ -107,3 +108,4 @@ public sealed class NcnnOperatorCapabilityTests
         Assert.That(report.missingDependencies.Single(issue => issue.code == "missing-input-descriptor").blob, Is.EqualTo("input_blob"));
     }
 }
+#endif

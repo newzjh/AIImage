@@ -1660,7 +1660,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                || t == GraphicsDeviceType.Direct3D11
                || t == GraphicsDeviceType.Direct3D12
                || t == GraphicsDeviceType.Metal
-               || t == GraphicsDeviceType.WebGPU;
+#if UNITY_6000_0_OR_NEWER
+               || t == GraphicsDeviceType.WebGPU
+#endif
+            ;
     }
 
     private static void CopyTextureArrayAllSlices(CommandBuffer cmd, RenderTexture src, int dstNameId, int sliceCount)

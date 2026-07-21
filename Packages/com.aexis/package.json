@@ -2,7 +2,7 @@
   "name": "com.aexis",
   "displayName": "Aexis",
   "version": "0.1.0-pre.1",
-  "unity": "6000.2",
+  "unity": "2022.3",
   "description": "A self-contained Unity on-device inference engine with ONNX and NCNN model-format support.",
   "keywords": ["aexis", "inference", "onnx", "ncnn", "gpu", "edge"],
   "author": { "name": "Aexis" },

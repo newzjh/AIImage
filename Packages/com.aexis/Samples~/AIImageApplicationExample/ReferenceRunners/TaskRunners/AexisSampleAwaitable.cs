@@ -1,17 +1,18 @@
 using System.Threading;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace Aexis.Samples.Runners
 {
-    internal static class AexisSampleAwaitable
+    internal static class AexisSampleUniTask
     {
-        public static async Awaitable<T> FromResult<T>(T value)
+        public static async UniTask<T> FromResult<T>(T value)
         {
             return value;
         }
 
-        public static async Awaitable<AsyncGPUReadbackRequest> RequestReadbackAsync(
+        public static async UniTask<AsyncGPUReadbackRequest> RequestReadbackAsync(
             RenderTexture texture,
             TextureFormat format,
             CancellationToken cancellationToken)
@@ -20,7 +21,7 @@ namespace Aexis.Samples.Runners
             while (!request.done)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await Awaitable.NextFrameAsync();
+                await UniTask.NextFrame();
             }
             return request;
         }

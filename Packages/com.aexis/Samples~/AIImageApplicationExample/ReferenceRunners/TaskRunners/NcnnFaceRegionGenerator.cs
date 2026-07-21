@@ -5,6 +5,7 @@ using System.IO;
 using System.Diagnostics;
 using System.Threading;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Debug = UnityEngine.Debug;
@@ -167,7 +168,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         _hasAppliedPrecisionMode = false;
     }
 
-    public async Awaitable<FaceRegionResult> GenerateAsync(Texture2D src, bool dumpDebug, CancellationToken ct)
+    public async UniTask<FaceRegionResult> GenerateAsync(Texture2D src, bool dumpDebug, CancellationToken ct)
     {
         if (!enableNcnnFaceRegion)
             return new FaceRegionResult { error = "NcnnFaceRegion disabled" };
@@ -515,7 +516,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         }
     }
 
-    private async Awaitable EnsureLoaded(CancellationToken ct)
+    private async UniTask EnsureLoaded(CancellationToken ct)
     {
         if (_loaded)
             return;

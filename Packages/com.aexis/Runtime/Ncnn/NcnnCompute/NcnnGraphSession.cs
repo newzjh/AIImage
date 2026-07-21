@@ -4619,7 +4619,7 @@ namespace Aexis.Ncnn
             return NcnnParamParser.MergeStringParamsByLayerName(Model, pnnxModel, overwriteExisting);
         }
 
-        public async Awaitable LoadModelAsync(
+        public async Task LoadModelAsync(
             string paramText,
             NcnnBinReader br,
             Action<LoadProgress> onProgress = null,

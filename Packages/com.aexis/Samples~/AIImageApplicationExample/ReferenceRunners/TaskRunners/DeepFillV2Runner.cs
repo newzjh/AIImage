@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 
 namespace Aexis.Samples.Runners
@@ -62,7 +63,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     private DeepFillV2OnnxNcnnImportReport _lastOnnxReport;
     private string _lastDumpDir;
 
-    public async Awaitable<DeepFillV2Result> ProcessAsync(Texture sourceImage, Texture maskImage, CancellationToken ct)
+    public async UniTask<DeepFillV2Result> ProcessAsync(Texture sourceImage, Texture maskImage, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         var loadMs = 0L;
@@ -233,7 +234,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         _repro.DebugLog = enableLayerPathDebugLog ? line => UnityEngine.Debug.Log("[DeepFillV2][Layer] " + line) : null;
     }
 
-    private async Awaitable EnsureLoadedAsync(CancellationToken ct)
+    private async UniTask EnsureLoadedAsync(CancellationToken ct)
     {
         var paramPath = ResolveStreamingAssetPath(ncnnParamRelativePath);
         var signature = BuildLoadSignature(paramPath);

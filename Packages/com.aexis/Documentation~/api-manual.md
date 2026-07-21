@@ -18,7 +18,7 @@ Create `TensorDescriptor` with positive logical and storage dimensions. A descri
 
 Namespace: `Aexis.Async`
 
-`AexisAsync.YieldFrame()` returns Unity `Awaitable` and resumes on the next Unity frame. It is the only package async scheduling abstraction. Callers that use UniTask may await Aexis calls from their own adapters, but Aexis never exposes UniTask in a public signature.
+`AexisAsync.YieldFrame()` returns `Task` and resumes after the next Unity synchronization-context continuation. It is the only package async scheduling abstraction. Callers that use UniTask may await Aexis calls from their own adapters, but Aexis never exposes UniTask in a public signature.
 
 ## ONNX inspection and planning
 
@@ -56,7 +56,7 @@ session.Release();
 | `NcnnParamParser.Parse(string)` | Parse NCNN `.param` text for inspection or merge workflows |
 | `NcnnBinReader(Stream)` | Read NCNN `.bin` weights; dispose it after model load |
 | `NcnnGraphSession.LoadModel(...)` | Synchronous model load |
-| `NcnnGraphSession.LoadModelAsync(...)` | Cooperative frame-yielding load; returns `Awaitable` |
+| `NcnnGraphSession.LoadModelAsync(...)` | Cooperative frame-yielding load; returns `Task` |
 | `NcnnGraphSession.ForwardPack4(...)` | Execute texture-native Pack4 inference |
 | `NcnnGraphSession.Release()` | Release session-owned textures and fixed uploads; idempotent cleanup boundary |
 

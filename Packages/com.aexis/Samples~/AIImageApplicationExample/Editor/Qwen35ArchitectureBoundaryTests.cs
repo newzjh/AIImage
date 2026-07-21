@@ -1,3 +1,4 @@
+#if UNITY_EDITOR && AEXIS_INCLUDE_EDITOR_TESTS
 using System;
 using System.IO;
 using System.Linq;
@@ -73,3 +74,4 @@ public sealed class Qwen35ArchitectureBoundaryTests
             ?? throw new InvalidOperationException("Unable to resolve the Unity project root.");
     }
 }
+#endif

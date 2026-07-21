@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using Aexis.Ncnn;
+using Aexis.Samples.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -209,7 +210,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         Release();
     }
 
-    public async Awaitable<YoloSegResult> ProcessAsync(Texture2D src, CancellationToken ct)
+    public async UniTask<YoloSegResult> ProcessAsync(Texture2D src, CancellationToken ct)
     {
         if (src == null)
             return default;
@@ -577,7 +578,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private async Awaitable EnsureLoaded(CancellationToken ct)
+    private async UniTask EnsureLoaded(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -937,7 +938,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         return Mathf.Lerp(v0, v1, ty);
     }
 
-    private async Awaitable<OutputTextureData> BuildOutputTexturesAsync(Texture2D source, bool[] mask, Color32 tint, float opacity, CancellationToken ct)
+    private async UniTask<OutputTextureData> BuildOutputTexturesAsync(Texture2D source, bool[] mask, Color32 tint, float opacity, CancellationToken ct)
     {
         if (source == null || mask == null || mask.Length != source.width * source.height)
             return null;
@@ -1015,7 +1016,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             _imageProcessingCs.SetFloat("_OverlayOpacity", Mathf.Clamp01(opacity));
             _imageProcessingCs.Dispatch(overlayKernel, gx, gy, 1);
 
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
             ct.ThrowIfCancellationRequested();
 
             var maskTexture = await ReadbackTextureAsync(maskRt, width, height, ct);
@@ -1116,7 +1117,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             UnityEngine.Object.Destroy(obj);
     }
 
-    private static async Awaitable<Texture2D> ReadbackTextureAsync(RenderTexture rt, int width, int height, CancellationToken ct)
+    private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int width, int height, CancellationToken ct)
     {
         if (rt == null)
             return null;
@@ -1124,7 +1125,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         if (Application.isBatchMode)
             return ReadbackTextureSync(rt, width, height);
 
-        var request = await AexisSampleAwaitable.RequestReadbackAsync(rt, TextureFormat.RGBA32, ct);
+        var request = await AexisSampleUniTask.RequestReadbackAsync(rt, TextureFormat.RGBA32, ct);
         ct.ThrowIfCancellationRequested();
         if (request.hasError)
             return null;
@@ -1715,10 +1716,10 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static async Awaitable YieldIfNeeded()
+    private static async UniTask YieldIfNeeded()
     {
         if (!Application.isBatchMode)
-            await Awaitable.NextFrameAsync();
+            await UniTask.NextFrame();
     }
 }
 
