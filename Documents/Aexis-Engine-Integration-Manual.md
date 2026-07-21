@@ -4,9 +4,9 @@
 
 Aexis 的 UPM 包名和根命名空间为 `com.aexis` / `Aexis`。AIImage 是使用 Aexis 的例子工程，不能成为引擎 Runtime 的程序集、命名空间或资源路径依赖。发布时只分发一个 Unity Package：`Packages/com.aexis`。
 
-当前实现自带 ONNX 解析、NCNN `.param/.bin` 读取、模型图加载、Pack4 纹理 GPU 推理、计算着色器和形状/索引执行模块。它不引用 Unity Sentis、ncnn、ONNX Runtime、MNN、UniTask 或原生推理插件。声明的依赖仅为 Unity 内建 `com.unity.modules.imageconversion`、`com.unity.modules.unitywebrequest` 和 `com.unity.modules.unitywebrequesttexture`，分别用于样例 PNG 调试导出、跨平台 StreamingAssets 读取及示例中的网络纹理下载。MNN 未来增加时应落在 `Aexis.Mnn` asmdef 内，仍然由同一个 `com.aexis` 包交付。
+当前实现自带 ONNX 解析、NCNN `.param/.bin` 读取、模型图加载、Pack4 纹理 GPU 推理、计算着色器和形状/索引执行模块。Runtime 不引用 Unity Sentis、ncnn、ONNX Runtime、MNN、UniTask 或原生推理插件。样例和 Editor 的动态 JSON 工具使用命名空间隔离的 `Aexis.Samples.Json` 源码副本；它们包含嵌套 token 遍历和诊断报告，不能以 Unity `JsonUtility` 等价替换。该副本源自 MIT 许可的 Json.NET 13.0.2，来源、固定提交、归档校验值和改写记录位于 `Samples~/AIImageApplicationExample/ThirdParty/AexisSampleJson/UPSTREAM.md`，不会与宿主工程的 Json.NET 冲突。MNN 未来增加时应落在 `Aexis.Mnn` asmdef 内，仍然由同一个 `com.aexis` 包交付。
 
-Unity 基线版本为 `6000.2.7f2`，验证可执行文件为 `C:\Program Files\Unity 6000.2.7f2\Editor\Unity.exe`。最低 Package Manager 声明版本为 Unity `6000.2`。
+兼容范围为 Unity `2022.3` 至 `6000.3`；发布验证分别使用 2022.3.9f1、2023.2.20f1c1 和 6000.3.2f1。最低 Package Manager 声明版本为 Unity `2022.3`。
 
 ## 2. 安装
 
@@ -27,7 +27,7 @@ Unity 基线版本为 `6000.2.7f2`，验证可执行文件为 `C:\Program Files\
 | 路径/程序集 | 责任 |
 | --- | --- |
 | `Runtime/Core` / `Aexis` | 公共推理会话、张量、精度、量化契约 |
-| `Runtime/Async` / `Aexis.Async` | Unity 原生 `Awaitable` 逐帧调度 |
+| `Runtime/Async` / `Aexis.Async` | BCL `Task` 逐帧调度 |
 | `Runtime/Onnx` / `Aexis.Onnx` | ONNX protobuf 图读取与执行规划 |
 | `Runtime/Ncnn` / `Aexis.Ncnn` | NCNN 图、权重、算子和 Pack4 纹理执行 |
 | `Runtime/Execution` / `Aexis.Execution` | ONNX 形状/索引类 GPU 执行 |
@@ -36,7 +36,7 @@ Unity 基线版本为 `6000.2.7f2`，验证可执行文件为 `C:\Program Files\
 | `Samples~` | 可选导入的脚本、示例模型和安装器 |
 | `Tests/Editor` | Package 边界和规划测试 |
 
-Runtime 下允许多个 asmdef，Unity 6 支持一个 UPM 包内的多程序集。它们是编译边界，不是多个 Package；用户只导入 `com.aexis`。
+Runtime 下允许多个 asmdef，Unity 2022.3 至 Unity 6.3 都支持一个 UPM 包内的多程序集。它们是编译边界，不是多个 Package；用户只导入 `com.aexis`。
 
 ## 4. 核心接口
 
@@ -50,7 +50,7 @@ Runtime 下允许多个 asmdef，Unity 6 支持一个 UPM 包内的多程序集�
 
 ### 4.2 `Aexis.Async`
 
-`AexisAsync.YieldFrame()` 返回 Unity 的 `Awaitable`。Aexis 公共 API 不出现 UniTask；宿主可以自行用 UniTask、Task 或协程封装它。这样不会与宿主项目已有的 UniTask 包、GUID 或 asmdef 发生冲突。
+`AexisAsync.YieldFrame()` 返回 BCL `Task`。Aexis 公共 API 不出现 UniTask；宿主可以自行用 UniTask、Task 或协程封装它。这样不会与宿主项目已有的 UniTask 包、GUID 或 asmdef 发生冲突。
 
 ### 4.3 `Aexis.Onnx`
 
@@ -90,7 +90,7 @@ session.Release();
 | `NcnnParamParser.Parse` | 解析 `.param` 文本用于检查或合并 |
 | `NcnnBinReader` | 从 `Stream` 读取 `.bin`，模型加载完成后释放 |
 | `NcnnGraphSession.LoadModel` | 同步加载 |
-| `NcnnGraphSession.LoadModelAsync` | 可取消、逐帧让出的异步加载，返回 `Awaitable` |
+| `NcnnGraphSession.LoadModelAsync` | 可取消、逐帧让出的异步加载，返回 `Task` |
 | `NcnnGraphSession.ForwardPack4` | 执行 Pack4 RenderTexture 推理 |
 | `NcnnGraphSession.Release` | 释放会话持有的 GPU 资源，允许重复调用 |
 
@@ -134,7 +134,7 @@ Package Manager 导入唯一的 **AIImage Main2 Application Example** 后，执�
 | MONAI/VISTA | 仅外部配置，模型不携带 | 否 |
 | QWEN | 仅外部配置，模型不携带 | 否 |
 
-迁入的 Runner 已位于 `Aexis.Samples.Runners` 并使用 Unity `Awaitable`；它们不再编译依赖 Aexis Runtime 之外的 UniTask。`AIImage Main2 Application Example` 是唯一的应用样例，包含 Main2、MainView2、DesignView、LibraryView、所有 Runner（含 GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN）及 Editor 测试/批处理代码。它带有 Clip、CodeFormer、DeepFillV2、Matting、RealESRGAN 和 YOLO 的默认模型；GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 的模型权重、外部 exe、私有 golden 和业务数据不随该 Sample 发布。样例将所需的 UniTask 和 SharpZip 源码隔离为 `Aexis.Samples.Async` 与 `Aexis.Samples.SharpZipLib`，不会与宿主工程的同名库冲突。
+迁入的 Runner 已位于 `Aexis.Samples.Runners` 并使用隔离的 `Aexis.Samples.Async`；它们不再编译依赖 Aexis Runtime 之外的 UniTask。`AIImage Main2 Application Example` 是唯一的应用样例，包含 Main2、MainView2、DesignView、LibraryView、所有 Runner（含 GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN）及 Editor 测试/批处理代码。它带有 Clip、CodeFormer、DeepFillV2、Matting、RealESRGAN 和 YOLO 的默认模型；GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 的模型权重、外部 exe、私有 golden 和业务数据不随该 Sample 发布。样例将所需的 UniTask 和 SharpZip 源码隔离为 `Aexis.Samples.Async` 与 `Aexis.Samples.SharpZipLib`，不会与宿主工程的同名库冲突。SharpZip 仍被 `StandardImageIO` 和 MONAI 压缩输入读取路径调用，不能按未使用代码删除。
 
 ## 7. 模型与许可证
 
@@ -145,7 +145,8 @@ Aexis 源码使用 MIT，不自动改变模型权重许可证。每一个发布�
 ## 8. 发布验证
 
 1. 运行 `dotnet build AIImage.sln -v minimal -m:1`。
-2. 用 Unity 6000.2.7f2 无界面编译当前工程。
-3. 新建空 Unity 6000.2.7f2 工程，以 `file:` 引用 `com.aexis`，确认没有 UniTask、AIImage、Sentis、ONNX Runtime 或 ncnn 依赖。
-4. 在空工程导入 AIImage Main2 Application Example，运行 StreamingAssets 安装器后再次编译。
-5. 检查 package archive 不包含 GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 模型和未声明许可的二进制文件。
+2. 用 Unity 2022.3.9f1、2023.2.20f1c1、6000.3.2f1 分别无界面编译验证工程。
+3. 每个版本新建默认空工程，分别验证 `file:` UPM 安装和 `Aexis/Release/Export Complete UnityPackage` 导出的 `.unitypackage` 导入编译。UnityPackage 导入后必须恢复 `Packages/com.aexis`，并在该包的 `Samples~/AIImageApplicationExample` 保留完整 Main2 样例；确认没有 UniTask、AIImage、Sentis、ONNX Runtime 或 ncnn Runtime 依赖。
+4. 在空工程导入 AIImage Main2 Application Example，运行 StreamingAssets 安装器后再次编译，确认 Main2 与六类携带模型的 runner 可发现。
+5. 安装 Unity Test Framework 并设置 `AEXIS_INCLUDE_EDITOR_TESTS` 后，确认样例附带的 Editor NUnit 测试可被编译和发现；默认导入不应因测试框架缺失而失败。
+6. 检查 package archive 不包含 GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 模型和未声明许可的二进制文件；Json.NET 仅可作为带许可证、来源、固定提交和校验值记录的 `Aexis.Samples.Json` 源码副本存在，禁止复制 `Newtonsoft.Json.dll` 到 `Assets` 或声明同名 UPM 依赖。
