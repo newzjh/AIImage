@@ -500,8 +500,7 @@ public sealed class MainView2 : BasePageView
         }
 
         var modelDirectory = ResolveQwen35ModelDirectory();
-        var manifestPath = Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName);
-        if (!Directory.Exists(modelDirectory) || !File.Exists(manifestPath))
+        if (!HasQwen35ModelPayload(modelDirectory))
         {
             ShowToast("Qwen3.5 q8 模型未安装: " + modelDirectory, 5000);
             return;
@@ -675,10 +674,11 @@ public sealed class MainView2 : BasePageView
             return Path.GetFullPath(configured);
 
         var mobileDirectory = Path.Combine(Application.persistentDataPath, "qwen3.5_0.8b_mobile_q8");
-        if (Directory.Exists(mobileDirectory))
+        if (HasQwen35ModelPayload(mobileDirectory))
             return mobileDirectory;
 
-        if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory))
+        if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory)
+            && HasQwen35ModelPayload(streamingAssetsDirectory))
             return streamingAssetsDirectory;
 
 #if UNITY_EDITOR
@@ -689,10 +689,45 @@ public sealed class MainView2 : BasePageView
             "Qwen35NcnnBaseline",
             "_models",
             "qwen3.5_0.8b_mobile_q8"));
-        if (Directory.Exists(projectDirectory))
+        if (HasQwen35ModelPayload(projectDirectory))
             return projectDirectory;
 #endif
         return mobileDirectory;
+    }
+
+    private static bool HasQwen35ModelPayload(string modelDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(modelDirectory) || !Directory.Exists(modelDirectory))
+            return false;
+
+        if (File.Exists(Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName)))
+            return true;
+
+        var requiredFiles = new[]
+        {
+            "model.json",
+            "vocab.txt",
+            "merges.txt",
+            "qwen3.5_decoder.ncnn.param",
+            "qwen3.5_decoder.ncnn.bin",
+            "qwen3.5_embed_token.ncnn.param",
+            "qwen3.5_embed_token.ncnn.bin",
+            "qwen3.5_proj_out.ncnn.param",
+            "qwen3.5_vision_embed_patch.ncnn.param",
+            "qwen3.5_vision_embed_patch.ncnn.bin",
+            "qwen3.5_vision_embed_pos.ncnn.param",
+            "qwen3.5_vision_embed_pos.ncnn.bin",
+            "qwen3.5_vision_encoder.ncnn.param",
+            "qwen3.5_vision_encoder.ncnn.bin"
+        };
+
+        for (var index = 0; index < requiredFiles.Length; index++)
+        {
+            if (!File.Exists(Path.Combine(modelDirectory, requiredFiles[index])))
+                return false;
+        }
+
+        return true;
     }
 
     private VisualElement BuildPresetBar()
