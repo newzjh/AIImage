@@ -705,7 +705,9 @@ public class MainView : MonoBehaviour
             var data = _directoryTree.GetItemDataForIndex<DirectoryEntry>(index);
             label.text = data.displayName;
         };
+#if UNITY_6000_0_OR_NEWER
         _directoryTree.itemExpandedChanged += OnDirectoryItemExpandedChanged;
+#endif
         _directoryTree.selectionChanged += OnDirectorySelectionChanged;
         parent.Add(_directoryTree);
     }
@@ -2418,6 +2420,7 @@ public class MainView : MonoBehaviour
         return EnumerateDirectoriesSafe(directoryPath, 1).Any();
     }
 
+#if UNITY_6000_0_OR_NEWER
     private void OnDirectoryItemExpandedChanged(TreeViewExpansionChangedArgs args)
     {
         if (_suppressTreeEvents) return;
@@ -2438,6 +2441,28 @@ public class MainView : MonoBehaviour
 
         EnsureDirectoryChildrenLoaded(args.id, data.path);
     }
+#else
+    private void OnDirectoryItemExpandedChanged(int id, bool isExpanded)
+    {
+        if (_suppressTreeEvents) return;
+        if (!isExpanded) return;
+
+        DirectoryEntry data;
+        try
+        {
+            data = _directoryTree.GetItemDataForId<DirectoryEntry>(id);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (data.isPlaceholder) return;
+        if (string.IsNullOrWhiteSpace(data.path)) return;
+
+        EnsureDirectoryChildrenLoaded(id, data.path);
+    }
+#endif
 
     private void ApplyDirectoryRootItems(IList<TreeViewItemData<DirectoryEntry>> items)
     {
