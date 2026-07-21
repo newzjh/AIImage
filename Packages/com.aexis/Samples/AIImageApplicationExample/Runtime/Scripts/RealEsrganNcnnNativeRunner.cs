@@ -534,11 +534,11 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         if (string.IsNullOrWhiteSpace(modelName))
             return null;
 
-        var streamingDir = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models");
+        Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath(Path.Combine("RealESRGAN", "models"), out var streamingDir);
         var paramName = modelName + ".param";
         var binName = modelName + ".bin";
-        var pParam = Path.Combine(streamingDir, paramName);
-        var pBin = Path.Combine(streamingDir, binName);
+        var pParam = string.IsNullOrWhiteSpace(streamingDir) ? null : Path.Combine(streamingDir, paramName);
+        var pBin = string.IsNullOrWhiteSpace(streamingDir) ? null : Path.Combine(streamingDir, binName);
 
         if (Directory.Exists(streamingDir) && File.Exists(pParam) && File.Exists(pBin))
             return streamingDir;
@@ -570,30 +570,8 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
     {
         if (string.IsNullOrWhiteSpace(relativePath))
             return null;
-        var url = Path.Combine(Application.streamingAssetsPath, relativePath).Replace("\\", "/");
-
-        // Android: streamingAssetsPath can be jar:file:///...!/assets
-        // Desktop/iOS: file path works with file:///
-        if (url.IndexOf("://", StringComparison.Ordinal) < 0)
-            url = "file:///" + url;
-
-        using var req = UnityWebRequest.Get(url);
-        req.downloadHandler = new DownloadHandlerBuffer();
-        var op = req.SendWebRequest();
-        while (!op.isDone)
-        {
-            ct.ThrowIfCancellationRequested();
-            await UniTask.Delay(20, cancellationToken: ct);
-        }
-
-#if UNITY_2020_1_OR_NEWER
-        if (req.result != UnityWebRequest.Result.Success)
-            return null;
-#else
-        if (req.isNetworkError || req.isHttpError)
-            return null;
-#endif
-        return req.downloadHandler.data;
+        try { return await Aexis.Samples.AexisSampleStreamingAssets.ReadBytesAsync(relativePath, ct); }
+        catch { return null; }
     }
 
     #region debug-point realesrgan-extract-crash-report

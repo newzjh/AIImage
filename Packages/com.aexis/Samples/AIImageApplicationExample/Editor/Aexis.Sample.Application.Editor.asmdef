@@ -18,7 +18,13 @@
   "precompiledReferences": [],
   "autoReferenced": true,
   "defineConstraints": [],
-  "versionDefines": [],
+  "versionDefines": [
+    {
+      "name": "com.unity.test-framework",
+      "expression": "",
+      "define": "AEXIS_INCLUDE_EDITOR_TESTS"
+    }
+  ],
   "noEngineReferences": false,
   "optionalUnityReferences": ["TestAssemblies"]
 }

@@ -285,10 +285,10 @@ public sealed class NcnnInt4RunnerComparisonTests
                 peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int4.stats),
                 packageWeightComparison = CreateMattingPackageWeightComparison(),
                 effectiveWeightComparison = CreateEffectiveWeightComparison(
-                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Matting", "matting.param"),
+                    AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Matting", "matting.param"),
                     "matting.int4.model.json"),
                 int4SelectiveCoverage = CreateQuantizationCoverage(
-                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Matting", "matting.param"),
+                    AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Matting", "matting.param"),
                     "matting.int4.model.json"),
                 fp16VsFp32 = CompareTextureChannel(fp32.result.matte, fp16.result.matte, 0),
                 int4SelectiveVsFp32 = CompareTextureChannel(fp32.result.matte, int4.result.matte, 0),
@@ -335,10 +335,10 @@ public sealed class NcnnInt4RunnerComparisonTests
                 peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int4.stats),
                 packageWeightComparison = CreateYoloPackageWeightComparison(),
                 effectiveWeightComparison = CreateEffectiveWeightComparison(
-                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.param"),
+                    AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Yolo", "yolov8n_seg.ncnn.param"),
                     "yolo-seg.int4.model.json"),
                 int4SelectiveCoverage = CreateQuantizationCoverage(
-                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.param"),
+                    AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Yolo", "yolov8n_seg.ncnn.param"),
                     "yolo-seg.int4.model.json"),
                 fp16VsFp32 = CompareTextureChannel(fp32.result.mask, fp16.result.mask, 0),
                 int4SelectiveVsFp32 = CompareTextureChannel(fp32.result.mask, int4.result.mask, 0),
@@ -387,10 +387,10 @@ public sealed class NcnnInt4RunnerComparisonTests
                 peakRtBufferComparison = CreatePeakComparison(fp32.stats, fp16.stats, int4.stats),
                 packageWeightComparison = CreateClipPackageWeightComparison(),
                 effectiveWeightComparison = CreateEffectiveWeightComparison(
-                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.param"),
+                    AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Clip", "mobileclip_s0_export", "image_encoder.ncnn.param"),
                     "clip-mobileclip-s0.int4.model.json"),
                 int4SelectiveCoverage = CreateQuantizationCoverage(
-                    Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.param"),
+                    AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Clip", "mobileclip_s0_export", "image_encoder.ncnn.param"),
                     "clip-mobileclip-s0.int4.model.json"),
                 fp16VsFp32 = CompareVector(fp32.result.imageEmbedding, fp16.result.imageEmbedding),
                 int4SelectiveVsFp32 = CompareVector(fp32.result.imageEmbedding, int4.result.imageEmbedding),
@@ -528,8 +528,8 @@ public sealed class NcnnInt4RunnerComparisonTests
     private static NcnnInt4RunnerPackageWeightComparison CreateMattingPackageWeightComparison()
     {
         var root = Directory.GetCurrentDirectory();
-        var modelParam = Path.Combine(root, "Assets", "StreamingAssets", "Matting", "matting.param");
-        var modelBin = Path.Combine(root, "Assets", "StreamingAssets", "Matting", "matting.bin");
+        var modelParam = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Matting", "matting.param");
+        var modelBin = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Matting", "matting.bin");
         return CreatePackageWeightComparison(
             new[] { modelParam, modelBin, ManifestPath("matting.fp32.model.json") },
             new[] { modelParam, modelBin, ManifestPath("matting.fp16.model.json") },
@@ -539,8 +539,8 @@ public sealed class NcnnInt4RunnerComparisonTests
     private static NcnnInt4RunnerPackageWeightComparison CreateYoloPackageWeightComparison()
     {
         var root = Directory.GetCurrentDirectory();
-        var modelParam = Path.Combine(root, "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.param");
-        var modelBin = Path.Combine(root, "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.bin");
+        var modelParam = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Yolo", "yolov8n_seg.ncnn.param");
+        var modelBin = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Yolo", "yolov8n_seg.ncnn.bin");
         return CreatePackageWeightComparison(
             new[] { modelParam, modelBin },
             new[] { modelParam, modelBin, ManifestPath("yolo-seg.fp16.model.json") },
@@ -550,8 +550,8 @@ public sealed class NcnnInt4RunnerComparisonTests
     private static NcnnInt4RunnerPackageWeightComparison CreateClipPackageWeightComparison()
     {
         var root = Directory.GetCurrentDirectory();
-        var modelParam = Path.Combine(root, "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.param");
-        var modelBin = Path.Combine(root, "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export", "image_encoder.ncnn.bin");
+        var modelParam = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Clip", "mobileclip_s0_export", "image_encoder.ncnn.param");
+        var modelBin = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Clip", "mobileclip_s0_export", "image_encoder.ncnn.bin");
         return CreatePackageWeightComparison(
             new[] { modelParam, modelBin, ManifestPath("clip-mobileclip-s0.fp32.model.json") },
             new[] { modelParam, modelBin, ManifestPath("clip-mobileclip-s0.fp16.model.json") },
@@ -573,7 +573,7 @@ public sealed class NcnnInt4RunnerComparisonTests
 
     private static string ManifestPath(string fileName)
     {
-        return Path.Combine(Directory.GetCurrentDirectory(), "Assets", "StreamingAssets", "InferenceManifests", fileName);
+        return AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", fileName);
     }
 
     private static long SumExistingFileBytes(string[] paths)

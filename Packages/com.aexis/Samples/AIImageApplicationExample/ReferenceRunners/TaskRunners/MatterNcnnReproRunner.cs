@@ -373,8 +373,8 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         if (_loaded && _repro?.Model != null)
             return;
 
-        var paramPath = Path.Combine(Application.streamingAssetsPath, modelParamRelativePath);
-        var binPath = Path.Combine(Application.streamingAssetsPath, modelBinRelativePath);
+        var paramPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(modelParamRelativePath);
+        var binPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(modelBinRelativePath);
         if (!File.Exists(paramPath))
             throw new FileNotFoundException("Matting param not found", paramPath);
         if (!File.Exists(binPath))

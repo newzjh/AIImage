@@ -192,14 +192,14 @@ public static class NcnnDebugRunner
     private const string DesignViewDebugInputEnvVar = "AIIMAGE_DESIGNVIEW_DEBUG_INPUT";
     private static readonly MethodInfo EditorUpdatePumpMethod = typeof(EditorApplication).GetMethod("Internal_CallUpdateFunctions", BindingFlags.Static | BindingFlags.NonPublic);
     private static readonly MethodInfo EditorDelayPumpMethod = typeof(EditorApplication).GetMethod("Internal_CallDelayFunctions", BindingFlags.Static | BindingFlags.NonPublic);
-    private static readonly string DefaultFaceDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
-    private static readonly string DefaultCodeFormerDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
-    private static readonly string DefaultClipDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "Pa070111a.jpg");
-    private static readonly string DefaultMattingDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_img.jpg");
-    private static readonly string DefaultMattingReferencePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "ncnn_matting-main", "test_result.jpg");
-    private static readonly string DefaultYoloSegDebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "P1120028.jpg");
-    private static readonly string DefaultReproStressImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "CodeFormer-ncnn-main", "data", "02.png");
-    private static readonly string DefaultDeepFillV2DebugImagePath = Path.Combine(Directory.GetCurrentDirectory(), "Documents", "ClipCompareInput", "03.jpg");
+    private static readonly string DefaultFaceDebugImagePath = AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail2.png");
+    private static readonly string DefaultCodeFormerDebugImagePath = AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail2.png");
+    private static readonly string DefaultClipDebugImagePath = AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail2.png");
+    private static readonly string DefaultMattingDebugImagePath = AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail3.jpg");
+    private static readonly string DefaultMattingReferencePath = null;
+    private static readonly string DefaultYoloSegDebugImagePath = AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail2.png");
+    private static readonly string DefaultReproStressImagePath = AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail2.png");
+    private static readonly string DefaultDeepFillV2DebugImagePath = AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail3.jpg");
     private static readonly string DefaultDeepFillV2Case1ImagePath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "deepfillv2", "deepfillv2-pytorch-master", "examples", "inpaint", "case1.png");
     private static readonly string DefaultDeepFillV2Case1MaskedPath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "deepfillv2", "deepfillv2-pytorch-master", "examples", "inpaint", "case1_masked.png");
     private static readonly string DefaultDeepFillV2Case1OutputPath = Path.Combine(Directory.GetCurrentDirectory(), "ref", "deepfillv2", "deepfillv2-pytorch-master", "examples", "inpaint", "case1_out.png");
@@ -210,7 +210,7 @@ public static class NcnnDebugRunner
     private static readonly string DefaultMonaiInputPath = @"E:\Projects\CTData\sliceexampledata2\MRBrainTumor1\RegLib_C01_1.nrrd";
     private static readonly string DefaultVistaBaselineManifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Tools", "MonaiToNCNN", "manual_test", "vista3d_ct_philips_heart_baseline", "ct_philips_heart", "baseline_manifest.json");
     private static readonly string DefaultVistaInputPath = @"E:\Projects\CTData\sliceexampledata2\CT_Philips\CT_Philips.nii.gz";
-    private static readonly string DefaultRealEsrganInputDir = Path.Combine(Directory.GetCurrentDirectory(), "Documents", "ClipCompareInput");
+    private static readonly string DefaultRealEsrganInputDir = AexisApplicationExamplePaths.SampleTextureDirectory;
     private static readonly string DefaultSdPositivePrompt = "floating hair, portrait, ((loli)), ((one girl)), cute face, hidden hands, asymmetrical bangs, beautiful detailed eyes, eye shadow, hair ornament, ribbons, bowties, buttons, pleated skirt, (((masterpiece))), ((best quality)), colorful";
     private static readonly string DefaultSdNegativePrompt = "((part of the head)), ((((mutated hands and fingers)))), deformed, blurry, bad anatomy, disfigured, poorly drawn face, mutation, mutated, extra limb, ugly, poorly drawn hands, missing limb, blurry, floating limbs, disconnected limbs, malformed hands, blur, out of focus, long neck, long body, Octane renderer, lowres, bad anatomy, bad hands, text";
     private static bool _autoBatchScheduled;
@@ -268,6 +268,9 @@ public static class NcnnDebugRunner
                 return;
             case nameof(RunYoloAndInpaintingDebugBatch):
                 RunYoloAndInpaintingDebugBatch();
+                return;
+            case nameof(RunSdInpaintingSampleMaskBatch):
+                RunSdInpaintingSampleMaskBatch();
                 return;
             case nameof(RunYoloAndDeepFillV2DebugBatch):
                 RunYoloAndDeepFillV2DebugBatch();
@@ -389,6 +392,16 @@ public static class NcnnDebugRunner
     public static void RunYoloAndInpaintingDebugMenu()
     {
         RunYoloAndInpaintingDebug().Forget();
+    }
+
+    private static string ResolveQwen35ModelDirectory(string projectRoot, string fallbackModelDirectory)
+    {
+        var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (!string.IsNullOrWhiteSpace(configured))
+            return Path.GetFullPath(configured);
+        if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory))
+            return streamingAssetsDirectory;
+        return Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", fallbackModelDirectory);
     }
 
     [MenuItem("Tools/AIImage/Run YOLO + DeepFillV2 Debug")]
@@ -572,6 +585,10 @@ public static class NcnnDebugRunner
             runner.ProgressChanged += (value, message) =>
                 Debug.Log("[GFPGAN Progress] " + value.ToString("0.000", CultureInfo.InvariantCulture) + " | " + (message ?? string.Empty));
             var result = await runner.ProcessAsync(tex, CancellationToken.None);
+            if (!string.IsNullOrWhiteSpace(result.error))
+                throw new InvalidOperationException("GFPGAN failed: " + result.error);
+            if (result.texture == null)
+                throw new InvalidOperationException("GFPGAN returned no output texture.");
             Debug.Log("GFPGAN Debug result | error=" + (result.error ?? "") + " | elapsedMs=" + result.elapsedMs);
             if (result.texture != null)
             {
@@ -628,6 +645,8 @@ public static class NcnnDebugRunner
 
     public static void RunYoloAndInpaintingDebugBatch() => RunBatchBlocking(nameof(RunYoloAndInpaintingDebugBatch), RunYoloAndInpaintingDebugInternal, TimeSpan.FromHours(4));
 
+    public static void RunSdInpaintingSampleMaskBatch() => RunBatchBlocking(nameof(RunSdInpaintingSampleMaskBatch), RunSdInpaintingSampleMaskInternal, TimeSpan.FromHours(4));
+
     public static void RunYoloAndDeepFillV2DebugBatch() => RunBatchBlocking(nameof(RunYoloAndDeepFillV2DebugBatch), RunYoloAndDeepFillV2DebugInternal, TimeSpan.FromMinutes(45));
 
     public static void RunDeepFillV2Case1DebugBatch() => RunBatchBlocking(nameof(RunDeepFillV2Case1DebugBatch), RunDeepFillV2Case1DebugInternal, TimeSpan.FromMinutes(45));
@@ -658,6 +677,35 @@ public static class NcnnDebugRunner
     public static void RunRealEsrganValidationBatch() => RunBatchBlocking(nameof(RunRealEsrganValidationBatch), RunRealEsrganValidationInternal, TimeSpan.FromMinutes(20));
 
     public static void RunDesignViewCompositeDebugBatch() => RunBatchBlocking(nameof(RunDesignViewCompositeDebugBatch), RunDesignViewCompositeDebugInternal, TimeSpan.FromMinutes(20));
+
+    private static async UniTask RunSdInpaintingSampleMaskInternal()
+    {
+        var inputPath = ResolveInputPath(DefaultReproStressImagePath);
+        var source = LoadTexture(inputPath);
+        if (source == null)
+            throw new InvalidOperationException("Failed to load SD Inpainting sample input: " + inputPath);
+
+        var mask = BuildSampleDeepFillMask(source);
+        var go = new GameObject("SDInpaintingSampleMaskRunner");
+        try
+        {
+            var runner = go.AddComponent<SDInpaintingNcnnReproRunner>();
+            runner.enableDebugDump = ResolveBoolEnv(SdEnableDumpEnvVar, false);
+            var result = await runner.ProcessAsync(source, mask, CancellationToken.None);
+            if (!string.IsNullOrWhiteSpace(result.error))
+                throw new InvalidOperationException("SD Inpainting failed: " + result.error);
+            if (result.texture == null)
+                throw new InvalidOperationException("SD Inpainting returned no output texture.");
+            Debug.Log("SD Inpainting sample-mask result | elapsedMs=" + result.elapsedMs + " | dump=" + (result.dumpDir ?? string.Empty));
+            UnityEngine.Object.DestroyImmediate(result.texture);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(go);
+            UnityEngine.Object.DestroyImmediate(mask);
+            UnityEngine.Object.DestroyImmediate(source);
+        }
+    }
 
     private static async UniTask RunMattingDebugInternal()
     {
@@ -1728,22 +1776,37 @@ public static class NcnnDebugRunner
         var source = LoadTexture(DefaultDeepFillV2Case1ImagePath);
         var maskedExample = LoadTexture(DefaultDeepFillV2Case1MaskedPath);
         var reference = LoadTexture(DefaultDeepFillV2Case1OutputPath);
-        if (source == null || maskedExample == null || reference == null)
-            throw new InvalidOperationException("Failed to load DeepFillV2 case1 source/masked/reference images.");
-        if (source.width != maskedExample.width || source.height != maskedExample.height
-            || source.width != reference.width || source.height != reference.height)
-            throw new InvalidOperationException("DeepFillV2 case1 source/masked/reference dimensions do not match.");
+        var hasGoldenCase = source != null && maskedExample != null && reference != null;
+        Texture2D mask = null;
+        if (hasGoldenCase)
+        {
+            if (source.width != maskedExample.width || source.height != maskedExample.height
+                || source.width != reference.width || source.height != reference.height)
+                throw new InvalidOperationException("DeepFillV2 case1 source/masked/reference dimensions do not match.");
+            mask = BuildPureWhiteMask(maskedExample);
+        }
+        else
+        {
+            UnityEngine.Object.DestroyImmediate(source);
+            UnityEngine.Object.DestroyImmediate(maskedExample);
+            UnityEngine.Object.DestroyImmediate(reference);
+            source = LoadTexture(ResolveInputPath(DefaultDeepFillV2DebugImagePath));
+            maskedExample = null;
+            reference = null;
+            if (source == null)
+                throw new InvalidOperationException("Failed to load the packaged DeepFillV2 sample input.");
+            mask = BuildSampleDeepFillMask(source);
+        }
 
-        var mask = BuildPureWhiteMask(maskedExample);
         TryWriteTexturePng(source, outputDir, "00_source.png");
         TryWriteTexturePng(mask, outputDir, "01_mask_from_masked_example.png");
-        TryWriteTexturePng(reference, outputDir, "02_reference_case1_out.png");
+        if (reference != null)
+            TryWriteTexturePng(reference, outputDir, "02_reference_case1_out.png");
         var go = new GameObject("DeepFillV2Case1DebugRunner");
         var summary = new List<string>
         {
-            "source=" + DefaultDeepFillV2Case1ImagePath,
-            "masked_example=" + DefaultDeepFillV2Case1MaskedPath,
-            "reference=" + DefaultDeepFillV2Case1OutputPath,
+            "source=" + (hasGoldenCase ? DefaultDeepFillV2Case1ImagePath : DefaultDeepFillV2DebugImagePath),
+            "validation_mode=" + (hasGoldenCase ? "golden_case1" : "packaged_smoke"),
             "preprocess=resize_full_image_to_400x512"
         };
         Aexis.Execution.AexisGpuResourceTracker.Enabled = true;
@@ -1778,32 +1841,42 @@ public static class NcnnDebugRunner
                         throw new InvalidOperationException("DeepFillV2 case1 " + backend + " returned no output texture.");
 
                     TryWriteTexturePng(result.texture, backendDir, "case1_unity.png");
-                    var maskedMae = ComputeMaskedMeanAbsDiff(reference, result.texture, mask, false, out var maskedPixels);
-                    var fullMae = ComputeFullRgbMeanAbsDiff(reference, result.texture, out var maxAbs);
+                    var maskedMae = 0d;
+                    var fullMae = 0d;
+                    var maxAbs = 0;
+                    var maskedPixels = 0;
+                    if (reference != null)
+                    {
+                        maskedMae = ComputeMaskedMeanAbsDiff(reference, result.texture, mask, false, out maskedPixels);
+                        fullMae = ComputeFullRgbMeanAbsDiff(reference, result.texture, out maxAbs);
+                    }
                     var backendSummary = string.Join(
                         Environment.NewLine,
                         "backend=" + backend,
                         "elapsed_ms=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture),
                         "load_ms=" + result.loadElapsedMs.ToString(CultureInfo.InvariantCulture),
                         "inference_ms=" + result.inferenceElapsedMs.ToString(CultureInfo.InvariantCulture),
-                        "masked_pixels=" + maskedPixels.ToString(CultureInfo.InvariantCulture),
-                        "full_mae_rgb=" + fullMae.ToString("0.000000", CultureInfo.InvariantCulture),
-                        "masked_mae_rgb=" + maskedMae.ToString("0.000000", CultureInfo.InvariantCulture),
-                        "max_abs_rgb=" + maxAbs.ToString(CultureInfo.InvariantCulture),
+                        "masked_pixels=" + (reference != null ? maskedPixels.ToString(CultureInfo.InvariantCulture) : "not_available"),
+                        "full_mae_rgb=" + (reference != null ? fullMae.ToString("0.000000", CultureInfo.InvariantCulture) : "not_available"),
+                        "masked_mae_rgb=" + (reference != null ? maskedMae.ToString("0.000000", CultureInfo.InvariantCulture) : "not_available"),
+                        "max_abs_rgb=" + (reference != null ? maxAbs.ToString(CultureInfo.InvariantCulture) : "not_available"),
                         "model_report=" + (result.modelReport ?? string.Empty),
                         "deepfill_dump=" + (result.dumpDir ?? string.Empty));
                     File.WriteAllText(Path.Combine(backendDir, "summary.txt"), backendSummary);
-                    summary.Add(backend + "_full_mae_rgb=" + fullMae.ToString("0.000000", CultureInfo.InvariantCulture));
-                    summary.Add(backend + "_masked_mae_rgb=" + maskedMae.ToString("0.000000", CultureInfo.InvariantCulture));
-                    summary.Add(backend + "_max_abs_rgb=" + maxAbs.ToString(CultureInfo.InvariantCulture));
+                    if (reference != null)
+                    {
+                        summary.Add(backend + "_full_mae_rgb=" + fullMae.ToString("0.000000", CultureInfo.InvariantCulture));
+                        summary.Add(backend + "_masked_mae_rgb=" + maskedMae.ToString("0.000000", CultureInfo.InvariantCulture));
+                        summary.Add(backend + "_max_abs_rgb=" + maxAbs.ToString(CultureInfo.InvariantCulture));
+                    }
                     summary.Add(backend + "_elapsed_ms=" + result.elapsedMs.ToString(CultureInfo.InvariantCulture));
                     Debug.Log("[DeepFillV2Case1][" + backend + "]\n" + backendSummary);
 
-                    if (maskedPixels != 14229)
+                    if (hasGoldenCase && maskedPixels != 14229)
                         throw new InvalidOperationException("DeepFillV2 case1 effective mask pixel count mismatch: " + maskedPixels + ".");
-                    if (fullMae > DeepFillV2Case1MaxFullMae
+                    if (hasGoldenCase && (fullMae > DeepFillV2Case1MaxFullMae
                         || maskedMae > DeepFillV2Case1MaxMaskedMae
-                        || maxAbs > DeepFillV2Case1MaxAbs)
+                        || maxAbs > DeepFillV2Case1MaxAbs))
                     {
                         throw new InvalidOperationException(
                             "DeepFillV2 case1 alignment failed: fullMae=" + fullMae.ToString("0.000000", CultureInfo.InvariantCulture)
@@ -1833,6 +1906,31 @@ public static class NcnnDebugRunner
             UnityEngine.Object.DestroyImmediate(mask);
             await ReleaseGpuPressureAsync();
         }
+    }
+
+    private static Texture2D BuildSampleDeepFillMask(Texture2D source)
+    {
+        var mask = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true)
+        {
+            name = "DeepFillV2SampleMask",
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear
+        };
+        var pixels = new Color32[source.width * source.height];
+        for (var i = 0; i < pixels.Length; i++)
+            pixels[i] = new Color32(0, 0, 0, 255);
+        var minX = source.width / 4;
+        var maxX = source.width - minX;
+        var minY = source.height / 4;
+        var maxY = source.height - minY;
+        for (var y = minY; y < maxY; y++)
+        {
+            for (var x = minX; x < maxX; x++)
+                pixels[y * source.width + x] = new Color32(255, 255, 255, 255);
+        }
+        mask.SetPixels32(pixels);
+        mask.Apply(false, false);
+        return mask;
     }
 
     private static DeepFillV2Backend[] ResolveDeepFillV2Backends()
@@ -2459,9 +2557,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TOKENIZER_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_tokenizer_contract.json");
@@ -2526,9 +2622,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TEXT_GENERATION_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_text_generation.json");
@@ -2648,9 +2742,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
         if (string.IsNullOrWhiteSpace(imagePath))
             imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
@@ -2958,9 +3050,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b_mobile_q8");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
         var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
         if (string.IsNullOrWhiteSpace(imagePath))
             imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
@@ -3262,9 +3352,7 @@ public static class NcnnDebugRunner
     public static void RunQwen35ContractBatch()
     {
         var validationStart = Stopwatch.StartNew();
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(Directory.GetParent(Application.dataPath).FullName, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_CONTRACT_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_contract_validation.json");
@@ -3322,9 +3410,7 @@ public static class NcnnDebugRunner
     public static void RunQwen35NetworkLoadBatch()
     {
         var start = Stopwatch.StartNew();
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(Directory.GetParent(Application.dataPath).FullName, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_NETWORK_LOAD_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_network_load_validation.json");
@@ -3407,9 +3493,7 @@ public static class NcnnDebugRunner
     public static void RunQwen35EmbedProbeBatch()
     {
         var start = Stopwatch.StartNew();
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(Directory.GetParent(Application.dataPath).FullName, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_EMBED_PROBE_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_embed_probe.json");
@@ -3480,9 +3564,7 @@ public static class NcnnDebugRunner
     public static void RunQwen35DecoderPrefixProbeBatch()
     {
         var start = Stopwatch.StartNew();
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(Directory.GetParent(Application.dataPath).FullName, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_DECODER_PROBE_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_decoder_prefix_probe.json");
@@ -3696,9 +3778,7 @@ public static class NcnnDebugRunner
     public static void RunQwen35ProjOutProbeBatch()
     {
         var start = Stopwatch.StartNew();
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(Directory.GetParent(Application.dataPath).FullName, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_PROJ_PROBE_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "unity_proj_out_probe.json");
@@ -3805,9 +3885,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
         if (string.IsNullOrWhiteSpace(imagePath))
             imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
@@ -3945,9 +4023,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_POSITION_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_position_probe.json");
@@ -4048,9 +4124,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
         if (string.IsNullOrWhiteSpace(imagePath))
             imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
@@ -4218,9 +4292,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
         if (string.IsNullOrWhiteSpace(imagePath))
             imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
@@ -4428,9 +4500,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
-        if (string.IsNullOrWhiteSpace(modelDir))
-            modelDir = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
         var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
         if (string.IsNullOrWhiteSpace(imagePath))
             imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
@@ -6834,8 +6904,7 @@ public static class NcnnDebugRunner
         if (string.IsNullOrWhiteSpace(fileName))
             return null;
 
-        var path = Path.Combine(Application.streamingAssetsPath, "InferenceManifests", fileName);
-        return File.Exists(path) ? path : null;
+        return Aexis.Samples.AexisSampleStreamingAssets.TryResolveFilePath(Path.Combine("InferenceManifests", fileName), out var path) ? path : null;
     }
 
     private static Aexis.Execution.AexisPrecisionMode ResolveRunnerPrecision(string environmentVariable)

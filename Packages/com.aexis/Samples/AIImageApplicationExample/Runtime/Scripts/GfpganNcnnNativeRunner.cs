@@ -522,10 +522,10 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
 
     private static async UniTask<string> PrepareModelDirAsync(string modelName, CancellationToken ct)
     {
-        var streamingDir = Path.Combine(Application.streamingAssetsPath, "GFPGAN", "models");
-        var pEncoderParam = Path.Combine(streamingDir, "encoder.param");
-        var pEncoderBin = Path.Combine(streamingDir, "encoder.bin");
-        var pStyleBin = Path.Combine(streamingDir, "style.bin");
+        Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath(Path.Combine("GFPGAN", "models"), out var streamingDir);
+        var pEncoderParam = string.IsNullOrWhiteSpace(streamingDir) ? null : Path.Combine(streamingDir, "encoder.param");
+        var pEncoderBin = string.IsNullOrWhiteSpace(streamingDir) ? null : Path.Combine(streamingDir, "encoder.bin");
+        var pStyleBin = string.IsNullOrWhiteSpace(streamingDir) ? null : Path.Combine(streamingDir, "style.bin");
 
         if (Directory.Exists(streamingDir) && File.Exists(pEncoderParam) && File.Exists(pEncoderBin) && File.Exists(pStyleBin))
             return streamingDir;
@@ -556,27 +556,8 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
     {
         if (string.IsNullOrWhiteSpace(relativePath))
             return null;
-        var url = Path.Combine(Application.streamingAssetsPath, relativePath).Replace("\\", "/");
-        if (url.IndexOf("://", StringComparison.Ordinal) < 0)
-            url = "file:///" + url;
-
-        using var req = UnityWebRequest.Get(url);
-        req.downloadHandler = new DownloadHandlerBuffer();
-        var op = req.SendWebRequest();
-        while (!op.isDone)
-        {
-            ct.ThrowIfCancellationRequested();
-            await UniTask.Delay(20, cancellationToken: ct);
-        }
-
-#if UNITY_2020_1_OR_NEWER
-        if (req.result != UnityWebRequest.Result.Success)
-            return null;
-#else
-        if (req.isNetworkError || req.isHttpError)
-            return null;
-#endif
-        return req.downloadHandler.data;
+        try { return await Aexis.Samples.AexisSampleStreamingAssets.ReadBytesAsync(relativePath, ct); }
+        catch { return null; }
     }
 }
 

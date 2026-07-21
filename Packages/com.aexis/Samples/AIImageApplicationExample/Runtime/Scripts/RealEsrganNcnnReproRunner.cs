@@ -1137,8 +1137,8 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
         EnsureRuntimeObjects();
 
-        var paramPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".param");
-        var binPath = Path.Combine(Application.streamingAssetsPath, "RealESRGAN", "models", model + ".bin");
+        var paramPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(Path.Combine("RealESRGAN", "models", model + ".param"));
+        var binPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(Path.Combine("RealESRGAN", "models", model + ".bin"));
 
         ReportProgress(0.02f, "Reading Model File...");
         await YieldIfNeeded();

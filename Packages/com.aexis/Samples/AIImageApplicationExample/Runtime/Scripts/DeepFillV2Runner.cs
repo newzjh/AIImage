@@ -275,11 +275,11 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     private static string ResolveStreamingAssetPath(string relativePath)
     {
         if (string.IsNullOrWhiteSpace(relativePath))
-            return Application.streamingAssetsPath;
+            return Aexis.Samples.AexisSampleStreamingAssets.ResolveDirectoryPath();
         if (Path.IsPathRooted(relativePath))
             return relativePath;
         var rel = relativePath.Replace('\\', '/').TrimStart('/');
-        return Path.Combine(Application.streamingAssetsPath, rel);
+        return Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(rel);
     }
 
     private static string BuildLoadSignature(string path)

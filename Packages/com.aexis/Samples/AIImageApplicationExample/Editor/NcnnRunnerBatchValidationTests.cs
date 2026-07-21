@@ -11,8 +11,8 @@ using UnityEngine.TestTools;
 
 public sealed class NcnnRunnerBatchValidationTests
 {
-    private static readonly string Input02Path = Path.Combine(Directory.GetCurrentDirectory(), "documents", "ClipCompareInput", "02.png");
-    private static readonly string Input03Path = Path.Combine(Directory.GetCurrentDirectory(), "documents", "ClipCompareInput", "03.jpg");
+    private static string Input02Path => AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail2.png");
+    private static string Input03Path => AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail3.jpg");
 
     [UnityTest]
     public IEnumerator CodeFormer_Runs_On_02()
@@ -172,6 +172,34 @@ public sealed class NcnnRunnerBatchValidationTests
     }
 
     [UnityTest]
+    public IEnumerator DeepFillV2_Runs_On_SampleMask()
+    {
+        var input = LoadTexture(Input03Path);
+        var mask = CreateCenterMask(input.width, input.height);
+        var go = new GameObject("DeepFillV2RunnerTest");
+        var runner = go.AddComponent<DeepFillV2Runner>();
+        runner.backend = DeepFillV2Backend.NcnnBin;
+        runner.enableDebugDump = false;
+
+        var task = runner.ProcessAsync(input, mask, CancellationToken.None).AsTask();
+        yield return WaitForTask(task);
+
+        try
+        {
+            Assert.That(task.Result.error, Is.Null.Or.Empty, "DeepFillV2 error");
+            Assert.That(task.Result.texture, Is.Not.Null, "DeepFillV2 output texture");
+            Debug.Log("[NcnnRunnerBatchValidationTests] DeepFillV2 elapsedMs=" + task.Result.elapsedMs);
+        }
+        finally
+        {
+            DestroyImmediateSafe(task.Result.texture);
+            DestroyImmediateSafe(go);
+            DestroyImmediateSafe(mask);
+            DestroyImmediateSafe(input);
+        }
+    }
+
+    [UnityTest]
     public IEnumerator Clip_Runs_On_02()
     {
         var input = LoadTexture(Input02Path);
@@ -296,6 +324,29 @@ public sealed class NcnnRunnerBatchValidationTests
         }
 
         return tex;
+    }
+
+    private static Texture2D CreateCenterMask(int width, int height)
+    {
+        var mask = new Texture2D(width, height, TextureFormat.RGBA32, false, true)
+        {
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+            name = "DeepFillV2SampleMask"
+        };
+        var pixels = new Color32[width * height];
+        var minX = width / 4;
+        var maxX = width - minX;
+        var minY = height / 4;
+        var maxY = height - minY;
+        for (var y = minY; y < maxY; y++)
+        {
+            for (var x = minX; x < maxX; x++)
+                pixels[y * width + x] = new Color32(255, 255, 255, 255);
+        }
+        mask.SetPixels32(pixels);
+        mask.Apply(false, false);
+        return mask;
     }
 
     private static void DestroyImmediateSafe(UnityEngine.Object obj)

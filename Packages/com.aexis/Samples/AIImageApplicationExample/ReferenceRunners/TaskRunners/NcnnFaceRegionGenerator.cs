@@ -527,8 +527,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             Debug.Log("[FaceDebugLoad] " + message);
         }
 
-        var paramPath = Path.Combine(Application.streamingAssetsPath, paramRelativePath);
-        var binPath = Path.Combine(Application.streamingAssetsPath, binRelativePath);
+        var paramPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(paramRelativePath);
+        var binPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(binRelativePath);
         LogLoad("paths | param=" + paramPath + " | bin=" + binPath);
         if (!File.Exists(paramPath))
             throw new InvalidOperationException("Missing face detector param: " + paramPath);

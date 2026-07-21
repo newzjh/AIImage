@@ -2015,7 +2015,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
 
     private IEnumerable<string> EnumerateSearchRoots()
     {
-        var streamingRoot = Path.Combine(Application.streamingAssetsPath, stableDiffusionRootRelativePath);
+        var streamingRoot = Aexis.Samples.AexisSampleStreamingAssets.ResolveDirectoryPath(stableDiffusionRootRelativePath);
         yield return streamingRoot;
 
         if (!useReferenceAssetFallback)

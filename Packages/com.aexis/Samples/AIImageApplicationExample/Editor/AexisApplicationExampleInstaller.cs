@@ -13,7 +13,7 @@ internal static class AexisApplicationExampleInstaller
     private static void InstallStreamingAssets()
     {
         var root = ResolveSampleRoot();
-        CopyDirectory(Path.Combine(root, "StreamingAssets"), Path.GetFullPath(Destination));
+        CopyDirectory(Path.Combine(root, "StreamingAssets"), Path.GetFullPath(Destination), overwrite: true);
         AssetDatabase.Refresh();
         Debug.Log("Installed AIImage application configuration and permitted default models to " + Destination + ".");
     }
@@ -24,12 +24,37 @@ internal static class AexisApplicationExampleInstaller
         EditorSceneManager.OpenScene(AexisApplicationExamplePaths.Main2SceneAssetPath, OpenSceneMode.Single);
     }
 
+    internal static void EnsureStreamingAssetsInstalled()
+    {
+        var root = ResolveSampleRoot();
+        var source = Path.Combine(root, "StreamingAssets");
+        var destination = Path.GetFullPath(Destination);
+        if (!Directory.Exists(source))
+            throw new DirectoryNotFoundException("AIImage application sample StreamingAssets are missing: " + source);
+        if (HasDefaultModelPayload(destination))
+            return;
+
+        CopyDirectory(source, destination, overwrite: false);
+        AssetDatabase.Refresh();
+        Debug.Log("Installed missing AIImage application configuration and permitted default models to " + Destination + ".");
+    }
+
     private static string ResolveSampleRoot()
     {
         return AexisApplicationExamplePaths.SampleRootAbsolutePath;
     }
 
-    private static void CopyDirectory(string source, string destination)
+    private static bool HasDefaultModelPayload(string root)
+    {
+        return File.Exists(Path.Combine(root, "Clip", "mobileclip_s0_export", "image_encoder.ncnn.bin"))
+            && File.Exists(Path.Combine(root, "CodeFormer", "models", "generator.bin"))
+            && File.Exists(Path.Combine(root, "DeepFileV2", "deepfillv2_case1.ncnn.bin"))
+            && File.Exists(Path.Combine(root, "Matting", "matting.bin"))
+            && File.Exists(Path.Combine(root, "RealESRGAN", "models", "realesrgan-x4plus.bin"))
+            && File.Exists(Path.Combine(root, "Yolo", "yolov8n_seg.ncnn.bin"));
+    }
+
+    private static void CopyDirectory(string source, string destination, bool overwrite)
     {
         if (!Directory.Exists(source))
             return;
@@ -40,7 +65,9 @@ internal static class AexisApplicationExampleInstaller
         {
             if (string.Equals(Path.GetExtension(file), ".meta", StringComparison.OrdinalIgnoreCase))
                 continue;
-            File.Copy(file, file.Replace(source, destination), true);
+            var target = file.Replace(source, destination);
+            if (overwrite || !File.Exists(target))
+                File.Copy(file, target, true);
         }
     }
 }
@@ -62,6 +89,25 @@ internal static class AexisApplicationExamplePaths
     }
 
     internal static string Main2SceneAssetPath => ToAssetPath(Path.Combine(SampleRootAbsolutePath, "Scenes", "Main2.unity"));
+
+    internal static string SampleTextureAbsolutePath(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            throw new ArgumentException("A sample texture file name is required.", nameof(fileName));
+        return Path.Combine(SampleRootAbsolutePath, "Textures", fileName);
+    }
+
+    internal static string SampleTextureDirectory => Path.Combine(SampleRootAbsolutePath, "Textures");
+
+    internal static string ResolveStreamingAssetFilePath(params string[] pathSegments)
+    {
+        return Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(Path.Combine(pathSegments));
+    }
+
+    internal static string ResolveStreamingAssetDirectoryPath(params string[] pathSegments)
+    {
+        return Aexis.Samples.AexisSampleStreamingAssets.ResolveDirectoryPath(pathSegments == null || pathSegments.Length == 0 ? null : Path.Combine(pathSegments));
+    }
 
     internal static string ToAbsolutePath(string assetPath)
     {

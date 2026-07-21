@@ -28,11 +28,11 @@ public static class NcnnOperatorCapabilityReportTool
             Path.Combine(outputDirectory, "operator-capabilities.json"),
             AexisOperatorCapabilities.CreateDocument());
         ExportPreflight(
-            Path.Combine(root, "Assets", "StreamingAssets", "Yolo", "yolov8n_seg.ncnn.param"),
+            AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Yolo", "yolov8n_seg.ncnn.param"),
             Path.Combine(outputDirectory, "yolov8n-seg-preflight.json"),
             new[] { CreateInput("in0", new[] { 4, 640, 640, 1, 3 }, new[] { 4, 640, 640, 1, 3 }, "NCHW", "FP32") });
         ExportPreflight(
-            Path.Combine(root, "Assets", "StreamingAssets", "StableDiffusion", "FrozenCLIPEmbedder-fp16.param"),
+            AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("StableDiffusion", "FrozenCLIPEmbedder-fp16.param"),
             Path.Combine(outputDirectory, "frozen-clip-preflight.json"),
             new[]
             {

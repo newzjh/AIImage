@@ -13,8 +13,8 @@ public sealed class NcnnFp16ModelManifestTests
     public void ManifestParser_AcceptsFp32AndFp16VariantsForTheSameModel()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var fp32 = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "clip-mobileclip-s0.fp32.model.json"));
-        var fp16 = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "clip-mobileclip-s0.fp16.model.json"));
+        var fp32 = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "clip-mobileclip-s0.fp32.model.json"));
+        var fp16 = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "clip-mobileclip-s0.fp16.model.json"));
 
         Assert.That(fp32.modelId, Is.EqualTo(fp16.modelId));
         Assert.That(fp32.precision.activationDataType, Is.EqualTo(TensorDataType.Float32));
@@ -22,7 +22,7 @@ public sealed class NcnnFp16ModelManifestTests
         Assert.That(fp16.precision.weightDataType, Is.EqualTo(TensorDataType.Float16));
         Assert.That(fp16.precision.sensitiveOutputDataType, Is.EqualTo(TensorDataType.Float32));
 
-        var mattingMixed = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "matting.fp16-weights.model.json"));
+        var mattingMixed = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "matting.fp16-weights.model.json"));
         Assert.That(mattingMixed.modelId, Is.EqualTo("matting.ncnn"));
         Assert.That(mattingMixed.precision.activationDataType, Is.EqualTo(TensorDataType.Float32));
         Assert.That(mattingMixed.precision.weightDataType, Is.EqualTo(TensorDataType.Float16));
@@ -32,9 +32,9 @@ public sealed class NcnnFp16ModelManifestTests
     public void ShippingDefaults_KeepMattingOptInAndSelectFp16ForValidatedRunners()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var clip = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "clip-mobileclip-s0.fp16.model.json"));
-        var esrgan = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "esrgan-realesrgan-x4plus.fp16.model.json"));
-        var matting = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "matting.fp32.model.json"));
+        var clip = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "clip-mobileclip-s0.fp16.model.json"));
+        var esrgan = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "esrgan-realesrgan-x4plus.fp16.model.json"));
+        var matting = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "matting.fp32.model.json"));
 
         Assert.That(clip.precision.activationDataType, Is.EqualTo(TensorDataType.Float16));
         Assert.That(esrgan.precision.activationDataType, Is.EqualTo(TensorDataType.Float16));
@@ -54,7 +54,7 @@ public sealed class NcnnFp16ModelManifestTests
     public void ExplicitPrecision_OverridesTheProcessWideManifest()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var configuredFp16 = Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "clip-mobileclip-s0.fp16.model.json");
+        var configuredFp16 = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "clip-mobileclip-s0.fp16.model.json");
         var previous = Environment.GetEnvironmentVariable(AexisModelManifestLoader.ManifestEnvironmentVariable);
         try
         {

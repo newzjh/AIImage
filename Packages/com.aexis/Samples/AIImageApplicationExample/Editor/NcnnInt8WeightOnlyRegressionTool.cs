@@ -136,9 +136,9 @@ public static class NcnnInt8WeightOnlyRegressionTool
         {
             cases = new[]
             {
-                RunMattingConv(Path.Combine(root, "Assets", "StreamingAssets", "Matting")),
-                RunYoloConv(Path.Combine(root, "Assets", "StreamingAssets", "Yolo")),
-                RunMobileClipGemm(Path.Combine(root, "Assets", "StreamingAssets", "Clip", "mobileclip_s0_export"))
+                RunMattingConv(AexisApplicationExamplePaths.ResolveStreamingAssetDirectoryPath("Matting")),
+                RunYoloConv(AexisApplicationExamplePaths.ResolveStreamingAssetDirectoryPath("Yolo")),
+                RunMobileClipGemm(AexisApplicationExamplePaths.ResolveStreamingAssetDirectoryPath("Clip", "mobileclip_s0_export"))
             }
         };
     }

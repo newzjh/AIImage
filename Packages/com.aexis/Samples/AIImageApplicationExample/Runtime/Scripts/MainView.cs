@@ -138,6 +138,7 @@ public class MainView : MonoBehaviour
 
     private void Awake()
     {
+        Aexis.Samples.AexisSampleStreamingAssets.RegisterManifestPathResolver();
         _uiDocument = GetComponent<UIDocument>();
         _image2ImageAI = GetComponent<Image2ImageAI>();
         if (_image2ImageAI == null)

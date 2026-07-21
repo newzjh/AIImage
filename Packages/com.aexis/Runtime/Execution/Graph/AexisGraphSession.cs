@@ -4647,7 +4647,10 @@ namespace Aexis.Execution
                     }
 
                     ct.ThrowIfCancellationRequested();
-                    if (shouldYield)
+                    // The sample batch harness drives its own UniTask loop and cannot
+                    // resume a BCL Task.Yield continuation. Batch loading therefore
+                    // keeps the same layer loop but runs it synchronously.
+                    if (shouldYield && !Application.isBatchMode)
                         await AexisAsync.YieldFrame();
                 }
             }

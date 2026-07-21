@@ -1731,8 +1731,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             return;
         EnsureRuntimeObjects();
 
-        var paramPath = Path.Combine(Application.streamingAssetsPath, encoderParamRelativePath);
-        var binPath = Path.Combine(Application.streamingAssetsPath, encoderBinRelativePath);
+        var paramPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(encoderParamRelativePath);
+        var binPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(encoderBinRelativePath);
         if (!File.Exists(paramPath))
             throw new InvalidOperationException("Missing encoder param: " + paramPath);
         if (!File.Exists(binPath))
@@ -1767,8 +1767,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             return;
         EnsureRuntimeObjects();
 
-        var paramPath = Path.Combine(Application.streamingAssetsPath, generatorParamRelativePath);
-        var binPath = Path.Combine(Application.streamingAssetsPath, generatorBinRelativePath);
+        var paramPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(generatorParamRelativePath);
+        var binPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(generatorBinRelativePath);
         if (!File.Exists(paramPath))
             throw new InvalidOperationException("Missing generator param: " + paramPath);
         if (!File.Exists(binPath))

@@ -506,7 +506,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         _loadedModelKey = null;
         _lastTextEmbeddingSource = null;
 
-        var clipRoot = Path.Combine(Application.streamingAssetsPath, clipRootRelativePath);
+        var clipRoot = Aexis.Samples.AexisSampleStreamingAssets.ResolveDirectoryPath(clipRootRelativePath);
         var modelRoot = Path.Combine(clipRoot, modelKey);
 
         var warmupSw = Stopwatch.StartNew();

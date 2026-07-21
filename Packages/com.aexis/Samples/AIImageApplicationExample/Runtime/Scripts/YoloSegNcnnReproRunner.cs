@@ -584,8 +584,8 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         if (string.Equals(_loadedModelKey, modelKey, StringComparison.Ordinal) && _repro?.Model != null)
             return;
 
-        var paramPath = Path.Combine(Application.streamingAssetsPath, paramRelativePath);
-        var binPath = Path.Combine(Application.streamingAssetsPath, binRelativePath);
+        var paramPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(paramRelativePath);
+        var binPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(binRelativePath);
         if (!File.Exists(paramPath))
             throw new FileNotFoundException("YOLO seg param not found", paramPath);
         if (!File.Exists(binPath))

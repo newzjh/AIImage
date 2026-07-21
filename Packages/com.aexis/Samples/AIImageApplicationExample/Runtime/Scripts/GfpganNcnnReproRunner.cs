@@ -869,9 +869,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         if (_loaded)
             return;
 
-        var paramPath = Path.Combine(Application.streamingAssetsPath, paramRelativePath);
-        var binPath = Path.Combine(Application.streamingAssetsPath, binRelativePath);
-        var stylePath = Path.Combine(Application.streamingAssetsPath, styleRelativePath);
+        var paramPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(paramRelativePath);
+        var binPath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(binRelativePath);
+        var stylePath = Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(styleRelativePath);
         if (!File.Exists(paramPath))
             throw new InvalidOperationException("GFPGAN(复刻) param 不存在: " + paramPath);
         if (!File.Exists(binPath))

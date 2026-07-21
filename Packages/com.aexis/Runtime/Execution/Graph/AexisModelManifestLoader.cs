@@ -66,6 +66,10 @@ namespace Aexis.Execution
     {
         public const string ManifestEnvironmentVariable = "AIIMAGE_INFERENCE_MODEL_MANIFEST";
 
+        // Hosts may provide an editor-only sample fallback without making the engine
+        // depend on a package path, AssetDatabase, or an application assembly.
+        public static Func<string, string> DefaultStreamingAssetsPathResolver { get; set; }
+
         public static ModelManifest LoadFromFile(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
@@ -125,8 +129,7 @@ namespace Aexis.Execution
             if (string.IsNullOrWhiteSpace(defaultManifestFileName))
                 throw new ArgumentException("A default manifest file name is required.", nameof(defaultManifestFileName));
 
-            var path = Path.Combine(Application.streamingAssetsPath, "InferenceManifests", defaultManifestFileName);
-            return LoadFromFile(path);
+            return LoadFromFile(ResolveDefaultStreamingAssetsManifestPath(defaultManifestFileName));
         }
 
         public static AexisPrecisionMode ResolveAutoPrecision(string modelId)
@@ -168,7 +171,27 @@ namespace Aexis.Execution
                 return null;
             }
 
-            return LoadFromFile(Path.Combine(Application.streamingAssetsPath, "InferenceManifests", manifestFileName));
+            return LoadFromFile(ResolveDefaultStreamingAssetsManifestPath(manifestFileName));
+        }
+
+        private static string ResolveDefaultStreamingAssetsManifestPath(string manifestFileName)
+        {
+            var relativePath = Path.Combine("InferenceManifests", manifestFileName);
+            var playerPath = Path.Combine(Application.streamingAssetsPath, relativePath);
+            if (File.Exists(playerPath))
+                return playerPath;
+
+            var resolver = DefaultStreamingAssetsPathResolver;
+            if (resolver != null)
+            {
+                var resolvedPath = resolver(relativePath);
+                if (!string.IsNullOrWhiteSpace(resolvedPath) && File.Exists(resolvedPath))
+                    return resolvedPath;
+            }
+
+            // Preserve the player path in the error when a build omitted its required
+            // manifest instead of exposing an editor-only package fallback.
+            return playerPath;
         }
 
         public static AexisPrecisionMode ResolveAppliedPrecision(

@@ -287,7 +287,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
                     threadError = e.Message;
                     try
                     {
-                        var realDir = Path.Combine(Application.streamingAssetsPath, "RealESRGAN");
+                        Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("RealESRGAN", out var realDir);
                         var dirExists = Directory.Exists(realDir);
                         var files = dirExists ? string.Join("|", Directory.GetFiles(realDir)) : "";
                         await ReportDbgAsync("D", "realesrgan.exe.process.start.exception", "[DEBUG] Process.Start exception",
@@ -664,16 +664,12 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
         if (!string.IsNullOrWhiteSpace(executablePathOverride))
             return executablePathOverride;
 
-        var root = Application.streamingAssetsPath;
-        if (string.IsNullOrWhiteSpace(root))
-            return null;
-
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-        return Path.Combine(root, "RealESRGAN", "realesrgan-ncnn-vulkan.exe");
+        return Aexis.Samples.AexisSampleStreamingAssets.TryResolveFilePath(Path.Combine("RealESRGAN", "realesrgan-ncnn-vulkan.exe"), out var windowsPath) ? windowsPath : null;
 #elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
-        return Path.Combine(root, "RealESRGAN", "realesrgan-ncnn-vulkan");
+        return Aexis.Samples.AexisSampleStreamingAssets.TryResolveFilePath(Path.Combine("RealESRGAN", "realesrgan-ncnn-vulkan"), out var macPath) ? macPath : null;
 #elif UNITY_STANDALONE_LINUX
-        return Path.Combine(root, "RealESRGAN", "realesrgan-ncnn-vulkan");
+        return Aexis.Samples.AexisSampleStreamingAssets.TryResolveFilePath(Path.Combine("RealESRGAN", "realesrgan-ncnn-vulkan"), out var linuxPath) ? linuxPath : null;
 #else
         return null;
 #endif
@@ -683,10 +679,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
     {
         if (!string.IsNullOrWhiteSpace(modelDirOverride))
             return modelDirOverride;
-        var root = Application.streamingAssetsPath;
-        if (string.IsNullOrWhiteSpace(root))
-            return null;
-        return Path.Combine(root, "RealESRGAN", "models");
+        return Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath(Path.Combine("RealESRGAN", "models"), out var modelDir) ? modelDir : null;
     }
 
     private static string CreateWorkDir()

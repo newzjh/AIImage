@@ -678,6 +678,9 @@ public sealed class MainView2 : BasePageView
         if (Directory.Exists(mobileDirectory))
             return mobileDirectory;
 
+        if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory))
+            return streamingAssetsDirectory;
+
 #if UNITY_EDITOR
         var projectDirectory = Path.GetFullPath(Path.Combine(
             Application.dataPath,

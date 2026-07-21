@@ -13,13 +13,10 @@ public sealed class NcnnInt8WeightOnlyTests
     [Test]
     public void ManifestParser_AcceptsD2SelectiveInt8AndRequiresPlansForW8A8()
     {
-        var root = Path.GetDirectoryName(Application.dataPath);
-        var manifest = AexisModelManifestLoader.LoadFromFile(Path.Combine(
-            root,
-            "Assets",
-            "StreamingAssets",
-            "InferenceManifests",
-            "clip-mobileclip-s0.int8.model.json"));
+        var manifest = AexisModelManifestLoader.LoadFromFile(
+            AexisApplicationExamplePaths.ResolveStreamingAssetFilePath(
+                "InferenceManifests",
+                "clip-mobileclip-s0.int8.model.json"));
 
         Assert.That(manifest.IsInt8WeightOnly, Is.True);
         Assert.That(manifest.precision.activationDataType, Is.EqualTo(TensorDataType.Float16));
@@ -271,9 +268,9 @@ public sealed class NcnnInt8WeightOnlyTests
     public void ShippingSelectiveInt8Manifests_RecordRunnerNodePlans()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var clip = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "clip-mobileclip-s0.int8.model.json"));
-        var matting = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "matting.int8.model.json"));
-        var yolo = AexisModelManifestLoader.LoadFromFile(Path.Combine(root, "Assets", "StreamingAssets", "InferenceManifests", "yolo-seg.int8.model.json"));
+        var clip = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "clip-mobileclip-s0.int8.model.json"));
+        var matting = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "matting.int8.model.json"));
+        var yolo = AexisModelManifestLoader.LoadFromFile(AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("InferenceManifests", "yolo-seg.int8.model.json"));
 
         Assert.That(clip.TryGetQuantizedNodePlan("gemm_0", "Gemm", out var clipGemm), Is.True);
         Assert.That(clipGemm.mode, Is.EqualTo(QuantizedNodeMode.Int8W8A8));

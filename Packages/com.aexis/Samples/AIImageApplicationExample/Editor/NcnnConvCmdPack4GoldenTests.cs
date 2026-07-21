@@ -68,8 +68,8 @@ public sealed class NcnnConvCmdPack4GoldenTests
     public void CommandBufferPack4_MattingConvSubgraphHasNoBufferFallback()
     {
         var root = System.IO.Path.GetDirectoryName(Application.dataPath);
-        var paramPath = System.IO.Path.Combine(root, "Assets", "StreamingAssets", "Matting", "matting.param");
-        var binPath = System.IO.Path.Combine(root, "Assets", "StreamingAssets", "Matting", "matting.bin");
+        var paramPath = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Matting", "matting.param");
+        var binPath = AexisApplicationExamplePaths.ResolveStreamingAssetFilePath("Matting", "matting.bin");
         var sourceLines = System.IO.File.ReadAllLines(paramPath);
         Assert.That(sourceLines.Length, Is.GreaterThanOrEqualTo(4), "Matting fixture must contain its input and first convolution.");
 
