@@ -20,17 +20,17 @@
     {
       "displayName": "Core contracts",
       "description": "Minimal reference for Aexis public contracts.",
-      "path": "Samples~/CoreContracts"
+      "path": "Samples/CoreContracts"
     },
     {
       "displayName": "NCNN runtime integration",
       "description": "Reference integration notes for the self-contained NCNN runtime.",
-      "path": "Samples~/RunnerIntegration"
+      "path": "Samples/RunnerIntegration"
     },
     {
       "displayName": "AIImage Main2 Application Example",
       "description": "Complete Main2 scene, application pages, all runners, editor tools, and permitted default models in one importable example.",
-      "path": "Samples~/AIImageApplicationExample"
+      "path": "Samples/AIImageApplicationExample"
     }
   ]
 }

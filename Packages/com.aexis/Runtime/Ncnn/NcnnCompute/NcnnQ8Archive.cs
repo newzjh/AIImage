@@ -1,15 +1,16 @@
 using System;
 using System.IO;
+using Aexis.Execution;
 using UnityEngine;
 
 namespace Aexis.Ncnn
 {
-    public sealed class NcnnQ8PackedArray
+    public sealed class NcnnQ8PackedArray : AexisQuantizedTensor
     {
-        public int ElementCount { get; internal set; }
-        public int BlockSize { get; internal set; }
-        public uint[] PackedValues { get; internal set; }
-        public float[] Scales { get; internal set; }
+        internal NcnnQ8PackedArray(int elementCount, int blockSize, uint[] packedValues, float[] scales)
+            : base(elementCount, blockSize, packedValues, scales)
+        {
+        }
     }
 
     public sealed class NcnnQ8ArchiveWriter : IDisposable
@@ -238,7 +239,7 @@ namespace Aexis.Ncnn
                 }
             }
             ValidatePayload(header, bytesConsumed);
-            return new NcnnQ8PackedArray { ElementCount = expectedCount, BlockSize = header.BlockSize, PackedValues = packed, Scales = scales };
+            return new NcnnQ8PackedArray(expectedCount, header.BlockSize, packed, scales);
         }
 
         public bool TryReadPackedArray(int expectedCount, int expectedBlockSize, out NcnnQ8PackedArray packed)

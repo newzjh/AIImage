@@ -5,6 +5,7 @@ using System.IO;
 using System.Security.Cryptography;
 using Aexis;
 using Aexis.Onnx;
+using Aexis.Execution;
 
 namespace Aexis.Ncnn
 {
@@ -76,16 +77,16 @@ namespace Aexis.Ncnn
                     convNodes.Add(node);
             }
 
-            var ncnnConvLayers = new List<NcnnParamModel.Layer>(ExpectedConvCount);
+            var ncnnConvLayers = new List<AexisGraphModel.Layer>(ExpectedConvCount);
             var extractPatchesLayers = 0;
             for (var i = 0; i < paramModel.layers.Count; i++)
             {
                 var layer = paramModel.layers[i];
                 if (layer == null)
                     continue;
-                if (layer.type == NcnnLayerTypes.Convolution || layer.type == NcnnLayerTypes.ConvolutionDepthWise)
+                if (layer.type == AexisLayerTypes.Convolution || layer.type == AexisLayerTypes.ConvolutionDepthWise)
                     ncnnConvLayers.Add(layer);
-                else if (layer.type == NcnnLayerTypes.ExtractPatches)
+                else if (layer.type == AexisLayerTypes.ExtractPatches)
                     extractPatchesLayers++;
             }
 
@@ -142,7 +143,7 @@ namespace Aexis.Ncnn
             string onnxPath,
             string paramText,
             string paramTemplatePath,
-            NcnnParamModel paramModel)
+            AexisGraphModel paramModel)
         {
             if (onnx.opset != ExpectedCase1Opset)
                 throw new InvalidDataException("DeepFillV2 case1 ONNX opset must be " + ExpectedCase1Opset + ", got " + onnx.opset + ".");
@@ -166,16 +167,16 @@ namespace Aexis.Ncnn
                 convByName.Add(node.name, node);
             }
 
-            var convLayers = new List<NcnnParamModel.Layer>(ExpectedCase1ConvCount);
+            var convLayers = new List<AexisGraphModel.Layer>(ExpectedCase1ConvCount);
             var attentionLayers = 0;
             for (var i = 0; i < paramModel.layers.Count; i++)
             {
                 var layer = paramModel.layers[i];
                 if (layer == null)
                     continue;
-                if (layer.type == NcnnLayerTypes.Convolution)
+                if (layer.type == AexisLayerTypes.Convolution)
                     convLayers.Add(layer);
-                else if (layer.type == NcnnLayerTypes.DeepFillV2ContextualAttention)
+                else if (layer.type == AexisLayerTypes.DeepFillV2ContextualAttention)
                     attentionLayers++;
             }
             if (convLayers.Count != ExpectedCase1ConvCount)
@@ -296,7 +297,7 @@ namespace Aexis.Ncnn
         private static void WriteConvLayerWeights(
             Dictionary<string, OnnxTensor> initializers,
             OnnxNode convNode,
-            NcnnParamModel.Layer layer,
+            AexisGraphModel.Layer layer,
             BinaryWriter writer)
         {
             if (convNode == null)

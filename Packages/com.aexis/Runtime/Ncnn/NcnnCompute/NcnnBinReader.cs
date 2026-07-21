@@ -1,10 +1,11 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using Aexis.Execution;
 
 namespace Aexis.Ncnn
 {
-    public sealed class NcnnBinReader : IDisposable
+    public sealed class NcnnBinReader : AexisWeightReader
     {
         private const uint TagFp16 = 0x01306B47;
         private const uint TagInt8 = 0x000D4B38;
@@ -17,7 +18,7 @@ namespace Aexis.Ncnn
         private readonly NcnnQ8ArchiveReader _q8Reader;
         private readonly NcnnQ8ArchiveWriter _q8Capture;
 
-        public long Position => _stream.CanSeek ? _stream.Position : 0;
+        public override long Position => _stream.CanSeek ? _stream.Position : 0;
 
         public NcnnBinReader(Stream stream)
             : this(stream, null)
@@ -43,7 +44,7 @@ namespace Aexis.Ncnn
             return value;
         }
 
-        public float[] ReadFloat32Array(int count)
+        public override float[] ReadFloat32Array(int count)
         {
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
@@ -83,7 +84,7 @@ namespace Aexis.Ncnn
             return a;
         }
 
-        public float[] ReadNcnnMatAsFloat32(int w, int h, int d, int c, int loadType)
+        public override float[] ReadTensorAsFloat32(int w, int h, int d, int c, int loadType)
         {
             if (w < 0 || h < 0 || d < 0 || c < 0)
                 throw new ArgumentOutOfRangeException(nameof(w));
@@ -101,7 +102,7 @@ namespace Aexis.Ncnn
             return values;
         }
 
-        public void SkipNcnnMat(int w, int h, int d, int c, int loadType)
+        public override void SkipTensor(int w, int h, int d, int c, int loadType)
         {
             if (w < 0 || h < 0 || d < 0 || c < 0)
                 throw new ArgumentOutOfRangeException(nameof(w));
@@ -216,7 +217,7 @@ namespace Aexis.Ncnn
                 _br.ReadBytes((int)byteCount);
         }
 
-        public void Dispose()
+        public override void Dispose()
         {
             try { _br?.Dispose(); } catch { }
         }
@@ -361,6 +362,23 @@ namespace Aexis.Ncnn
                 return false;
             }
             return _q8Reader.TryReadPackedArray(count, expectedBlockSize, out packed);
+        }
+
+        public float[] ReadNcnnMatAsFloat32(int w, int h, int d, int c, int loadType)
+        {
+            return ReadTensorAsFloat32(w, h, d, c, loadType);
+        }
+
+        public void SkipNcnnMat(int w, int h, int d, int c, int loadType)
+        {
+            SkipTensor(w, h, d, c, loadType);
+        }
+
+        public override bool TryReadQuantizedTensor(int count, int expectedBlockSize, out AexisQuantizedTensor packed)
+        {
+            var result = TryReadQ8NcnnMatPacked(count, expectedBlockSize, out var ncnnPacked);
+            packed = ncnnPacked;
+            return result;
         }
 
         public void Seek(long position)

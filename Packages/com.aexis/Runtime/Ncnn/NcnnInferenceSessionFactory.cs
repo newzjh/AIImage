@@ -1,31 +1,32 @@
 using System;
 using Aexis;
 using UnityEngine;
+using Aexis.Execution;
 
 namespace Aexis.Ncnn
 {
     // Application runners use this package-owned factory rather than owning backend construction.
     public static class NcnnInferenceSessionFactory
     {
-        public static NcnnGraphSession Create(NcnnOps ops)
+        public static AexisGraphSession Create(AexisOps ops)
         {
-            return Create(ops, NcnnModelManifestLoader.TryLoadFromEnvironment());
+            return Create(ops, AexisModelManifestLoader.TryLoadFromEnvironment());
         }
 
-        public static NcnnGraphSession Create(NcnnOps ops, ModelManifest manifest)
+        public static AexisGraphSession Create(AexisOps ops, ModelManifest manifest)
         {
             if (ops == null)
                 throw new ArgumentNullException(nameof(ops));
-            var session = new NcnnGraphSession(ops);
+            var session = new AexisGraphSession(ops);
             if (manifest != null)
                 session.ApplyModelManifest(manifest);
             return session;
         }
 
-        public static NcnnGraphSession Create(NcnnOps ops, string modelId, NcnnPrecisionMode precisionMode)
+        public static AexisGraphSession Create(AexisOps ops, string modelId, AexisPrecisionMode precisionMode)
         {
-            var manifest = NcnnModelManifestLoader.ResolveRunnerManifest(modelId, precisionMode);
-            var appliedMode = NcnnModelManifestLoader.ResolveAppliedPrecision(modelId, precisionMode, manifest);
+            var manifest = AexisModelManifestLoader.ResolveRunnerManifest(modelId, precisionMode);
+            var appliedMode = AexisModelManifestLoader.ResolveAppliedPrecision(modelId, precisionMode, manifest);
             var session = Create(ops, manifest);
             session.SetAppliedPrecisionMode(appliedMode);
             Debug.Log("[NcnnPrecision] model=" + (modelId ?? string.Empty)

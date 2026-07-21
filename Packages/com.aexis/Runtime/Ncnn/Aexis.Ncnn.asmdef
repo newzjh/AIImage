@@ -1,7 +1,7 @@
 {
   "name": "Aexis.Ncnn",
   "rootNamespace": "Aexis.Ncnn",
-  "references": ["Aexis", "Aexis.Async", "Aexis.Onnx"],
+  "references": ["Aexis", "Aexis.Async", "Aexis.Onnx", "Aexis.Execution"],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
