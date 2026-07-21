@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aexis Package Release"
+  short_description: "Maintain the Aexis Unity package release layout."
+  default_prompt: "Use $aiimage-package-release to prepare and validate an Aexis package release."

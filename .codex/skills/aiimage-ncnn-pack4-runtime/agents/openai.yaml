@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIImage NCNN Pack4 Runtime"
+  short_description: "Keep AIImage NCNN inference on pack4 RT or CommandBuffer paths."
+  default_prompt: "Use $aiimage-ncnn-pack4-runtime when changing AIImage NCNN inference paths."
