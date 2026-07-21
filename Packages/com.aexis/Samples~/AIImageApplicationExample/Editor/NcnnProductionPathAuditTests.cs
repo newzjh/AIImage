@@ -27,13 +27,13 @@ public sealed class NcnnProductionPathAuditTests
     // including an additional use in one of these files, must update the A2 audit deliberately.
     private static readonly Dictionary<string, int[]> AuditedLegacyRunnerApiCounts = new Dictionary<string, int[]>
     {
-        { "Assets/Scripts/ClipNcnnReproRunner.cs", new[] { 0, 2, 0, 0, 0 } },
-        { "Assets/Scripts/CodeFormerNcnnReproRunner2.cs", new[] { 0, 2, 0, 0, 0 } },
-        { "Assets/Scripts/MatterNcnnReproRunner.cs", new[] { 0, 2, 0, 0, 0 } },
-        { "Assets/Scripts/MONAINcnnReproRunner.cs", new[] { 0, 2, 3, 0, 0 } },
-        { "Assets/Scripts/SDInpaintingNcnnReproRunner.cs", new[] { 0, 6, 2, 0, 0 } },
-        { "Assets/Scripts/SDNcnnReproRunner.cs", new[] { 0, 4, 0, 0, 0 } },
-        { "Assets/Scripts/YoloSegNcnnReproRunner.cs", new[] { 0, 1, 0, 0, 0 } }
+        { "Runtime/Scripts/ClipNcnnReproRunner.cs", new[] { 0, 2, 0, 0, 0 } },
+        { "Runtime/Scripts/CodeFormerNcnnReproRunner2.cs", new[] { 0, 2, 0, 0, 0 } },
+        { "Runtime/Scripts/MatterNcnnReproRunner.cs", new[] { 0, 2, 0, 0, 0 } },
+        { "Runtime/Scripts/MONAINcnnReproRunner.cs", new[] { 0, 2, 3, 0, 0 } },
+        { "Runtime/Scripts/SDInpaintingNcnnReproRunner.cs", new[] { 0, 6, 2, 0, 0 } },
+        { "Runtime/Scripts/SDNcnnReproRunner.cs", new[] { 0, 4, 0, 0, 0 } },
+        { "Runtime/Scripts/YoloSegNcnnReproRunner.cs", new[] { 0, 1, 0, 0, 0 } }
     };
 
     [Test]
@@ -58,7 +58,7 @@ public sealed class NcnnProductionPathAuditTests
         var embed = ReadPackageSource("Layers", "NcnnEmbedLayerRepro.cs");
         var innerProduct = ReadPackageSource("Layers", "NcnnInnerProductLayerRepro.cs");
         var permute = ReadPackageSource("Layers", "NcnnPermuteLayerRepro.cs");
-        var inpainting = ReadAssetSource("Scripts/SDInpaintingNcnnReproRunner.cs");
+        var inpainting = ReadSampleSource("Runtime/Scripts/SDInpaintingNcnnReproRunner.cs");
 
         Assert.That(repro, Does.Contain("if (!IsDebugOracleExecution)\n                return true;"));
         Assert.That(repro, Does.Contain("logical_shape="));
@@ -103,21 +103,22 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void LegacyBufferCalls_AreConfinedToTheAuditedEngineDirectories()
     {
-        var root = Path.GetDirectoryName(Application.dataPath);
+        var projectRoot = Path.GetDirectoryName(Application.dataPath);
+        var sampleRoot = AexisApplicationExamplePaths.SampleRootAbsolutePath;
         var allowedRoots = new[]
         {
-            Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute"),
-            Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers")
+            Path.Combine(projectRoot, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute"),
+            Path.Combine(projectRoot, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers")
         };
         var violations = new List<string>();
 
-        foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "Assets", "Scripts"), "*.cs", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(sampleRoot, "Runtime", "Scripts"), "*.cs", SearchOption.AllDirectories))
         {
             if (Array.Exists(allowedRoots, allowedRoot => file.StartsWith(allowedRoot, StringComparison.OrdinalIgnoreCase)))
                 continue;
 
             var source = File.ReadAllText(file);
-            var relativePath = MakeAssetRelative(root, file);
+            var relativePath = MakeAssetRelative(sampleRoot, file);
             var observed = new int[LegacyBufferMaterializationApis.Length];
             var total = 0;
             for (var i = 0; i < LegacyBufferMaterializationApis.Length; i++)
@@ -268,9 +269,9 @@ public sealed class NcnnProductionPathAuditTests
         Debug.Log("[NcnnProductionPathAudit] passed");
     }
 
-    private static string ReadAssetSource(string relativePath)
+    private static string ReadSampleSource(string relativePath)
     {
-        return File.ReadAllText(Path.Combine(Application.dataPath, relativePath));
+        return File.ReadAllText(Path.Combine(AexisApplicationExamplePaths.SampleRootAbsolutePath, relativePath));
     }
 
     private static string ReadPackageSource(params string[] relativePath)

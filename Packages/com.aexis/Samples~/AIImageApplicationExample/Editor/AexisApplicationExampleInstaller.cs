@@ -7,7 +7,6 @@ using UnityEngine;
 
 internal static class AexisApplicationExampleInstaller
 {
-    private const string InstallerScriptName = "AexisApplicationExampleInstaller";
     private const string Destination = "Assets/StreamingAssets";
 
     [MenuItem("Aexis/Examples/Install Main2 Application StreamingAssets")]
@@ -22,23 +21,12 @@ internal static class AexisApplicationExampleInstaller
     [MenuItem("Aexis/Examples/Open Main2 Application Scene")]
     private static void OpenMain2Scene()
     {
-        var root = ResolveSampleRoot();
-        EditorSceneManager.OpenScene(ToAssetPath(Path.Combine(root, "Scenes", "Main2.unity")), OpenSceneMode.Single);
+        EditorSceneManager.OpenScene(AexisApplicationExamplePaths.Main2SceneAssetPath, OpenSceneMode.Single);
     }
 
     private static string ResolveSampleRoot()
     {
-        var guids = AssetDatabase.FindAssets(InstallerScriptName);
-        if (guids.Length != 1)
-            throw new InvalidOperationException("Could not resolve the AIImage application sample root.");
-        var scriptPath = AssetDatabase.GUIDToAssetPath(guids[0]);
-        return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(scriptPath), ".."));
-    }
-
-    private static string ToAssetPath(string absolutePath)
-    {
-        var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-        return absolutePath.Substring(projectRoot.Length + 1).Replace('\\', '/');
+        return AexisApplicationExamplePaths.SampleRootAbsolutePath;
     }
 
     private static void CopyDirectory(string source, string destination)
@@ -54,6 +42,41 @@ internal static class AexisApplicationExampleInstaller
                 continue;
             File.Copy(file, file.Replace(source, destination), true);
         }
+    }
+}
+
+internal static class AexisApplicationExamplePaths
+{
+    private const string InstallerScriptName = "AexisApplicationExampleInstaller";
+
+    internal static string SampleRootAbsolutePath
+    {
+        get
+        {
+            var guids = AssetDatabase.FindAssets(InstallerScriptName);
+            if (guids.Length != 1)
+                throw new InvalidOperationException("Could not resolve the AIImage application sample root.");
+            var scriptPath = AssetDatabase.GUIDToAssetPath(guids[0]);
+            return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(scriptPath), ".."));
+        }
+    }
+
+    internal static string Main2SceneAssetPath => ToAssetPath(Path.Combine(SampleRootAbsolutePath, "Scenes", "Main2.unity"));
+
+    internal static string ToAbsolutePath(string assetPath)
+    {
+        if (string.IsNullOrWhiteSpace(assetPath))
+            throw new ArgumentException("An asset path is required.", nameof(assetPath));
+        if (Path.IsPathRooted(assetPath))
+            return Path.GetFullPath(assetPath);
+        var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        return Path.GetFullPath(Path.Combine(projectRoot, assetPath));
+    }
+
+    private static string ToAssetPath(string absolutePath)
+    {
+        var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        return absolutePath.Substring(projectRoot.Length + 1).Replace('\\', '/');
     }
 }
 #endif

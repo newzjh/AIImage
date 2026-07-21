@@ -10,7 +10,7 @@ using System.Threading;
 using Aexis.Samples.Async;
 using Aexis;
 using Aexis.Ncnn;
-using Newtonsoft.Json;
+using Aexis.Samples.Json;
 using UnityEngine;
 using UnityEngine.Rendering;
 

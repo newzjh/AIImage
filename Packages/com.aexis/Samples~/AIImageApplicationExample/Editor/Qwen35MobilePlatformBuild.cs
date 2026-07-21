@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using Aexis.Ncnn;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 using UnityEditor;
 using AIImage.Qwen35;
 using UnityEditor.Build.Reporting;
@@ -14,7 +14,6 @@ using Debug = UnityEngine.Debug;
 
 public static class Qwen35MobilePlatformBuild
 {
-    private const string DefaultScene = "Assets/Scenes/Main2.unity";
     private const string ModelDirectoryEnvironmentVariable = "AIIMAGE_QWEN35_MODEL_DIR";
     private const string BuildOutputEnvironmentVariable = "AIIMAGE_QWEN35_BUILD_OUTPUT";
     private const string BuildReportEnvironmentVariable = "AIIMAGE_QWEN35_BUILD_REPORT";
@@ -92,8 +91,9 @@ public static class Qwen35MobilePlatformBuild
                 throw new InvalidOperationException(
                     target + " graphics API configuration did not retain exclusive " + requiredGraphicsApi + ".");
 
-            var scene = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_BUILD_SCENE") ?? DefaultScene;
-            if (!File.Exists(Path.Combine(ProjectRoot, scene.Replace('/', Path.DirectorySeparatorChar))))
+            var scene = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_BUILD_SCENE")
+                        ?? AexisApplicationExamplePaths.Main2SceneAssetPath;
+            if (!File.Exists(AexisApplicationExamplePaths.ToAbsolutePath(scene)))
                 throw new FileNotFoundException("Qwen3.5 mobile validation scene is missing.", scene);
             var output = ResolveBuildOutput(target);
             Directory.CreateDirectory(target == BuildTarget.Android ? Path.GetDirectoryName(output) : output);

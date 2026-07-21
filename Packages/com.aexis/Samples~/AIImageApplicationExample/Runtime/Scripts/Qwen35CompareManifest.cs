@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 
 namespace AIImage.Qwen35
 {

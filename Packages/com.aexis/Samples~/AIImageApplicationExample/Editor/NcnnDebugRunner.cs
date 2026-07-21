@@ -9,7 +9,7 @@ using System.Reflection;
 using System.Threading;
 using Aexis.Samples.Async;
 using AIImage.Qwen35;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Profiling;
@@ -2514,7 +2514,7 @@ public static class NcnnDebugRunner
             ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35TokenizerContractBatch"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] tokenizer contract report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen3.5 tokenizer contract failed; see " + outputPath);
@@ -2636,7 +2636,7 @@ public static class NcnnDebugRunner
             ["command"] = "C:\\Program Files\\Unity 6000.2.7f2\\Editor\\Unity.exe -batchmode -quit -projectPath E:\\Projects\\AIImage -executeMethod NcnnDebugRunner.RunQwen35TextGenerationBatch"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] text generation report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen3.5 text generation failed; see " + outputPath);
@@ -2938,7 +2938,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_multimodal_generation.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] multimodal generation report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen3.5 multimodal generation failed; see " + outputPath);
@@ -3163,7 +3163,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_async_multimodal_smoke.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] async multimodal generation report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen3.5 async multimodal generation failed; see " + outputPath);
@@ -3311,7 +3311,7 @@ public static class NcnnDebugRunner
             ["stderr"] = "Unity log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] contract report: " + outputPath + " valid=" + (contract.IsValid && registration));
         if (!contract.IsValid || !registration || !shaderKernels || !compareManifest.IsContractValid || catalogErrors.Count != 0)
             throw new InvalidOperationException("Qwen35 contract validation failed: " + string.Join("; ", contract.Errors));
@@ -3396,7 +3396,7 @@ public static class NcnnDebugRunner
             ["stderr"] = "Unity log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] network load report: " + outputPath + " valid=" + loadValid);
         if (!loadValid)
             throw new InvalidOperationException("Qwen35 network load validation failed; see " + outputPath);
@@ -3469,7 +3469,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_embed_probe.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] embed probe report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen35 embed probe failed; see " + outputPath);
@@ -3685,7 +3685,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_decoder_prefix_probe.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] decoder prefix probe report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen35 decoder prefix probe failed; see " + outputPath);
@@ -3793,7 +3793,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen_proj_out_probe.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] proj_out probe report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen35 proj_out probe failed; see " + outputPath);
@@ -3933,7 +3933,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_patch_probe.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] vision patch probe report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen35 vision patch probe failed; see " + outputPath);
@@ -4036,7 +4036,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_position_probe.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] vision position probe report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen35 vision position probe failed; see " + outputPath);
@@ -4206,7 +4206,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_patch_atlas_probe.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] vision patch atlas probe report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen35 vision patch atlas probe failed; see " + outputPath);
@@ -4416,7 +4416,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_vision_encoder_prefix_probe.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
-        File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] vision encoder prefix probe report: " + outputPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen35 vision encoder prefix probe failed; see " + outputPath);
@@ -4594,7 +4594,7 @@ public static class NcnnDebugRunner
             ["unity_log"] = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_UNITY_LOG") ?? "Logs/qwen35_full_checkpoint_audit.log"
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath)));
-        File.WriteAllText(reportPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+        File.WriteAllText(reportPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] full checkpoint audit report: " + reportPath + " valid=" + report["valid"]);
         if (!(bool)report["valid"])
             throw new InvalidOperationException("Qwen3.5 full checkpoint audit dump failed; see " + reportPath);

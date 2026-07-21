@@ -9,7 +9,7 @@
 | Unity | 2022.3 LTS through Unity 6000.3 |
 | Script runtime | Unity-supported .NET profile for the installed editor |
 | GPU path | Compute-shader-capable graphics API with RenderTexture support |
-| Package dependencies | Unity modules plus `com.unity.nuget.newtonsoft-json` for optional sample/editor JSON tooling |
+| Package dependencies | Unity modules only; dynamic JSON is source-vendored in the optional application sample |
 | Runtime namespaces | `Aexis`, `Aexis.Async`, `Aexis.Onnx`, `Aexis.Ncnn`, `Aexis.Execution` |
 
 `Aexis.Async` exposes BCL `Task` and does not ship, vendor, or reference UniTask. This keeps the engine compatible with Unity 2022.3 and prevents package-level conflicts when a host project uses its own UniTask version or distribution.
@@ -27,6 +27,8 @@ For an embedded package, add the following entry to the consuming project's `Pac
 ```
 
 For a registry or Git release, install the published `com.aexis` package through Unity Package Manager. Do not copy `Runtime` files into `Assets`; package-local resources and assembly definitions are part of the runtime contract.
+
+For a standalone `.unitypackage`, run `Aexis/Release/Export Complete UnityPackage` from an Aexis project, then import the exported archive. Its editor bootstrap restores the complete package to `Packages/com.aexis` and registers it with Package Manager. The Main2 application remains at `Packages/com.aexis/Samples~/AIImageApplicationExample`; import that sample through Package Manager before opening its scene or running its installer.
 
 ## Package layout
 
@@ -65,13 +67,13 @@ Import **AIImage Main2 Application Example** from Package Manager, then run `Aex
 
 Its installer copies the complete sample payload to `Assets/StreamingAssets`, the Unity Player-included location. The reusable runner catalog uses `Clip/...`, `CodeFormer/...`, `DeepFileV2/...`, `Matting/...`, `RealESRGAN/...`, and `Yolo/...` paths below that root. Default model files are included only for those six model families. GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN weights are deliberately excluded because of package-size and redistribution constraints. See [model distribution](Documentation~/model-distribution.md) before redistributing any sample model.
 
-The complete sample retains its Editor NUnit sources. A default UnityPackage import excludes them through `AEXIS_INCLUDE_EDITOR_TESTS`; install Unity Test Framework and add that define symbol when running the included test suite.
+The complete sample retains its Editor NUnit sources. A default sample import excludes them through `AEXIS_INCLUDE_EDITOR_TESTS`; install Unity Test Framework and add that define symbol when running the included test suite.
 
 ## Scope and licensing
 
 The source implementation is released under the MIT license in [LICENSE.md](LICENSE.md). Aexis does not include Unity Sentis, Tencent ncnn, ONNX Runtime, MNN, MONAI, or VISTA source/binaries as runtime dependencies. Compatibility targets do not imply affiliation or use of upstream code.
 
-The complete application sample uses Newtonsoft.Json in fourteen source files for dynamic JSON documents, token traversal, and editor diagnostics. These uses are not DTO-only configuration payloads, so Unity `JsonUtility` is not a compatible replacement. The UPM package resolves Unity's maintained `com.unity.nuget.newtonsoft-json` dependency. The standalone UnityPackage carries the same Unity-provided DLL only for projects that do not use UPM; its bundled license and notice must remain with that export.
+The complete application sample uses its namespace-isolated `Aexis.Samples.Json` source copy in fourteen files for dynamic JSON documents, token traversal, and editor diagnostics. These uses are not DTO-only configuration payloads, so Unity `JsonUtility` is not a compatible replacement. The source copy is MIT-licensed Json.NET 13.0.2, with its immutable revision, checksum, license, and shading record under `Samples~/AIImageApplicationExample/ThirdParty/AexisSampleJson`; it does not install a Newtonsoft package or copy a duplicate DLL into `Assets`.
 
 The sample's shaded `Aexis.Samples.SharpZipLib` source is required by `StandardImageIO` and the MONAI runner for compressed input. It is intentionally namespaced away from `ICSharpCode.SharpZipLib` and must not be removed as unused code.
 

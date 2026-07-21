@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Aexis.Samples.Async;
-using Newtonsoft.Json;
+using Aexis.Samples.Json;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.Rendering;

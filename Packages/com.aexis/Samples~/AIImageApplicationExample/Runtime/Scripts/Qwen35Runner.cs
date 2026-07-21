@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using Aexis.Samples.Async;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 using UnityEngine;
 
 namespace AIImage.Qwen35

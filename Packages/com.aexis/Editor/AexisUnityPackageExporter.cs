@@ -2,6 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using UnityEditor;
 using UnityEngine;
 
@@ -82,24 +83,12 @@ namespace Aexis.Editor
             var projectRoot = Directory.GetParent(Application.dataPath).FullName;
             var stagingProject = Path.Combine(projectRoot, "Temp", ExportStagingDirectoryName, Guid.NewGuid().ToString("N"));
             var assetsRoot = Path.Combine(stagingProject, "Assets");
-            var aexisRoot = Path.Combine(assetsRoot, "Aexis");
-            Directory.CreateDirectory(aexisRoot);
+            var bootstrapRoot = Path.Combine(assetsRoot, "AexisPackageBootstrap");
+            Directory.CreateDirectory(bootstrapRoot);
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
 
-            CopyDirectory(Path.Combine(sourceRoot, "Runtime"), Path.Combine(aexisRoot, "Runtime"));
-            CopyDirectory(Path.Combine(sourceRoot, "Editor"), Path.Combine(aexisRoot, "Editor"));
-            CopyDirectory(
-                Path.Combine(sourceRoot, "Samples~", "AIImageApplicationExample"),
-                Path.Combine(aexisRoot, "Examples", "AIImageApplicationExample"));
-            CopyDirectory(
-                Path.Combine(sourceRoot, "UnityPackage~", "ThirdParty", "AexisSampleNewtonsoft"),
-                Path.Combine(aexisRoot, "Examples", "AIImageApplicationExample", "ThirdParty", "AexisSampleNewtonsoft"));
-            CopyFileIfPresent(Path.Combine(sourceRoot, "package.json"), Path.Combine(aexisRoot, "package.json"));
-            CopyFileIfPresent(Path.Combine(sourceRoot, "README.md"), Path.Combine(aexisRoot, "README.md"));
-            CopyFileIfPresent(Path.Combine(sourceRoot, "CHANGELOG.md"), Path.Combine(aexisRoot, "CHANGELOG.md"));
-            CopyFileIfPresent(Path.Combine(sourceRoot, "LICENSE.md"), Path.Combine(aexisRoot, "LICENSE.md"));
-            CopyFileIfPresent(Path.Combine(sourceRoot, "Third Party Notices.md"), Path.Combine(aexisRoot, "Third Party Notices.md"));
-            CopyDirectory(Path.Combine(sourceRoot, "Documentation~"), Path.Combine(aexisRoot, "Documentation"));
+            CreatePackageArchive(sourceRoot, Path.Combine(bootstrapRoot, "com.aexis.zip"));
+            WritePackageBootstrap(bootstrapRoot);
 
             var projectSettingsDirectory = Path.Combine(stagingProject, "ProjectSettings");
             var packagesDirectory = Path.Combine(stagingProject, "Packages");
@@ -157,37 +146,157 @@ namespace Aexis.Editor
                 + "{\n"
                 + "    public static void Export()\n"
                 + "    {\n"
-                + "        AssetDatabase.ExportPackage(new[] { \"Assets/Aexis\" }, \"" + escapedOutput + "\", ExportPackageOptions.Recurse);\n"
+                + "        AssetDatabase.ExportPackage(new[] { \"Assets/AexisPackageBootstrap\" }, \"" + escapedOutput + "\", ExportPackageOptions.Recurse);\n"
                 + "    }\n"
                 + "}\n"
                 + "#endif\n");
         }
 
-        private static void CopyDirectory(string source, string destination)
+        private static void CreatePackageArchive(string sourceRoot, string archivePath)
         {
-            if (!Directory.Exists(source))
-                throw new DirectoryNotFoundException("Required Aexis export source was not found: " + source);
-
-            foreach (var directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
-                Directory.CreateDirectory(directory.Replace(source, destination));
-            foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+            using (var archiveStream = File.Create(archivePath))
+            using (var archive = new ZipArchive(archiveStream, ZipArchiveMode.Create, false))
             {
-                var target = file.Replace(source, destination);
-                Directory.CreateDirectory(Path.GetDirectoryName(target));
-                File.Copy(file, target, true);
+                foreach (var file in Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories))
+                {
+                    var relative = file.Substring(sourceRoot.Length + 1).Replace('\\', '/');
+                    if (relative.StartsWith("UnityPackage~/", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var entry = archive.CreateEntry(relative, System.IO.Compression.CompressionLevel.Fastest);
+                    using (var input = File.OpenRead(file))
+                    using (var entryStream = entry.Open())
+                        input.CopyTo(entryStream);
+                }
             }
         }
 
-        private static void CopyFileIfPresent(string source, string destination)
+        private static void WritePackageBootstrap(string bootstrapRoot)
         {
-            if (!File.Exists(source))
-                return;
-
-            Directory.CreateDirectory(Path.GetDirectoryName(destination));
-            File.Copy(source, destination, true);
-            var metaSource = source + ".meta";
-            if (File.Exists(metaSource))
-                File.Copy(metaSource, destination + ".meta", true);
+            var editorDirectory = Path.Combine(bootstrapRoot, "Editor");
+            Directory.CreateDirectory(editorDirectory);
+            var bootstrapPath = Path.Combine(editorDirectory, "AexisEmbeddedPackageBootstrap.cs");
+            File.WriteAllText(bootstrapPath,
+                "#if UNITY_EDITOR\n"
+                + "using System;\n"
+                + "using System.IO;\n"
+                + "using System.IO.Compression;\n"
+                + "using UnityEditor;\n"
+                + "using UnityEditor.PackageManager;\n"
+                + "using UnityEngine;\n"
+                + "\n"
+                + "[InitializeOnLoad]\n"
+                + "internal static class AexisEmbeddedPackageBootstrap\n"
+                + "{\n"
+                + "    private const string PackageName = \"com.aexis\";\n"
+                + "    private const string BootstrapScriptName = \"AexisEmbeddedPackageBootstrap\";\n"
+                + "    private const string CleanupMarkerRelativePath = \"Library/AexisPackageBootstrapCleanup.marker\";\n"
+                + "    private static double _waitStarted;\n"
+                + "\n"
+                + "    static AexisEmbeddedPackageBootstrap()\n"
+                + "    {\n"
+                + "        EditorApplication.delayCall += Install;\n"
+                + "    }\n"
+                + "\n"
+                + "    private static void Install()\n"
+                + "    {\n"
+                + "        try\n"
+                + "        {\n"
+                + "            var packageRoot = Path.Combine(ProjectRoot, \"Packages\", PackageName);\n"
+                + "            if (File.Exists(CleanupMarkerPath) && UnityEditor.PackageManager.PackageInfo.FindForAssetPath(\"Packages/com.aexis/package.json\") != null)\n"
+                + "            {\n"
+                + "                File.Delete(CleanupMarkerPath);\n"
+                + "                EditorApplication.delayCall += CleanupBootstrapAssets;\n"
+                + "                return;\n"
+                + "            }\n"
+                + "            if (!Directory.Exists(packageRoot))\n"
+                + "                ExtractPackage(packageRoot);\n"
+                + "\n"
+                + "            if (!File.Exists(Path.Combine(packageRoot, \"package.json\")))\n"
+                + "                throw new FileNotFoundException(\"Aexis package.json was not restored.\", packageRoot);\n"
+                + "\n"
+                + "            _waitStarted = EditorApplication.timeSinceStartup;\n"
+                + "            Client.Resolve();\n"
+                + "            EditorApplication.update += AwaitEmbeddedPackage;\n"
+                + "        }\n"
+                + "        catch (Exception exception)\n"
+                + "        {\n"
+                + "            Debug.LogError(\"Aexis UnityPackage bootstrap failed: \" + exception);\n"
+                + "        }\n"
+                + "    }\n"
+                + "\n"
+                + "    private static void AwaitEmbeddedPackage()\n"
+                + "    {\n"
+                + "        var package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath(\"Packages/com.aexis/package.json\");\n"
+                + "        if (package != null && string.Equals(package.name, PackageName, StringComparison.Ordinal))\n"
+                + "        {\n"
+                + "            EditorApplication.update -= AwaitEmbeddedPackage;\n"
+                + "            Debug.Log(\"Aexis package restored to Packages/com.aexis. Import the AIImage Main2 Application Example from Package Manager to run Main2.\");\n"
+                + "            Directory.CreateDirectory(Path.GetDirectoryName(CleanupMarkerPath));\n"
+                + "            File.WriteAllText(CleanupMarkerPath, \"delete bootstrap after the package scripts have reloaded\");\n"
+                + "            return;\n"
+                + "        }\n"
+                + "\n"
+                + "        if (EditorApplication.timeSinceStartup - _waitStarted > 120d)\n"
+                + "        {\n"
+                + "            EditorApplication.update -= AwaitEmbeddedPackage;\n"
+                + "            Debug.LogError(\"Aexis package resolution timed out.\");\n"
+                + "        }\n"
+                + "    }\n"
+                + "\n"
+                + "    private static void ExtractPackage(string packageRoot)\n"
+                + "    {\n"
+                + "        var archivePath = Path.Combine(BootstrapRoot, \"com.aexis.zip\");\n"
+                + "        if (!File.Exists(archivePath))\n"
+                + "            throw new FileNotFoundException(\"Aexis package payload is missing.\", archivePath);\n"
+                + "\n"
+                + "        Directory.CreateDirectory(packageRoot);\n"
+                + "        var packageRootWithSeparator = Path.GetFullPath(packageRoot) + Path.DirectorySeparatorChar;\n"
+                + "        using (var archiveStream = File.OpenRead(archivePath))\n"
+                + "        using (var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read, false))\n"
+                + "        {\n"
+                + "            foreach (var entry in archive.Entries)\n"
+                + "            {\n"
+                + "                var destination = Path.GetFullPath(Path.Combine(packageRoot, entry.FullName));\n"
+                + "                if (!destination.StartsWith(packageRootWithSeparator, StringComparison.OrdinalIgnoreCase))\n"
+                + "                    throw new InvalidOperationException(\"Aexis package payload contains an invalid path: \" + entry.FullName);\n"
+                + "                if (string.IsNullOrEmpty(entry.Name))\n"
+                + "                {\n"
+                + "                    Directory.CreateDirectory(destination);\n"
+                + "                    continue;\n"
+                + "                }\n"
+                + "\n"
+                + "                Directory.CreateDirectory(Path.GetDirectoryName(destination));\n"
+                + "                using (var input = entry.Open())\n"
+                + "                using (var output = File.Create(destination))\n"
+                + "                    input.CopyTo(output);\n"
+                + "            }\n"
+                + "        }\n"
+                + "    }\n"
+                + "\n"
+                + "    private static string BootstrapRoot\n"
+                + "    {\n"
+                + "        get\n"
+                + "        {\n"
+                + "            var guids = AssetDatabase.FindAssets(BootstrapScriptName);\n"
+                + "            if (guids.Length != 1)\n"
+                + "                throw new InvalidOperationException(\"Could not resolve the Aexis UnityPackage bootstrap asset.\");\n"
+                + "            var scriptPath = AssetDatabase.GUIDToAssetPath(guids[0]);\n"
+                + "            return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(scriptPath), \"..\"));\n"
+                + "        }\n"
+                + "    }\n"
+                + "\n"
+                + "    private static string ProjectRoot => Path.GetFullPath(Path.Combine(Application.dataPath, \"..\"));\n"
+                + "\n"
+                + "    private static string CleanupMarkerPath => Path.Combine(ProjectRoot, CleanupMarkerRelativePath);\n"
+                + "\n"
+                + "    private static void CleanupBootstrapAssets()\n"
+                + "    {\n"
+                + "        AssetDatabase.DeleteAsset(\"Assets/AexisPackageBootstrap\");\n"
+                + "        AssetDatabase.Refresh();\n"
+                + "    }\n"
+                + "}\n"
+                + "#endif\n");
         }
 
         [Serializable]

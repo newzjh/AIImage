@@ -3,7 +3,7 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using Aexis.Ncnn;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 using NUnit.Framework;
 using AIImage.Qwen35;
 using UnityEngine;

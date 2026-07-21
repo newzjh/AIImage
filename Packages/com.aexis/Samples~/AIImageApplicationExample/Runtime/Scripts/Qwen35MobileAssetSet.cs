@@ -5,7 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using Aexis.Ncnn;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 
 namespace AIImage.Qwen35
 {
@@ -273,7 +273,7 @@ namespace AIImage.Qwen35
                 var cachePath = GetValidationCachePath(root);
                 Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
                 var temporaryPath = cachePath + ".tmp";
-                File.WriteAllText(temporaryPath, document.ToString(Newtonsoft.Json.Formatting.None));
+                File.WriteAllText(temporaryPath, document.ToString(Aexis.Samples.Json.Formatting.None));
                 if (File.Exists(cachePath)) File.Delete(cachePath);
                 File.Move(temporaryPath, cachePath);
             }

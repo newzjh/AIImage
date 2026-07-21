@@ -2,7 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 using NUnit.Framework;
 using UnityEngine;
 

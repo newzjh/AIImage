@@ -9,11 +9,9 @@ public static class Main2SceneValidation
 {
     public static void ValidateMain2SceneBatch()
     {
-        const string scenePath = "Assets/Scenes/Main2.unity";
-
         try
         {
-            var scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+            var scene = EditorSceneManager.OpenScene(AexisApplicationExamplePaths.Main2SceneAssetPath, OpenSceneMode.Single);
             if (!scene.IsValid())
                 throw new InvalidOperationException("Failed to open Main2 scene.");
 

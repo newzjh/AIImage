@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using Aexis.Ncnn;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 using UnityEditor;
 using AIImage.Qwen35;
 using UnityEngine;

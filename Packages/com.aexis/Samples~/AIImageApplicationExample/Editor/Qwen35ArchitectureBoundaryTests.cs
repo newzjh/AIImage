@@ -30,7 +30,7 @@ public sealed class Qwen35ArchitectureBoundaryTests
         var projectRoot = ProjectRoot();
         var packageRoots = new[]
         {
-            Path.Combine(projectRoot, "Packages", "com.aexis")
+            Path.Combine(projectRoot, "Packages", "com.aexis", "Runtime")
         };
 
         foreach (var packageRoot in packageRoots)
@@ -50,9 +50,9 @@ public sealed class Qwen35ArchitectureBoundaryTests
     [Test]
     public void Qwen35IntegrationSources_LiveBesideApplicationRunners()
     {
-        var scriptsRoot = Path.Combine(ProjectRoot(), "Assets", "Scripts");
+        var scriptsRoot = Path.Combine(AexisApplicationExamplePaths.SampleRootAbsolutePath, "Runtime", "Scripts");
         foreach (var source in IntegrationSources)
-            Assert.That(File.Exists(Path.Combine(scriptsRoot, source)), Is.True, source + " must live under Assets/Scripts.");
+            Assert.That(File.Exists(Path.Combine(scriptsRoot, source)), Is.True, source + " must live under the package application sample.");
     }
 
     [Test]

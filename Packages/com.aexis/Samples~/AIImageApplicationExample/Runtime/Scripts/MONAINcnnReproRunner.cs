@@ -9,7 +9,7 @@ using System.Threading;
 using Aexis.Samples.Async;
 using Aexis.Samples.SharpZipLib.GZip;
 using Aexis.Ncnn;
-using Newtonsoft.Json.Linq;
+using Aexis.Samples.Json.Linq;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Profiling;

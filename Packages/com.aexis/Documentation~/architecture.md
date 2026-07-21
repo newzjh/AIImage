@@ -13,7 +13,7 @@
 | `Aexis.Execution` | `Aexis`, `Aexis.Onnx` | Shape/index GPU operators |
 | `Aexis.Editor` | Runtime assemblies | Editor-only tooling |
 
-No Runtime assembly may reference `AIImage`, UniTask, Unity Sentis, ONNX Runtime, Tencent ncnn, MNN, or a native plugin. `com.unity.modules.imageconversion` and `com.unity.modules.unitywebrequest` are Unity built-in dependencies used only by sample PNG diagnostics and cross-platform StreamingAssets loading. Newtonsoft.Json is confined to optional sample/editor tooling; it is needed for dynamic JSON documents and must not enter Runtime.
+No Runtime assembly may reference `AIImage`, UniTask, Unity Sentis, ONNX Runtime, Tencent ncnn, MNN, or a native plugin. `com.unity.modules.imageconversion` and `com.unity.modules.unitywebrequest` are Unity built-in dependencies used only by sample PNG diagnostics and cross-platform StreamingAssets loading. The namespace-isolated `Aexis.Samples.Json` source copy is confined to optional sample/editor tooling; it is needed for dynamic JSON documents and must not enter Runtime.
 
 ## Model formats
 
