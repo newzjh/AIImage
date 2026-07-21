@@ -1,0 +1,225 @@
+7767517
+223 224
+Input                    image                     0 1 image
+Input                    mask                      0 1 mask
+BinaryOp                 prepare_image_mul2        1 1 image prepare_image_mul2_out 0=2 1=1 2=2
+BinaryOp                 prepare_image_sub1        1 1 prepare_image_mul2_out prepare_image_sub1_out 0=1 1=1 2=1
+BinaryOp                 prepare_one_minus_mask    1 1 mask prepare_one_minus_mask_out 0=7 1=1 2=1
+BinaryOp                 prepare_image_masked      2 1 prepare_image_sub1_out prepare_one_minus_mask_out image_masked 0=2
+BinaryOp                 prepare_mask_zero         1 1 mask prepare_mask_zero_out 0=2 1=1 2=0
+BinaryOp                 prepare_ones              1 1 prepare_mask_zero_out prepare_ones_out 0=0 1=1 2=1
+Concat                   prepare_concat            3 1 image_masked prepare_ones_out mask x 0=0
+Convolution              conv1_feature             1 1 x conv1_feature_out 0=24 1=5 11=5 2=1 12=1 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=3000
+Convolution              conv1_gate                1 1 x conv1_gate_out 0=24 1=5 11=5 2=1 12=1 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=3000
+Sigmoid                  conv1_sigmoid             1 1 conv1_gate_out conv1_gate_out_sigmoid
+ELU                      conv1_elu                 1 1 conv1_feature_out conv1_feature_out_activated 0=1.0
+BinaryOp                 conv1_mul                 2 1 conv1_feature_out_activated conv1_gate_out_sigmoid conv1_out 0=2
+Convolution              conv2_downsample_feature  1 1 conv1_out conv2_downsample_feature_out 0=48 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=10368
+Convolution              conv2_downsample_gate     1 1 conv1_out conv2_downsample_gate_out 0=48 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=10368
+Sigmoid                  conv2_downsample_sigmoid  1 1 conv2_downsample_gate_out conv2_downsample_gate_out_sigmoid
+ELU                      conv2_downsample_elu      1 1 conv2_downsample_feature_out conv2_downsample_feature_out_activated 0=1.0
+BinaryOp                 conv2_downsample_mul      2 1 conv2_downsample_feature_out_activated conv2_downsample_gate_out_sigmoid conv2_downsample_out 0=2
+Convolution              conv3_feature             1 1 conv2_downsample_out conv3_feature_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=20736
+Convolution              conv3_gate                1 1 conv2_downsample_out conv3_gate_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=20736
+Sigmoid                  conv3_sigmoid             1 1 conv3_gate_out conv3_gate_out_sigmoid
+ELU                      conv3_elu                 1 1 conv3_feature_out conv3_feature_out_activated 0=1.0
+BinaryOp                 conv3_mul                 2 1 conv3_feature_out_activated conv3_gate_out_sigmoid conv3_out 0=2
+Convolution              conv4_downsample_feature  1 1 conv3_out conv4_downsample_feature_out 0=96 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=41472
+Convolution              conv4_downsample_gate     1 1 conv3_out conv4_downsample_gate_out 0=96 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=41472
+Sigmoid                  conv4_downsample_sigmoid  1 1 conv4_downsample_gate_out conv4_downsample_gate_out_sigmoid
+ELU                      conv4_downsample_elu      1 1 conv4_downsample_feature_out conv4_downsample_feature_out_activated 0=1.0
+BinaryOp                 conv4_downsample_mul      2 1 conv4_downsample_feature_out_activated conv4_downsample_gate_out_sigmoid conv4_downsample_out 0=2
+Convolution              conv5_feature             1 1 conv4_downsample_out conv5_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              conv5_gate                1 1 conv4_downsample_out conv5_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  conv5_sigmoid             1 1 conv5_gate_out conv5_gate_out_sigmoid
+ELU                      conv5_elu                 1 1 conv5_feature_out conv5_feature_out_activated 0=1.0
+BinaryOp                 conv5_mul                 2 1 conv5_feature_out_activated conv5_gate_out_sigmoid conv5_out 0=2
+Convolution              conv6_feature             1 1 conv5_out conv6_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              conv6_gate                1 1 conv5_out conv6_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  conv6_sigmoid             1 1 conv6_gate_out conv6_gate_out_sigmoid
+ELU                      conv6_elu                 1 1 conv6_feature_out conv6_feature_out_activated 0=1.0
+BinaryOp                 conv6_mul                 2 1 conv6_feature_out_activated conv6_gate_out_sigmoid conv6_out 0=2
+Convolution              conv7_atrous_feature      1 1 conv6_out conv7_atrous_feature_out 0=96 1=3 11=3 2=2 12=2 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=82944
+Convolution              conv7_atrous_gate         1 1 conv6_out conv7_atrous_gate_out 0=96 1=3 11=3 2=2 12=2 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=82944
+Sigmoid                  conv7_atrous_sigmoid      1 1 conv7_atrous_gate_out conv7_atrous_gate_out_sigmoid
+ELU                      conv7_atrous_elu          1 1 conv7_atrous_feature_out conv7_atrous_feature_out_activated 0=1.0
+BinaryOp                 conv7_atrous_mul          2 1 conv7_atrous_feature_out_activated conv7_atrous_gate_out_sigmoid conv7_atrous_out 0=2
+Convolution              conv8_atrous_feature      1 1 conv7_atrous_out conv8_atrous_feature_out 0=96 1=3 11=3 2=4 12=4 3=1 13=1 4=4 14=4 15=4 16=4 5=1 6=82944
+Convolution              conv8_atrous_gate         1 1 conv7_atrous_out conv8_atrous_gate_out 0=96 1=3 11=3 2=4 12=4 3=1 13=1 4=4 14=4 15=4 16=4 5=1 6=82944
+Sigmoid                  conv8_atrous_sigmoid      1 1 conv8_atrous_gate_out conv8_atrous_gate_out_sigmoid
+ELU                      conv8_atrous_elu          1 1 conv8_atrous_feature_out conv8_atrous_feature_out_activated 0=1.0
+BinaryOp                 conv8_atrous_mul          2 1 conv8_atrous_feature_out_activated conv8_atrous_gate_out_sigmoid conv8_atrous_out 0=2
+Convolution              conv9_atrous_feature      1 1 conv8_atrous_out conv9_atrous_feature_out 0=96 1=3 11=3 2=8 12=8 3=1 13=1 4=8 14=8 15=8 16=8 5=1 6=82944
+Convolution              conv9_atrous_gate         1 1 conv8_atrous_out conv9_atrous_gate_out 0=96 1=3 11=3 2=8 12=8 3=1 13=1 4=8 14=8 15=8 16=8 5=1 6=82944
+Sigmoid                  conv9_atrous_sigmoid      1 1 conv9_atrous_gate_out conv9_atrous_gate_out_sigmoid
+ELU                      conv9_atrous_elu          1 1 conv9_atrous_feature_out conv9_atrous_feature_out_activated 0=1.0
+BinaryOp                 conv9_atrous_mul          2 1 conv9_atrous_feature_out_activated conv9_atrous_gate_out_sigmoid conv9_atrous_out 0=2
+Convolution              conv10_atrous_feature     1 1 conv9_atrous_out conv10_atrous_feature_out 0=96 1=3 11=3 2=16 12=16 3=1 13=1 4=16 14=16 15=16 16=16 5=1 6=82944
+Convolution              conv10_atrous_gate        1 1 conv9_atrous_out conv10_atrous_gate_out 0=96 1=3 11=3 2=16 12=16 3=1 13=1 4=16 14=16 15=16 16=16 5=1 6=82944
+Sigmoid                  conv10_atrous_sigmoid     1 1 conv10_atrous_gate_out conv10_atrous_gate_out_sigmoid
+ELU                      conv10_atrous_elu         1 1 conv10_atrous_feature_out conv10_atrous_feature_out_activated 0=1.0
+BinaryOp                 conv10_atrous_mul         2 1 conv10_atrous_feature_out_activated conv10_atrous_gate_out_sigmoid conv10_atrous_out 0=2
+Convolution              conv11_feature            1 1 conv10_atrous_out conv11_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              conv11_gate               1 1 conv10_atrous_out conv11_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  conv11_sigmoid            1 1 conv11_gate_out conv11_gate_out_sigmoid
+ELU                      conv11_elu                1 1 conv11_feature_out conv11_feature_out_activated 0=1.0
+BinaryOp                 conv11_mul                2 1 conv11_feature_out_activated conv11_gate_out_sigmoid conv11_out 0=2
+Convolution              conv12_feature            1 1 conv11_out conv12_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              conv12_gate               1 1 conv11_out conv12_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  conv12_sigmoid            1 1 conv12_gate_out conv12_gate_out_sigmoid
+ELU                      conv12_elu                1 1 conv12_feature_out conv12_feature_out_activated 0=1.0
+BinaryOp                 conv12_mul                2 1 conv12_feature_out_activated conv12_gate_out_sigmoid conv12_out 0=2
+Interp                   conv13_upsample_resize    1 1 conv12_out conv13_upsample_resize_out 0=1 1=2.0 2=2.0 3=256 4=200 6=0 100=1
+Convolution              conv13_upsample_feature   1 1 conv13_upsample_resize_out conv13_upsample_feature_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=41472
+Convolution              conv13_upsample_gate      1 1 conv13_upsample_resize_out conv13_upsample_gate_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=41472
+Sigmoid                  conv13_upsample_sigmoid   1 1 conv13_upsample_gate_out conv13_upsample_gate_out_sigmoid
+ELU                      conv13_upsample_elu       1 1 conv13_upsample_feature_out conv13_upsample_feature_out_activated 0=1.0
+BinaryOp                 conv13_upsample_mul       2 1 conv13_upsample_feature_out_activated conv13_upsample_gate_out_sigmoid conv13_upsample_out 0=2
+Convolution              conv14_feature            1 1 conv13_upsample_out conv14_feature_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=20736
+Convolution              conv14_gate               1 1 conv13_upsample_out conv14_gate_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=20736
+Sigmoid                  conv14_sigmoid            1 1 conv14_gate_out conv14_gate_out_sigmoid
+ELU                      conv14_elu                1 1 conv14_feature_out conv14_feature_out_activated 0=1.0
+BinaryOp                 conv14_mul                2 1 conv14_feature_out_activated conv14_gate_out_sigmoid conv14_out 0=2
+Interp                   conv15_upsample_resize    1 1 conv14_out conv15_upsample_resize_out 0=1 1=2.0 2=2.0 3=512 4=400 6=0 100=1
+Convolution              conv15_upsample_feature   1 1 conv15_upsample_resize_out conv15_upsample_feature_out 0=24 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Convolution              conv15_upsample_gate      1 1 conv15_upsample_resize_out conv15_upsample_gate_out 0=24 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Sigmoid                  conv15_upsample_sigmoid   1 1 conv15_upsample_gate_out conv15_upsample_gate_out_sigmoid
+ELU                      conv15_upsample_elu       1 1 conv15_upsample_feature_out conv15_upsample_feature_out_activated 0=1.0
+BinaryOp                 conv15_upsample_mul       2 1 conv15_upsample_feature_out_activated conv15_upsample_gate_out_sigmoid conv15_upsample_out 0=2
+Convolution              conv16_feature            1 1 conv15_upsample_out conv16_feature_out 0=12 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=2592
+Convolution              conv16_gate               1 1 conv15_upsample_out conv16_gate_out 0=12 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=2592
+Sigmoid                  conv16_sigmoid            1 1 conv16_gate_out conv16_gate_out_sigmoid
+ELU                      conv16_elu                1 1 conv16_feature_out conv16_feature_out_activated 0=1.0
+BinaryOp                 conv16_mul                2 1 conv16_feature_out_activated conv16_gate_out_sigmoid conv16_out 0=2
+Convolution              conv17_feature            1 1 conv16_out conv17_feature_out 0=3 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=324
+TanH                     stage1_tanh               1 1 conv17_feature_out stage1_tanh_out
+Slice                    stage2_x_rgb              1 2 x x_rgb x_aux -23300=2,3,2 1=0
+BinaryOp                 stage1_masked             2 1 stage1_tanh_out mask stage1_masked 0=2
+BinaryOp                 stage2_input              2 1 stage1_masked x_rgb stage2_input 0=0
+Convolution              xconv1_feature            1 1 stage2_input xconv1_feature_out 0=24 1=5 11=5 2=1 12=1 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=1800
+Convolution              xconv1_gate               1 1 stage2_input xconv1_gate_out 0=24 1=5 11=5 2=1 12=1 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=1800
+Sigmoid                  xconv1_sigmoid            1 1 xconv1_gate_out xconv1_gate_out_sigmoid
+ELU                      xconv1_elu                1 1 xconv1_feature_out xconv1_feature_out_activated 0=1.0
+BinaryOp                 xconv1_mul                2 1 xconv1_feature_out_activated xconv1_gate_out_sigmoid xconv1_out 0=2
+Convolution              xconv2_downsample_feature 1 1 xconv1_out xconv2_downsample_feature_out 0=24 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=5184
+Convolution              xconv2_downsample_gate    1 1 xconv1_out xconv2_downsample_gate_out 0=24 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=5184
+Sigmoid                  xconv2_downsample_sigmoid 1 1 xconv2_downsample_gate_out xconv2_downsample_gate_out_sigmoid
+ELU                      xconv2_downsample_elu     1 1 xconv2_downsample_feature_out xconv2_downsample_feature_out_activated 0=1.0
+BinaryOp                 xconv2_downsample_mul     2 1 xconv2_downsample_feature_out_activated xconv2_downsample_gate_out_sigmoid xconv2_downsample_out 0=2
+Convolution              xconv3_feature            1 1 xconv2_downsample_out xconv3_feature_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Convolution              xconv3_gate               1 1 xconv2_downsample_out xconv3_gate_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Sigmoid                  xconv3_sigmoid            1 1 xconv3_gate_out xconv3_gate_out_sigmoid
+ELU                      xconv3_elu                1 1 xconv3_feature_out xconv3_feature_out_activated 0=1.0
+BinaryOp                 xconv3_mul                2 1 xconv3_feature_out_activated xconv3_gate_out_sigmoid xconv3_out 0=2
+Convolution              xconv4_downsample_feature 1 1 xconv3_out xconv4_downsample_feature_out 0=48 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=20736
+Convolution              xconv4_downsample_gate    1 1 xconv3_out xconv4_downsample_gate_out 0=48 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=20736
+Sigmoid                  xconv4_downsample_sigmoid 1 1 xconv4_downsample_gate_out xconv4_downsample_gate_out_sigmoid
+ELU                      xconv4_downsample_elu     1 1 xconv4_downsample_feature_out xconv4_downsample_feature_out_activated 0=1.0
+BinaryOp                 xconv4_downsample_mul     2 1 xconv4_downsample_feature_out_activated xconv4_downsample_gate_out_sigmoid xconv4_downsample_out 0=2
+Convolution              xconv5_feature            1 1 xconv4_downsample_out xconv5_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=41472
+Convolution              xconv5_gate               1 1 xconv4_downsample_out xconv5_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=41472
+Sigmoid                  xconv5_sigmoid            1 1 xconv5_gate_out xconv5_gate_out_sigmoid
+ELU                      xconv5_elu                1 1 xconv5_feature_out xconv5_feature_out_activated 0=1.0
+BinaryOp                 xconv5_mul                2 1 xconv5_feature_out_activated xconv5_gate_out_sigmoid xconv5_out 0=2
+Convolution              xconv6_feature            1 1 xconv5_out xconv6_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              xconv6_gate               1 1 xconv5_out xconv6_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  xconv6_sigmoid            1 1 xconv6_gate_out xconv6_gate_out_sigmoid
+ELU                      xconv6_elu                1 1 xconv6_feature_out xconv6_feature_out_activated 0=1.0
+BinaryOp                 xconv6_mul                2 1 xconv6_feature_out_activated xconv6_gate_out_sigmoid xconv6_out 0=2
+Convolution              xconv7_atrous_feature     1 1 xconv6_out xconv7_atrous_feature_out 0=96 1=3 11=3 2=2 12=2 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=82944
+Convolution              xconv7_atrous_gate        1 1 xconv6_out xconv7_atrous_gate_out 0=96 1=3 11=3 2=2 12=2 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=82944
+Sigmoid                  xconv7_atrous_sigmoid     1 1 xconv7_atrous_gate_out xconv7_atrous_gate_out_sigmoid
+ELU                      xconv7_atrous_elu         1 1 xconv7_atrous_feature_out xconv7_atrous_feature_out_activated 0=1.0
+BinaryOp                 xconv7_atrous_mul         2 1 xconv7_atrous_feature_out_activated xconv7_atrous_gate_out_sigmoid xconv7_atrous_out 0=2
+Convolution              xconv8_atrous_feature     1 1 xconv7_atrous_out xconv8_atrous_feature_out 0=96 1=3 11=3 2=4 12=4 3=1 13=1 4=4 14=4 15=4 16=4 5=1 6=82944
+Convolution              xconv8_atrous_gate        1 1 xconv7_atrous_out xconv8_atrous_gate_out 0=96 1=3 11=3 2=4 12=4 3=1 13=1 4=4 14=4 15=4 16=4 5=1 6=82944
+Sigmoid                  xconv8_atrous_sigmoid     1 1 xconv8_atrous_gate_out xconv8_atrous_gate_out_sigmoid
+ELU                      xconv8_atrous_elu         1 1 xconv8_atrous_feature_out xconv8_atrous_feature_out_activated 0=1.0
+BinaryOp                 xconv8_atrous_mul         2 1 xconv8_atrous_feature_out_activated xconv8_atrous_gate_out_sigmoid xconv8_atrous_out 0=2
+Convolution              xconv9_atrous_feature     1 1 xconv8_atrous_out xconv9_atrous_feature_out 0=96 1=3 11=3 2=8 12=8 3=1 13=1 4=8 14=8 15=8 16=8 5=1 6=82944
+Convolution              xconv9_atrous_gate        1 1 xconv8_atrous_out xconv9_atrous_gate_out 0=96 1=3 11=3 2=8 12=8 3=1 13=1 4=8 14=8 15=8 16=8 5=1 6=82944
+Sigmoid                  xconv9_atrous_sigmoid     1 1 xconv9_atrous_gate_out xconv9_atrous_gate_out_sigmoid
+ELU                      xconv9_atrous_elu         1 1 xconv9_atrous_feature_out xconv9_atrous_feature_out_activated 0=1.0
+BinaryOp                 xconv9_atrous_mul         2 1 xconv9_atrous_feature_out_activated xconv9_atrous_gate_out_sigmoid xconv9_atrous_out 0=2
+Convolution              xconv10_atrous_feature    1 1 xconv9_atrous_out xconv10_atrous_feature_out 0=96 1=3 11=3 2=16 12=16 3=1 13=1 4=16 14=16 15=16 16=16 5=1 6=82944
+Convolution              xconv10_atrous_gate       1 1 xconv9_atrous_out xconv10_atrous_gate_out 0=96 1=3 11=3 2=16 12=16 3=1 13=1 4=16 14=16 15=16 16=16 5=1 6=82944
+Sigmoid                  xconv10_atrous_sigmoid    1 1 xconv10_atrous_gate_out xconv10_atrous_gate_out_sigmoid
+ELU                      xconv10_atrous_elu        1 1 xconv10_atrous_feature_out xconv10_atrous_feature_out_activated 0=1.0
+BinaryOp                 xconv10_atrous_mul        2 1 xconv10_atrous_feature_out_activated xconv10_atrous_gate_out_sigmoid xconv10_atrous_out 0=2
+Convolution              pmconv1_feature           1 1 stage2_input pmconv1_feature_out 0=24 1=5 11=5 2=1 12=1 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=1800
+Convolution              pmconv1_gate              1 1 stage2_input pmconv1_gate_out 0=24 1=5 11=5 2=1 12=1 3=1 13=1 4=2 14=2 15=2 16=2 5=1 6=1800
+Sigmoid                  pmconv1_sigmoid           1 1 pmconv1_gate_out pmconv1_gate_out_sigmoid
+ELU                      pmconv1_elu               1 1 pmconv1_feature_out pmconv1_feature_out_activated 0=1.0
+BinaryOp                 pmconv1_mul               2 1 pmconv1_feature_out_activated pmconv1_gate_out_sigmoid pmconv1_out 0=2
+Convolution              pmconv2_downsample_feature 1 1 pmconv1_out pmconv2_downsample_feature_out 0=24 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=5184
+Convolution              pmconv2_downsample_gate   1 1 pmconv1_out pmconv2_downsample_gate_out 0=24 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=5184
+Sigmoid                  pmconv2_downsample_sigmoid 1 1 pmconv2_downsample_gate_out pmconv2_downsample_gate_out_sigmoid
+ELU                      pmconv2_downsample_elu    1 1 pmconv2_downsample_feature_out pmconv2_downsample_feature_out_activated 0=1.0
+BinaryOp                 pmconv2_downsample_mul    2 1 pmconv2_downsample_feature_out_activated pmconv2_downsample_gate_out_sigmoid pmconv2_downsample_out 0=2
+Convolution              pmconv3_feature           1 1 pmconv2_downsample_out pmconv3_feature_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Convolution              pmconv3_gate              1 1 pmconv2_downsample_out pmconv3_gate_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Sigmoid                  pmconv3_sigmoid           1 1 pmconv3_gate_out pmconv3_gate_out_sigmoid
+ELU                      pmconv3_elu               1 1 pmconv3_feature_out pmconv3_feature_out_activated 0=1.0
+BinaryOp                 pmconv3_mul               2 1 pmconv3_feature_out_activated pmconv3_gate_out_sigmoid pmconv3_out 0=2
+Convolution              pmconv4_downsample_feature 1 1 pmconv3_out pmconv4_downsample_feature_out 0=96 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=41472
+Convolution              pmconv4_downsample_gate   1 1 pmconv3_out pmconv4_downsample_gate_out 0=96 1=3 11=3 2=1 12=1 3=2 13=2 4=0 14=0 15=1 16=1 5=1 6=41472
+Sigmoid                  pmconv4_downsample_sigmoid 1 1 pmconv4_downsample_gate_out pmconv4_downsample_gate_out_sigmoid
+ELU                      pmconv4_downsample_elu    1 1 pmconv4_downsample_feature_out pmconv4_downsample_feature_out_activated 0=1.0
+BinaryOp                 pmconv4_downsample_mul    2 1 pmconv4_downsample_feature_out_activated pmconv4_downsample_gate_out_sigmoid pmconv4_downsample_out 0=2
+Convolution              pmconv5_feature           1 1 pmconv4_downsample_out pmconv5_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              pmconv5_gate              1 1 pmconv4_downsample_out pmconv5_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  pmconv5_sigmoid           1 1 pmconv5_gate_out pmconv5_gate_out_sigmoid
+ELU                      pmconv5_elu               1 1 pmconv5_feature_out pmconv5_feature_out_activated 0=1.0
+BinaryOp                 pmconv5_mul               2 1 pmconv5_feature_out_activated pmconv5_gate_out_sigmoid pmconv5_out 0=2
+Convolution              pmconv6_feature           1 1 pmconv5_out pmconv6_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              pmconv6_gate              1 1 pmconv5_out pmconv6_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  pmconv6_sigmoid           1 1 pmconv6_gate_out pmconv6_gate_out_sigmoid
+ReLU                     pmconv6_relu              1 1 pmconv6_feature_out pmconv6_feature_out_activated 0=0.0
+BinaryOp                 pmconv6_mul               2 1 pmconv6_feature_out_activated pmconv6_gate_out_sigmoid pmconv6_out 0=2
+DeepFillV2ContextualAttention contextual_attention_case1_2021 2 1 pmconv6_out mask contextual_attention_out 0=3 1=2 2=1 3=10.0 4=0.0001 5=8
+Convolution              pmconv9_feature           1 1 contextual_attention_out pmconv9_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              pmconv9_gate              1 1 contextual_attention_out pmconv9_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  pmconv9_sigmoid           1 1 pmconv9_gate_out pmconv9_gate_out_sigmoid
+ELU                      pmconv9_elu               1 1 pmconv9_feature_out pmconv9_feature_out_activated 0=1.0
+BinaryOp                 pmconv9_mul               2 1 pmconv9_feature_out_activated pmconv9_gate_out_sigmoid pmconv9_out 0=2
+Convolution              pmconv10_feature          1 1 pmconv9_out pmconv10_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              pmconv10_gate             1 1 pmconv9_out pmconv10_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  pmconv10_sigmoid          1 1 pmconv10_gate_out pmconv10_gate_out_sigmoid
+ELU                      pmconv10_elu              1 1 pmconv10_feature_out pmconv10_feature_out_activated 0=1.0
+BinaryOp                 pmconv10_mul              2 1 pmconv10_feature_out_activated pmconv10_gate_out_sigmoid pmconv10_out 0=2
+Concat                   stage2_concat             2 1 xconv10_atrous_out pmconv10_out stage2_combined 0=0
+Convolution              allconv11_feature         1 1 stage2_combined allconv11_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=165888
+Convolution              allconv11_gate            1 1 stage2_combined allconv11_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=165888
+Sigmoid                  allconv11_sigmoid         1 1 allconv11_gate_out allconv11_gate_out_sigmoid
+ELU                      allconv11_elu             1 1 allconv11_feature_out allconv11_feature_out_activated 0=1.0
+BinaryOp                 allconv11_mul             2 1 allconv11_feature_out_activated allconv11_gate_out_sigmoid allconv11_out 0=2
+Convolution              allconv12_feature         1 1 allconv11_out allconv12_feature_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Convolution              allconv12_gate            1 1 allconv11_out allconv12_gate_out 0=96 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=82944
+Sigmoid                  allconv12_sigmoid         1 1 allconv12_gate_out allconv12_gate_out_sigmoid
+ELU                      allconv12_elu             1 1 allconv12_feature_out allconv12_feature_out_activated 0=1.0
+BinaryOp                 allconv12_mul             2 1 allconv12_feature_out_activated allconv12_gate_out_sigmoid allconv12_out 0=2
+Interp                   allconv13_upsample_resize 1 1 allconv12_out allconv13_upsample_resize_out 0=1 1=2.0 2=2.0 3=256 4=200 6=0 100=1
+Convolution              allconv13_upsample_feature 1 1 allconv13_upsample_resize_out allconv13_upsample_feature_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=41472
+Convolution              allconv13_upsample_gate   1 1 allconv13_upsample_resize_out allconv13_upsample_gate_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=41472
+Sigmoid                  allconv13_upsample_sigmoid 1 1 allconv13_upsample_gate_out allconv13_upsample_gate_out_sigmoid
+ELU                      allconv13_upsample_elu    1 1 allconv13_upsample_feature_out allconv13_upsample_feature_out_activated 0=1.0
+BinaryOp                 allconv13_upsample_mul    2 1 allconv13_upsample_feature_out_activated allconv13_upsample_gate_out_sigmoid allconv13_upsample_out 0=2
+Convolution              allconv14_feature         1 1 allconv13_upsample_out allconv14_feature_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=20736
+Convolution              allconv14_gate            1 1 allconv13_upsample_out allconv14_gate_out 0=48 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=20736
+Sigmoid                  allconv14_sigmoid         1 1 allconv14_gate_out allconv14_gate_out_sigmoid
+ELU                      allconv14_elu             1 1 allconv14_feature_out allconv14_feature_out_activated 0=1.0
+BinaryOp                 allconv14_mul             2 1 allconv14_feature_out_activated allconv14_gate_out_sigmoid allconv14_out 0=2
+Interp                   allconv15_upsample_resize 1 1 allconv14_out allconv15_upsample_resize_out 0=1 1=2.0 2=2.0 3=512 4=400 6=0 100=1
+Convolution              allconv15_upsample_feature 1 1 allconv15_upsample_resize_out allconv15_upsample_feature_out 0=24 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Convolution              allconv15_upsample_gate   1 1 allconv15_upsample_resize_out allconv15_upsample_gate_out 0=24 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=10368
+Sigmoid                  allconv15_upsample_sigmoid 1 1 allconv15_upsample_gate_out allconv15_upsample_gate_out_sigmoid
+ELU                      allconv15_upsample_elu    1 1 allconv15_upsample_feature_out allconv15_upsample_feature_out_activated 0=1.0
+BinaryOp                 allconv15_upsample_mul    2 1 allconv15_upsample_feature_out_activated allconv15_upsample_gate_out_sigmoid allconv15_upsample_out 0=2
+Convolution              allconv16_feature         1 1 allconv15_upsample_out allconv16_feature_out 0=12 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=2592
+Convolution              allconv16_gate            1 1 allconv15_upsample_out allconv16_gate_out 0=12 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=2592
+Sigmoid                  allconv16_sigmoid         1 1 allconv16_gate_out allconv16_gate_out_sigmoid
+ELU                      allconv16_elu             1 1 allconv16_feature_out allconv16_feature_out_activated 0=1.0
+BinaryOp                 allconv16_mul             2 1 allconv16_feature_out_activated allconv16_gate_out_sigmoid allconv16_out 0=2
+Convolution              allconv17_feature         1 1 allconv16_out allconv17_feature_out 0=3 1=3 11=3 2=1 12=1 3=1 13=1 4=1 14=1 15=1 16=1 5=1 6=324
+TanH                     stage2_tanh               1 1 allconv17_feature_out stage2_tanh_out
+Noop                     output_identity           1 1 stage2_tanh_out out0

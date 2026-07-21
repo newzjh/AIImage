@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "aiimage.model-manifest/v1",
+  "modelId": "codeformer",
+  "precision": {
+    "activationDtype": "FP32",
+    "weightDtype": "FP32",
+    "sensitiveOutputDtype": "FP32",
+    "requireStrictTexturePlan": true
+  }
+}

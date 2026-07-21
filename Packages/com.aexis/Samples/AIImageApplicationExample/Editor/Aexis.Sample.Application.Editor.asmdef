@@ -1,0 +1,24 @@
+{
+  "name": "Aexis.Sample.Application.Editor",
+  "rootNamespace": "AIImage.Editor",
+  "references": [
+    "Aexis.Sample.Application",
+    "Aexis",
+    "Aexis.Async",
+    "Aexis.Onnx",
+    "Aexis.Ncnn",
+    "Aexis.Execution",
+    "Aexis.Sample.Async",
+    "Aexis.Sample.Json"
+  ],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": ["TestAssemblies"]
+}

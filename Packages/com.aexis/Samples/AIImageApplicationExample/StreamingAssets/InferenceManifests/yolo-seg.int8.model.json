@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "aiimage.model-manifest/v1",
+  "modelId": "yolo-seg",
+  "precision": { "activationDtype": "FP16", "weightDtype": "INT8", "sensitiveOutputDtype": "FP32", "requireStrictTexturePlan": true },
+  "quantization": {
+    "quantizationVersion": "aiimage.int8-selective/v1",
+    "calibrationVersion": "yolo-seg-public-fixture-v1",
+    "calibrationMethod": "symmetric-activation-absmax-per-calibrated-layer",
+    "weightScheme": "INT8_WEIGHT_ONLY_PER_OUTPUT_CHANNEL_SYMMETRIC",
+    "outputChannelAxis": 0,
+    "symmetric": true,
+    "zeroPoint": 0,
+    "accumulationDtype": "FP32",
+    "activationQuantized": true,
+    "quantizedOperators": ["Convolution"],
+    "nodePlans": [
+      { "layerName": "conv_0", "operatorName": "Convolution", "mode": "W8A8", "activationScale": 0.0078125, "activationZeroPoint": 0 },
+      { "layerName": "conv_1", "operatorName": "Convolution", "mode": "W8", "activationScale": 1.0, "activationZeroPoint": 0 },
+      { "layerName": "conv_2", "operatorName": "Convolution", "mode": "W8", "activationScale": 1.0, "activationZeroPoint": 0 },
+      { "layerName": "conv_74", "operatorName": "Convolution", "mode": "Float", "activationScale": 1.0, "activationZeroPoint": 0 }
+    ],
+    "unquantizedWeightDtype": "FP32"
+  }
+}

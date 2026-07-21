@@ -1,0 +1,22 @@
+{
+  "name": "Aexis.Sample.Application",
+  "rootNamespace": "AIImage",
+  "references": [
+    "Aexis",
+    "Aexis.Async",
+    "Aexis.Onnx",
+    "Aexis.Ncnn",
+    "Aexis.Execution",
+    "Aexis.Sample.Async",
+    "Aexis.Sample.Json"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
