@@ -168,7 +168,17 @@ namespace Aexis.Execution
         public const string Contract = "aiimage.operator-capabilities/v3";
         public const string PreflightContract = "aiimage.model-preflight/v2";
 
-        private static readonly HashSet<string> UnsupportedOperators = new HashSet<string>(StringComparer.Ordinal);
+        // These are native ncnn built-ins present in the reference registry but
+        // outside the verified P0 Pack4 contract. Keep them in the capability
+        // document so a raw .param name never degrades to an ambiguous unknown
+        // layer or a buffer fallback.
+        private static readonly HashSet<string> UnsupportedOperators = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "ConvolutionDepthWise3D", "DeconvolutionDepthWise1D", "DeconvolutionDepthWise3D",
+            "DeformableConv2D", "DetectionOutput", "Diag", "Einsum", "Flip", "Fold", "GLU", "GridSample",
+            "GRU", "InverseSpectrogram", "LSTM", "Proposal", "PSROIPooling", "RNN", "ROIAlign", "ROIPooling",
+            "Spectrogram", "SPP", "StatisticsPooling", "YoloDetectionOutput", "Yolov3DetectionOutput"
+        };
 
         private static readonly HashSet<string> AliasOnlyOperators = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -261,18 +271,23 @@ namespace Aexis.Execution
 
         public static AexisOperatorCapabilityDocument CreateDocument()
         {
-            var operators = new List<AexisOperatorCapability>();
+            var operatorNames = new HashSet<string>(StringComparer.Ordinal);
             var registered = AexisLayerFactory.GetRegisteredLayerTypes();
             for (var i = 0; i < registered.Count; i++)
-                operators.Add(CreateCapability(registered[i].ToString()));
+                operatorNames.Add(registered[i].ToString());
             foreach (var alias in new[] { "CumulativeSum", "ConvolutionDepthWise1D", "Deconvolution1D" })
-                operators.Add(CreateCapability(alias));
+                operatorNames.Add(alias);
+            foreach (var unsupported in UnsupportedOperators)
+                operatorNames.Add(unsupported);
 
             return new AexisOperatorCapabilityDocument
             {
                 schemaVersion = SchemaVersion,
                 contract = Contract,
-                operators = operators.OrderBy(capability => capability.operatorName, StringComparer.Ordinal).ToArray()
+                operators = operatorNames
+                    .OrderBy(operatorName => operatorName, StringComparer.Ordinal)
+                    .Select(CreateCapability)
+                    .ToArray()
             };
         }
 
@@ -283,7 +298,7 @@ namespace Aexis.Execution
                 return false;
 
             var canonical = AexisLayerFactory.ResolveCanonicalLayerTypeName(operatorName);
-            if (!AexisLayerFactory.IsRegistered(canonical))
+            if (!AexisLayerFactory.IsRegistered(canonical) && !UnsupportedOperators.Contains(operatorName))
                 return false;
 
             // Preserve the requested spelling. Long NCNN names have distinct parameter
@@ -1317,7 +1332,9 @@ namespace Aexis.Execution
                 if (request.strict && !strictEligible && nodeIssues.Count == 0)
                 {
                     var planDiagnostic = texturePlan?.diagnostics?.FirstOrDefault(diagnostic => diagnostic != null && diagnostic.layerIndex == index && diagnostic.blocking);
-                    nodeIssues.Add(planDiagnostic?.reason
+                    nodeIssues.Add(string.Equals(capability.status, AexisOperatorCapabilityStatus.Unsupported, StringComparison.Ordinal)
+                        ? capability.limitations
+                        : planDiagnostic?.reason
                         ?? (texturePlan == null
                             ? "Strict model admission requires exact textureInputs and a model-level texture execution plan."
                             : !string.IsNullOrWhiteSpace(profileReason)

@@ -381,7 +381,10 @@ namespace Aexis.Execution
                     node.outputs = verifiedOutputs;
                     RegisterOutputs(descriptors, verifiedOutputs);
                 }
-                else if (request.debugOracleRelaxed && capability != null && inputs.Count > 0)
+                else if (request.debugOracleRelaxed
+                    && capability != null
+                    && !string.Equals(capability.status, AexisOperatorCapabilityStatus.Unsupported, StringComparison.Ordinal)
+                    && inputs.Count > 0)
                 {
                     var outputs = CreateComputedOutputs(layer, inputs[0], request);
                     node.accepted = true;
@@ -395,6 +398,8 @@ namespace Aexis.Execution
                 {
                     var reason = capability == null
                         ? "No capability entry exists for this operator."
+                        : string.Equals(capability.status, AexisOperatorCapabilityStatus.Unsupported, StringComparison.Ordinal)
+                            ? capability.limitations
                         : !inputsMatchTarget
                             ? "Input descriptor dtype/layout does not match the requested CommandBuffer Pack4 target."
                             : isConditionalCapability && profileTargetCompatible
@@ -403,7 +408,9 @@ namespace Aexis.Execution
                             : isConditionalCapability && !string.IsNullOrWhiteSpace(profileMatchReason)
                                 ? profileMatchReason
                                 : "The capability matrix does not record a verified CommandBuffer Pack4 implementation for this dtype/layout.";
-                    var code = isConditionalCapability && profileTargetCompatible
+                    var code = capability != null && string.Equals(capability.status, AexisOperatorCapabilityStatus.Unsupported, StringComparison.Ordinal)
+                        ? "unsupported-operator"
+                        : isConditionalCapability && profileTargetCompatible
                         ? "command-buffer-pack4-profile-rejected"
                         : "missing-command-buffer-pack4-capability";
                     diagnostics.Add(CreateDiagnostic(request, index, layer, capability, operatorName, code, reason, inputs, true, "Implement and verify a real CommandBuffer Pack4 path, then update the capability matrix."));

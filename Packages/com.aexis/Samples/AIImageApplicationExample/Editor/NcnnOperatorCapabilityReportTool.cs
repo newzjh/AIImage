@@ -115,6 +115,7 @@ public static class NcnnOperatorCapabilityReportTool
                 storageShape = input.storageShape,
                 layout = input.layout,
                 dtype = input.dtype,
+                logicalDtype = input.logicalDtype,
                 aliasGroup = "cli:" + input.blob,
                 textureBacked = true
             }).ToArray()
@@ -124,7 +125,13 @@ public static class NcnnOperatorCapabilityReportTool
         Debug.Log("[OperatorCapabilities] strict texture plan | model=" + plan.modelName + " | " + plan.summary + " | output=" + outputPath);
     }
 
-    private static AexisPreflightTensorDescriptor CreateInput(string blob, int[] logicalShape, int[] storageShape, string layout, string dtype)
+    private static AexisPreflightTensorDescriptor CreateInput(
+        string blob,
+        int[] logicalShape,
+        int[] storageShape,
+        string layout,
+        string dtype,
+        string logicalDtype = null)
     {
         return new AexisPreflightTensorDescriptor
         {
@@ -132,12 +139,15 @@ public static class NcnnOperatorCapabilityReportTool
             logicalShape = logicalShape,
             storageShape = storageShape,
             layout = layout,
-            dtype = dtype
+            dtype = dtype,
+            logicalDtype = logicalDtype
         };
     }
 
-    // Format: blob|logical-dims|storage-dims|layout|dtype; dims use comma-separated integers.
-    private static List<AexisPreflightTensorDescriptor> ParseInputs(string[] values)
+    // Format: blob|logical-dims|storage-dims|layout|physical-dtype[|logical-dtype].
+    // The optional logical dtype is required for shape/index tensors stored exactly
+    // in FP32 textures, for example `indices|...|Linear|FP32|Int32`.
+    internal static List<AexisPreflightTensorDescriptor> ParseInputs(string[] values)
     {
         var inputs = new List<AexisPreflightTensorDescriptor>();
         if (values == null)
@@ -146,9 +156,15 @@ public static class NcnnOperatorCapabilityReportTool
         for (var index = 0; index < values.Length; index++)
         {
             var parts = (values[index] ?? string.Empty).Split('|');
-            if (parts.Length != 5 || string.IsNullOrWhiteSpace(parts[0]))
-                throw new ArgumentException("-ncnnPreflightInput must be blob|logical-dims|storage-dims|layout|dtype");
-            inputs.Add(CreateInput(parts[0], ParseShape(parts[1]), ParseShape(parts[2]), parts[3], parts[4]));
+            if ((parts.Length != 5 && parts.Length != 6) || string.IsNullOrWhiteSpace(parts[0]))
+                throw new ArgumentException("-ncnnPreflightInput must be blob|logical-dims|storage-dims|layout|physical-dtype[|logical-dtype]");
+            inputs.Add(CreateInput(
+                parts[0],
+                ParseShape(parts[1]),
+                ParseShape(parts[2]),
+                parts[3],
+                parts[4],
+                parts.Length == 6 ? parts[5] : null));
         }
         return inputs;
     }

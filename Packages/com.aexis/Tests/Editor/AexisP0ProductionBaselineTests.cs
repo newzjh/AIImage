@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using Aexis;
 using Aexis.Execution;
+using Aexis.Ncnn;
 using Aexis.Onnx;
 using NUnit.Framework;
 using UnityEngine;
@@ -56,6 +57,12 @@ namespace Aexis.Tests.Editor
             Assert.That(offenders, Is.Empty,
                 "Production execution layers must reject unsupported CommandBuffer profiles instead of publishing blank tensors: "
                 + string.Join(", ", offenders));
+        }
+
+        [Test]
+        public void PackageBatchSmoke_CoversP0OnnxCompilationAndNcnnAliasCompatibility()
+        {
+            Aexis.Editor.AexisPackageValidation.RunBatchSmoke();
         }
 
         [Test]
@@ -585,6 +592,78 @@ namespace Aexis.Tests.Editor
             Assert.That(copyTo.ranks, Is.EqualTo(new[] { 3, 4 }));
             Assert.That(AexisOperatorCapabilities.TryGet("MVN", out var mvn), Is.True);
             Assert.That(mvn.ranks, Is.EqualTo(new[] { 3, 4 }));
+        }
+
+        [Test]
+        public void NcnnReferenceLayersOutsideP0_AreExplicitCapabilitiesAndStrictlyReject()
+        {
+            var unsupported = new[]
+            {
+                "ConvolutionDepthWise3D", "DeconvolutionDepthWise1D", "DeconvolutionDepthWise3D",
+                "DeformableConv2D", "DetectionOutput", "Diag", "Einsum", "Flip", "Fold", "GLU", "GridSample",
+                "GRU", "InverseSpectrogram", "LSTM", "Proposal", "PSROIPooling", "RNN", "ROIAlign", "ROIPooling",
+                "Spectrogram", "SPP", "StatisticsPooling", "YoloDetectionOutput", "Yolov3DetectionOutput"
+            };
+            var document = AexisOperatorCapabilities.CreateDocument();
+            foreach (var operatorName in unsupported)
+            {
+                Assert.That(AexisOperatorCapabilities.TryGet(operatorName, out var capability), Is.True, operatorName);
+                Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.Unsupported), operatorName);
+                Assert.That(capability.importSupported, Is.False, operatorName);
+                Assert.That(capability.commandBuffer, Is.False, operatorName);
+                Assert.That(document.operators.Any(entry => entry.operatorName == operatorName), Is.True, operatorName);
+            }
+
+            var model = NcnnParamParser.Parse(
+                "7767517\n"
+                + "2 2\n"
+                + "Input input 0 1 data\n"
+                + "GridSample unsupported_grid 1 1 data output\n");
+            var report = AexisModelPreflight.Analyze(model, new AexisModelPreflightRequest
+            {
+                strict = true,
+                inputs = new[]
+                {
+                    new AexisPreflightTensorDescriptor
+                    {
+                        blob = "data",
+                        logicalShape = new[] { 3, 8, 8, 1, 4 },
+                        storageShape = new[] { 3, 8, 8, 1, 4 },
+                        layout = AexisTexturePlanLayout.Packed4,
+                        dtype = "FP32",
+                        logicalDtype = "Float32"
+                    }
+                }
+            });
+
+            var node = report.nodes.Single(entry => entry.operatorName == "GridSample");
+            Assert.That(report.missingNodes, Is.Empty);
+            Assert.That(node.strictEligible, Is.False);
+            Assert.That(node.status, Is.EqualTo(AexisOperatorCapabilityStatus.Unsupported));
+            Assert.That(node.issues, Has.Some.Contains("GridSample"));
+
+            var plannerModel = new AexisGraphModel();
+            plannerModel.layers.Add(new AexisGraphModel.Layer
+            {
+                name = "unsupported_grid",
+                typeName = "GridSample",
+                bottomNames = new[] { "data" },
+                topNames = new[] { "output" }
+            });
+            var relaxedPlan = AexisTextureExecutionPlanner.Analyze(plannerModel, new AexisTextureExecutionPlanRequest
+            {
+                strict = true,
+                debugOracleRelaxed = true,
+                targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+                targetDtype = "FP32",
+                targetLayout = AexisTexturePlanLayout.Packed4,
+                inputs = new[] { LinearTexture("data", 1, 4, 1, 1, 1) }
+            });
+
+            Assert.That(relaxedPlan.dispatchAllowed, Is.False);
+            Assert.That(relaxedPlan.nodes.Single().acceptedByDebugOracle, Is.False);
+            Assert.That(relaxedPlan.diagnostics, Has.Some.Matches<AexisTextureExecutionPlanDiagnostic>(diagnostic =>
+                diagnostic.code == "unsupported-operator" && diagnostic.blocking));
         }
 
         [Test]

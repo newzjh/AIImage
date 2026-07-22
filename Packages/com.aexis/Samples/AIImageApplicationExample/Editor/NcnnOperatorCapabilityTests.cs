@@ -108,5 +108,18 @@ public sealed class NcnnOperatorCapabilityTests
         Assert.That(report.missingDependencies.Select(issue => issue.code), Has.Some.EqualTo("missing-input-descriptor"));
         Assert.That(report.missingDependencies.Single(issue => issue.code == "missing-input-descriptor").blob, Is.EqualTo("input_blob"));
     }
+
+    [Test]
+    public void CommandLinePreflightInput_PreservesLogicalIndexDtype()
+    {
+        var inputs = NcnnOperatorCapabilityReportTool.ParseInputs(new[]
+        {
+            "indices|2,4,1,1,1|2,4,1,1,1|Linear|FP32|Int32"
+        });
+
+        Assert.That(inputs, Has.Count.EqualTo(1));
+        Assert.That(inputs[0].dtype, Is.EqualTo("FP32"));
+        Assert.That(inputs[0].logicalDtype, Is.EqualTo("Int32"));
+    }
 }
 #endif
