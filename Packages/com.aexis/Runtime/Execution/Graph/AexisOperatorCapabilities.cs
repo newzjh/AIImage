@@ -65,6 +65,7 @@ namespace Aexis.Execution
         public bool commandBuffer;
         public bool fp32;
         public bool fp16;
+        public bool bf16;
         public bool int8;
         public string[] layouts;
         public int[] ranks;
@@ -175,9 +176,14 @@ namespace Aexis.Execution
         private static readonly HashSet<string> UnsupportedOperators = new HashSet<string>(StringComparer.Ordinal)
         {
             "ConvolutionDepthWise3D", "DeconvolutionDepthWise1D", "DeconvolutionDepthWise3D",
+            "GRU", "InverseSpectrogram", "LSTM", "RNN", "Spectrogram", "StatisticsPooling"
+        };
+
+        private static readonly HashSet<string> P1VisualOperators = new HashSet<string>(StringComparer.Ordinal)
+        {
             "DeformableConv2D", "DetectionOutput", "Diag", "Einsum", "Flip", "Fold", "GLU", "GridSample",
-            "GRU", "InverseSpectrogram", "LSTM", "Proposal", "PSROIPooling", "RNN", "ROIAlign", "ROIPooling",
-            "Spectrogram", "SPP", "StatisticsPooling", "YoloDetectionOutput", "Yolov3DetectionOutput"
+            "Proposal", "PSROIPooling", "ROIAlign", "ROIPooling", "SPP", "YoloDetectionOutput", "Yolov3DetectionOutput",
+            "YoloDetectOut", "Yolov3DetectOut"
         };
 
         private static readonly HashSet<string> AliasOnlyOperators = new HashSet<string>(StringComparer.Ordinal)
@@ -267,6 +273,20 @@ namespace Aexis.Execution
             { "ExtractPatches", new[] { "1:kernel_w", "11:kernel_h" } },
             { "Interp", new[] { "0:resize_type" } },
             { "InnerProduct", new[] { "0:num_output", "1:bias_term", "2:weight_data_size" } },
+            { "GridSample", new[] { "0:sample_type", "1:padding_mode", "2:align_corner" } },
+            { "DeformableConv2D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
+            { "Fold", new[] { "1:kernel_w", "20:output_w" } },
+            { "Flip", new[] { "0:flip_direction" } },
+            { "SPP", new[] { "0:pooling_type", "1:pooling_kernel" } },
+            { "ROIAlign", new[] { "0:pooled_width", "1:pooled_height", "2:spatial_scale" } },
+            { "ROIPooling", new[] { "0:pooled_width", "1:pooled_height", "2:spatial_scale" } },
+            { "PSROIPooling", new[] { "0:pooled_width", "1:pooled_height", "2:spatial_scale" } },
+            { "Proposal", new[] { "0:feat_stride", "3:base_size", "4:pre_nms_topN", "5:post_nms_topN" } },
+            { "DetectionOutput", new[] { "0:num_classes", "2:keep_top_k" } },
+            { "YoloDetectionOutput", new[] { "0:num_class", "1:num_box" } },
+            { "Yolov3DetectionOutput", new[] { "0:num_class", "1:num_box" } },
+            { "YoloDetectOut", new[] { "0:num_class", "1:num_box" } },
+            { "Yolov3DetectOut", new[] { "0:num_class", "1:num_box" } },
         };
 
         public static AexisOperatorCapabilityDocument CreateDocument()
@@ -279,6 +299,8 @@ namespace Aexis.Execution
                 operatorNames.Add(alias);
             foreach (var unsupported in UnsupportedOperators)
                 operatorNames.Add(unsupported);
+            foreach (var p1 in P1VisualOperators)
+                operatorNames.Add(p1);
 
             return new AexisOperatorCapabilityDocument
             {
@@ -348,6 +370,7 @@ namespace Aexis.Execution
 
             var dtypeSupported = string.Equals(targetDtype, "FP32", StringComparison.OrdinalIgnoreCase) ? capability.fp32
                 : string.Equals(targetDtype, "FP16", StringComparison.OrdinalIgnoreCase) ? capability.fp16
+                : string.Equals(targetDtype, "BF16", StringComparison.OrdinalIgnoreCase) ? capability.bf16
                 : string.Equals(targetDtype, "INT8", StringComparison.OrdinalIgnoreCase) && capability.int8;
             if (!dtypeSupported)
                 return false;
@@ -359,6 +382,7 @@ namespace Aexis.Execution
         private static AexisOperatorCapability CreateCapability(string operatorName)
         {
             var isUnsupported = UnsupportedOperators.Contains(operatorName);
+            var isP1Visual = P1VisualOperators.Contains(operatorName);
             var isAliasOnly = AliasOnlyOperators.Contains(operatorName);
             var hasTexturePath = TextureAndCommandBufferOperators.Contains(operatorName)
                 || TextureAndCommandBufferOperators.Contains(AexisLayerFactory.ResolveCanonicalLayerTypeName(operatorName));
@@ -376,6 +400,8 @@ namespace Aexis.Execution
                 ? AexisOperatorCapabilityStatus.Unsupported
                 : isAliasOnly
                     ? AexisOperatorCapabilityStatus.AliasOnly
+                    : isP1Visual
+                        ? AexisOperatorCapabilityStatus.Partial
                      : hasVerifiedCommandBufferPack4
                          ? AexisOperatorCapabilityStatus.Supported
                     : hasRuntimeVerifiedProfile
@@ -397,6 +423,7 @@ namespace Aexis.Execution
                 commandBuffer = hasTexturePath && !isUnsupported,
                 fp32 = hasTexturePath && !isUnsupported,
                 fp16 = hasTexturePath && !isUnsupported,
+                bf16 = hasTexturePath && !isUnsupported,
                 int8 = hasInt8QuantizedKernel && hasTexturePath && !isUnsupported,
                 layouts = ResolveLayouts(operatorName),
                 ranks = ResolveRanks(operatorName),
@@ -486,6 +513,9 @@ namespace Aexis.Execution
             if (status == AexisOperatorCapabilityStatus.Unsupported)
                 return operatorName + " is registered only to report a deterministic error; its texture-native implementation is absent. "
                     + "D3 rejects this graph at plan time rather than reading GPU data back or falling back to a ComputeBuffer.";
+            if (P1VisualOperators.Contains(operatorName))
+                return "P1 visual operator ABI and import schema are registered, but strict execution requires its exact Pack4 RenderTexture and CommandBuffer shader profile. "
+                    + "The runtime rejects the node until that profile is installed; it never falls back to a ComputeBuffer.";
             if (status == AexisOperatorCapabilityStatus.AliasOnly)
                 return "Only alias/view semantics are known. Strict planning requires a separately proven logical/storage layout match.";
             if (status == AexisOperatorCapabilityStatus.DebugOnly)

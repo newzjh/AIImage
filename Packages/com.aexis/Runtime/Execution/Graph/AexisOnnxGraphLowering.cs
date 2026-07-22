@@ -107,6 +107,7 @@ namespace Aexis.Execution
             { "Swish", "Swish" }, { "ThresholdedRelu", "ThresholdedRelu" }, { "Clip", "Clip" },
             { "LRN", "LRN" }, { "Pad", "Padding" }, { "Resize", "Interp" }, { "Upsample", "Interp" },
             { "ExtractImagePatches", "ExtractPatches" },
+            { "GridSample", "GridSample" },
             { "DepthToSpace", "PixelShuffle" }, { "SpaceToDepth", "Reorg" },
             { "Conv", "Convolution" }, { "ConvTranspose", "Deconvolution" }, { "BatchNormalization", "BatchNorm" },
             { "InstanceNormalization", "InstanceNorm" }, { "LayerNormalization", "LayerNorm" },
@@ -534,11 +535,6 @@ namespace Aexis.Execution
             string action;
             switch (node.opType)
             {
-                case "GridSample":
-                    code = "missing-grid-sample-texture-kernel";
-                    message = "GridSample requires coordinate-grid sampling with exact interpolation, padding, and align_corners semantics; no verified Aexis CommandBuffer Pack4 kernel currently implements that contract.";
-                    action = "Lower to supported static Resize only when the grid is provably affine, otherwise add a texture-native GridSample kernel.";
-                    break;
                 case "NonMaxSuppression":
                     code = "missing-bounded-nms-profile";
                     message = "NonMaxSuppression has a data-dependent selected-index count and no capacity-bounded deterministic Aexis texture profile.";
@@ -674,7 +670,7 @@ namespace Aexis.Execution
                 "Atan", "Round", "Sign", "Sinh", "Asinh", "Cosh", "Acosh", "Atanh", "Not", "ExtractImagePatches");
             Add(new OperatorSchema(2, 2, 1, 1),
                 "PRelu", "MatMul", "CastLike", "Expand", "CumSum", "Compress", "Gather", "GatherElements", "GatherND",
-                "Add", "Sub", "Mul", "Div", "Max", "Min", "Pow", "Mod", "Equal", "Greater", "GreaterOrEqual",
+                "GridSample", "Add", "Sub", "Mul", "Div", "Max", "Min", "Pow", "Mod", "Equal", "Greater", "GreaterOrEqual",
                 "Less", "LessOrEqual", "And", "Or", "Xor");
             Add(new OperatorSchema(3, 3, 1, 1), "Where", "OneHot", "Range", "Scatter", "ScatterElements", "ScatterND");
             Add(new OperatorSchema(0, 0, 1, 1), "Constant");
@@ -724,6 +720,7 @@ namespace Aexis.Execution
                 case "GreaterOrEqual":
                 case "LessOrEqual": return 12;
                 case "HardSwish": return 14;
+                case "GridSample": return 16;
                 case "CastLike": return 15;
                 default: return schemaMinimum;
             }
@@ -1164,6 +1161,46 @@ namespace Aexis.Execution
             if (string.Equals(node.opType, "Mod", StringComparison.Ordinal))
             {
                 layer.intParams[0] = GetInt(node, "fmod", 0) != 0 ? "12" : "19";
+            }
+
+            if (string.Equals(node.opType, "GridSample", StringComparison.Ordinal))
+            {
+                var validInput = inputs.Count == 2
+                    && inputs[0]?.shape != null && inputs[0].shape.Length == 4
+                    && inputs[1]?.shape != null && inputs[1].shape.Length == 4
+                    && inputs[0].onnxDataType == 1 && inputs[1].onnxDataType == 1
+                    && inputs[0].shape[0] == 1 && inputs[1].shape[0] == 1
+                    && inputs[1].shape[3] == 2
+                    && !HasDynamic(inputs[0].shape) && !HasDynamic(inputs[1].shape);
+                if (!validInput)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-grid-sample-profile",
+                        "GridSample requires static FP32 NCHW input and static FP32 NHW2 grid with batch=1.",
+                        "Export a static batch-one GridSample model; dynamic grids and non-NCHW layouts require a dedicated profile.", true));
+                    return;
+                }
+
+                var mode = GetString(node, "mode") ?? "bilinear";
+                var padding = GetString(node, "padding_mode") ?? "zeros";
+                var sampleType = string.Equals(mode, "bilinear", StringComparison.Ordinal) ? 1
+                    : string.Equals(mode, "nearest", StringComparison.Ordinal) ? 2
+                    : string.Equals(mode, "bicubic", StringComparison.Ordinal) ? 3 : 0;
+                var paddingMode = string.Equals(padding, "zeros", StringComparison.Ordinal) ? 1
+                    : string.Equals(padding, "border", StringComparison.Ordinal) ? 2
+                    : string.Equals(padding, "reflection", StringComparison.Ordinal) ? 3 : 0;
+                if (sampleType == 0 || paddingMode == 0)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-grid-sample-attributes",
+                        "GridSample mode must be bilinear, nearest, or bicubic and padding_mode must be zeros, border, or reflection.",
+                        "Export standard ONNX GridSample attributes.", true));
+                    return;
+                }
+                layer.intParams[0] = sampleType.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[1] = paddingMode.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[2] = GetInt(node, "align_corners", 0).ToString(CultureInfo.InvariantCulture);
+                layer.stringParams["onnx.mode"] = mode;
+                layer.stringParams["onnx.padding_mode"] = padding;
+                layer.stringParams["onnx.align_corners"] = layer.intParams[2];
             }
 
             if (string.Equals(node.opType, "Not", StringComparison.Ordinal))
@@ -3215,6 +3252,11 @@ namespace Aexis.Execution
                     out _, out _, out _, out _, out var patchOutput, out _)
                     ? patchOutput
                     : Dynamic(inputs[0].shape?.Length ?? 4);
+            }
+            if (string.Equals(node.opType, "GridSample", StringComparison.Ordinal) && inputs.Count == 2
+                && inputs[0].shape?.Length == 4 && inputs[1].shape?.Length == 4)
+            {
+                shape = new[] { inputs[0].shape[0], inputs[0].shape[1], inputs[1].shape[1], inputs[1].shape[2] };
             }
             if (string.Equals(node.opType, "Transpose", StringComparison.Ordinal)) shape = InferTranspose(node, shape);
             if (string.Equals(node.opType, "Flatten", StringComparison.Ordinal)) shape = InferFlatten(node, shape);

@@ -46,6 +46,14 @@ For a standalone `.unitypackage`, run `Aexis/Release/Export Complete UnityPackag
 
 The runtime is partitioned into multiple asmdefs inside one UPM package. Unity supports this arrangement; consumers import only `com.aexis` and get the assemblies transitively. `Aexis.Ncnn` production inference stays on Pack4 RenderTextures and CommandBuffer-compatible texture flows. Compute buffers are limited to immutable uploads and explicit diagnostic paths.
 
+## Model import and extension contracts
+
+Unity imports `.onnx`, NCNN `.param`, and versioned `.aexis` archive files as `AexisModelAsset`. The importer preserves source bytes, emits a versioned binary graph, attaches a sibling NCNN `.bin` when present, and records lowering/preflight diagnostics on the asset. `AexisModelPackager` exposes the same offline prepack path for build tooling.
+
+`AexisNcnnBinaryParam` is the stable binary `.param` representation and `AexisModelArchive` (`AEXM` v1) packages the binary graph, weights, source, manifest, and diagnostics. Use `AexisCustomLayerRegistry` to register a public layer factory with a versioned parameter/arity schema. Model archives may declare their required custom layer type and shader kernel id; unresolved declarations fail before execution.
+
+P1 visual operators use the same strict contract. Their NCNN ABI is parsed and preflighted, while actual execution requires a matching Pack4 RenderTexture and CommandBuffer shader profile. Aexis rejects missing profiles with an explicit error instead of materializing activations through a ComputeBuffer.
+
 ## Quick start
 
 ```csharp

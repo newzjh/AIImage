@@ -159,6 +159,21 @@ namespace Aexis.Execution
         public static readonly AexisLayerTypeKey Tile = AexisLayerTypeKey.FromString("Tile");
         public static readonly AexisLayerTypeKey Unfold = AexisLayerTypeKey.FromString("Unfold");
         public static readonly AexisLayerTypeKey ExtractPatches = AexisLayerTypeKey.FromString("ExtractPatches");
+        public static readonly AexisLayerTypeKey GridSample = AexisLayerTypeKey.FromString("GridSample");
+        public static readonly AexisLayerTypeKey DeformableConv2D = AexisLayerTypeKey.FromString("DeformableConv2D");
+        public static readonly AexisLayerTypeKey Fold = AexisLayerTypeKey.FromString("Fold");
+        public static readonly AexisLayerTypeKey Flip = AexisLayerTypeKey.FromString("Flip");
+        public static readonly AexisLayerTypeKey GLU = AexisLayerTypeKey.FromString("GLU");
+        public static readonly AexisLayerTypeKey Einsum = AexisLayerTypeKey.FromString("Einsum");
+        public static readonly AexisLayerTypeKey Diag = AexisLayerTypeKey.FromString("Diag");
+        public static readonly AexisLayerTypeKey SPP = AexisLayerTypeKey.FromString("SPP");
+        public static readonly AexisLayerTypeKey ROIAlign = AexisLayerTypeKey.FromString("ROIAlign");
+        public static readonly AexisLayerTypeKey ROIPooling = AexisLayerTypeKey.FromString("ROIPooling");
+        public static readonly AexisLayerTypeKey PSROIPooling = AexisLayerTypeKey.FromString("PSROIPooling");
+        public static readonly AexisLayerTypeKey Proposal = AexisLayerTypeKey.FromString("Proposal");
+        public static readonly AexisLayerTypeKey DetectionOutput = AexisLayerTypeKey.FromString("DetectionOutput");
+        public static readonly AexisLayerTypeKey YoloDetectOut = AexisLayerTypeKey.FromString("YoloDetectOut");
+        public static readonly AexisLayerTypeKey Yolov3DetectOut = AexisLayerTypeKey.FromString("Yolov3DetectOut");
         public static readonly AexisLayerTypeKey DeepFillV2ContextualAttention = AexisLayerTypeKey.FromString("DeepFillV2ContextualAttention");
         public static readonly AexisLayerTypeKey Shape = AexisLayerTypeKey.FromString("Shape");
         public static readonly AexisLayerTypeKey Size = AexisLayerTypeKey.FromString("Size");
@@ -320,6 +335,7 @@ namespace Aexis.Execution
         public int layerCount;
         public int blobCount;
         public List<Layer> layers = new List<Layer>();
+        public AexisModelExtensionDeclaration[] extensionDeclarations = Array.Empty<AexisModelExtensionDeclaration>();
 
         public Layer FindByName(string layerName)
         {

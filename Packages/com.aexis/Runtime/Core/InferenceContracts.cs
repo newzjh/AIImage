@@ -36,7 +36,8 @@ namespace Aexis
         Int8 = 3,
         UInt8 = 4,
         Int32 = 5,
-        Int4 = 6
+        Int4 = 6,
+        BFloat16 = 7
     }
 
     // D2 exposes narrowly-scoped quantized weight storage contracts. Selective
@@ -104,19 +105,25 @@ namespace Aexis
 
         private static void ValidateFloatingType(TensorDataType value, string name)
         {
-            if (value != TensorDataType.Float16 && value != TensorDataType.Float32)
-                throw new InferenceContractException("Model precision " + name + " must be Float16 or Float32; INT8 is not part of this contract.");
+            if (value != TensorDataType.Float16
+                && value != TensorDataType.Float32
+                && value != TensorDataType.BFloat16)
+            {
+                throw new InferenceContractException(
+                    "Model precision " + name + " must be Float16, BFloat16, or Float32; INT8 requires an explicit activation quantization plan.");
+            }
         }
 
         private static void ValidateWeightType(TensorDataType value, string name)
         {
             if (value != TensorDataType.Float16
                 && value != TensorDataType.Float32
+                && value != TensorDataType.BFloat16
                 && value != TensorDataType.Int8
                 && value != TensorDataType.Int4)
             {
                 throw new InferenceContractException(
-                    "Model precision " + name + " must be Float16, Float32, INT8, or INT4 weight-only.");
+                    "Model precision " + name + " must be Float16, BFloat16, Float32, INT8, or INT4 weight-only.");
             }
         }
     }
@@ -167,9 +174,10 @@ namespace Aexis
             if (activationQuantized && (nodePlans == null || nodePlans.Length == 0))
                 throw new InferenceContractException("Activation quantization requires explicit calibrated nodePlans.");
             if (unquantizedWeightDataType != TensorDataType.Float16
+                && unquantizedWeightDataType != TensorDataType.BFloat16
                 && unquantizedWeightDataType != TensorDataType.Float32)
             {
-                throw new InferenceContractException(label + " weight-only unquantized weights must remain Float16 or Float32.");
+                throw new InferenceContractException(label + " weight-only unquantized weights must remain Float16, BFloat16, or Float32.");
             }
             if (quantizedOperators != null)
             {
@@ -256,6 +264,8 @@ namespace Aexis
         public string modelId = string.Empty;
         public ModelPrecisionContract precision = new ModelPrecisionContract();
         public ModelQuantizationContract quantization;
+        public ModelMixedPrecisionContract mixedPrecision;
+        public ModelPrecisionGateContract precisionGate;
 
         public void Validate()
         {
@@ -277,6 +287,8 @@ namespace Aexis
             {
                 throw new InferenceContractException("A quantization contract requires precision.weightDataType=Int8 or Int4.");
             }
+            mixedPrecision?.Validate();
+            precisionGate?.Validate();
         }
 
         public bool IsFp16Mixed
@@ -286,6 +298,16 @@ namespace Aexis
                 return precision != null
                     && (precision.activationDataType == TensorDataType.Float16
                         || precision.weightDataType == TensorDataType.Float16);
+            }
+        }
+
+        public bool IsBf16Mixed
+        {
+            get
+            {
+                return precision != null
+                    && (precision.activationDataType == TensorDataType.BFloat16
+                        || precision.weightDataType == TensorDataType.BFloat16);
             }
         }
 

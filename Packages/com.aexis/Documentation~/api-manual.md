@@ -9,7 +9,10 @@ Namespace: `Aexis`
 | `IInferenceSession` | Common session identity, state, backend, and disposal contract |
 | `IInferenceTensor` | Backend-owned tensor descriptor and resource identity contract |
 | `TensorDescriptor` | Immutable logical/storage shape, layout, element type, and debug name |
-| `ModelManifest` | Serializable model precision and optional quantization contract |
+| `ModelManifest` | Serializable FP16/BF16/FP32 precision, mixed-precision, quantization, and precision-gate contract |
+| `AexisImportCalibration` | Import-time activation-range calibration helper |
+| `AexisPrecisionGateEvaluator` | Measure FP32-versus-low-precision output error before accepting a model variant |
+| `AexisDetectionPostprocessing` | Proposal, DetectionOutput, and YOLO class-aware NMS decoding helper |
 | `InferenceContractException` | Invalid model or execution-contract configuration |
 
 Create `TensorDescriptor` with positive logical and storage dimensions. A descriptor describes a backend tensor; it does not transfer ownership of its native texture.
@@ -54,6 +57,8 @@ session.Release();
 | `NcnnOps()` | Create the package-owned compute operator facade and load package shaders |
 | `NcnnInferenceSessionFactory.Create(...)` | Create a graph session and apply an optional model manifest |
 | `NcnnParamParser.Parse(string)` | Parse NCNN `.param` text for inspection or merge workflows |
+| `NcnnParamParser.Parse(byte[])` / `WriteBinary(...)` | Read/write versioned Aexis binary NCNN graph parameters |
+| `AexisModelArchive` | Read/write the versioned `.aexis` model archive |
 | `NcnnBinReader(Stream)` | Read NCNN `.bin` weights; dispose it after model load |
 | `NcnnGraphSession.LoadModel(...)` | Synchronous model load |
 | `NcnnGraphSession.LoadModelAsync(...)` | Cooperative frame-yielding load; returns `Task` |
@@ -64,7 +69,13 @@ session.Release();
 
 ## Precision and manifests
 
-Use `NcnnPrecisionMode.Auto` unless a tested manifest selects a supported precision. `ModelManifest` validates FP16/FP32 activation contracts and INT8/INT4 weight-only contracts. Quantized model metadata must provide calibration provenance and explicit node plans where activation quantization is used.
+Use `NcnnPrecisionMode.Auto` unless a tested manifest selects a supported precision. `ModelManifest` validates FP16/BF16/FP32 activation contracts, INT8/INT4 weight-only contracts, calibrated Pack4 INT8 activation plans, per-layer mixed-precision plans, and output precision gates. Quantized model metadata must provide calibration provenance and explicit node plans where activation quantization is used.
+
+## Unity model assets and custom layers
+
+`AexisModelAsset` is produced by the package `ScriptedImporter` implementations for `.onnx`, `.param`, and `.aexis`. It contains source bytes, a binary graph, optional weights, and diagnostic JSON. `AexisModelPackager` exposes the offline equivalents for build tools.
+
+Use `AexisCustomLayerRegistry.Register(...)` with `AexisCustomLayerDefinition` to publish a layer factory, schema, and shader kernel identifier. The schema is validated before the factory runs. Put matching `AexisModelExtensionDeclaration` entries in a model graph/archive; unresolved declarations and missing Pack4 kernel profiles are terminal import or execution errors, never Buffer fallbacks.
 
 ## Error handling
 

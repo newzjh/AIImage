@@ -1,4 +1,6 @@
 using Aexis.Execution;
+using System;
+using System.IO;
 
 namespace Aexis.Ncnn
 {
@@ -8,6 +10,21 @@ namespace Aexis.Ncnn
         public static AexisGraphModel Parse(string text)
         {
             return AexisGraphModelParser.Parse(text);
+        }
+
+        public static AexisGraphModel Parse(byte[] binaryParam)
+        {
+            return AexisNcnnBinaryParam.Deserialize(binaryParam);
+        }
+
+        public static AexisGraphModel Parse(Stream binaryParam)
+        {
+            return AexisNcnnBinaryParam.Read(binaryParam);
+        }
+
+        public static byte[] WriteBinary(AexisGraphModel graph)
+        {
+            return AexisNcnnBinaryParam.Serialize(graph);
         }
 
         public static int MergeStringParamsByLayerName(

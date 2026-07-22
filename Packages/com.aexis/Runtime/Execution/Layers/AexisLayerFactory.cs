@@ -15,6 +15,8 @@ namespace Aexis.Execution
             { "CumSum", "CumSum" },
             { "ConvolutionDepthWise1D", "Convolution1D" },
             { "Deconvolution1D", "Deconvolution" },
+            { "YoloDetectionOutput", "YoloDetectOut" },
+            { "Yolov3DetectionOutput", "Yolov3DetectOut" },
         };
 
         private static readonly Dictionary<AexisLayerTypeKey, Func<AexisBaseLayer>> Registry = new Dictionary<AexisLayerTypeKey, Func<AexisBaseLayer>>
@@ -100,6 +102,21 @@ namespace Aexis.Execution
             { AexisLayerTypes.MaxUnPooling, () => new AexisMaxUnPoolingLayer() },
             { AexisLayerTypes.Unfold, () => new AexisUnfoldLayer() },
             { AexisLayerTypes.ExtractPatches, () => new AexisExtractPatchesLayer() },
+            { AexisLayerTypes.GridSample, () => new AexisP1VisionLayer(AexisLayerTypes.GridSample) },
+            { AexisLayerTypes.DeformableConv2D, () => new AexisP1VisionLayer(AexisLayerTypes.DeformableConv2D) },
+            { AexisLayerTypes.Fold, () => new AexisP1VisionLayer(AexisLayerTypes.Fold) },
+            { AexisLayerTypes.Flip, () => new AexisP1VisionLayer(AexisLayerTypes.Flip) },
+            { AexisLayerTypes.GLU, () => new AexisP1VisionLayer(AexisLayerTypes.GLU) },
+            { AexisLayerTypes.Einsum, () => new AexisP1VisionLayer(AexisLayerTypes.Einsum) },
+            { AexisLayerTypes.Diag, () => new AexisP1VisionLayer(AexisLayerTypes.Diag) },
+            { AexisLayerTypes.SPP, () => new AexisP1VisionLayer(AexisLayerTypes.SPP) },
+            { AexisLayerTypes.ROIAlign, () => new AexisP1VisionLayer(AexisLayerTypes.ROIAlign) },
+            { AexisLayerTypes.ROIPooling, () => new AexisP1VisionLayer(AexisLayerTypes.ROIPooling) },
+            { AexisLayerTypes.PSROIPooling, () => new AexisP1VisionLayer(AexisLayerTypes.PSROIPooling) },
+            { AexisLayerTypes.Proposal, () => new AexisP1VisionLayer(AexisLayerTypes.Proposal) },
+            { AexisLayerTypes.DetectionOutput, () => new AexisP1VisionLayer(AexisLayerTypes.DetectionOutput) },
+            { AexisLayerTypes.YoloDetectOut, () => new AexisP1VisionLayer(AexisLayerTypes.YoloDetectOut) },
+            { AexisLayerTypes.Yolov3DetectOut, () => new AexisP1VisionLayer(AexisLayerTypes.Yolov3DetectOut) },
             { AexisLayerTypes.DeepFillV2ContextualAttention, () => new AexisDeepFillV2ContextualAttentionLayer() },
             { AexisLayerTypes.Tile, () => new AexisTileLayer() },
             { AexisLayerTypes.Shape, () => new AexisShapeLayer() },
@@ -154,6 +171,16 @@ namespace Aexis.Execution
             return types;
         }
 
+        public static IReadOnlyList<string> GetRegisteredLayerTypeNames()
+        {
+            var names = new List<string>(Registry.Count + AexisCustomLayerRegistry.GetRegisteredTypeNames().Length);
+            foreach (var type in Registry.Keys)
+                names.Add(type.ToString());
+            names.AddRange(AexisCustomLayerRegistry.GetRegisteredTypeNames());
+            names.Sort(StringComparer.Ordinal);
+            return names;
+        }
+
         public static bool IsRegistered(AexisLayerTypeKey typeKey)
         {
             return Registry.ContainsKey(typeKey);
@@ -163,6 +190,9 @@ namespace Aexis.Execution
         {
             if (layer == null)
                 return new AexisUnknownLayer(default);
+
+            if (AexisCustomLayerRegistry.TryCreate(layer, out var customLayer))
+                return customLayer;
 
             // The existing 2D/depthwise loaders do not share the NCNN 1D
             // parameter/weight contract. Keep long aliases recognized, but fail
@@ -194,7 +224,8 @@ namespace Aexis.Execution
         public static bool IsRegistered(string typeName)
         {
             var canonical = ResolveCanonicalLayerTypeName(typeName);
-            return !string.IsNullOrEmpty(canonical) && Registry.ContainsKey(AexisLayerTypeKey.FromString(canonical));
+            return AexisCustomLayerRegistry.IsRegistered(typeName)
+                || (!string.IsNullOrEmpty(canonical) && Registry.ContainsKey(AexisLayerTypeKey.FromString(canonical)));
         }
 
         private sealed class AexisUnknownLayer : AexisBaseLayer
