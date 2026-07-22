@@ -85,12 +85,14 @@ void NcnnInterpPack4Nearest_Impl(uint3 id)
 
     float sxScale = max(_InterpScaleFactorX, 1e-6);
     float syScale = max(_InterpScaleFactorY, 1e-6);
-    int sx = min((int)(_InterpCoordinateTransformMode != 0
-        ? floor((float)id.x / sxScale)
-        : floor(((float)id.x + 0.5) / sxScale)), (int)iw - 1);
-    int sy = min((int)(_InterpCoordinateTransformMode != 0
-        ? floor((float)id.y / syScale)
-        : floor(((float)id.y + 0.5) / syScale)), (int)ih - 1);
+    float sourceX = _InterpCoordinateTransformMode != 0
+        ? (float)id.x / sxScale
+        : ((float)id.x + 0.5) / sxScale - 0.5;
+    float sourceY = _InterpCoordinateTransformMode != 0
+        ? (float)id.y / syScale
+        : ((float)id.y + 0.5) / syScale - 0.5;
+    int sx = min((int)(_InterpCoordinateTransformMode != 0 ? floor(sourceX) : ceil(sourceX - 0.5)), (int)iw - 1);
+    int sy = min((int)(_InterpCoordinateTransformMode != 0 ? floor(sourceY) : ceil(sourceY - 0.5)), (int)ih - 1);
     sx = max(0, sx);
     sy = max(0, sy);
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = _InterpInArr[int3(sx, sy, p)];
@@ -379,11 +381,56 @@ void NcnnPoolingPack4_Impl(uint3 id)
 
     if (_PoolType != 0)
     {
-        float inv = count > 0 ? (1.0 / (float)count) : 0.0;
+        int divisor = _PoolIncludePad != 0 ? _PoolKernelW * _PoolKernelH : count;
+        float inv = divisor > 0 ? (1.0 / (float)divisor) : 0.0;
         acc *= inv;
     }
 
     _PoolOutArr[int3(ox, oy, p)] = acc;
+}
+
+void NcnnPooling1DPack4_Impl(uint3 id)
+{
+    uint outW, outH, outPacks;
+    _PoolOutArr.GetDimensions(outW, outH, outPacks);
+    if (id.x >= outW || id.y != 0 || id.z >= outPacks)
+        return;
+
+    int begin;
+    int end;
+    if (_Pool1DAdaptive != 0)
+    {
+        begin = (_Pool1DInputW * (int)id.x) / (int)outW;
+        end = (_Pool1DInputW * ((int)id.x + 1) + (int)outW - 1) / (int)outW;
+    }
+    else
+    {
+        begin = (int)id.x * _Pool1DStride - _Pool1DPadLeft;
+        end = begin + _Pool1DKernel;
+    }
+
+    float4 value = _Pool1DType == 0
+        ? float4(-3.402823466e+38, -3.402823466e+38, -3.402823466e+38, -3.402823466e+38)
+        : 0.0;
+    int validCount = 0;
+    for (int x = begin; x < end; ++x)
+    {
+        if (x < 0 || x >= _Pool1DInputW)
+            continue;
+        float4 sampleValue = _PoolInArr[int3(x, 0, (int)id.z)];
+        if (_Pool1DType == 0) value = max(value, sampleValue);
+        else value += sampleValue;
+        validCount++;
+    }
+
+    if (_Pool1DType != 0)
+    {
+        int divisor = _Pool1DAdaptive != 0
+            ? validCount
+            : (_Pool1DIncludePad != 0 ? max(1, end - begin) : validCount);
+        value *= divisor > 0 ? rcp((float)divisor) : 0.0;
+    }
+    _PoolOutArr[int3((int)id.x, 0, (int)id.z)] = value;
 }
 
 void NcnnPoolingPack4CDHW_Impl(uint3 id)
@@ -663,8 +710,33 @@ void NcnnSoftmaxChannelPack4_Impl(uint3 id)
         float4 e = exp(t - maxv);
         sum += e.x + e.y + e.z + e.w;
     }
+    if (_SoftmaxMode == 2)
+    {
+        int firstIndex = 0;
+        bool found = false;
+        for (int ip2 = 0; ip2 < _SoftmaxPacks && !found; ip2++)
+        {
+            float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip2)];
+            for (int lane = 0; lane < 4; lane++)
+            {
+                if (NcnnReadLane(t, lane) == maxv)
+                {
+                    firstIndex = ip2 * 4 + lane;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        float4 hard = 0.0;
+        for (int outLane = 0; outLane < 4; outLane++)
+            NcnnWriteLane(hard, outLane, p * 4 + outLane == firstIndex ? 1.0 : 0.0);
+        _SoftmaxOutArr[int3((int)id.x, (int)id.y, p)] = hard;
+        return;
+    }
     float inv = sum > 0.0 ? (1.0 / sum) : 0.0;
-    float4 o = exp(v - maxv) * inv;
+    float4 o = _SoftmaxMode == 1
+        ? v - maxv - log(max(sum, 1e-20))
+        : exp(v - maxv) * inv;
     _SoftmaxOutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
@@ -683,16 +755,56 @@ void NcnnUnaryOpPack4_Impl(uint3 id)
     else if (t == 2) y = floor(x);
     else if (t == 3) y = ceil(x);
     else if (t == 4) y = x * x;
-    else if (t == 5) y = sqrt(max(x, 0.0));
-    else if (t == 6) y = rsqrt(max(x, 1e-12));
+    else if (t == 5) y = sqrt(x);
+    else if (t == 6) y = rsqrt(x);
     else if (t == 7) y = exp(x);
-    else if (t == 8) y = log(max(x, 1e-12));
+    else if (t == 8) y = log(x);
     else if (t == 9) y = sin(x);
     else if (t == 10) y = cos(x);
     else if (t == 11) y = tan(x);
-    else if (t == 15) y = 1.0 / max(x, 1e-12);
+    else if (t == 12) y = asin(x);
+    else if (t == 13) y = acos(x);
+    else if (t == 14) y = atan(x);
+    else if (t == 15) y = 1.0 / x;
     else if (t == 16) y = tanh(x);
+    else if (t == 17) y = log(x) / log(10.0);
+    else if (t == 18) y = round(x);
+    else if (t == 19) y = trunc(x);
+    else if (t == 20) y = sign(x);
+    else if (t == 21) y = exp(x) - 1.0;
+    else if (t == 22) y = sinh(x);
+    else if (t == 23) y = log(x + sqrt(x * x + 1.0));
+    else if (t == 24) y = cosh(x);
+    else if (t == 25) y = log(x + sqrt(x * x - 1.0));
+    else if (t == 26) y = 0.5 * log((1.0 + x) / (1.0 - x));
+    else if (t == 27) y = log(1.0 + x);
+    else if (t == 28) y = x == 0.0 ? 1.0 : 0.0; // Aexis ONNX logical Not extension.
+    if (_UnaryChannels > 0)
+    {
+        int packsPerDepth = max(1, (_UnaryChannels + 3) / 4);
+        int baseChannel = (p % packsPerDepth) * 4;
+        y *= float4(
+            baseChannel + 0 < _UnaryChannels ? 1.0 : 0.0,
+            baseChannel + 1 < _UnaryChannels ? 1.0 : 0.0,
+            baseChannel + 2 < _UnaryChannels ? 1.0 : 0.0,
+            baseChannel + 3 < _UnaryChannels ? 1.0 : 0.0);
+    }
     _UnaryOutArr[int3((int)id.x, (int)id.y, p)] = y;
+}
+
+void NcnnTriluPack4_Impl(uint3 id)
+{
+    uint w, h, d;
+    _TriluOutArr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    int columnMinusRow = (int)id.x - (int)id.y;
+    bool keep = _TriluUpper != 0
+        ? columnMinusRow >= _TriluK
+        : columnMinusRow <= _TriluK;
+    int3 coordinate = int3((int)id.x, (int)id.y, (int)id.z);
+    _TriluOutArr[coordinate] = keep ? _TriluInArr[coordinate] : 0.0;
 }
 
 void NcnnBinaryOpPack4_Impl(uint3 id)
@@ -706,19 +818,7 @@ void NcnnBinaryOpPack4_Impl(uint3 id)
     float4 a = _BinaryA[int3((int)id.x, (int)id.y, p)];
     float4 b = _BinaryWithScalar != 0 ? _BinaryScalar : _BinaryB[int3((int)id.x, (int)id.y, p)];
 
-    float4 o = a;
-    int t = _BinaryOpType;
-    if (t == 0) o = a + b;
-    else if (t == 1) o = a - b;
-    else if (t == 2) o = a * b;
-    else if (t == 3) o = a / b;
-    else if (t == 4) o = max(a, b);
-    else if (t == 5) o = min(a, b);
-    else if (t == 6) o = pow(abs(a), b);
-    else if (t == 7) o = b - a;
-    else if (t == 8) o = b / a;
-    else if (t == 9) o = pow(abs(b), a);
-    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = o;
+    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
 void NcnnBinaryOpPack4Broadcast_Impl(uint3 id)
@@ -760,19 +860,7 @@ void NcnnBinaryOpPack4Broadcast_Impl(uint3 id)
     else if (broadcastMode == 8)
         b = b.xxxx;
 
-    float4 o = a;
-    int t = _BinaryOpType;
-    if (t == 0) o = a + b;
-    else if (t == 1) o = a - b;
-    else if (t == 2) o = a * b;
-    else if (t == 3) o = a / b;
-    else if (t == 4) o = max(a, b);
-    else if (t == 5) o = min(a, b);
-    else if (t == 6) o = pow(abs(a), b);
-    else if (t == 7) o = b - a;
-    else if (t == 8) o = b / a;
-    else if (t == 9) o = pow(abs(b), a);
-    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = o;
+    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
 void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id)
@@ -789,19 +877,7 @@ void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id)
     float4 a = _BinaryPack4BufferScalarMode == 1 ? scalar : tex;
     float4 b = _BinaryPack4BufferScalarMode == 1 ? tex : scalar;
 
-    float4 o = a;
-    int t = _BinaryOpType;
-    if (t == 0) o = a + b;
-    else if (t == 1) o = a - b;
-    else if (t == 2) o = a * b;
-    else if (t == 3) o = a / b;
-    else if (t == 4) o = max(a, b);
-    else if (t == 5) o = min(a, b);
-    else if (t == 6) o = pow(abs(a), b);
-    else if (t == 7) o = b - a;
-    else if (t == 8) o = b / a;
-    else if (t == 9) o = pow(abs(b), a);
-    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = o;
+    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
 void NcnnBinaryOpPack4ChannelVectorTex_Impl(uint3 id)
@@ -845,19 +921,7 @@ void NcnnBinaryOpPack4ChannelVectorTex_Impl(uint3 id)
     float4 a = _BinaryPack4ChannelVectorMode == 1 ? vec : tex;
     float4 b = _BinaryPack4ChannelVectorMode == 1 ? tex : vec;
 
-    float4 o = a;
-    int t = _BinaryOpType;
-    if (t == 0) o = a + b;
-    else if (t == 1) o = a - b;
-    else if (t == 2) o = a * b;
-    else if (t == 3) o = a / b;
-    else if (t == 4) o = max(a, b);
-    else if (t == 5) o = min(a, b);
-    else if (t == 6) o = pow(abs(a), b);
-    else if (t == 7) o = b - a;
-    else if (t == 8) o = b / a;
-    else if (t == 9) o = pow(abs(b), a);
-    _BinaryOutArr[int3((int)id.x, (int)id.y, slice)] = o;
+    _BinaryOutArr[int3((int)id.x, (int)id.y, slice)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
 void NcnnBinaryOpScalarSingleBroadcast_Impl(uint3 id)
@@ -907,18 +971,7 @@ void NcnnBinaryOpScalarSingleBroadcast_Impl(uint3 id)
 
     float a = _BinaryA[aCoord].x;
     float b = _BinaryB[bCoord].x;
-    float o = a;
-    int t = _BinaryOpType;
-    if (t == 0) o = a + b;
-    else if (t == 1) o = a - b;
-    else if (t == 2) o = a * b;
-    else if (t == 3) o = a / b;
-    else if (t == 4) o = max(a, b);
-    else if (t == 5) o = min(a, b);
-    else if (t == 6) o = pow(abs(a), b);
-    else if (t == 7) o = b - a;
-    else if (t == 8) o = b / a;
-    else if (t == 9) o = pow(abs(b), a);
+    float o = NcnnApplyBinaryOpScalar(a, b, _BinaryOpType);
     _BinaryOutArr[int3(x, y, (int)id.z)] = float4(o, 0.0, 0.0, 0.0);
 }
 
@@ -984,4 +1037,36 @@ void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id)
 
     float oneHot = outX == bestIndex ? 1.0 : 0.0;
     _CodeFormerMinEncodingArr[int3(outX, outY, (int)id.z)] = float4(oneHot, 0.0, 0.0, 0.0);
+}
+void NcnnCopyToPack4_Impl(uint3 id)
+{
+    if (id.x >= (uint)_CopyToSrcW || id.y >= (uint)_CopyToSrcH || id.z >= (uint)(_CopyToSrcD * _CopyToDstPacks))
+        return;
+
+    int srcZ = (int)id.z / _CopyToDstPacks;
+    int dstPack = (int)id.z - srcZ * _CopyToDstPacks;
+    int dstX = _CopyToOffsetW + (int)id.x;
+    int dstY = _CopyToOffsetH + (int)id.y;
+    int dstZ = _CopyToOffsetD + srcZ;
+    int dstSlice = dstZ * _CopyToDstPacks + dstPack;
+    float4 value = _CopyToOutArr[int3(dstX, dstY, dstSlice)];
+
+    [unroll]
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        int dstChannel = dstPack * 4 + lane;
+        int srcChannel = dstChannel - _CopyToOffsetC;
+        if (dstChannel < _CopyToDstC && srcChannel >= 0 && srcChannel < _CopyToSrcC)
+        {
+            float sourceValue = NcnnReadPack4ChannelCDHW(
+                _CopyToSrcArr,
+                (int)id.x,
+                (int)id.y,
+                srcZ,
+                srcChannel,
+                _CopyToSrcC);
+            NcnnWriteLane(value, lane, sourceValue);
+        }
+    }
+    _CopyToOutArr[int3(dstX, dstY, dstSlice)] = value;
 }

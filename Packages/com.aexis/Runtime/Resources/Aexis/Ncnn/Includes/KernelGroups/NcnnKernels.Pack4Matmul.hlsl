@@ -12,33 +12,36 @@ float NcnnApplyUnaryOpLinearScalar(float x)
     else if (t == 2) y = floor(x);
     else if (t == 3) y = ceil(x);
     else if (t == 4) y = x * x;
-    else if (t == 5) y = sqrt(max(x, 0.0));
-    else if (t == 6) y = rsqrt(max(x, 1e-12));
+    else if (t == 5) y = sqrt(x);
+    else if (t == 6) y = rsqrt(x);
     else if (t == 7) y = exp(x);
-    else if (t == 8) y = log(max(x, 1e-12));
+    else if (t == 8) y = log(x);
     else if (t == 9) y = sin(x);
     else if (t == 10) y = cos(x);
     else if (t == 11) y = tan(x);
-    else if (t == 15) y = 1.0 / max(x, 1e-12);
+    else if (t == 12) y = asin(x);
+    else if (t == 13) y = acos(x);
+    else if (t == 14) y = atan(x);
+    else if (t == 15) y = 1.0 / x;
     else if (t == 16) y = tanh(x);
+    else if (t == 17) y = log(x) / log(10.0);
+    else if (t == 18) y = round(x);
+    else if (t == 19) y = trunc(x);
+    else if (t == 20) y = sign(x);
+    else if (t == 21) y = exp(x) - 1.0;
+    else if (t == 22) y = sinh(x);
+    else if (t == 23) y = log(x + sqrt(x * x + 1.0));
+    else if (t == 24) y = cosh(x);
+    else if (t == 25) y = log(x + sqrt(x * x - 1.0));
+    else if (t == 26) y = 0.5 * log((1.0 + x) / (1.0 - x));
+    else if (t == 27) y = log(1.0 + x);
+    else if (t == 28) y = x == 0.0 ? 1.0 : 0.0; // Aexis ONNX logical Not extension.
     return y;
 }
 
 float NcnnApplyBinaryOpLinearScalar(float a, float b)
 {
-    float o = a;
-    int t = _BinaryOpType;
-    if (t == 0) o = a + b;
-    else if (t == 1) o = a - b;
-    else if (t == 2) o = a * b;
-    else if (t == 3) o = a / b;
-    else if (t == 4) o = max(a, b);
-    else if (t == 5) o = min(a, b);
-    else if (t == 6) o = pow(abs(a), b);
-    else if (t == 7) o = b - a;
-    else if (t == 8) o = b / a;
-    else if (t == 9) o = pow(abs(b), a);
-    return o;
+    return NcnnApplyBinaryOpScalar(a, b, _BinaryOpType);
 }
 
 float NcnnApplySwishLinearScalar(float x)
@@ -142,6 +145,21 @@ void NcnnUnaryOpLinearMat_Impl(uint3 id)
     int2 coord = int2((int)id.x, (int)id.y);
     float x = _LinearIn0[coord];
     _LinearOut0[coord] = NcnnApplyUnaryOpLinearScalar(x);
+}
+
+void NcnnTriluLinearMat_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    int columnMinusRow = (int)id.x - (int)id.y;
+    bool keep = _TriluUpper != 0
+        ? columnMinusRow >= _TriluK
+        : columnMinusRow <= _TriluK;
+    int2 coordinate = int2((int)id.x, (int)id.y);
+    _LinearOut0[coordinate] = keep ? _LinearIn0[coordinate] : 0.0;
 }
 
 void NcnnBinaryOpLinearMat_Impl(uint3 id)
@@ -1521,59 +1539,36 @@ void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
     if (row < 0 || row >= _LnH || packX < 0 || packX >= storageW)
         return;
 
-    float4 sumLo = 0.0;
-    float4 sumHi = 0.0;
-    int pairCount = storageW / 2;
-    for (int pair = 0; pair < pairCount; pair++)
+    float sum = 0.0;
+    for (int inputPack = 0; inputPack < storageW; inputPack++)
     {
-        sumLo += _LnTexInArr[int3(pair * 2, row, 0)];
-        sumHi += _LnTexInArr[int3(pair * 2 + 1, row, 0)];
-    }
-    float tailSum = 0.0;
-    for (int tailPack = pairCount * 2; tailPack < storageW; tailPack++)
-    {
-        float4 tail = _LnTexInArr[int3(tailPack, row, 0)];
+        float4 packed = _LnTexInArr[int3(inputPack, row, 0)];
         [unroll]
-        for (int tailLane = 0; tailLane < 4; tailLane++)
+        for (int inputLane = 0; inputLane < 4; inputLane++)
         {
-            int tailCol = tailPack * 4 + tailLane;
-            if (tailCol < logicalW)
-                tailSum += NcnnReadLane(tail, tailLane);
+            int inputCol = inputPack * 4 + inputLane;
+            if (inputCol < logicalW)
+                sum += NcnnReadLane(packed, inputLane);
         }
     }
 
     float invCount = 1.0 / (float)logicalW;
-    float4 mergedSum = sumLo + sumHi;
-    float2 pairedSum = mergedSum.xy + mergedSum.zw;
-    float sum = (pairedSum.x + pairedSum.y) + tailSum;
     float mean = sum * invCount;
-    float4 varianceLo = 0.0;
-    float4 varianceHi = 0.0;
-    for (int pair2 = 0; pair2 < pairCount; pair2++)
+    float sqsum = 0.0;
+    for (int variancePack = 0; variancePack < storageW; variancePack++)
     {
-        float4 centeredLo = _LnTexInArr[int3(pair2 * 2, row, 0)] - mean;
-        float4 centeredHi = _LnTexInArr[int3(pair2 * 2 + 1, row, 0)] - mean;
-        varianceLo += centeredLo * centeredLo;
-        varianceHi += centeredHi * centeredHi;
-    }
-    float tailVariance = 0.0;
-    for (int tailPack2 = pairCount * 2; tailPack2 < storageW; tailPack2++)
-    {
-        float4 tail2 = _LnTexInArr[int3(tailPack2, row, 0)];
+        float4 packedVariance = _LnTexInArr[int3(variancePack, row, 0)];
         [unroll]
-        for (int tailLane2 = 0; tailLane2 < 4; tailLane2++)
+        for (int varianceLane = 0; varianceLane < 4; varianceLane++)
         {
-            int tailCol2 = tailPack2 * 4 + tailLane2;
-            if (tailCol2 < logicalW)
+            int varianceCol = variancePack * 4 + varianceLane;
+            if (varianceCol < logicalW)
             {
-                float centeredTail = NcnnReadLane(tail2, tailLane2) - mean;
-                tailVariance += centeredTail * centeredTail;
+                float centered = NcnnReadLane(packedVariance, varianceLane) - mean;
+                sqsum += centered * centered;
             }
         }
     }
-    float4 mergedVariance = varianceLo + varianceHi;
-    float2 pairedVariance = mergedVariance.xy + mergedVariance.zw;
-    float sqsum = (pairedVariance.x + pairedVariance.y) + tailVariance;
     float variance = sqsum * invCount;
     // Match ncnn's FP32 elempack=1 LayerNorm path (1 / sqrtf), rather than
     // the approximate reciprocal-square-root used by packed image norms.
@@ -1643,6 +1638,8 @@ void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
             maxv = max(maxv, v);
         }
 
+        int firstMaximum = 0;
+        bool foundMaximum = false;
         float sum = 0.0;
         for (int i = 0; i < axisLength; i++)
         {
@@ -1651,11 +1648,21 @@ void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
             int z = axis == 2 ? i : outZ;
             int channel = axis == 3 ? i : c;
             float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, x, y, z, channel, _SoftmaxPack4CDHWC);
+            if (!foundMaximum && v == maxv)
+            {
+                firstMaximum = i;
+                foundMaximum = true;
+            }
             sum += exp(v - maxv);
         }
 
         float current = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, outX, outY, outZ, c, _SoftmaxPack4CDHWC);
-        float value = sum > 0.0 ? exp(current - maxv) / sum : 0.0;
+        int currentIndex = axis == 0 ? outX : axis == 1 ? outY : axis == 2 ? outZ : c;
+        float value = _SoftmaxMode == 2
+            ? (currentIndex == firstMaximum ? 1.0 : 0.0)
+            : _SoftmaxMode == 1
+                ? current - maxv - log(max(sum, 1e-20))
+                : (sum > 0.0 ? exp(current - maxv) / sum : 0.0);
         NcnnWriteLane(o, lane, value);
     }
 
@@ -1700,8 +1707,23 @@ void NcnnSoftmaxLinearMat2D_Impl(uint3 id)
         sum += exp(value - maxv);
     }
 
+    int firstMaximum = 0;
+    for (int i = 0; i < axisLength; i++)
+    {
+        float value = axis == 0 ? _LinearIn0[int2(i, row)] : _LinearIn0[int2(x, i)];
+        if (value == maxv)
+        {
+            firstMaximum = i;
+            break;
+        }
+    }
     float current = _LinearIn0[int2(x, row)];
-    _LinearOut0[int2(x, row)] = sum > 0.0 ? exp(current - maxv) / sum : 0.0;
+    int currentIndex = axis == 0 ? x : row;
+    _LinearOut0[int2(x, row)] = _SoftmaxMode == 2
+        ? (currentIndex == firstMaximum ? 1.0 : 0.0)
+        : _SoftmaxMode == 1
+            ? current - maxv - log(max(sum, 1e-20))
+            : (sum > 0.0 ? exp(current - maxv) / sum : 0.0);
 }
 
 void NcnnReductionScalar2D_Impl(uint3 id)

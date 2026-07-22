@@ -34,10 +34,9 @@ namespace Aexis.Execution
         public ICollection<string> pinnedNames;
     }
 
-    // Migration guidance for all LayerRepro implementations:
-    // 1. Keep the compute-buffer path only as a compatibility / truth-path fallback and avoid expanding new buffer-only branches.
-    // 2. Prefer migrating execution to the pack4 RenderTexture path first, because it is the near-term primary runtime path.
-    // 3. Long term, migrate toward the ComputeTexture-based ExecuteCommandBuffer pack4 RT path so async compute and command-buffer temporary RT allocation are both supported.
+    // Production execution is texture-native. Buffer implementations are explicit
+    // debug oracles only; a missing texture path must fail instead of publishing an
+    // uninitialized tensor or materializing an activation through ComputeBuffer.
     public abstract class AexisBaseLayer
     {
         internal const string ComputeBufferPathObsoleteMessage = "ComputeBuffer path is only kept for temporary real-time debugging. Please migrate the final implementation to ExecuteRenderTexturePath and ExecuteCommandBuffer.";
@@ -89,14 +88,13 @@ namespace Aexis.Execution
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
 
-            if (layer.bottomNames != null && layer.bottomNames.Length > 0)
-            {
-                new AexisNoopLayer().ExecuteCommandBuffer(owner, layer, context);
-                return;
-            }
-
-            if (layer.topNames != null && layer.topNames.Length > 0)
-                owner.PublishCmdTensorLikeInput(context.commandBuffer, layer.topNames[0], 1, 1, 1, context.blobs, context.shapes);
+            throw new NotSupportedException(
+                "CommandBuffer Pack4 path is not implemented"
+                + " | layer=" + (layer.name ?? string.Empty)
+                + " | type=" + (layer.typeName ?? TypeKey.ToString())
+                + " | bottoms=" + string.Join(",", layer.bottomNames ?? Array.Empty<string>())
+                + " | tops=" + string.Join(",", layer.topNames ?? Array.Empty<string>())
+                + " | rejected_fallback=placeholder");
         }
     }
 

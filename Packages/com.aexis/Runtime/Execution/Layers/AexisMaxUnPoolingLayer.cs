@@ -160,9 +160,12 @@ namespace Aexis.Execution
             var outShape = new AexisGraphSession.BufferShape(3, outW, outH, 1, srcShape.c);
             if (idx == null || idx.texture == null)
             {
-                owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                return;
+                throw new InvalidOperationException(
+                    "MaxUnPooling requires a texture-native index tensor"
+                    + " | layer=" + layer.name
+                    + " | indexBlob=" + layer.bottomNames[1]
+                    + " | outputShape=" + outW + "x" + outH + "x" + srcShape.c
+                    + " | rejected_fallback=placeholder");
             }
 
             var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);

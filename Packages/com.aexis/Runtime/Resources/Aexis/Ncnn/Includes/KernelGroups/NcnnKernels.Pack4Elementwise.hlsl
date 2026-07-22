@@ -244,7 +244,7 @@ void NcnnAddBiasPack4_Impl(uint3 id)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
     float4 v = _BiasInArr[int3((int)id.x, (int)id.y, p)];
-    float4 b = _Bias4[p];
+    float4 b = _Bias4[p % max(1, _BiasPacks)];
     _BiasOutArr[int3((int)id.x, (int)id.y, p)] = v + b;
 }
 
@@ -282,7 +282,7 @@ void NcnnPReluPack4_Impl(uint3 id)
     if (p < 0 || p >= (int)d) return;
 
     float4 v = _LreluInArr[int3((int)id.x, (int)id.y, p)];
-    int baseChannel = p * 4;
+    int baseChannel = (p % max(1, _PReluSlopePack4Packs)) * 4;
     float4 slope = float4(
         _PReluSlopePack4Count > 0 ? _PReluSlopePack4Buf[clamp(baseChannel + 0, 0, _PReluSlopePack4Count - 1)] : _LreluSlope,
         _PReluSlopePack4Count > 0 ? _PReluSlopePack4Buf[clamp(baseChannel + 1, 0, _PReluSlopePack4Count - 1)] : _LreluSlope,

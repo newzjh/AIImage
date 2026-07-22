@@ -200,95 +200,49 @@ namespace Aexis.Execution
             var padBottom = layer.GetInt(15, padTop);
             var globalPooling = layer.GetInt(4, 0) != 0;
             var padMode = layer.GetInt(5, 0);
+            var includePad = layer.GetInt(6, 0) != 0;
+            var adaptivePooling = layer.GetInt(7, 0) != 0;
 
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var src, out var srcShape))
                 throw new InvalidOperationException("Pooling render-texture path requires pack4 texture input: " + layer.name);
 
-            var pooledInput = src.texture;
-            var pooledInputW = src.width;
-            var pooledInputH = src.height;
-            RenderTexture paddedRt = null;
+            if (adaptivePooling)
+                throw new InvalidOperationException("Pooling render-texture Pack4 path does not implement adaptive 2D pooling: " + layer.name);
 
+            int outW;
+            int outH;
+            if (globalPooling)
+            {
+                kernelW = src.width;
+                kernelH = src.height;
+                strideW = 1;
+                strideH = 1;
+                padLeft = 0;
+                padTop = 0;
+                outW = 1;
+                outH = 1;
+            }
+            else if (!TryResolvePack4Geometry(
+                src.width, src.height, kernelW, kernelH, strideW, strideH,
+                padLeft, padRight, padTop, padBottom, padMode,
+                out padLeft, out _, out padTop, out _, out outW, out outH, out var reason))
+            {
+                throw new InvalidOperationException("Pooling render-texture Pack4 geometry is invalid | layer=" + layer.name + " | reason=" + reason);
+            }
+
+            RenderTexture outRt = null;
             try
             {
-                if (globalPooling)
-                {
-                    kernelW = pooledInputW;
-                    kernelH = pooledInputH;
-                    strideW = 1;
-                    strideH = 1;
-                    padLeft = 0;
-                    padRight = 0;
-                    padTop = 0;
-                    padBottom = 0;
-                }
-                else
-                {
-                    var padW = padLeft + padRight;
-                    var padH = padTop + padBottom;
-                    var extraRight = 0;
-                    var extraBottom = 0;
-
-                    if (padMode == 0)
-                    {
-                        var wtail = (src.width + padW - kernelW) % Mathf.Max(1, strideW);
-                        var htail = (src.height + padH - kernelH) % Mathf.Max(1, strideH);
-                        if (wtail != 0)
-                            extraRight = strideW - wtail;
-                        if (htail != 0)
-                            extraBottom = strideH - htail;
-                    }
-                    else if (padMode == 2 || padMode == 3)
-                    {
-                        var wpad = kernelW + (src.width - 1) / Mathf.Max(1, strideW) * strideW - src.width;
-                        var hpad = kernelH + (src.height - 1) / Mathf.Max(1, strideH) * strideH - src.height;
-                        if (wpad > 0)
-                        {
-                            padLeft = 0;
-                            padRight = wpad;
-                            padTop = 0;
-                            padBottom = hpad > 0 ? hpad : 0;
-                        }
-                        else if (hpad > 0)
-                        {
-                            padLeft = 0;
-                            padRight = 0;
-                            padTop = 0;
-                            padBottom = hpad;
-                        }
-                    }
-
-                    var totalPadLeft = Mathf.Max(0, padLeft);
-                    var totalPadRight = Mathf.Max(0, padRight + extraRight);
-                    var totalPadTop = Mathf.Max(0, padTop);
-                    var totalPadBottom = Mathf.Max(0, padBottom + extraBottom);
-                    if (totalPadLeft != 0 || totalPadRight != 0 || totalPadTop != 0 || totalPadBottom != 0)
-                    {
-                        var padValue = poolType == 0
-                            ? ((src.texture.format == RenderTextureFormat.ARGBHalf || src.texture.format == RenderTextureFormat.ARGB2101010 || src.texture.format == RenderTextureFormat.ARGB64)
-                                ? -65000f
-                                : -3.402823466e+38f)
-                            : 0f;
-
-                        paddedRt = owner.RentTempArray(src.width + totalPadLeft + totalPadRight, src.height + totalPadTop + totalPadBottom, src.packs, RenderTextureFormat.ARGBHalf);
-                        owner.Ops.PaddingPack4(src.texture, src.packs, totalPadLeft, totalPadRight, totalPadTop, totalPadBottom, 0, new Vector4(padValue, padValue, padValue, padValue), paddedRt);
-                        pooledInput = paddedRt;
-                        pooledInputW = paddedRt.width;
-                        pooledInputH = paddedRt.height;
-                    }
-                }
-
-                var outW = Mathf.Max(1, (pooledInputW - kernelW) / Mathf.Max(1, strideW) + 1);
-                var outH = Mathf.Max(1, (pooledInputH - kernelH) / Mathf.Max(1, strideH) + 1);
-                var outRt = owner.RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.PoolingPack4(pooledInput, src.packs, kernelW, kernelH, strideW, strideH, 0, 0, poolType, outRt);
+                outRt = owner.RentTempArray(outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                owner.Ops.PoolingPack4(src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolType, outRt, includePad);
                 var outShape = new AexisGraphSession.BufferShape(3, outW, outH, 1, srcShape.c);
                 AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape);
+                outRt = null;
             }
             finally
             {
-                if (paddedRt != null)
-                    owner.ReturnTempArray(paddedRt);
+                if (outRt != null)
+                    owner.ReturnTempArray(outRt);
             }
 
             owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -315,23 +269,43 @@ namespace Aexis.Execution
                                                 var padTop = layer.GetInt(13, padLeft);
                                                 var padBottom = layer.GetInt(15, padTop);
                                                 var globalPooling = layer.GetInt(4, 0);
+                                                var padMode = layer.GetInt(5, 0);
+                                                var includePad = layer.GetInt(6, 0) != 0;
                                                 var adaptivePooling = layer.GetInt(7, 0);
-                                                var outShape = ResolveCmdOutputShape(srcShape, layer, kernelW, kernelH, strideW, strideH, padLeft, padRight, padTop, padBottom, globalPooling != 0, adaptivePooling != 0);
                                                 if (adaptivePooling != 0 || !CanUsePack4CmdPath(src, srcShape))
                                                 {
-                                                    AexisGraphSession.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
-                                                    owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
-                                                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                                                    continue;
+                                                    throw new InvalidOperationException(
+                                                        "Pooling command-buffer Pack4 profile rejected the input descriptor or adaptive mode"
+                                                        + " | layer=" + layer.name
+                                                        + " | logical=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                                                        + " | texture=" + src.width + "x" + src.height + "x" + src.packs
+                                                        + " | adaptive=" + adaptivePooling
+                                                        + " | rejectedFallback=placeholder");
                                                 }
 
-                                                var outW = globalPooling != 0 ? 1 : Mathf.Max(1, AexisGraphSession.ComputeConvOut(srcShape.w, kernelW, 1, strideW, padLeft, padRight));
-                                                var outH = globalPooling != 0 ? 1 : Mathf.Max(1, AexisGraphSession.ComputeConvOut(srcShape.h, kernelH, 1, strideH, padTop, padBottom));
-                                                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                                                int outW;
+                                                int outH;
                                                 if (globalPooling != 0)
-                                                    owner.Ops.PoolingPack4(cmd, src.texture, src.packs, src.width, src.height, 1, 1, 0, 0, poolingType, outArr);
-                                                else
-                                                    owner.Ops.PoolingPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr);
+                                                {
+                                                    kernelW = srcShape.w;
+                                                    kernelH = srcShape.h;
+                                                    strideW = 1;
+                                                    strideH = 1;
+                                                    padLeft = 0;
+                                                    padTop = 0;
+                                                    outW = 1;
+                                                    outH = 1;
+                                                }
+                                                else if (!TryResolvePack4Geometry(
+                                                    srcShape.w, srcShape.h, kernelW, kernelH, strideW, strideH,
+                                                    padLeft, padRight, padTop, padBottom, padMode,
+                                                    out padLeft, out _, out padTop, out _, out outW, out outH, out var reason))
+                                                {
+                                                    throw new InvalidOperationException("Pooling command-buffer Pack4 geometry is invalid | layer=" + layer.name + " | reason=" + reason);
+                                                }
+                                                var outShape = new AexisGraphSession.BufferShape(3, outW, outH, 1, srcShape.c);
+                                                var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+                                                owner.Ops.PoolingPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, poolingType, outArr, includePad);
                                                 blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef { texture = outArr, width = outW, height = outH, packs = src.packs, refs = 1, owned = true };
                                                 if (shapes != null)
                                                     shapes[layer.topNames[0]] = outShape;
@@ -362,6 +336,101 @@ namespace Aexis.Execution
                 context.bufferViews,
                 out _,
                 out _);
+        }
+
+        internal static bool TryResolvePack4Geometry(
+            int inputW,
+            int inputH,
+            int kernelW,
+            int kernelH,
+            int strideW,
+            int strideH,
+            int declaredPadLeft,
+            int declaredPadRight,
+            int declaredPadTop,
+            int declaredPadBottom,
+            int padMode,
+            out int padLeft,
+            out int padRight,
+            out int padTop,
+            out int padBottom,
+            out int outW,
+            out int outH,
+            out string reason)
+        {
+            padLeft = declaredPadLeft;
+            padRight = declaredPadRight;
+            padTop = declaredPadTop;
+            padBottom = declaredPadBottom;
+            outW = 0;
+            outH = 0;
+            reason = null;
+            if (inputW <= 0 || inputH <= 0 || kernelW <= 0 || kernelH <= 0 || strideW <= 0 || strideH <= 0)
+            {
+                reason = "input, kernel, and stride extents must be positive";
+                return false;
+            }
+            if (padMode < 0 || padMode > 3)
+            {
+                reason = "pad_mode must be full(0), valid(1), SAME_UPPER(2), or SAME_LOWER(3)";
+                return false;
+            }
+            if ((padMode == 0 || padMode == 1)
+                && (padLeft < 0 || padRight < 0 || padTop < 0 || padBottom < 0))
+            {
+                reason = "explicit pooling pads must be non-negative";
+                return false;
+            }
+
+            long left = padLeft;
+            long right = padRight;
+            long top = padTop;
+            long bottom = padBottom;
+            if (padMode == 0)
+            {
+                var widthTail = ((long)inputW + left + right - kernelW) % strideW;
+                var heightTail = ((long)inputH + top + bottom - kernelH) % strideH;
+                if (widthTail != 0) right += strideW - widthTail;
+                if (heightTail != 0) bottom += strideH - heightTail;
+            }
+            else if (padMode == 2 || padMode == 3)
+            {
+                var widthPad = (long)kernelW + ((long)inputW - 1) / strideW * strideW - inputW;
+                var heightPad = (long)kernelH + ((long)inputH - 1) / strideH * strideH - inputH;
+                widthPad = Math.Max(0L, widthPad);
+                heightPad = Math.Max(0L, heightPad);
+                if (padMode == 2)
+                {
+                    left = widthPad / 2;
+                    right = widthPad - left;
+                    top = heightPad / 2;
+                    bottom = heightPad - top;
+                }
+                else
+                {
+                    right = widthPad / 2;
+                    left = widthPad - right;
+                    bottom = heightPad / 2;
+                    top = heightPad - bottom;
+                }
+            }
+
+            var width = ((long)inputW + left + right - kernelW) / strideW + 1;
+            var height = ((long)inputH + top + bottom - kernelH) / strideH + 1;
+            if (left > int.MaxValue || right > int.MaxValue || top > int.MaxValue || bottom > int.MaxValue
+                || width <= 0 || width > int.MaxValue || height <= 0 || height > int.MaxValue)
+            {
+                reason = "resolved pooling geometry is empty or exceeds the Int32 descriptor range";
+                return false;
+            }
+
+            padLeft = (int)left;
+            padRight = (int)right;
+            padTop = (int)top;
+            padBottom = (int)bottom;
+            outW = (int)width;
+            outH = (int)height;
+            return true;
         }
 
         private static AexisGraphSession.BufferShape ResolveCmdOutputShape(

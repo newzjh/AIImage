@@ -4,67 +4,16 @@ using UnityEngine.Rendering;
 
 namespace Aexis.Execution
 {
-    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
+    // Named unary aliases are production texture operators. They deliberately expose no
+    // ComputeBuffer path so a missing texture descriptor cannot trigger materialization.
     public sealed class AexisUnaryOpAliasLayer : AexisBaseLayer
     {
         private readonly int _opType;
 
         public AexisUnaryOpAliasLayer(AexisLayerTypeKey typeKey, int opType)
-            : base(typeKey, supportsBufferPath: true, supportsCommandBufferPath: true)
+            : base(typeKey, supportsBufferPath: false, supportsCommandBufferPath: true)
         {
             _opType = opType;
-        }
-
-        public override void ExecuteBuffer(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
-        {
-            if (AexisGraphSession.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape)
-                && ((!AexisGraphSession.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 3)
-                    || (AexisGraphSession.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 2)))
-            {
-                ExecuteRenderTexturePath(owner, layer, context);
-                return;
-            }
-
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
-        }
-
-        [Obsolete(ComputeBufferPathObsoleteMessage)]
-        public override void ExecuteComputeBufferPath(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
-        {
-            var textureBlobs = context.textureBlobs;
-            var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferRefs = context.bufferRefs;
-            var bufferViews = context.bufferViews;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-            var tempOwned = context.tempOwned;
-
-            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-            var srcView = AexisGraphSession.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-            if (srcBuf == null)
-                throw new InvalidOperationException(TypeKey + " source not found: " + layer.name);
-
-            var outTensor = owner.RentTempTensorBuffer(
-                srcView?.dims ?? 1,
-                srcView?.w ?? srcBuf.count,
-                srcView?.h ?? 1,
-                srcView?.d ?? 1,
-                srcView?.c ?? 1);
-            owner.Ops.UnaryOpBuf(srcBuf, srcBuf.count, _opType, outTensor.buffer);
-            owner.PublishTensorBufferOutput(
-                layer.topNames[0],
-                outTensor,
-                preferTexture: srcView != null && srcView.dims <= 3,
-                textureBlobs,
-                textureShapes,
-                bufferBlobs,
-                bufferRefs,
-                bufferViews,
-                tempOwned);
-            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteRenderTexturePath(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
@@ -84,9 +33,11 @@ namespace Aexis.Execution
             }
             else
             {
-                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.UnaryOpPack4(srcTex.texture, srcTex.packs, _opType, outRt);
-                AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                var storageShape = AexisGraphSession.GetTextureStorageShape(srcTex, srcShape);
+                var outputDepth = srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs;
+                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outputDepth, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
+                owner.Ops.UnaryOpPack4(srcTex.texture, outputDepth, _opType, outRt, srcShape.dims >= 3 ? srcShape.c : 0);
+                AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
             }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
@@ -110,17 +61,11 @@ namespace Aexis.Execution
             }
             else
             {
-                var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.UnaryOpPack4(cmd, src.texture, src.packs, _opType, outArr);
-                blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-                {
-                    texture = outArr,
-                    width = src.width,
-                    height = src.height,
-                    packs = src.packs,
-                    refs = 1,
-                    owned = true
-                };
+                var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
+                var outputDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
+                var outArr = owner.RentTempArray(cmd, src.width, src.height, outputDepth, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
+                owner.Ops.UnaryOpPack4(cmd, src.texture, outputDepth, _opType, outArr, srcShape.dims >= 3 ? srcShape.c : 0);
+                blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true, blobName: layer.topNames[0]);
             }
             if (shapes != null)
                 shapes[layer.topNames[0]] = srcShape;

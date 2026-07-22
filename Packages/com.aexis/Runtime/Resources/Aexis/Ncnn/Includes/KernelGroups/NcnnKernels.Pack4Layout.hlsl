@@ -1179,7 +1179,18 @@ void NcnnPointwisePack4_Impl(uint3 id)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
     float4 x = _PointwiseInArr[int3((int)id.x, (int)id.y, p)];
-    _PointwiseOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyPointwise4(x);
+    float4 y = NcnnApplyPointwise4(x);
+    if (_PointwiseChannels > 0)
+    {
+        int packsPerDepth = max(1, (_PointwiseChannels + 3) / 4);
+        int baseChannel = (p % packsPerDepth) * 4;
+        y *= float4(
+            baseChannel + 0 < _PointwiseChannels ? 1.0 : 0.0,
+            baseChannel + 1 < _PointwiseChannels ? 1.0 : 0.0,
+            baseChannel + 2 < _PointwiseChannels ? 1.0 : 0.0,
+            baseChannel + 3 < _PointwiseChannels ? 1.0 : 0.0);
+    }
+    _PointwiseOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
 void NcnnPixelShufflePack4_Impl(uint3 id)

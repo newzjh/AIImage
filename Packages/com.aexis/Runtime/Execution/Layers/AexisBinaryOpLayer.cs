@@ -2507,17 +2507,14 @@ namespace Aexis.Execution
                                                             + " | aLogical=" + aShape
                                                             + " | bLogical=" + bShape
                                                             + " | outLogical=" + fallbackShape);
-                                                        if (owner.DisallowBufferAccess || owner.DisallowBufferOutputs || owner.DisallowBufferToTextureMaterialization)
-                                                        {
-                                                            throw new InvalidOperationException(
-                                                                "pack4-only guard: command-buffer BinaryOp placeholder disallowed"
-                                                                + " | layer=" + layer.name
-                                                                + " | opType=" + opType.ToString(CultureInfo.InvariantCulture));
-                                                        }
-                                                        AexisGraphSession.ResolveCmdTextureLayout(fallbackShape, out var width, out var height, out var packs);
-                                                        owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, fallbackShape);
-                                                        owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                                                        continue;
+                                                        throw new InvalidOperationException(
+                                                            "BinaryOp command-buffer Pack4 broadcast profile is unsupported"
+                                                            + " | layer=" + layer.name
+                                                            + " | opType=" + opType.ToString(CultureInfo.InvariantCulture)
+                                                            + " | a=d" + aShape.dims + ":" + aShape.w + "x" + aShape.h + "x" + aShape.d + "x" + aShape.c
+                                                            + " | b=d" + bShape.dims + ":" + bShape.w + "x" + bShape.h + "x" + bShape.d + "x" + bShape.c
+                                                            + " | out=d" + fallbackShape.dims + ":" + fallbackShape.w + "x" + fallbackShape.h + "x" + fallbackShape.d + "x" + fallbackShape.c
+                                                            + " | rejectedFallback=placeholder");
                                                     }
                                                 }
                                                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

@@ -83,9 +83,13 @@ namespace Aexis.Execution
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
                 throw new InvalidOperationException("Clip render-texture path requires pack4 texture input: " + layer.name);
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.ClipPack4(srcTex.texture, minValue, maxValue, srcTex.packs, outRt);
-            AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            if (minValue > maxValue)
+                throw new InvalidOperationException("Clip minimum exceeds maximum: " + layer.name);
+            var storageShape = AexisGraphSession.GetTextureStorageShape(srcTex, srcShape);
+            var outputDepth = srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs;
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outputDepth, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
+            owner.Ops.ClipPack4(srcTex.texture, minValue, maxValue, outputDepth, outRt);
+            AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
@@ -99,19 +103,15 @@ namespace Aexis.Execution
 
             var minValue = layer.GetFloat(0, -1e30f);
             var maxValue = layer.GetFloat(1, 1e30f);
+            if (minValue > maxValue)
+                throw new InvalidOperationException("Clip minimum exceeds maximum: " + layer.name);
             var src = AexisGraphSession.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = AexisGraphSession.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.ClipPack4(cmd, src.texture, minValue, maxValue, src.packs, outArr);
-            blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-            {
-                texture = outArr,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
-                refs = 1,
-                owned = true
-            };
+            var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
+            var outputDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
+            var outArr = owner.RentTempArray(cmd, src.width, src.height, outputDepth, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
+            owner.Ops.ClipPack4(cmd, src.texture, minValue, maxValue, outputDepth, outArr);
+            blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true, blobName: layer.topNames[0]);
             if (shapes != null)
                 shapes[layer.topNames[0]] = srcShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

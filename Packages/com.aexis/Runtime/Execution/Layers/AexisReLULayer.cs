@@ -82,7 +82,7 @@ namespace Aexis.Execution
                 throw new InvalidOperationException("ReLU render-texture path requires pack4 texture input: " + layer.name);
 
             var outDepth = srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs;
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outDepth, RenderTextureFormat.ARGBHalf);
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outDepth, srcTex.texture.format);
             owner.Ops.LeakyReluPack4(srcTex.texture, slope, srcTex.packs, outRt);
             textureBlobs[layer.topNames[0]] = new AexisGraphSession.TensorRef
             {
@@ -111,7 +111,7 @@ namespace Aexis.Execution
                                                 var srcShape = AexisGraphSession.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
                                                 var slope = layer.GetFloat(0, 0f);
                                                 var outDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
-                                                var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, RenderTextureFormat.ARGBHalf);
+                                                var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, src.texture.format);
                                                 owner.Ops.LeakyReluPack4(cmd, src.texture, slope, src.packs, outArr);
                                                 var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
                                                 blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true);

@@ -156,7 +156,7 @@ namespace Aexis.Execution
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
                 throw new InvalidOperationException("Scale render-texture path requires pack4 texture input: " + layer.name);
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, srcTex.texture.format);
             owner.Ops.ScalePack4(srcTex.texture, sp.scaleCpu[0], srcTex.packs, outRt);
             AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
@@ -177,25 +177,29 @@ namespace Aexis.Execution
 
             if (!sp.dynamic && sp.scaleDataSize == 1 && !sp.biasTerm)
             {
-                var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
+                var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
+                var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, src.texture.format);
                 owner.Ops.PointwisePack4(cmd, src.texture, src.packs, AexisOps.PointwiseType.ScaleScalar, sp.scaleCpu[0], 0f, outArr);
-                blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-                {
-                    texture = outArr,
-                    width = src.width,
-                    height = src.height,
-                    packs = src.packs,
-                    refs = 1,
-                    owned = true
-                };
+                blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(
+                    outArr,
+                    srcShape,
+                    storageShape,
+                    owned: true,
+                    blobName: layer.topNames[0]);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = srcShape;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                 return;
             }
 
-            owner.PublishCmdPlaceholder(cmd, layer.topNames[0], srcShape, blobs, shapes);
-            owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+            throw new InvalidOperationException(
+                "Scale input does not match the verified scalar CommandBuffer Pack4 profile"
+                + " | layer=" + layer.name
+                + " | dynamic=" + sp.dynamic
+                + " | scaleDataSize=" + sp.scaleDataSize
+                + " | biasTerm=" + sp.biasTerm
+                + " | input=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | rejected_fallback=placeholder");
         }
     }
 }

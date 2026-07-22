@@ -62,11 +62,11 @@ namespace Aexis.Execution
                                         var canUseGeneralTexturePack = owner.EnableGeneralTextureConvolution
                                                                        && pack.group == 1
                                                                        && pack.kernelW > 0
-                                                                       && pack.kernelH == pack.kernelW;
+                                                                       && pack.kernelH > 0;
                                         if (canUseGeneralTexturePack)
                                         {
                                             phaseSw.Restart();
-                                            var w4 = AexisGraphSession.PackWeightsToO4I4K(w, pack.outC, pack.inC, pack.kernelW, pack.outPacks, pack.inPacks);
+                                            var w4 = AexisGraphSession.PackWeightsToO4I4K2D(w, pack.outC, pack.inC, pack.kernelW, pack.kernelH, pack.outPacks, pack.inPacks);
                                             var b4 = AexisGraphSession.PackBiasToO4(b, pack.outC, pack.outPacks);
                                             pack.packedWeight4 = new ComputeBuffer(w4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -92,7 +92,7 @@ namespace Aexis.Execution
                                            && deconv.packedWeight4 != null
                                            && deconv.packedBias4 != null
                                            && deconv.kernelW > 0
-                                           && deconv.kernelH == deconv.kernelW
+                                           && deconv.kernelH > 0
                                            && context.textureBlobs != null
                                            && context.textureBlobs.TryGetValue(layer.bottomNames[0], out var src)
                                            && src != null
@@ -242,7 +242,6 @@ namespace Aexis.Execution
             {
                 outArr = owner.RentTempArray(cmd, outW, outH, deconv.outPacks, AexisGraphSession.ResolveTensorTextureFormat(outShape.dims));
                 if (deconv.group == 1
-                    && deconv.kernelW == deconv.kernelH
                     && (deconv.outC & 3) == 0
                     && deconv.packedWeight4 != null
                     && deconv.packedBias4 != null)
@@ -330,7 +329,6 @@ namespace Aexis.Execution
                 && deconv.outPacks > 0
                 && deconv.kernelW > 0
                 && deconv.kernelH > 0
-                && deconv.kernelH == deconv.kernelW
                 && deconv.strideW > 0
                 && deconv.strideH > 0
                 && deconv.dilationW > 0

@@ -130,10 +130,14 @@ namespace Aexis.Execution
         public static readonly AexisLayerTypeKey SELU = AexisLayerTypeKey.FromString("SELU");
         public static readonly AexisLayerTypeKey Shrink = AexisLayerTypeKey.FromString("Shrink");
         public static readonly AexisLayerTypeKey Softplus = AexisLayerTypeKey.FromString("Softplus");
+        public static readonly AexisLayerTypeKey Softsign = AexisLayerTypeKey.FromString("Softsign");
+        public static readonly AexisLayerTypeKey IsInf = AexisLayerTypeKey.FromString("IsInf");
+        public static readonly AexisLayerTypeKey IsNaN = AexisLayerTypeKey.FromString("IsNaN");
         public static readonly AexisLayerTypeKey GELU = AexisLayerTypeKey.FromString("GELU");
         public static readonly AexisLayerTypeKey Cast = AexisLayerTypeKey.FromString("Cast");
         public static readonly AexisLayerTypeKey CELU = AexisLayerTypeKey.FromString("CELU");
         public static readonly AexisLayerTypeKey Clip = AexisLayerTypeKey.FromString("Clip");
+        public static readonly AexisLayerTypeKey Trilu = AexisLayerTypeKey.FromString("Trilu");
         public static readonly AexisLayerTypeKey Softmax = AexisLayerTypeKey.FromString("Softmax");
         public static readonly AexisLayerTypeKey Padding = AexisLayerTypeKey.FromString("Padding");
         public static readonly AexisLayerTypeKey Pooling = AexisLayerTypeKey.FromString("Pooling");
@@ -177,6 +181,18 @@ namespace Aexis.Execution
         public static readonly AexisLayerTypeKey Scatter = AexisLayerTypeKey.FromString("Scatter");
         public static readonly AexisLayerTypeKey ShortConv = AexisLayerTypeKey.FromString("ShortConv");
         public static readonly AexisLayerTypeKey GatedDeltaRule = AexisLayerTypeKey.FromString("GatedDeltaRule");
+        // Keep aliases below the fixed 16-byte layer key limit. Long NCNN names are
+        // canonicalized by AexisLayerFactory before a key is looked up.
+        public static readonly AexisLayerTypeKey Bias = AexisLayerTypeKey.FromString("Bias");
+        public static readonly AexisLayerTypeKey BNLL = AexisLayerTypeKey.FromString("BNLL");
+        public static readonly AexisLayerTypeKey CopyTo = AexisLayerTypeKey.FromString("CopyTo");
+        public static readonly AexisLayerTypeKey Exp = AexisLayerTypeKey.FromString("Exp");
+        public static readonly AexisLayerTypeKey Log = AexisLayerTypeKey.FromString("Log");
+        public static readonly AexisLayerTypeKey Power = AexisLayerTypeKey.FromString("Power");
+        public static readonly AexisLayerTypeKey Threshold = AexisLayerTypeKey.FromString("Threshold");
+        public static readonly AexisLayerTypeKey ThresholdedRelu = AexisLayerTypeKey.FromString("ThresholdedRelu");
+        public static readonly AexisLayerTypeKey MVN = AexisLayerTypeKey.FromString("MVN");
+        public static readonly AexisLayerTypeKey Pooling1D = AexisLayerTypeKey.FromString("Pooling1D");
     }
 
     [Serializable]

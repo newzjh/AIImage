@@ -313,8 +313,17 @@ namespace Aexis.Execution
             RequireTops(layer, 1);
             var storage = AexisGraphSession.ResolveLinearMatStorageShape(logicalShape);
             var output = owner.RentTempMat(storage.w, storage.h, AexisGraphSession.ResolveLinearMatTextureFormat());
-            fill(output, storage);
-            AexisGraphSession.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, logicalShape, storage);
+            try
+            {
+                fill(output, storage);
+                AexisGraphSession.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, logicalShape, storage);
+                output = null;
+            }
+            finally
+            {
+                if (output != null)
+                    owner.ReturnTempArray(output);
+            }
         }
 
         public static void PublishCmdLinear(
@@ -327,10 +336,19 @@ namespace Aexis.Execution
             RequireTops(layer, 1);
             var storage = AexisGraphSession.ResolveLinearMatStorageShape(logicalShape);
             var output = owner.RentTempMat(context.commandBuffer, storage.w, storage.h, AexisGraphSession.ResolveLinearMatTextureFormat());
-            fill(output, storage);
-            context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, logicalShape, storage, owned: true);
-            if (context.shapes != null)
-                context.shapes[layer.topNames[0]] = logicalShape;
+            try
+            {
+                fill(output, storage);
+                context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, logicalShape, storage, owned: true);
+                if (context.shapes != null)
+                    context.shapes[layer.topNames[0]] = logicalShape;
+                output = null;
+            }
+            finally
+            {
+                if (output != null)
+                    owner.ReturnTempArray(context.commandBuffer, output);
+            }
         }
 
         public static AexisGraphSession.BufferShape BroadcastShapes(params AexisGraphSession.BufferShape[] shapes)
@@ -1097,7 +1115,10 @@ namespace Aexis.Execution
             if (!AexisShapeIndexLayerUtil.TryGetInt(layer, "axis", out var axis)
                 && !AexisShapeIndexLayerUtil.TryGetInt(layer, 0, out axis))
             {
-                throw new InvalidOperationException("CumSum texture path requires static axis param: " + layer.name);
+                if (string.Equals(layer.typeName, "CumulativeSum", StringComparison.Ordinal))
+                    axis = 0;
+                else
+                    throw new InvalidOperationException("ONNX CumSum texture path requires a statically lowered axis param: " + layer.name);
             }
             axis = AexisShapeIndexLayerUtil.NormalizeAxis(axis, inputShape.dims, layer.name);
             var exclusive = AexisShapeIndexLayerUtil.GetInt(layer, 1, "exclusive", 0) != 0;

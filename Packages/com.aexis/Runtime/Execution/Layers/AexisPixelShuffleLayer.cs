@@ -162,7 +162,13 @@ namespace Aexis.Execution
             }
             else
             {
-                owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+                throw new InvalidOperationException(
+                    "PixelShuffle input does not match the verified CommandBuffer Pack4 profile"
+                    + " | layer=" + layer.name
+                    + " | input=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | upscaleFactor=" + upscaleFactor
+                    + " | mode=" + mode
+                    + " | rejected_fallback=placeholder");
             }
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
         }

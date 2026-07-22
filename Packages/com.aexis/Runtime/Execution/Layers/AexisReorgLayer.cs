@@ -115,21 +115,14 @@ namespace Aexis.Execution
             var mode = layer.GetInt(1, 0);
             if (stride != 2 || mode != 0)
             {
-                var cmdFallback = context.commandBuffer;
-                var blobsFallback = context.blobs;
-                var shapesFallback = context.shapes;
-                var remainingFallback = context.remaining;
-                var pinnedFallback = context.pinnedNames;
-                var srcShapeFallback = AexisGraphSession.GetCmdShape(shapesFallback, blobsFallback, layer.bottomNames[0]);
-                var outShapeFallback = new AexisGraphSession.BufferShape(
-                    3,
-                    Mathf.Max(1, srcShapeFallback.w / Mathf.Max(1, stride)),
-                    Mathf.Max(1, srcShapeFallback.h / Mathf.Max(1, stride)),
-                    1,
-                    Mathf.Max(1, srcShapeFallback.c * stride * stride));
-                owner.PublishCmdPlaceholder(cmdFallback, layer.topNames[0], outShapeFallback, blobsFallback, shapesFallback);
-                owner.ConsumeCmd(cmdFallback, blobsFallback, remainingFallback, layer.bottomNames, pinnedFallback, shapesFallback);
-                return;
+                var rejectedShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[0]);
+                throw new InvalidOperationException(
+                    "Reorg CommandBuffer Pack4 supports only stride=2 and mode=0"
+                    + " | layer=" + layer.name
+                    + " | stride=" + stride
+                    + " | mode=" + mode
+                    + " | input=d" + rejectedShape.dims + ":" + rejectedShape.w + "x" + rejectedShape.h + "x" + rejectedShape.d + "x" + rejectedShape.c
+                    + " | rejected_fallback=placeholder");
             }
             var cmd = context.commandBuffer;
             var blobs = context.blobs;

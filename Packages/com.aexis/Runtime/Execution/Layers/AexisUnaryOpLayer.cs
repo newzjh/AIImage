@@ -16,7 +16,7 @@ namespace Aexis.Execution
         {
             if (!owner.ShouldForceCurrentLayerBufferPath()
                 && AexisGraphSession.TryGetExistingTexture(context.textureBlobs, context.textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape)
-                && ((!AexisGraphSession.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 3)
+                && ((!AexisGraphSession.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 4)
                     || (AexisGraphSession.IsStrictLinearMatTexture(srcTex) && srcShape.dims <= 2)))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
@@ -70,8 +70,8 @@ namespace Aexis.Execution
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
 
-            if (!AexisGraphSession.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape) || srcShape.dims > 3)
-                throw new InvalidOperationException("UnaryOp render-texture path requires existing <=3D texture input: " + layer.name);
+            if (!AexisGraphSession.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape) || srcShape.dims > 4)
+                throw new InvalidOperationException("UnaryOp render-texture path requires existing <=4D texture input: " + layer.name);
 
             if (AexisGraphSession.IsStrictLinearMatTexture(srcTex))
             {
@@ -82,9 +82,11 @@ namespace Aexis.Execution
             }
             else
             {
-                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.UnaryOpPack4(srcTex.texture, srcTex.packs, layer.GetInt(0, 0), outRt);
-                AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+                var storageShape = AexisGraphSession.GetTextureStorageShape(srcTex, srcShape);
+                var outputDepth = srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs;
+                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outputDepth, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
+                owner.Ops.UnaryOpPack4(srcTex.texture, outputDepth, layer.GetInt(0, 0), outRt, srcShape.dims >= 3 ? srcShape.c : 0);
+                AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
             }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
@@ -110,9 +112,11 @@ namespace Aexis.Execution
                                                 }
                                                 else
                                                 {
-                                                    var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-                                                    owner.Ops.UnaryOpPack4(cmd, src.texture, src.packs, opType, outArr);
-                                                    blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef { texture = outArr, width = src.width, height = src.height, packs = src.packs, refs = 1, owned = true };
+                                                    var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
+                                                    var outputDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
+                                                    var outArr = owner.RentTempArray(cmd, src.width, src.height, outputDepth, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
+                                                    owner.Ops.UnaryOpPack4(cmd, src.texture, outputDepth, opType, outArr, srcShape.dims >= 3 ? srcShape.c : 0);
+                                                    blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true, blobName: layer.topNames[0]);
                                                 }
                                                 if (shapes != null)
                                                     shapes[layer.topNames[0]] = srcShape;

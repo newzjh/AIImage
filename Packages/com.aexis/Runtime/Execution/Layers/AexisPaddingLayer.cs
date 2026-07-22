@@ -338,10 +338,13 @@ namespace Aexis.Execution
             var outShape = ResolveCmdOutputShape(srcShape, pp);
             if (!CanUseSimplePack4CmdPath(src, srcShape, pp))
             {
-                AexisGraphSession.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
-                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                return;
+                throw new InvalidOperationException(
+                    "Padding command-buffer Pack4 profile rejected the input descriptor"
+                    + " | layer=" + layer.name
+                    + " | logical=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | texture=" + src.width + "x" + src.height + "x" + src.packs
+                    + " | front=" + pp.front + " | behind=" + pp.behind + " | per_channel=" + pp.perChannelPadDataSize
+                    + " | rejectedFallback=placeholder");
             }
 
             var outW = srcShape.w + pp.left + pp.right;

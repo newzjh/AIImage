@@ -361,19 +361,7 @@ void NcnnBinaryOpBuf_Impl(uint3 id)
                     ? _BufB[channelIndex]
                     : _BufB[idx])));
 
-    float o = a;
-    int t = _BinaryOpType;
-    if (t == 0) o = a + b;
-    else if (t == 1) o = a - b;
-    else if (t == 2) o = a * b;
-    else if (t == 3) o = a / b;
-    else if (t == 4) o = max(a, b);
-    else if (t == 5) o = min(a, b);
-    else if (t == 6) o = pow(abs(a), b);
-    else if (t == 7) o = b - a;
-    else if (t == 8) o = b / a;
-    else if (t == 9) o = pow(abs(b), a);
-    _BufOut[idx] = o;
+    _BufOut[idx] = NcnnApplyBinaryOpScalar(a, b, _BinaryOpType);
 }
 
 void NcnnUnaryOpBuf_Impl(uint3 id)
@@ -389,15 +377,30 @@ void NcnnUnaryOpBuf_Impl(uint3 id)
     else if (t == 2) y = floor(x);
     else if (t == 3) y = ceil(x);
     else if (t == 4) y = x * x;
-    else if (t == 5) y = sqrt(max(x, 0.0));
-    else if (t == 6) y = rsqrt(max(x, 1e-12));
+    else if (t == 5) y = sqrt(x);
+    else if (t == 6) y = rsqrt(x);
     else if (t == 7) y = exp(x);
-    else if (t == 8) y = log(max(x, 1e-12));
+    else if (t == 8) y = log(x);
     else if (t == 9) y = sin(x);
     else if (t == 10) y = cos(x);
     else if (t == 11) y = tan(x);
-    else if (t == 15) y = 1.0 / max(x, 1e-12);
+    else if (t == 12) y = asin(x);
+    else if (t == 13) y = acos(x);
+    else if (t == 14) y = atan(x);
+    else if (t == 15) y = 1.0 / x;
     else if (t == 16) y = tanh(x);
+    else if (t == 17) y = log(x) / log(10.0);
+    else if (t == 18) y = round(x);
+    else if (t == 19) y = trunc(x);
+    else if (t == 20) y = sign(x);
+    else if (t == 21) y = exp(x) - 1.0;
+    else if (t == 22) y = sinh(x);
+    else if (t == 23) y = log(x + sqrt(x * x + 1.0));
+    else if (t == 24) y = cosh(x);
+    else if (t == 25) y = log(x + sqrt(x * x - 1.0));
+    else if (t == 26) y = 0.5 * log((1.0 + x) / (1.0 - x));
+    else if (t == 27) y = log(1.0 + x);
+    else if (t == 28) y = x == 0.0 ? 1.0 : 0.0; // Aexis ONNX logical Not extension.
     _BufOut[idx] = y;
 }
 

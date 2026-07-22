@@ -9,7 +9,7 @@ namespace Aexis.Execution
     public sealed class AexisInstanceNormLayer : AexisBaseLayer
     {
         public AexisInstanceNormLayer()
-            : base(AexisLayerTypes.InstanceNorm, supportsBufferPath: true, supportsCommandBufferPath: true)
+            : base(AexisLayerTypes.InstanceNorm, supportsBufferPath: false, supportsCommandBufferPath: true)
         {
         }
 
@@ -53,8 +53,7 @@ namespace Aexis.Execution
             if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not AexisGraphSession.GroupNormPack gp)
                 throw new InvalidOperationException("InstanceNorm pack not found: " + layer.name);
 
-            if (!owner.ShouldForceCurrentLayerBufferPath()
-                && owner.EnableGroupNormTexturePath
+            if (owner.EnableGroupNormTexturePath
                 && owner.UseNcnnStyleGroupNorm
                 && gp.affine
                 && owner.TryGetPack4Texture(layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out var srcTex, out var srcShape)
@@ -64,9 +63,10 @@ namespace Aexis.Execution
                 return;
             }
 
-            #pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-            #pragma warning restore CS0618
+            throw new InvalidOperationException(
+                "InstanceNorm production execution requires affine immutable constants and an exact Pack4 texture input"
+                + " | layer=" + layer.name
+                + " | rejectedFallback=ComputeBuffer-or-placeholder");
         }
 
         [Obsolete(ComputeBufferPathObsoleteMessage)]
@@ -130,7 +130,7 @@ namespace Aexis.Execution
                 throw new InvalidOperationException("InstanceNorm render-texture path requires affine supported pack4 input: " + layer.name);
             }
 
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs, RenderTextureFormat.ARGBHalf);
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs, srcTex.texture.format);
             var statsA = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
             var statsB = owner.RentTempArray(gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
             try
@@ -171,7 +171,7 @@ namespace Aexis.Execution
                 var statsA = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
                 var statsB = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
                 var outDepth = srcShape.dims == 4 ? logicalDepth * src.packs : src.packs;
-                var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, RenderTextureFormat.ARGBHalf);
+                var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, src.texture.format);
                 owner.Ops.GroupNormPack4Tex(cmd, src.texture, srcShape.w, srcShape.h, logicalDepth, srcShape.c, src.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outArr);
                 owner.ReturnTempArray(cmd, statsA);
                 owner.ReturnTempArray(cmd, statsB);
@@ -193,24 +193,13 @@ namespace Aexis.Execution
             }
             else
             {
-                owner.DebugLog?.Invoke(
-                    "[CmdPlaceholder][InstanceNorm]"
+                throw new InvalidOperationException(
+                    "InstanceNorm CommandBuffer Pack4 profile rejected"
                     + " | layer=" + layer.name
-                    + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
-                    + " | packs=" + src.packs
+                    + " | logicalShape=" + srcShape
                     + " | affine=" + (gp.affine ? "1" : "0")
                     + " | channels=" + gp.channels.ToString()
-                    + " | group=" + gp.group.ToString());
-                if (owner.DisallowBufferAccess || owner.DisallowBufferOutputs || owner.DisallowBufferToTextureMaterialization)
-                {
-                    throw new InvalidOperationException(
-                        "pack4-only guard: command-buffer InstanceNorm placeholder disallowed"
-                        + " | layer=" + layer.name
-                        + " | dims=" + srcShape.dims
-                        + " | shape=" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c);
-                }
-                AexisGraphSession.ResolveCmdTextureLayout(srcShape, out var width, out var height, out var packs);
-                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], width, height, packs, blobs, shapes, srcShape);
+                    + " | rejectedFallback=ComputeBuffer-or-placeholder");
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
@@ -232,7 +221,9 @@ namespace Aexis.Execution
                 && gp.channels > 0
                 && gp.group > 0
                 && gp.channels % gp.group == 0
-                && src.packs == Mathf.CeilToInt(gp.channels / 4f);
+                && src.packs == Mathf.CeilToInt(gp.channels / 4f)
+                && gp.eps >= 0f
+                && AexisGraphSession.MatchesPack4TextureStorage(src, srcShape);
         }
     }
 }

@@ -498,3 +498,66 @@ void NcnnSentisCumSumLinearMat_Impl(uint3 id)
 
     _LinearOut0[int2((int)id.x, (int)id.y)] = sum;
 }
+
+// Data-dependent ONNX nodes use a fixed LinearMat capacity. _LinearOut1[0]
+// carries the actual count and stays GPU-resident; no CPU readback is involved.
+void NcnnSentisNonZeroLinearMat_Impl(uint3 id)
+{
+    int sourceTotal = NcnnSentisTotalCount(_SentisIn0W, _SentisIn0H, _SentisIn0D, _SentisIn0C);
+    int capacity = max(1, _SentisTotal);
+    int count = 0;
+    [loop] for (int i = 0; i < capacity; ++i) _LinearOut0[int2(i % _SentisOutStorageW, i / _SentisOutStorageW)] = -1.0;
+    [loop] for (int i = 0; i < sourceTotal; ++i)
+    {
+        if (NcnnSentisReadLinear(_LinearIn0, i, _SentisIn0StorageW, _SentisIn0StorageH) != 0.0)
+        {
+            if (count < capacity) _LinearOut0[int2(count % _SentisOutStorageW, count / _SentisOutStorageW)] = (float)i;
+            count++;
+        }
+    }
+    _LinearOut1[int2(0, 0)] = (float)min(count, capacity);
+}
+
+void NcnnSentisCompressLinearMat_Impl(uint3 id)
+{
+    int sourceTotal = NcnnSentisTotalCount(_SentisIn0W, _SentisIn0H, _SentisIn0D, _SentisIn0C);
+    int conditionTotal = NcnnSentisTotalCount(_SentisIn1W, _SentisIn1H, _SentisIn1D, _SentisIn1C);
+    int capacity = max(1, _SentisTotal);
+    int count = 0;
+    [loop] for (int i = 0; i < capacity; ++i) _LinearOut0[int2(i % _SentisOutStorageW, i / _SentisOutStorageW)] = 0.0;
+    [loop] for (int i = 0; i < min(sourceTotal, conditionTotal); ++i)
+    {
+        if (NcnnSentisReadLinear(_LinearIn1, i, _SentisIn1StorageW, _SentisIn1StorageH) != 0.0)
+        {
+            if (count < capacity) _LinearOut0[int2(count % _SentisOutStorageW, count / _SentisOutStorageW)] = NcnnSentisReadLinear(_LinearIn0, i, _SentisIn0StorageW, _SentisIn0StorageH);
+            count++;
+        }
+    }
+    _LinearOut1[int2(0, 0)] = (float)min(count, capacity);
+}
+
+void NcnnSentisGatherNDLinearMat_Impl(uint3 id)
+{
+    uint sw, sh; _LinearOut0.GetDimensions(sw, sh);
+    if (id.x >= sw || id.y >= sh) return;
+    int outputIndex = (int)id.y * _SentisOutStorageW + (int)id.x;
+    int total = NcnnSentisTotalCount(_SentisOutW, _SentisOutH, _SentisOutD, _SentisOutC);
+    if (outputIndex >= total) { _LinearOut0[int2(id.xy)] = 0.0; return; }
+    int sourceTotal = NcnnSentisTotalCount(_SentisIn0W, _SentisIn0H, _SentisIn0D, _SentisIn0C);
+    int source = (int)round(NcnnSentisReadLinear(_LinearIn1, outputIndex, _SentisIn1StorageW, _SentisIn1StorageH));
+    if (source < 0) source += sourceTotal;
+    _LinearOut0[int2((int)id.x, (int)id.y)] = source >= 0 && source < sourceTotal ? NcnnSentisReadLinear(_LinearIn0, source, _SentisIn0StorageW, _SentisIn0StorageH) : 0.0;
+}
+
+void NcnnSentisScatterLinearMat_Impl(uint3 id)
+{
+    int total = NcnnSentisTotalCount(_SentisIn0W, _SentisIn0H, _SentisIn0D, _SentisIn0C);
+    [loop] for (int i = 0; i < total; ++i) _LinearOut0[int2(i % _SentisOutStorageW, i / _SentisOutStorageW)] = NcnnSentisReadLinear(_LinearIn0, i, _SentisIn0StorageW, _SentisIn0StorageH);
+    int updates = min(_SentisTotal, NcnnSentisTotalCount(_SentisIn2W, _SentisIn2H, _SentisIn2D, _SentisIn2C));
+    [loop] for (int i = 0; i < updates; ++i)
+    {
+        int target = (int)round(NcnnSentisReadLinear(_LinearIn1, i, _SentisIn1StorageW, _SentisIn1StorageH));
+        if (target < 0) target += total;
+        if (target >= 0 && target < total) _LinearOut0[int2(target % _SentisOutStorageW, target / _SentisOutStorageW)] = NcnnSentisReadLinear(_LinearIn2, i, _SentisIn2StorageW, _SentisIn2StorageH);
+    }
+}

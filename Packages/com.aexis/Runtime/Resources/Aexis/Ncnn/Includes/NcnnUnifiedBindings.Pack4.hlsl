@@ -18,6 +18,8 @@ RWTexture2D<float> _LinearOut1;
 #define _AddOutArr _TexOut0Arr
 #define _CopyInArr _TexIn0Arr
 #define _CopyOutArr _TexOut0Arr
+#define _CopyToSrcArr _TexIn1Arr
+#define _CopyToOutArr _TexOut0Arr
 #define _ConcatPack4CDHWAInArr _TexIn0Arr
 #define _ConcatPack4CDHWBInArr _TexIn1Arr
 #define _ConcatPack4CDHWOutArr _TexOut0Arr
@@ -70,6 +72,8 @@ RWTexture2D<float> _LinearOut1;
 #define _SoftmaxOutArr _TexOut0Arr
 #define _UnaryInArr _TexIn0Arr
 #define _UnaryOutArr _TexOut0Arr
+#define _TriluInArr _TexIn0Arr
+#define _TriluOutArr _TexOut0Arr
 #define _BinaryA _TexIn0Arr
 #define _BinaryB _TexIn1Arr
 #define _BinaryOutArr _TexOut0Arr

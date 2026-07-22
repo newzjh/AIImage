@@ -9,6 +9,14 @@ namespace Aexis.Execution
 {
     public static class AexisLayerFactory
     {
+        private static readonly Dictionary<string, string> CanonicalAliases = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            { "CumulativeSum", "CumSum" },
+            { "CumSum", "CumSum" },
+            { "ConvolutionDepthWise1D", "Convolution1D" },
+            { "Deconvolution1D", "Deconvolution" },
+        };
+
         private static readonly Dictionary<AexisLayerTypeKey, Func<AexisBaseLayer>> Registry = new Dictionary<AexisLayerTypeKey, Func<AexisBaseLayer>>
         {
             { AexisLayerTypes.Input, () => new AexisInputLayer() },
@@ -64,10 +72,14 @@ namespace Aexis.Execution
             { AexisLayerTypes.SELU, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.SELU) },
             { AexisLayerTypes.Shrink, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.Shrink) },
             { AexisLayerTypes.Softplus, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.Softplus) },
+            { AexisLayerTypes.Softsign, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.Softsign) },
+            { AexisLayerTypes.IsInf, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.IsInf) },
+            { AexisLayerTypes.IsNaN, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.IsNaN) },
             { AexisLayerTypes.GELU, () => new AexisGeluLayer() },
             { AexisLayerTypes.Cast, () => new AexisCastLayer() },
             { AexisLayerTypes.CELU, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.CELU) },
             { AexisLayerTypes.Clip, () => new AexisClipLayer() },
+            { AexisLayerTypes.Trilu, () => new AexisTriluLayer() },
             { AexisLayerTypes.Softmax, () => new AexisSoftmaxLayer() },
             { AexisLayerTypes.Padding, () => new AexisPaddingLayer() },
             { AexisLayerTypes.Pooling, () => new AexisPoolingLayer() },
@@ -99,16 +111,26 @@ namespace Aexis.Execution
             { AexisLayerTypes.ArgMin, () => new AexisArgReduceLayer(AexisLayerTypes.ArgMin, reduceMax: false) },
             { AexisLayerTypes.Where, () => new AexisWhereLayer() },
             { AexisLayerTypes.TopK, () => new AexisTopKLayer() },
-            { AexisLayerTypes.NonZero, () => new AexisUnsupportedSentisLayer(AexisLayerTypes.NonZero, "NonZero has data-dependent output length and needs GPU compaction/shape-tensor support.") },
+            { AexisLayerTypes.NonZero, () => new AexisNonZeroLayer() },
             { AexisLayerTypes.OneHot, () => new AexisOneHotLayer() },
             { AexisLayerTypes.CumSum, () => new AexisCumSumLayer() },
-            { AexisLayerTypes.Compress, () => new AexisUnsupportedSentisLayer(AexisLayerTypes.Compress, "Compress has data-dependent output length unless the condition is statically folded.") },
+            { AexisLayerTypes.Bias, () => new AexisBiasLayer() },
+            { AexisLayerTypes.BNLL, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.BNLL) },
+            { AexisLayerTypes.CopyTo, () => new AexisCopyToLayer() },
+            { AexisLayerTypes.Exp, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.Exp) },
+            { AexisLayerTypes.Log, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.Log) },
+            { AexisLayerTypes.Power, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.Power) },
+            { AexisLayerTypes.Threshold, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.Threshold) },
+            { AexisLayerTypes.ThresholdedRelu, () => new AexisPointwiseFormulaLayer(AexisLayerTypes.ThresholdedRelu) },
+            { AexisLayerTypes.MVN, () => new AexisMvnLayer() },
+            { AexisLayerTypes.Pooling1D, () => new AexisPooling1DLayer() },
+            { AexisLayerTypes.Compress, () => new AexisCompressLayer() },
             { AexisLayerTypes.Gather, () => new AexisGatherLayer() },
             { AexisLayerTypes.GatherElements, () => new AexisGatherElementsLayer() },
-            { AexisLayerTypes.GatherND, () => new AexisUnsupportedSentisLayer(AexisLayerTypes.GatherND, "GatherND is registered but not yet implemented on the texture-backed path.") },
-            { AexisLayerTypes.ScatterElements, () => new AexisUnsupportedSentisLayer(AexisLayerTypes.ScatterElements, "ScatterElements needs conflict-safe texture writes/reductions before it can run without buffer fallback.") },
-            { AexisLayerTypes.ScatterND, () => new AexisUnsupportedSentisLayer(AexisLayerTypes.ScatterND, "ScatterND needs conflict-safe texture writes/reductions before it can run without buffer fallback.") },
-            { AexisLayerTypes.Scatter, () => new AexisUnsupportedSentisLayer(AexisLayerTypes.Scatter, "Scatter needs conflict-safe texture writes/reductions before it can run without buffer fallback.") },
+            { AexisLayerTypes.GatherND, () => new AexisGatherNDLayer() },
+            { AexisLayerTypes.ScatterElements, () => new AexisScatterLayer(AexisLayerTypes.ScatterElements) },
+            { AexisLayerTypes.ScatterND, () => new AexisScatterLayer(AexisLayerTypes.ScatterND) },
+            { AexisLayerTypes.Scatter, () => new AexisScatterLayer(AexisLayerTypes.Scatter) },
             { AexisLayerTypes.ShortConv, () => new AexisShortConvLayer() },
             { AexisLayerTypes.GatedDeltaRule, () => new AexisGatedDeltaRuleLayer() },
         };
@@ -142,10 +164,37 @@ namespace Aexis.Execution
             if (layer == null)
                 return new AexisUnknownLayer(default);
 
-            if (Registry.TryGetValue(layer.type, out var factory))
+            // The existing 2D/depthwise loaders do not share the NCNN 1D
+            // parameter/weight contract. Keep long aliases recognized, but fail
+            // before dispatch rather than silently changing their semantics.
+            if (string.Equals(layer.typeName, "ConvolutionDepthWise1D", StringComparison.Ordinal)
+                )
+                return new AexisConvolutionDepthWise1DLayer();
+            if (string.Equals(layer.typeName, "Deconvolution1D", StringComparison.Ordinal))
+                return new AexisDeconvolution1DLayer();
+
+            var canonicalName = ResolveCanonicalLayerTypeName(layer.typeName);
+            if (!string.IsNullOrEmpty(canonicalName)
+                && Registry.TryGetValue(AexisLayerTypeKey.FromString(canonicalName), out var factory))
+                return factory();
+
+            if (Registry.TryGetValue(layer.type, out factory))
                 return factory();
 
             return new AexisUnknownLayer(layer.type);
+        }
+
+        public static string ResolveCanonicalLayerTypeName(string typeName)
+        {
+            if (string.IsNullOrWhiteSpace(typeName))
+                return string.Empty;
+            return CanonicalAliases.TryGetValue(typeName, out var canonical) ? canonical : typeName;
+        }
+
+        public static bool IsRegistered(string typeName)
+        {
+            var canonical = ResolveCanonicalLayerTypeName(typeName);
+            return !string.IsNullOrEmpty(canonical) && Registry.ContainsKey(AexisLayerTypeKey.FromString(canonical));
         }
 
         private sealed class AexisUnknownLayer : AexisBaseLayer
@@ -1007,7 +1056,10 @@ namespace Aexis.Execution
             out BufferShape outputLogicalShape,
             ICollection<string> pinnedNames = null,
             string outputBlobName = null,
-            string stopAfterTopName = null)
+            string stopAfterTopName = null,
+            ICollection<string> retainedOutputNames = null,
+            Dictionary<string, ComputeTexture> retainedOutputs = null,
+            Dictionary<string, BufferShape> retainedOutputShapes = null)
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
@@ -1101,7 +1153,24 @@ namespace Aexis.Execution
                 var outRef = GetCmdTensor(blobs, outBlobName);
                 outputLogicalShape = GetCmdShape(shapes, blobs, outBlobName);
                 var keep = outRef.texture;
-                DetachReturnedCmdTextureOwnership(blobs, keep);
+                if (retainedOutputNames == null)
+                {
+                    DetachReturnedCmdTextureOwnership(blobs, keep);
+                }
+                else
+                {
+                    if (retainedOutputs == null || retainedOutputShapes == null)
+                        throw new ArgumentException("Retained CommandBuffer outputs require destination dictionaries.", nameof(retainedOutputs));
+                    foreach (var retainedName in retainedOutputNames)
+                    {
+                        if (string.IsNullOrWhiteSpace(retainedName))
+                            throw new ArgumentException("Retained CommandBuffer output names cannot be empty.", nameof(retainedOutputNames));
+                        var retained = GetCmdTensor(blobs, retainedName);
+                        retainedOutputs[retainedName] = retained.texture;
+                        retainedOutputShapes[retainedName] = GetCmdShape(shapes, blobs, retainedName);
+                        DetachReturnedCmdTextureOwnership(blobs, retained.texture);
+                    }
+                }
 
                 var visited = new HashSet<CmdTensorRef>();
                 foreach (var kv in blobs)

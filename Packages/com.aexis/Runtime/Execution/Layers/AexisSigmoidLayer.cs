@@ -92,7 +92,7 @@ namespace Aexis.Execution
             }
             else
             {
-                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
+                var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, srcTex.texture.format);
                 owner.Ops.SigmoidPack4(srcTex.texture, srcTex.packs, outRt);
                 AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
             }
@@ -126,7 +126,8 @@ namespace Aexis.Execution
                                                 }
                                                 else
                                                 {
-                                                    var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
+                                                    var outDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
+                                                    var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, src.texture.format);
                                                     owner.Ops.SigmoidPack4(cmd, src.texture, src.packs, outArr);
                                                     blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef { texture = outArr, width = src.width, height = src.height, packs = src.packs, refs = 1, owned = true };
                                                 }

@@ -22,13 +22,16 @@ namespace Aexis.Execution
         // reconstruct its exact output dimensions without a CPU-side readback.
         public int[] sourceLogicalShape;
         public string layout = AexisTexturePlanLayout.Packed4;
+        // dtype describes the physical texture format. logicalDtype keeps tensor
+        // semantics when Int32 values are encoded exactly in an FP32 texture.
         public string dtype = "FP16";
+        public string logicalDtype = "Float16";
         public string aliasGroup;
         public bool textureBacked = true;
     }
 
     // Partial matrix entries need a loaded-runtime proof for a concrete node. The planner
-    // accepts only a real CommandBuffer Pack4 path returned by this callback.
+    // accepts only a real CommandBuffer texture path returned by this callback.
     public delegate AexisTextureExecutionPlanNodeVerification AexisTextureExecutionPlanNodeVerifier(
         AexisGraphModel.Layer layer,
         IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
@@ -177,7 +180,15 @@ namespace Aexis.Execution
 
         private static readonly string[] RejectedComputationPaths =
         {
-            "alias-only", "placeholder", "materialize-from-buffer", "legacy-path"
+            "alias-only",
+            "placeholder",
+            "materialize",
+            "compute-buffer",
+            "buffer-fallback",
+            "texture-to-buffer",
+            "buffer-to-texture",
+            "readback",
+            "legacy-path"
         };
 
         public static AexisTextureExecutionPlan Compile(
@@ -240,9 +251,46 @@ namespace Aexis.Execution
                     continue;
                 }
 
+                if (request.strict
+                    && (string.Equals(operatorName, "NonZero", StringComparison.Ordinal)
+                        || string.Equals(operatorName, "Compress", StringComparison.Ordinal))
+                    && TryFindOutputConsumer(layers, index, layer.topNames, out var consumedBlob, out var consumerIndex, out var consumerName))
+                {
+                    diagnostics.Add(CreateDiagnostic(
+                        request,
+                        index,
+                        layer,
+                        capability,
+                        operatorName,
+                        "bounded-data-index-output-must-be-terminal",
+                        "Bounded " + operatorName + " output " + consumedBlob + " is consumed by layer " + consumerIndex + " (" + consumerName + "); padded capacity values are not standard ONNX tensor semantics.",
+                        inputs,
+                        true,
+                        "Keep both bounded value/count outputs terminal, or implement an explicit count-aware texture consumer profile."));
+                    nodes.Add(node);
+                    continue;
+                }
+
                 if (inputs.Any(input => input == null))
                 {
                     diagnostics.Add(CreateDiagnostic(request, index, layer, capability, operatorName, "missing-input-descriptor", "A required input has no declared texture descriptor.", inputs, true, "Declare every model input with logical/storage shape, dtype, layout, and alias group."));
+                    nodes.Add(node);
+                    continue;
+                }
+
+                if (request.strict && !TryValidateTextureCapacities(inputs, out var capacityReason))
+                {
+                    diagnostics.Add(CreateDiagnostic(
+                        request,
+                        index,
+                        layer,
+                        capability,
+                        operatorName,
+                        "texture-descriptor-capacity-exceeded",
+                        capacityReason,
+                        inputs,
+                        true,
+                        "Use storage extents that fit the active graphics device, or reject this model before dispatch."));
                     nodes.Add(node);
                     continue;
                 }
@@ -295,14 +343,27 @@ namespace Aexis.Execution
                     request.targetDtype,
                     request.targetLayout)
                     && (!requiresInt8WeightKernel || capability.int8);
+                var isConditionalCapability = string.Equals(capability?.status, AexisOperatorCapabilityStatus.SupportedByProfile, StringComparison.Ordinal)
+                    || string.Equals(capability?.status, AexisOperatorCapabilityStatus.Partial, StringComparison.Ordinal);
+                var profileMatchReason = string.Empty;
+                var profileTargetCompatible = isConditionalCapability
+                    && (!requiresInt8WeightKernel || capability.int8)
+                    && AexisOperatorCapabilities.TryMatchTextureProfile(
+                        capability,
+                        layer,
+                        request.targetBackend,
+                        request.targetDtype,
+                        request.targetLayout,
+                        inputs,
+                        out _,
+                        out profileMatchReason);
                 var verifiedOutputs = Array.Empty<AexisTexturePlanTensorDescriptor>();
                 var verifiedPath = string.Empty;
                 var verificationReason = string.Empty;
                 var verifiedUsesDescriptorAlias = false;
                 var profileVerified = !strictCapability
                     && inputsMatchTarget
-                    && string.Equals(capability?.status, AexisOperatorCapabilityStatus.Partial, StringComparison.Ordinal)
-                    && IsProfileTargetCompatible(capability, request, requiresInt8WeightKernel)
+                    && profileTargetCompatible
                     && TryAcceptRuntimeVerifiedNode(layer, inputs, request, out verifiedOutputs, out verifiedPath, out verifiedUsesDescriptorAlias, out verificationReason);
                 if (strictCapability && inputsMatchTarget)
                 {
@@ -336,13 +397,13 @@ namespace Aexis.Execution
                         ? "No capability entry exists for this operator."
                         : !inputsMatchTarget
                             ? "Input descriptor dtype/layout does not match the requested CommandBuffer Pack4 target."
-                            : string.Equals(capability.status, AexisOperatorCapabilityStatus.Partial, StringComparison.Ordinal)
-                                && IsProfileTargetCompatible(capability, request, requiresInt8WeightKernel)
+                            : isConditionalCapability && profileTargetCompatible
                                 ? "The loaded runtime profile cannot prove that this node reaches a real CommandBuffer Pack4 path"
                                     + (string.IsNullOrWhiteSpace(verificationReason) ? "." : ": " + verificationReason)
-                            : "The capability matrix does not record a verified CommandBuffer Pack4 implementation for this dtype/layout.";
-                    var code = string.Equals(capability?.status, AexisOperatorCapabilityStatus.Partial, StringComparison.Ordinal)
-                        && IsProfileTargetCompatible(capability, request, requiresInt8WeightKernel)
+                            : isConditionalCapability && !string.IsNullOrWhiteSpace(profileMatchReason)
+                                ? profileMatchReason
+                                : "The capability matrix does not record a verified CommandBuffer Pack4 implementation for this dtype/layout.";
+                    var code = isConditionalCapability && profileTargetCompatible
                         ? "command-buffer-pack4-profile-rejected"
                         : "missing-command-buffer-pack4-capability";
                     diagnostics.Add(CreateDiagnostic(request, index, layer, capability, operatorName, code, reason, inputs, true, "Implement and verify a real CommandBuffer Pack4 path, then update the capability matrix."));
@@ -371,6 +432,42 @@ namespace Aexis.Execution
                 dispatchAllowed = dispatchAllowed,
                 summary = "nodes=" + nodes.Count + " | diagnostics=" + diagnostics.Count + " | int8_weight_only=" + request.int8WeightOnly + " | strict_eligible=" + strictEligible + " | dispatch_allowed=" + dispatchAllowed
             };
+        }
+
+        private static bool TryFindOutputConsumer(
+            IReadOnlyList<AexisGraphModel.Layer> layers,
+            int producerIndex,
+            string[] outputs,
+            out string consumedBlob,
+            out int consumerIndex,
+            out string consumerName)
+        {
+            consumedBlob = null;
+            consumerIndex = -1;
+            consumerName = null;
+            if (layers == null || outputs == null || outputs.Length == 0)
+                return false;
+
+            var outputNames = new HashSet<string>(outputs.Where(name => !string.IsNullOrWhiteSpace(name)), StringComparer.Ordinal);
+            if (outputNames.Count == 0)
+                return false;
+            for (var index = producerIndex + 1; index < layers.Count; index++)
+            {
+                var layer = layers[index];
+                if (layer?.bottomNames == null)
+                    continue;
+                for (var bottomIndex = 0; bottomIndex < layer.bottomNames.Length; bottomIndex++)
+                {
+                    var bottom = layer.bottomNames[bottomIndex];
+                    if (!outputNames.Contains(bottom))
+                        continue;
+                    consumedBlob = bottom;
+                    consumerIndex = index;
+                    consumerName = layer.name ?? layer.typeName ?? string.Empty;
+                    return true;
+                }
+            }
+            return false;
         }
 
         public static void ThrowIfDispatchRejected(AexisTextureExecutionPlan plan)
@@ -410,6 +507,22 @@ namespace Aexis.Execution
             if (string.IsNullOrWhiteSpace(sourceName) || !descriptors.TryGetValue(sourceName, out var source) || !MatchesTarget(source, request))
             {
                 diagnostics.Add(CreateDiagnostic(request, node.layerIndex, layer, null, node.operatorName, "missing-pack4-input-descriptor", "Input requires a texture-backed descriptor matching the requested dtype/layout.", Array.Empty<AexisTexturePlanTensorDescriptor>(), true, "Supply a CommandBuffer Pack4 input descriptor for this blob."));
+                return;
+            }
+
+            if (request.strict && !TryValidateTextureCapacity(source, out var capacityReason))
+            {
+                diagnostics.Add(CreateDiagnostic(
+                    request,
+                    node.layerIndex,
+                    layer,
+                    null,
+                    node.operatorName,
+                    "texture-descriptor-capacity-exceeded",
+                    capacityReason,
+                    new[] { source },
+                    true,
+                    "Use input storage extents that fit the active graphics device."));
                 return;
             }
 
@@ -653,28 +766,10 @@ namespace Aexis.Execution
                 storageShape = CopyShape(source.storageShape),
                 layout = request.targetLayout,
                 dtype = request.targetDtype,
+                logicalDtype = source.logicalDtype,
                 aliasGroup = "computed:" + (layer.name ?? layer.typeName ?? "layer") + ":" + index,
                 textureBacked = true
             }).ToArray();
-        }
-
-        private static bool IsProfileTargetCompatible(
-            AexisOperatorCapability capability,
-            AexisTextureExecutionPlanRequest request,
-            bool requiresInt8WeightKernel)
-        {
-            if (capability == null || request == null)
-                return false;
-            if (!string.Equals(request.targetBackend, AexisOperatorCapabilityBackend.CommandBuffer, StringComparison.Ordinal)
-                || !capability.commandBuffer)
-                return false;
-
-            var dtypeSupported = string.Equals(request.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase) ? capability.fp32
-                : string.Equals(request.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase) ? capability.fp16
-                : string.Equals(request.targetDtype, "INT8", StringComparison.OrdinalIgnoreCase) && capability.int8;
-            return dtypeSupported
-                && (!requiresInt8WeightKernel || capability.int8)
-                && (capability.layouts ?? Array.Empty<string>()).Any(layout => string.Equals(layout, request.targetLayout, StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool RequiresInt8WeightOnlyKernel(string operatorName)
@@ -721,6 +816,7 @@ namespace Aexis.Execution
                 || string.Equals(operatorName, "Embed", StringComparison.Ordinal)
                 || string.Equals(operatorName, "MultiHeadAttention", StringComparison.Ordinal)
                 || string.Equals(operatorName, "BatchNorm", StringComparison.Ordinal)
+                || string.Equals(operatorName, "InstanceNorm", StringComparison.Ordinal)
                 || string.Equals(operatorName, "GroupNorm", StringComparison.Ordinal)
                 || string.Equals(operatorName, "LayerNorm", StringComparison.Ordinal)
                 || string.Equals(operatorName, "Scale", StringComparison.Ordinal)
@@ -772,9 +868,9 @@ namespace Aexis.Execution
                     return false;
                 }
             }
-            else if (!IsRealCommandBufferPack4Path(verification.executionPath))
+            else if (!IsRealCommandBufferTexturePath(verification.executionPath))
             {
-                reason = "The loaded-runtime verifier did not provide a real CommandBuffer Pack4 execution path.";
+                reason = "The loaded-runtime verifier did not provide a real texture-native CommandBuffer execution path.";
                 return false;
             }
 
@@ -888,10 +984,14 @@ namespace Aexis.Execution
             return layer.GetInt(1, 1) == 1;
         }
 
-        private static bool IsRealCommandBufferPack4Path(string executionPath)
+        private static bool IsRealCommandBufferTexturePath(string executionPath)
         {
-            if (string.IsNullOrWhiteSpace(executionPath)
-                || !executionPath.StartsWith("command-buffer-pack4", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(executionPath))
+                return false;
+
+            var textureNative = executionPath.StartsWith("command-buffer-pack4", StringComparison.OrdinalIgnoreCase)
+                || executionPath.StartsWith("command-buffer-linearmat", StringComparison.OrdinalIgnoreCase);
+            if (!textureNative)
                 return false;
 
             return !RejectedComputationPaths.Any(path => executionPath.IndexOf(path, StringComparison.OrdinalIgnoreCase) >= 0);
@@ -921,6 +1021,82 @@ namespace Aexis.Execution
                 && string.Equals(descriptor.dtype, request.targetDtype, StringComparison.OrdinalIgnoreCase)
                 && TryToBufferShape(descriptor.logicalShape, out _)
                 && TryToBufferShape(descriptor.storageShape, out _);
+        }
+
+        private static bool TryValidateTextureCapacities(
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> descriptors,
+            out string reason)
+        {
+            for (var index = 0; descriptors != null && index < descriptors.Count; index++)
+            {
+                if (!TryValidateTextureCapacity(descriptors[index], out reason))
+                {
+                    reason = "Input " + index + " (" + (descriptors[index]?.blob ?? string.Empty) + ") is invalid: " + reason;
+                    return false;
+                }
+            }
+
+            reason = null;
+            return true;
+        }
+
+        private static bool TryValidateTextureCapacity(
+            AexisTexturePlanTensorDescriptor descriptor,
+            out string reason)
+        {
+            if (descriptor?.logicalShape == null || descriptor.storageShape == null
+                || descriptor.logicalShape.Length != 5 || descriptor.storageShape.Length != 5)
+            {
+                reason = "The texture descriptor does not contain five-component logical and storage shapes.";
+                return false;
+            }
+
+            var logical = descriptor.logicalShape;
+            var storage = descriptor.storageShape;
+            long logicalElements = 1;
+            for (var axis = 1; axis < logical.Length; axis++)
+            {
+                if (logical[axis] <= 0 || logicalElements > int.MaxValue / (long)logical[axis])
+                {
+                    reason = "The logical tensor element count exceeds the supported 32-bit shader descriptor range.";
+                    return false;
+                }
+                logicalElements *= logical[axis];
+            }
+
+            var maxTextureSize = GetSystemLimit(() => SystemInfo.maxTextureSize, 16384);
+            if (storage[1] > maxTextureSize || storage[2] > maxTextureSize)
+            {
+                reason = "Texture width/height exceeds SystemInfo.maxTextureSize=" + maxTextureSize + ".";
+                return false;
+            }
+
+            if (storage[0] >= 3)
+            {
+                var packs = Math.Max(1L, (storage[4] + 3L) / 4L);
+                var slices = storage[0] == 4 ? packs * storage[3] : packs;
+                var maxSlices = GetSystemLimit(() => SystemInfo.maxTextureArraySlices, 2048);
+                if (slices > maxSlices)
+                {
+                    reason = "Texture2DArray slices=" + slices + " exceed SystemInfo.maxTextureArraySlices=" + maxSlices + ".";
+                    return false;
+                }
+            }
+
+            reason = null;
+            return true;
+        }
+
+        private static int GetSystemLimit(Func<int> query, int fallback)
+        {
+            try
+            {
+                return Math.Max(1, query());
+            }
+            catch
+            {
+                return fallback;
+            }
         }
 
         private static bool IsMaxPoolingIndexInput(
@@ -999,6 +1175,7 @@ namespace Aexis.Execution
                 sourceLogicalShape = CopyShape(descriptor?.sourceLogicalShape),
                 layout = descriptor?.layout ?? string.Empty,
                 dtype = descriptor?.dtype ?? string.Empty,
+                logicalDtype = descriptor?.logicalDtype ?? string.Empty,
                 aliasGroup = descriptor?.aliasGroup ?? string.Empty,
                 textureBacked = descriptor != null && descriptor.textureBacked
             };

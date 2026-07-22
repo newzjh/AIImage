@@ -902,21 +902,13 @@ namespace Aexis.Execution
             }
             else
             {
-                owner.DebugLog?.Invoke(
-                    "[CmdPlaceholder][Concat]"
+                throw new InvalidOperationException(
+                    "Concat has no CommandBuffer Pack4 implementation for the requested axis and descriptor"
                     + " | layer=" + layer.name
-                    + " | axis=" + positiveAxis.ToString()
+                    + " | axis=" + positiveAxis
                     + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
-                    + " | parts=" + partShapes.Length.ToString());
-                if (owner.DisallowBufferAccess || owner.DisallowBufferOutputs || owner.DisallowBufferToTextureMaterialization)
-                {
-                    throw new InvalidOperationException(
-                        "pack4-only guard: command-buffer Concat placeholder disallowed"
-                        + " | layer=" + layer.name
-                        + " | axis=" + positiveAxis
-                        + " | outShape=" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
-                }
-                owner.PublishCmdPlaceholder(cmd, layer.topNames[0], outShape, blobs, shapes);
+                    + " | parts=" + partShapes.Length
+                    + " | rejected_fallback=placeholder");
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

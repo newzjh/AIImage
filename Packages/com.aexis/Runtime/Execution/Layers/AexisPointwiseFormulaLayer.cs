@@ -4,93 +4,44 @@ using UnityEngine.Rendering;
 
 namespace Aexis.Execution
 {
-    // Migration note: avoid expanding the legacy compute-buffer path; prefer pack4 RT execution, and plan for ComputeTexture command-buffer pack4 RT for async compute and temporary RT allocation support.
+    // Formula aliases are production Pack4 texture operators. No implicit buffer/texture
+    // conversion is allowed: strict preflight and runtime require an existing texture input.
     public sealed class AexisPointwiseFormulaLayer : AexisBaseLayer
     {
         public AexisPointwiseFormulaLayer(AexisLayerTypeKey typeKey)
-            : base(typeKey, supportsBufferPath: true, supportsCommandBufferPath: true)
+            : base(typeKey, supportsBufferPath: false, supportsCommandBufferPath: true)
         {
-        }
-
-        public override void ExecuteBuffer(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
-        {
-            if (owner.TryGetPack4Texture(
-                    layer.bottomNames[0],
-                    context.textureBlobs,
-                    context.textureShapes,
-                    context.bufferBlobs,
-                    context.bufferViews,
-                    out _,
-                    out _))
-            {
-                ExecuteRenderTexturePath(owner, layer, context);
-                return;
-            }
-
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
-        }
-
-        [Obsolete(ComputeBufferPathObsoleteMessage)]
-        public override void ExecuteComputeBufferPath(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
-        {
-            var textureBlobs = context.textureBlobs;
-            var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferRefs = context.bufferRefs;
-            var bufferViews = context.bufferViews;
-            var remaining = context.remaining;
-            var pinnedNames = context.pinnedNames;
-            var tempOwned = context.tempOwned;
-
-            ResolveFormula(TypeKey, layer, out var type, out var a, out var b);
-
-            var srcBuf = owner.GetOrConvertToBuffer(layer.bottomNames[0], textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
-            var srcView = AexisGraphSession.TryGetBufferView(layer.bottomNames[0], bufferBlobs, bufferViews);
-            if (srcBuf == null)
-                throw new InvalidOperationException(TypeKey + " source not found: " + layer.name);
-
-            var outTensor = owner.RentTempTensorBuffer(
-                srcView?.dims ?? 1,
-                srcView?.w ?? srcBuf.count,
-                srcView?.h ?? 1,
-                srcView?.d ?? 1,
-                srcView?.c ?? 1);
-            owner.Ops.PointwiseBuf(srcBuf, srcBuf.count, type, a, b, outTensor.buffer);
-            owner.PublishTensorBufferOutput(
-                layer.topNames[0],
-                outTensor,
-                preferTexture: srcView != null && srcView.dims <= 3,
-                textureBlobs,
-                textureShapes,
-                bufferBlobs,
-                bufferRefs,
-                bufferViews,
-                tempOwned);
-            owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
         }
 
         public override void ExecuteRenderTexturePath(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
         {
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
-            var bufferBlobs = context.bufferBlobs;
-            var bufferViews = context.bufferViews;
+            ResolveFormula(TypeKey, layer, out var type, out var a, out var b, out var c);
+            if (!AexisGraphSession.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape)
+                || AexisGraphSession.IsStrictLinearMatTexture(srcTex)
+                || !AexisGraphSession.MatchesPack4TextureStorage(srcTex, srcShape))
+                throw new InvalidOperationException(TypeKey + " render-texture path requires an existing descriptor-valid Pack4 texture input: " + layer.name);
 
-            ResolveFormula(TypeKey, layer, out var type, out var a, out var b);
-            if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape))
-                throw new InvalidOperationException(TypeKey + " render-texture path requires pack4 texture input: " + layer.name);
-
-            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.PointwisePack4(srcTex.texture, srcTex.packs, type, a, b, outRt);
-            AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
+            var storageShape = AexisGraphSession.GetTextureStorageShape(srcTex, srcShape);
+            var outputDepth = srcShape.dims == 4 ? srcShape.d * srcTex.packs : srcTex.packs;
+            var outRt = owner.RentTempArray(srcTex.width, srcTex.height, outputDepth, srcTex.texture.format);
+            owner.Ops.PointwisePack4(
+                srcTex.texture,
+                outputDepth,
+                type,
+                a,
+                b,
+                outRt,
+                c,
+                srcShape.dims >= 3 ? srcShape.c : 0);
+            AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
         public override void ExecuteCommandBuffer(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerCommandBufferContext context)
         {
-            ResolveFormula(TypeKey, layer, out var type, out var a, out var b);
+            ResolveFormula(TypeKey, layer, out var type, out var a, out var b, out var c);
 
             var cmd = context.commandBuffer;
             var blobs = context.blobs;
@@ -100,17 +51,20 @@ namespace Aexis.Execution
 
             var src = AexisGraphSession.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = AexisGraphSession.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-            var outArr = owner.RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-            owner.Ops.PointwisePack4(cmd, src.texture, src.packs, type, a, b, outArr);
-            blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-            {
-                texture = outArr,
-                width = src.width,
-                height = src.height,
-                packs = src.packs,
-                refs = 1,
-                owned = true
-            };
+            var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
+            var outputDepth = srcShape.dims == 4 ? srcShape.d * src.packs : src.packs;
+            var outArr = owner.RentTempArray(cmd, src.width, src.height, outputDepth, src.texture.format);
+            owner.Ops.PointwisePack4(
+                cmd,
+                src.texture,
+                outputDepth,
+                type,
+                a,
+                b,
+                outArr,
+                c,
+                srcShape.dims >= 3 ? srcShape.c : 0);
+            blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true, blobName: layer.topNames[0]);
             if (shapes != null)
                 shapes[layer.topNames[0]] = srcShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
@@ -121,10 +75,12 @@ namespace Aexis.Execution
             AexisGraphModel.Layer layer,
             out AexisOps.PointwiseType pointwiseType,
             out float a,
-            out float b)
+            out float b,
+            out float c)
         {
             a = 0f;
             b = 0f;
+            c = 0f;
 
             if (typeKey == AexisLayerTypes.ELU)
             {
@@ -183,9 +139,76 @@ namespace Aexis.Execution
                 return;
             }
 
+            if (typeKey == AexisLayerTypes.BNLL)
+            {
+                pointwiseType = AexisOps.PointwiseType.Softplus;
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.Exp)
+            {
+                pointwiseType = AexisOps.PointwiseType.Exp;
+                a = layer.GetFloat(0, -1f);
+                b = layer.GetFloat(1, 1f);
+                c = layer.GetFloat(2, 0f);
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.Log)
+            {
+                pointwiseType = AexisOps.PointwiseType.Log;
+                a = layer.GetFloat(0, -1f);
+                b = layer.GetFloat(1, 1f);
+                c = layer.GetFloat(2, 0f);
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.Softsign)
+            {
+                pointwiseType = AexisOps.PointwiseType.Softsign;
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.IsInf)
+            {
+                pointwiseType = AexisOps.PointwiseType.IsInf;
+                a = layer.GetInt(0, 1);
+                b = layer.GetInt(1, 1);
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.IsNaN)
+            {
+                pointwiseType = AexisOps.PointwiseType.IsNaN;
+                return;
+            }
+
             if (typeKey == AexisLayerTypes.CELU)
             {
                 pointwiseType = AexisOps.PointwiseType.Celu;
+                a = layer.GetFloat(0, 1f);
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.Power)
+            {
+                pointwiseType = AexisOps.PointwiseType.Power;
+                a = layer.GetFloat(0, 1f);
+                b = layer.GetFloat(1, 1f);
+                c = layer.GetFloat(2, 0f);
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.Threshold)
+            {
+                pointwiseType = AexisOps.PointwiseType.Threshold;
+                a = layer.GetFloat(0, 0f);
+                return;
+            }
+
+            if (typeKey == AexisLayerTypes.ThresholdedRelu)
+            {
+                pointwiseType = AexisOps.PointwiseType.ThresholdedRelu;
                 a = layer.GetFloat(0, 1f);
                 return;
             }

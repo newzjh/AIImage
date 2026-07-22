@@ -554,6 +554,7 @@ namespace Aexis.Execution
                 return false;
             if (!CanUseScalarTextureReductionOp(op))
                 return false;
+            var reductionAxis = reduceAll ? 2 : reduceAlongWidth ? 1 : 0;
 
             RenderTexture outRt;
             AexisGraphSession.BufferShape storageShape;
@@ -561,12 +562,12 @@ namespace Aexis.Execution
             {
                 storageShape = AexisGraphSession.ResolveLinearMatStorageShape(outShape);
                 outRt = owner.RentTempMat(storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
-                ExecuteLinearMatReduction(owner.Ops, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+                ExecuteLinearMatReduction(owner.Ops, srcTex.texture, srcShape, reductionAxis, op, coeff, outRt);
             }
             else
             {
                 outRt = owner.RentTempArray(Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
-                ExecuteScalar2DReduction(owner.Ops, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+                ExecuteScalar2DReduction(owner.Ops, srcTex.texture, srcShape, reductionAxis, op, coeff, outRt);
                 storageShape = new AexisGraphSession.BufferShape(3, outRt.width, outRt.height, 1, 1);
             }
             AexisGraphSession.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], outRt, outShape, storageShape);
@@ -600,6 +601,7 @@ namespace Aexis.Execution
                 return false;
             if (!CanUseScalarTextureReductionOp(op))
                 return false;
+            var reductionAxis = reduceAll ? 2 : reduceAlongWidth ? 1 : 0;
 
             ComputeTexture outRt;
             AexisGraphSession.BufferShape storageShape;
@@ -607,12 +609,12 @@ namespace Aexis.Execution
             {
                 storageShape = AexisGraphSession.ResolveLinearMatStorageShape(outShape);
                 outRt = owner.RentTempMat(context.commandBuffer, storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
-                ExecuteLinearMatReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+                ExecuteLinearMatReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reductionAxis, op, coeff, outRt);
             }
             else
             {
                 outRt = owner.RentTempArray(context.commandBuffer, Mathf.Max(1, outShape.w), Mathf.Max(1, outShape.h), 1, RenderTextureFormat.ARGBHalf);
-                ExecuteScalar2DReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reduceAlongWidth, op, coeff, outRt);
+                ExecuteScalar2DReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reductionAxis, op, coeff, outRt);
                 storageShape = new AexisGraphSession.BufferShape(3, outRt.width, outRt.height, 1, 1);
             }
             context.blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
@@ -733,12 +735,11 @@ namespace Aexis.Execution
             AexisOps ops,
             RenderTexture input,
             AexisGraphSession.BufferShape srcShape,
-            bool reduceAlongWidth,
+            int axis,
             int op,
             float coeff,
             RenderTexture output)
         {
-            var axis = reduceAlongWidth ? 1 : 0;
             ops.ReductionScalar2D(input, srcShape.w, srcShape.h, axis, op, coeff, output);
         }
 
@@ -747,12 +748,11 @@ namespace Aexis.Execution
             CommandBuffer cmd,
             ComputeTexture input,
             AexisGraphSession.BufferShape srcShape,
-            bool reduceAlongWidth,
+            int axis,
             int op,
             float coeff,
             ComputeTexture output)
         {
-            var axis = reduceAlongWidth ? 1 : 0;
             ops.ReductionScalar2D(cmd, input, srcShape.w, srcShape.h, axis, op, coeff, output);
         }
 
@@ -760,12 +760,11 @@ namespace Aexis.Execution
             AexisOps ops,
             RenderTexture input,
             AexisGraphSession.BufferShape srcShape,
-            bool reduceAlongWidth,
+            int axis,
             int op,
             float coeff,
             RenderTexture output)
         {
-            var axis = reduceAlongWidth ? 1 : 0;
             ops.ReductionLinearMat2D(input, srcShape.w, srcShape.h, axis, op, coeff, output);
         }
 
@@ -774,12 +773,11 @@ namespace Aexis.Execution
             CommandBuffer cmd,
             ComputeTexture input,
             AexisGraphSession.BufferShape srcShape,
-            bool reduceAlongWidth,
+            int axis,
             int op,
             float coeff,
             ComputeTexture output)
         {
-            var axis = reduceAlongWidth ? 1 : 0;
             ops.ReductionLinearMat2D(cmd, input, srcShape.w, srcShape.h, axis, op, coeff, output);
         }
 

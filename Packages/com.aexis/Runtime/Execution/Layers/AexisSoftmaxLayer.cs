@@ -75,7 +75,7 @@ namespace Aexis.Execution
 
                 if (TryResolveContiguousSoftmax2D(softTensor, axis, out var rows, out var cols))
                 {
-                    owner.Ops.Softmax2D(softBuf, outTensor.buffer, rows, cols);
+                    owner.Ops.Softmax2D(softBuf, outTensor.buffer, rows, cols, layer.GetInt(10, 0));
                 }
                 else
                 {
@@ -96,7 +96,7 @@ namespace Aexis.Execution
             {
                 var src = AexisGraphSession.GetTexture(textureBlobs, layer.bottomNames[0]);
                 var outRt = owner.RentTempArray(src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.SoftmaxChannelPack4(src.texture, src.packs, outRt);
+                owner.Ops.SoftmaxChannelPack4(src.texture, src.packs, outRt, layer.GetInt(10, 0));
                 textureBlobs[layer.topNames[0]] = new AexisGraphSession.TensorRef
                 {
                     texture = outRt,
@@ -130,13 +130,13 @@ namespace Aexis.Execution
                 {
                     var storageShape = AexisGraphSession.GetTextureStorageShape(scalarSrcTex, scalarSrcShape);
                     var outScalarRt = owner.RentTempMat(storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
-                    owner.Ops.SoftmaxLinearMat2D(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, outScalarRt, scalarAxis);
+                    owner.Ops.SoftmaxLinearMat2D(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, outScalarRt, scalarAxis, layer.GetInt(10, 0));
                     AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outScalarRt, scalarSrcShape, storageShape);
                 }
                 else
                 {
                     var outScalarRt = owner.RentTempArray(scalarSrcTex.width, scalarSrcTex.height, scalarSrcTex.packs, scalarTextureFormat);
-                    owner.Ops.SoftmaxPack4Cdhw(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, 1, 1, outScalarRt, scalarAxis);
+                    owner.Ops.SoftmaxPack4Cdhw(scalarSrcTex.texture, scalarSrcShape.w, scalarSrcShape.h, 1, 1, outScalarRt, scalarAxis, layer.GetInt(10, 0));
                     AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outScalarRt, scalarSrcShape);
                 }
                 owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
@@ -155,7 +155,7 @@ namespace Aexis.Execution
             var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
             var outSlices = logicalDepth * Mathf.Max(1, Mathf.CeilToInt(srcShape.c / 4f));
             var outRt4 = owner.RentTempArray(srcTex.width, srcTex.height, outSlices, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
-            owner.Ops.SoftmaxPack4Cdhw(srcTex.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, outRt4, tensorAxis);
+            owner.Ops.SoftmaxPack4Cdhw(srcTex.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, outRt4, tensorAxis, layer.GetInt(10, 0));
             AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt4, srcShape, srcShape);
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
@@ -178,13 +178,13 @@ namespace Aexis.Execution
                 {
                     var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
                     var outRt = owner.RentTempMat(cmd, storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
-                    owner.Ops.SoftmaxLinearMat2D(cmd, src.texture, srcShape.w, srcShape.h, outRt, scalarAxis);
+                    owner.Ops.SoftmaxLinearMat2D(cmd, src.texture, srcShape.w, srcShape.h, outRt, scalarAxis, layer.GetInt(10, 0));
                     blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outRt, srcShape, storageShape, owned: true);
                 }
                 else
                 {
                     var outRt = owner.RentTempArray(cmd, src.width, src.height, src.packs, AexisGraphSession.ResolveTensorTextureFormat(2));
-                    owner.Ops.SoftmaxPack4Cdhw(cmd, src.texture, srcShape.w, srcShape.h, 1, 1, outRt, scalarAxis);
+                    owner.Ops.SoftmaxPack4Cdhw(cmd, src.texture, srcShape.w, srcShape.h, 1, 1, outRt, scalarAxis, layer.GetInt(10, 0));
                     blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
                     {
                         texture = outRt,
@@ -214,7 +214,7 @@ namespace Aexis.Execution
             var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
             var outSlices = logicalDepth * outPacks;
             var outPack4 = owner.RentTempArray(cmd, src.width, src.height, outSlices, AexisGraphSession.ResolveTensorTextureFormat(srcShape.dims));
-            owner.Ops.SoftmaxPack4Cdhw(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, outPack4, tensorAxis);
+            owner.Ops.SoftmaxPack4Cdhw(cmd, src.texture, srcShape.w, srcShape.h, srcShape.d, srcShape.c, outPack4, tensorAxis, layer.GetInt(10, 0));
             blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
             {
                 texture = outPack4,

@@ -323,10 +323,12 @@ namespace Aexis.Execution
 
             if (!CanUsePack4Interp(src, srcShape))
             {
-                AexisGraphSession.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
-                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
-                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
-                return;
+                throw new InvalidOperationException(
+                    "Interp command-buffer Pack4 profile rejected the input descriptor"
+                    + " | layer=" + layer.name
+                    + " | logical=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                    + " | texture=" + src.width + "x" + src.height + "x" + src.packs
+                    + " | rejectedFallback=placeholder");
             }
 
             var coordinateTransformModePack = ResolveCoordinateTransformMode(layer);
@@ -427,8 +429,11 @@ namespace Aexis.Execution
             }
             else
             {
-                AexisGraphSession.ResolveCmdTextureLayout(outShape, out var placeholderW, out var placeholderH, out var placeholderPacks);
-                owner.PublishCmdTensorLikeInput(cmd, layer.topNames[0], placeholderW, placeholderH, placeholderPacks, blobs, shapes, outShape);
+                throw new InvalidOperationException(
+                    "Interp command-buffer Pack4 resize mode is unsupported"
+                    + " | layer=" + layer.name
+                    + " | resize_type=" + resizeType
+                    + " | rejectedFallback=placeholder");
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);

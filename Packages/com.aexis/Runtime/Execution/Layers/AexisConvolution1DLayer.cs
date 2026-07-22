@@ -8,12 +8,18 @@ namespace Aexis.Execution
     public sealed class AexisConvolution1DLayer : AexisBaseLayer
     {
         public AexisConvolution1DLayer()
-            : base(AexisLayerTypes.Convolution1D, supportsBufferPath: true, supportsCommandBufferPath: true)
+            : base(AexisLayerTypes.Convolution1D, supportsBufferPath: false, supportsCommandBufferPath: true)
         {
         }
 
         public override AexisGraphSession.LayerLoadMetrics LoadLayer(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisWeightReader br)
         {
+            if (layer.GetInt(19, 0) != 0)
+                throw new NotSupportedException("Convolution1D dynamic_weight=1 has no immutable Pack4 weight profile: " + layer.name);
+            var padValue = layer.GetFloat(18, 0f);
+            if (float.IsNaN(padValue) || float.IsInfinity(padValue) || Math.Abs(padValue) > 0f)
+                throw new NotSupportedException("Convolution1D non-zero pad_value is not implemented by the Pack4 convolution kernel: " + layer.name);
+
             var bytesStart = br.Position;
             long readMs = 0;
             long uploadMs = 0;
@@ -77,25 +83,15 @@ namespace Aexis.Execution
 
         public override void ExecuteBuffer(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
         {
-            if (!owner._extraPacks.TryGetValue(layer.name, out var packObj) || packObj is not AexisGraphSession.ConvPack conv)
-                throw new InvalidOperationException("Convolution1D pack not found: " + layer.name);
-
-            if (!owner.ShouldForceCurrentLayerBufferPath()
-                && owner.EnableGeneralTextureConvolution
-                && CanUseTexturePath(layer, context, conv))
-            {
-                ExecuteRenderTexturePath(owner, layer, context);
-                return;
-            }
-
-#pragma warning disable CS0618
-            ExecuteComputeBufferPath(owner, layer, context);
-#pragma warning restore CS0618
+            ExecuteRenderTexturePath(owner, layer, context);
         }
 
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public override void ExecuteComputeBufferPath(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
         {
+            if (!owner.IsDebugOracleExecution)
+                throw new InvalidOperationException("Convolution1D ComputeBuffer execution is debug-oracle only; production requires the texture-native path: " + layer.name);
+
             var textureBlobs = context.textureBlobs;
             var textureShapes = context.textureShapes;
             var bufferBlobs = context.bufferBlobs;
@@ -171,7 +167,7 @@ namespace Aexis.Execution
             RenderTexture scalarOutput = null;
             try
             {
-                packInput = owner.RentTempArray(srcShape.w, 1, conv.inPacks, RenderTextureFormat.ARGBHalf);
+                packInput = owner.RentTempArray(srcShape.w, 1, conv.inPacks, owner.TensorTextureFormat);
                 if (AexisGraphSession.IsStrictLinearMatTexture(src))
                 {
                     owner.Ops.ReshapeLinearMatToPack4(
@@ -199,7 +195,7 @@ namespace Aexis.Execution
                         packInput);
                 }
 
-                packOutput = owner.RentTempArray(outW, 1, conv.outPacks, RenderTextureFormat.ARGBHalf);
+                packOutput = owner.RentTempArray(outW, 1, conv.outPacks, owner.TensorTextureFormat);
                 owner.Ops.ConvPack4General(
                     packInput,
                     conv.inPacks,
@@ -260,7 +256,7 @@ namespace Aexis.Execution
             ComputeTexture scalarOutput = null;
             try
             {
-                packInput = owner.RentTempArray(cmd, srcShape.w, 1, conv.inPacks, RenderTextureFormat.ARGBHalf);
+                packInput = owner.RentTempArray(cmd, srcShape.w, 1, conv.inPacks, owner.TensorTextureFormat);
                 if (AexisGraphSession.IsStrictLinearMatTexture(src))
                 {
                     owner.Ops.ReshapeLinearMatToPack4(
@@ -290,7 +286,7 @@ namespace Aexis.Execution
                         packInput);
                 }
 
-                packOutput = owner.RentTempArray(cmd, outW, 1, conv.outPacks, RenderTextureFormat.ARGBHalf);
+                packOutput = owner.RentTempArray(cmd, outW, 1, conv.outPacks, owner.TensorTextureFormat);
                 owner.Ops.ConvPack4General(
                     cmd,
                     packInput,

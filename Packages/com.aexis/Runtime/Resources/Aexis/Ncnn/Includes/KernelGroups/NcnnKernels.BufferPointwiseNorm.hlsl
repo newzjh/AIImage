@@ -72,6 +72,22 @@ void NcnnSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId)
     }
     float rowMax = _Red0[0];
 
+    if (_SoftmaxMode == 2)
+    {
+        int firstMaximum = 0;
+        for (int c = 0; c < cols; c++)
+        {
+            if (_SoftIn[baseIndex + c] == rowMax)
+            {
+                firstMaximum = c;
+                break;
+            }
+        }
+        for (int c = tid; c < cols; c += 256)
+            _SoftOut[baseIndex + c] = c == firstMaximum ? 1.0 : 0.0;
+        return;
+    }
+
     float sum = 0.0;
     for (int c1 = tid; c1 < cols; c1 += 256)
     {
@@ -93,7 +109,9 @@ void NcnnSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId)
 
     for (int c2 = tid; c2 < cols; c2 += 256)
     {
-        _SoftOut[baseIndex + c2] = _SoftOut[baseIndex + c2] * invSum;
+        _SoftOut[baseIndex + c2] = _SoftmaxMode == 1
+            ? _SoftIn[baseIndex + c2] - rowMax - log(max(_Red1[0], 1e-20))
+            : _SoftOut[baseIndex + c2] * invSum;
     }
 }
 

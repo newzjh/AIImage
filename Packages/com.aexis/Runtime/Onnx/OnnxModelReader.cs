@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using Aexis;
@@ -72,6 +73,9 @@ namespace Aexis.Onnx
     {
         public string name = string.Empty;
         public TensorDataType dataType = TensorDataType.Unknown;
+        // Preserve the source ONNX element type so lowering can distinguish
+        // INT64 from the narrowed Aexis Int32 logical texture contract.
+        public int onnxDataType;
         public long[] dims = Array.Empty<long>();
     }
 
@@ -86,6 +90,10 @@ namespace Aexis.Onnx
         public float[] floatData = Array.Empty<float>();
         public int[] int32Data = Array.Empty<int>();
         public long[] int64Data = Array.Empty<long>();
+        public int dataLocation;
+        public readonly Dictionary<string, string> externalData = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        public bool UsesExternalData => dataLocation == 1 || externalData.Count != 0;
 
         public long ElementCount
         {
@@ -98,9 +106,117 @@ namespace Aexis.Onnx
                 {
                     if (dims[i] < 0)
                         return -1;
-                    count = checked(count * Math.Max(1, dims[i]));
+                    count = checked(count * dims[i]);
                 }
                 return count;
+            }
+        }
+
+        public bool TryValidatePayload(out string reason)
+        {
+            long count;
+            try
+            {
+                count = ElementCount;
+            }
+            catch (OverflowException)
+            {
+                reason = "element count overflows Int64";
+                return false;
+            }
+            if (count < 0)
+            {
+                reason = "shape contains a dynamic or negative extent";
+                return false;
+            }
+            if (count > int.MaxValue)
+            {
+                reason = "element count exceeds the managed importer limit";
+                return false;
+            }
+
+            var elementCount = (int)count;
+            if (rawData != null && rawData.Length != 0)
+            {
+                if (!TryGetElementByteWidth(onnxDataType, out var width))
+                {
+                    reason = "raw payload uses unsupported ONNX elem_type " + onnxDataType.ToString(CultureInfo.InvariantCulture);
+                    return false;
+                }
+                var expected = checked((long)elementCount * width);
+                if (rawData.LongLength != expected)
+                {
+                    reason = "raw payload length is " + rawData.LongLength.ToString(CultureInfo.InvariantCulture)
+                        + " bytes; expected " + expected.ToString(CultureInfo.InvariantCulture);
+                    return false;
+                }
+                reason = null;
+                return true;
+            }
+
+            if (elementCount == 0)
+            {
+                reason = null;
+                return true;
+            }
+
+            switch (onnxDataType)
+            {
+                case 1:
+                    if (floatData != null && floatData.Length == elementCount) { reason = null; return true; }
+                    reason = "float_data length does not match the tensor shape";
+                    return false;
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 9:
+                case 10:
+                case 12:
+                    if (int32Data != null && int32Data.Length == elementCount) { reason = null; return true; }
+                    reason = "int32_data length does not match the tensor shape";
+                    return false;
+                case 7:
+                case 11:
+                case 13:
+                    if (int64Data != null && int64Data.Length == elementCount) { reason = null; return true; }
+                    reason = "int64_data length does not match the tensor shape";
+                    return false;
+                default:
+                    reason = "ONNX elem_type " + onnxDataType.ToString(CultureInfo.InvariantCulture) + " is not supported by the payload validator";
+                    return false;
+            }
+        }
+
+        internal static bool TryGetElementByteWidth(int onnxType, out int width)
+        {
+            switch (onnxType)
+            {
+                case 2:
+                case 3:
+                case 9:
+                    width = 1;
+                    return true;
+                case 10:
+                case 16:
+                    width = 2;
+                    return true;
+                case 1:
+                case 4:
+                case 5:
+                case 6:
+                case 12:
+                    width = 4;
+                    return true;
+                case 7:
+                case 11:
+                case 13:
+                    width = 8;
+                    return true;
+                default:
+                    width = 0;
+                    return false;
             }
         }
 
@@ -145,7 +261,11 @@ namespace Aexis.Onnx
         {
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("An ONNX path is required.", nameof(path));
-            return Read(File.ReadAllBytes(path));
+            var fullPath = Path.GetFullPath(path);
+            var model = Parse(File.ReadAllBytes(fullPath));
+            ResolveExternalData(model, fullPath);
+            ValidateTensorPayloads(model);
+            return model;
         }
 
         public static OnnxModel Read(byte[] modelBytes)
@@ -153,6 +273,18 @@ namespace Aexis.Onnx
             if (modelBytes == null || modelBytes.Length == 0)
                 throw new ArgumentException("ONNX model bytes are required.", nameof(modelBytes));
 
+            var model = Parse(modelBytes);
+            foreach (var tensor in EnumerateTensors(model))
+            {
+                if (tensor.UsesExternalData)
+                    throw new InvalidDataException("ONNX tensor " + TensorName(tensor) + " uses external_data. Import from a model path so relative payload files can be resolved safely.");
+            }
+            ValidateTensorPayloads(model);
+            return model;
+        }
+
+        private static OnnxModel Parse(byte[] modelBytes)
+        {
             var model = new OnnxModel();
             var reader = new ProtoReader(modelBytes);
             while (reader.TryRead(out var field, out var wire))
@@ -168,6 +300,96 @@ namespace Aexis.Onnx
             if (model.graph == null || (model.graph.nodes.Count == 0 && model.graph.initializers.Count == 0))
                 throw new InvalidDataException("ONNX ModelProto has no GraphProto.");
             return model;
+        }
+
+        private static void ResolveExternalData(OnnxModel model, string modelPath)
+        {
+            var root = Path.GetFullPath(Path.GetDirectoryName(modelPath) ?? string.Empty);
+            var rootPrefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            foreach (var tensor in EnumerateTensors(model))
+            {
+                if (!tensor.UsesExternalData)
+                    continue;
+                if (!tensor.externalData.TryGetValue("location", out var location) || string.IsNullOrWhiteSpace(location))
+                    throw new InvalidDataException("ONNX tensor " + TensorName(tensor) + " declares external_data without a location.");
+                if (Path.IsPathRooted(location))
+                    throw new InvalidDataException("ONNX tensor " + TensorName(tensor) + " uses an absolute external_data location, which is not allowed: " + location);
+
+                var payloadPath = Path.GetFullPath(Path.Combine(root, location.Replace('/', Path.DirectorySeparatorChar)));
+                if (!payloadPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("ONNX tensor " + TensorName(tensor) + " external_data escapes the model directory: " + location);
+                if (!File.Exists(payloadPath))
+                    throw new FileNotFoundException("External ONNX tensor payload was not found for " + TensorName(tensor) + ": " + payloadPath, payloadPath);
+
+                var offset = ParseExternalRange(tensor, "offset", 0L);
+                long requestedLength;
+                if (tensor.externalData.ContainsKey("length"))
+                {
+                    requestedLength = ParseExternalRange(tensor, "length", -1L);
+                }
+                else
+                {
+                    if (!OnnxTensor.TryGetElementByteWidth(tensor.onnxDataType, out var width))
+                        throw new InvalidDataException("Cannot infer external_data length for tensor " + TensorName(tensor) + " with ONNX elem_type " + tensor.onnxDataType.ToString(CultureInfo.InvariantCulture) + ".");
+                    requestedLength = checked(tensor.ElementCount * width);
+                }
+                if (requestedLength < 0 || requestedLength > int.MaxValue)
+                    throw new InvalidDataException("External ONNX tensor payload length is outside the supported range for " + TensorName(tensor) + ".");
+
+                using var stream = new FileStream(payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (offset < 0 || offset > stream.Length || requestedLength > stream.Length - offset)
+                    throw new EndOfStreamException("External ONNX tensor payload is truncated for " + TensorName(tensor)
+                        + ": offset=" + offset.ToString(CultureInfo.InvariantCulture)
+                        + " length=" + requestedLength.ToString(CultureInfo.InvariantCulture)
+                        + " fileLength=" + stream.Length.ToString(CultureInfo.InvariantCulture) + ".");
+                stream.Position = offset;
+                tensor.rawData = new byte[(int)requestedLength];
+                var read = 0;
+                while (read < tensor.rawData.Length)
+                {
+                    var current = stream.Read(tensor.rawData, read, tensor.rawData.Length - read);
+                    if (current <= 0)
+                        throw new EndOfStreamException("External ONNX tensor payload ended while reading " + TensorName(tensor) + ".");
+                    read += current;
+                }
+            }
+        }
+
+        private static long ParseExternalRange(OnnxTensor tensor, string key, long defaultValue)
+        {
+            if (!tensor.externalData.TryGetValue(key, out var text) || string.IsNullOrWhiteSpace(text))
+                return defaultValue;
+            if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value < 0)
+                throw new InvalidDataException("ONNX tensor " + TensorName(tensor) + " has invalid external_data " + key + "=" + text + ".");
+            return value;
+        }
+
+        private static void ValidateTensorPayloads(OnnxModel model)
+        {
+            foreach (var tensor in EnumerateTensors(model))
+            {
+                if (!tensor.TryValidatePayload(out var reason))
+                    throw new InvalidDataException("ONNX tensor " + TensorName(tensor) + " has an invalid payload: " + reason + ".");
+            }
+        }
+
+        private static IEnumerable<OnnxTensor> EnumerateTensors(OnnxModel model)
+        {
+            if (model?.graph == null)
+                yield break;
+            foreach (var pair in model.graph.initializers)
+                if (pair.Value != null)
+                    yield return pair.Value;
+            foreach (var node in model.graph.nodes)
+                if (node != null)
+                    foreach (var pair in node.attributes)
+                        if (pair.Value?.tensor != null)
+                            yield return pair.Value.tensor;
+        }
+
+        private static string TensorName(OnnxTensor tensor)
+        {
+            return string.IsNullOrEmpty(tensor?.name) ? "<unnamed>" : tensor.name;
         }
 
         private static void ParseOpset(byte[] bytes, OnnxModel model)
@@ -302,6 +524,14 @@ namespace Aexis.Onnx
                     tensor.name = reader.ReadString();
                 else if (field == 9 && wire == 2)
                     tensor.rawData = reader.ReadBytes();
+                else if (field == 13 && wire == 2)
+                {
+                    ParseExternalDataEntry(reader.ReadBytes(), out var key, out var value);
+                    if (!string.IsNullOrEmpty(key))
+                        tensor.externalData[key] = value;
+                }
+                else if (field == 14 && wire == 0)
+                    tensor.dataLocation = (int)reader.ReadVarint();
                 else
                     reader.Skip(wire);
             }
@@ -311,6 +541,22 @@ namespace Aexis.Onnx
             tensor.int32Data = int32s.ToArray();
             tensor.int64Data = int64s.ToArray();
             return tensor;
+        }
+
+        private static void ParseExternalDataEntry(byte[] bytes, out string key, out string value)
+        {
+            key = string.Empty;
+            value = string.Empty;
+            var reader = new ProtoReader(bytes);
+            while (reader.TryRead(out var field, out var wire))
+            {
+                if (field == 1 && wire == 2)
+                    key = reader.ReadString();
+                else if (field == 2 && wire == 2)
+                    value = reader.ReadString();
+                else
+                    reader.Skip(wire);
+            }
         }
 
         private static OnnxValueInfo ParseValueInfo(byte[] bytes)
@@ -347,7 +593,10 @@ namespace Aexis.Onnx
             while (reader.TryRead(out var field, out var wire))
             {
                 if (field == 1 && wire == 0)
-                    value.dataType = ToType((int)reader.ReadVarint());
+                {
+                    value.onnxDataType = (int)reader.ReadVarint();
+                    value.dataType = ToType(value.onnxDataType);
+                }
                 else if (field == 2 && wire == 2)
                     value.dims = ParseShape(reader.ReadBytes());
                 else
@@ -449,6 +698,10 @@ namespace Aexis.Onnx
                 case 3: return TensorDataType.Int8;
                 case 2: return TensorDataType.UInt8;
                 case 6: return TensorDataType.Int32;
+                // Aexis' texture index contract is Int32. ONNX INT64/BOOL constants
+                // are range-checked and narrowed by the graph compiler before upload.
+                case 7: return TensorDataType.Int32;
+                case 9: return TensorDataType.Int32;
                 default: return TensorDataType.Unknown;
             }
         }
