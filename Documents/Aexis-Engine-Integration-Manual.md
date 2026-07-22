@@ -153,3 +153,11 @@ Aexis 源码使用 MIT，不自动改变模型权重许可证。每一个发布�
 # Player Build Resource Staging
 
 When a Player build includes the Main2 application sample, `AexisApplicationExamplePlayerBuildPreprocessor` stages every missing package-default sample resource into `Assets/StreamingAssets` before Unity collects Player data. This includes NCNN `.param` and `.bin` files, ONNX files, tokenizer files, and inference manifests. Existing project files are not overwritten, so large externally supplied GFPGAN, Stable Diffusion, MONAI/VISTA, and QWEN model files remain intact and are included by the normal Unity StreamingAssets build flow. Set `AEXIS_SKIP_SAMPLE_STREAMING_ASSETS_STAGING=1` only for a specialized build pipeline that intentionally replaces the whole StreamingAssets tree.
+
+## P1 model contract additions
+
+`AexisModelAsset` is now the package importer output for `.onnx`, `.param`, and `.aexis` files. It stores source bytes, the versioned Aexis binary graph, optional NCNN weights, and the stable import diagnostic report. `AexisNcnnBinaryParam` and `AexisModelArchive` are the offline/prepack equivalents; archives must be rebuilt whenever a graph schema, custom layer declaration, or weight payload changes.
+
+Low-precision manifests may declare BF16, calibrated Pack4 INT8 activation plans, per-layer mixed precision, and a precision gate. Treat the gate as a required release check: compare the candidate output against the recorded FP32 baseline with `AexisPrecisionGateEvaluator`, then reject a variant that exceeds its recorded error/cosine limits.
+
+Custom layers must be registered through `AexisCustomLayerRegistry` with a versioned schema and shader kernel id. P1 visual layers use the same schema/ABI preflight. A missing Pack4 RenderTexture/CommandBuffer profile is a terminal error and must not be worked around with a ComputeBuffer readback or fallback.
