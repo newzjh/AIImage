@@ -19,7 +19,9 @@ namespace Aexis.Editor
             ValidateKernelDeclaration();
             ValidateGridSampleLowering();
             ValidateP1CapabilityCatalog();
+            ValidateStrictP1Pack4Profile();
             ValidatePrecisionContracts();
+            ValidateBfloat16CastLowering();
             ValidateDetectionPostprocessing();
             Debug.Log("[AexisP1PackageValidation] passed");
         }
@@ -155,6 +157,24 @@ namespace Aexis.Editor
                             weightDataType = TensorDataType.BFloat16,
                             accumulationDataType = TensorDataType.Float32
                         }
+                    },
+                    activationPlans = new[]
+                    {
+                        new QuantizedActivationPlan
+                        {
+                            layerName = "head",
+                            operatorName = "Convolution",
+                            packing = ActivationQuantizationPacking.Pack4UnsignedInt8,
+                            calibration = new ActivationCalibrationRange
+                            {
+                                layerName = "head",
+                                tensorName = "head_input",
+                                minimum = -1f,
+                                maximum = 2f,
+                                sampleCount = 32,
+                                method = CalibrationMethod.Percentile
+                            }
+                        }
                     }
                 },
                 precisionGate = new ModelPrecisionGateContract
@@ -166,8 +186,39 @@ namespace Aexis.Editor
                 }
             };
             manifest.Validate();
+            Require(Math.Abs(manifest.mixedPrecision.activationPlans[0].calibration.SymmetricScale - 2f / 127f) < 1e-6f,
+                "INT8 activation calibration scale is not deterministic.");
             var measurement = AexisPrecisionGateEvaluator.Measure("output", new[] { 1f, 2f }, new[] { 1.01f, 1.99f });
             Require(manifest.precisionGate.Accepts(measurement, out _), "Precision gate rejected a compliant output.");
+        }
+
+        private static void ValidateBfloat16CastLowering()
+        {
+            var model = new OnnxModel { opset = 16 };
+            model.graph.inputs.Add(new OnnxValueInfo
+            {
+                name = "input",
+                dataType = TensorDataType.Float16,
+                onnxDataType = 10,
+                dims = new long[] { 1, 3, 4, 4 }
+            });
+            var node = new OnnxNode { name = "to_bfloat16", opType = "Cast" };
+            node.inputs.Add("input");
+            node.outputs.Add("output");
+            node.attributes["to"] = new OnnxAttribute { i = 16 };
+            model.graph.nodes.Add(node);
+            model.graph.outputs.Add(new OnnxValueInfo
+            {
+                name = "output",
+                dataType = TensorDataType.BFloat16,
+                onnxDataType = 16,
+                dims = new long[] { 1, 3, 4, 4 }
+            });
+
+            var lowered = AexisOnnxGraphLowering.Lower(model);
+            var layer = lowered.graph.layers[lowered.graph.layers.Count - 1];
+            Require(lowered.IsEligible && layer.typeName == "Cast" && layer.GetInt(0) == 2 && layer.GetInt(1) == 4,
+                "ONNX BFLOAT16 Cast did not lower to the Pack4 BF16 ABI.");
         }
 
         private static void ValidateP1CapabilityCatalog()
@@ -180,6 +231,52 @@ namespace Aexis.Editor
             {
                 Require(AexisOperatorCapabilities.TryGet(operatorName, out var capability) && capability.importSupported,
                     "P1 operator is missing from the capability catalog: " + operatorName);
+            }
+        }
+
+        private static void ValidateStrictP1Pack4Profile()
+        {
+            // Exercise the loaded-runtime verifier rather than only the static
+            // capability catalog. Flip has no immutable weights, so this validates
+            // the texture-only P1 admission path without creating a model fixture.
+            using (var ops = new AexisOps())
+            using (var session = new AexisGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat })
+            using (var reader = new AexisFloatArrayWeightReader(Array.Empty<float>()))
+            {
+                session.LoadModel("7767517\n1 2\nFlip p1_flip 1 1 data output\n", reader);
+                var descriptor = new AexisTexturePlanTensorDescriptor
+                {
+                    blob = "data",
+                    logicalShape = new[] { 3, 4, 4, 1, 4 },
+                    storageShape = new[] { 3, 4, 4, 1, 4 },
+                    layout = AexisTexturePlanLayout.Packed4,
+                    dtype = "FP32",
+                    logicalDtype = "Float32",
+                    textureBacked = true
+                };
+                var report = session.AnalyzeLoadedModelPreflight(new AexisModelPreflightRequest
+                {
+                    strict = true,
+                    targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+                    targetDtype = "BF16",
+                    targetLayout = AexisTexturePlanLayout.Packed4,
+                    inputs = new[]
+                    {
+                        new AexisPreflightTensorDescriptor
+                        {
+                            blob = "data",
+                            logicalShape = descriptor.logicalShape,
+                            storageShape = descriptor.storageShape,
+                            layout = descriptor.layout,
+                            dtype = descriptor.dtype,
+                            logicalDtype = descriptor.logicalDtype
+                        }
+                    },
+                    textureInputs = new[] { descriptor }
+                });
+                Require(report.strictEligible && report.texturePlan.dispatchAllowed,
+                    "Loaded P1 Pack4/BF16 profile was not admitted by strict preflight: "
+                    + (report.summary ?? string.Empty) + " | " + (report.texturePlan?.summary ?? string.Empty));
             }
         }
 

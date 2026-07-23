@@ -132,7 +132,7 @@ namespace Aexis.Execution
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedDepthWiseWeight4.SetData(w4);
                                             pack.packedBias4.SetData(b4);
-                                            if (owner.UsesFp16WeightStorage)
+                                            if (owner.UsesFp16WeightsForLayer(layer))
                                                 pack.packedDepthWiseWeight4Fp16 = AexisGraphSession.NewFp16Vector4Buffer(w4, "AexisGraphSession.ConvPackedDepthWiseWeight4Fp16:" + layer.name);
                                             phaseSw.Stop();
                                             packMs += phaseSw.ElapsedMilliseconds;
@@ -257,7 +257,7 @@ namespace Aexis.Execution
 
             var outWTex = AexisGraphSession.ComputeConvOut(src.width, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
             var outHTex = AexisGraphSession.ComputeConvOut(src.height, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
-            var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
+            var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, owner.ResolveActivationTextureFormat(layer, 3));
 
             var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
             var useInt4WeightOnly = owner.UsesInt4WeightsForLayer(layer);
@@ -299,7 +299,7 @@ namespace Aexis.Execution
             }
             else if (canUseDepthWiseTexturePath)
             {
-                owner.Ops.SetFp16DepthWiseWeights(owner.UsesFp16WeightStorage ? conv.packedDepthWiseWeight4Fp16 : null);
+                owner.Ops.SetFp16DepthWiseWeights(owner.UsesFp16WeightsForLayer(layer) ? conv.packedDepthWiseWeight4Fp16 : null);
                 owner.Ops.ConvDepthWisePack4(src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, outRt);
                 if (owner.ShouldCompareTextureConvLayer(layer.name))
                     owner.CompareTextureConvPath(layer.name, layer.bottomNames[0], conv, outWTex, outHTex, outRt, textureBlobs, bufferBlobs, textureShapes, bufferViews, tempOwned);
@@ -356,7 +356,7 @@ namespace Aexis.Execution
             ComputeTexture output = null;
             try
             {
-                output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, RenderTextureFormat.ARGBHalf);
+                output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, owner.ResolveActivationTextureFormat(layer, 3));
                 var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
                 var useInt4WeightOnly = owner.UsesInt4WeightsForLayer(layer);
                 owner.Ops.SetInt8ConvWeights(
@@ -375,7 +375,7 @@ namespace Aexis.Execution
                 }
                 else if (SupportsDepthWiseTexturePath(conv) && (conv.outC & 3) == 0 && conv.packedDepthWiseWeight4 != null && conv.packedBias4 != null)
                 {
-                    owner.Ops.SetFp16DepthWiseWeights(owner.UsesFp16WeightStorage ? conv.packedDepthWiseWeight4Fp16 : null);
+                    owner.Ops.SetFp16DepthWiseWeights(owner.UsesFp16WeightsForLayer(layer) ? conv.packedDepthWiseWeight4Fp16 : null);
                     owner.Ops.ConvDepthWisePack4(cmd, src.texture, conv.packedDepthWiseWeight4, conv.packedBias4, conv.inC, conv.outC, conv.group, conv.outPacks, conv.kernelW, conv.kernelH, conv.strideW, conv.strideH, conv.padLeft, conv.padTop, conv.dilationW, conv.dilationH, conv.activationType, conv.activationSlope, output);
                 }
                 else

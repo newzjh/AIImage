@@ -124,7 +124,7 @@ namespace Aexis.Execution
             { "TopK", "TopK" }, { "NonZero", "NonZero" }, { "OneHot", "OneHot" }, { "CumSum", "CumSum" },
             { "Compress", "Compress" }, { "Gather", "Gather" }, { "GatherElements", "GatherElements" },
             { "GatherND", "GatherND" }, { "Scatter", "Scatter" }, { "ScatterElements", "ScatterElements" }, { "ScatterND", "ScatterND" },
-            { "Einsum", "MatMul" },
+            { "Einsum", "Einsum" },
             { "Mod", "BinaryOp" }, { "Equal", "BinaryOp" }, { "Greater", "BinaryOp" }, { "GreaterOrEqual", "BinaryOp" },
             { "Less", "BinaryOp" }, { "LessOrEqual", "BinaryOp" }, { "And", "BinaryOp" }, { "Or", "BinaryOp" },
             { "Xor", "BinaryOp" }, { "Not", "UnaryOp" }, { "Sum", "Eltwise" }, { "Mean", "Eltwise" }
@@ -278,7 +278,7 @@ namespace Aexis.Execution
                 {
                     diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "unsupported-einsum-equation",
                         einsumReason,
-                        "Rewrite this Einsum to Transpose/Reshape/MatMul, or use a two-input direct batched-matmul equation.", true));
+                        "Use a static two/three-input rank<=4 equation without ellipsis/repeated labels, or lower the equation offline.", true));
                     continue;
                 }
 
@@ -579,9 +579,9 @@ namespace Aexis.Execution
             out string reason)
         {
             reason = null;
-            if (node.inputs.Count != 2 || node.outputs.Count != 1)
+            if ((node.inputs.Count != 2 && node.inputs.Count != 3) || node.outputs.Count != 1)
             {
-                reason = "The P0 Einsum lowering accepts exactly two operands and one output.";
+                reason = "The texture-native Einsum profile accepts two or three operands and one output.";
                 return false;
             }
 
@@ -589,52 +589,46 @@ namespace Aexis.Execution
             var arrow = equation.IndexOf("->", StringComparison.Ordinal);
             if (arrow <= 0 || equation.IndexOf("...", StringComparison.Ordinal) >= 0)
             {
-                reason = "Einsum requires an explicit equation without ellipsis for direct MatMul lowering.";
+                reason = "Einsum requires an explicit equation without ellipsis.";
                 return false;
             }
             var operands = equation.Substring(0, arrow).Split(',');
             var output = equation.Substring(arrow + 2);
-            if (operands.Length != 2
-                || !descriptors.TryGetValue(node.inputs[0], out var left)
-                || !descriptors.TryGetValue(node.inputs[1], out var right)
-                || left.shape == null || right.shape == null
-                || left.shape.Length < 2 || left.shape.Length > 4
-                || right.shape.Length != left.shape.Length
-                || operands[0].Length != left.shape.Length
-                || operands[1].Length != right.shape.Length
-                || output.Length != left.shape.Length)
+            if (operands.Length != node.inputs.Count || output.Length == 0 || output.Length > 4 || output.Distinct().Count() != output.Length)
             {
-                reason = "Einsum operand labels must match two equal static ranks in the range 2..4.";
+                reason = "Einsum requires a unique explicit output of rank 1..4.";
                 return false;
             }
-
-            var rank = left.shape.Length;
-            var leading = rank - 2;
-            if (operands[0].Distinct().Count() != operands[0].Length
-                || operands[1].Distinct().Count() != operands[1].Length
-                || output.Distinct().Count() != output.Length)
+            var extents = new Dictionary<char, long>();
+            var labels = new HashSet<char>();
+            for (var operandIndex = 0; operandIndex < operands.Length; operandIndex++)
             {
-                reason = "Repeated labels within an Einsum operand/output are not a direct MatMul profile.";
-                return false;
-            }
-            for (var axis = 0; axis < leading; axis++)
-            {
-                if (operands[0][axis] != operands[1][axis]
-                    || operands[0][axis] != output[axis]
-                    || left.shape[axis] != right.shape[axis])
+                if (!descriptors.TryGetValue(node.inputs[operandIndex], out var descriptor)
+                    || descriptor.shape == null || descriptor.shape.Length < 1 || descriptor.shape.Length > 4
+                    || operands[operandIndex].Length != descriptor.shape.Length
+                    || operands[operandIndex].Distinct().Count() != operands[operandIndex].Length)
                 {
-                    reason = "Direct Einsum MatMul lowering requires identical, non-broadcast leading batch labels and extents.";
+                    reason = "Einsum operand labels must be unique and match static rank 1..4 tensors.";
                     return false;
                 }
+                for (var axis = 0; axis < operands[operandIndex].Length; axis++)
+                {
+                    var extent = descriptor.shape[axis];
+                    var label = operands[operandIndex][axis];
+                    if (extent <= 0) { reason = "Einsum requires static positive dimensions."; return false; }
+                    labels.Add(label);
+                    if (extents.TryGetValue(label, out var known) && known != extent && known != 1 && extent != 1)
+                    {
+                        reason = "Einsum shared labels require equal extents or broadcast extent one.";
+                        return false;
+                    }
+                    extents[label] = Math.Max(known, extent);
+                }
             }
-            if (operands[0][leading] != output[leading]
-                || operands[0][rank - 1] != operands[1][leading]
-                || operands[1][rank - 1] != output[rank - 1]
-                || left.shape[rank - 1] != right.shape[leading])
-            {
-                reason = "Einsum labels/extents do not match [...,M,K] x [...,K,N] -> [...,M,N].";
-                return false;
-            }
+            if (labels.Count > 8 || output.Any(label => !labels.Contains(label)))
+            { reason = "Einsum supports at most eight operand labels and every output label must be present."; return false; }
+            if (labels.Count - output.Length > 4)
+            { reason = "Einsum native shader supports at most four reduced labels."; return false; }
             return true;
         }
 
@@ -1717,7 +1711,7 @@ namespace Aexis.Execution
                 var to = ToNcnnCastType(targetType, targetOnnxType);
                 if (from == 0 || to == 0)
                     diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-cast-dtype",
-                        "Cast only supports FP32, FP16, Int32, Int8, and UInt8 in the Aexis texture contract.",
+                        "Cast only supports FP32, FP16, BF16, Int32, Int8, and UInt8 in the Aexis texture contract.",
                         "Insert a supported explicit cast before import.", true));
                 layer.intParams[0] = from.ToString(CultureInfo.InvariantCulture);
                 layer.intParams[1] = to.ToString(CultureInfo.InvariantCulture);
@@ -2655,6 +2649,7 @@ namespace Aexis.Execution
             {
                 case 1: return TensorDataType.Float32;
                 case 10: return TensorDataType.Float16;
+                case 16: return TensorDataType.BFloat16;
                 case 3: return TensorDataType.Int8;
                 case 2: return TensorDataType.UInt8;
                 case 6:
@@ -2674,6 +2669,7 @@ namespace Aexis.Execution
             {
                 case TensorDataType.Float32: return 1;
                 case TensorDataType.Float16: return 2;
+                case TensorDataType.BFloat16: return 4;
                 case TensorDataType.Int8: return 3;
                 case TensorDataType.Int32: return 5;
                 case TensorDataType.UInt8: return 6;
@@ -3266,7 +3262,8 @@ namespace Aexis.Execution
                 || string.Equals(node.opType, "GlobalAveragePool", StringComparison.Ordinal) || string.Equals(node.opType, "GlobalMaxPool", StringComparison.Ordinal))
                 shape = InferPool(node, shape, string.Equals(node.opType, "GlobalAveragePool", StringComparison.Ordinal) || string.Equals(node.opType, "GlobalMaxPool", StringComparison.Ordinal));
             if (string.Equals(node.opType, "Gemm", StringComparison.Ordinal)) shape = InferGemm(node, inputs);
-            if ((string.Equals(node.opType, "MatMul", StringComparison.Ordinal) || string.Equals(node.opType, "Einsum", StringComparison.Ordinal)) && inputs.Count > 1) shape = InferMatMul(inputs[0].shape, inputs[1].shape);
+            if (string.Equals(node.opType, "MatMul", StringComparison.Ordinal) && inputs.Count > 1) shape = InferMatMul(inputs[0].shape, inputs[1].shape);
+            if (string.Equals(node.opType, "Einsum", StringComparison.Ordinal) && inputs.Count > 1) shape = InferEinsum(node, inputs);
             if (string.Equals(node.opType, "Reshape", StringComparison.Ordinal)) shape = InferReshape(node, shape, initializers);
             if (string.Equals(node.opType, "Squeeze", StringComparison.Ordinal)) shape = InferSqueeze(node, shape, initializers);
             if (string.Equals(node.opType, "Unsqueeze", StringComparison.Ordinal)) shape = InferUnsqueeze(node, shape, initializers);
@@ -4333,6 +4330,41 @@ namespace Aexis.Execution
             if (!leftVector) output.Add(a[a.Length - 2]);
             if (!rightVector) output.Add(b[b.Length - 1]);
             return output.ToArray();
+        }
+
+        private static long[] InferEinsum(OnnxNode node, List<AexisOnnxTensorDescriptor> inputs)
+        {
+            var equation = (GetString(node, "equation") ?? string.Empty).Replace(" ", string.Empty);
+            var arrow = equation.IndexOf("->", StringComparison.Ordinal);
+            if (arrow <= 0 || equation.IndexOf("...", StringComparison.Ordinal) >= 0)
+                return Dynamic(Math.Max(1, inputs?.Count ?? 1));
+            var operands = equation.Substring(0, arrow).Split(',');
+            var outputLabels = equation.Substring(arrow + 2);
+            if (inputs == null || operands.Length != inputs.Count || outputLabels.Length == 0 || outputLabels.Length > 4)
+                return Dynamic(Math.Max(1, outputLabels.Length));
+            var extents = new Dictionary<char, long>();
+            for (var operand = 0; operand < operands.Length; operand++)
+            {
+                var shape = inputs[operand]?.shape;
+                if (shape == null || shape.Length != operands[operand].Length)
+                    return Dynamic(Math.Max(1, outputLabels.Length));
+                for (var axis = 0; axis < shape.Length; axis++)
+                {
+                    var label = operands[operand][axis];
+                    var extent = shape[axis];
+                    if (extent <= 0) return Dynamic(outputLabels.Length);
+                    if (extents.TryGetValue(label, out var known) && known != extent && known != 1 && extent != 1)
+                        return Dynamic(outputLabels.Length);
+                    extents[label] = Math.Max(known, extent);
+                }
+            }
+            var result = new long[outputLabels.Length];
+            for (var axis = 0; axis < outputLabels.Length; axis++)
+            {
+                if (!extents.TryGetValue(outputLabels[axis], out var extent)) return Dynamic(outputLabels.Length);
+                result[axis] = extent;
+            }
+            return result;
         }
 
         private static long[] InferReshape(OnnxNode node, long[] input, Dictionary<string, OnnxTensor> tensors)

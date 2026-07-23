@@ -73,7 +73,7 @@ namespace Aexis.Execution
                                             ip.w = new ComputeBuffer(w.Length, sizeof(float), ComputeBufferType.Structured);
                                             ip.w.SetData(w);
                                         }
-                                        if (owner.UsesFp16WeightStorage)
+                                        if (owner.UsesFp16WeightsForLayer(layer))
                                             ip.wFp16 = AexisGraphSession.NewFp16Buffer(w, "AexisGraphSession.InnerProductWeightFp16:" + layer.name);
                                         phaseSw.Stop();
                                         uploadMs += phaseSw.ElapsedMilliseconds;
@@ -160,7 +160,7 @@ namespace Aexis.Execution
             var hasPack = owner._innerProduct.TryGetValue(layer.name, out var pack);
             var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
             var useInt4WeightOnly = owner.UsesInt4WeightsForLayer(layer);
-            var useFp16Weights = owner.UsesFp16WeightsForCurrentLayer && !owner.UsesQuantizedWeightsForLayer(layer);
+            var useFp16Weights = owner.UsesFp16WeightsForLayer(layer) && !owner.UsesQuantizedWeightsForLayer(layer);
             owner.Ops.SetFp16GemmWeights(useFp16Weights && hasPack ? pack.wFp16 : null);
             owner.Ops.SetInt8GemmWeights(
                 useInt8WeightOnly && hasPack ? pack.wInt8Packed : null,
@@ -275,7 +275,7 @@ namespace Aexis.Execution
             var useStrictLinearMat = AexisGraphSession.IsStrictLinearMatTexture(srcTex);
             // Pack4-linear is an FP16 activation optimization. FP32 retains its
             // RFloat LinearMat contract so legacy outputs remain bit-for-bit stable.
-            var usePack4LinearMat = owner.UsesFp16ActivationStorage
+            var usePack4LinearMat = owner.ResolveActivationTextureFormat(layer, outLogicalShape.dims) == RenderTextureFormat.ARGBHalf
                 && useStrictLinearMat
                 && outLogicalShape.dims == 2
                 && (ip.outFeatures & 3) == 0
@@ -289,10 +289,10 @@ namespace Aexis.Execution
                     ? AexisGraphSession.ResolveLinearMatStorageShape(outLogicalShape)
                     : new AexisGraphSession.BufferShape(3, Mathf.Max(1, outLogicalShape.w), Mathf.Max(1, outLogicalShape.h), 1, 1);
             var outRt = usePack4LinearMat
-                ? owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, RenderTextureFormat.ARGBHalf)
+                ? owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, owner.ResolveActivationTextureFormat(layer, outLogicalShape.dims))
                 : useStrictLinearMat
                     ? owner.RentTempMat(context.commandBuffer, outStorageShape.w, outStorageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat())
-                    : owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, RenderTextureFormat.ARGBHalf);
+                    : owner.RentTempArray(context.commandBuffer, outStorageShape.w, outStorageShape.h, 1, owner.ResolveActivationTextureFormat(layer, outLogicalShape.dims));
             if (usePack4LinearMat)
             {
                 owner.Ops.Gemm2DPack4LinearTextureA(
@@ -451,7 +451,7 @@ namespace Aexis.Execution
 
             var useStrictLinearMat = AexisGraphSession.IsStrictLinearMatTexture(srcTex);
             // See the render-texture path: do not down-convert FP32 LinearMat output.
-            var usePack4LinearMat = owner.UsesFp16ActivationStorage
+            var usePack4LinearMat = owner.ResolveActivationTextureFormat(layer, logicalShape.dims) == RenderTextureFormat.ARGBHalf
                 && useStrictLinearMat
                 && logicalShape.dims == 2
                 && (ip.outFeatures & 3) == 0
@@ -465,10 +465,10 @@ namespace Aexis.Execution
                     ? AexisGraphSession.ResolveLinearMatStorageShape(logicalShape)
                     : new AexisGraphSession.BufferShape(3, Mathf.Max(1, logicalShape.w), Mathf.Max(1, logicalShape.h), 1, 1);
             var outRt = usePack4LinearMat
-                ? owner.RentTempArray(storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf)
+                ? owner.RentTempArray(storageShape.w, storageShape.h, 1, owner.ResolveActivationTextureFormat(layer, logicalShape.dims))
                 : useStrictLinearMat
                     ? owner.RentTempMat(storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat())
-                    : owner.RentTempArray(storageShape.w, storageShape.h, 1, RenderTextureFormat.ARGBHalf);
+                    : owner.RentTempArray(storageShape.w, storageShape.h, 1, owner.ResolveActivationTextureFormat(layer, logicalShape.dims));
             if (usePack4LinearMat)
             {
                 owner.Ops.Gemm2DPack4LinearTextureA(

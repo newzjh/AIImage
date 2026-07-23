@@ -44,7 +44,7 @@ namespace Aexis.Execution
                                             var weightCount = checked(bw * bh);
                                             var hasSharedFp32 = owner.SharedTokenEmbeddingWeights != null
                                                 && !owner.UsesQuantizedWeightsForLayer(layer)
-                                                && !owner.UsesFp16WeightStorage;
+                                                && !owner.UsesFp16WeightsForLayer(layer);
                                             var hasSharedInt8 = owner.SharedTokenEmbeddingWeightsInt8Packed != null
                                                 && owner.SharedTokenEmbeddingWeightsInt8Scales != null
                                                 && owner.UsesInt8WeightOnlyForLayer(layer);
@@ -126,7 +126,7 @@ namespace Aexis.Execution
                                             {
                                                 gp.bData = AexisGraphSession.NewBuffer(gp.bDataCpu);
                                             }
-                                            if (owner.UsesFp16WeightStorage)
+                                            if (owner.UsesFp16WeightsForLayer(layer))
                                                 gp.bDataFp16 = AexisGraphSession.NewFp16Buffer(gp.bDataCpu, "AexisGraphSession.GemmWeightFp16:" + layer.name);
                                             if (gp.cDataCpu != null)
                                                 gp.cData = AexisGraphSession.NewBuffer(gp.cDataCpu);
@@ -291,7 +291,7 @@ namespace Aexis.Execution
             var hasPack = owner._gemm.TryGetValue(layer.name, out var pack);
             var useInt8WeightOnly = owner.UsesInt8WeightsForLayer(layer);
             var useInt4WeightOnly = owner.UsesInt4WeightsForLayer(layer);
-            var useFp16Weights = owner.UsesFp16WeightStorage && !owner.UsesQuantizedWeightsForLayer(layer);
+            var useFp16Weights = owner.UsesFp16WeightsForLayer(layer) && !owner.UsesQuantizedWeightsForLayer(layer);
             owner.Ops.SetFp16GemmWeights(useFp16Weights && hasPack ? pack.bDataFp16 : null);
             owner.Ops.SetInt8GemmWeights(
                 useInt8WeightOnly && hasPack ? pack.bDataInt8Packed : null,
@@ -642,7 +642,7 @@ namespace Aexis.Execution
             var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
             var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
                 ? RenderTextureFormat.ARGBFloat
-                : RenderTextureFormat.ARGBHalf;
+                : owner.ResolveActivationTextureFormat(layer, logicalOutShape.dims);
 
             if (TryResolveAttentionQkvProjectionSpec(owner, layer, logicalOutShape, out var packedQkvShape))
             {
@@ -830,7 +830,7 @@ namespace Aexis.Execution
             var useC = gp.constantC && gp.broadcastTypeC != -1 && gp.cData != null;
             var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
                 ? RenderTextureFormat.ARGBFloat
-                : RenderTextureFormat.ARGBHalf;
+                : owner.ResolveActivationTextureFormat(layer, logicalOutShape.dims);
 
             if (TryResolveAttentionQkvProjectionSpec(owner, layer, logicalOutShape, out var packedQkvShape))
             {
@@ -1102,7 +1102,7 @@ namespace Aexis.Execution
                 : new AexisGraphSession.BufferShape(3, outShape.w, outShape.h, 1, 1);
             var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
                 ? RenderTextureFormat.ARGBFloat
-                : RenderTextureFormat.ARGBHalf;
+                : owner.ResolveActivationTextureFormat(layer, outShape.dims);
             ComputeTexture aMaterialized = null;
             ComputeTexture bMaterialized = null;
             ComputeTexture outRt = null;
@@ -1218,7 +1218,7 @@ namespace Aexis.Execution
                 : new AexisGraphSession.BufferShape(3, outShape.w, outShape.h, 1, 1);
             var outFormat = ShouldPromoteAttentionGemmOutputTexture(owner, layer)
                 ? RenderTextureFormat.ARGBFloat
-                : RenderTextureFormat.ARGBHalf;
+                : owner.ResolveActivationTextureFormat(layer, outShape.dims);
             RenderTexture aMaterialized = null;
             RenderTexture bMaterialized = null;
             RenderTexture outRt = null;

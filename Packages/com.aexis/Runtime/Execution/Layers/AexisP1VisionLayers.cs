@@ -102,14 +102,13 @@ namespace Aexis.Execution
                     break;
                 case "Flip":
                     RequireInputs(layer, inputs, 1, 1);
-                    RequireRange(layer, 0, 0, 2, "flip_direction");
                     break;
                 case "GLU":
                 case "Diag":
                     RequireInputs(layer, inputs, 1, 1);
                     break;
                 case "Einsum":
-                    RequireInputs(layer, inputs, 1, int.MaxValue);
+                    RequireInputs(layer, inputs, 2, 3);
                     var equation = layer.GetString("equation", layer.GetString("onnx.equation", string.Empty));
                     if (string.IsNullOrWhiteSpace(equation) || equation.IndexOf("->", StringComparison.Ordinal) < 0)
                         throw Invalid(layer, "requires an explicit equation parameter.");
@@ -123,7 +122,7 @@ namespace Aexis.Execution
                     RequireInputs(layer, inputs, 2, 2);
                     RequirePositive(layer, 0, "pooled_width");
                     RequirePositive(layer, 1, "pooled_height");
-                    RequirePositiveOrDefault(layer, 2, 1, "spatial_scale");
+                    RequirePositiveFloatOrDefault(layer, 2, 1f, "spatial_scale");
                     RequireRange(layer, 4, 0, 1, "aligned");
                     break;
                 case "ROIPooling":
@@ -131,19 +130,19 @@ namespace Aexis.Execution
                     RequireInputs(layer, inputs, 2, 2);
                     RequirePositive(layer, 0, "pooled_width");
                     RequirePositive(layer, 1, "pooled_height");
-                    RequirePositiveOrDefault(layer, 2, 1, "spatial_scale");
+                    RequirePositiveFloatOrDefault(layer, 2, 1f, "spatial_scale");
                     break;
                 case "Proposal":
                     RequireInputs(layer, inputs, 3, 3);
                     RequirePositive(layer, 0, "feat_stride");
-                    RequirePositive(layer, 3, "base_size");
-                    RequirePositive(layer, 4, "pre_nms_topN");
-                    RequirePositive(layer, 5, "post_nms_topN");
+                    RequirePositive(layer, 1, "base_size");
+                    RequirePositive(layer, 2, "pre_nms_topN");
+                    RequirePositive(layer, 3, "post_nms_topN");
                     break;
                 case "DetectionOutput":
-                    RequireInputs(layer, inputs, 2, 3);
-                    RequirePositive(layer, 0, "num_classes");
-                    RequirePositive(layer, 2, "keep_top_k");
+                    RequireInputs(layer, inputs, 3, 3);
+                    RequirePositive(layer, 0, "num_class");
+                    RequirePositive(layer, 3, "keep_top_k");
                     break;
                 case "YoloDetectionOutput":
                 case "Yolov3DetectionOutput":
@@ -173,6 +172,12 @@ namespace Aexis.Execution
         private static void RequirePositiveOrDefault(AexisGraphModel.Layer layer, int key, int defaultValue, string name)
         {
             if (layer.GetInt(key, defaultValue) <= 0)
+                throw Invalid(layer, name + " must be positive.");
+        }
+
+        private static void RequirePositiveFloatOrDefault(AexisGraphModel.Layer layer, int key, float defaultValue, string name)
+        {
+            if (layer.GetFloat(key, defaultValue) <= 0f)
                 throw Invalid(layer, name + " must be positive.");
         }
 

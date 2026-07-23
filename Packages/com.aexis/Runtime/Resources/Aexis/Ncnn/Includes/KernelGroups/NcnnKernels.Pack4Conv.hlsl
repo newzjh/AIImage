@@ -68,7 +68,8 @@ float NcnnQuantizeActivationForInt8(float value)
 {
     if (_UseInt8Activations == 0)
         return value;
-    int quantized = clamp((int)round(value / _Int8ActivationScale) + _Int8ActivationZeroPoint, -128, 127);
+    int quantized = (int)round(value / _Int8ActivationScale) + _Int8ActivationZeroPoint;
+    quantized = _Int8ActivationUnsigned != 0 ? clamp(quantized, 0, 255) : clamp(quantized, -128, 127);
     return (float)(quantized - _Int8ActivationZeroPoint) * _Int8ActivationScale;
 }
 

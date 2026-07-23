@@ -225,6 +225,8 @@ namespace Aexis.Execution
             "HardSwish", "Mish", "SELU", "Shrink", "Softplus", "Softsign", "IsInf", "IsNaN", "CELU"
             , "CopyTo", "NonZero", "Compress", "GatherND", "Scatter", "ScatterElements", "ScatterND"
             , "ConvolutionDepthWise1D", "Deconvolution1D", "ExtractPatches", "Softsign", "IsInf", "IsNaN", "Trilu"
+            , "GridSample", "DeformableConv2D", "Fold", "Flip", "GLU", "Einsum", "Diag", "SPP"
+            , "ROIAlign", "ROIPooling", "PSROIPooling", "Proposal", "DetectionOutput", "YoloDetectionOutput", "Yolov3DetectionOutput", "YoloDetectOut", "Yolov3DetectOut"
         };
 
         // These operators have a loaded-runtime verifier which proves the exact node
@@ -245,6 +247,8 @@ namespace Aexis.Execution
             "Shape", "Size", "Range", "ConstantOfShape", "Expand", "Where", "Gather", "GatherElements",
             "ArgMax", "ArgMin", "TopK", "OneHot", "aten::to", "Crop", "GroupNorm", "Padding",
             "Quantize", "Dequantize", "Requantize", "Reorg", "Scale", "Unfold", "ExtractPatches"
+            , "GridSample", "DeformableConv2D", "Fold", "Flip", "GLU", "Einsum", "Diag", "SPP"
+            , "ROIAlign", "ROIPooling", "PSROIPooling", "Proposal", "DetectionOutput", "YoloDetectionOutput", "Yolov3DetectionOutput", "YoloDetectOut", "Yolov3DetectOut"
         };
 
         private static readonly Dictionary<string, string[]> RequiredParameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
@@ -276,13 +280,12 @@ namespace Aexis.Execution
             { "GridSample", new[] { "0:sample_type", "1:padding_mode", "2:align_corner" } },
             { "DeformableConv2D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
             { "Fold", new[] { "1:kernel_w", "20:output_w" } },
-            { "Flip", new[] { "0:flip_direction" } },
             { "SPP", new[] { "0:pooling_type", "1:pooling_kernel" } },
             { "ROIAlign", new[] { "0:pooled_width", "1:pooled_height", "2:spatial_scale" } },
             { "ROIPooling", new[] { "0:pooled_width", "1:pooled_height", "2:spatial_scale" } },
             { "PSROIPooling", new[] { "0:pooled_width", "1:pooled_height", "2:spatial_scale" } },
-            { "Proposal", new[] { "0:feat_stride", "3:base_size", "4:pre_nms_topN", "5:post_nms_topN" } },
-            { "DetectionOutput", new[] { "0:num_classes", "2:keep_top_k" } },
+            { "Proposal", new[] { "0:feat_stride", "1:base_size", "2:pre_nms_topN", "3:after_nms_topN" } },
+            { "DetectionOutput", new[] { "0:num_class", "3:keep_top_k" } },
             { "YoloDetectionOutput", new[] { "0:num_class", "1:num_box" } },
             { "Yolov3DetectionOutput", new[] { "0:num_class", "1:num_box" } },
             { "YoloDetectOut", new[] { "0:num_class", "1:num_box" } },
@@ -400,7 +403,7 @@ namespace Aexis.Execution
                 ? AexisOperatorCapabilityStatus.Unsupported
                 : isAliasOnly
                     ? AexisOperatorCapabilityStatus.AliasOnly
-                    : isP1Visual
+                    : isP1Visual && !hasRuntimeVerifiedProfile
                         ? AexisOperatorCapabilityStatus.Partial
                      : hasVerifiedCommandBufferPack4
                          ? AexisOperatorCapabilityStatus.Supported
@@ -513,9 +516,10 @@ namespace Aexis.Execution
             if (status == AexisOperatorCapabilityStatus.Unsupported)
                 return operatorName + " is registered only to report a deterministic error; its texture-native implementation is absent. "
                     + "D3 rejects this graph at plan time rather than reading GPU data back or falling back to a ComputeBuffer.";
+            if (P1VisualOperators.Contains(operatorName) && !RuntimeVerifiedProfileOperators.Contains(operatorName))
+                return "P1 visual operator ABI is registered but its exact Pack4 profile has not been installed. The runtime rejects the node instead of falling back to a ComputeBuffer.";
             if (P1VisualOperators.Contains(operatorName))
-                return "P1 visual operator ABI and import schema are registered, but strict execution requires its exact Pack4 RenderTexture and CommandBuffer shader profile. "
-                    + "The runtime rejects the node until that profile is installed; it never falls back to a ComputeBuffer.";
+                return "Built-in P1 Pack4 RenderTexture and CommandBuffer implementation. Inputs may be exact Pack4 or LinearMat materialized through a texture transform; unsupported dynamic ranks, unbounded detection capacity, and unlisted equation forms are rejected before dispatch.";
             if (status == AexisOperatorCapabilityStatus.AliasOnly)
                 return "Only alias/view semantics are known. Strict planning requires a separately proven logical/storage layout match.";
             if (status == AexisOperatorCapabilityStatus.DebugOnly)
@@ -718,7 +722,10 @@ namespace Aexis.Execution
                 profile.backend ??= AexisOperatorCapabilityBackend.CommandBuffer;
                 profile.layouts ??= ResolveLayouts(operatorName);
                 profile.storageLayouts ??= new[] { AexisTexturePlanLayout.Packed4 };
-                profile.dtypes ??= new[] { "FP16", "FP32" };
+                // BF16 is logically distinct but uses ARGBFloat physical storage.
+                // The loaded verifier still proves the concrete Pack4 path before a
+                // profile can be dispatched.
+                profile.dtypes ??= new[] { "FP16", "BF16", "FP32" };
                 profile.inputRanks ??= ranks;
                 profile.outputRanks ??= ranks;
                 profile.minInputs = minInputs;
@@ -781,6 +788,28 @@ namespace Aexis.Execution
                 case "GatherElements":
                 case "GatherND":
                     minInputs = maxInputs = 2;
+                    break;
+                case "GridSample":
+                case "ROIAlign":
+                case "ROIPooling":
+                case "PSROIPooling":
+                    minInputs = maxInputs = 2;
+                    break;
+                case "DeformableConv2D":
+                case "Einsum":
+                    minInputs = 2;
+                    maxInputs = 3;
+                    break;
+                case "Proposal":
+                case "DetectionOutput":
+                    minInputs = maxInputs = 3;
+                    break;
+                case "YoloDetectionOutput":
+                case "Yolov3DetectionOutput":
+                case "YoloDetectOut":
+                case "Yolov3DetectOut":
+                    minInputs = 1;
+                    maxInputs = -1;
                     break;
                 case "Where":
                     minInputs = maxInputs = 3;

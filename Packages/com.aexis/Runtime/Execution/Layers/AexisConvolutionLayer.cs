@@ -113,7 +113,7 @@ namespace Aexis.Execution
                                             pack.packedBias4 = new ComputeBuffer(b4.Length, sizeof(float) * 4, ComputeBufferType.Structured);
                                             pack.packedWeight4.SetData(w4);
                                             pack.packedBias4.SetData(b4);
-                                            if (owner.UsesFp16WeightStorage)
+                                            if (owner.UsesFp16WeightsForLayer(layer))
                                                 pack.packedWeight4Fp16 = AexisGraphSession.NewFp16Vector4Buffer(w4, "AexisGraphSession.ConvPackedWeight4Fp16:" + layer.name);
 
                                             if (AexisGraphSession.EnableWinograd23
@@ -318,7 +318,7 @@ namespace Aexis.Execution
 
             var outWTex = AexisGraphSession.ComputeConvOut(srcShape.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight);
             var outHTex = AexisGraphSession.ComputeConvOut(srcShape.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom);
-            var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, RenderTextureFormat.ARGBHalf);
+            var outRt = owner.RentTempArray(outWTex, outHTex, conv.outPacks, owner.ResolveActivationTextureFormat(layer, 3));
             var canUseSpecialized3x3TexturePath = conv.kernelW == 3
                                                  && conv.kernelH == 3
                                                  && conv.strideW == 1
@@ -333,7 +333,7 @@ namespace Aexis.Execution
                                           && owner.ShouldCompareTextureConvLayer(layer.name)
                                           && canUseGeneralTexturePath;
 
-            var useFp16GeneralWeights = owner.UsesFp16WeightStorage
+            var useFp16GeneralWeights = owner.UsesFp16WeightsForLayer(layer)
                                         && conv.packedWeight4Fp16 != null
                                         && conv.group == 1
                                         && !conv.isDepthWise
@@ -474,7 +474,7 @@ namespace Aexis.Execution
                     && srcShape.c == conv.inC)
                 {
                     var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
-                    tempInput = owner.RentTempArray(cmd, srcShape.w, srcShape.h, conv.inPacks, RenderTextureFormat.ARGBHalf);
+                    tempInput = owner.RentTempArray(cmd, srcShape.w, srcShape.h, conv.inPacks, owner.ResolveActivationTextureFormat(layer, 3));
                     owner.Ops.ReshapeLinearMatToPack4(cmd, src.texture, storageShape.w, storageShape.h, srcShape.w, srcShape.h, srcShape.d, srcShape.c, srcShape.dims, tempInput);
                     src = AexisGraphSession.CreateCmdTensorRef(tempInput, srcShape, srcShape, owned: false);
                 }
@@ -483,8 +483,8 @@ namespace Aexis.Execution
                     throw new InvalidOperationException(BuildUnsupportedMessage(layer, src, srcShape, "source is not a matching Pack4 texture-array"));
 
                 var outShape = ResolveCmdOutputShape(srcShape, conv);
-                output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, RenderTextureFormat.ARGBHalf);
-                var useFp16GeneralWeights = owner.UsesFp16WeightStorage
+                output = owner.RentTempArray(cmd, outShape.w, outShape.h, conv.outPacks, owner.ResolveActivationTextureFormat(layer, 3));
+                var useFp16GeneralWeights = owner.UsesFp16WeightsForLayer(layer)
                                             && conv.packedWeight4Fp16 != null
                                             && conv.group == 1
                                             && !conv.isDepthWise

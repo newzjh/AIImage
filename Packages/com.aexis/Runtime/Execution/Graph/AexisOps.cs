@@ -253,6 +253,88 @@ namespace Aexis.Execution
         public AexisTemporaryRtDescriptor temporaryDescriptor;
     }
 
+    public enum AexisP1VisionKernel
+    {
+        GridSample,
+        Glu,
+        Diag,
+        Fold,
+        Spp,
+        RoiAlign,
+        RoiPooling,
+        PsRoiPooling,
+        DeformableConv2D,
+        Proposal,
+        DetectionOutput,
+        YoloDetectionOutput,
+        Einsum
+    }
+
+    // Texture-only P1 dispatch. DeformableConv2D is the one exception allowed to
+    // bind immutable model constants through weights and bias.
+    public struct AexisP1VisionDispatch
+    {
+        public AexisP1VisionKernel kernel;
+        public AexisGraphSession.BufferShape input0;
+        public AexisGraphSession.BufferShape input1;
+        public AexisGraphSession.BufferShape input2;
+        public AexisGraphSession.BufferShape output;
+        public int mode;
+        public int paddingMode;
+        public int alignCorners;
+        public int gridPermute;
+        public int axis;
+        public int diagonal;
+        public int kernelW;
+        public int kernelH;
+        public int dilationW;
+        public int dilationH;
+        public int strideW;
+        public int strideH;
+        public int padLeft;
+        public int padRight;
+        public int padTop;
+        public int padBottom;
+        public int poolingType;
+        public int pyramidHeight;
+        public int pooledW;
+        public int pooledH;
+        public int samplingRatio;
+        public int aligned;
+        public int roiVersion;
+        public int psOutputDim;
+        public int biasTerm;
+        public int activationType;
+        public float activationSlope;
+        public float spatialScale;
+        public ComputeBuffer weights;
+        public ComputeBuffer bias;
+        public ComputeBuffer detectionBiases;
+        public int detectionCapacity;
+        public int preNmsTopK;
+        public int numClasses;
+        public int numBoxes;
+        public int featStride;
+        public int baseSize;
+        public int yoloV3;
+        public float nmsThreshold;
+        public float confidenceThreshold;
+        public float minSize;
+        public float variance0;
+        public float variance1;
+        public float variance2;
+        public float variance3;
+        public int einsumOperandCount;
+        public int einsumLabelCount;
+        public int einsumReductionCount;
+        public int[] einsumDims;
+        public int[] einsumA;
+        public int[] einsumB;
+        public int[] einsumC;
+        public int[] einsumOutput;
+        public int[] einsumReduction;
+    }
+
     public sealed class AexisOps : IDisposable
     {
         private static readonly float[] ZeroScalar = { 0f };
@@ -403,6 +485,20 @@ namespace Aexis.Execution
         private readonly int _kCodeFormerMinEncodingFromSoftOneHot;
         private readonly int _kCodeFormerMinEncodingFromSoftOneHotLinearMat;
         private readonly int _kShuffleChannelPack4;
+        private readonly int _kFlipPack4P1;
+        private readonly int _kP1GridSamplePack4;
+        private readonly int _kP1GluPack4;
+        private readonly int _kP1DiagPack4;
+        private readonly int _kP1FoldPack4;
+        private readonly int _kP1SppPack4;
+        private readonly int _kP1RoiAlignPack4;
+        private readonly int _kP1RoiPoolPack4;
+        private readonly int _kP1PsRoiPoolPack4;
+        private readonly int _kP1DeformableConv2dPack4;
+        private readonly int _kP1ProposalPack4;
+        private readonly int _kP1DetectionOutputPack4;
+        private readonly int _kP1YoloDetectionOutputPack4;
+        private readonly int _kP1EinsumPack4;
         private readonly int _kCropPack4;
         private readonly int _kSlicePack4;
         private readonly int _kSliceLinearMat2D;
@@ -551,6 +647,7 @@ namespace Aexis.Execution
         private bool _useInt8Activations;
         private float _int8ActivationScale = 1f;
         private int _int8ActivationZeroPoint;
+        private bool _int8ActivationUnsigned;
 
         // These immutable uploads are selected only by manifest-driven FP16 sessions.
         // Activations always remain texture resources; no texture-to-buffer path is used.
@@ -616,6 +713,34 @@ namespace Aexis.Execution
             _useInt8Activations = plan != null && plan.mode == QuantizedNodeMode.Int8W8A8;
             _int8ActivationScale = _useInt8Activations ? plan.activationScale : 1f;
             _int8ActivationZeroPoint = _useInt8Activations ? plan.activationZeroPoint : 0;
+            _int8ActivationUnsigned = false;
+        }
+
+        // Import calibration is an activation contract rather than a transient CPU
+        // probe. Convert it here once per dispatch so Pack4 Conv/Gemm consume the
+        // same deterministic code range on both RenderTexture and CommandBuffer paths.
+        public void SetInt8ActivationQuantization(QuantizedActivationPlan plan)
+        {
+            _useInt8Activations = plan != null;
+            _int8ActivationScale = 1f;
+            _int8ActivationZeroPoint = 0;
+            _int8ActivationUnsigned = false;
+            if (!_useInt8Activations)
+                return;
+
+            plan.Validate();
+            var calibration = plan.calibration;
+            _int8ActivationUnsigned = plan.packing == ActivationQuantizationPacking.Pack4UnsignedInt8;
+            if (_int8ActivationUnsigned)
+            {
+                var range = calibration.maximum - calibration.minimum;
+                _int8ActivationScale = range > 0f ? range / 255f : 1f;
+                _int8ActivationZeroPoint = Mathf.Clamp(Mathf.RoundToInt(-calibration.minimum / _int8ActivationScale), 0, 255);
+            }
+            else
+            {
+                _int8ActivationScale = calibration.SymmetricScale;
+            }
         }
 
         private void SetConvPack4Weights(int kernel, ComputeBuffer fp32Weights)
@@ -660,6 +785,7 @@ namespace Aexis.Execution
             _cs.SetInt("_UseInt8Activations", _useInt8Activations ? 1 : 0);
             _cs.SetFloat("_Int8ActivationScale", _int8ActivationScale);
             _cs.SetInt("_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
+            _cs.SetInt("_Int8ActivationUnsigned", _int8ActivationUnsigned ? 1 : 0);
         }
 
         private void SetTextureGemmWeights(CommandBuffer cmd, int kernel, ComputeBuffer fp32Weights)
@@ -676,6 +802,7 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_UseInt8Activations", _useInt8Activations ? 1 : 0);
             cmd.SetComputeFloatParam(_cs, "_Int8ActivationScale", _int8ActivationScale);
             cmd.SetComputeIntParam(_cs, "_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
+            cmd.SetComputeIntParam(_cs, "_Int8ActivationUnsigned", _int8ActivationUnsigned ? 1 : 0);
         }
 
         private static int ResolveRenderTextureDispatchDepth(RenderTexture output, int fallbackPacks)
@@ -877,6 +1004,20 @@ namespace Aexis.Execution
             _kCodeFormerMinEncodingFromSoftOneHot = _cs.FindKernel("NcnnCodeFormerMinEncodingFromSoftOneHot");
             _kCodeFormerMinEncodingFromSoftOneHotLinearMat = _cs.FindKernel("NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat");
             _kShuffleChannelPack4 = _cs.FindKernel("NcnnShuffleChannelPack4");
+            _kFlipPack4P1 = _cs.FindKernel("NcnnFlipPack4P1");
+            _kP1GridSamplePack4 = _cs.FindKernel("NcnnP1GridSamplePack4");
+            _kP1GluPack4 = _cs.FindKernel("NcnnP1GluPack4");
+            _kP1DiagPack4 = _cs.FindKernel("NcnnP1DiagPack4");
+            _kP1FoldPack4 = _cs.FindKernel("NcnnP1FoldPack4");
+            _kP1SppPack4 = _cs.FindKernel("NcnnP1SppPack4");
+            _kP1RoiAlignPack4 = _cs.FindKernel("NcnnP1RoiAlignPack4");
+            _kP1RoiPoolPack4 = _cs.FindKernel("NcnnP1RoiPoolPack4");
+            _kP1PsRoiPoolPack4 = _cs.FindKernel("NcnnP1PsRoiPoolPack4");
+            _kP1DeformableConv2dPack4 = _cs.FindKernel("NcnnP1DeformableConv2dPack4");
+            _kP1ProposalPack4 = _cs.FindKernel("NcnnP1ProposalPack4");
+            _kP1DetectionOutputPack4 = _cs.FindKernel("NcnnP1DetectionOutputPack4");
+            _kP1YoloDetectionOutputPack4 = _cs.FindKernel("NcnnP1YoloDetectionOutputPack4");
+            _kP1EinsumPack4 = _cs.FindKernel("NcnnP1EinsumPack4");
             _kCropPack4 = _cs.FindKernel("NcnnCropPack4");
             _kSlicePack4 = _cs.FindKernel("NcnnSlicePack4");
             _kSliceLinearMat2D = _cs.FindKernel("NcnnSliceLinearMat2D");
@@ -2052,6 +2193,303 @@ namespace Aexis.Execution
             cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kShuffleChannelPack4, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kShuffleChannelPack4, output.width, output.height, ResolveComputeTextureDispatchDepth(output, packs), 8, 8);
+        }
+
+        public void FlipPack4(
+            RenderTexture input,
+            int width,
+            int height,
+            int depth,
+            int channels,
+            bool flipWidth,
+            bool flipHeight,
+            bool flipDepth,
+            bool flipChannels,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            SetFlipPack4Parameters(width, height, depth, channels, flipWidth, flipHeight, flipDepth, flipChannels);
+            _cs.SetTexture(_kFlipPack4P1, "_NcnnInArr", input);
+            _cs.SetTexture(_kFlipPack4P1, "_NcnnOutArr", output);
+            Dispatch3D(_kFlipPack4P1, width, height, depth * Mathf.CeilToInt(channels / 4f), 8, 8);
+        }
+
+        public void FlipPack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            int width,
+            int height,
+            int depth,
+            int channels,
+            bool flipWidth,
+            bool flipHeight,
+            bool flipDepth,
+            bool flipChannels,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (width <= 0 || height <= 0 || depth <= 0 || channels <= 0)
+                throw new ArgumentOutOfRangeException("Flip Pack4 dimensions must be positive.");
+            var packs = Mathf.CeilToInt(channels / 4f);
+            cmd.SetComputeIntParam(_cs, "_P1Width", width);
+            cmd.SetComputeIntParam(_cs, "_P1Height", height);
+            cmd.SetComputeIntParam(_cs, "_P1Depth", depth);
+            cmd.SetComputeIntParam(_cs, "_P1Channels", channels);
+            cmd.SetComputeIntParam(_cs, "_P1Packs", packs);
+            cmd.SetComputeIntParam(_cs, "_P1FlipWidth", flipWidth ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_P1FlipHeight", flipHeight ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_P1FlipDepth", flipDepth ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_P1FlipChannels", flipChannels ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kFlipPack4P1, "_NcnnInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kFlipPack4P1, "_NcnnOutArr", output.nameID);
+            Dispatch3D(cmd, _kFlipPack4P1, width, height, ResolveComputeTextureDispatchDepth(output, depth * packs), 8, 8);
+        }
+
+        private void SetFlipPack4Parameters(int width, int height, int depth, int channels, bool flipWidth, bool flipHeight, bool flipDepth, bool flipChannels)
+        {
+            if (width <= 0 || height <= 0 || depth <= 0 || channels <= 0)
+                throw new ArgumentOutOfRangeException("Flip Pack4 dimensions must be positive.");
+            _cs.SetInt("_P1Width", width);
+            _cs.SetInt("_P1Height", height);
+            _cs.SetInt("_P1Depth", depth);
+            _cs.SetInt("_P1Channels", channels);
+            _cs.SetInt("_P1Packs", Mathf.CeilToInt(channels / 4f));
+            _cs.SetInt("_P1FlipWidth", flipWidth ? 1 : 0);
+            _cs.SetInt("_P1FlipHeight", flipHeight ? 1 : 0);
+            _cs.SetInt("_P1FlipDepth", flipDepth ? 1 : 0);
+            _cs.SetInt("_P1FlipChannels", flipChannels ? 1 : 0);
+        }
+
+        public void P1VisionPack4(
+            AexisP1VisionDispatch dispatch,
+            RenderTexture input0,
+            RenderTexture input1,
+            RenderTexture input2,
+            RenderTexture output)
+        {
+            if (input0 == null || input1 == null || output == null)
+                throw new ArgumentNullException("P1 vision texture input/output is null.");
+            var kernel = ResolveP1VisionKernel(dispatch.kernel);
+            SetP1VisionParameters(dispatch);
+            _cs.SetTexture(kernel, "_P1In0Arr", input0);
+            _cs.SetTexture(kernel, "_P1In1Arr", input1);
+            _cs.SetTexture(kernel, "_P1In2Arr", input2 ?? input0);
+            _cs.SetTexture(kernel, "_P1OutArr", output);
+            if (dispatch.weights != null)
+                _cs.SetBuffer(kernel, "_P1Weights", dispatch.weights);
+            if (dispatch.bias != null)
+                _cs.SetBuffer(kernel, "_P1Bias", dispatch.bias);
+            if (dispatch.detectionBiases != null)
+                _cs.SetBuffer(kernel, "_P1DetectionBiases", dispatch.detectionBiases);
+            Dispatch3D(kernel, dispatch.output.w, dispatch.output.h, dispatch.output.d * Mathf.CeilToInt(dispatch.output.c / 4f), 8, 8);
+        }
+
+        public void P1VisionPack4(
+            CommandBuffer cmd,
+            AexisP1VisionDispatch dispatch,
+            ComputeTexture input0,
+            ComputeTexture input1,
+            ComputeTexture input2,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input0 == null || input1 == null || output == null)
+                throw new ArgumentNullException("P1 vision command texture input/output is null.");
+            var kernel = ResolveP1VisionKernel(dispatch.kernel);
+            SetP1VisionParameters(cmd, dispatch);
+            cmd.SetComputeTextureParam(_cs, kernel, "_P1In0Arr", input0.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_P1In1Arr", input1.nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_P1In2Arr", (input2 ?? input0).nameID);
+            cmd.SetComputeTextureParam(_cs, kernel, "_P1OutArr", output.nameID);
+            if (dispatch.weights != null)
+                cmd.SetComputeBufferParam(_cs, kernel, "_P1Weights", dispatch.weights);
+            if (dispatch.bias != null)
+                cmd.SetComputeBufferParam(_cs, kernel, "_P1Bias", dispatch.bias);
+            if (dispatch.detectionBiases != null)
+                cmd.SetComputeBufferParam(_cs, kernel, "_P1DetectionBiases", dispatch.detectionBiases);
+            Dispatch3D(cmd, kernel, dispatch.output.w, dispatch.output.h, ResolveComputeTextureDispatchDepth(output, dispatch.output.d * Mathf.CeilToInt(dispatch.output.c / 4f)), 8, 8);
+        }
+
+        private int ResolveP1VisionKernel(AexisP1VisionKernel kind)
+        {
+            switch (kind)
+            {
+                case AexisP1VisionKernel.GridSample: return _kP1GridSamplePack4;
+                case AexisP1VisionKernel.Glu: return _kP1GluPack4;
+                case AexisP1VisionKernel.Diag: return _kP1DiagPack4;
+                case AexisP1VisionKernel.Fold: return _kP1FoldPack4;
+                case AexisP1VisionKernel.Spp: return _kP1SppPack4;
+                case AexisP1VisionKernel.RoiAlign: return _kP1RoiAlignPack4;
+                case AexisP1VisionKernel.RoiPooling: return _kP1RoiPoolPack4;
+                case AexisP1VisionKernel.PsRoiPooling: return _kP1PsRoiPoolPack4;
+                case AexisP1VisionKernel.DeformableConv2D: return _kP1DeformableConv2dPack4;
+                case AexisP1VisionKernel.Proposal: return _kP1ProposalPack4;
+                case AexisP1VisionKernel.DetectionOutput: return _kP1DetectionOutputPack4;
+                case AexisP1VisionKernel.YoloDetectionOutput: return _kP1YoloDetectionOutputPack4;
+                case AexisP1VisionKernel.Einsum: return _kP1EinsumPack4;
+                default: throw new ArgumentOutOfRangeException(nameof(kind));
+            }
+        }
+
+        private void SetP1VisionParameters(AexisP1VisionDispatch p)
+        {
+            SetP1VisionShape("_P1In0", p.input0);
+            SetP1VisionShape("_P1In1", p.input1);
+            SetP1VisionShape("_P1In2", p.input2);
+            SetP1VisionShape("_P1Out", p.output);
+            _cs.SetInt("_P1Mode", p.mode);
+            _cs.SetInt("_P1PaddingMode", p.paddingMode);
+            _cs.SetInt("_P1AlignCorners", p.alignCorners);
+            _cs.SetInt("_P1GridPermute", p.gridPermute);
+            _cs.SetInt("_P1Axis", p.axis);
+            _cs.SetInt("_P1Diagonal", p.diagonal);
+            _cs.SetInt("_P1KernelW", p.kernelW);
+            _cs.SetInt("_P1KernelH", p.kernelH);
+            _cs.SetInt("_P1DilationW", p.dilationW);
+            _cs.SetInt("_P1DilationH", p.dilationH);
+            _cs.SetInt("_P1StrideW", p.strideW);
+            _cs.SetInt("_P1StrideH", p.strideH);
+            _cs.SetInt("_P1PadLeft", p.padLeft);
+            _cs.SetInt("_P1PadRight", p.padRight);
+            _cs.SetInt("_P1PadTop", p.padTop);
+            _cs.SetInt("_P1PadBottom", p.padBottom);
+            _cs.SetInt("_P1PoolingType", p.poolingType);
+            _cs.SetInt("_P1PyramidHeight", p.pyramidHeight);
+            _cs.SetInt("_P1PooledW", p.pooledW);
+            _cs.SetInt("_P1PooledH", p.pooledH);
+            _cs.SetInt("_P1SamplingRatio", p.samplingRatio);
+            _cs.SetInt("_P1Aligned", p.aligned);
+            _cs.SetInt("_P1RoiVersion", p.roiVersion);
+            _cs.SetInt("_P1PsOutputDim", p.psOutputDim);
+            _cs.SetInt("_P1BiasTerm", p.biasTerm);
+            _cs.SetInt("_P1ActivationType", p.activationType);
+            _cs.SetFloat("_P1ActivationSlope", p.activationSlope);
+            _cs.SetFloat("_P1SpatialScale", p.spatialScale);
+            _cs.SetInt("_P1DetectionCapacity", p.detectionCapacity);
+            _cs.SetInt("_P1PreNmsTopK", p.preNmsTopK);
+            _cs.SetInt("_P1NumClasses", p.numClasses);
+            _cs.SetInt("_P1NumBoxes", p.numBoxes);
+            _cs.SetInt("_P1FeatStride", p.featStride);
+            _cs.SetInt("_P1BaseSize", p.baseSize);
+            _cs.SetInt("_P1YoloV3", p.yoloV3);
+            _cs.SetFloat("_P1NmsThreshold", p.nmsThreshold);
+            _cs.SetFloat("_P1ConfidenceThreshold", p.confidenceThreshold);
+            _cs.SetFloat("_P1MinSize", p.minSize);
+            _cs.SetFloat("_P1Variance0", p.variance0);
+            _cs.SetFloat("_P1Variance1", p.variance1);
+            _cs.SetFloat("_P1Variance2", p.variance2);
+            _cs.SetFloat("_P1Variance3", p.variance3);
+            SetP1EinsumParameters(p);
+        }
+
+        private void SetP1VisionParameters(CommandBuffer cmd, AexisP1VisionDispatch p)
+        {
+            SetP1VisionShape(cmd, "_P1In0", p.input0);
+            SetP1VisionShape(cmd, "_P1In1", p.input1);
+            SetP1VisionShape(cmd, "_P1In2", p.input2);
+            SetP1VisionShape(cmd, "_P1Out", p.output);
+            cmd.SetComputeIntParam(_cs, "_P1Mode", p.mode);
+            cmd.SetComputeIntParam(_cs, "_P1PaddingMode", p.paddingMode);
+            cmd.SetComputeIntParam(_cs, "_P1AlignCorners", p.alignCorners);
+            cmd.SetComputeIntParam(_cs, "_P1GridPermute", p.gridPermute);
+            cmd.SetComputeIntParam(_cs, "_P1Axis", p.axis);
+            cmd.SetComputeIntParam(_cs, "_P1Diagonal", p.diagonal);
+            cmd.SetComputeIntParam(_cs, "_P1KernelW", p.kernelW);
+            cmd.SetComputeIntParam(_cs, "_P1KernelH", p.kernelH);
+            cmd.SetComputeIntParam(_cs, "_P1DilationW", p.dilationW);
+            cmd.SetComputeIntParam(_cs, "_P1DilationH", p.dilationH);
+            cmd.SetComputeIntParam(_cs, "_P1StrideW", p.strideW);
+            cmd.SetComputeIntParam(_cs, "_P1StrideH", p.strideH);
+            cmd.SetComputeIntParam(_cs, "_P1PadLeft", p.padLeft);
+            cmd.SetComputeIntParam(_cs, "_P1PadRight", p.padRight);
+            cmd.SetComputeIntParam(_cs, "_P1PadTop", p.padTop);
+            cmd.SetComputeIntParam(_cs, "_P1PadBottom", p.padBottom);
+            cmd.SetComputeIntParam(_cs, "_P1PoolingType", p.poolingType);
+            cmd.SetComputeIntParam(_cs, "_P1PyramidHeight", p.pyramidHeight);
+            cmd.SetComputeIntParam(_cs, "_P1PooledW", p.pooledW);
+            cmd.SetComputeIntParam(_cs, "_P1PooledH", p.pooledH);
+            cmd.SetComputeIntParam(_cs, "_P1SamplingRatio", p.samplingRatio);
+            cmd.SetComputeIntParam(_cs, "_P1Aligned", p.aligned);
+            cmd.SetComputeIntParam(_cs, "_P1RoiVersion", p.roiVersion);
+            cmd.SetComputeIntParam(_cs, "_P1PsOutputDim", p.psOutputDim);
+            cmd.SetComputeIntParam(_cs, "_P1BiasTerm", p.biasTerm);
+            cmd.SetComputeIntParam(_cs, "_P1ActivationType", p.activationType);
+            cmd.SetComputeFloatParam(_cs, "_P1ActivationSlope", p.activationSlope);
+            cmd.SetComputeFloatParam(_cs, "_P1SpatialScale", p.spatialScale);
+            cmd.SetComputeIntParam(_cs, "_P1DetectionCapacity", p.detectionCapacity);
+            cmd.SetComputeIntParam(_cs, "_P1PreNmsTopK", p.preNmsTopK);
+            cmd.SetComputeIntParam(_cs, "_P1NumClasses", p.numClasses);
+            cmd.SetComputeIntParam(_cs, "_P1NumBoxes", p.numBoxes);
+            cmd.SetComputeIntParam(_cs, "_P1FeatStride", p.featStride);
+            cmd.SetComputeIntParam(_cs, "_P1BaseSize", p.baseSize);
+            cmd.SetComputeIntParam(_cs, "_P1YoloV3", p.yoloV3);
+            cmd.SetComputeFloatParam(_cs, "_P1NmsThreshold", p.nmsThreshold);
+            cmd.SetComputeFloatParam(_cs, "_P1ConfidenceThreshold", p.confidenceThreshold);
+            cmd.SetComputeFloatParam(_cs, "_P1MinSize", p.minSize);
+            cmd.SetComputeFloatParam(_cs, "_P1Variance0", p.variance0);
+            cmd.SetComputeFloatParam(_cs, "_P1Variance1", p.variance1);
+            cmd.SetComputeFloatParam(_cs, "_P1Variance2", p.variance2);
+            cmd.SetComputeFloatParam(_cs, "_P1Variance3", p.variance3);
+            SetP1EinsumParameters(cmd, p);
+        }
+
+        private void SetP1EinsumParameters(AexisP1VisionDispatch p)
+        {
+            _cs.SetInt("_P1EinsumOperandCount", p.einsumOperandCount);
+            _cs.SetInt("_P1EinsumLabelCount", p.einsumLabelCount);
+            _cs.SetInt("_P1EinsumReductionCount", p.einsumReductionCount);
+            SetP1EinsumVector("_P1EinsumDim", p.einsumDims);
+            SetP1EinsumVector("_P1EinsumA", p.einsumA);
+            SetP1EinsumVector("_P1EinsumB", p.einsumB);
+            SetP1EinsumVector("_P1EinsumC", p.einsumC);
+            SetP1EinsumVector("_P1EinsumO", p.einsumOutput);
+            SetP1EinsumVector("_P1EinsumR", p.einsumReduction);
+        }
+
+        private void SetP1EinsumParameters(CommandBuffer cmd, AexisP1VisionDispatch p)
+        {
+            cmd.SetComputeIntParam(_cs, "_P1EinsumOperandCount", p.einsumOperandCount);
+            cmd.SetComputeIntParam(_cs, "_P1EinsumLabelCount", p.einsumLabelCount);
+            cmd.SetComputeIntParam(_cs, "_P1EinsumReductionCount", p.einsumReductionCount);
+            SetP1EinsumVector(cmd, "_P1EinsumDim", p.einsumDims);
+            SetP1EinsumVector(cmd, "_P1EinsumA", p.einsumA);
+            SetP1EinsumVector(cmd, "_P1EinsumB", p.einsumB);
+            SetP1EinsumVector(cmd, "_P1EinsumC", p.einsumC);
+            SetP1EinsumVector(cmd, "_P1EinsumO", p.einsumOutput);
+            SetP1EinsumVector(cmd, "_P1EinsumR", p.einsumReduction);
+        }
+
+        private void SetP1EinsumVector(string prefix, int[] values)
+        {
+            for (var index = 0; index < 8; index++)
+                _cs.SetInt(prefix + index, values != null && index < values.Length ? values[index] : -1);
+        }
+
+        private void SetP1EinsumVector(CommandBuffer cmd, string prefix, int[] values)
+        {
+            for (var index = 0; index < 8; index++)
+                cmd.SetComputeIntParam(_cs, prefix + index, values != null && index < values.Length ? values[index] : -1);
+        }
+
+        private void SetP1VisionShape(string prefix, AexisGraphSession.BufferShape shape)
+        {
+            _cs.SetInt(prefix + "W", Mathf.Max(1, shape.w));
+            _cs.SetInt(prefix + "H", Mathf.Max(1, shape.h));
+            _cs.SetInt(prefix + "D", Mathf.Max(1, shape.d));
+            _cs.SetInt(prefix + "C", Mathf.Max(0, shape.c));
+            _cs.SetInt(prefix + "Dims", Mathf.Max(1, shape.dims));
+        }
+
+        private void SetP1VisionShape(CommandBuffer cmd, string prefix, AexisGraphSession.BufferShape shape)
+        {
+            cmd.SetComputeIntParam(_cs, prefix + "W", Mathf.Max(1, shape.w));
+            cmd.SetComputeIntParam(_cs, prefix + "H", Mathf.Max(1, shape.h));
+            cmd.SetComputeIntParam(_cs, prefix + "D", Mathf.Max(1, shape.d));
+            cmd.SetComputeIntParam(_cs, prefix + "C", Mathf.Max(0, shape.c));
+            cmd.SetComputeIntParam(_cs, prefix + "Dims", Mathf.Max(1, shape.dims));
         }
 
         public void CropPack4(RenderTexture input, int inW, int inH, int inC, int offsetW, int offsetH, int offsetC, int outW, int outH, int outC, RenderTexture output)
@@ -4790,6 +5228,7 @@ namespace Aexis.Execution
             _cs.SetInt("_UseInt8Activations", _useInt8Activations ? 1 : 0);
             _cs.SetFloat("_Int8ActivationScale", _int8ActivationScale);
             _cs.SetInt("_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
+            _cs.SetInt("_Int8ActivationUnsigned", _int8ActivationUnsigned ? 1 : 0);
             _cs.SetBuffer(kernel, "_ConvB", bias);
             _cs.SetTexture(kernel, "_ConvInArr", srcPack4);
             _cs.SetTexture(kernel, "_ConvOutArr", dstPack4);
@@ -5828,6 +6267,7 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_UseInt8Activations", _useInt8Activations ? 1 : 0);
             cmd.SetComputeFloatParam(_cs, "_Int8ActivationScale", _int8ActivationScale);
             cmd.SetComputeIntParam(_cs, "_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
+            cmd.SetComputeIntParam(_cs, "_Int8ActivationUnsigned", _int8ActivationUnsigned ? 1 : 0);
             cmd.SetComputeBufferParam(_cs, kernel, "_ConvB", bias);
             cmd.SetComputeTextureParam(_cs, kernel, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, kernel, "_ConvOutArr", dstPack4.nameID);

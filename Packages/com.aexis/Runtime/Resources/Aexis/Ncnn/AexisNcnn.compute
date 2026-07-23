@@ -110,6 +110,20 @@
 #pragma kernel NcnnCodeFormerMinEncodingFromSoftOneHot
 #pragma kernel NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat
 #pragma kernel NcnnShuffleChannelPack4
+#pragma kernel NcnnFlipPack4P1
+#pragma kernel NcnnP1GridSamplePack4
+#pragma kernel NcnnP1GluPack4
+#pragma kernel NcnnP1DiagPack4
+#pragma kernel NcnnP1FoldPack4
+#pragma kernel NcnnP1SppPack4
+#pragma kernel NcnnP1RoiAlignPack4
+#pragma kernel NcnnP1RoiPoolPack4
+#pragma kernel NcnnP1PsRoiPoolPack4
+#pragma kernel NcnnP1DeformableConv2dPack4
+#pragma kernel NcnnP1ProposalPack4
+#pragma kernel NcnnP1DetectionOutputPack4
+#pragma kernel NcnnP1YoloDetectionOutputPack4
+#pragma kernel NcnnP1EinsumPack4
 #pragma kernel NcnnCropPack4
 #pragma kernel NcnnSlicePack4
 #pragma kernel NcnnSliceLinearMat2D
@@ -510,6 +524,118 @@ float _PointwiseB;
 float _PointwiseC;
 int _PointwiseChannels;
 
+int _P1Width;
+int _P1Height;
+int _P1Depth;
+int _P1Channels;
+int _P1Packs;
+int _P1FlipWidth;
+int _P1FlipHeight;
+int _P1FlipDepth;
+int _P1FlipChannels;
+
+Texture2DArray<float4> _P1In0Arr;
+Texture2DArray<float4> _P1In1Arr;
+Texture2DArray<float4> _P1In2Arr;
+RWTexture2DArray<float4> _P1OutArr;
+StructuredBuffer<float> _P1Weights;
+StructuredBuffer<float> _P1Bias;
+StructuredBuffer<float> _P1DetectionBiases;
+
+int _P1In0W;
+int _P1In0H;
+int _P1In0D;
+int _P1In0C;
+int _P1In0Dims;
+int _P1In1W;
+int _P1In1H;
+int _P1In1D;
+int _P1In1C;
+int _P1In1Dims;
+int _P1In2W;
+int _P1In2H;
+int _P1In2D;
+int _P1In2C;
+int _P1In2Dims;
+int _P1OutW;
+int _P1OutH;
+int _P1OutD;
+int _P1OutC;
+int _P1OutDims;
+int _P1Mode;
+int _P1PaddingMode;
+int _P1AlignCorners;
+int _P1GridPermute;
+int _P1Axis;
+int _P1Diagonal;
+int _P1KernelW;
+int _P1KernelH;
+int _P1DilationW;
+int _P1DilationH;
+int _P1StrideW;
+int _P1StrideH;
+int _P1PadLeft;
+int _P1PadRight;
+int _P1PadTop;
+int _P1PadBottom;
+int _P1PoolingType;
+int _P1PyramidHeight;
+int _P1PooledW;
+int _P1PooledH;
+int _P1SamplingRatio;
+int _P1Aligned;
+int _P1RoiVersion;
+int _P1PsOutputDim;
+int _P1BiasTerm;
+int _P1ActivationType;
+float _P1ActivationSlope;
+float _P1SpatialScale;
+int _P1DetectionCapacity;
+int _P1PreNmsTopK;
+int _P1NumClasses;
+int _P1NumBoxes;
+int _P1FeatStride;
+int _P1BaseSize;
+int _P1YoloV3;
+float _P1NmsThreshold;
+float _P1ConfidenceThreshold;
+float _P1MinSize;
+float _P1Variance0;
+float _P1Variance1;
+float _P1Variance2;
+float _P1Variance3;
+int _P1EinsumOperandCount;
+int _P1EinsumLabelCount;
+int _P1EinsumReductionCount;
+int _P1EinsumDim0;
+int _P1EinsumDim1;
+int _P1EinsumDim2;
+int _P1EinsumDim3;
+int _P1EinsumDim4;
+int _P1EinsumDim5;
+int _P1EinsumDim6;
+int _P1EinsumDim7;
+int _P1EinsumA0;
+int _P1EinsumA1;
+int _P1EinsumA2;
+int _P1EinsumA3;
+int _P1EinsumB0;
+int _P1EinsumB1;
+int _P1EinsumB2;
+int _P1EinsumB3;
+int _P1EinsumC0;
+int _P1EinsumC1;
+int _P1EinsumC2;
+int _P1EinsumC3;
+int _P1EinsumO0;
+int _P1EinsumO1;
+int _P1EinsumO2;
+int _P1EinsumO3;
+int _P1EinsumR0;
+int _P1EinsumR1;
+int _P1EinsumR2;
+int _P1EinsumR3;
+
 groupshared float red0[256];
 groupshared float red1[256];
 
@@ -645,6 +771,7 @@ void NcnnBinaryOpScalarSingleBroadcast_Impl(uint3 id);
 void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id);
 void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id);
 void NcnnShuffleChannelPack4_Impl(uint3 id);
+void NcnnFlipPack4P1_Impl(uint3 id);
 void NcnnCropPack4_Impl(uint3 id);
 void NcnnSlicePack4_Impl(uint3 id);
 void NcnnSliceLinearMat2D_Impl(uint3 id);
@@ -775,6 +902,7 @@ int _UseInt4ConvWeights;
 int _UseInt8Activations;
 float _Int8ActivationScale;
 int _Int8ActivationZeroPoint;
+int _Int8ActivationUnsigned;
 Texture2DArray<float4> _Pack4ChannelInArr;
 RWTexture2DArray<float4> _Pack4ChannelOutArr;
 int _Pack4ChannelCount;
@@ -2633,6 +2761,90 @@ void NcnnShuffleChannelPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void NcnnFlipPack4P1(uint3 id : SV_DispatchThreadID)
+{
+    NcnnFlipPack4P1_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1GridSamplePack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1GridSamplePack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1GluPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1GluPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1DiagPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1DiagPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1FoldPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1FoldPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1SppPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1SppPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1RoiAlignPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1RoiAlignPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1RoiPoolPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1RoiPoolPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1PsRoiPoolPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1PsRoiPoolPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1DeformableConv2dPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1DeformableConv2dPack4_Impl(id);
+}
+
+[numthreads(1,1,1)]
+void NcnnP1ProposalPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1ProposalPack4_Impl(id);
+}
+
+[numthreads(1,1,1)]
+void NcnnP1DetectionOutputPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1DetectionOutputPack4_Impl(id);
+}
+
+[numthreads(1,1,1)]
+void NcnnP1YoloDetectionOutputPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1YoloDetectionOutputPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void NcnnP1EinsumPack4(uint3 id : SV_DispatchThreadID)
+{
+    NcnnP1EinsumPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void NcnnCropPack4(uint3 id : SV_DispatchThreadID)
 {
     NcnnCropPack4_Impl(id);
@@ -3551,7 +3763,7 @@ float NcnnCastScalar(float value)
         return f16tof32(f32tof16(value));
     }
 
-    if (_CastTypeFrom == 1 && _CastTypeTo == 4)
+    if (_CastTypeTo == 4)
     {
         uint bits = asuint(value);
         uint lsb = (bits >> 16) & 1;
@@ -4007,6 +4219,8 @@ void NcnnDeepFillV2Reconstruct(uint3 id : SV_DispatchThreadID)
 #include "Includes/KernelGroups/NcnnKernels.GroupNorm.hlsl"
 #include "Includes/KernelGroups/NcnnKernels.BufferAttention.hlsl"
 #include "Includes/KernelGroups/NcnnKernels.BufferPointwiseNorm.hlsl"
+#include "Includes/NcnnFlipPack4P1.cginc"
+#include "Includes/NcnnP1VisionPack4.cginc"
 #if defined(AIIMAGE_DEEPFILLV2)
 #include "Includes/KernelGroups/NcnnKernels.DeepFillV2.hlsl"
 #endif

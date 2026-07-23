@@ -1431,11 +1431,51 @@ namespace Aexis.Execution
         public ModelManifest ModelManifest { get; private set; }
         public AexisPrecisionMode AppliedPrecisionMode { get; private set; } = AexisPrecisionMode.Auto;
         public bool UsesFp16WeightStorage => ModelManifest?.precision?.weightDataType == TensorDataType.Float16;
+        // Unity exposes no portable BF16 RenderTexture format. BF16 tensors are kept
+        // in ARGBFloat storage and rounded by the Pack4 Cast path, so capacity and
+        // accumulation remain FP32 while the declared logical precision is BF16.
+        public bool UsesBf16ActivationStorage => ModelManifest?.precision?.activationDataType == TensorDataType.BFloat16;
         public bool UsesInt8WeightOnly => ModelManifest?.IsInt8WeightOnly == true;
         public bool UsesInt4WeightOnly => ModelManifest?.IsInt4WeightOnly == true;
         public bool UsesQuantizedWeightOnly => UsesInt8WeightOnly || UsesInt4WeightOnly;
         public bool UsesFp16ActivationStorage => ModelManifest?.precision?.activationDataType == TensorDataType.Float16;
         internal bool UsesFp16WeightsForCurrentLayer => UsesFp16WeightStorage;
+
+        // Model-level precision is the fallback; a mixed plan is authoritative for
+        // its declared layer. BF16 deliberately resolves to ARGBFloat because Unity
+        // has no portable BF16 RenderTexture, while FP16 uses ARGBHalf.
+        internal bool TryGetMixedPrecisionNodePlan(string layerName, string operatorName, out MixedPrecisionNodePlan plan)
+        {
+            foreach (var candidate in ModelManifest?.mixedPrecision?.nodePlans ?? Array.Empty<MixedPrecisionNodePlan>())
+            {
+                if (candidate == null || !string.Equals(candidate.layerName, layerName, StringComparison.Ordinal))
+                    continue;
+                if (!string.IsNullOrWhiteSpace(candidate.operatorName)
+                    && !string.Equals(candidate.operatorName, operatorName, StringComparison.Ordinal))
+                    break;
+                plan = candidate;
+                return true;
+            }
+            plan = null;
+            return false;
+        }
+
+        internal bool UsesFp16WeightsForLayer(AexisGraphModel.Layer layer)
+        {
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            return TryGetMixedPrecisionNodePlan(layer?.name, operatorName, out var plan)
+                ? plan.weightDataType == TensorDataType.Float16
+                : UsesFp16WeightStorage;
+        }
+
+        internal RenderTextureFormat ResolveActivationTextureFormat(AexisGraphModel.Layer layer, int dims)
+        {
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            var activationType = TryGetMixedPrecisionNodePlan(layer?.name, operatorName, out var plan)
+                ? plan.activationDataType
+                : ModelManifest?.precision?.activationDataType ?? TensorDataType.Float32;
+            return activationType == TensorDataType.Float16 ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGBFloat;
+        }
         public bool UsesInt8WeightOnlyForLayer(AexisGraphModel.Layer layer)
         {
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
@@ -1539,14 +1579,35 @@ namespace Aexis.Execution
         internal void ConfigureInt8ActivationQuantization(AexisGraphModel.Layer layer)
         {
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            if (TryGetActivationQuantizationPlan(layer?.name, operatorName, out var activationPlan))
+            {
+                _ops.SetInt8ActivationQuantization(activationPlan);
+                return;
+            }
             QuantizedNodePlan plan = null;
             ModelManifest?.TryGetQuantizedNodePlan(layer?.name, operatorName, out plan);
             _ops.SetInt8ActivationQuantization(plan);
         }
 
+        internal bool TryGetActivationQuantizationPlan(string layerName, string operatorName, out QuantizedActivationPlan plan)
+        {
+            foreach (var candidate in ModelManifest?.mixedPrecision?.activationPlans ?? Array.Empty<QuantizedActivationPlan>())
+            {
+                if (candidate == null || !string.Equals(candidate.layerName, layerName, StringComparison.Ordinal))
+                    continue;
+                if (!string.IsNullOrWhiteSpace(candidate.operatorName)
+                    && !string.Equals(candidate.operatorName, operatorName, StringComparison.Ordinal))
+                    break;
+                plan = candidate;
+                return true;
+            }
+            plan = null;
+            return false;
+        }
+
         internal void ResetInt8ActivationQuantization()
         {
-            _ops.SetInt8ActivationQuantization(null);
+            _ops.SetInt8ActivationQuantization((QuantizedNodePlan)null);
         }
         public long TemporaryTextureBudgetBytes { get; set; }
         public int AttentionKvCacheTextureCapacity { get; set; }
@@ -1621,7 +1682,9 @@ namespace Aexis.Execution
                 : RenderTextureFormat.ARGBFloat;
             // targetDtype describes activation textures.  The plan separately records
             // whether immutable weights require the D2 INT8 capability.
-            StrictTextureTargetDtype = manifest.precision.activationDataType == TensorDataType.Float16 ? "FP16" : "FP32";
+            StrictTextureTargetDtype = manifest.precision.activationDataType == TensorDataType.Float16
+                ? "FP16"
+                : manifest.precision.activationDataType == TensorDataType.BFloat16 ? "BF16" : "FP32";
             StrictTextureTargetLayout = AexisTexturePlanLayout.Packed4;
         }
 
@@ -1635,7 +1698,8 @@ namespace Aexis.Execution
                     : precisionMode == AexisPrecisionMode.FP32
                         ? RenderTextureFormat.ARGBFloat
                         : _tensorTextureFormat;
-                StrictTextureTargetDtype = precisionMode == AexisPrecisionMode.FP32 ? "FP32" : "FP16";
+                StrictTextureTargetDtype = precisionMode == AexisPrecisionMode.FP32 ? "FP32"
+                    : precisionMode == AexisPrecisionMode.BF16 ? "BF16" : "FP16";
             }
         }
 
@@ -1828,14 +1892,16 @@ namespace Aexis.Execution
         {
             if (!string.Equals(request?.targetBackend, AexisOperatorCapabilityBackend.CommandBuffer, StringComparison.Ordinal)
                 || (!string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(request?.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase))
+                    && !string.Equals(request?.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(request?.targetDtype, "BF16", StringComparison.OrdinalIgnoreCase))
                 || !string.Equals(request?.targetLayout, AexisTexturePlanLayout.Packed4, StringComparison.OrdinalIgnoreCase))
             {
-                return RejectStrictCommandBufferPack4Node("The loaded runtime profile supports only FP16/FP32 Packed4 CommandBuffer branches.");
+                return RejectStrictCommandBufferPack4Node("The loaded runtime profile supports only FP16, BF16-emulated, or FP32 Packed4 CommandBuffer branches.");
             }
-            if (string.Equals(request.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase)
+            if ((string.Equals(request.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(request.targetDtype, "BF16", StringComparison.OrdinalIgnoreCase))
                 && TensorTextureFormat != RenderTextureFormat.ARGBFloat)
-                return RejectStrictCommandBufferPack4Node("FP32 Pack4 requires TensorTextureFormat=ARGBFloat for texture-native intermediate/output storage.");
+                return RejectStrictCommandBufferPack4Node("FP32/BF16 Pack4 requires TensorTextureFormat=ARGBFloat for texture-native intermediate/output storage.");
 
             if (ModelManifest != null
                 && string.Equals(request.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
@@ -1994,6 +2060,24 @@ namespace Aexis.Execution
                     return VerifyStrictCommandBufferCast(layer, inputs, request);
                 case "MatMul":
                     return VerifyStrictCommandBufferMatMul(layer, inputs, request);
+                case "GridSample":
+                case "DeformableConv2D":
+                case "Fold":
+                case "Flip":
+                case "GLU":
+                case "Einsum":
+                case "Diag":
+                case "SPP":
+                case "ROIAlign":
+                case "ROIPooling":
+                case "PSROIPooling":
+                case "Proposal":
+                case "DetectionOutput":
+                case "YoloDetectionOutput":
+                case "Yolov3DetectionOutput":
+                case "YoloDetectOut":
+                case "Yolov3DetectOut":
+                    return VerifyStrictCommandBufferP1Vision(layer, inputs, request);
                 case "Softmax":
                     return VerifyStrictCommandBufferSoftmax(layer, inputs, request);
                 case "SDPA":
@@ -2546,7 +2630,7 @@ namespace Aexis.Execution
                         logicalShape = outputShape,
                         storageShape = (int[])outputShape.Clone(),
                         layout = request.targetLayout,
-                        dtype = request.targetDtype,
+                        dtype = ResolvePhysicalTextureDtype(request.targetDtype),
                         aliasGroup = "computed:" + layer.name + ":value",
                         textureBacked = true
                     },
@@ -4630,8 +4714,8 @@ namespace Aexis.Execution
 
             var typeFrom = layer.GetInt(0, 0);
             var typeTo = layer.GetInt(1, 0);
-            if (typeFrom < 1 || typeFrom > 7 || typeTo < 1 || typeTo > 7 || typeFrom == 4 || typeTo == 4)
-                return RejectStrictCommandBufferPack4Node("Cast supports FP32(1), FP16(2), Int8(3), Int32(5), UInt8(6), and logical Bool(7); BF16 and unknown codes are rejected.");
+            if (typeFrom < 1 || typeFrom > 7 || typeTo < 1 || typeTo > 7)
+                return RejectStrictCommandBufferPack4Node("Cast supports FP32(1), FP16(2), BF16(4), Int8(3), Int32(5), UInt8(6), and logical Bool(7).");
             if (typeFrom == typeTo)
                 return AcceptStrictCommandBufferPack4Alias(layer, inputs[0], input, request);
             return AcceptStrictCommandBufferPack4Node(
@@ -4672,7 +4756,7 @@ namespace Aexis.Execution
                     logicalShape = (int[])logical.Clone(),
                     storageShape = (int[])storage.Clone(),
                     layout = request.targetLayout,
-                    dtype = request.targetDtype,
+                    dtype = ResolvePhysicalTextureDtype(request.targetDtype),
                     aliasGroup = source.aliasGroup,
                     textureBacked = source.textureBacked
                 }).ToArray()
@@ -5079,7 +5163,7 @@ namespace Aexis.Execution
                     logicalShape = new[] { output.dims, output.w, output.h, output.d, output.c },
                     storageShape = new[] { storage.dims, storage.w, storage.h, storage.d, storage.c },
                     layout = request.targetLayout,
-                    dtype = request.targetDtype,
+                    dtype = ResolvePhysicalTextureDtype(request.targetDtype),
                     aliasGroup = "computed:" + (layer.name ?? layer.typeName ?? "slice") + ":" + index,
                     textureBacked = true
                 };
@@ -5128,6 +5212,61 @@ namespace Aexis.Execution
 
             var size = sliceParams[Mathf.Min(outputIndex, sliceParams.Length - 1)];
             return size == -233 ? (axisSize - begin) / Mathf.Max(1, outputCount - outputIndex) : size;
+        }
+
+        // P1 vision layers have a native Pack4 implementation. Admission is based on
+        // the same descriptor/parameter proof used by the dispatch, rather than the
+        // broad capability catalog: this is what keeps strict inference texture-only.
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferP1Vision(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+
+            try
+            {
+                AexisP1VisionSchema.Validate(layer);
+                for (var index = 0; index < shapes.Length; index++)
+                {
+                    var exactPack4 = HasStrictExactPack4Storage(inputs[index], shapes[index])
+                        || HasStrictScalarPack4Storage(inputs[index], shapes[index]);
+                    var linearMat = HasStrictLinearMatStorage(inputs[index], shapes[index])
+                        || HasStrictPack4LinearMatStorage(inputs[index], shapes[index]);
+                    if (!exactPack4 && !linearMat)
+                        return RejectStrictCommandBufferPack4Node(
+                            "P1 vision input " + index.ToString(CultureInfo.InvariantCulture)
+                            + " is neither exact Pack4 nor descriptor-proven LinearMat storage.");
+                }
+
+                if (string.Equals(layer.typeName, "Flip", StringComparison.Ordinal))
+                {
+                    if (shapes.Length != 1 || !HasStrictExactPack4Storage(inputs[0], shapes[0]))
+                        return RejectStrictCommandBufferPack4Node("Flip requires a rank-3/rank-4 exact Pack4 Texture2DArray input.");
+                    AexisFlipLayer.ValidatePack4Profile(layer, shapes[0]);
+                    return AcceptStrictCommandBufferPack4Node(layer, shapes[0], request, "command-buffer-pack4:p1-flip");
+                }
+
+                var input0 = shapes.Length > 0 ? shapes[0] : new BufferShape(3, 1, 1, 1, 0);
+                var input1 = shapes.Length > 1 ? shapes[1] : new BufferShape(3, 1, 1, 1, 0);
+                var input2 = shapes.Length > 2 ? shapes[2] : new BufferShape(3, 1, 1, 1, 0);
+                var dispatch = AexisNativeP1VisionLayer.DescribeDispatch(this, layer, input0, input1, input2);
+                if (dispatch.output.w <= 0 || dispatch.output.h <= 0 || dispatch.output.d <= 0 || dispatch.output.c <= 0)
+                    return RejectStrictCommandBufferPack4Node("P1 vision dispatch resolved a non-positive output extent.");
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    dispatch.output,
+                    request,
+                    "command-buffer-pack4:p1-" + (layer.typeName ?? "vision").ToLowerInvariant());
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                || exception is InvalidOperationException
+                || exception is NotSupportedException
+                || exception is OverflowException)
+            {
+                return RejectStrictCommandBufferPack4Node("P1 vision profile rejected: " + exception.Message);
+            }
         }
 
         private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMatMul(
@@ -5492,7 +5631,7 @@ namespace Aexis.Execution
                     logicalShape = (int[])logical.Clone(),
                     storageShape = (int[])storage.Clone(),
                     layout = request.targetLayout,
-                    dtype = request.targetDtype,
+                    dtype = ResolvePhysicalTextureDtype(request.targetDtype),
                     logicalDtype = string.IsNullOrWhiteSpace(logicalDtype) ? ResolveLogicalDtype(request.targetDtype) : logicalDtype,
                     aliasGroup = "computed:" + (layer?.name ?? layer?.typeName ?? "layer") + ":" + index,
                     textureBacked = true
@@ -5539,8 +5678,14 @@ namespace Aexis.Execution
         private static string ResolveLogicalDtype(string physicalDtype)
         {
             return string.Equals(physicalDtype, "FP16", StringComparison.OrdinalIgnoreCase) ? "Float16"
+                : string.Equals(physicalDtype, "BF16", StringComparison.OrdinalIgnoreCase) ? "BFloat16"
                 : string.Equals(physicalDtype, "FP32", StringComparison.OrdinalIgnoreCase) ? "Float32"
                 : physicalDtype ?? string.Empty;
+        }
+
+        private static string ResolvePhysicalTextureDtype(string requestedDtype)
+        {
+            return string.Equals(requestedDtype, "BF16", StringComparison.OrdinalIgnoreCase) ? "FP32" : requestedDtype;
         }
 
         private static AexisTextureExecutionPlanNodeVerification RejectStrictCommandBufferPack4Node(string reason)
@@ -5617,7 +5762,7 @@ namespace Aexis.Execution
                     logicalShape = source.logicalShape == null ? Array.Empty<int>() : (int[])source.logicalShape.Clone(),
                     storageShape = source.storageShape == null ? Array.Empty<int>() : (int[])source.storageShape.Clone(),
                     layout = request.targetLayout,
-                    dtype = request.targetDtype,
+                    dtype = ResolvePhysicalTextureDtype(request.targetDtype),
                     logicalDtype = source.logicalDtype,
                     aliasGroup = source.aliasGroup,
                     textureBacked = source.textureBacked

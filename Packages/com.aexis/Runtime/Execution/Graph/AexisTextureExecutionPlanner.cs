@@ -772,8 +772,8 @@ namespace Aexis.Execution
                 logicalShape = CopyShape(source.logicalShape),
                 storageShape = CopyShape(source.storageShape),
                 layout = request.targetLayout,
-                dtype = request.targetDtype,
-                logicalDtype = source.logicalDtype,
+                dtype = ResolvePhysicalTextureDtype(request.targetDtype),
+                logicalDtype = string.Equals(request.targetDtype, "BF16", StringComparison.OrdinalIgnoreCase) ? "BFloat16" : source.logicalDtype,
                 aliasGroup = "computed:" + (layer.name ?? layer.typeName ?? "layer") + ":" + index,
                 textureBacked = true
             }).ToArray();
@@ -1025,9 +1025,16 @@ namespace Aexis.Execution
             return descriptor != null
                 && descriptor.textureBacked
                 && string.Equals(descriptor.layout, request.targetLayout, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(descriptor.dtype, request.targetDtype, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(descriptor.dtype, ResolvePhysicalTextureDtype(request.targetDtype), StringComparison.OrdinalIgnoreCase)
                 && TryToBufferShape(descriptor.logicalShape, out _)
                 && TryToBufferShape(descriptor.storageShape, out _);
+        }
+
+        private static string ResolvePhysicalTextureDtype(string targetDtype)
+        {
+            // Unity has no portable BF16 RenderTexture. The runtime uses FP32
+            // texture storage and records BFloat16 as the logical dtype.
+            return string.Equals(targetDtype, "BF16", StringComparison.OrdinalIgnoreCase) ? "FP32" : targetDtype;
         }
 
         private static bool TryValidateTextureCapacities(

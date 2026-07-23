@@ -69,13 +69,15 @@ session.Release();
 
 ## Precision and manifests
 
-Use `NcnnPrecisionMode.Auto` unless a tested manifest selects a supported precision. `ModelManifest` validates FP16/BF16/FP32 activation contracts, INT8/INT4 weight-only contracts, calibrated Pack4 INT8 activation plans, per-layer mixed-precision plans, and output precision gates. Quantized model metadata must provide calibration provenance and explicit node plans where activation quantization is used.
+Use `NcnnPrecisionMode.Auto` unless a tested manifest selects a supported precision. `ModelManifest` validates FP16/BF16/FP32 activation contracts, INT8/INT4 weight-only contracts, calibrated Pack4 INT8 activation plans, per-layer mixed-precision plans, and output precision gates. Quantized model metadata must provide calibration provenance and explicit node plans where activation quantization is used. Activation plans drive signed or unsigned Pack4 INT8 quantize/dequantize arithmetic in Conv/DWConv/Gemm/InnerProduct on both immediate and CommandBuffer paths.
 
 ## Unity model assets and custom layers
 
 `AexisModelAsset` is produced by the package `ScriptedImporter` implementations for `.onnx`, `.param`, and `.aexis`. It contains source bytes, a binary graph, optional weights, and diagnostic JSON. `AexisModelPackager` exposes the offline equivalents for build tools.
 
 Use `AexisCustomLayerRegistry.Register(...)` with `AexisCustomLayerDefinition` to publish a layer factory, schema, and shader kernel identifier. The schema is validated before the factory runs. Put matching `AexisModelExtensionDeclaration` entries in a model graph/archive; unresolved declarations and missing Pack4 kernel profiles are terminal import or execution errors, never Buffer fallbacks.
+
+The built-in P1 visual set is verified by the same strict profile used for dispatch: GridSample, DeformableConv2D, Fold, Flip, GLU, Einsum, Diag, SPP, ROIAlign, ROIPooling, PSROIPooling, Proposal, DetectionOutput, and YOLO output variants. BF16 is a logical precision: Aexis keeps its texture storage in FP32, and Pack4 `Cast` applies deterministic BF16 rounding.
 
 ## Error handling
 

@@ -189,6 +189,24 @@ namespace Aexis.Tests.Editor
                             weightDataType = TensorDataType.BFloat16,
                             accumulationDataType = TensorDataType.Float32
                         }
+                    },
+                    activationPlans = new[]
+                    {
+                        new QuantizedActivationPlan
+                        {
+                            layerName = "head",
+                            operatorName = "Convolution",
+                            packing = ActivationQuantizationPacking.Pack4UnsignedInt8,
+                            calibration = new ActivationCalibrationRange
+                            {
+                                layerName = "head",
+                                tensorName = "head_input",
+                                minimum = -1f,
+                                maximum = 2f,
+                                sampleCount = 32,
+                                method = CalibrationMethod.Percentile
+                            }
+                        }
                     }
                 },
                 precisionGate = new ModelPrecisionGateContract
@@ -201,6 +219,7 @@ namespace Aexis.Tests.Editor
             };
 
             manifest.Validate();
+            Assert.That(manifest.mixedPrecision.activationPlans[0].calibration.SymmetricScale, Is.EqualTo(2f / 127f).Within(1e-6f));
             Assert.That(manifest.precisionGate.Accepts(new PrecisionGateMeasurement
             {
                 outputName = "boxes",
@@ -208,6 +227,39 @@ namespace Aexis.Tests.Editor
                 meanAbsoluteError = 0.005f,
                 cosineSimilarity = 0.999f
             }, out _), Is.True);
+        }
+
+        [Test]
+        public void OnnxBfloat16Cast_LowersToThePack4Bfloat16Abi()
+        {
+            var model = new OnnxModel { opset = 16 };
+            model.graph.inputs.Add(new OnnxValueInfo
+            {
+                name = "input",
+                dataType = TensorDataType.Float16,
+                onnxDataType = 10,
+                dims = new long[] { 1, 3, 4, 4 }
+            });
+            var node = new OnnxNode { name = "to_bfloat16", opType = "Cast" };
+            node.inputs.Add("input");
+            node.outputs.Add("output");
+            node.attributes["to"] = new OnnxAttribute { i = 16 };
+            model.graph.nodes.Add(node);
+            model.graph.outputs.Add(new OnnxValueInfo
+            {
+                name = "output",
+                dataType = TensorDataType.BFloat16,
+                onnxDataType = 16,
+                dims = new long[] { 1, 3, 4, 4 }
+            });
+
+            var result = AexisOnnxGraphLowering.Lower(model);
+            var layer = result.graph.layers[result.graph.layers.Count - 1];
+
+            Assert.That(result.IsEligible, Is.True);
+            Assert.That(layer.typeName, Is.EqualTo("Cast"));
+            Assert.That(layer.GetInt(0), Is.EqualTo(2));
+            Assert.That(layer.GetInt(1), Is.EqualTo(4));
         }
 
         [Test]
