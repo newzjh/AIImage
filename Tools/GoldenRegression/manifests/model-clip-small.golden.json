@@ -1,0 +1,28 @@
+{
+  "schema_version": "aiimage.inference.golden/v1",
+  "case_id": "model.clip.small-public-image",
+  "scope": "model",
+  "precision": "FP16",
+  "model_manifest_variants": {
+    "fp32": "../../../Assets/StreamingAssets/InferenceManifests/clip-mobileclip-s0.fp32.model.json",
+    "fp16": "../../../Assets/StreamingAssets/InferenceManifests/clip-mobileclip-s0.fp16.model.json"
+  },
+  "runtime_benchmark_schema": "aiimage.inference.runtime-benchmark/v1",
+  "input_fixtures": [
+    { "name": "preprocessed_probe", "kind": "tensor", "path": "../fixtures/clip_image_input.tensor.json" }
+  ],
+  "debug_oracle": { "readback": "texture-aware", "pinned_blobs": ["image_embedding"], "mode": "Debug/Oracle test only" },
+  "expected_tensors": [
+    {
+      "node": "image_projection",
+      "blob": "image_embedding",
+      "oracle_fixture": "../fixtures/clip_embedding_oracle.tensor.json",
+      "actual_fixture": "../fixtures/clip_embedding_actual.tensor.json"
+    }
+  ],
+  "thresholds": { "FP16": { "abs": 0.001, "rel": 0.01 } },
+  "task_metrics": [
+    { "name": "top1_label_stable", "actual": "fixture-label", "expected": "fixture-label", "comparison": "equals" }
+  ],
+  "platform": { "unity": "6000.2.7f2", "graphics_api": "Vulkan-or-DX12", "model": "mobileclip_s0_export" }
+}

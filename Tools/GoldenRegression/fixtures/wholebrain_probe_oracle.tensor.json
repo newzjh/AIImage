@@ -1,0 +1,10 @@
+{
+  "schema_version": "aiimage.inference.tensor/v1",
+  "node": "wholebrain_probe_head",
+  "blob": "out0",
+  "logical_shape": [4, 2, 1, 1, 2],
+  "storage_shape": [4, 2, 1, 1, 4],
+  "layout": "CDHW-Pack4",
+  "dtype": "FP32",
+  "values": [0.25, 0.75, 0.5, 0.5]
+}

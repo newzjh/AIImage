@@ -1,0 +1,23 @@
+{
+  "schema_version": "aiimage.inference.golden/v1",
+  "case_id": "subgraph.residual.pack4-tail",
+  "scope": "subgraph",
+  "precision": "FP16",
+  "input_fixtures": [
+    { "name": "conv_out", "kind": "tensor", "path": "../fixtures/pack4_tail_input.tensor.json" }
+  ],
+  "debug_oracle": { "readback": "texture-aware", "pinned_blobs": ["residual_out"], "mode": "Debug/Oracle test only" },
+  "expected_tensors": [
+    {
+      "node": "binary_1",
+      "blob": "residual_out",
+      "oracle_fixture": "../fixtures/pack4_tail_oracle.tensor.json",
+      "actual_fixture": "../fixtures/pack4_tail_actual.tensor.json"
+    }
+  ],
+  "thresholds": { "FP16": { "abs": 0.001, "rel": 0.01 } },
+  "task_metrics": [
+    { "name": "tail_channels_preserved", "actual": 3, "expected": 3, "comparison": "equals" }
+  ],
+  "platform": { "unity": "6000.2.7f2", "graphics_api": "Vulkan-or-DX12", "runner": "NcnnRepro.Infer pinned blob" }
+}

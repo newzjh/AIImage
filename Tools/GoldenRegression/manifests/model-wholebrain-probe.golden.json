@@ -1,0 +1,30 @@
+{
+  "schema_version": "aiimage.inference.golden/v1",
+  "case_id": "model.wholebrain.probe-external-data",
+  "scope": "model",
+  "precision": "FP32",
+  "model_manifest_variants": {
+    "fp32": "../../../Assets/StreamingAssets/InferenceManifests/wholebrain-probe.fp32.model.json",
+    "fp16": "../../../Assets/StreamingAssets/InferenceManifests/wholebrain-probe.fp16.model.json"
+  },
+  "fp16_status": "strict-rejected until a verified 3D packed-half Conv/Deconv profile is implemented",
+  "runtime_benchmark_schema": "aiimage.inference.runtime-benchmark/v1",
+  "privacy": "external-private-input-required; no patient data is stored in this repository",
+  "allow_missing_observation": true,
+  "input_fixtures": [
+    { "name": "volume", "kind": "external-private-volume", "path": "not-stored-in-repository" }
+  ],
+  "debug_oracle": { "readback": "texture-aware", "pinned_blobs": ["out0"], "mode": "Debug/Oracle test only", "launcher": "Tools/MonaiToNCNN/RunMonaiUnityDebug.bat", "timeout_minutes": 10 },
+  "expected_tensors": [
+    {
+      "node": "wholebrain_probe_head",
+      "blob": "out0",
+      "oracle_fixture": "../fixtures/wholebrain_probe_oracle.tensor.json"
+    }
+  ],
+  "thresholds": { "FP32": { "abs": 0.00001, "rel": 0.00001 } },
+  "task_metrics": [
+    { "name": "guardrails_required", "actual": true, "expected": true, "comparison": "equals" }
+  ],
+  "platform": { "unity": "6000.2.7f2", "graphics_api": "Vulkan-or-DX12", "model": "wholeBrain probe", "monai_guardrails": "AIIMAGE_MONAI_* enabled" }
+}

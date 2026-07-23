@@ -1,0 +1,10 @@
+{
+  "schema_version": "aiimage.inference.tensor/v1",
+  "node": "image_projection",
+  "blob": "image_embedding",
+  "logical_shape": [2, 4, 1, 1, 1],
+  "storage_shape": [3, 1, 1, 1, 4],
+  "layout": "LinearMat-Pack4",
+  "dtype": "FP16",
+  "values": [0.5, -0.25, 0.75, 0.125]
+}

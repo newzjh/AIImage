@@ -1,0 +1,23 @@
+{
+  "schema_version": "aiimage.inference.golden/v1",
+  "case_id": "model.yolo-seg.small-public-image",
+  "scope": "model",
+  "precision": "INT8",
+  "input_fixtures": [
+    { "name": "letterbox_probe", "kind": "tensor", "path": "../fixtures/yolo_input.tensor.json" }
+  ],
+  "debug_oracle": { "readback": "texture-aware", "pinned_blobs": ["out2"], "mode": "Debug/Oracle test only" },
+  "expected_tensors": [
+    {
+      "node": "segmentation_head",
+      "blob": "out2",
+      "oracle_fixture": "../fixtures/yolo_proto_oracle.tensor.json",
+      "actual_fixture": "../fixtures/yolo_proto_actual.tensor.json"
+    }
+  ],
+  "thresholds": { "INT8": { "abs": 0.05, "rel": 0.15 } },
+  "task_metrics": [
+    { "name": "person_count_minimum", "actual": 1, "expected": 1, "comparison": "minimum" }
+  ],
+  "platform": { "unity": "6000.2.7f2", "graphics_api": "Vulkan-or-DX12", "model": "yolov8n_seg.ncnn" }
+}

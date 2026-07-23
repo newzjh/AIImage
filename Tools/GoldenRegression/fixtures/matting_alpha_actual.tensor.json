@@ -1,0 +1,10 @@
+{
+  "schema_version": "aiimage.inference.tensor/v1",
+  "node": "decoder_0",
+  "blob": "local",
+  "logical_shape": [3, 2, 2, 1, 1],
+  "storage_shape": [3, 2, 2, 1, 4],
+  "layout": "NCHW-Pack4",
+  "dtype": "FP16",
+  "values": [0.0, 0.25024414, 0.74975586, 1.0]
+}

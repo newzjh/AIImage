@@ -1,0 +1,22 @@
+{
+  "schema_version": "aiimage.inference.golden/v1",
+  "case_id": "layer.sigmoid.pack4",
+  "scope": "single_layer",
+  "precision": "FP32",
+  "input_fixtures": [
+    { "name": "input", "kind": "tensor", "path": "../fixtures/sigmoid_input.tensor.json" }
+  ],
+  "expected_tensors": [
+    {
+      "node": "sigmoid_0",
+      "blob": "sigmoid_out",
+      "oracle_fixture": "../fixtures/sigmoid_oracle.tensor.json",
+      "actual_fixture": "../fixtures/sigmoid_actual.tensor.json"
+    }
+  ],
+  "thresholds": { "FP32": { "abs": 0.000001, "rel": 0.000001 } },
+  "task_metrics": [
+    { "name": "finite_ratio", "actual": 1.0, "expected": 1.0, "comparison": "equals" }
+  ],
+  "platform": { "unity": "6000.2.7f2", "graphics_api": "Vulkan-or-DX12", "runner": "Editor Debug/Oracle" }
+}
