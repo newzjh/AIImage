@@ -335,7 +335,13 @@ namespace Aexis.Execution
 
         private static ModelMixedPrecisionContract ParseMixedPrecision(AexisModelManifestMixedPrecision document, string source)
         {
-            if (document == null)
+            // JsonUtility can materialize a nested serializable object even when an
+            // older manifest did not contain this P1 field. Treat that completely
+            // empty shell as absent so existing FP32/FP16 manifests remain valid.
+            if (document == null
+                || (string.IsNullOrWhiteSpace(document.planVersion)
+                    && document.nodePlans == null
+                    && document.activationPlans == null))
                 return null;
 
             var sourceNodes = document.nodePlans ?? Array.Empty<AexisModelManifestMixedPrecisionNode>();
@@ -389,7 +395,11 @@ namespace Aexis.Execution
 
         private static ModelPrecisionGateContract ParsePrecisionGate(AexisModelManifestPrecisionGate document, string source)
         {
-            if (document == null)
+            // Keep pre-P1 manifests forward-compatible for the same JsonUtility
+            // nested-object behavior handled by ParseMixedPrecision above.
+            if (document == null
+                || (string.IsNullOrWhiteSpace(document.gateVersion)
+                    && document.baseline == null))
                 return null;
             var sourceBaseline = document.baseline ?? Array.Empty<AexisModelManifestPrecisionMeasurement>();
             var baseline = new PrecisionGateMeasurement[sourceBaseline.Length];

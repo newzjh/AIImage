@@ -1471,9 +1471,16 @@ namespace Aexis.Execution
         internal RenderTextureFormat ResolveActivationTextureFormat(AexisGraphModel.Layer layer, int dims)
         {
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
-            var activationType = TryGetMixedPrecisionNodePlan(layer?.name, operatorName, out var plan)
-                ? plan.activationDataType
-                : ModelManifest?.precision?.activationDataType ?? TensorDataType.Float32;
+            if (!TryGetMixedPrecisionNodePlan(layer?.name, operatorName, out var plan))
+            {
+                // A manifest owns the default precision. Manifest-less sessions may
+                // deliberately select a texture format (the face detector uses
+                // ARGBFloat), so do not discard that explicit runtime contract.
+                return ModelManifest != null
+                    ? ResolveActivationTextureFormat(dims)
+                    : TensorTextureFormat;
+            }
+            var activationType = plan.activationDataType;
             return activationType == TensorDataType.Float16 ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGBFloat;
         }
         public bool UsesInt8WeightOnlyForLayer(AexisGraphModel.Layer layer)

@@ -195,6 +195,20 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         Texture2D letterbox = null;
         RenderTexture inputPack4 = null;
         string dumpDir = null;
+        FaceRegionResult FinishDebugFailure(string error)
+        {
+            if (dumpDebug && debugLines != null)
+            {
+                if (string.IsNullOrWhiteSpace(dumpDir))
+                    dumpDir = CreateDumpDir();
+                debugLines.Add("failure=" + error);
+                debugLines.Add(AexisGpuResourceTracker.BuildSummary());
+                File.WriteAllLines(Path.Combine(dumpDir, "ncnn_face_debug.txt"), debugLines);
+                AexisGpuResourceTracker.WriteReport(dumpDir, "ncnn_face_gpu_resources.txt");
+            }
+
+            return new FaceRegionResult { error = error, dumpDir = dumpDir };
+        }
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -439,7 +453,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
             LogPhase("decode-finished | total_proposals=" + proposals.Count);
             if (proposals.Count == 0)
-                return new FaceRegionResult { error = "No face detected" };
+                return FinishDebugFailure("No face detected");
 
             LogPhase("sort-start");
             SortProposals(proposals);
@@ -448,13 +462,13 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             var picked = ApplyNms(proposals, Mathf.Clamp01(nmsThreshold));
             LogPhase("nms-done | picked=" + picked.Count);
             if (picked.Count == 0)
-                return new FaceRegionResult { error = "No face left after NMS" };
+                return FinishDebugFailure("No face left after NMS");
 
             LogPhase("build-faces-start");
             var faces = BuildFaces(proposals, picked, src.width, src.height, Mathf.Max(1, maxDetectedFaces));
             LogPhase("build-faces-done | faces=" + (faces != null ? faces.Length : 0));
             if (faces == null || faces.Length == 0)
-                return new FaceRegionResult { error = "No face left after postprocess" };
+                return FinishDebugFailure("No face left after postprocess");
 
             var primary = faces[0];
             var primaryProposal = proposals[picked[0]];
@@ -462,7 +476,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             var mask = BuildMask(src.width, src.height, primaryProposal, out var maskRect);
             LogPhase("build-mask-done | rect=" + maskRect.x + "," + maskRect.y + "," + maskRect.width + "," + maskRect.height);
             if (mask == null)
-                return new FaceRegionResult { error = "Face mask build failed" };
+                return FinishDebugFailure("Face mask build failed");
 
             if (dumpDebug)
             {

@@ -65,6 +65,11 @@ float P1Read1Linear(int index)
     return P1ReadLinear(_P1In1Arr, index, _P1In1Dims, _P1In1W, _P1In1H, _P1In1D, _P1In1C);
 }
 
+float P1Read2Linear(int index)
+{
+    return P1ReadLinear(_P1In2Arr, index, _P1In2Dims, _P1In2W, _P1In2H, _P1In2D, _P1In2C);
+}
+
 void P1DecodeOutput(uint3 id, out int x, out int y, out int z, out int pack)
 {
     int packs = P1PackCount(_P1OutC);

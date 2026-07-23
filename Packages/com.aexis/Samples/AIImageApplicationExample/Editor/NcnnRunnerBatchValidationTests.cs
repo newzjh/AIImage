@@ -11,8 +11,10 @@ using UnityEngine.TestTools;
 
 public sealed class NcnnRunnerBatchValidationTests
 {
-    private static string Input02Path => AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail2.png");
-    private static string Input03Path => AexisApplicationExamplePaths.SampleTextureAbsolutePath("facedetail3.jpg");
+    // Detection, restoration, and segmentation assertions require actual people.
+    // The package's face-detail textures are intentionally texture-only samples.
+    private static string Input02Path => Path.Combine(Directory.GetCurrentDirectory(), "ref", "02.png");
+    private static string Input03Path => Path.Combine(Directory.GetCurrentDirectory(), "ref", "03.jpg");
 
     [UnityTest]
     public IEnumerator CodeFormer_Runs_On_02()
