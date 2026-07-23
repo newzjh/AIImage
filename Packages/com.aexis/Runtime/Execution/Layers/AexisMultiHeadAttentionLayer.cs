@@ -202,7 +202,7 @@ namespace Aexis.Execution
                 + " | rejectedFallback=placeholder-or-buffer-materialization");
         }
 
-        private static void ResolveBottomBlobIndices(int bottomBlobCount, bool attnMask, bool kvCache, out int qBlobIndex, out int kBlobIndex, out int vBlobIndex, out int attnMaskIndex)
+        internal static void ResolveBottomBlobIndices(int bottomBlobCount, bool attnMask, bool kvCache, out int qBlobIndex, out int kBlobIndex, out int vBlobIndex, out int attnMaskIndex)
         {
             qBlobIndex = 0;
             kBlobIndex = 0;

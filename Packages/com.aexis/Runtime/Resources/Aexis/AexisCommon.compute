@@ -54,9 +54,14 @@
 #pragma kernel AexisPack4ToBufferCDHW
 #pragma kernel AexisInnerProduct
 #pragma kernel AexisPackRgbToPack4Gfpgan
+#pragma kernel AexisGfpganStyleModulation
+#pragma kernel AexisGfpganStyleDemod
+#pragma kernel AexisGfpganBuildDynamicWeight
+#pragma kernel AexisGfpganAddNoisePack4
 #pragma kernel AexisFillPack4FromBufferCHW
 #pragma kernel AexisFillPack4FromBufferCDHW
 #pragma kernel AexisFillLinearMatFromBuffer
+#pragma kernel AexisFillLinearMatFromIntBuffer
 #pragma kernel AexisFillScalarTexture
 #pragma kernel AexisFillScalarLinearMat
 #pragma kernel AexisConstantLinearMat
@@ -95,6 +100,7 @@
 #pragma kernel AexisMaxUnPoolingPack4
 #pragma kernel AexisSoftmaxChannelPack4
 #pragma kernel AexisSoftmaxLinearMat2D
+#pragma kernel AexisSoftmaxPack4LinearMat2D
 #pragma kernel AexisUnaryOpPack4
 #pragma kernel AexisUnaryOpLinearMat
 #pragma kernel AexisTriluPack4
@@ -103,6 +109,7 @@
 #pragma kernel AexisBinaryOpLinearMatFixedInputScalar
 #pragma kernel AexisBinaryOpPack4
 #pragma kernel AexisBinaryOpPack4LinearMixed
+#pragma kernel AexisBinaryOpPack4LinearMixedArray
 #pragma kernel AexisBinaryOpPack4Broadcast
 #pragma kernel AexisBinaryOpPack4BufferScalar
 #pragma kernel AexisBinaryOpPack4ChannelVectorTex
@@ -136,6 +143,7 @@
 #pragma kernel AexisWindowUnpartitionPack4
 #pragma kernel AexisReshapePack4ToScalar2D
 #pragma kernel AexisReshapePack4ToLinearMat
+#pragma kernel AexisReshapePack4Linear2D
 #pragma kernel AexisReshapePack4ToPack4
 #pragma kernel AexisReshapeScalar2DToPack4
 #pragma kernel AexisPack4LinearFromScalar2D
@@ -645,6 +653,10 @@ void AexisPackRgbToPack4_Impl(uint3 id);
 void AexisPackRgbToNhwcPack4_Impl(uint3 id);
 void AexisPackMaskToNhwcPack4_Impl(uint3 id);
 void AexisPackRgbToPack4Gfpgan_Impl(uint3 id);
+void AexisGfpganStyleModulation_Impl(uint3 id);
+void AexisGfpganStyleDemod_Impl(uint3 id);
+void AexisGfpganBuildDynamicWeight_Impl(uint3 id);
+void AexisGfpganAddNoisePack4_Impl(uint3 id);
 void AexisUnpackPack4ToRgb_Impl(uint3 id);
 void AexisConv3x3Pack4_Impl(uint3 id, uint3 groupId, uint3 groupThreadId);
 void AexisWinograd23TransformInputPack4_Impl(uint3 id);
@@ -686,6 +698,7 @@ void AexisMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId);
 void AexisFillPack4FromBufferCHW_Impl(uint3 id);
 void AexisFillPack4FromBufferCDHW_Impl(uint3 id);
 void AexisFillLinearMatFromBuffer_Impl(uint3 id);
+void AexisFillLinearMatFromIntBuffer_Impl(uint3 id);
 void AexisFillScalarTexture_Impl(uint3 id);
 void AexisFillScalarLinearMat_Impl(uint3 id);
 void AexisConstantLinearMat_Impl(uint3 id);
@@ -756,6 +769,7 @@ void AexisMaxUnPoolingPack4_Impl(uint3 id);
 void AexisSoftmaxChannelPack4_Impl(uint3 id);
 void AexisSoftmaxPack4CDHW_Impl(uint3 id);
 void AexisSoftmaxLinearMat2D_Impl(uint3 id);
+void AexisSoftmaxPack4LinearMat2D_Impl(uint3 id);
 void AexisUnaryOpPack4_Impl(uint3 id);
 void AexisUnaryOpLinearMat_Impl(uint3 id);
 void AexisTriluPack4_Impl(uint3 id);
@@ -764,6 +778,7 @@ void AexisBinaryOpLinearMat_Impl(uint3 id);
 void AexisBinaryOpLinearMatFixedInputScalar_Impl(uint3 id);
 void AexisBinaryOpPack4_Impl(uint3 id);
 void AexisBinaryOpPack4LinearMixed_Impl(uint3 id);
+void AexisBinaryOpPack4LinearMixedArray_Impl(uint3 id);
 void AexisBinaryOpPack4Broadcast_Impl(uint3 id);
 void AexisBinaryOpPack4BufferScalar_Impl(uint3 id);
 void AexisBinaryOpPack4ChannelVectorTex_Impl(uint3 id);
@@ -833,6 +848,7 @@ void AexisVistaTailPromptDotPack4_Impl(uint3 id);
 void AexisVistaTailPromptDotPack4Tex_Impl(uint3 id);
 void AexisReshapePack4ToScalar2D_Impl(uint3 id);
 void AexisReshapePack4ToLinearMat_Impl(uint3 id);
+void AexisReshapePack4Linear2D_Impl(uint3 id);
 void AexisReshapePack4ToPack4_Impl(uint3 id);
 void AexisReshapeScalar2DToPack4_Impl(uint3 id);
 void AexisPack4LinearFromScalar2D_Impl(uint3 id);
@@ -1002,6 +1018,53 @@ void AexisPackRgbToPack4Gfpgan(uint3 id : SV_DispatchThreadID)
     AexisPackRgbToPack4Gfpgan_Impl(id);
 }
 
+// GFPGAN generator dynamic data stays texture-native. The only buffers bound to
+// these kernels are immutable model constants loaded once from style.bin.
+Texture2D<float> _GfpganStyleIn;
+RWTexture2D<float> _GfpganStyleOut;
+Texture2D<float> _GfpganStyleVector;
+Texture2D<float> _GfpganDemodIn;
+RWTexture2D<float> _GfpganDemodOut;
+RWTexture2DArray<float4> _GfpganDynW4Tex;
+StructuredBuffer<float> _GfpganModulationW;
+StructuredBuffer<float> _GfpganModulationB;
+StructuredBuffer<float> _GfpganSelfWeight;
+RWTexture2DArray<float4> _GfpganNoiseInOutArr;
+int _GfpganStyleRow;
+int _GfpganStyleInputDim;
+int _GfpganStyleOutputDim;
+int _GfpganHiddenDim;
+int _GfpganOutputChannels;
+int _GfpganKernelArea;
+int _GfpganUseDemod;
+int _GfpganDynW4Width;
+int _GfpganNoiseSeed;
+float _GfpganNoiseWeight;
+
+[numthreads(64,1,1)]
+void AexisGfpganStyleModulation(uint3 id : SV_DispatchThreadID)
+{
+    AexisGfpganStyleModulation_Impl(id);
+}
+
+[numthreads(64,1,1)]
+void AexisGfpganStyleDemod(uint3 id : SV_DispatchThreadID)
+{
+    AexisGfpganStyleDemod_Impl(id);
+}
+
+[numthreads(64,1,1)]
+void AexisGfpganBuildDynamicWeight(uint3 id : SV_DispatchThreadID)
+{
+    AexisGfpganBuildDynamicWeight_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisGfpganAddNoisePack4(uint3 id : SV_DispatchThreadID)
+{
+    AexisGfpganAddNoisePack4_Impl(id);
+}
+
 [numthreads(32,32,1)]
 void AexisUnpackPack4ToRgb(uint3 id : SV_DispatchThreadID)
 {
@@ -1011,6 +1074,7 @@ void AexisUnpackPack4ToRgb(uint3 id : SV_DispatchThreadID)
 StructuredBuffer<float4> _ConvW4;
 StructuredBuffer<uint2> _ConvW4Fp16;
 StructuredBuffer<float4> _ConvB4;
+Texture2DArray<float4> _GfpganDynamicConvW4Tex;
 StructuredBuffer<float4> _DwConvW4;
 StructuredBuffer<uint2> _DwConvW4Fp16;
 StructuredBuffer<float4> _DwConvB4;
@@ -1020,6 +1084,8 @@ int _InPacks;
 int _OutPacks;
 int _UseFp16ConvWeights;
 int _UseFp16DepthWiseWeights;
+int _UseGfpganDynWeights;
+int _GfpganDynamicConvW4Width;
 
 float4 AexisApplyActivation(float4 v)
 {
@@ -1370,6 +1436,7 @@ int _SdpaHasTextureMask;
 int _SdpaTextureMaskW;
 int _SdpaTextureMaskH;
 int _SdpaCausal;
+int _SdpaCausalOffset;
 float _SdpaScale;
 groupshared float _SdpaReduce[64];
 groupshared float _SdpaScoresFast[4096];
@@ -1455,6 +1522,7 @@ void AexisMhaProjectQkv2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_G
 }
 
 StructuredBuffer<float> _FillIn;
+StructuredBuffer<int> _FillIntIn;
 
 
 float4 _FillScalarValues4;
@@ -1519,6 +1587,12 @@ void AexisFillPack4FromBufferCDHW(uint3 id : SV_DispatchThreadID)
 void AexisFillLinearMatFromBuffer(uint3 id : SV_DispatchThreadID)
 {
     AexisFillLinearMatFromBuffer_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisFillLinearMatFromIntBuffer(uint3 id : SV_DispatchThreadID)
+{
+    AexisFillLinearMatFromIntBuffer_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -2648,6 +2722,12 @@ void AexisSoftmaxLinearMat2D(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void AexisSoftmaxPack4LinearMat2D(uint3 id : SV_DispatchThreadID)
+{
+    AexisSoftmaxPack4LinearMat2D_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void AexisUnaryOpPack4(uint3 id : SV_DispatchThreadID)
 {
     AexisUnaryOpPack4_Impl(id);
@@ -2693,6 +2773,12 @@ void AexisBinaryOpPack4(uint3 id : SV_DispatchThreadID)
 void AexisBinaryOpPack4LinearMixed(uint3 id : SV_DispatchThreadID)
 {
     AexisBinaryOpPack4LinearMixed_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisBinaryOpPack4LinearMixedArray(uint3 id : SV_DispatchThreadID)
+{
+    AexisBinaryOpPack4LinearMixedArray_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -3325,6 +3411,12 @@ void AexisReshapePack4ToScalar2D(uint3 id : SV_DispatchThreadID)
 void AexisReshapePack4ToLinearMat(uint3 id : SV_DispatchThreadID)
 {
     AexisReshapePack4ToLinearMat_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisReshapePack4Linear2D(uint3 id : SV_DispatchThreadID)
+{
+    AexisReshapePack4Linear2D_Impl(id);
 }
 
 [numthreads(8,8,1)]

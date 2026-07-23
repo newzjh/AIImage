@@ -226,6 +226,41 @@ void AexisBinaryOpPack4LinearMixed_Impl(uint3 id)
     _TexOut0Arr[int3(packX, row, (int)id.z)] = o;
 }
 
+void AexisBinaryOpPack4LinearMixedArray_Impl(uint3 id)
+{
+    uint w, h, d;
+    _TexOut0Arr.GetDimensions(w, h, d);
+    if (id.x >= w || id.y >= h || id.z >= d)
+        return;
+
+    uint linearW, linearH, linearD;
+    _BinaryLinearIn1Arr.GetDimensions(linearW, linearH, linearD);
+    if (linearD == 0)
+        return;
+
+    int packX = (int)id.x;
+    int row = (int)id.y;
+    int baseCol = (((int)id.z * (int)w) + packX) * 4;
+    float4 a = _TexIn0Arr[int3(packX, row, (int)id.z)];
+    float4 o = 0.0;
+
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int col = baseCol + lane;
+        if (col >= (int)linearW || row >= (int)linearH)
+            continue;
+
+        float packValue = AexisReadLane(a, lane);
+        float linearValue = _BinaryLinearIn1Arr[int3(col, row, 0)].x;
+        float lhs = _BinaryPack4LinearMixedMode == 2 ? linearValue : packValue;
+        float rhs = _BinaryPack4LinearMixedMode == 2 ? packValue : linearValue;
+        AexisWriteLane(o, lane, AexisApplyBinaryOpLinearScalar(lhs, rhs));
+    }
+
+    _TexOut0Arr[int3(packX, row, (int)id.z)] = o;
+}
+
 void AexisMatMul2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int lx = (int)groupThreadId.x;
@@ -377,7 +412,7 @@ void AexisSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
                     s += q * k;
                 }
                 s *= _SdpaScale;
-                if (_SdpaCausal != 0 && colScore > row)
+                if (_SdpaCausal != 0 && colScore > row + _SdpaCausalOffset)
                     s = -1.0e20;
                 else if (_SdpaHasTextureMask != 0
                     && colScore < _SdpaTextureMaskW
@@ -1724,7 +1759,135 @@ void AexisSoftmaxLinearMat2D_Impl(uint3 id)
         ? (currentIndex == firstMaximum ? 1.0 : 0.0)
         : _SoftmaxMode == 1
             ? current - maxv - log(max(sum, 1e-20))
-            : (sum > 0.0 ? exp(current - maxv) / sum : 0.0);
+        : (sum > 0.0 ? exp(current - maxv) / sum : 0.0);
+}
+
+// Pack4 LinearMat uses RGBA lanes as four consecutive logical matrix columns.
+// A scalar LinearMat kernel would normalize W/4 values rather than the full
+// logical row. For axis=0 one thread owns a complete row; for axis=1 one
+// thread owns one packed column. Both variants accumulate in FP32.
+void AexisSoftmaxPack4LinearMat2D_Impl(uint3 id)
+{
+    uint outWidth, outHeight, outSlices;
+    _SoftmaxPack4CDHWOutArr.GetDimensions(outWidth, outHeight, outSlices);
+    if (id.x >= outWidth || id.y >= outHeight || id.z != 0)
+        return;
+
+    int logicalWidth = max(1, _SoftmaxPack4CDHWW);
+    int logicalHeight = max(1, _SoftmaxPack4CDHWH);
+    int packedWidth = min((int)outWidth, (logicalWidth + 3) / 4);
+    int packedHeight = min((int)outHeight, logicalHeight);
+    int axis = _SoftmaxAxis;
+    if (packedWidth <= 0 || packedHeight <= 0 || (axis != 0 && axis != 1))
+        return;
+
+    if (axis == 0)
+    {
+        // Each row has one global maximum/sum across all RGBA lanes. Restrict
+        // the work to the first x thread and write the full row explicitly.
+        if (id.x != 0 || id.y >= packedHeight)
+            return;
+
+        int row = (int)id.y;
+        float maxValue = -3.402823466e+38;
+        for (int packX = 0; packX < packedWidth; packX++)
+        {
+            float4 values = _SoftmaxPack4CDHWInArr[int3(packX, row, 0)];
+            for (int lane = 0; lane < 4; lane++)
+            {
+                int logicalX = packX * 4 + lane;
+                if (logicalX < logicalWidth)
+                    maxValue = max(maxValue, AexisReadLane(values, lane));
+            }
+        }
+
+        float sum = 0.0;
+        int firstMaximum = -1;
+        for (int packX = 0; packX < packedWidth; packX++)
+        {
+            float4 values = _SoftmaxPack4CDHWInArr[int3(packX, row, 0)];
+            for (int lane = 0; lane < 4; lane++)
+            {
+                int logicalX = packX * 4 + lane;
+                if (logicalX >= logicalWidth)
+                    continue;
+                float value = AexisReadLane(values, lane);
+                sum += exp(value - maxValue);
+                if (firstMaximum < 0 && value == maxValue)
+                    firstMaximum = logicalX;
+            }
+        }
+
+        for (int packX = 0; packX < packedWidth; packX++)
+        {
+            float4 values = _SoftmaxPack4CDHWInArr[int3(packX, row, 0)];
+            float4 output = 0.0;
+            for (int lane = 0; lane < 4; lane++)
+            {
+                int logicalX = packX * 4 + lane;
+                if (logicalX >= logicalWidth)
+                    continue;
+                float value = AexisReadLane(values, lane);
+                float softmax = _SoftmaxMode == 2
+                    ? (logicalX == firstMaximum ? 1.0 : 0.0)
+                    : _SoftmaxMode == 1
+                        ? value - maxValue - log(max(sum, 1e-20))
+                        : (sum > 0.0 ? exp(value - maxValue) / sum : 0.0);
+                AexisWriteLane(output, lane, softmax);
+            }
+            _SoftmaxPack4CDHWOutArr[int3(packX, row, 0)] = output;
+        }
+        return;
+    }
+
+    // Axis=1 normalizes each logical column independently over its rows.
+    if (id.y != 0 || id.x >= packedWidth)
+        return;
+
+    int outputX = (int)id.x;
+    float4 maxVector = -3.402823466e+38;
+    for (int row = 0; row < packedHeight; row++)
+        maxVector = max(maxVector, _SoftmaxPack4CDHWInArr[int3(outputX, row, 0)]);
+
+    float4 sumVector = 0.0;
+    float4 firstMaximum = -1.0;
+    for (int row = 0; row < packedHeight; row++)
+    {
+        float4 values = _SoftmaxPack4CDHWInArr[int3(outputX, row, 0)];
+        sumVector += exp(values - maxVector);
+        [unroll]
+        for (int lane = 0; lane < 4; lane++)
+        {
+            if (outputX * 4 + lane < logicalWidth
+                && AexisReadLane(firstMaximum, lane) < 0
+                && AexisReadLane(values, lane) == AexisReadLane(maxVector, lane))
+            {
+                AexisWriteLane(firstMaximum, lane, (float)row);
+            }
+        }
+    }
+
+    for (int row = 0; row < packedHeight; row++)
+    {
+        float4 values = _SoftmaxPack4CDHWInArr[int3(outputX, row, 0)];
+        float4 output = 0.0;
+        [unroll]
+        for (int lane = 0; lane < 4; lane++)
+        {
+            if (outputX * 4 + lane >= logicalWidth)
+                continue;
+            float value = AexisReadLane(values, lane);
+            float maxValue = AexisReadLane(maxVector, lane);
+            float sum = AexisReadLane(sumVector, lane);
+            float softmax = _SoftmaxMode == 2
+                ? (row == (int)AexisReadLane(firstMaximum, lane) ? 1.0 : 0.0)
+                : _SoftmaxMode == 1
+                    ? value - maxValue - log(max(sum, 1e-20))
+                    : (sum > 0.0 ? exp(value - maxValue) / sum : 0.0);
+            AexisWriteLane(output, lane, softmax);
+        }
+        _SoftmaxPack4CDHWOutArr[int3(outputX, row, 0)] = output;
+    }
 }
 
 void AexisReductionScalar2D_Impl(uint3 id)

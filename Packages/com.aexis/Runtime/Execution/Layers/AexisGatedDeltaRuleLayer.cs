@@ -101,33 +101,56 @@ namespace Aexis.Execution
         {
             if (layer.bottomNames == null || layer.bottomNames.Length < 8 || layer.topNames == null || layer.topNames.Length < 2)
                 throw new InvalidOperationException("GatedDeltaRule command contract is invalid: " + layer.name);
-            var alog = RequireCmd2D(context, layer.bottomNames[0], layer.name);
-            var dt = RequireCmd2D(context, layer.bottomNames[1], layer.name);
-            var b = RequireCmd2D(context, layer.bottomNames[2], layer.name);
-            var a = RequireCmd2D(context, layer.bottomNames[3], layer.name);
-            var q = RequireCmdArray(context, layer.bottomNames[4], layer.name);
-            var k = RequireCmdArray(context, layer.bottomNames[5], layer.name);
-            var v = RequireCmdArray(context, layer.bottomNames[6], layer.name);
-            var state = RequireCmdArray(context, layer.bottomNames[7], layer.name);
-            var qShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[4]);
-            var vShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[6]);
-            var stateShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[7]);
-            var heads = Mathf.Max(1, qShape.h);
-            var sequence = Mathf.Max(1, qShape.c);
-            var output = owner.RentTempArray(context.commandBuffer, v.texture.width, v.texture.height, v.texture.depth, owner.TensorTextureFormat);
-            var stateA = owner.RentTempArray(context.commandBuffer, state.texture.width, state.texture.height, state.texture.depth, owner.TensorTextureFormat);
-            var stateB = owner.RentTempArray(context.commandBuffer, state.texture.width, state.texture.height, state.texture.depth, owner.TensorTextureFormat);
-            ComputeTexture finalState = state.texture;
-            for (var token = 0; token < sequence; token++)
+            var alog = default(CmdScalarView);
+            var dt = default(CmdScalarView);
+            var b = default(CmdScalarView);
+            var a = default(CmdScalarView);
+            ComputeTexture output = null;
+            ComputeTexture stateA = null;
+            ComputeTexture stateB = null;
+            try
             {
-                var source = token == 0 ? state.texture : ((token & 1) == 1 ? stateA : stateB);
-                var target = (token & 1) == 0 ? stateA : stateB;
-                owner.Ops.GatedDeltaRulePack4(context.commandBuffer, alog.texture, dt.texture, b.texture, a.texture, q.texture, k.texture, v.texture, source, output, target, heads, qShape.w, vShape.w, sequence, token, 1e-6f);
-                finalState = target;
+                alog = ToCmdScalar(owner, context, layer.bottomNames[0], layer.name);
+                dt = ToCmdScalar(owner, context, layer.bottomNames[1], layer.name);
+                b = ToCmdScalar(owner, context, layer.bottomNames[2], layer.name);
+                a = ToCmdScalar(owner, context, layer.bottomNames[3], layer.name);
+                var q = RequireCmdArray(context, layer.bottomNames[4], layer.name);
+                var k = RequireCmdArray(context, layer.bottomNames[5], layer.name);
+                var v = RequireCmdArray(context, layer.bottomNames[6], layer.name);
+                var state = RequireCmdArray(context, layer.bottomNames[7], layer.name);
+                var qShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[4]);
+                var vShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[6]);
+                var stateShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[7]);
+                var heads = Mathf.Max(1, qShape.h);
+                var sequence = Mathf.Max(1, qShape.c);
+                output = owner.RentTempArray(context.commandBuffer, v.texture.width, v.texture.height, v.texture.depth, owner.TensorTextureFormat);
+                stateA = owner.RentTempArray(context.commandBuffer, state.texture.width, state.texture.height, state.texture.depth, owner.TensorTextureFormat);
+                stateB = owner.RentTempArray(context.commandBuffer, state.texture.width, state.texture.height, state.texture.depth, owner.TensorTextureFormat);
+                var finalState = state.texture;
+                for (var token = 0; token < sequence; token++)
+                {
+                    var source = token == 0 ? state.texture : ((token & 1) == 1 ? stateA : stateB);
+                    var target = (token & 1) == 0 ? stateA : stateB;
+                    owner.Ops.GatedDeltaRulePack4(context.commandBuffer, alog.texture, dt.texture, b.texture, a.texture, q.texture, k.texture, v.texture, source, output, target, heads, qShape.w, vShape.w, sequence, token, 1e-6f);
+                    finalState = target;
+                }
+                context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, vShape, AexisGraphSession.GetCmdStorageShape(v, vShape), owned: true);
+                context.blobs[layer.topNames[1]] = AexisGraphSession.CreateCmdTensorRef(finalState, stateShape, AexisGraphSession.GetCmdStorageShape(state, stateShape), owned: true);
+                if (context.shapes != null) { context.shapes[layer.topNames[0]] = vShape; context.shapes[layer.topNames[1]] = stateShape; }
+                output = null;
+                if (finalState == stateA) stateA = null;
+                if (finalState == stateB) stateB = null;
             }
-            context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, vShape, new AexisGraphSession.BufferShape(vShape.dims, output.width, output.height, vShape.d, output.depth * 4), owned: true);
-            context.blobs[layer.topNames[1]] = AexisGraphSession.CreateCmdTensorRef(finalState, stateShape, new AexisGraphSession.BufferShape(stateShape.dims, finalState.width, finalState.height, stateShape.d, finalState.depth * 4), owned: true);
-            if (context.shapes != null) { context.shapes[layer.topNames[0]] = vShape; context.shapes[layer.topNames[1]] = stateShape; }
+            finally
+            {
+                if (output != null) owner.ReturnTempArray(context.commandBuffer, output);
+                if (stateA != null) owner.ReturnTempArray(context.commandBuffer, stateA);
+                if (stateB != null) owner.ReturnTempArray(context.commandBuffer, stateB);
+                ReleaseCmdScalar(owner, context.commandBuffer, alog);
+                ReleaseCmdScalar(owner, context.commandBuffer, dt);
+                ReleaseCmdScalar(owner, context.commandBuffer, b);
+                ReleaseCmdScalar(owner, context.commandBuffer, a);
+            }
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
         }
 
@@ -159,12 +182,42 @@ namespace Aexis.Execution
             return new ScalarView { texture = linear, temporary = true };
         }
 
-        private static AexisGraphSession.CmdTensorRef RequireCmd2D(AexisLayerCommandBufferContext context, string name, string layer)
+        private struct CmdScalarView
+        {
+            public ComputeTexture texture;
+            public bool temporary;
+        }
+
+        private static CmdScalarView ToCmdScalar(AexisGraphSession owner, AexisLayerCommandBufferContext context, string name, string layer)
         {
             var tensor = AexisGraphSession.GetCmdTensor(context.blobs, name);
-            if (tensor == null || tensor.texture == null || tensor.texture.dimension != TextureDimension.Tex2D)
-                throw new InvalidOperationException("GatedDeltaRule command path requires Texture2D scalar input: layer=" + layer + " blob=" + name);
-            return tensor;
+            if (tensor == null || tensor.texture == null)
+                throw new InvalidOperationException("GatedDeltaRule command path requires texture scalar input: layer=" + layer + " blob=" + name);
+            if (tensor.texture.dimension == TextureDimension.Tex2D)
+                return new CmdScalarView { texture = tensor.texture };
+
+            var shape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, name);
+            if (shape.dims < 1 || shape.dims > 2)
+                throw new InvalidOperationException("GatedDeltaRule command scalar input must be rank one or two: layer=" + layer + " blob=" + name);
+            var elements = Mathf.Max(1, shape.w) * Mathf.Max(1, shape.h) * Mathf.Max(1, shape.d) * Mathf.Max(1, shape.c);
+            var linear = owner.RentTempMat(context.commandBuffer, elements, 1, AexisGraphSession.ResolveLinearMatTextureFormat());
+            owner.Ops.ReshapePack4ToLinearMat(
+                context.commandBuffer,
+                tensor.texture,
+                shape.w,
+                Mathf.Max(1, shape.h),
+                Mathf.Max(1, shape.d),
+                Mathf.Max(1, shape.c),
+                shape.dims,
+                linear,
+                inputPack4Linear: AexisGraphSession.IsPack4LinearMatTexture(tensor, shape));
+            return new CmdScalarView { texture = linear, temporary = true };
+        }
+
+        private static void ReleaseCmdScalar(AexisGraphSession owner, CommandBuffer commandBuffer, CmdScalarView view)
+        {
+            if (view.temporary && view.texture != null)
+                owner.ReturnTempArray(commandBuffer, view.texture);
         }
 
         private static AexisGraphSession.CmdTensorRef RequireCmdArray(AexisLayerCommandBufferContext context, string name, string layer)

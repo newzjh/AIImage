@@ -229,6 +229,13 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             if (letterbox == null)
                 return new FaceRegionResult { error = "Face detector letterbox build failed" };
 
+            // Layer-by-layer comparison reads activation data back to the CPU. Keep
+            // that diagnostic solely in the explicit DebugOracle mode; a production
+            // Pack4 session may still collect non-invasive phase logs and resource
+            // data without changing its execution contract.
+            var allowOracleLayerComparison = dumpDebug
+                && enableDetailedProposalDump
+                && _repro.IsDebugOracleExecution;
             if (dumpDebug && enableDetailedProposalDump)
             {
                 debugLines = new List<string>(128)
@@ -241,6 +248,12 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     "probThreshold=" + probThreshold.ToString("F4", CultureInfo.InvariantCulture),
                     "nmsThreshold=" + nmsThreshold.ToString("F4", CultureInfo.InvariantCulture)
                 };
+                if (!allowOracleLayerComparison)
+                    debugLines.Add("layerComparison=disabled-production-texture-only");
+            }
+
+            if (allowOracleLayerComparison)
+            {
                 _repro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
                 {
                     "Conv_0",
@@ -265,6 +278,14 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     "Conv_349",
                     "Conv_354"
                 };
+            }
+            else
+            {
+                _repro.DebugCompareTextureLayers = null;
+            }
+
+            if (debugLines != null)
+            {
                 _repro.DebugLog = line =>
                 {
                     if (debugLines.Count < 512)

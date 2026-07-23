@@ -54,6 +54,21 @@ public sealed class NcnnStrictTextureExecutionPlanTests
     }
 
     [Test]
+    public void StrictPlan_ValidatesOnlyTheDispatchedGraphPrefix()
+    {
+        var plan = AexisTextureExecutionPlanner.Compile(
+            Parse("Input in0 0 1 in\nReLU relu_0 1 1 in out\nLayerNorm unsupported_tail 1 1 out ignored\n"),
+            CreateRequest(
+                nodeVerifier: CreateVerifiedRuntimeProfileNode,
+                stopAfterTopName: "out"));
+
+        Assert.That(plan.strictEligible, Is.True, plan.summary);
+        Assert.That(plan.nodes.Length, Is.EqualTo(2));
+        Assert.That(plan.nodes.Last().layer, Is.EqualTo("relu_0"));
+        Assert.That(plan.diagnostics, Is.Empty);
+    }
+
+    [Test]
     public void StrictPlan_AcceptsRuntimeVerifiedCommandBufferPack4Graph()
     {
         var plan = AexisTextureExecutionPlanner.Compile(
@@ -156,6 +171,171 @@ public sealed class NcnnStrictTextureExecutionPlanTests
     }
 
     [Test]
+    public void StrictPlan_AcceptsSingleInputMultiHeadAttentionSelfAttentionProfile()
+    {
+        var model = Parse(
+            "Input in0 0 1 in\n"
+            + "MultiHeadAttention attention_53 1 1 in out 0=512 1=1 2=262144 3=512 4=512\n");
+        var request = new AexisTextureExecutionPlanRequest
+        {
+            modelName = "vae-self-attention",
+            targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+            targetDtype = "FP32",
+            targetLayout = AexisTexturePlanLayout.Packed4,
+            strict = true,
+            nodeVerifier = CreateVerifiedRuntimeProfileNode,
+            inputs = new[]
+            {
+                new AexisTexturePlanTensorDescriptor
+                {
+                    blob = "in",
+                    logicalShape = new[] { 2, 512, 4096, 1, 1 },
+                    storageShape = new[] { 2, 512, 4096, 1, 1 },
+                    layout = AexisTexturePlanLayout.Packed4,
+                    dtype = "FP32",
+                    aliasGroup = "input:in",
+                    textureBacked = true
+                }
+            }
+        };
+
+        var plan = AexisTextureExecutionPlanner.Compile(model, request);
+        var attention = plan.nodes.Single(node => node.operatorName == "MultiHeadAttention");
+        var capability = AexisOperatorCapabilities.CreateDocument().operators
+            .Single(item => item.operatorName == "MultiHeadAttention");
+
+        Assert.That(plan.strictEligible, Is.True, plan.summary);
+        Assert.That(attention.accepted, Is.True);
+        Assert.That(capability.commandBuffer, Is.True);
+        Assert.That(capability.profiles.Single().minInputs, Is.EqualTo(1));
+        Assert.That(capability.profiles.Single().maxInputs, Is.EqualTo(4));
+    }
+
+    [Test]
+    public void StrictPlan_PreservesScalarPack4StorageAcrossPointwiseAndInnerProduct()
+    {
+        var model = Parse(
+            "Input in0 0 1 in\n"
+            + "Swish silu_391 1 1 in hidden\n"
+            + "InnerProduct linear_368 1 1 hidden out 0=1280 1=1 2=1638400\n");
+        var request = new AexisTextureExecutionPlanRequest
+        {
+            modelName = "unet-time-embedding",
+            targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+            targetDtype = "FP32",
+            targetLayout = AexisTexturePlanLayout.Packed4,
+            strict = true,
+            nodeVerifier = (layer, inputs, ignored) =>
+            {
+                if (layer.typeName == "Swish")
+                    return AexisGraphSession.VerifyStrictCommandBufferPointwise(layer, inputs, ignored, "Swish");
+                if (layer.typeName == "InnerProduct")
+                {
+                    return new AexisTextureExecutionPlanNodeVerification
+                    {
+                        accepted = true,
+                        executionPath = "command-buffer-pack4:inner-product-scalar-pack4",
+                        outputs = new[]
+                        {
+                            new AexisTexturePlanTensorDescriptor
+                            {
+                                blob = layer.topNames[0],
+                                logicalShape = new[] { 1, 1280, 1, 1, 1 },
+                                storageShape = new[] { 3, 1280, 1, 1, 1 },
+                                layout = AexisTexturePlanLayout.Packed4,
+                                dtype = "FP32",
+                                logicalDtype = "Float32",
+                                aliasGroup = "computed:linear_368:0",
+                                textureBacked = true
+                            }
+                        }
+                    };
+                }
+
+                return CreateVerifiedRuntimeProfileNode(layer, inputs, ignored);
+            },
+            inputs = new[]
+            {
+                new AexisTexturePlanTensorDescriptor
+                {
+                    blob = "in",
+                    logicalShape = new[] { 1, 1280, 1, 1, 1 },
+                    storageShape = new[] { 3, 1280, 1, 1, 1 },
+                    layout = AexisTexturePlanLayout.Packed4,
+                    dtype = "FP32",
+                    aliasGroup = "input:in",
+                    textureBacked = true
+                }
+            }
+        };
+
+        var plan = AexisTextureExecutionPlanner.Compile(model, request);
+        var swish = plan.nodes.Single(node => node.operatorName == "Swish");
+
+        Assert.That(plan.strictEligible, Is.True, plan.summary);
+        Assert.That(swish.outputs.Single().storageShape, Is.EqualTo(new[] { 3, 1280, 1, 1, 1 }));
+        Assert.That(plan.nodes.Last().accepted, Is.True);
+    }
+
+    [Test]
+    public void StrictPlan_AcceptsExactGpuTextureEmbedIndicesWithoutAdmittingFp32Activations()
+    {
+        var model = CreateEmbedModel();
+        var exactIndexInput = new AexisTexturePlanTensorDescriptor
+        {
+            blob = "token",
+            logicalShape = new[] { 1, 4, 1, 1, 1 },
+            storageShape = new[] { 2, 4, 1, 1, 1 },
+            layout = AexisTexturePlanLayout.Packed4,
+            dtype = "FP32",
+            logicalDtype = "Int32",
+            fixedInputUpload = true,
+            aliasGroup = "input:token",
+            textureBacked = true
+        };
+        var request = CreateRequest(nodeVerifier: (layer, inputs, ignored) => new AexisTextureExecutionPlanNodeVerification
+        {
+            accepted = true,
+            executionPath = "command-buffer-linearmat:embed-index-texture",
+            outputs = new[]
+            {
+                new AexisTexturePlanTensorDescriptor
+                {
+                    blob = "out",
+                    logicalShape = new[] { 2, 4, 4, 1, 1 },
+                    storageShape = new[] { 2, 4, 4, 1, 1 },
+                    layout = AexisTexturePlanLayout.Packed4,
+                    dtype = "FP32",
+                    logicalDtype = "Float32",
+                    aliasGroup = "computed:embed_0:0",
+                    textureBacked = true
+                }
+            }
+        });
+        request.inputs = new[] { exactIndexInput };
+
+        var plan = AexisTextureExecutionPlanner.Compile(model, request);
+        Assert.That(plan.strictEligible, Is.True);
+        Assert.That(model.layers[1].typeName, Is.EqualTo("Embed"));
+        Assert.That(plan.nodes.Last().executionPath,
+            Is.EqualTo("command-buffer-linearmat:embed-index-texture"));
+
+        // A caller-provided RFloat texture boundary is just as texture-native as a
+        // fixed upload source. It must not be routed through a ComputeBuffer in order
+        // to satisfy an FP16 graph plan.
+        exactIndexInput.fixedInputUpload = false;
+        var nativeTexturePlan = AexisTextureExecutionPlanner.Compile(model, request);
+        Assert.That(nativeTexturePlan.strictEligible, Is.True);
+
+        // Keep the exception narrow: an arbitrary FP32 activation remains invalid.
+        exactIndexInput.logicalDtype = "Float32";
+        var error = Assert.Throws<StrictTextureInferencePlanException>(() => AexisTextureExecutionPlanner.Compile(model, request));
+        Assert.That(error.Plan.strictEligible, Is.False);
+        Assert.That(error.Diagnostics, Has.Some.Matches<AexisTextureExecutionPlanDiagnostic>(
+            diagnostic => diagnostic.code == "missing-pack4-input-descriptor"));
+    }
+
+    [Test]
     public void ProductionRunners_KeepCommandBufferStrictPlanningAndDoNotEnableDebugOracle()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
@@ -178,7 +358,9 @@ public sealed class NcnnStrictTextureExecutionPlanTests
         Assert.That(repro, Does.Contain("public bool StrictTextureInference => !IsExplicitDebugOracleExecution;"));
         Assert.That(repro, Does.Contain("&& ExecutionMode == AexisInferenceExecutionMode.DebugOracle;"));
         Assert.That(repro, Does.Contain("CompleteTextureExecutionPlan(inputs, IsExplicitDebugOracleExecution);"));
-        Assert.That(factory, Does.Contain("EnsureCommandBufferTextureExecutionPlan(textureInputs, textureInputShapes);"));
+        Assert.That(factory, Does.Contain("EnsureCommandBufferTextureExecutionPlan(resolvedInputs, resolvedShapes, fixedUploadNames);"));
+        Assert.That(factory, Does.Contain("EnsureImmediateTextureExecutionPlan(textureBlobs, textureShapes, fixedBufferInputBlobs, stopAfterTopName);"));
+        Assert.That(repro, Does.Contain("EnsureProductionDebugOverridesRejected"));
         Assert.That(overrides, Is.Empty);
     }
 
@@ -188,18 +370,23 @@ public sealed class NcnnStrictTextureExecutionPlanTests
         var tests = new NcnnStrictTextureExecutionPlanTests();
         tests.StrictPlan_RejectsUnverifiedLayerNormWithCompleteDiagnostics();
         tests.StrictPlan_AcceptsDescriptorProvenReshapeAndSplit();
+        tests.StrictPlan_ValidatesOnlyTheDispatchedGraphPrefix();
         tests.StrictPlan_AcceptsRuntimeVerifiedCommandBufferPack4Graph();
+        tests.StrictPlan_AcceptsSingleInputMultiHeadAttentionSelfAttentionProfile();
+        tests.StrictPlan_PreservesScalarPack4StorageAcrossPointwiseAndInnerProduct();
         tests.StrictPlan_RequiresRuntimeProofForRuntimeProfileCommandBufferNode();
         tests.StrictPlan_RejectsRuntimeProfileProofThatNamesPlaceholder();
         tests.StrictPlan_AcceptsProfileProvenNoopAliasOnlyWithDescriptorEvidence();
         tests.DebugOracle_ExplicitlyRelaxesButDoesNotPromoteCapability();
+        tests.StrictPlan_AcceptsExactGpuTextureEmbedIndicesWithoutAdmittingFp32Activations();
         tests.ProductionRunners_KeepCommandBufferStrictPlanningAndDoNotEnableDebugOracle();
         UnityEngine.Debug.Log("[NcnnStrictTextureExecutionPlanTests] passed");
     }
 
     private static AexisTextureExecutionPlanRequest CreateRequest(
         bool debugOracleRelaxed = false,
-        AexisTextureExecutionPlanNodeVerifier nodeVerifier = null)
+        AexisTextureExecutionPlanNodeVerifier nodeVerifier = null,
+        string stopAfterTopName = null)
     {
         return new AexisTextureExecutionPlanRequest
         {
@@ -209,6 +396,7 @@ public sealed class NcnnStrictTextureExecutionPlanTests
             targetLayout = AexisTexturePlanLayout.Packed4,
             strict = !debugOracleRelaxed,
             debugOracleRelaxed = debugOracleRelaxed,
+            stopAfterTopName = stopAfterTopName,
             nodeVerifier = nodeVerifier,
             inputs = new[]
             {
@@ -258,6 +446,45 @@ public sealed class NcnnStrictTextureExecutionPlanTests
         var layerCount = layers.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries).Length;
         var blobCount = layers.IndexOf("Split", StringComparison.Ordinal) >= 0 ? 4 : 2;
         return NcnnParamParser.Parse("7767517\n" + layerCount + " " + blobCount + "\n" + layers);
+    }
+
+    private static AexisGraphModel CreateEmbedModel()
+    {
+        return new AexisGraphModel
+        {
+            layerCount = 2,
+            blobCount = 2,
+            layers = new System.Collections.Generic.List<AexisGraphModel.Layer>
+            {
+                new AexisGraphModel.Layer
+                {
+                    type = AexisLayerTypes.Input,
+                    typeName = "Input",
+                    name = "input_0",
+                    bottoms = 0,
+                    tops = 1,
+                    bottomNames = System.Array.Empty<string>(),
+                    topNames = new[] { "token" }
+                },
+                new AexisGraphModel.Layer
+                {
+                    type = AexisLayerTypes.Embed,
+                    typeName = "Embed",
+                    name = "embed_0",
+                    bottoms = 1,
+                    tops = 1,
+                    bottomNames = new[] { "token" },
+                    topNames = new[] { "out" },
+                    intParams = new System.Collections.Generic.Dictionary<int, string>
+                    {
+                        [0] = "4",
+                        [1] = "16",
+                        [2] = "0",
+                        [3] = "64"
+                    }
+                }
+            }
+        };
     }
 }
 #endif

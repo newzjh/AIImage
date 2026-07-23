@@ -19,14 +19,16 @@ public sealed class NcnnC2CdhwCmdPack4Tests
             var capability = capabilities.Single(item => item.operatorName == operatorName);
             Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
             Assert.That(capability.profiles, Is.Not.Empty);
-            var profile = capability.profiles.Single(item => item.backend == AexisOperatorCapabilityBackend.CommandBuffer);
+            var profile = capability.profiles.Single(item => item.backend == AexisOperatorCapabilityBackend.CommandBuffer
+                && item.layouts.Contains("CDHW"));
             Assert.That(profile.layouts, Does.Contain("CDHW"));
             Assert.That(profile.layouts, Does.Contain("Packed4"));
             Assert.That(profile.shapeProfile, Does.Contain("Texture2DArray"));
         }
 
         var interp = capabilities.Single(item => item.operatorName == "Interp");
-        Assert.That(interp.profiles.Single().supportedParameters, Does.Contain("align_corners=0|1"));
+        Assert.That(interp.profiles.Single(profile => profile.layouts.Contains("CDHW")).supportedParameters,
+            Does.Contain("align_corners=0|1"));
     }
 
     [Test]

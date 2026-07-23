@@ -2101,6 +2101,190 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
+        public void SliceAndMaxUnPooling_LoadedProfilesAdmitNativeMultiOutputAndWideIndexTextures()
+        {
+            var slice = SentisLayer("Slice", new[] { "data" }, new[] { "left", "right" });
+            slice.intParams[-23300] = "2,6";
+            slice.intParams[1] = "0";
+            var sliceReport = AnalyzeLoadedLayer(
+                slice,
+                StrictTextureRequest(new[] { Texture("data", 3, 4, 2, 1, 8) }));
+            Assert.That(sliceReport.strictEligible, Is.True, DescribeReport(sliceReport));
+            Assert.That(sliceReport.texturePlan.nodes[0].outputs.Select(output => output.logicalShape[4]),
+                Is.EqualTo(new[] { 2, 6 }));
+
+            var maxUnpool = SentisLayer("MaxUnPooling", new[] { "values", "indices" }, new[] { "output" });
+            maxUnpool.intParams[1] = "2";
+            maxUnpool.intParams[11] = "2";
+            maxUnpool.intParams[2] = "2";
+            maxUnpool.intParams[12] = "2";
+            var indices = Texture("indices", 3, 16, 16, 1, 512);
+            indices.sourceLogicalShape = new[] { 3, 32, 32, 1, 512 };
+            var unpoolReport = AnalyzeLoadedLayer(
+                maxUnpool,
+                StrictTextureRequest(new[] { Texture("values", 3, 16, 16, 1, 256), indices }));
+            Assert.That(unpoolReport.strictEligible, Is.True, DescribeReport(unpoolReport));
+            Assert.That(unpoolReport.texturePlan.nodes[0].outputs[0].logicalShape,
+                Is.EqualTo(new[] { 3, 32, 32, 1, 256 }));
+        }
+
+        [Test]
+        public void ShuffleChannelAndFp16InnerProduct_AdmitRealCommandBufferTextureProfiles()
+        {
+            var shuffle = SentisLayer("ShuffleChannel", new[] { "data" }, new[] { "output" });
+            shuffle.intParams[0] = "3";
+            var shuffleReport = AnalyzeLoadedLayer(
+                shuffle,
+                StrictTextureRequest(new[] { Texture("data", 3, 4, 4, 1, 12) }));
+            Assert.That(shuffleReport.strictEligible, Is.True, DescribeReport(shuffleReport));
+            Assert.That(shuffleReport.texturePlan.nodes[0].executionPath,
+                Is.EqualTo("command-buffer-pack4:shuffle-channel"));
+
+            var innerProduct = SentisLayer("InnerProduct", new[] { "data" }, new[] { "output" });
+            innerProduct.intParams[0] = "2";
+            innerProduct.intParams[1] = "0";
+            innerProduct.intParams[2] = "8";
+            var fp16Input = LinearTexture("data", 1, 4, 1, 1, 1);
+            fp16Input.dtype = "FP16";
+            fp16Input.logicalDtype = "Float16";
+            var fp16Request = StrictTextureRequest(new[] { fp16Input });
+            fp16Request.targetDtype = "FP16";
+            var innerReport = AnalyzeLoadedLayer(
+                innerProduct,
+                fp16Request,
+                1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f);
+            Assert.That(innerReport.strictEligible, Is.True, DescribeReport(innerReport));
+            Assert.That(innerReport.texturePlan.nodes[0].executionPath,
+                Is.EqualTo("command-buffer-pack4:inner-product-linear-mat"));
+        }
+
+        [Test]
+        public void CodeFormerPack4LinearInnerProductAndQwenDescriptorInterp_AdmitNativeCommandBufferProfiles()
+        {
+            // CodeFormer encoder MatMul_911: [K=512,M=256] Pack4Linear input
+            // followed by an immutable [N=1024,K=512] InnerProduct. This must
+            // use the Pack4 source shader variant, not reinterpret K/4 as K or
+            // materialize the activation into a buffer.
+            var innerProduct = SentisLayer("InnerProduct", new[] { "data" }, new[] { "output" });
+            innerProduct.name = "MatMul_911";
+            innerProduct.intParams[0] = "1024";
+            innerProduct.intParams[1] = "1";
+            innerProduct.intParams[2] = "524288";
+            var codeFormerInput = new AexisTexturePlanTensorDescriptor
+            {
+                blob = "data",
+                logicalShape = new[] { 2, 512, 256, 1, 1 },
+                storageShape = new[] { 3, 128, 256, 1, 4 },
+                layout = AexisTexturePlanLayout.Packed4,
+                dtype = "FP16",
+                logicalDtype = "Float16",
+                aliasGroup = "external:data",
+                textureBacked = true
+            };
+            var codeFormerRequest = StrictTextureRequest(new[] { codeFormerInput });
+            codeFormerRequest.targetDtype = "FP16";
+            var codeFormerReport = AnalyzeLoadedLayer(
+                innerProduct,
+                codeFormerRequest,
+                new float[524288 + 1024]);
+            var codeFormerNode = codeFormerReport.texturePlan.nodes.Single(node => node.operatorName == "InnerProduct");
+            Assert.That(codeFormerReport.strictEligible, Is.True, DescribeReport(codeFormerReport));
+            Assert.That(codeFormerNode.executionPath,
+                Is.EqualTo("command-buffer-pack4:inner-product-pack4-linear-mat"));
+            Assert.That(codeFormerNode.outputs[0].logicalShape,
+                Is.EqualTo(new[] { 2, 1024, 256, 1, 1 }));
+            Assert.That(codeFormerNode.outputs[0].storageShape,
+                Is.EqualTo(new[] { 3, 256, 256, 1, 4 }));
+
+            // QWEN vision position embedding: size_expr=1w,1h only reads the
+            // second texture's logical descriptor. At 48x48 it is a legal GPU
+            // alias; it must not be classified as data-dependent resize.
+            var interp = SentisLayer("Interp", new[] { "template", "grid" }, new[] { "position" });
+            interp.name = "F.upsample_6";
+            interp.intParams[0] = "2";
+            interp.intParams[5] = "1";
+            interp.intParams[6] = "1";
+            interp.intParams[9] = "1w,1h";
+            var qwenReport = AnalyzeLoadedLayerWithDeclaredInputs(
+                interp,
+                StrictTextureRequest(new[]
+                {
+                    Texture("template", 3, 48, 48, 1, 768),
+                    LinearTexture("grid", 2, 48, 48, 1, 1)
+                }));
+            var qwenNode = qwenReport.texturePlan.nodes.Single(node => node.operatorName == "Interp");
+            Assert.That(qwenReport.strictEligible, Is.True, DescribeReport(qwenReport));
+            Assert.That(qwenNode.usesDescriptorAlias, Is.True);
+            Assert.That(qwenNode.outputs[0].logicalShape,
+                Is.EqualTo(new[] { 3, 48, 48, 1, 768 }));
+        }
+
+        [Test]
+        public void BinaryOpPack4Broadcast_PreflightMatchesTextureKernelProfiles()
+        {
+            var binary = SentisLayer("BinaryOp", new[] { "image", "mask" }, new[] { "output" });
+            binary.intParams[0] = "2";
+
+            // DeepFillV2 prepare_image_masked: RGB * (1 - mask).  The runtime
+            // shader replicates the single-channel mask lane directly on GPU.
+            var deepFillReport = AnalyzeLoadedLayerWithDeclaredInputs(
+                binary,
+                StrictTextureRequest(new[]
+                {
+                    Texture("image", 3, 400, 512, 1, 3),
+                    Texture("mask", 3, 400, 512, 1, 1)
+                }));
+            Assert.That(deepFillReport.strictEligible, Is.True, DescribeReport(deepFillReport));
+            var deepFillNode = deepFillReport.texturePlan.nodes.Single(node => node.operatorName == "BinaryOp");
+            Assert.That(deepFillNode.executionPath,
+                Is.EqualTo("command-buffer-pack4:binary-spatial-broadcast"));
+            Assert.That(deepFillNode.outputs[0].logicalShape,
+                Is.EqualTo(new[] { 3, 400, 512, 1, 3 }));
+
+            // The same kernel also supports width-1 row broadcasting (modes 5/6).
+            var rowReport = AnalyzeLoadedLayerWithDeclaredInputs(
+                binary,
+                StrictTextureRequest(new[]
+                {
+                    Texture("image", 3, 1, 5, 1, 8),
+                    Texture("mask", 3, 7, 5, 1, 8)
+                }));
+            Assert.That(rowReport.strictEligible, Is.True, DescribeReport(rowReport));
+            var rowNode = rowReport.texturePlan.nodes.Single(node => node.operatorName == "BinaryOp");
+            Assert.That(rowNode.outputs[0].logicalShape,
+                Is.EqualTo(new[] { 3, 7, 5, 1, 8 }));
+
+            // CodeFormer applies SFT scale/shift tensors as exact 2D LinearMat
+            // BinaryOps. The runtime dispatches BinaryOpLinearMat directly, so
+            // strict planning must accept the same descriptor contract.
+            var codeFormerBinary = SentisLayer("BinaryOp", new[] { "scale", "shift" }, new[] { "output" });
+            codeFormerBinary.intParams[0] = "0";
+            var codeFormerReport = AnalyzeLoadedLayerWithDeclaredInputs(
+                codeFormerBinary,
+                StrictTextureRequest(new[]
+                {
+                    LinearTexture("scale", 2, 16, 8, 1, 1),
+                    LinearTexture("shift", 2, 16, 8, 1, 1)
+                }));
+            Assert.That(codeFormerReport.strictEligible, Is.True, DescribeReport(codeFormerReport));
+            Assert.That(codeFormerReport.texturePlan.nodes.Single(node => node.operatorName == "BinaryOp").executionPath,
+                Is.EqualTo("command-buffer-linearmat:binary-exact"));
+        }
+
+        // Direct Unity batch entry point used where the Unity Test Framework CLI
+        // is not installed.  It keeps the production admission checks executable
+        // without introducing a CPU fallback test harness.
+        public static void RunSliceAndMaxUnPoolingBatchValidation()
+        {
+            var tests = new AexisP0ProductionBaselineTests();
+            tests.SliceAndMaxUnPooling_LoadedProfilesAdmitNativeMultiOutputAndWideIndexTextures();
+            tests.ShuffleChannelAndFp16InnerProduct_AdmitRealCommandBufferTextureProfiles();
+            tests.CodeFormerPack4LinearInnerProductAndQwenDescriptorInterp_AdmitNativeCommandBufferProfiles();
+            tests.BinaryOpPack4Broadcast_PreflightMatchesTextureKernelProfiles();
+            Debug.Log("[AexisP0ProductionBaselineTests] Slice/MaxUnPooling/ShuffleChannel/InnerProduct/Qwen Interp/BinaryOp Pack4 profiles passed");
+        }
+
+        [Test]
         public void NcnnTextureNativeLayers_RequireExactLoadedStrictProfiles()
         {
             var pack4 = Texture("data", 3, 4, 4, 1, 4);
@@ -2591,6 +2775,20 @@ namespace Aexis.Tests.Editor
             return session.AnalyzeLoadedModelPreflight(request);
         }
 
+        private static AexisModelPreflightReport AnalyzeLoadedLayerWithDeclaredInputs(
+            AexisGraphModel.Layer layer,
+            AexisModelPreflightRequest request,
+            params float[] immutableWeights)
+        {
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops);
+            using var reader = new AexisFloatArrayWeightReader(immutableWeights ?? Array.Empty<float>());
+            session.TensorTextureFormat = RenderTextureFormat.ARGBFloat;
+            session.UseNcnnStyleGroupNorm = true;
+            session.LoadModel(SerializeSingleLayerWithDeclaredInputs(layer), reader);
+            return session.AnalyzeLoadedModelPreflight(request);
+        }
+
         private static string DescribeReport(AexisModelPreflightReport report)
         {
             var diagnostics = report?.texturePlan?.diagnostics == null
@@ -2615,6 +2813,35 @@ namespace Aexis.Tests.Editor
             var builder = new StringBuilder();
             builder.AppendLine("7767517");
             builder.Append("1 ").Append(blobs.Count.ToString(CultureInfo.InvariantCulture)).AppendLine();
+            builder.Append(layer.typeName).Append(' ').Append(layer.name).Append(' ')
+                .Append(layer.bottoms.ToString(CultureInfo.InvariantCulture)).Append(' ')
+                .Append(layer.tops.ToString(CultureInfo.InvariantCulture));
+            foreach (var name in layer.bottomNames ?? Array.Empty<string>()) builder.Append(' ').Append(name);
+            foreach (var name in layer.topNames ?? Array.Empty<string>()) builder.Append(' ').Append(name);
+            foreach (var pair in layer.intParams.OrderBy(pair => pair.Key)) builder.Append(' ').Append(pair.Key.ToString(CultureInfo.InvariantCulture)).Append('=').Append(pair.Value);
+            foreach (var pair in layer.stringParams.OrderBy(pair => pair.Key, StringComparer.Ordinal)) builder.Append(' ').Append(pair.Key).Append('=').Append(pair.Value);
+            builder.AppendLine();
+            return builder.ToString();
+        }
+
+        private static string SerializeSingleLayerWithDeclaredInputs(AexisGraphModel.Layer layer)
+        {
+            var bottoms = (layer.bottomNames ?? Array.Empty<string>())
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            var blobs = new HashSet<string>(bottoms, StringComparer.Ordinal);
+            foreach (var top in layer.topNames ?? Array.Empty<string>())
+                blobs.Add(top);
+
+            var builder = new StringBuilder();
+            builder.AppendLine("7767517");
+            builder.Append((bottoms.Length + 1).ToString(CultureInfo.InvariantCulture))
+                .Append(' ')
+                .Append(blobs.Count.ToString(CultureInfo.InvariantCulture))
+                .AppendLine();
+            foreach (var bottom in bottoms)
+                builder.Append("Input input_").Append(bottom).Append(" 0 1 ").Append(bottom).AppendLine();
             builder.Append(layer.typeName).Append(' ').Append(layer.name).Append(' ')
                 .Append(layer.bottoms.ToString(CultureInfo.InvariantCulture)).Append(' ')
                 .Append(layer.tops.ToString(CultureInfo.InvariantCulture));

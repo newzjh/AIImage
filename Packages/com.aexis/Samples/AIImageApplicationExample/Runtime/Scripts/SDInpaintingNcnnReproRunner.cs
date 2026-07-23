@@ -27,6 +27,8 @@ public struct SDInpaintingNcnnReproResult
 public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
 {
     private const string TextEncoderTokenBlobName = "in0";
+    private const string TextEncoderMultiplierBlobName = "in1";
+    private const string TextEncoderConditionBlobName = "in2";
     private const string TextEncoderOutputBlobName = "out0";
     private const string VaeEncoderInputBlobName = "in0";
     private const string VaeEncoderMeanBlobName = "out0";
@@ -2003,7 +2005,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         if (_tokenizer == null)
             throw new InvalidOperationException("Tokenizer is not loaded.");
 
-        ComputeBuffer tokenBuffer = null;
+        RenderTexture tokenTex = null;
+        RenderTexture multiplierTex = null;
+        RenderTexture conditionTex = null;
         RenderTexture resultTex = null;
         try
         {
@@ -2020,17 +2024,39 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
                     string.Join(Environment.NewLine, Array.ConvertAll(tokens, value => value.ToString(CultureInfo.InvariantCulture))));
             }
 
-            tokenBuffer = NewTrackedBuffer(tokens.Length, sizeof(int), ComputeBufferType.Structured, "SDInpaint.TextTokens." + (label ?? "prompt"));
-            tokenBuffer.SetData(tokens);
-            var tokenView = new AexisTensorBuffer(tokenBuffer, 1, tokens.Length, 1, 1, 1, false);
+            // The text graph has three boundary inputs even though this extraction
+            // stops at out0 before multiplier/cond are consumed. Supply all three as
+            // native textures so strict planning covers the complete graph without a
+            // ComputeBuffer input upload or a later buffer fallback. Token ids must
+            // retain their exact Int32 values, so they use a FP32 RFloat LinearMat.
+            var tokenValues = new float[tokens.Length];
+            for (var i = 0; i < tokens.Length; i++)
+                tokenValues[i] = tokens[i];
+            var multiplierValues = new float[tokens.Length];
+            for (var i = 0; i < multiplierValues.Length; i++)
+                multiplierValues[i] = 1f;
+            var conditionValues = new float[TextEmbeddingWidth];
+
+            tokenTex = CreateLinearMatTexture(_textRepro, tokenValues, tokens.Length, 1, "SDInpaint.TextTokens." + (label ?? "prompt"));
+            multiplierTex = CreateLinearMatTexture(_textRepro, multiplierValues, multiplierValues.Length, 1, "SDInpaint.TextMultiplier." + (label ?? "prompt"));
+            conditionTex = CreateLinearMatTexture(_textRepro, conditionValues, TextEmbeddingWidth, 1, "SDInpaint.TextCondition." + (label ?? "prompt"));
+            _textRepro.StrictTextureInputLogicalDtypes[TextEncoderTokenBlobName] = "Int32";
             LogStageTrace("text infer begin" + (string.IsNullOrWhiteSpace(label) ? string.Empty : " | " + label));
             using var infer = _textRepro.InferWithMultiInputs(
-                null,
-                new Dictionary<string, AexisTensorBuffer>(StringComparer.Ordinal)
+                new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
                 {
-                    { TextEncoderTokenBlobName, tokenView }
+                    { TextEncoderTokenBlobName, tokenTex },
+                    { TextEncoderMultiplierBlobName, multiplierTex },
+                    { TextEncoderConditionBlobName, conditionTex }
                 },
+                null,
                 new HashSet<string>(StringComparer.Ordinal) { TextEncoderOutputBlobName },
+                new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                {
+                    { TextEncoderTokenBlobName, new AexisGraphSession.BufferShape(1, tokens.Length, 1, 1, 1) },
+                    { TextEncoderMultiplierBlobName, new AexisGraphSession.BufferShape(1, multiplierValues.Length, 1, 1, 1) },
+                    { TextEncoderConditionBlobName, new AexisGraphSession.BufferShape(2, TextEmbeddingWidth, 1, 1, 1) }
+                },
                 stopAfterTopName: TextEncoderOutputBlobName);
 
             if (!infer.TryGetLogicalShape(TextEncoderOutputBlobName, out var dims, out var w, out var h, out var d, out var c))
@@ -2082,7 +2108,12 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
         finally
         {
-            DisposeBuffer(tokenBuffer, "SDInpaint.TextTokens." + (label ?? "prompt"));
+            if (tokenTex != null)
+                _textRepro?.ReturnTempArray(tokenTex);
+            if (multiplierTex != null)
+                _textRepro?.ReturnTempArray(multiplierTex);
+            if (conditionTex != null)
+                _textRepro?.ReturnTempArray(conditionTex);
             ReleasePersistentTensorTexture(ref resultTex, "SDInpaint.Prompt.CloneFailure");
         }
     }
@@ -2425,6 +2456,55 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         }
     }
 
+    // Exact scalar/index graph inputs use RFloat LinearMat storage. This is still a
+    // texture-backed GPU boundary; it is deliberately distinct from Pack4 values so
+    // CLIP token ids above half precision remain exact.
+    private static RenderTexture CreateLinearMatTexture(
+        AexisGraphSession owner,
+        float[] values,
+        int width,
+        int height,
+        string label)
+    {
+        if (owner == null)
+            throw new ArgumentNullException(nameof(owner));
+        if (values == null)
+            throw new ArgumentNullException(nameof(values));
+
+        width = Mathf.Max(1, width);
+        height = Mathf.Max(1, height);
+        if (values.Length > width * height)
+            throw new ArgumentException("LinearMat input data exceeds its texture extent.", nameof(values));
+
+        var target = owner.RentTempMat(width, height, RenderTextureFormat.RFloat);
+        Texture2D source = null;
+        try
+        {
+            source = new Texture2D(width, height, TextureFormat.RFloat, false, true)
+            {
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Point
+            };
+            var pixels = new float[width * height];
+            Array.Copy(values, pixels, values.Length);
+            source.SetPixelData(pixels, 0);
+            source.Apply(false, false);
+            Graphics.CopyTexture(source, target);
+            target.name = label ?? "SDInpaint.LinearMatInput";
+            return target;
+        }
+        catch
+        {
+            owner.ReturnTempArray(target);
+            throw;
+        }
+        finally
+        {
+            if (source != null)
+                DestroyImmediate(source);
+        }
+    }
+
     private static float ReadTensorValue(float[] data, int dims, int width, int height, int depth, int channels, int whIndex, int z, int channel)
     {
         if (channel >= channels)
@@ -2590,16 +2670,27 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             return await RunCfgUnetPack4CommandBufferAsync(latentsTex, maskTex, maskedLatentTex, timestep, condTex, uncondTex, guidanceScale, ct);
 
         RenderTexture inputTex = null;
+        RenderTexture timestepTex = null;
         RenderTexture condOutTex = null;
         RenderTexture uncondOutTex = null;
         RenderTexture finalTex = null;
-        ComputeBuffer timestepBuf = null;
         List<UnetCacheBlob> unetCache = null;
         try
         {
             inputTex = BuildUnetInputPack4(latentsTex, maskTex, maskedLatentTex);
-            timestepBuf = NewFloatBuffer(new[] { (float)timestep }, "SDInpaint.UnetTimestep");
-            var timestepView = new AexisTensorBuffer(timestepBuf, 1, 1, 1, 1, 1, false);
+            // Keep the timestep as a Pack4 texture from the graph boundary. A
+            // one-value ComputeBuffer upload would materialize an FP32 LinearMat
+            // activation and cannot satisfy the FP16 Pack4 input contract used by
+            // the normal RT path.
+            timestepTex = CreateTensorPack4Texture(
+                _unetRepro,
+                new[] { (float)timestep },
+                1,
+                1,
+                1,
+                1,
+                1,
+                tensorTextureFormat);
             var shouldDumpFirstStep = enableDebugDump && !_unetDebugDumped && !string.IsNullOrWhiteSpace(_lastDumpDir);
 
             if (shouldDumpFirstStep)
@@ -2612,17 +2703,16 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             if (useOfficialUnetCache)
                 unetCache = new List<UnetCacheBlob>(OfficialUnetCacheBlobNames.Length);
 
-            // Keep text conditioning texture-backed during normal pack4 inference so the
-            // UNet stays on the pack4 RT path. The fixed prompt buffer remains only the
-            // upload source used to build condTex/uncondTex earlier.
-            condOutTex = RunUnetOnceTextureMixedInputs(inputTex, timestepView, condTex, null, "cond", unetCache, null);
+            // All three UNet inputs are texture-backed during normal Pack4 RT
+            // inference. No model activation is admitted through a ComputeBuffer.
+            condOutTex = RunUnetOnceTexture(inputTex, timestepTex, condTex, "cond", unetCache, null);
             if (shouldDumpFirstStep && condOutTex != null)
             {
                 _ops.DebugSyncGpu();
                 DumpTextureRawF32Safe(Path.Combine(_lastDumpDir, "unity_unet_cond_out_before_uncond_f32.bin"), condOutTex, LatentChannels);
             }
             var cacheForUncond = unetCache != null && unetCache.Count == OfficialUnetCacheBlobNames.Length ? unetCache : null;
-            uncondOutTex = RunUnetOnceTextureMixedInputs(inputTex, timestepView, uncondTex, null, "uncond", null, cacheForUncond);
+            uncondOutTex = RunUnetOnceTexture(inputTex, timestepTex, uncondTex, "uncond", null, cacheForUncond);
             if (condOutTex == null || uncondOutTex == null)
                 return null;
 
@@ -2659,7 +2749,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
         {
             if (inputTex != null)
                 _unetRepro?.ReturnTempArray(inputTex);
-            DisposeBuffer(timestepBuf, "SDInpaint.UnetTimestep");
+            if (timestepTex != null)
+                _unetRepro?.ReturnTempArray(timestepTex);
             if (condOutTex != null)
                 _unetRepro?.ReturnTempArray(condOutTex);
             if (uncondOutTex != null)

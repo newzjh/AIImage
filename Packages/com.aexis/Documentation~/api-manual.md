@@ -63,9 +63,12 @@ session.Release();
 | `NcnnGraphSession.LoadModel(...)` | Synchronous model load |
 | `NcnnGraphSession.LoadModelAsync(...)` | Cooperative frame-yielding load; returns `Task` |
 | `NcnnGraphSession.ForwardPack4(...)` | Execute texture-native Pack4 inference |
+| `NcnnGraphSession.ForwardPack4WithFixedInputs(...)` | Record strict Pack4 CommandBuffer inference; fixed buffers are GPU upload sources and become textures before layer execution |
 | `NcnnGraphSession.Release()` | Release session-owned textures and fixed uploads; idempotent cleanup boundary |
 
 `LoadProgress` reports model/layer load stages. Pass `CancellationToken` to cancel loading safely. Always call `Release` when a component is destroyed or a model is replaced. Do not retain an output after releasing its session.
+
+For asynchronous command recording, use `ForwardPack4WithFixedInputs` when token ids or other immutable GPU buffers are required. The method dispatches each fixed input into an exact Pack4/LinearMat texture at the graph boundary and rejects profiles that would retain a ComputeBuffer activation or materialize an intermediate through the CPU.
 
 ## Precision and manifests
 

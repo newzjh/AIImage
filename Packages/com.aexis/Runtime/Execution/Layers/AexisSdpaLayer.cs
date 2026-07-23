@@ -344,7 +344,8 @@ namespace Aexis.Execution
                         plan.scale,
                         output,
                         plan.attnMask != null ? plan.attnMask.texture : null,
-                        plan.causal);
+                        plan.causal,
+                        plan.hasPastCache ? plan.pastKeyShape.h : 0);
 
                     AexisGraphSession.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], output, plan.outputShape, plan.outputStorageShape);
                     output = null;
@@ -500,7 +501,8 @@ namespace Aexis.Execution
                         plan.scale,
                         output,
                         plan.attnMask != null ? plan.attnMask.texture : null,
-                        plan.causal);
+                        plan.causal,
+                        plan.hasPastCache ? plan.pastKeyShape.h : 0);
 
                     context.blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
                     {

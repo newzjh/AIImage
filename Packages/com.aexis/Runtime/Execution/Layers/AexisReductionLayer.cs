@@ -617,19 +617,12 @@ namespace Aexis.Execution
                 ExecuteScalar2DReduction(owner.Ops, context.commandBuffer, srcTex.texture, srcShape, reductionAxis, op, coeff, outRt);
                 storageShape = new AexisGraphSession.BufferShape(3, outRt.width, outRt.height, 1, 1);
             }
-            context.blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-            {
-                texture = outRt,
-                width = outRt.width,
-                height = outRt.height,
-                packs = 1,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = outShape,
-                hasStorageShape = true,
-                storageShape = storageShape
-            };
+            context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(
+                outRt,
+                outShape,
+                storageShape,
+                owned: true,
+                blobName: layer.topNames[0]);
             context.shapes[layer.topNames[0]] = outShape;
             owner.DebugLog?.Invoke(
                 "[CmdTexture][Reduction]"

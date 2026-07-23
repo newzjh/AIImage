@@ -30,15 +30,17 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         public int inc;
         public int hidDim;
         public int numOutput;
-        public float[] selfWeight;
-        public float[] modulationW;
-        public float[] modulationB;
+        public ComputeBuffer selfWeight;
+        public ComputeBuffer modulationW;
+        public ComputeBuffer modulationB;
         public float noiseWeight;
-        public float[] bias;
         public ComputeBuffer bias4;
 
         public void Dispose()
         {
+            try { selfWeight?.Dispose(); } catch { }
+            try { modulationW?.Dispose(); } catch { }
+            try { modulationB?.Dispose(); } catch { }
             try { bias4?.Dispose(); } catch { }
         }
     }
@@ -48,14 +50,16 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         public int inc;
         public int hidDim;
         public int numOutput;
-        public float[] selfWeight;
-        public float[] modulationW;
-        public float[] modulationB;
-        public float[] bias;
+        public ComputeBuffer selfWeight;
+        public ComputeBuffer modulationW;
+        public ComputeBuffer modulationB;
         public ComputeBuffer bias4;
 
         public void Dispose()
         {
+            try { selfWeight?.Dispose(); } catch { }
+            try { modulationW?.Dispose(); } catch { }
+            try { modulationB?.Dispose(); } catch { }
             try { bias4?.Dispose(); } catch { }
         }
     }
@@ -63,15 +67,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     private AexisGraphSession _repro;
     private StyleConvWeights[] _styleConv;
     private ToRgbWeights[] _toRgb;
-    private float[] _constInput;
     private ComputeBuffer _constInputBuf;
     private readonly Dictionary<int, ComputeBuffer> _zeroBias4 = new Dictionary<int, ComputeBuffer>();
-    private ComputeBuffer _dynW4;
-    private int _dynW4Count;
-    private Vector4[] _dynW4Host;
-    private float[] _demodTmp;
-    private float[] _styleOutTmp;
-    private readonly Dictionary<int, ComputeBuffer> _noiseBuf = new Dictionary<int, ComputeBuffer>();
     private int _noiseSequence;
     private AexisOps _ops;
     private bool _loaded;
@@ -104,20 +101,11 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _toRgb = null;
         try { _constInputBuf?.Dispose(); } catch { }
         _constInputBuf = null;
-        _constInput = null;
         foreach (var kv in _zeroBias4)
         {
             try { kv.Value?.Dispose(); } catch { }
         }
         _zeroBias4.Clear();
-        try { _dynW4?.Dispose(); } catch { }
-        _dynW4 = null;
-        _dynW4Count = 0;
-        foreach (var kv in _noiseBuf)
-        {
-            try { kv.Value?.Dispose(); } catch { }
-        }
-        _noiseBuf.Clear();
         _noiseSequence = 0;
         _repro?.Release();
         _loaded = false;
@@ -296,6 +284,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         _noiseSequence = 0;
 
         RenderTexture inArr = null;
+        RenderTexture styles = null;
         RenderTexture[] cond = null;
         RenderTexture constIn = null;
         RenderTexture outFeat = null;
@@ -309,8 +298,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             inArr = _repro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
             _repro.Ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, inArr);
 
-            var styles = RunEncoderForGfpgan(inArr, out cond);
-            if (styles == null || styles.Length < 512)
+            styles = RunEncoderForGfpgan(inArr, out cond);
+            if (styles == null || styles.dimension != TextureDimension.Tex2D || styles.width < 512 || styles.height < 16)
                 return null;
             if (cond == null || cond.Length != 14)
                 return null;
@@ -370,6 +359,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         finally
         {
             if (inArr != null) _repro.ReturnTempArray(inArr);
+            if (styles != null) _repro.ReturnTempArray(styles);
             if (cond != null)
             {
                 for (var i = 0; i < cond.Length; i++)
@@ -383,31 +373,31 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private float[] RunEncoderForGfpgan(RenderTexture inputPack4, out RenderTexture[] conditions)
+    private RenderTexture RunEncoderForGfpgan(RenderTexture inputPack4, out RenderTexture[] conditions)
     {
         var condNames = new[]
         {
             "440","443","463","466","486","489","509","512","532","535","555","558","578","581"
         };
-        var pinned = new HashSet<string>(condNames, StringComparer.Ordinal);
+        var pinned = new HashSet<string>(condNames, StringComparer.Ordinal) { "420" };
 
         var inputName = _repro.Model.layers.Count > 0 && _repro.Model.layers[0].topNames != null && _repro.Model.layers[0].topNames.Length > 0
             ? _repro.Model.layers[0].topNames[0]
             : "input.1";
 
         conditions = null;
-        float[] styles = null;
+        RenderTexture styles = null;
 
         try
         {
             using (var result = _repro.Infer(inputPack4, 1, inputName, pinned))
             {
-                styles = ReadInferBlobData(result, "420");
+                styles = ExtractExistingGpuTexture(result, "420");
 
                 conditions = new RenderTexture[condNames.Length];
                 for (var i = 0; i < condNames.Length; i++)
                 {
-                    conditions[i] = result.ExtractTexture(condNames[i]);
+                    conditions[i] = ExtractExistingGpuTexture(result, condNames[i]);
                 }
             }
 
@@ -422,44 +412,25 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                     if (conditions[i] != null) _repro.ReturnTempArray(conditions[i]);
                 conditions = null;
             }
+            if (styles != null)
+                _repro.ReturnTempArray(styles);
             return null;
         }
     }
 
-    private float[] ReadInferBlobData(AexisGraphSession.InferResult result, string blobName)
+    private static RenderTexture ExtractExistingGpuTexture(AexisGraphSession.InferResult result, string blobName)
     {
-        if (result == null || string.IsNullOrWhiteSpace(blobName))
-            return Array.Empty<float>();
-
-        if (ShouldAvoidInferenceBufferReadback())
+        if (result == null || !result.TryGetExistingTexture(blobName, out var texture) || texture == null)
         {
-            if (result.TryGetExistingTextureData(blobName, out var textureData) && textureData != null)
-                return textureData;
-
-            throw new InvalidOperationException("pack4-only guard: existing texture data unavailable | blob=" + blobName);
+            throw new InvalidOperationException(
+                "GFPGAN Pack4-only generator rejected a non-texture encoder activation"
+                + " | blob=" + blobName
+                + " | rejected_fallback=buffer-or-readback");
         }
-
-        try
-        {
-            return result.ReadTextureDataForOutput(blobName);
-        }
-        catch
-        {
-            if (result.TryGetExistingTextureData(blobName, out var textureData) && textureData != null)
-                return textureData;
-
-            throw;
-        }
+        return result.ExtractTexture(blobName);
     }
 
-    private bool ShouldAvoidInferenceBufferReadback()
-    {
-        return disallowBufferAccess
-            || disallowBufferOutputs
-            || disallowBufferToTextureMaterialization;
-    }
-
-    private RenderTexture RunStyleConv(RenderTexture x, float[] styles, int styleRow, StyleConvWeights w, int sampleMode, bool demodulate)
+    private RenderTexture RunStyleConv(RenderTexture x, RenderTexture styles, int styleRow, StyleConvWeights w, int sampleMode, bool demodulate)
     {
         var inArr = x;
         if (sampleMode == 1)
@@ -473,27 +444,38 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         var outPacks = (w.numOutput + 3) / 4;
         var outArr = _repro.RentTempArray(inArr.width, inArr.height, outPacks, RenderTextureFormat.ARGBHalf);
-
         var w4Count = outPacks * (w.hidDim / 4) * 9 * 4;
-        EnsureDynW4(w4Count);
-        EnsureStyleTmp(w.hidDim, w.numOutput);
-
-        ComputeStyleOut(styles, styleRow * 512, w.modulationW, w.modulationB, _styleOutTmp, w.hidDim);
-        BuildDynW4_3x3(_dynW4Host, _styleOutTmp, w.selfWeight, w.hidDim, w.numOutput, demodulate ? _demodTmp : null);
-
-        _dynW4.SetData(_dynW4Host, 0, 0, w4Count);
-        var zeroB4 = GetZeroBias4(outPacks);
-        _repro.Ops.Conv3x3Pack4(inArr, w.hidDim / 4, _dynW4, zeroB4, outPacks, 1, 0, 0f, outArr);
+        var dynamicWeightWidth = Mathf.Min(2048, w4Count);
+        var dynamicWeightHeight = Mathf.CeilToInt(w4Count / (float)dynamicWeightWidth);
+        RenderTexture styleVector = null;
+        RenderTexture demod = null;
+        RenderTexture dynamicW4 = null;
+        try
+        {
+            styleVector = _repro.RentTempMat(w.hidDim, 1, RenderTextureFormat.RFloat);
+            _repro.Ops.GfpganStyleModulation(styles, styleRow, 512, w.modulationW, w.modulationB, w.hidDim, styleVector);
+            if (demodulate)
+            {
+                demod = _repro.RentTempMat(w.numOutput, 1, RenderTextureFormat.RFloat);
+                _repro.Ops.GfpganStyleDemod(styleVector, w.selfWeight, w.hidDim, w.numOutput, 9, demod);
+            }
+            dynamicW4 = _repro.RentTempArray(dynamicWeightWidth, dynamicWeightHeight, 1, RenderTextureFormat.ARGBFloat);
+            _repro.Ops.GfpganBuildDynamicWeight(styleVector, demod, w.selfWeight, w.hidDim, w.numOutput, 9, demodulate, dynamicW4);
+            _repro.Ops.Conv3x3Pack4DynamicWeight(inArr, w.hidDim / 4, dynamicW4, GetZeroBias4(outPacks), outPacks, 1, 0, 0f, outArr);
+        }
+        finally
+        {
+            if (dynamicW4 != null) _repro.ReturnTempArray(dynamicW4);
+            if (demod != null) _repro.ReturnTempArray(demod);
+            if (styleVector != null) _repro.ReturnTempArray(styleVector);
+        }
 
         var scaled = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
         _repro.Ops.ScalePack4(outArr, 1.4142135381698608f, outArr.volumeDepth, scaled);
         _repro.ReturnTempArray(outArr);
         outArr = scaled;
 
-        var noiseWh = outArr.width * outArr.height;
-        var noise = GetNoiseBuffer(noiseWh);
-        FillNoise(noise, noiseWh);
-        _repro.Ops.AddNoiseBroadcastPack4(outArr, noise, w.noiseWeight, outArr.volumeDepth);
+        _repro.Ops.GfpganAddNoisePack4(outArr, w.noiseWeight, NextNoiseSeed(), outArr.volumeDepth);
 
         var biased = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
         _repro.Ops.AddBiasPack4(outArr, w.bias4, outArr.volumeDepth, biased);
@@ -510,19 +492,27 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return outArr;
     }
 
-    private RenderTexture RunToRgb(RenderTexture feat, float[] styles, int styleRow, ToRgbWeights w, RenderTexture skip)
+    private RenderTexture RunToRgb(RenderTexture feat, RenderTexture styles, int styleRow, ToRgbWeights w, RenderTexture skip)
     {
         var outArr = _repro.RentTempArray(feat.width, feat.height, 1, RenderTextureFormat.ARGBHalf);
-
         var w4Count = 1 * (w.hidDim / 4) * 4;
-        EnsureDynW4(w4Count);
-        EnsureStyleTmp(w.hidDim, w.numOutput);
-        ComputeStyleOut(styles, styleRow * 512, w.modulationW, w.modulationB, _styleOutTmp, w.hidDim);
-        BuildDynW4_1x1(_dynW4Host, _styleOutTmp, w.selfWeight, w.hidDim, w.numOutput);
-        _dynW4.SetData(_dynW4Host, 0, 0, w4Count);
-
-        var zeroB4 = GetZeroBias4(1);
-        _repro.Ops.Conv1x1Pack4(feat, w.hidDim / 4, _dynW4, zeroB4, 1, 0, 0f, outArr);
+        var dynamicWeightWidth = Mathf.Min(2048, w4Count);
+        var dynamicWeightHeight = Mathf.CeilToInt(w4Count / (float)dynamicWeightWidth);
+        RenderTexture styleVector = null;
+        RenderTexture dynamicW4 = null;
+        try
+        {
+            styleVector = _repro.RentTempMat(w.hidDim, 1, RenderTextureFormat.RFloat);
+            _repro.Ops.GfpganStyleModulation(styles, styleRow, 512, w.modulationW, w.modulationB, w.hidDim, styleVector);
+            dynamicW4 = _repro.RentTempArray(dynamicWeightWidth, dynamicWeightHeight, 1, RenderTextureFormat.ARGBFloat);
+            _repro.Ops.GfpganBuildDynamicWeight(styleVector, null, w.selfWeight, w.hidDim, w.numOutput, 1, false, dynamicW4);
+            _repro.Ops.Conv1x1Pack4DynamicWeight(feat, w.hidDim / 4, dynamicW4, GetZeroBias4(1), 1, 0, 0f, outArr);
+        }
+        finally
+        {
+            if (dynamicW4 != null) _repro.ReturnTempArray(dynamicW4);
+            if (styleVector != null) _repro.ReturnTempArray(styleVector);
+        }
 
         var biased = _repro.RentTempArray(outArr.width, outArr.height, 1, RenderTextureFormat.ARGBHalf);
         _repro.Ops.AddBiasPack4(outArr, w.bias4, 1, biased);
@@ -569,12 +559,11 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 w.numOutput = styleOutC[i];
 
                 var selfCount = w.numOutput * w.hidDim * 3 * 3;
-                w.selfWeight = ReadFloatArray(br, selfCount);
-                w.modulationW = ReadFloatArray(br, w.inc * w.hidDim);
-                w.modulationB = ReadFloatArray(br, w.hidDim);
+                w.selfWeight = CreateFloatBuffer(ReadFloatArray(br, selfCount));
+                w.modulationW = CreateFloatBuffer(ReadFloatArray(br, w.inc * w.hidDim));
+                w.modulationB = CreateFloatBuffer(ReadFloatArray(br, w.hidDim));
                 w.noiseWeight = br.ReadSingle();
-                w.bias = ReadFloatArray(br, w.numOutput);
-                w.bias4 = CreateBias4Buffer(w.bias, w.numOutput);
+                w.bias4 = CreateBias4Buffer(ReadFloatArray(br, w.numOutput), w.numOutput);
                 _styleConv[i] = w;
             }
 
@@ -585,21 +574,18 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 w.inc = 512;
                 w.hidDim = rgbHidDim[i];
                 w.numOutput = 3;
-                w.selfWeight = ReadFloatArray(br, w.numOutput * w.hidDim);
-                w.modulationW = ReadFloatArray(br, w.inc * w.hidDim);
-                w.modulationB = ReadFloatArray(br, w.hidDim);
-                w.bias = ReadFloatArray(br, 3);
-                w.bias4 = CreateBias4Buffer(w.bias, 3);
+                w.selfWeight = CreateFloatBuffer(ReadFloatArray(br, w.numOutput * w.hidDim));
+                w.modulationW = CreateFloatBuffer(ReadFloatArray(br, w.inc * w.hidDim));
+                w.modulationB = CreateFloatBuffer(ReadFloatArray(br, w.hidDim));
+                w.bias4 = CreateBias4Buffer(ReadFloatArray(br, 3), 3);
                 _toRgb[i] = w;
             }
 
-            _constInput = ReadFloatArray(br, 4 * 4 * 512);
+            var constInput = ReadFloatArray(br, 4 * 4 * 512);
+            _constInputBuf = CreateFloatBuffer(constInput);
         }
 
         ms.Dispose();
-
-        _constInputBuf = new ComputeBuffer(_constInput.Length, sizeof(float), ComputeBufferType.Structured);
-        _constInputBuf.SetData(_constInput);
     }
 
     private static float[] ReadFloatArray(BinaryReader br, int count)
@@ -608,6 +594,15 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         for (var i = 0; i < count; i++)
             a[i] = br.ReadSingle();
         return a;
+    }
+
+    private static ComputeBuffer CreateFloatBuffer(float[] values)
+    {
+        if (values == null || values.Length == 0)
+            throw new ArgumentException("GFPGAN immutable weight payload is empty.", nameof(values));
+        var buffer = new ComputeBuffer(values.Length, sizeof(float), ComputeBufferType.Structured);
+        buffer.SetData(values);
+        return buffer;
     }
 
     private ComputeBuffer CreateBias4Buffer(float[] bias, int outC)
@@ -642,158 +637,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return cb;
     }
 
-    private void EnsureDynW4(int count)
+    private int NextNoiseSeed()
     {
-        if (_dynW4 == null || _dynW4Count < count)
-        {
-            try { _dynW4?.Dispose(); } catch { }
-            _dynW4 = new ComputeBuffer(count, sizeof(float) * 4, ComputeBufferType.Structured);
-            _dynW4Count = count;
-        }
-        if (_dynW4Host == null || _dynW4Host.Length < count)
-            _dynW4Host = new Vector4[count];
-    }
-
-    private void EnsureStyleTmp(int hidDim, int outC)
-    {
-        if (_styleOutTmp == null || _styleOutTmp.Length < hidDim)
-            _styleOutTmp = new float[hidDim];
-        if (_demodTmp == null || _demodTmp.Length < outC)
-            _demodTmp = new float[outC];
-    }
-
-    private static void ComputeStyleOut(float[] styles, int styleOffset, float[] modW, float[] modB, float[] outVec, int hidDim)
-    {
-        for (var o = 0; o < hidDim; o++)
-        {
-            var sum = modB[o];
-            var wbase = o * 512;
-            for (var i = 0; i < 512; i++)
-                sum += modW[wbase + i] * styles[styleOffset + i];
-            outVec[o] = sum;
-        }
-    }
-
-    private static void BuildDynW4_3x3(Vector4[] dst, float[] styleOut, float[] selfWeight, int hidDim, int outC, float[] demodTmp)
-    {
-        var inPacks = hidDim / 4;
-        var outPacks = (outC + 3) / 4;
-        var k = 9;
-        if (demodTmp != null)
-        {
-            for (var oc = 0; oc < outC; oc++)
-            {
-                double sum = 0.0;
-                var base0 = oc * hidDim * k;
-                for (var ic = 0; ic < hidDim; ic++)
-                {
-                    var s = styleOut[ic];
-                    var base1 = base0 + ic * k;
-                    for (var kk = 0; kk < k; kk++)
-                    {
-                        var v = selfWeight[base1 + kk] * s;
-                        sum += v * v;
-                    }
-                }
-                demodTmp[oc] = (float)(1.0 / Math.Sqrt(sum + 1e-8));
-            }
-        }
-
-        var idx = 0;
-        for (var op = 0; op < outPacks; op++)
-        {
-            for (var ip = 0; ip < inPacks; ip++)
-            {
-                for (var kk = 0; kk < k; kk++)
-                {
-                    for (var ol = 0; ol < 4; ol++)
-                    {
-                        var oc = op * 4 + ol;
-                        if (oc >= outC)
-                        {
-                            dst[idx++] = Vector4.zero;
-                            continue;
-                        }
-                        var dm = demodTmp != null ? demodTmp[oc] : 1f;
-                        var il0 = ip * 4 + 0;
-                        var il1 = ip * 4 + 1;
-                        var il2 = ip * 4 + 2;
-                        var il3 = ip * 4 + 3;
-                        var b0 = (oc * hidDim + il0) * k + kk;
-                        var b1 = (oc * hidDim + il1) * k + kk;
-                        var b2 = (oc * hidDim + il2) * k + kk;
-                        var b3 = (oc * hidDim + il3) * k + kk;
-                        var x0 = selfWeight[b0] * styleOut[il0] * dm;
-                        var x1 = selfWeight[b1] * styleOut[il1] * dm;
-                        var x2 = selfWeight[b2] * styleOut[il2] * dm;
-                        var x3 = selfWeight[b3] * styleOut[il3] * dm;
-                        dst[idx++] = new Vector4(x0, x1, x2, x3);
-                    }
-                }
-            }
-        }
-    }
-
-    private static void BuildDynW4_1x1(Vector4[] dst, float[] styleOut, float[] selfWeight, int hidDim, int outC)
-    {
-        var inPacks = hidDim / 4;
-        var outPacks = (outC + 3) / 4;
-        var idx = 0;
-        for (var op = 0; op < outPacks; op++)
-        {
-            for (var ip = 0; ip < inPacks; ip++)
-            {
-                for (var ol = 0; ol < 4; ol++)
-                {
-                    var oc = op * 4 + ol;
-                    if (oc >= outC)
-                    {
-                        dst[idx++] = Vector4.zero;
-                        continue;
-                    }
-                    var il0 = ip * 4 + 0;
-                    var il1 = ip * 4 + 1;
-                    var il2 = ip * 4 + 2;
-                    var il3 = ip * 4 + 3;
-                    var b0 = oc * hidDim + il0;
-                    var b1 = oc * hidDim + il1;
-                    var b2 = oc * hidDim + il2;
-                    var b3 = oc * hidDim + il3;
-                    var x0 = selfWeight[b0] * styleOut[il0];
-                    var x1 = selfWeight[b1] * styleOut[il1];
-                    var x2 = selfWeight[b2] * styleOut[il2];
-                    var x3 = selfWeight[b3] * styleOut[il3];
-                    dst[idx++] = new Vector4(x0, x1, x2, x3);
-                }
-            }
-        }
-    }
-
-    private ComputeBuffer GetNoiseBuffer(int wh)
-    {
-        if (_noiseBuf.TryGetValue(wh, out var cb) && cb != null)
-            return cb;
-        cb = new ComputeBuffer(wh, sizeof(float), ComputeBufferType.Structured);
-        _noiseBuf[wh] = cb;
-        return cb;
-    }
-
-    private void FillNoise(ComputeBuffer noise, int wh)
-    {
-        var r = new System.Random(unchecked(0x4F1BBCDC + _noiseSequence++ * unchecked((int)0x9E3779B9)));
-        var a = new float[wh];
-        var i = 0;
-        while (i < wh)
-        {
-            var u1 = Math.Max(1e-12, r.NextDouble());
-            var u2 = Math.Max(1e-12, r.NextDouble());
-            var mag = Math.Sqrt(-2.0 * Math.Log(u1));
-            var z0 = (float)(mag * Math.Cos(2.0 * Math.PI * u2));
-            var z1 = (float)(mag * Math.Sin(2.0 * Math.PI * u2));
-            a[i++] = z0;
-            if (i < wh) a[i++] = z1;
-        }
-        noise.SetData(a);
+        return unchecked(0x4F1BBCDC + _noiseSequence++ * unchecked((int)0x9E3779B9));
     }
 
     private static RectInt FindFaceRect(Texture2D mask, int w, int h, float threshold01)

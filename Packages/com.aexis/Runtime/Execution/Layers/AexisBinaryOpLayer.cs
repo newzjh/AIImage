@@ -302,7 +302,10 @@ namespace Aexis.Execution
                         mixedStorageShape.h,
                         ResolveTexturePhysicalDepth(mixedPack4Linear.texture, mixedPack4Linear.packs),
                         mixedPack4Linear.texture.format);
-                    owner.Ops.BinaryOpPack4LinearMixed(mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, finalTexture);
+                    if (mixedLinear.texture.dimension == TextureDimension.Tex2DArray)
+                        owner.Ops.BinaryOpPack4LinearMixedArray(mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, finalTexture);
+                    else
+                        owner.Ops.BinaryOpPack4LinearMixed(mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, finalTexture);
                     AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, mixedOutShape, mixedStorageShape);
                     finalTexture = null;
                 }
@@ -462,7 +465,19 @@ namespace Aexis.Execution
                         }
                     }
 
-                    AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], finalTexture, scalar2DAShape);
+                    var scalarPack4StorageShape = new AexisGraphSession.BufferShape(
+                        3,
+                        finalTexture.width,
+                        finalTexture.height,
+                        1,
+                        1);
+                    AexisGraphSession.SetTextureBlob(
+                        textureBlobs,
+                        textureShapes,
+                        layer.topNames[0],
+                        finalTexture,
+                        scalar2DAShape,
+                        scalarPack4StorageShape);
                     finalTexture = null;
                 }
                 finally
@@ -1210,8 +1225,10 @@ namespace Aexis.Execution
 
             var aPack4 = IsPackedLogical2DTexture(aTex, aShape);
             var bPack4 = IsPackedLogical2DTexture(bTex, bShape);
-            var aLinear = AexisGraphSession.IsStrictLinearMatTexture(aTex);
-            var bLinear = AexisGraphSession.IsStrictLinearMatTexture(bTex);
+            var aLinear = AexisGraphSession.IsStrictLinearMatTexture(aTex)
+                || IsScalarLinearArrayTexture(aTex, aShape, aContract.StorageShape);
+            var bLinear = AexisGraphSession.IsStrictLinearMatTexture(bTex)
+                || IsScalarLinearArrayTexture(bTex, bShape, bContract.StorageShape);
             if (aPack4 == bPack4)
                 return false;
 
@@ -1273,8 +1290,10 @@ namespace Aexis.Execution
 
             var aPack4 = IsPackedLogical2DTexture(aTex, aShape);
             var bPack4 = IsPackedLogical2DTexture(bTex, bShape);
-            var aLinear = AexisGraphSession.IsStrictLinearMatTexture(aTex);
-            var bLinear = AexisGraphSession.IsStrictLinearMatTexture(bTex);
+            var aLinear = AexisGraphSession.IsStrictLinearMatTexture(aTex)
+                || IsScalarLinearArrayTexture(aTex, aShape, aContract.StorageShape);
+            var bLinear = AexisGraphSession.IsStrictLinearMatTexture(bTex)
+                || IsScalarLinearArrayTexture(bTex, bShape, bContract.StorageShape);
             if (aPack4 == bPack4)
                 return false;
 
@@ -1299,6 +1318,48 @@ namespace Aexis.Execution
             }
 
             return false;
+        }
+
+        private static bool IsScalarLinearArrayTexture(
+            AexisGraphSession.TensorRef tensor,
+            AexisGraphSession.BufferShape logicalShape,
+            AexisGraphSession.BufferShape storageShape)
+        {
+            return tensor != null
+                && tensor.texture != null
+                && tensor.texture.dimension == TextureDimension.Tex2DArray
+                && tensor.layoutKind == AexisTextureTensorLayoutKind.LinearMat
+                && logicalShape.dims == 2
+                && storageShape.dims == 3
+                && storageShape.w == logicalShape.w
+                && storageShape.h == logicalShape.h
+                && storageShape.d == 1
+                && storageShape.c == 1
+                && tensor.width == storageShape.w
+                && tensor.height == storageShape.h
+                && tensor.packs == 1
+                && ResolveTexturePhysicalDepth(tensor.texture, tensor.packs) == 1;
+        }
+
+        private static bool IsScalarLinearArrayTexture(
+            AexisGraphSession.CmdTensorRef tensor,
+            AexisGraphSession.BufferShape logicalShape,
+            AexisGraphSession.BufferShape storageShape)
+        {
+            return tensor != null
+                && tensor.texture != null
+                && tensor.texture.dimension == TextureDimension.Tex2DArray
+                && tensor.layoutKind == AexisTextureTensorLayoutKind.LinearMat
+                && logicalShape.dims == 2
+                && storageShape.dims == 3
+                && storageShape.w == logicalShape.w
+                && storageShape.h == logicalShape.h
+                && storageShape.d == 1
+                && storageShape.c == 1
+                && tensor.width == storageShape.w
+                && tensor.height == storageShape.h
+                && tensor.packs == 1
+                && ResolveTexturePhysicalDepth(tensor.texture, tensor.packs) == 1;
         }
 
         private static bool IsPackedLogical2DTexture(AexisGraphSession.TensorRef tensor, AexisGraphSession.BufferShape shape)
@@ -2187,7 +2248,10 @@ namespace Aexis.Execution
                                                             mixedStorageShape.h,
                                                             ResolveTexturePhysicalDepth(mixedPack4Linear.texture, mixedPack4Linear.packs),
                                                             mixedPack4Linear.texture.format);
-                                                        owner.Ops.BinaryOpPack4LinearMixed(cmd, mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, outArr);
+                                                        if (mixedLinear.texture.dimension == TextureDimension.Tex2DArray)
+                                                            owner.Ops.BinaryOpPack4LinearMixedArray(cmd, mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, outArr);
+                                                        else
+                                                            owner.Ops.BinaryOpPack4LinearMixed(cmd, mixedPack4Linear.texture, mixedLinear.texture, mixedPack4IsA, opType, outArr);
                                                         blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, mixedOutShape, mixedStorageShape, owned: true);
                                                         if (shapes != null)
                                                             shapes[layer.topNames[0]] = mixedOutShape;
@@ -2294,19 +2358,17 @@ namespace Aexis.Execution
                                                                 }
                                                             }
 
-                                                            blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-                                                            {
-                                                                texture = finalOut,
-                                                                width = a.width,
-                                                                height = a.height,
-                                                                packs = a.packs,
-                                                                refs = 1,
-                                                                owned = true,
-                                                                hasLogicalShape = true,
-                                                                logicalShape = aShape,
-                                                                hasStorageShape = true,
-                                                                storageShape = aShape
-                                                            };
+                                                            var scalarPack4StorageShape = new AexisGraphSession.BufferShape(
+                                                                3,
+                                                                finalOut.width,
+                                                                finalOut.height,
+                                                                1,
+                                                                1);
+                                                            blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(
+                                                                finalOut,
+                                                                aShape,
+                                                                scalarPack4StorageShape,
+                                                                owned: true);
                                                             if (shapes != null)
                                                                 shapes[layer.topNames[0]] = aShape;
                                                             finalOut = null;

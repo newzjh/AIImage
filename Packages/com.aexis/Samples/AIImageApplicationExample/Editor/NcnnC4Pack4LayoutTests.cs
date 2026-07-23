@@ -50,7 +50,7 @@ public sealed class NcnnC4Pack4LayoutTests
     }
 
     [Test]
-    public void CapabilityMetadata_RecordsC4ProfilesAndRejectsRotaryProductionPlaceholder()
+    public void CapabilityMetadata_RecordsC4AndRotaryProductionProfiles()
     {
         var capabilities = AexisOperatorCapabilities.CreateDocument().operators;
         foreach (var operatorName in new[] { "Reshape", "Flatten", "Squeeze", "ExpandDims", "Permute", "Slice", "Tile", "Packing", "Cast" })
@@ -62,8 +62,10 @@ public sealed class NcnnC4Pack4LayoutTests
         }
 
         var rotary = capabilities.Single(item => item.operatorName == "RotaryEmbed");
-        Assert.That(rotary.status, Is.Not.EqualTo(AexisOperatorCapabilityStatus.Supported));
-        Assert.That(rotary.commandBuffer, Is.False);
+        Assert.That(rotary.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
+        Assert.That(rotary.commandBuffer, Is.True);
+        Assert.That(rotary.profiles.Single(profile => profile.backend == AexisOperatorCapabilityBackend.CommandBuffer).minInputs, Is.EqualTo(3));
+        Assert.That(rotary.limitations, Does.Contain("Texture2DArray"));
     }
 
     [Test]
@@ -109,6 +111,45 @@ public sealed class NcnnC4Pack4LayoutTests
         Assert.That(diagnostic.code, Is.EqualTo("command-buffer-pack4-profile-rejected"));
         Assert.That(diagnostic.rejectedPaths, Does.Contain("placeholder"));
         Assert.That(diagnostic.rejectedPaths, Does.Contain("materialize"));
+    }
+
+    [Test]
+    public void StrictPlanner_AdmitsSdpaKvCacheWithReservedTextureHeight()
+    {
+        using var repro = new AexisGraphSession(new AexisOps())
+        {
+            TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+            AttentionKvCacheTextureCapacity = 11
+        };
+        using var weights = new AexisFloatArrayWeightReader(Array.Empty<float>());
+        repro.LoadModel(
+            "7767517\n1 8\nSDPA sdpa_kv_cache 5 3 q k v past_k past_v out cache_k cache_v 7=1 8=1\n",
+            weights);
+
+        var query = CreatePack4Descriptor("q", 3, 2, 5, 2);
+        var currentKey = CreatePack4Descriptor("k", 3, 2, 5, 2);
+        var currentValue = CreatePack4Descriptor("v", 3, 2, 5, 2);
+        var pastKey = CreatePack4Descriptor("past_k", 3, 3, 5, 11);
+        var pastValue = CreatePack4Descriptor("past_v", 3, 3, 5, 11);
+        var report = repro.AnalyzeLoadedModelPreflight(new AexisModelPreflightRequest
+        {
+            targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+            targetDtype = "FP32",
+            targetLayout = AexisTexturePlanLayout.Packed4,
+            strict = true,
+            textureInputs = new[] { query, currentKey, currentValue, pastKey, pastValue }
+        });
+
+        var planNode = report.texturePlan.nodes.Single(node => node.layer == "sdpa_kv_cache");
+        var rejection = string.Join(" | ", report.texturePlan.diagnostics.Select(diagnostic => diagnostic.code + ":" + diagnostic.reason));
+        Assert.That(planNode.accepted, Is.True, rejection);
+        Assert.That(planNode.executionPath, Is.EqualTo("command-buffer-pack4:sdpa-mask-causal-kv-cache"));
+        Assert.That(planNode.outputs, Has.Length.EqualTo(3));
+        Assert.That(planNode.outputs[0].logicalShape, Is.EqualTo(new[] { 3, 3, 2, 1, 5 }));
+        Assert.That(planNode.outputs[1].logicalShape, Is.EqualTo(new[] { 3, 3, 5, 1, 5 }));
+        Assert.That(planNode.outputs[2].logicalShape, Is.EqualTo(new[] { 3, 3, 5, 1, 5 }));
+        Assert.That(planNode.outputs[1].storageShape, Is.EqualTo(new[] { 3, 3, 11, 1, 5 }));
+        Assert.That(planNode.outputs[2].storageShape, Is.EqualTo(new[] { 3, 3, 11, 1, 5 }));
     }
 
     [Test]
@@ -224,6 +265,95 @@ public sealed class NcnnC4Pack4LayoutTests
     }
 
     [Test]
+    public void CommandBufferPack4_RotaryEmbedMatchesReferenceWithoutBufferActivation()
+    {
+        const int embedDim = 4;
+        const int sequenceLength = 2;
+        const int heads = 5;
+        var sourceValues = new float[embedDim * sequenceLength * heads];
+        for (var head = 0; head < heads; head++)
+        {
+            for (var sequence = 0; sequence < sequenceLength; sequence++)
+            {
+                for (var embed = 0; embed < embedDim; embed++)
+                    sourceValues[(head * sequenceLength + sequence) * embedDim + embed] = head * 100 + sequence * 10 + embed + 1;
+            }
+        }
+
+        var cosineValues = new[] { 1f, 0.5f, 0.25f, -0.5f };
+        var sineValues = new[] { 0f, 0.25f, 0.5f, 0.75f };
+        var sourceShape = new AexisGraphSession.BufferShape(3, embedDim, sequenceLength, 1, heads);
+        var cacheShape = new AexisGraphSession.BufferShape(3, embedDim / 2, sequenceLength, 1, 1);
+        var repro = new AexisGraphSession(new AexisOps()) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+
+        try
+        {
+            foreach (var interleaved in new[] { false, true })
+            {
+                using var commandBuffer = new CommandBuffer { name = "NcnnRotaryEmbedPack4_" + interleaved };
+                using var sourceBuffer = new ComputeBuffer(sourceValues.Length, sizeof(float), ComputeBufferType.Structured);
+                using var cosineBuffer = new ComputeBuffer(cosineValues.Length, sizeof(float), ComputeBufferType.Structured);
+                using var sineBuffer = new ComputeBuffer(sineValues.Length, sizeof(float), ComputeBufferType.Structured);
+                sourceBuffer.SetData(sourceValues);
+                cosineBuffer.SetData(cosineValues);
+                sineBuffer.SetData(sineValues);
+
+                var source = repro.RentTempArray(commandBuffer, embedDim, sequenceLength, 2, RenderTextureFormat.ARGBFloat);
+                var cosine = repro.RentTempArray(commandBuffer, embedDim / 2, sequenceLength, 1, RenderTextureFormat.ARGBFloat);
+                var sine = repro.RentTempArray(commandBuffer, embedDim / 2, sequenceLength, 1, RenderTextureFormat.ARGBFloat);
+                var output = repro.RentTempArray(commandBuffer, embedDim, sequenceLength, 2, RenderTextureFormat.ARGBFloat);
+                var readbackTargets = new[] { CreateReadbackTarget(embedDim, sequenceLength), CreateReadbackTarget(embedDim, sequenceLength) };
+
+                try
+                {
+                    repro.Ops.FillPack4FromBufferCHW(commandBuffer, sourceBuffer, embedDim, sequenceLength, heads, source);
+                    repro.Ops.FillPack4FromBufferCHW(commandBuffer, cosineBuffer, embedDim / 2, sequenceLength, 1, cosine);
+                    repro.Ops.FillPack4FromBufferCHW(commandBuffer, sineBuffer, embedDim / 2, sequenceLength, 1, sine);
+                    repro.Ops.RotaryEmbedPack4(commandBuffer, source, sourceShape, cosine, cacheShape, sine, cacheShape, interleaved, output);
+                    CopySlices(commandBuffer, output, readbackTargets, 0, 2);
+
+                    repro.ReturnTempArray(commandBuffer, output);
+                    output = null;
+                    repro.ReturnTempArray(commandBuffer, sine);
+                    sine = null;
+                    repro.ReturnTempArray(commandBuffer, cosine);
+                    cosine = null;
+                    repro.ReturnTempArray(commandBuffer, source);
+                    source = null;
+                    Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                    for (var head = 0; head < heads; head++)
+                    {
+                        var values = Readback(readbackTargets[head / 4]);
+                        for (var sequence = 0; sequence < sequenceLength; sequence++)
+                        {
+                            for (var embed = 0; embed < embedDim; embed++)
+                            {
+                                var expected = RotaryReference(sourceValues, cosineValues, sineValues, embedDim, sequenceLength, head, sequence, embed, interleaved);
+                                Assert.That(ReadLane(values[sequence * embedDim + embed], head & 3), Is.EqualTo(expected).Within(1e-5f),
+                                    "interleaved=" + interleaved + " head=" + head + " sequence=" + sequence + " embed=" + embed);
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (output != null) repro.ReturnTempArray(commandBuffer, output);
+                    if (sine != null) repro.ReturnTempArray(commandBuffer, sine);
+                    if (cosine != null) repro.ReturnTempArray(commandBuffer, cosine);
+                    if (source != null) repro.ReturnTempArray(commandBuffer, source);
+                    foreach (var target in readbackTargets)
+                        DestroyRenderTexture(target);
+                }
+            }
+        }
+        finally
+        {
+            repro.Dispose();
+        }
+    }
+
+    [Test]
     public void C4LayersPublishDescriptorsAndDoNotPublishCmdPlaceholders()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
@@ -248,9 +378,11 @@ public sealed class NcnnC4Pack4LayoutTests
     {
         var tests = new NcnnC4Pack4LayoutTests();
         tests.AliasMatrix_UsesDescriptorsForViewsAndRejectsTransforms();
-        tests.CapabilityMetadata_RecordsC4ProfilesAndRejectsRotaryProductionPlaceholder();
+        tests.CapabilityMetadata_RecordsC4AndRotaryProductionProfiles();
         tests.StrictPlanner_AliasesProvenIdentityAndRejectsUnprovenFlattenTransform();
+        tests.StrictPlanner_AdmitsSdpaKvCacheWithReservedTextureHeight();
         tests.CommandBufferPack4_RandomPermuteSliceTileMatchOracle();
+        tests.CommandBufferPack4_RotaryEmbedMatchesReferenceWithoutBufferActivation();
         tests.C4LayersPublishDescriptorsAndDoNotPublishCmdPlaceholders();
         Debug.Log("[NcnnC4Pack4LayoutTests] passed");
     }
@@ -292,6 +424,31 @@ public sealed class NcnnC4Pack4LayoutTests
         return lane == 0 ? value.x : lane == 1 ? value.y : lane == 2 ? value.z : value.w;
     }
 
+    private static float RotaryReference(
+        float[] source,
+        float[] cosine,
+        float[] sine,
+        int embedDim,
+        int sequenceLength,
+        int head,
+        int sequence,
+        int embed,
+        bool interleaved)
+    {
+        var half = embedDim / 2;
+        var pair = interleaved ? embed / 2 : (embed < half ? embed : embed - half);
+        var first = interleaved ? (embed & 1) == 0 : embed < half;
+        var pair0 = interleaved ? pair * 2 : pair;
+        var pair1 = interleaved ? pair0 + 1 : half + pair;
+        var baseIndex = (head * sequenceLength + sequence) * embedDim;
+        var cacheIndex = sequence * half + pair;
+        var x0 = source[baseIndex + pair0];
+        var x1 = source[baseIndex + pair1];
+        return first
+            ? x0 * cosine[cacheIndex] - x1 * sine[cacheIndex]
+            : x0 * sine[cacheIndex] + x1 * cosine[cacheIndex];
+    }
+
     private static void DestroyRenderTexture(RenderTexture texture)
     {
         if (texture == null)
@@ -305,6 +462,26 @@ public sealed class NcnnC4Pack4LayoutTests
     {
         var layerCount = body.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries).Length;
         return NcnnParamParser.Parse("7767517\n" + layerCount + " 2\n" + body);
+    }
+
+    private static AexisTexturePlanTensorDescriptor CreatePack4Descriptor(
+        string blob,
+        int width,
+        int logicalHeight,
+        int channels,
+        int storageHeight)
+    {
+        return new AexisTexturePlanTensorDescriptor
+        {
+            blob = blob,
+            logicalShape = new[] { 3, width, logicalHeight, 1, channels },
+            storageShape = new[] { 3, width, storageHeight, 1, channels },
+            layout = AexisTexturePlanLayout.Packed4,
+            dtype = "FP32",
+            logicalDtype = "Float32",
+            aliasGroup = "input:" + blob,
+            textureBacked = true
+        };
     }
 }
 #endif

@@ -362,6 +362,12 @@ namespace Aexis.Execution
                     return;
                 }
 
+                if (TryExecuteRenderTexturePack4Linear2DReshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
                 if (TryExecuteRenderTexturePack4Linear2DToPack4Reshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
                 {
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
@@ -396,6 +402,12 @@ namespace Aexis.Execution
                 }
 
                 if (TryExecuteRenderTexturePack4ToPack4Reshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
+                {
+                    owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                    return;
+                }
+
+                if (TryExecuteRenderTexturePack4Linear2DReshape(owner, layer, src, srcShape, bottomShapes, textureBlobs, textureShapes))
                 {
                     owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
                     return;
@@ -494,6 +506,12 @@ namespace Aexis.Execution
                     return;
                 }
 
+                if (TryExecuteCommandBufferPack4Linear2DReshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
                 if (TryExecuteCommandBufferPack4Linear2DToPack4Reshape(owner, layer, src, srcShape, blobs, shapes, cmd))
                 {
                     owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
@@ -515,6 +533,12 @@ namespace Aexis.Execution
 
             if (ShouldAllowGenericPack4ReshapeSpecializations(owner))
             {
+                if (TryExecuteCommandBufferLinearMat2DReshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
                 if (TryExecuteCommandBufferPack4ToScalar2DReshape(owner, layer, src, srcShape, blobs, shapes, cmd))
                 {
                     owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
@@ -522,6 +546,12 @@ namespace Aexis.Execution
                 }
 
                 if (TryExecuteCommandBufferPack4ToPack4Reshape(owner, layer, src, srcShape, blobs, shapes, cmd))
+                {
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
+                if (TryExecuteCommandBufferPack4Linear2DReshape(owner, layer, src, srcShape, blobs, shapes, cmd))
                 {
                     owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
                     return;
@@ -569,6 +599,100 @@ namespace Aexis.Execution
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static bool TryExecuteCommandBufferLinearMat2DReshape(
+            AexisGraphSession owner,
+            AexisGraphModel.Layer layer,
+            AexisGraphSession.CmdTensorRef src,
+            AexisGraphSession.BufferShape srcShape,
+            System.Collections.Generic.Dictionary<string, AexisGraphSession.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, AexisGraphSession.BufferShape> shapes,
+            UnityEngine.Rendering.CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null
+                || !AexisGraphSession.IsStrictLinearMatTexture(src))
+                return false;
+
+            var outShape = AexisGraphSession.ResolveReshapeShape(srcShape, layer, BuildCmdBottomShapes(layer, blobs, shapes));
+            if (srcShape.dims > 2 || outShape.dims > 2 || GetShapeElementCount(srcShape) != GetShapeElementCount(outShape))
+                return false;
+            if (src.texture.width == outShape.w && src.texture.height == (outShape.dims == 1 ? 1 : outShape.h))
+                return false;
+
+            var storageShape = AexisGraphSession.ResolveLinearMatStorageShape(outShape);
+            var output = owner.RentTempMat(cmd, storageShape.w, storageShape.h, src.texture.format);
+            owner.Ops.ReshapeLinearMat2D(cmd, src.texture, src.texture.width, src.texture.height, output);
+            blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
+            {
+                texture = output,
+                width = storageShape.w,
+                height = storageShape.h,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = storageShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdTexture][ReshapeLinearMat2D]"
+                + " | layer=" + layer.name
+                + " | src=" + src.texture.width + "x" + src.texture.height
+                + " | out=" + storageShape.w + "x" + storageShape.h);
+            return true;
+        }
+
+        private static bool TryExecuteCommandBufferPack4Linear2DReshape(
+            AexisGraphSession owner,
+            AexisGraphModel.Layer layer,
+            AexisGraphSession.CmdTensorRef src,
+            AexisGraphSession.BufferShape srcShape,
+            System.Collections.Generic.Dictionary<string, AexisGraphSession.CmdTensorRef> blobs,
+            System.Collections.Generic.Dictionary<string, AexisGraphSession.BufferShape> shapes,
+            UnityEngine.Rendering.CommandBuffer cmd)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null
+                || !AexisGraphSession.IsPack4LinearMatTexture(src, srcShape))
+                return false;
+
+            var outShape = AexisGraphSession.ResolveReshapeShape(srcShape, layer, BuildCmdBottomShapes(layer, blobs, shapes));
+            if (outShape.dims > 2 || GetShapeElementCount(srcShape) != GetShapeElementCount(outShape))
+                return false;
+
+            var storageShape = AexisGraphSession.ResolvePack4LinearMatStorageShape(outShape);
+            var outRt = owner.RentTempArray(
+                cmd,
+                storageShape.w,
+                storageShape.h,
+                1,
+                AexisGraphSession.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.ReshapePack4Linear2D(cmd, src.texture, srcShape.w, srcShape.dims == 1 ? 1 : srcShape.h, outRt);
+            blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
+            {
+                texture = outRt,
+                width = storageShape.w,
+                height = storageShape.h,
+                packs = 1,
+                refs = 1,
+                owned = true,
+                hasLogicalShape = true,
+                logicalShape = outShape,
+                hasStorageShape = true,
+                storageShape = storageShape
+            };
+            if (shapes != null)
+                shapes[layer.topNames[0]] = outShape;
+            owner.DebugLog?.Invoke(
+                "[CmdTexture][ReshapePack4Linear2D]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h
+                + " | storage=" + storageShape.w + "x" + storageShape.h);
+            return true;
         }
 
         private static bool TryExecuteCommandBufferPack4Linear2DToPack4Reshape(
@@ -945,19 +1069,12 @@ namespace Aexis.Execution
                 srcShape.dims,
                 outRt,
                 inputPack4Linear: AexisGraphSession.IsPack4LinearMatTexture(src, srcShape));
-            blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-            {
-                texture = outRt,
-                width = outRt.width,
-                height = outRt.height,
-                packs = 1,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = outShape,
-                hasStorageShape = true,
-                storageShape = storageShape
-            };
+            blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(
+                outRt,
+                outShape,
+                storageShape,
+                owned: true,
+                blobName: layer.topNames[0]);
             if (shapes != null)
                 shapes[layer.topNames[0]] = outShape;
             owner.DebugLog?.Invoke(
@@ -1274,6 +1391,10 @@ namespace Aexis.Execution
                 var canPack4ToPack4 = CanUsePack4ToPack4Reshape(owner, srcShape, attentionOutShape);
                 if (canPack4ToPack4)
                     return src != null && src.texture != null;
+                if (AexisGraphSession.IsPack4LinearMatTexture(src, srcShape)
+                    && attentionOutShape.dims <= 2
+                    && GetShapeElementCount(srcShape) == GetShapeElementCount(attentionOutShape))
+                    return src != null && src.texture != null;
                 if (TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out _))
                     return src != null && src.texture != null;
 
@@ -1295,11 +1416,21 @@ namespace Aexis.Execution
                 if (CanAliasLinearMatTextureLayout(src, srcShape, outShape))
                     return src != null && src.texture != null;
 
+                if (AexisGraphSession.IsStrictLinearMatTexture(src)
+                    && srcShape.dims <= 2
+                    && outShape.dims <= 2
+                    && GetShapeElementCount(srcShape) == GetShapeElementCount(outShape))
+                    return src != null && src.texture != null;
+
                 var canGenericPack4ToScalar2D = CanUsePack4ToScalar2DReshape(owner, layer, srcShape, outShape);
                 var canGenericPack4ToPack4 = CanUsePack4ToPack4Reshape(owner, srcShape, outShape);
                 if (canGenericPack4ToScalar2D)
                     return src != null && src.texture != null;
                 if (canGenericPack4ToPack4)
+                    return src != null && src.texture != null;
+                if (AexisGraphSession.IsPack4LinearMatTexture(src, srcShape)
+                    && outShape.dims <= 2
+                    && GetShapeElementCount(srcShape) == GetShapeElementCount(outShape))
                     return src != null && src.texture != null;
                 if (TryResolveScalar2DToPack4ReshapeShape(layer, srcShape, out _))
                     return src != null && src.texture != null;
@@ -1415,6 +1546,40 @@ namespace Aexis.Execution
                 + " | layer=" + layer.name
                 + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
                 + " | dst=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c);
+            return true;
+        }
+
+        private static bool TryExecuteRenderTexturePack4Linear2DReshape(
+            AexisGraphSession owner,
+            AexisGraphModel.Layer layer,
+            AexisGraphSession.TensorRef src,
+            AexisGraphSession.BufferShape srcShape,
+            System.Collections.Generic.IReadOnlyList<AexisGraphSession.BufferShape> bottomShapes,
+            Dictionary<string, AexisGraphSession.TensorRef> textureBlobs,
+            Dictionary<string, AexisGraphSession.BufferShape> textureShapes)
+        {
+            if (owner == null || layer == null || src == null || src.texture == null
+                || !AexisGraphSession.IsPack4LinearMatTexture(src, srcShape))
+                return false;
+
+            var outShape = AexisGraphSession.ResolveReshapeShape(srcShape, layer, bottomShapes);
+            if (outShape.dims > 2 || GetShapeElementCount(srcShape) != GetShapeElementCount(outShape))
+                return false;
+
+            var storageShape = AexisGraphSession.ResolvePack4LinearMatStorageShape(outShape);
+            var outRt = owner.RentTempArray(
+                storageShape.w,
+                storageShape.h,
+                1,
+                AexisGraphSession.ResolveTensorTextureFormat(outShape.dims));
+            owner.Ops.ReshapePack4Linear2D(src.texture, srcShape.w, srcShape.dims == 1 ? 1 : srcShape.h, outRt);
+            AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, outShape, storageShape);
+            owner.DebugLog?.Invoke(
+                "[Texture][ReshapePack4Linear2D]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h
+                + " | storage=" + storageShape.w + "x" + storageShape.h);
             return true;
         }
 

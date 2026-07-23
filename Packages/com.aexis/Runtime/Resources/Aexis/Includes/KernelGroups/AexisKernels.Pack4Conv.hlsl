@@ -13,6 +13,19 @@ float4 AexisReadConvWeight4(int index)
         f16tof32(packed.y >> 16));
 }
 
+// StyleGAN/GFPGAN changes convolution weights per image. Keep the existing
+// Pack4 index ABI, but source execution-time weights from a Texture2DArray so
+// model execution never relies on a temporary ComputeBuffer.
+float4 AexisReadPack4ConvWeight4(int index)
+{
+    if (_UseGfpganDynWeights == 0)
+        return _ConvW4[index];
+
+    int x = index % _GfpganDynamicConvW4Width;
+    int y = index / _GfpganDynamicConvW4Width;
+    return _GfpganDynamicConvW4Tex[int3(x, y, 0)];
+}
+
 float4 AexisReadDepthWiseConvWeight4(int index)
 {
     if (_UseFp16DepthWiseWeights == 0)
@@ -215,8 +228,8 @@ void AexisConv3x3Pack4_Impl(uint3 id, uint3 groupId, uint3 groupThreadId)
 
         for (int wi = lane; wi < 9 * 4; wi += 64)
         {
-            _ConvWeight0[wi] = hasOp0 ? _ConvW4[((op * _InPacks + ip0) * 9) * 4 + wi] : 0.0;
-            _ConvWeight1[wi] = hasOp1 ? _ConvW4[((op1 * _InPacks + ip0) * 9) * 4 + wi] : 0.0;
+            _ConvWeight0[wi] = hasOp0 ? AexisReadPack4ConvWeight4(((op * _InPacks + ip0) * 9) * 4 + wi) : 0.0;
+            _ConvWeight1[wi] = hasOp1 ? AexisReadPack4ConvWeight4(((op1 * _InPacks + ip0) * 9) * 4 + wi) : 0.0;
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -1015,10 +1028,10 @@ void AexisConv1x1Pack4_Impl(uint3 id)
         float4 v11 = (hasX1 && hasY1) ? _ConvInArr[int3(ox + 1, oy + 1, ip0)] : 0.0;
 
         int base0 = ((op * _InPacks + ip0) * 4);
-        float4 w00 = _ConvW4[base0 + 0];
-        float4 w01 = _ConvW4[base0 + 1];
-        float4 w02 = _ConvW4[base0 + 2];
-        float4 w03 = _ConvW4[base0 + 3];
+        float4 w00 = AexisReadPack4ConvWeight4(base0 + 0);
+        float4 w01 = AexisReadPack4ConvWeight4(base0 + 1);
+        float4 w02 = AexisReadPack4ConvWeight4(base0 + 2);
+        float4 w03 = AexisReadPack4ConvWeight4(base0 + 3);
 
         sum00.x += dot(v00, w00);
         sum00.y += dot(v00, w01);
@@ -1053,10 +1066,10 @@ void AexisConv1x1Pack4_Impl(uint3 id)
             continue;
 
         int base1 = ((op1 * _InPacks + ip0) * 4);
-        float4 w10 = _ConvW4[base1 + 0];
-        float4 w11 = _ConvW4[base1 + 1];
-        float4 w12 = _ConvW4[base1 + 2];
-        float4 w13 = _ConvW4[base1 + 3];
+        float4 w10 = AexisReadPack4ConvWeight4(base1 + 0);
+        float4 w11 = AexisReadPack4ConvWeight4(base1 + 1);
+        float4 w12 = AexisReadPack4ConvWeight4(base1 + 2);
+        float4 w13 = AexisReadPack4ConvWeight4(base1 + 3);
 
         sum20.x += dot(v00, w10);
         sum20.y += dot(v00, w11);
@@ -1129,4 +1142,95 @@ void AexisPackRgbToPack4Gfpgan_Impl(uint3 id)
     v.xyz *= _InputValueScale;
     v.xyz = v.xyz * 2.0 - 1.0;
     _AexisOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
+}
+
+void AexisGfpganStyleModulation_Impl(uint3 id)
+{
+    int outputChannel = (int)id.x;
+    if (outputChannel < 0 || outputChannel >= _GfpganStyleOutputDim)
+        return;
+
+    float sum = _GfpganModulationB[outputChannel];
+    int weightOffset = outputChannel * _GfpganStyleInputDim;
+    for (int inputChannel = 0; inputChannel < _GfpganStyleInputDim; inputChannel++)
+        sum += _GfpganModulationW[weightOffset + inputChannel] * _GfpganStyleIn[int2(inputChannel, _GfpganStyleRow)];
+    _GfpganStyleOut[int2(outputChannel, 0)] = sum;
+}
+
+void AexisGfpganStyleDemod_Impl(uint3 id)
+{
+    int outputChannel = (int)id.x;
+    if (outputChannel < 0 || outputChannel >= _GfpganOutputChannels)
+        return;
+
+    float sum = 0.0;
+    int outputBase = outputChannel * _GfpganHiddenDim * _GfpganKernelArea;
+    for (int inputChannel = 0; inputChannel < _GfpganHiddenDim; inputChannel++)
+    {
+        float style = _GfpganStyleVector[int2(inputChannel, 0)];
+        int inputBase = outputBase + inputChannel * _GfpganKernelArea;
+        for (int kernel = 0; kernel < _GfpganKernelArea; kernel++)
+        {
+            float value = _GfpganSelfWeight[inputBase + kernel] * style;
+            sum += value * value;
+        }
+    }
+    _GfpganDemodOut[int2(outputChannel, 0)] = rsqrt(sum + 1e-8);
+}
+
+void AexisGfpganBuildDynamicWeight_Impl(uint3 id)
+{
+    int index = (int)id.x;
+    int outputPacks = (_GfpganOutputChannels + 3) / 4;
+    int inputPacks = _GfpganHiddenDim / 4;
+    int total = outputPacks * inputPacks * _GfpganKernelArea * 4;
+    if (index < 0 || index >= total)
+        return;
+
+    int outputLane = index % 4;
+    int q = index / 4;
+    int kernel = q % _GfpganKernelArea;
+    q /= _GfpganKernelArea;
+    int inputPack = q % inputPacks;
+    int outputPack = q / inputPacks;
+    int outputChannel = outputPack * 4 + outputLane;
+
+    float4 weight = 0.0;
+    if (outputChannel < _GfpganOutputChannels)
+    {
+        float demod = _GfpganUseDemod != 0 ? _GfpganDemodIn[int2(outputChannel, 0)] : 1.0;
+        int inputBase = inputPack * 4;
+        int outputBase = outputChannel * _GfpganHiddenDim * _GfpganKernelArea;
+        weight.x = _GfpganSelfWeight[outputBase + (inputBase + 0) * _GfpganKernelArea + kernel] * _GfpganStyleVector[int2(inputBase + 0, 0)] * demod;
+        weight.y = _GfpganSelfWeight[outputBase + (inputBase + 1) * _GfpganKernelArea + kernel] * _GfpganStyleVector[int2(inputBase + 1, 0)] * demod;
+        weight.z = _GfpganSelfWeight[outputBase + (inputBase + 2) * _GfpganKernelArea + kernel] * _GfpganStyleVector[int2(inputBase + 2, 0)] * demod;
+        weight.w = _GfpganSelfWeight[outputBase + (inputBase + 3) * _GfpganKernelArea + kernel] * _GfpganStyleVector[int2(inputBase + 3, 0)] * demod;
+    }
+
+    _GfpganDynW4Tex[int3(index % _GfpganDynW4Width, index / _GfpganDynW4Width, 0)] = weight;
+}
+
+uint AexisGfpganNoiseHash(uint value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
+void AexisGfpganAddNoisePack4_Impl(uint3 id)
+{
+    uint width, height, depth;
+    _GfpganNoiseInOutArr.GetDimensions(width, height, depth);
+    if (id.x >= width || id.y >= height || id.z >= depth)
+        return;
+
+    uint pixel = id.y * width + id.x;
+    uint seed = (uint)_GfpganNoiseSeed;
+    float u1 = max(1e-7, ((float)AexisGfpganNoiseHash(pixel ^ seed) + 1.0) * (1.0 / 4294967296.0));
+    float u2 = ((float)AexisGfpganNoiseHash(pixel + 0x9e3779b9u + seed) + 1.0) * (1.0 / 4294967296.0);
+    float noise = sqrt(-2.0 * log(u1)) * cos(6.28318530718 * u2) * _GfpganNoiseWeight;
+    _GfpganNoiseInOutArr[int3((int)id.x, (int)id.y, (int)id.z)] += noise;
 }

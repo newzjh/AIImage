@@ -216,15 +216,16 @@ namespace Aexis.Execution
             "AbsVal", "aten::to", "BatchNorm", "Bias", "BinaryOp", "Cast", "Clip", "Concat", "Convolution", "InstanceNorm", "MVN",
             "Convolution1D", "Convolution3D", "ConvolutionDepthWise", "Crop", "Deconvolution",
             "Deconvolution3D", "DeconvolutionDepthWise", "Eltwise", "ExpandDims", "Flatten", "GELU", "Squeeze",
-            "Gemm", "GroupNorm", "InnerProduct", "Interp", "LayerNorm", "MatMul", "Packing", "Padding",
+            "Embed", "Gemm", "GroupNorm", "InnerProduct", "Interp", "LayerNorm", "MatMul", "Packing", "Padding",
             "MaxPoolingInd", "MaxUnPooling", "Permute", "PixelShuffle", "Pooling", "Pooling1D", "Pooling3D", "PReLU", "LRN", "Quantize", "Dequantize",
-            "Requantize", "Reduction", "ReLU", "Reorg", "Reshape", "Scale", "Sigmoid", "Slice", "Softmax",
+            "Requantize", "Reduction", "ReLU", "Reorg", "Reshape", "Scale", "ShuffleChannel", "Sigmoid", "Slice", "Softmax",
             "Swish", "Tile", "UnaryOp", "Unfold", "MemoryData", "Shape", "Size", "Range", "ConstantOfShape", "Expand",
             "ArgMax", "ArgMin", "Where", "TopK", "OneHot", "CumSum", "Gather", "GatherElements", "pnnx.Expression",
             "AbsVal", "TanH", "Exp", "Log", "BNLL", "Power", "Threshold", "ThresholdedRelu", "ELU", "Erf", "HardSigmoid",
             "HardSwish", "Mish", "SELU", "Shrink", "Softplus", "Softsign", "IsInf", "IsNaN", "CELU"
             , "CopyTo", "NonZero", "Compress", "GatherND", "Scatter", "ScatterElements", "ScatterND"
             , "ConvolutionDepthWise1D", "Deconvolution1D", "ExtractPatches", "Softsign", "IsInf", "IsNaN", "Trilu"
+            , "RotaryEmbed", "MultiHeadAttention", "DeepFillV2ContextualAttention"
             , "GridSample", "DeformableConv2D", "Fold", "Flip", "GLU", "Einsum", "Diag", "SPP"
             , "ROIAlign", "ROIPooling", "PSROIPooling", "Proposal", "DetectionOutput", "YoloDetectionOutput", "Yolov3DetectionOutput", "YoloDetectOut", "Yolov3DetectOut"
         };
@@ -239,11 +240,12 @@ namespace Aexis.Execution
             "Eltwise", "Concat", "BinaryOp", "Interp", "PixelShuffle", "UnaryOp", "AbsVal", "TanH",
             "Exp", "Log", "BNLL", "Power", "Threshold", "ThresholdedRelu", "ELU", "Erf", "HardSigmoid", "HardSwish", "Mish",
             "SELU", "Shrink", "Softplus", "Softsign", "IsInf", "IsNaN", "CELU", "Swish", "Clip", "GELU",
-            "pnnx.Expression", "MemoryData", "InnerProduct", "Pooling", "Pooling1D", "MaxPoolingInd",
+            "pnnx.Expression", "MemoryData", "Embed", "InnerProduct", "Pooling", "Pooling1D", "MaxPoolingInd",
             "MaxUnPooling", "Pooling3D", "Reduction", "BatchNorm", "PReLU", "LRN", "InstanceNorm", "MVN", "Bias", "CopyTo", "Reshape",
-            "Flatten", "Squeeze", "ExpandDims", "Permute", "Gemm", "LayerNorm", "Slice", "Tile",
+            "Flatten", "Squeeze", "ExpandDims", "Permute", "ShuffleChannel", "Gemm", "LayerNorm", "RMSNorm", "Slice", "Tile",
             "Packing", "Cast", "MatMul", "Softmax", "SDPA", "MultiHeadAttention", "NonZero", "Compress",
             "GatherND", "Scatter", "ScatterElements", "ScatterND", "CumSum", "CumulativeSum", "ReLU", "Sigmoid", "Trilu",
+            "RotaryEmbed", "DeepFillV2ContextualAttention", "ShortConv", "GatedDeltaRule",
             "Shape", "Size", "Range", "ConstantOfShape", "Expand", "Where", "Gather", "GatherElements",
             "ArgMax", "ArgMin", "TopK", "OneHot", "aten::to", "Crop", "GroupNorm", "Padding",
             "Quantize", "Dequantize", "Requantize", "Reorg", "Scale", "Unfold", "ExtractPatches"
@@ -300,6 +302,11 @@ namespace Aexis.Execution
                 operatorNames.Add(registered[i].ToString());
             foreach (var alias in new[] { "CumulativeSum", "ConvolutionDepthWise1D", "Deconvolution1D" })
                 operatorNames.Add(alias);
+            // AexisLayerTypeKey is deliberately limited to 16 bytes, so keys such
+            // as MultiHeadAttention cannot round-trip through ToString(). Keep the
+            // public capability document in sync with the verified runtime names.
+            foreach (var runtimeVerified in RuntimeVerifiedProfileOperators)
+                operatorNames.Add(runtimeVerified);
             foreach (var unsupported in UnsupportedOperators)
                 operatorNames.Add(unsupported);
             foreach (var p1 in P1VisualOperators)
@@ -472,6 +479,8 @@ namespace Aexis.Execution
                 return new[] { "NCHW", "CDHW", "Packed4" };
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
                 return new[] { "Linear", "Packed4" };
+            if (operatorName == "Embed")
+                return new[] { "Index", "Linear", "Packed4" };
             if (SentisOperators.Contains(operatorName))
                 return new[] { "Scalar", "Linear", "Packed4" };
             return new[] { "NCHW", "Packed4" };
@@ -487,6 +496,8 @@ namespace Aexis.Execution
                 return new[] { 2 };
             if (operatorName == "Pooling1D")
                 return new[] { 3 };
+            if (operatorName == "ShuffleChannel")
+                return new[] { 3 };
             if (operatorName == "Bias")
                 return new[] { 3, 4 };
             if (operatorName == "ExtractPatches")
@@ -499,6 +510,8 @@ namespace Aexis.Execution
                 return new[] { 3 };
             if (operatorName == "Gemm" || operatorName == "MatMul" || operatorName == "InnerProduct")
                 return new[] { 1, 2, 3 };
+            if (operatorName == "Embed")
+                return new[] { 1, 2 };
             if (operatorName == "NonZero" || operatorName == "Compress"
                 || operatorName == "Scatter" || operatorName == "ScatterElements")
                 return new[] { 1 };
@@ -553,7 +566,7 @@ namespace Aexis.Execution
                 return "Texture-native ExtractPatches for exact rank-3 Pack4 or rank-4 Fold-D storage. ONNX ExtractImagePatches lowers static FP32 NHWC batch=1 with SAME/VALID padding through real Pack4 permutations; dynamic shapes and unsupported layouts fail preflight.";
             if (operatorName == "LayerNorm" || operatorName == "Softmax" || operatorName == "Reduction"
                 || operatorName == "MultiHeadAttention" || operatorName == "SDPA")
-                return "Partial CommandBuffer Pack4 support: LayerNorm/Softmax use FP32 accumulation; Reduction covers scalar rank-2 and Pack4 spatial SUM/MEAN; SDPA/MHA support texture-native masks where their descriptor profiles prove it. KV-cache, unlisted axes/ranks, and unsupported dtype/layout profiles fail strict planning.";
+                return "Partial CommandBuffer Pack4 support: LayerNorm/Softmax use FP32 accumulation; Reduction covers scalar rank-2 and Pack4 spatial SUM/MEAN; SDPA supports texture-native masks and rank-3 KV-cache append/concat with logical sequence length separated from reserved Texture2DArray height. MultiHeadAttention KV-cache, unlisted axes/ranks, and unsupported dtype/layout profiles fail strict planning.";
             if (operatorName == "Convolution3D")
                 return "Partial until the loaded node proves the group=1 OIDHW profile, explicit non-negative W/H/D padding, positive kernel/stride/dilation, supported activation, and TensorDescriptor CDHW Pack4 storage. Strict planning rejects every other branch.";
             if (operatorName == "Deconvolution3D")
@@ -561,7 +574,7 @@ namespace Aexis.Execution
             if (operatorName == "Pooling3D")
                 return "Partial until the loaded node proves max/average global, adaptive, or explicit/full/SAME W/H/D pooling with TensorDescriptor CDHW Pack4 storage. Strict planning rejects invalid padding and all unlisted modes.";
             if (operatorName == "Interp")
-                return "2D paths remain partial. The CDHW runtime profile is static nearest (1) or trilinear (2) resize with align_corners explicitly recorded, TensorDescriptor Pack4 storage, and no dynamic size expression; strict planning rejects other CDHW modes.";
+                return "2D Pack4 Interp supports static size/scale and descriptor-only size_expr (for example 1w,1h) with GPU texture metadata only; no activation readback or buffer materialization is used. The CDHW runtime profile remains static nearest (1) or trilinear (2) resize with TensorDescriptor Pack4 storage and rejects dynamic size expressions.";
             if (Pack4LayoutOperators.Contains(operatorName))
                 return "Partial CommandBuffer Pack4 layout profile: every branch validates logicalShape, storageShape, and layout. "
                     + "Only descriptor-proven identity/view branches alias; Permute, non-identity Slice/Tile/Packing/Cast, and storage-changing Reshape/Flatten dispatch a real texture transform. "
@@ -583,7 +596,9 @@ namespace Aexis.Execution
             if (operatorName == "Trilu")
                 return "Texture-native ONNX Trilu over the final two axes. Static scalar k and upper=0|1 are required; exact rank-2 LinearMat/scalar-Pack4 or rank-3/rank-4 Pack4 storage is verified before dispatch.";
             if (operatorName == "RotaryEmbed")
-                return "RotaryEmbed has no verified CommandBuffer Pack4 production profile and remains unavailable to strict plans; it must not be reported as a production placeholder.";
+                return "CommandBuffer Pack4 RotaryEmbed supports an even-width rank-3 [embed,sequence,head] source and exact rank-3 Texture2DArray cosine/sine caches with at least sequence*embed/2 values. Cache/state growth and unproven storage layouts fail strict planning.";
+            if (operatorName == "DeepFillV2ContextualAttention")
+                return "CommandBuffer Pack4 DeepFillV2 contextual attention supports only the verified HiFill case-1 texture profile: feature d3:100x128x96, mask d3:400x512x1, ksize=3, rate=2, stride=1, mask_downsample=8, and finite positive softmax scale/patch epsilon. All intermediate tensors are Texture2DArray resources; buffer activations and materialization fallbacks are rejected.";
             if (status == AexisOperatorCapabilityStatus.SupportedByProfile)
                 return "Production support is conditional on a matching machine-readable profile and an accepted loaded-runtime node verifier result. A profile match alone never authorizes dispatch or a Buffer/materialization fallback.";
             return "A texture branch may exist for selected shapes, but this entry has not passed full Pack4 CommandBuffer model validation. Strict planning rejects partial capability.";
@@ -789,6 +804,19 @@ namespace Aexis.Execution
                 case "GatherND":
                     minInputs = maxInputs = 2;
                     break;
+                case "Gemm":
+                    // Gemm has both the usual constant-B one-input form and the
+                    // texture-native two-input attention matmul form.
+                    minInputs = 1;
+                    maxInputs = 2;
+                    break;
+                case "Interp":
+                    // The second input is an optional texture-resident shape
+                    // reference for descriptor-only size_expr. It is metadata
+                    // only: the runtime never reads its activation values back.
+                    minInputs = 1;
+                    maxInputs = 2;
+                    break;
                 case "GridSample":
                 case "ROIAlign":
                 case "ROIPooling":
@@ -826,16 +854,48 @@ namespace Aexis.Execution
                 case "SDPA":
                     minInputs = 3;
                     maxInputs = 6;
+                    minOutputs = 1;
+                    maxOutputs = 3;
                     break;
                 case "MultiHeadAttention":
-                    minInputs = 3;
-                    maxInputs = -1;
+                    // ncnn accepts self-attention as one source blob. Cross-attention
+                    // and attention-mask variants add K/V and mask blobs up to four.
+                    minInputs = 1;
+                    maxInputs = 4;
+                    break;
+                case "RotaryEmbed":
+                    minInputs = maxInputs = 3;
+                    break;
+                case "DeepFillV2ContextualAttention":
+                    minInputs = maxInputs = 2;
+                    break;
+                case "ShortConv":
+                    minInputs = maxInputs = 3;
+                    minOutputs = maxOutputs = 2;
+                    break;
+                case "GatedDeltaRule":
+                    minInputs = maxInputs = 8;
+                    minOutputs = maxOutputs = 2;
                     break;
                 case "NonZero":
                     minOutputs = maxOutputs = 2;
                     break;
+                case "Slice":
+                    // ncnn Slice is a static split operation.  Unlike Split, it can
+                    // produce any positive number of individually materialized
+                    // texture outputs from one descriptor-backed input.
+                    minOutputs = 1;
+                    maxOutputs = -1;
+                    break;
                 case "MaxPoolingInd":
                     minOutputs = maxOutputs = 2;
+                    break;
+                case "MaxUnPooling":
+                    // Values and the GPU-resident indices tensor are distinct
+                    // texture inputs.  Do not describe this as a unary operator:
+                    // that would reject the real Pack4 CommandBuffer implementation
+                    // before its loaded-runtime shape verifier runs.
+                    minInputs = maxInputs = 2;
                     break;
                 case "TopK":
                     minOutputs = 1;
@@ -849,7 +909,7 @@ namespace Aexis.Execution
             return operatorName.IndexOf("Convolution", StringComparison.Ordinal) >= 0
                 || operatorName.IndexOf("Deconvolution", StringComparison.Ordinal) >= 0
                 || operatorName == "Gemm" || operatorName == "InnerProduct" || operatorName == "BatchNorm" || operatorName == "InstanceNorm"
-                || operatorName == "Bias" || operatorName == "LayerNorm" || operatorName == "GroupNorm" || operatorName == "Scale"
+                || operatorName == "Bias" || operatorName == "LayerNorm" || operatorName == "RMSNorm" || operatorName == "GroupNorm" || operatorName == "Scale"
                 || operatorName == "Quantize" || operatorName == "Dequantize" || operatorName == "Requantize" || operatorName == "MultiHeadAttention"
                 || operatorName == "MemoryData";
         }
@@ -1016,6 +1076,14 @@ namespace Aexis.Execution
                 case "Interp":
                     return new[]
                     {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "NCHW", "Packed4" },
+                            shapeProfile = "logical [dims=3,w,h,1,c]; storage [dims=3,w,h,1,c]; Texture2DArray slices=ceil(c/4)",
+                            supportedParameters = new[] { "resize_type=0..3", "static output W/H or positive scale W/H", "descriptor-only size_expr with one source and optional shape-reference texture", "align_corners=0|1" },
+                            rejectedParameters = new[] { "data-dependent target sizes", "missing/mismatched descriptor for size_expr bottom", "size_expr with more than two output extents", "buffer materialization" }
+                        },
                         new AexisOperatorCapabilityProfile
                         {
                             backend = AexisOperatorCapabilityBackend.CommandBuffer,
@@ -1288,6 +1356,20 @@ namespace Aexis.Execution
                             shapeProfile = "logical rank=2..4; final axes map exactly to texture Y/X; output logical and storage descriptors equal the input",
                             supportedParameters = new[] { "upper=0|1", "static scalar Int32-range k", "rank-2 LinearMat/scalar Pack4", "rank-3/rank-4 exact Pack4 Texture2DArray" },
                             rejectedParameters = new[] { "dynamic k", "rank<2 or rank>4", "packed-lane matrix storage", "logical/storage X/Y mismatch", "buffer materialization" }
+                        }
+                    };
+                case "DeepFillV2ContextualAttention":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4" },
+                            inputRanks = new[] { 3 },
+                            outputRanks = new[] { 3 },
+                            shapeProfile = "feature logical/storage d3:100x128x96 and mask logical/storage d3:400x512x1 as exact Pack4 Texture2DArray resources; output preserves the feature descriptor",
+                            supportedParameters = new[] { "ksize=3", "rate=2", "stride=1", "mask_downsample=8", "finite positive patch_epsilon", "finite positive softmax_scale", "four real CommandBuffer texture dispatches" },
+                            rejectedParameters = new[] { "other shapes or contextual-attention geometry", "LinearMat/buffer activations", "ComputeBuffer materialization", "placeholder output" }
                         }
                     };
                 default:

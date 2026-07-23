@@ -13,6 +13,11 @@ Texture2D<float> _LinearIn2;
 RWTexture2D<float> _LinearOut0;
 RWTexture2D<float> _LinearOut1;
 
+// Legacy attention publishes scalar matrices in a one-slice Texture2DArray.
+// Keep this distinct from the Texture2D LinearMat slots above so the shader
+// contract stays explicit for mixed Pack4/scalar BinaryOp execution.
+Texture2DArray<float4> _BinaryLinearIn1Arr;
+
 #define _AddA _TexIn0Arr
 #define _AddB _TexIn1Arr
 #define _AddOutArr _TexOut0Arr

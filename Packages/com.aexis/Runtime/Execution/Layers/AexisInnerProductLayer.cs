@@ -250,7 +250,10 @@ namespace Aexis.Execution
                 owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
                 return true;
             }
-            if (srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.packs != 1)
+            var srcIsStrictLinear = AexisGraphSession.IsStrictLinearMatTexture(srcTex);
+            var srcIsPack4Linear = AexisGraphSession.IsPack4LinearMatTexture(srcTex, srcShape);
+            if (srcShape.w != ip.inFeatures
+                || (!srcIsPack4Linear && (srcTex.width != ip.inFeatures || srcTex.packs != 1)))
                 return false;
 
             var rows = 0;
@@ -272,17 +275,15 @@ namespace Aexis.Execution
             else
                 return false;
 
-            var useStrictLinearMat = AexisGraphSession.IsStrictLinearMatTexture(srcTex);
-            // Pack4-linear is an FP16 activation optimization. FP32 retains its
-            // RFloat LinearMat contract so legacy outputs remain bit-for-bit stable.
-            var usePack4LinearMat = owner.ResolveActivationTextureFormat(layer, outLogicalShape.dims) == RenderTextureFormat.ARGBHalf
-                && useStrictLinearMat
+            // A Pack4-linear input must stay in the Pack4 matrix contract.  The
+            // shader reads the four logical input values from each texel; routing
+            // it through the scalar kernel would silently reinterpret width=K/4.
+            var usePack4LinearMat = (srcIsStrictLinear || srcIsPack4Linear)
                 && outLogicalShape.dims == 2
-                && (ip.outFeatures & 3) == 0
-                && !owner.PreserveLegacyFp32Execution
-                && !owner.UseLegacyPack4AttentionLayout
-                && !HasDirectSoftmaxConsumer(owner, layer)
-                && !owner.RequiresFp32SensitiveOutputStorage(layer);
+                && (ip.outFeatures & 3) == 0;
+            if (srcIsPack4Linear && !usePack4LinearMat)
+                return false;
+            var useStrictLinearMat = srcIsStrictLinear && !usePack4LinearMat;
             var outStorageShape = usePack4LinearMat
                 ? AexisGraphSession.ResolvePack4LinearMatStorageShape(outLogicalShape)
                 : useStrictLinearMat
@@ -298,7 +299,7 @@ namespace Aexis.Execution
                 owner.Ops.Gemm2DPack4LinearTextureA(
                     context.commandBuffer,
                     srcTex.texture,
-                    false,
+                    srcIsPack4Linear,
                     ip.TextureWeightBinding,
                     ip.b,
                     rows,
@@ -346,24 +347,18 @@ namespace Aexis.Execution
                     output: outRt);
             }
 
-            context.blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
-            {
-                texture = outRt,
-                width = outStorageShape.w,
-                height = outStorageShape.h,
-                packs = 1,
-                refs = 1,
-                owned = true,
-                hasLogicalShape = true,
-                logicalShape = outLogicalShape,
-                hasStorageShape = true,
-                storageShape = outStorageShape
-            };
+            context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(
+                outRt,
+                outLogicalShape,
+                outStorageShape,
+                owned: true,
+                blobName: layer.topNames[0]);
             context.shapes[layer.topNames[0]] = outLogicalShape;
             owner.DebugLog?.Invoke(
                 "[CmdTexture][InnerProduct]"
                 + " | layer=" + layer.name
                 + " | strictLinear=" + (useStrictLinearMat ? "1" : "0")
+                + " | srcPack4Linear=" + (srcIsPack4Linear ? "1" : "0")
                 + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
                 + " | out=d" + outLogicalShape.dims + ":" + outLogicalShape.w + "x" + outLogicalShape.h + "x" + outLogicalShape.d + "x" + outLogicalShape.c
                 + " | outFormat=" + outRt.format);
@@ -427,7 +422,10 @@ namespace Aexis.Execution
                     context.pinnedNames);
                 return true;
             }
-            if (srcShape.w != ip.inFeatures || srcTex.width != ip.inFeatures || srcTex.packs != 1)
+            var srcIsStrictLinear = AexisGraphSession.IsStrictLinearMatTexture(srcTex);
+            var srcIsPack4Linear = AexisGraphSession.IsPack4LinearMatTexture(srcTex, srcShape);
+            if (srcShape.w != ip.inFeatures
+                || (!srcIsPack4Linear && (srcTex.width != ip.inFeatures || srcTex.packs != 1)))
                 return false;
 
             var rows = 0;
@@ -449,16 +447,15 @@ namespace Aexis.Execution
             else
                 return false;
 
-            var useStrictLinearMat = AexisGraphSession.IsStrictLinearMatTexture(srcTex);
-            // See the render-texture path: do not down-convert FP32 LinearMat output.
-            var usePack4LinearMat = owner.ResolveActivationTextureFormat(layer, logicalShape.dims) == RenderTextureFormat.ARGBHalf
-                && useStrictLinearMat
+            // Keep Pack4-linear matrices in their native texture layout.  This
+            // is required for both immediate RT and CommandBuffer inference and
+            // never materializes an activation into a ComputeBuffer.
+            var usePack4LinearMat = (srcIsStrictLinear || srcIsPack4Linear)
                 && logicalShape.dims == 2
-                && (ip.outFeatures & 3) == 0
-                && !owner.PreserveLegacyFp32Execution
-                && !owner.UseLegacyPack4AttentionLayout
-                && !HasDirectSoftmaxConsumer(owner, layer)
-                && !owner.RequiresFp32SensitiveOutputStorage(layer);
+                && (ip.outFeatures & 3) == 0;
+            if (srcIsPack4Linear && !usePack4LinearMat)
+                return false;
+            var useStrictLinearMat = srcIsStrictLinear && !usePack4LinearMat;
             var storageShape = usePack4LinearMat
                 ? AexisGraphSession.ResolvePack4LinearMatStorageShape(logicalShape)
                 : useStrictLinearMat
@@ -473,7 +470,7 @@ namespace Aexis.Execution
             {
                 owner.Ops.Gemm2DPack4LinearTextureA(
                     srcTex.texture,
-                    false,
+                    srcIsPack4Linear,
                     ip.TextureWeightBinding,
                     ip.b,
                     rows,
@@ -537,6 +534,7 @@ namespace Aexis.Execution
                 "[Texture][InnerProduct]"
                 + " | layer=" + layer.name
                 + " | strictLinear=" + (useStrictLinearMat ? "1" : "0")
+                + " | srcPack4Linear=" + (srcIsPack4Linear ? "1" : "0")
                 + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
                 + " | out=d" + logicalShape.dims + ":" + logicalShape.w + "x" + logicalShape.h + "x" + logicalShape.d + "x" + logicalShape.c
                 + " | outFormat=" + outRt.format);

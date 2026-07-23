@@ -8,6 +8,7 @@
     "Aexis.Onnx",
     "Aexis.Ncnn",
     "Aexis.Execution",
+    "Aexis.Editor",
     "Aexis.Sample.Async",
     "Aexis.Sample.Json"
   ],

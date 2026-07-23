@@ -26,6 +26,10 @@ namespace Aexis.Execution
         // semantics when Int32 values are encoded exactly in an FP32 texture.
         public string dtype = "FP16";
         public string logicalDtype = "Float16";
+        // True only for a ComputeBuffer that has already been uploaded into an
+        // exact RFloat LinearMat texture at the graph boundary. This is never a
+        // Buffer activation; it makes the exceptional exact index storage explicit.
+        public bool fixedInputUpload;
         public string aliasGroup;
         public bool textureBacked = true;
     }
@@ -69,6 +73,10 @@ namespace Aexis.Execution
         public string[] int4WeightOnlyOperators = Array.Empty<string>();
         public string[] int4WeightOnlyLayerNames = Array.Empty<string>();
         public bool int4WeightOnlyLayerSelectionExplicit;
+        // Optional execution boundary for a graph prefix. Layers after the first
+        // producer of this blob are not dispatched and must not block a strict plan.
+        // An unknown blob deliberately preserves complete-graph validation.
+        public string stopAfterTopName;
         public AexisTexturePlanTensorDescriptor[] inputs = Array.Empty<AexisTexturePlanTensorDescriptor>();
         [NonSerialized] public AexisTextureExecutionPlanNodeVerifier nodeVerifier;
     }
@@ -154,6 +162,7 @@ namespace Aexis.Execution
                 + " | operator=" + (first.operatorName ?? string.Empty)
                 + " | status=" + (first.capabilityStatus ?? string.Empty)
                 + " | code=" + (first.code ?? string.Empty)
+                + " | reason=" + (first.reason ?? string.Empty)
                 + " | target_backend=" + (first.targetBackend ?? string.Empty)
                 + " | target_dtype=" + (first.targetDtype ?? string.Empty)
                 + " | target_layout=" + (first.targetLayout ?? string.Empty)
@@ -219,7 +228,8 @@ namespace Aexis.Execution
             var nodes = new List<AexisTextureExecutionPlanNode>();
             var diagnostics = new List<AexisTextureExecutionPlanDiagnostic>();
             var layers = model.layers ?? new List<AexisGraphModel.Layer>();
-            for (var index = 0; index < layers.Count; index++)
+            var plannedLayerCount = ResolvePlannedLayerCount(layers, request.stopAfterTopName);
+            for (var index = 0; index < plannedLayerCount; index++)
             {
                 var layer = layers[index];
                 if (layer == null)
@@ -232,6 +242,11 @@ namespace Aexis.Execution
                 var operatorName = string.IsNullOrWhiteSpace(layer.typeName) ? layer.type.ToString() : layer.typeName;
                 AexisOperatorCapabilities.TryGet(operatorName, out var capability);
                 var inputs = ResolveInputs(layer, descriptors);
+                // The Qwen decoder declares all KV-cache slots as one graph Input,
+                // while its first SDPA invocation deliberately has no past K/V
+                // textures.  This removes only that proven absent pair so the
+                // runtime verifier can admit its real GPU cache-initialization path.
+                TrimOptionalInitialSdpaKvCacheInputs(layer, inputs);
                 var node = new AexisTextureExecutionPlanNode
                 {
                     layerIndex = index,
@@ -246,7 +261,7 @@ namespace Aexis.Execution
 
                 if (string.Equals(operatorName, "Input", StringComparison.Ordinal))
                 {
-                    PlanInputNode(request, layer, node, descriptors, diagnostics);
+                    PlanInputNode(request, layer, layers, node, descriptors, diagnostics);
                     nodes.Add(node);
                     continue;
                 }
@@ -317,7 +332,10 @@ namespace Aexis.Execution
                 }
 
                 var inputsMatchTarget = inputs.Select((input, inputIndex) =>
-                    MatchesTarget(input, request) || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)).All(value => value);
+                    MatchesTarget(input, request)
+                    || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)
+                    || IsFixedTextureInputUpload(operatorName, inputIndex, input, request)
+                    || IsVerifiedLinearMatTexture(input, request)).All(value => value);
                 var quantizesOperator = IsInt8WeightOnlyOperator(request, layer.name, operatorName)
                     || IsInt4WeightOnlyOperator(request, layer.name, operatorName);
                 if (quantizesOperator && HasImmutableWeightsWithoutInt8WeightOnlyKernel(operatorName))
@@ -441,6 +459,24 @@ namespace Aexis.Execution
             };
         }
 
+        private static int ResolvePlannedLayerCount(
+            IReadOnlyList<AexisGraphModel.Layer> layers,
+            string stopAfterTopName)
+        {
+            if (layers == null || layers.Count == 0 || string.IsNullOrWhiteSpace(stopAfterTopName))
+                return layers?.Count ?? 0;
+
+            for (var index = 0; index < layers.Count; index++)
+            {
+                var topNames = layers[index]?.topNames;
+                if (topNames != null && topNames.Contains(stopAfterTopName))
+                    return index + 1;
+            }
+
+            // Preserve whole-model validation when the requested boundary is invalid.
+            return layers.Count;
+        }
+
         private static bool TryFindOutputConsumer(
             IReadOnlyList<AexisGraphModel.Layer> layers,
             int producerIndex,
@@ -505,13 +541,38 @@ namespace Aexis.Execution
         private static void PlanInputNode(
             AexisTextureExecutionPlanRequest request,
             AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisGraphModel.Layer> layers,
             AexisTextureExecutionPlanNode node,
             Dictionary<string, AexisTexturePlanTensorDescriptor> descriptors,
             List<AexisTextureExecutionPlanDiagnostic> diagnostics)
         {
             var topNames = layer.topNames ?? Array.Empty<string>();
+            if (IsOptionalInitialKvCacheInputGroup(layer, layers, descriptors))
+            {
+                // Do not synthesize zero textures or CPU-side cache state.  SDPA
+                // receives no past K/V on its initial step and creates both cache
+                // textures with its native Pack4 GPU dispatch.
+                node.accepted = true;
+                node.executionPath = "gpu-kv-cache-initial-state";
+                node.outputs = Array.Empty<AexisTexturePlanTensorDescriptor>();
+                return;
+            }
+
             var sourceName = topNames.FirstOrDefault(name => descriptors.ContainsKey(name)) ?? layer.name;
-            if (string.IsNullOrWhiteSpace(sourceName) || !descriptors.TryGetValue(sourceName, out var source) || !MatchesTarget(source, request))
+            // Exact integer indices may originate either from the narrowly allowed
+            // fixed-buffer upload or from a caller-provided RFloat texture boundary.
+            // In both cases Embed sees texture-native FP32 LinearMat storage; do not
+            // force a native texture input back through a ComputeBuffer just to admit
+            // an FP16 graph plan.
+            var isExactTextureIndex = descriptors.TryGetValue(sourceName ?? string.Empty, out var source)
+                && string.Equals(source.logicalDtype, "Int32", StringComparison.Ordinal)
+                && source.aliasGroup != null
+                && source.aliasGroup.StartsWith("input:", StringComparison.Ordinal)
+                && IsVerifiedLinearMatTexture(source, request);
+            var isVerifiedLinearMatInput = IsVerifiedLinearMatTexture(source, request);
+            if (string.IsNullOrWhiteSpace(sourceName)
+                || source == null
+                || (!MatchesTarget(source, request) && !isExactTextureIndex && !isVerifiedLinearMatInput))
             {
                 diagnostics.Add(CreateDiagnostic(request, node.layerIndex, layer, null, node.operatorName, "missing-pack4-input-descriptor", "Input requires a texture-backed descriptor matching the requested dtype/layout.", Array.Empty<AexisTexturePlanTensorDescriptor>(), true, "Supply a CommandBuffer Pack4 input descriptor for this blob."));
                 return;
@@ -570,6 +631,100 @@ namespace Aexis.Execution
             return inputs;
         }
 
+        private static void TrimOptionalInitialSdpaKvCacheInputs(
+            AexisGraphModel.Layer layer,
+            List<AexisTexturePlanTensorDescriptor> inputs)
+        {
+            if (!IsKvCacheSdpaLayer(layer)
+                || inputs == null
+                || inputs.Count != 6
+                || inputs[4] != null
+                || inputs[5] != null)
+                return;
+
+            // Qwen's exported KV-cache SDPA always carries an attention mask, so
+            // Q/K/V/mask are the four mandatory descriptors.  Never trim a missing
+            // activation or a partial cache pair.
+            for (var index = 0; index < 4; index++)
+            {
+                if (inputs[index] == null)
+                    return;
+            }
+
+            inputs.RemoveRange(4, 2);
+        }
+
+        private static bool IsOptionalInitialKvCacheInputGroup(
+            AexisGraphModel.Layer inputLayer,
+            IReadOnlyList<AexisGraphModel.Layer> layers,
+            IReadOnlyDictionary<string, AexisTexturePlanTensorDescriptor> descriptors)
+        {
+            if (inputLayer == null
+                || !string.Equals(inputLayer.name, "kv_cache", StringComparison.Ordinal)
+                || inputLayer.topNames == null
+                || inputLayer.topNames.Length == 0
+                || (inputLayer.topNames.Length & 1) != 0)
+                return false;
+
+            for (var index = 0; index < inputLayer.topNames.Length; index++)
+            {
+                var topName = inputLayer.topNames[index];
+                if (!IsExpectedKvCacheBlobName(topName, index)
+                    || descriptors.ContainsKey(topName)
+                    || !HasOnlyOptionalInitialKvCacheConsumers(topName, index, layers))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsExpectedKvCacheBlobName(string blobName, int groupIndex)
+        {
+            if (string.IsNullOrWhiteSpace(blobName))
+                return false;
+
+            var cacheIndex = groupIndex / 2;
+            var expected = (groupIndex & 1) == 0 ? "cache_k" : "cache_v";
+            return string.Equals(blobName, expected + cacheIndex, StringComparison.Ordinal);
+        }
+
+        private static bool HasOnlyOptionalInitialKvCacheConsumers(
+            string blobName,
+            int groupIndex,
+            IReadOnlyList<AexisGraphModel.Layer> layers)
+        {
+            var consumed = false;
+            var expectedBottomIndex = 4 + (groupIndex & 1);
+            for (var layerIndex = 0; layers != null && layerIndex < layers.Count; layerIndex++)
+            {
+                var consumer = layers[layerIndex];
+                var bottoms = consumer?.bottomNames;
+                for (var bottomIndex = 0; bottoms != null && bottomIndex < bottoms.Length; bottomIndex++)
+                {
+                    if (!string.Equals(bottoms[bottomIndex], blobName, StringComparison.Ordinal))
+                        continue;
+
+                    if (!IsKvCacheSdpaLayer(consumer) || bottomIndex != expectedBottomIndex)
+                        return false;
+                    consumed = true;
+                }
+            }
+
+            return consumed;
+        }
+
+        private static bool IsKvCacheSdpaLayer(AexisGraphModel.Layer layer)
+        {
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            return string.Equals(operatorName, "SDPA", StringComparison.Ordinal)
+                && layer.GetInt(5, 0) != 0
+                && layer.GetInt(7, 0) != 0
+                && layer.bottomNames != null
+                && layer.bottomNames.Length == 6
+                && layer.topNames != null
+                && layer.topNames.Length == 3;
+        }
+
         private static bool IsViewOperator(string operatorName)
         {
             return string.Equals(operatorName, "Noop", StringComparison.Ordinal)
@@ -611,7 +766,11 @@ namespace Aexis.Execution
             }
 
             var source = inputs[0];
-            if (!MatchesTarget(source, request) || string.IsNullOrWhiteSpace(source.aliasGroup))
+            // LinearMat tensors use RFloat texture storage even in FP16 graphs.
+            // A view only carries the same native texture descriptor forward, so
+            // accept that verified storage contract without materializing it.
+            if ((!MatchesTarget(source, request) && !IsVerifiedLinearMatTexture(source, request))
+                || string.IsNullOrWhiteSpace(source.aliasGroup))
             {
                 reason = "The source lacks a matching Pack4 descriptor or alias group.";
                 return false;
@@ -892,7 +1051,9 @@ namespace Aexis.Execution
             {
                 var output = verification.outputs[index];
                 if (output == null
-                    || (!MatchesTarget(output, request) && !IsMaxPoolingIndexOutput(layer, index, output, request))
+                    || (!MatchesTarget(output, request)
+                        && !IsMaxPoolingIndexOutput(layer, index, output, request)
+                        && !IsVerifiedLinearMatTexture(output, request))
                     || !string.Equals(output.blob, topNames[index], StringComparison.Ordinal))
                 {
                     reason = "The loaded-runtime verifier produced an output descriptor outside the requested target contract.";
@@ -911,7 +1072,11 @@ namespace Aexis.Execution
             IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs)
         {
             if (!string.Equals(verification.executionPath, "descriptor-alias", StringComparison.Ordinal)
-                || inputs == null || inputs.Count != 1 || inputs[0] == null
+                // Some texture-native noops (notably Interp size_expr=1w,1h)
+                // consume optional descriptor-only shape references. The first
+                // input remains the sole aliased activation; the extra inputs
+                // are never activation data sources or CPU readback targets.
+                || inputs == null || inputs.Count < 1 || inputs[0] == null
                 || string.IsNullOrWhiteSpace(inputs[0].aliasGroup)
                 || verification.outputs == null || verification.outputs.Length == 0)
             {
@@ -1028,6 +1193,47 @@ namespace Aexis.Execution
                 && string.Equals(descriptor.dtype, ResolvePhysicalTextureDtype(request.targetDtype), StringComparison.OrdinalIgnoreCase)
                 && TryToBufferShape(descriptor.logicalShape, out _)
                 && TryToBufferShape(descriptor.storageShape, out _);
+        }
+
+        private static bool IsFixedTextureInputUpload(
+            string operatorName,
+            int inputIndex,
+            AexisTexturePlanTensorDescriptor descriptor,
+            AexisTextureExecutionPlanRequest request)
+        {
+            // An index buffer is uploaded before model execution and Embed samples
+            // the resulting texture. Do not generalize this exception to FP32
+            // activations or to arbitrary operators in an FP16 graph.
+            return descriptor != null
+                && descriptor.fixedInputUpload
+                && string.Equals(operatorName, "Embed", StringComparison.Ordinal)
+                && inputIndex == 0
+                && string.Equals(descriptor.logicalDtype, "Int32", StringComparison.Ordinal)
+                && descriptor.aliasGroup != null
+                && descriptor.aliasGroup.StartsWith("input:", StringComparison.Ordinal)
+                && IsVerifiedLinearMatTexture(descriptor, request);
+        }
+
+        private static bool IsVerifiedLinearMatTexture(
+            AexisTexturePlanTensorDescriptor descriptor,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (descriptor == null
+                || !descriptor.textureBacked
+                || !string.Equals(descriptor.layout, request.targetLayout, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                || !TryToBufferShape(descriptor.logicalShape, out var logical)
+                || !TryToBufferShape(descriptor.storageShape, out var storage))
+            {
+                return false;
+            }
+
+            var expected = AexisGraphSession.ResolveLinearMatStorageShape(logical);
+            return storage.dims == expected.dims
+                && storage.w == expected.w
+                && storage.h == expected.h
+                && storage.d == expected.d
+                && storage.c == expected.c;
         }
 
         private static string ResolvePhysicalTextureDtype(string targetDtype)
@@ -1190,6 +1396,7 @@ namespace Aexis.Execution
                 layout = descriptor?.layout ?? string.Empty,
                 dtype = descriptor?.dtype ?? string.Empty,
                 logicalDtype = descriptor?.logicalDtype ?? string.Empty,
+                fixedInputUpload = descriptor != null && descriptor.fixedInputUpload,
                 aliasGroup = descriptor?.aliasGroup ?? string.Empty,
                 textureBacked = descriptor != null && descriptor.textureBacked
             };

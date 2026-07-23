@@ -675,6 +675,7 @@ namespace Aexis.Execution
             var bufferViews = new Dictionary<string, AexisTensorBuffer>(StringComparer.Ordinal);
             var indexBlobs = new Dictionary<string, IndexRef>(StringComparer.Ordinal);
             var tempOwned = new List<IDisposable>();
+            var fixedBufferInputBlobs = new HashSet<string>(StringComparer.Ordinal);
 
             RegisterTextureInputs(textureInputs, textureInputShapes, textureBlobs, textureShapes);
 
@@ -684,6 +685,40 @@ namespace Aexis.Execution
                 {
                     if (kv.Value == null || kv.Value.buffer == null)
                         throw new ArgumentNullException("bufferInputs[\"" + kv.Key + "\"]");
+
+                    if (!IsDebugOracleExecution)
+                    {
+                        if (textureBlobs.ContainsKey(kv.Key))
+                            throw new InvalidOperationException("A production input cannot bind both texture and buffer storage"
+                                + " | blob=" + kv.Key
+                                + " | rejected_fallback=buffer-activation");
+
+                        // A buffer can be an immutable upload source at the graph edge,
+                        // but no layer receives it. All model activations, including
+                        // Embed token ids, are texture-backed before execution starts.
+                        var logicalShape = new BufferShape(kv.Value.dims, kv.Value.w, kv.Value.h, kv.Value.d, kv.Value.c);
+                        var texture = UploadFixedInputTexture(kv.Key, kv.Value.buffer, kv.Value);
+                        var storageShape = ResolveExternalTextureInputStorageShape(
+                            logicalShape,
+                            texture.width,
+                            texture.height,
+                            texture.dimension,
+                            Mathf.Max(1, texture.volumeDepth),
+                            texture.format);
+                        var useCount = remaining.TryGetValue(kv.Key, out var count) ? Mathf.Max(1, count) : 1;
+                        textureBlobs[kv.Key] = CreateTextureRef(
+                            texture,
+                            logicalShape,
+                            storageShape,
+                            owned: true,
+                            refs: useCount,
+                            blobName: kv.Key);
+                        textureShapes[kv.Key] = logicalShape;
+                        fixedBufferInputBlobs.Add(kv.Key);
+                        continue;
+                    }
+
+                    // DebugOracle is the only mode that retains legacy Buffer inputs.
                     bufferBlobs[kv.Key] = kv.Value.buffer;
                     bufferRefs[kv.Key] = new BufferRef
                     {
@@ -692,22 +727,29 @@ namespace Aexis.Execution
                         owned = false
                     };
                     bufferViews[kv.Key] = kv.Value;
+                }
+            }
 
-                    // A fixed Buffer input is a valid graph boundary, but it is not an
-                    // activation fallback. Production layers must consume it directly
-                    // (for example, Embed token indices) or reject it with the tensor
-                    // contract; only an explicitly requested debug-oracle run may upload
-                    // it to a texture for legacy numerical comparison.
-                    if (IsDebugOracleExecution && !textureBlobs.ContainsKey(kv.Key))
+            // Immediate RenderTexture execution must admit the same strict Pack4
+            // CommandBuffer plan as asynchronous execution. Replay slices start from a
+            // retained intermediate descriptor and are planned by their caller.
+            if (!IsDebugOracleExecution && string.IsNullOrWhiteSpace(startAtTopName))
+            {
+                try
+                {
+                    EnsureImmediateTextureExecutionPlan(textureBlobs, textureShapes, fixedBufferInputBlobs, stopAfterTopName);
+                }
+                catch
+                {
+                    // A strict plan may reject after boundary upload. Return only
+                    // pool-owned RTs; do not touch caller-owned texture inputs.
+                    var released = new HashSet<TensorRef>();
+                    foreach (var tensor in textureBlobs.Values)
                     {
-                        var texture = MaterializeScratchTextureFromBufferView(kv.Value.buffer, kv.Value);
-                        if (texture != null)
-                        {
-                            var shape = new BufferShape(kv.Value.dims, kv.Value.w, kv.Value.h, kv.Value.d, kv.Value.c);
-                            SetTextureBlob(textureBlobs, textureShapes, kv.Key, texture, shape);
-                            TryDumpFixedInputTexture(kv.Key, texture, kv.Value);
-                        }
+                        if (tensor != null && tensor.owned && tensor.texture != null && released.Add(tensor))
+                            ReturnTempArray(tensor.texture);
                     }
+                    throw;
                 }
             }
 
@@ -1090,14 +1132,52 @@ namespace Aexis.Execution
             string stopAfterTopName = null,
             ICollection<string> retainedOutputNames = null,
             Dictionary<string, ComputeTexture> retainedOutputs = null,
-            Dictionary<string, BufferShape> retainedOutputShapes = null)
+            Dictionary<string, BufferShape> retainedOutputShapes = null,
+            Dictionary<string, AexisTensorBuffer> fixedBufferInputs = null)
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
-            if (textureInputs == null || textureInputs.Count == 0)
+            if ((textureInputs == null || textureInputs.Count == 0)
+                && (fixedBufferInputs == null || fixedBufferInputs.Count == 0))
                 throw new ArgumentNullException(nameof(textureInputs));
 
-            EnsureCommandBufferTextureExecutionPlan(textureInputs, textureInputShapes);
+            var resolvedInputs = textureInputs == null
+                ? new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
+                : new Dictionary<string, ComputeTexture>(textureInputs, StringComparer.Ordinal);
+            var resolvedShapes = textureInputShapes == null
+                ? new Dictionary<string, BufferShape>(StringComparer.Ordinal)
+                : new Dictionary<string, BufferShape>(textureInputShapes, StringComparer.Ordinal);
+            var fixedUploadNames = new HashSet<string>(StringComparer.Ordinal);
+            var fixedUploads = new List<ComputeTexture>();
+            try
+            {
+                if (fixedBufferInputs != null)
+                {
+                    foreach (var kv in fixedBufferInputs)
+                    {
+                        if (kv.Value == null || kv.Value.buffer == null)
+                            throw new ArgumentNullException("fixedBufferInputs[\"" + kv.Key + "\"]");
+                        if (resolvedInputs.ContainsKey(kv.Key))
+                            throw new InvalidOperationException("A CommandBuffer input cannot bind both texture and buffer storage"
+                                + " | blob=" + kv.Key
+                                + " | rejected_fallback=buffer-activation");
+
+                        var upload = UploadFixedInputCmdTexture(cmd, kv.Key, kv.Value.buffer, kv.Value);
+                        resolvedInputs.Add(kv.Key, upload);
+                        resolvedShapes[kv.Key] = new BufferShape(kv.Value.dims, kv.Value.w, kv.Value.h, kv.Value.d, kv.Value.c);
+                        fixedUploadNames.Add(kv.Key);
+                        fixedUploads.Add(upload);
+                    }
+                }
+
+                EnsureCommandBufferTextureExecutionPlan(resolvedInputs, resolvedShapes, fixedUploadNames);
+            }
+            catch
+            {
+                foreach (var upload in fixedUploads)
+                    ReturnTempArray(cmd, upload);
+                throw;
+            }
             BeginInferenceTempResourceTracking();
             Dictionary<string, CmdTensorRef> blobs = null;
             var returned = false;
@@ -1106,7 +1186,12 @@ namespace Aexis.Execution
                 var remaining = new Dictionary<string, int>(_blobUseCount, StringComparer.Ordinal);
                 var shapes = new Dictionary<string, BufferShape>(StringComparer.Ordinal);
                 blobs = new Dictionary<string, CmdTensorRef>(StringComparer.Ordinal);
-                RegisterCmdTextureInputs(textureInputs, textureInputShapes, blobs, shapes);
+                RegisterCmdTextureInputs(resolvedInputs, resolvedShapes, blobs, shapes);
+                foreach (var fixedUploadName in fixedUploadNames)
+                {
+                    if (blobs.TryGetValue(fixedUploadName, out var fixedUpload) && fixedUpload != null)
+                        fixedUpload.owned = true;
+                }
 
                 var context = new AexisLayerCommandBufferContext
                 {

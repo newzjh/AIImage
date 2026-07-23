@@ -296,6 +296,9 @@ public static class NcnnDebugRunner
             case nameof(RunRealEsrganValidationBatch):
                 RunRealEsrganValidationBatch();
                 return;
+            case nameof(RunAexisStrictTextureValidationBatch):
+                RunAexisStrictTextureValidationBatch();
+                return;
             case nameof(RunMonaiDebugBatch):
                 RunMonaiDebugBatch();
                 return;
@@ -827,7 +830,9 @@ public static class NcnnDebugRunner
                 throw new InvalidOperationException("Invalid " + YoloPrecisionEnvVar + ": " + configuredPrecision);
             runner.precisionMode = precisionMode;
             runner.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, runner.forceBufferConvolution);
-            runner.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, true);
+            // Production batches must exercise the Pack4 texture path. A forced
+            // buffer branch is diagnostic-only and now requires DebugOracle.
+            runner.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, false);
             runner.useArgbFloatTensor = ResolveBoolEnv(YoloUseArgbFloatEnvVar, true);
             runner.enableGeneralTextureConvolution = ResolveBoolEnv(YoloEnableGeneralTexConvEnvVar, runner.enableGeneralTextureConvolution);
             runner.enableDepthWiseTextureConvolution = ResolveBoolEnv(YoloEnableDepthwiseTexConvEnvVar, runner.enableDepthWiseTextureConvolution);
@@ -1106,7 +1111,7 @@ public static class NcnnDebugRunner
             yolo.targetPersonOnly = false;
             yolo.enableMaskClose = true;
             yolo.enableMaskDilate = true;
-            yolo.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, true);
+            yolo.forceBufferBinaryOp = ResolveBoolEnv(YoloForceBufferBinaryEnvVar, false);
             yolo.useArgbFloatTensor = ResolveBoolEnv(YoloUseArgbFloatEnvVar, true);
             yolo.forceBufferConvolution = ResolveBoolEnv(YoloForceBufferConvEnvVar, yolo.forceBufferConvolution);
             yolo.enableGeneralTextureConvolution = ResolveBoolEnv(YoloEnableGeneralTexConvEnvVar, yolo.enableGeneralTextureConvolution);
@@ -2554,6 +2559,15 @@ public static class NcnnDebugRunner
 
     public static void RunCodeFormerDebugBatch() => RunBatchBlocking(nameof(RunCodeFormerDebugBatch), RunCodeFormerDebugInternal);
 
+    // Runs the real CodeFormer encoder without depending on the face detector.
+    // This is deliberately a separate, model-backed regression because the
+    // packaged generic debug texture is not a face and therefore stops before
+    // the encoder in RunCodeFormerDebugBatch.
+    public static void RunCodeFormerEncoderPack4RegressionBatch() => RunBatchBlocking(
+        nameof(RunCodeFormerEncoderPack4RegressionBatch),
+        RunCodeFormerEncoderPack4RegressionInternal,
+        TimeSpan.FromMinutes(20));
+
     public static void RunClipDebugBatch() => RunBatchBlocking(nameof(RunClipDebugBatch), RunClipDebugInternal);
 
     public static void RunClipDirectoryDebugBatch() => RunBatchBlocking(nameof(RunClipDirectoryDebugBatch), RunClipDirectoryDebugInternal);
@@ -2563,6 +2577,33 @@ public static class NcnnDebugRunner
     public static void RunCodeFormerStressBatch() => RunBatchBlocking(nameof(RunCodeFormerStressBatch), RunCodeFormerStressInternal, TimeSpan.FromHours(2));
 
     public static void RunReproSuiteStressBatch() => RunBatchBlocking(nameof(RunReproSuiteStressBatch), RunReproSuiteStressInternal, TimeSpan.FromHours(2));
+
+    // Keeps the pack4 production admission, GPU kernels, and CommandBuffer
+    // lifetimes runnable from a graphics-enabled Unity batch session. It is
+    // intentionally independent of model assets, so it is a fast gate before
+    // the model runner regression suite.
+    public static void RunAexisStrictTextureValidationBatch()
+    {
+        try
+        {
+            Aexis.Editor.AexisPackageValidation.RunBatchSmoke();
+            Aexis.Editor.AexisP1PackageValidation.RunBatchSmoke();
+            NcnnProductionPathAuditTests.RunBatchValidation();
+            NcnnStrictTextureExecutionPlanTests.RunBatchValidation();
+            NcnnTemporaryRtLifecycleTests.RunBatchValidation();
+            NcnnC4Pack4LayoutTests.RunBatchValidation();
+            NcnnC2CdhwCmdPack4Tests.RunBatchValidation();
+            NcnnConvCmdPack4GoldenTests.RunBatchValidation();
+            NcnnLinearCmdPack4GoldenTests.RunBatchValidation();
+            Debug.Log("[NcnnDebugRunner] strict Pack4/CommandBuffer validation passed");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
 
     public static void RunMonaiDebugBatch() => RunBatchBlocking(nameof(RunMonaiDebugBatch), () => RunMonaiDebugInternal(), TimeSpan.FromMinutes(10));
 
@@ -4704,6 +4745,10 @@ public static class NcnnDebugRunner
     private static void ConfigureQwen35StrictRepro(AexisGraphSession repro)
     {
         repro.ExecutionMode = AexisInferenceExecutionMode.ProductionTextureOnly;
+        // QWEN probe sessions explicitly allocate ARGBFloat activations below.
+        // Keep the strict-plan target dtype aligned with that real GPU storage so
+        // Input descriptors are admitted without any conversion or fallback.
+        repro.StrictTextureTargetDtype = "FP32";
         repro.DisallowInferenceTempComputeBuffers = true;
         repro.DisallowBufferToTextureMaterialization = true;
         repro.DisallowBufferOutputs = true;
@@ -5211,6 +5256,119 @@ public static class NcnnDebugRunner
         {
             UnityEngine.Object.DestroyImmediate(go);
             UnityEngine.Object.DestroyImmediate(tex);
+        }
+    }
+
+    private static async UniTask RunCodeFormerEncoderPack4RegressionInternal()
+    {
+        var go = new GameObject("CodeFormerEncoderPack4Regression");
+        var trackingStarted = false;
+        try
+        {
+            var runner = go.AddComponent<CodeFormerNcnnReproRunner2>();
+            // The original rejection occurred with FP16 Pack4 activations.
+            runner.precisionMode = AexisPrecisionMode.FP16;
+
+            var runnerType = typeof(CodeFormerNcnnReproRunner2);
+            var ensureLoaded = runnerType.GetMethod("EnsureLoaded", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (ensureLoaded == null || !(ensureLoaded.Invoke(runner, null) is UniTask loadTask))
+                throw new InvalidOperationException("CodeFormer encoder load entry point is unavailable.");
+            await loadTask;
+
+            var encoderField = runnerType.GetField("_encoderRepro", BindingFlags.Instance | BindingFlags.NonPublic);
+            var encoder = encoderField?.GetValue(runner) as AexisGraphSession;
+            if (encoder == null || encoder.Model == null)
+                throw new InvalidOperationException("CodeFormer encoder session was not loaded.");
+            if (!encoder.DisallowBufferAccess
+                || !encoder.DisallowBufferOutputs
+                || !encoder.DisallowBufferToTextureMaterialization
+                || !encoder.DisallowInferenceTempComputeBuffers)
+            {
+                throw new InvalidOperationException("CodeFormer encoder regression must run with the production Pack4 no-buffer guard.");
+            }
+
+            using var ops = new AexisOps();
+            using var commandBuffer = new UnityEngine.Rendering.CommandBuffer
+            {
+                name = "CodeFormerEncoderPack4Regression"
+            };
+
+            encoder.BeginInferenceTempResourceTracking();
+            trackingStarted = true;
+            var input = encoder.RentTempArray(commandBuffer, 512, 512, 1, RenderTextureFormat.ARGBHalf);
+            ComputeTexture output = null;
+            try
+            {
+                // A fixed texture value is sufficient for this dispatch regression:
+                // it covers the actual encoder graph through MatMul_911 while
+                // keeping all activations in Pack4 RT / CommandBuffer storage.
+                ops.FillScalarTexture(commandBuffer, new[] { 0f, 0f, 0f, 0f }, input);
+                var inputShape = new AexisGraphSession.BufferShape(3, 512, 512, 1, 3);
+                output = encoder.ForwardPack4(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["input"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal) { ["input"] = inputShape },
+                    out var outputShape,
+                    new[] { "1428" },
+                    "1428",
+                    "1428");
+
+                var plan = encoder.LastTextureExecutionPlan;
+                var matMul = plan?.nodes?.FirstOrDefault(node => string.Equals(node.layer, "MatMul_911", StringComparison.Ordinal));
+                if (output == null
+                    || outputShape.dims != 2
+                    || outputShape.w != 1024
+                    || outputShape.h != 256
+                    || outputShape.d != 1
+                    || outputShape.c != 1
+                    || plan == null
+                    || !plan.strictEligible
+                    || !plan.dispatchAllowed
+                    || matMul == null
+                    || !matMul.accepted
+                    || !string.Equals(matMul.executionPath, "command-buffer-pack4:inner-product-pack4-linear-mat", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "CodeFormer MatMul_911 did not admit the verified CommandBuffer Pack4LinearMat path. "
+                        + (plan?.summary ?? "plan unavailable"));
+                }
+
+                var stats = encoder.GetInferenceTempResourceStats();
+                if (stats.tempBufferRentCount != 0 || stats.tempBufferPeakLiveCount != 0)
+                {
+                    throw new InvalidOperationException(
+                        "CodeFormer encoder allocated a temporary ComputeBuffer during Pack4 inference. "
+                        + "rents=" + stats.tempBufferRentCount + " peak=" + stats.tempBufferPeakLiveCount);
+                }
+
+                encoder.ReturnTempArray(commandBuffer, output);
+                output = null;
+                encoder.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+                Debug.Log("[NcnnDebugRunner] CodeFormer encoder MatMul_911 CommandBuffer Pack4 regression passed");
+            }
+            finally
+            {
+                // On the successful path releases are recorded into the command
+                // buffer above. The fallback cleanup is only for planning errors
+                // before a retained output can be scheduled for release.
+                if (output != null)
+                    encoder.ReturnTempArray(commandBuffer, output);
+                if (input != null)
+                    encoder.ReturnTempArray(commandBuffer, input);
+            }
+        }
+        finally
+        {
+            if (trackingStarted)
+            {
+                var runner = go.GetComponent<CodeFormerNcnnReproRunner2>();
+                var encoderField = typeof(CodeFormerNcnnReproRunner2).GetField("_encoderRepro", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (encoderField?.GetValue(runner) is AexisGraphSession encoder)
+                    encoder.EndInferenceTempResourceTracking();
+            }
+            UnityEngine.Object.DestroyImmediate(go);
         }
     }
 

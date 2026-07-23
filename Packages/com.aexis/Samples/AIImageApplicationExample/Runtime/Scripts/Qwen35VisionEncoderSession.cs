@@ -466,6 +466,7 @@ namespace AIImage.Qwen35
                 EnableConv1x1TextureConvolution = true,
                 EnableDepthWiseTextureConvolution = true,
                 TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32",
                 ManagedLoadGarbageCollectionIntervalBytes = Qwen35RuntimeTuning.ResolveManagedLoadGarbageCollectionIntervalBytes(modelDirectory)
             };
         }

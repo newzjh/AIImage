@@ -406,7 +406,8 @@ namespace Aexis.Execution
                 AexisGraphSession.ResolveLinearMatTextureFormat());
             cmd.CopyTexture(memoryPack.linearMatRt, 0, 0, output.nameID, 0, 0);
             var logicalShape = new AexisGraphSession.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, 1, 1);
-            blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, logicalShape, logicalShape, owned: true, blobName: layer.topNames[0]);
+            var storageShape = AexisGraphSession.ResolveLinearMatStorageShape(logicalShape);
+            blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, logicalShape, storageShape, owned: true, blobName: layer.topNames[0]);
             if (shapes != null)
                 shapes[layer.topNames[0]] = logicalShape;
             owner.DebugLog?.Invoke(

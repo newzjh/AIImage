@@ -429,9 +429,14 @@ namespace Aexis.Execution
         private readonly int _kPack4ToBufferCdhw;
         private readonly int _kInnerProduct;
         private readonly int _kPackRgbToPack4Gfpgan;
+        private readonly int _kGfpganStyleModulation;
+        private readonly int _kGfpganStyleDemod;
+        private readonly int _kGfpganBuildDynamicWeight;
+        private readonly int _kGfpganAddNoisePack4;
         private readonly int _kFillPack4FromBufferChw;
         private readonly int _kFillPack4FromBufferCdhw;
         private readonly int _kFillLinearMatFromBuffer;
+        private readonly int _kFillLinearMatFromIntBuffer;
         private readonly int _kFillScalarTexture;
         private readonly int _kFillScalarLinearMat;
         private readonly int _kAexisConstantLinearMat;
@@ -470,6 +475,7 @@ namespace Aexis.Execution
         private readonly int _kMaxUnPoolingPack4;
         private readonly int _kSoftmaxChannelPack4;
         private readonly int _kSoftmaxLinearMat2D;
+        private readonly int _kSoftmaxPack4LinearMat2D;
         private readonly int _kUnaryOpPack4;
         private readonly int _kUnaryOpLinearMat;
         private readonly int _kTriluPack4;
@@ -478,6 +484,7 @@ namespace Aexis.Execution
         private readonly int _kBinaryOpLinearMatFixedInputScalar;
         private readonly int _kBinaryOpPack4;
         private readonly int _kBinaryOpPack4LinearMixed;
+        private readonly int _kBinaryOpPack4LinearMixedArray;
         private readonly int _kBinaryOpPack4Broadcast;
         private readonly int _kBinaryOpPack4BufferScalar;
         private readonly int _kBinaryOpPack4ChannelVectorTex;
@@ -512,6 +519,7 @@ namespace Aexis.Execution
         private readonly int _kWindowUnpartitionPack4;
         private readonly int _kReshapePack4ToScalar2D;
         private readonly int _kReshapePack4ToLinearMat;
+        private readonly int _kReshapePack4Linear2D;
         private readonly int _kReshapePack4ToPack4;
         private readonly int _kReshapeScalar2DToPack4;
         private readonly int _kPack4LinearFromScalar2D;
@@ -948,9 +956,14 @@ namespace Aexis.Execution
             _kPack4ToBufferCdhw = _cs.FindKernel("AexisPack4ToBufferCDHW");
             _kInnerProduct = _cs.FindKernel("AexisInnerProduct");
             _kPackRgbToPack4Gfpgan = _cs.FindKernel("AexisPackRgbToPack4Gfpgan");
+            _kGfpganStyleModulation = _cs.FindKernel("AexisGfpganStyleModulation");
+            _kGfpganStyleDemod = _cs.FindKernel("AexisGfpganStyleDemod");
+            _kGfpganBuildDynamicWeight = _cs.FindKernel("AexisGfpganBuildDynamicWeight");
+            _kGfpganAddNoisePack4 = _cs.FindKernel("AexisGfpganAddNoisePack4");
             _kFillPack4FromBufferChw = _cs.FindKernel("AexisFillPack4FromBufferCHW");
             _kFillPack4FromBufferCdhw = _cs.FindKernel("AexisFillPack4FromBufferCDHW");
             _kFillLinearMatFromBuffer = _cs.FindKernel("AexisFillLinearMatFromBuffer");
+            _kFillLinearMatFromIntBuffer = _cs.FindKernel("AexisFillLinearMatFromIntBuffer");
             _kFillScalarTexture = _cs.FindKernel("AexisFillScalarTexture");
             _kFillScalarLinearMat = _cs.FindKernel("AexisFillScalarLinearMat");
             _kAexisConstantLinearMat = _cs.FindKernel("AexisConstantLinearMat");
@@ -989,6 +1002,7 @@ namespace Aexis.Execution
             _kMaxUnPoolingPack4 = _cs.FindKernel("AexisMaxUnPoolingPack4");
             _kSoftmaxChannelPack4 = _cs.FindKernel("AexisSoftmaxChannelPack4");
             _kSoftmaxLinearMat2D = _cs.FindKernel("AexisSoftmaxLinearMat2D");
+            _kSoftmaxPack4LinearMat2D = _cs.FindKernel("AexisSoftmaxPack4LinearMat2D");
             _kUnaryOpPack4 = _cs.FindKernel("AexisUnaryOpPack4");
             _kUnaryOpLinearMat = _cs.FindKernel("AexisUnaryOpLinearMat");
             _kTriluPack4 = _cs.FindKernel("AexisTriluPack4");
@@ -997,6 +1011,7 @@ namespace Aexis.Execution
             _kBinaryOpLinearMatFixedInputScalar = _cs.FindKernel("AexisBinaryOpLinearMatFixedInputScalar");
             _kBinaryOpPack4 = _cs.FindKernel("AexisBinaryOpPack4");
             _kBinaryOpPack4LinearMixed = _cs.FindKernel("AexisBinaryOpPack4LinearMixed");
+            _kBinaryOpPack4LinearMixedArray = _cs.FindKernel("AexisBinaryOpPack4LinearMixedArray");
             _kBinaryOpPack4Broadcast = _cs.FindKernel("AexisBinaryOpPack4Broadcast");
             _kBinaryOpPack4BufferScalar = _cs.FindKernel("AexisBinaryOpPack4BufferScalar");
             _kBinaryOpPack4ChannelVectorTex = _cs.FindKernel("AexisBinaryOpPack4ChannelVectorTex");
@@ -1031,6 +1046,7 @@ namespace Aexis.Execution
             _kWindowUnpartitionPack4 = _cs.FindKernel("AexisWindowUnpartitionPack4");
             _kReshapePack4ToScalar2D = _cs.FindKernel("AexisReshapePack4ToScalar2D");
             _kReshapePack4ToLinearMat = _cs.FindKernel("AexisReshapePack4ToLinearMat");
+            _kReshapePack4Linear2D = _cs.FindKernel("AexisReshapePack4Linear2D");
             _kReshapePack4ToPack4 = _cs.FindKernel("AexisReshapePack4ToPack4");
             _kReshapeScalar2DToPack4 = _cs.FindKernel("AexisReshapeScalar2DToPack4");
             _kPack4LinearFromScalar2D = _cs.FindKernel("AexisPack4LinearFromScalar2D");
@@ -1350,6 +1366,94 @@ namespace Aexis.Execution
             Dispatch2D(cmd, _cs, _kPackRgbToPack4Gfpgan, dstPack4.width, dstPack4.height, 32, 32);
         }
 
+        // GFPGAN generator helpers. Runtime-varying tensors (style vector,
+        // demodulation vector, generated Pack4 weights, and noise) are textures;
+        // the buffers below are immutable style.bin constants only.
+        public void GfpganStyleModulation(RenderTexture styles, int styleRow, int styleInputDim, ComputeBuffer modulationW, ComputeBuffer modulationB, int outputDim, RenderTexture output)
+        {
+            ValidateGfpganStyleModulation(styles, styleRow, styleInputDim, modulationW, modulationB, outputDim, output);
+            _cs.SetInt("_GfpganStyleRow", styleRow);
+            _cs.SetInt("_GfpganStyleInputDim", styleInputDim);
+            _cs.SetInt("_GfpganStyleOutputDim", outputDim);
+            _cs.SetBuffer(_kGfpganStyleModulation, "_GfpganModulationW", modulationW);
+            _cs.SetBuffer(_kGfpganStyleModulation, "_GfpganModulationB", modulationB);
+            _cs.SetTexture(_kGfpganStyleModulation, "_GfpganStyleIn", styles);
+            _cs.SetTexture(_kGfpganStyleModulation, "_GfpganStyleOut", output);
+            Dispatch1D(_kGfpganStyleModulation, outputDim, 64);
+        }
+
+        public void GfpganStyleModulation(CommandBuffer cmd, ComputeTexture styles, int styleRow, int styleInputDim, ComputeBuffer modulationW, ComputeBuffer modulationB, int outputDim, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            ValidateGfpganStyleModulation(styles, styleRow, styleInputDim, modulationW, modulationB, outputDim, output);
+            cmd.SetComputeIntParam(_cs, "_GfpganStyleRow", styleRow);
+            cmd.SetComputeIntParam(_cs, "_GfpganStyleInputDim", styleInputDim);
+            cmd.SetComputeIntParam(_cs, "_GfpganStyleOutputDim", outputDim);
+            cmd.SetComputeBufferParam(_cs, _kGfpganStyleModulation, "_GfpganModulationW", modulationW);
+            cmd.SetComputeBufferParam(_cs, _kGfpganStyleModulation, "_GfpganModulationB", modulationB);
+            cmd.SetComputeTextureParam(_cs, _kGfpganStyleModulation, "_GfpganStyleIn", styles.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGfpganStyleModulation, "_GfpganStyleOut", output.nameID);
+            Dispatch1D(cmd, _kGfpganStyleModulation, outputDim, 64);
+        }
+
+        public void GfpganStyleDemod(RenderTexture styleVector, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, RenderTexture output)
+        {
+            ValidateGfpganStyleDemod(styleVector, selfWeight, hiddenDim, outputChannels, kernelArea, output);
+            _cs.SetInt("_GfpganHiddenDim", hiddenDim);
+            _cs.SetInt("_GfpganOutputChannels", outputChannels);
+            _cs.SetInt("_GfpganKernelArea", kernelArea);
+            _cs.SetBuffer(_kGfpganStyleDemod, "_GfpganSelfWeight", selfWeight);
+            _cs.SetTexture(_kGfpganStyleDemod, "_GfpganStyleVector", styleVector);
+            _cs.SetTexture(_kGfpganStyleDemod, "_GfpganDemodOut", output);
+            Dispatch1D(_kGfpganStyleDemod, outputChannels, 64);
+        }
+
+        public void GfpganStyleDemod(CommandBuffer cmd, ComputeTexture styleVector, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            ValidateGfpganStyleDemod(styleVector, selfWeight, hiddenDim, outputChannels, kernelArea, output);
+            cmd.SetComputeIntParam(_cs, "_GfpganHiddenDim", hiddenDim);
+            cmd.SetComputeIntParam(_cs, "_GfpganOutputChannels", outputChannels);
+            cmd.SetComputeIntParam(_cs, "_GfpganKernelArea", kernelArea);
+            cmd.SetComputeBufferParam(_cs, _kGfpganStyleDemod, "_GfpganSelfWeight", selfWeight);
+            cmd.SetComputeTextureParam(_cs, _kGfpganStyleDemod, "_GfpganStyleVector", styleVector.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGfpganStyleDemod, "_GfpganDemodOut", output.nameID);
+            Dispatch1D(cmd, _kGfpganStyleDemod, outputChannels, 64);
+        }
+
+        public void GfpganBuildDynamicWeight(RenderTexture styleVector, RenderTexture demod, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, bool useDemod, RenderTexture output)
+        {
+            ValidateGfpganBuildDynamicWeight(styleVector, demod, selfWeight, hiddenDim, outputChannels, kernelArea, useDemod, output);
+            var total = GfpganDynamicWeightCount(hiddenDim, outputChannels, kernelArea);
+            _cs.SetInt("_GfpganHiddenDim", hiddenDim);
+            _cs.SetInt("_GfpganOutputChannels", outputChannels);
+            _cs.SetInt("_GfpganKernelArea", kernelArea);
+            _cs.SetInt("_GfpganUseDemod", useDemod ? 1 : 0);
+            _cs.SetInt("_GfpganDynW4Width", output.width);
+            _cs.SetBuffer(_kGfpganBuildDynamicWeight, "_GfpganSelfWeight", selfWeight);
+            _cs.SetTexture(_kGfpganBuildDynamicWeight, "_GfpganStyleVector", styleVector);
+            _cs.SetTexture(_kGfpganBuildDynamicWeight, "_GfpganDemodIn", demod ?? styleVector);
+            _cs.SetTexture(_kGfpganBuildDynamicWeight, "_GfpganDynW4Tex", output);
+            Dispatch1D(_kGfpganBuildDynamicWeight, total, 64);
+        }
+
+        public void GfpganBuildDynamicWeight(CommandBuffer cmd, ComputeTexture styleVector, ComputeTexture demod, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, bool useDemod, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            ValidateGfpganBuildDynamicWeight(styleVector, demod, selfWeight, hiddenDim, outputChannels, kernelArea, useDemod, output);
+            var total = GfpganDynamicWeightCount(hiddenDim, outputChannels, kernelArea);
+            cmd.SetComputeIntParam(_cs, "_GfpganHiddenDim", hiddenDim);
+            cmd.SetComputeIntParam(_cs, "_GfpganOutputChannels", outputChannels);
+            cmd.SetComputeIntParam(_cs, "_GfpganKernelArea", kernelArea);
+            cmd.SetComputeIntParam(_cs, "_GfpganUseDemod", useDemod ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_GfpganDynW4Width", output.width);
+            cmd.SetComputeBufferParam(_cs, _kGfpganBuildDynamicWeight, "_GfpganSelfWeight", selfWeight);
+            cmd.SetComputeTextureParam(_cs, _kGfpganBuildDynamicWeight, "_GfpganStyleVector", styleVector.nameID);
+            cmd.SetComputeTextureParam(_cs, _kGfpganBuildDynamicWeight, "_GfpganDemodIn", (demod ?? styleVector).nameID);
+            cmd.SetComputeTextureParam(_cs, _kGfpganBuildDynamicWeight, "_GfpganDynW4Tex", output.nameID);
+            Dispatch1D(cmd, _kGfpganBuildDynamicWeight, total, 64);
+        }
+
         public void FillPack4FromBufferCHW(ComputeBuffer input, int w, int h, int c, RenderTexture outputPack4)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -1415,6 +1519,20 @@ namespace Aexis.Execution
             Dispatch2D(_kFillLinearMatFromBuffer, output.width, output.height, 8, 8);
         }
 
+        // Fixed Int32 inputs such as token ids use an explicit GPU upload kernel.
+        // This avoids reinterpreting their IEEE bits as float values while promoting
+        // the graph boundary to texture-backed storage.
+        public void FillLinearMatFromIntBuffer(ComputeBuffer input, int w, int h, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_FillW", w);
+            _cs.SetInt("_FillH", h);
+            _cs.SetBuffer(_kFillLinearMatFromIntBuffer, "_FillIntIn", input);
+            _cs.SetTexture(_kFillLinearMatFromIntBuffer, "_LinearOut0", output);
+            Dispatch2D(_kFillLinearMatFromIntBuffer, output.width, output.height, 8, 8);
+        }
+
         public void FillLinearMatFromBuffer(CommandBuffer cmd, ComputeBuffer input, int w, int h, ComputeTexture output)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
@@ -1425,6 +1543,18 @@ namespace Aexis.Execution
             cmd.SetComputeBufferParam(_cs, _kFillLinearMatFromBuffer, "_FillIn", input);
             cmd.SetComputeTextureParam(_cs, _kFillLinearMatFromBuffer, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kFillLinearMatFromBuffer, output.width, output.height, 8, 8);
+        }
+
+        public void FillLinearMatFromIntBuffer(CommandBuffer cmd, ComputeBuffer input, int w, int h, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_FillW", w);
+            cmd.SetComputeIntParam(_cs, "_FillH", h);
+            cmd.SetComputeBufferParam(_cs, _kFillLinearMatFromIntBuffer, "_FillIntIn", input);
+            cmd.SetComputeTextureParam(_cs, _kFillLinearMatFromIntBuffer, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kFillLinearMatFromIntBuffer, output.width, output.height, 8, 8);
         }
 
         public void FillScalarTexture(float[] values, RenderTexture output)
@@ -2141,6 +2271,31 @@ namespace Aexis.Execution
             _cs.SetBuffer(_kAddNoiseBroadcastPack4, "_Noise", noise);
             _cs.SetTexture(_kAddNoiseBroadcastPack4, "_TexOut0Arr", inOut);
             Dispatch3D(_kAddNoiseBroadcastPack4, inOut.width, inOut.height, packs, 8, 8);
+        }
+
+        public void GfpganAddNoisePack4(RenderTexture inOut, float weight, int seed, int packs)
+        {
+            if (inOut == null) throw new ArgumentNullException(nameof(inOut));
+            if (inOut.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("GFPGAN noise requires a Pack4 Texture2DArray activation.");
+            if (packs <= 0 || packs > inOut.volumeDepth) throw new ArgumentOutOfRangeException(nameof(packs));
+            _cs.SetFloat("_GfpganNoiseWeight", weight);
+            _cs.SetInt("_GfpganNoiseSeed", seed);
+            _cs.SetTexture(_kGfpganAddNoisePack4, "_GfpganNoiseInOutArr", inOut);
+            Dispatch3D(_kGfpganAddNoisePack4, inOut.width, inOut.height, packs, 8, 8);
+        }
+
+        public void GfpganAddNoisePack4(CommandBuffer cmd, ComputeTexture inOut, float weight, int seed, int packs)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (inOut == null) throw new ArgumentNullException(nameof(inOut));
+            if (inOut.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("GFPGAN noise requires a Pack4 Texture2DArray activation.");
+            if (packs <= 0 || packs > inOut.depth) throw new ArgumentOutOfRangeException(nameof(packs));
+            cmd.SetComputeFloatParam(_cs, "_GfpganNoiseWeight", weight);
+            cmd.SetComputeIntParam(_cs, "_GfpganNoiseSeed", seed);
+            cmd.SetComputeTextureParam(_cs, _kGfpganAddNoisePack4, "_GfpganNoiseInOutArr", inOut.nameID);
+            Dispatch3D(cmd, _kGfpganAddNoisePack4, inOut.width, inOut.height, packs, 8, 8);
         }
 
         public void ClipPack4(RenderTexture input, float min, float max, int packs, RenderTexture output)
@@ -2967,6 +3122,35 @@ namespace Aexis.Execution
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToLinearMat, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToLinearMat, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kReshapePack4ToLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void ReshapePack4Linear2D(RenderTexture input, int inputWidth, int inputHeight, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (input.dimension != TextureDimension.Tex2DArray || output.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("ReshapePack4Linear2D requires Texture2DArray input and output.");
+            if (inputWidth <= 0 || inputHeight <= 0 || input.width != Mathf.CeilToInt(inputWidth / 4f) || input.height != inputHeight)
+                throw new InvalidOperationException("ReshapePack4Linear2D input storage does not match its logical shape.");
+            _cs.SetInt("_ReshapePack4ToScalar2DInW", inputWidth);
+            _cs.SetInt("_ReshapePack4ToScalar2DInH", inputHeight);
+            _cs.SetTexture(_kReshapePack4Linear2D, "_TexIn0Arr", input);
+            _cs.SetTexture(_kReshapePack4Linear2D, "_TexOut0Arr", output);
+            Dispatch3D(_kReshapePack4Linear2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void ReshapePack4Linear2D(CommandBuffer cmd, ComputeTexture input, int inputWidth, int inputHeight, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (inputWidth <= 0 || inputHeight <= 0 || input.width != Mathf.CeilToInt(inputWidth / 4f) || input.height != inputHeight)
+                throw new InvalidOperationException("ReshapePack4Linear2D input storage does not match its logical shape.");
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInW", inputWidth);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInH", inputHeight);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4Linear2D, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kReshapePack4Linear2D, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kReshapePack4Linear2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void ReshapePack4ToPack4(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, int outW, int outH, int outD, int outC, int outDims, RenderTexture output, bool inputPack4Linear = false)
@@ -4338,6 +4522,36 @@ namespace Aexis.Execution
             Dispatch2D(cmd, _cs, _kSoftmaxLinearMat2D, output.width, output.height, 8, 8);
         }
 
+        // Pack4 linear matrices store four adjacent logical columns per RGBA texel.
+        // The scalar LinearMat kernel would treat the physical width (W / 4) as
+        // the Softmax extent, so this path preserves the logical matrix contract.
+        public void SoftmaxPack4LinearMat2D(RenderTexture input, int w, int h, RenderTexture output, int axis = 0, int mode = 0)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetInt("_SoftmaxPack4CDHWW", w);
+            _cs.SetInt("_SoftmaxPack4CDHWH", h);
+            _cs.SetInt("_SoftmaxAxis", axis);
+            _cs.SetInt("_SoftmaxMode", mode);
+            _cs.SetTexture(_kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWInArr", input);
+            _cs.SetTexture(_kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWOutArr", output);
+            Dispatch2D(_kSoftmaxPack4LinearMat2D, output.width, output.height, 8, 8);
+        }
+
+        public void SoftmaxPack4LinearMat2D(CommandBuffer cmd, ComputeTexture input, int w, int h, ComputeTexture output, int axis = 0, int mode = 0)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWW", w);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWH", h);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_SoftmaxMode", mode);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWOutArr", output.nameID);
+            Dispatch2D(cmd, _cs, _kSoftmaxPack4LinearMat2D, output.width, output.height, 8, 8);
+        }
+
         public void SoftmaxChannelPack4(CommandBuffer cmd, ComputeTexture input, int packs, ComputeTexture output, int mode = 0)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -4609,6 +4823,27 @@ namespace Aexis.Execution
             Dispatch3D(_kBinaryOpPack4LinearMixed, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
+        public void BinaryOpPack4LinearMixedArray(RenderTexture pack4Linear, RenderTexture linear, bool pack4IsA, int opType, RenderTexture output)
+        {
+            if (pack4Linear == null) throw new ArgumentNullException(nameof(pack4Linear));
+            if (linear == null) throw new ArgumentNullException(nameof(linear));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryWithScalar", 0);
+            _cs.SetFloat("_BinaryScalar", 0f);
+            _cs.SetInt("_BinaryPack4LinearMixedMode", pack4IsA ? 1 : 2);
+            _cs.SetTexture(_kBinaryOpPack4LinearMixedArray, "_TexIn0Arr", pack4Linear);
+            _cs.SetTexture(_kBinaryOpPack4LinearMixedArray, "_BinaryLinearIn1Arr", linear);
+            _cs.SetTexture(_kBinaryOpPack4LinearMixedArray, "_TexOut0Arr", output);
+            Dispatch3D(_kBinaryOpPack4LinearMixedArray, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
+        }
+
         public void BinaryOpPack4Broadcast(RenderTexture a, RenderTexture b, int packs, int opType, int broadcastMode, RenderTexture output)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
@@ -4700,6 +4935,28 @@ namespace Aexis.Execution
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixed, "_LinearIn1", linear.nameID);
             cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixed, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kBinaryOpPack4LinearMixed, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
+        }
+
+        public void BinaryOpPack4LinearMixedArray(CommandBuffer cmd, ComputeTexture pack4Linear, ComputeTexture linear, bool pack4IsA, int opType, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (pack4Linear == null) throw new ArgumentNullException(nameof(pack4Linear));
+            if (linear == null) throw new ArgumentNullException(nameof(linear));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryWithScalar", 0);
+            cmd.SetComputeFloatParam(_cs, "_BinaryScalar", 0f);
+            cmd.SetComputeIntParam(_cs, "_BinaryPack4LinearMixedMode", pack4IsA ? 1 : 2);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixedArray, "_TexIn0Arr", pack4Linear.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixedArray, "_BinaryLinearIn1Arr", linear.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpPack4LinearMixedArray, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kBinaryOpPack4LinearMixedArray, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
         }
 
         public void BinaryOpPack4Broadcast(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int packs, int opType, int broadcastMode, ComputeTexture output)
@@ -4978,8 +5235,34 @@ namespace Aexis.Execution
             _cs.SetInt("_Pad", Mathf.Max(0, pad));
             _cs.SetInt("_ActType", activationType);
             _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetInt("_UseGfpganDynWeights", 0);
+            // AexisReadPack4ConvWeight4 conditionally selects dynamic GFPGAN
+            // texture weights. Vulkan validates every declared resource even for
+            // this inactive branch, so bind the existing Pack4 input as a
+            // harmless texture-native placeholder for ordinary convolution.
+            _cs.SetInt("_GfpganDynamicConvW4Width", Mathf.Max(1, srcPack4.width));
             _cs.SetBuffer(_kConv3x3Pack4, "_ConvW4", w4);
             _cs.SetBuffer(_kConv3x3Pack4, "_ConvB4", b4);
+            _cs.SetTexture(_kConv3x3Pack4, "_GfpganDynamicConvW4Tex", srcPack4);
+            _cs.SetTexture(_kConv3x3Pack4, "_ConvInArr", srcPack4);
+            _cs.SetTexture(_kConv3x3Pack4, "_ConvOutArr", dstPack4);
+            Dispatch3D(_kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
+        }
+
+        public void Conv3x3Pack4DynamicWeight(RenderTexture srcPack4, int inPacks, RenderTexture dynamicW4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            ValidateGfpganDynamicConv(srcPack4, dynamicW4, b4, inPacks, outPacks, 9, dstPack4);
+            _cs.SetInt("_InPacks", inPacks);
+            _cs.SetInt("_OutPacks", outPacks);
+            _cs.SetInt("_Pad", Mathf.Max(0, pad));
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetInt("_UseGfpganDynWeights", 1);
+            _cs.SetInt("_GfpganDynamicConvW4Width", dynamicW4.width);
+            // Bound only to satisfy the inactive immutable-weight branch.
+            _cs.SetBuffer(_kConv3x3Pack4, "_ConvW4", b4);
+            _cs.SetBuffer(_kConv3x3Pack4, "_ConvB4", b4);
+            _cs.SetTexture(_kConv3x3Pack4, "_GfpganDynamicConvW4Tex", dynamicW4);
             _cs.SetTexture(_kConv3x3Pack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConv3x3Pack4, "_ConvOutArr", dstPack4);
             Dispatch3D(_kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
@@ -5484,8 +5767,28 @@ namespace Aexis.Execution
             _cs.SetInt("_OutPacks", outPacks);
             _cs.SetInt("_ActType", activationType);
             _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetInt("_UseGfpganDynWeights", 0);
+            _cs.SetInt("_GfpganDynamicConvW4Width", Mathf.Max(1, srcPack4.width));
             _cs.SetBuffer(_kConv1x1Pack4, "_ConvW4", w4);
             _cs.SetBuffer(_kConv1x1Pack4, "_ConvB4", b4);
+            _cs.SetTexture(_kConv1x1Pack4, "_GfpganDynamicConvW4Tex", srcPack4);
+            _cs.SetTexture(_kConv1x1Pack4, "_ConvInArr", srcPack4);
+            _cs.SetTexture(_kConv1x1Pack4, "_ConvOutArr", dstPack4);
+            Dispatch3D(_kConv1x1Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
+        }
+
+        public void Conv1x1Pack4DynamicWeight(RenderTexture srcPack4, int inPacks, RenderTexture dynamicW4, ComputeBuffer b4, int outPacks, int activationType, float activationParam, RenderTexture dstPack4)
+        {
+            ValidateGfpganDynamicConv(srcPack4, dynamicW4, b4, inPacks, outPacks, 1, dstPack4);
+            _cs.SetInt("_InPacks", inPacks);
+            _cs.SetInt("_OutPacks", outPacks);
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetInt("_UseGfpganDynWeights", 1);
+            _cs.SetInt("_GfpganDynamicConvW4Width", dynamicW4.width);
+            _cs.SetBuffer(_kConv1x1Pack4, "_ConvW4", b4);
+            _cs.SetBuffer(_kConv1x1Pack4, "_ConvB4", b4);
+            _cs.SetTexture(_kConv1x1Pack4, "_GfpganDynamicConvW4Tex", dynamicW4);
             _cs.SetTexture(_kConv1x1Pack4, "_ConvInArr", srcPack4);
             _cs.SetTexture(_kConv1x1Pack4, "_ConvOutArr", dstPack4);
             Dispatch3D(_kConv1x1Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
@@ -5505,8 +5808,29 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
             cmd.SetComputeIntParam(_cs, "_ActType", activationType);
             cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeIntParam(_cs, "_UseGfpganDynWeights", 0);
+            cmd.SetComputeIntParam(_cs, "_GfpganDynamicConvW4Width", Mathf.Max(1, srcPack4.width));
             cmd.SetComputeBufferParam(_cs, _kConv1x1Pack4, "_ConvW4", w4);
             cmd.SetComputeBufferParam(_cs, _kConv1x1Pack4, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_GfpganDynamicConvW4Tex", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvInArr", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvOutArr", dstPack4.nameID);
+            Dispatch3D(cmd, _kConv1x1Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
+        }
+
+        public void Conv1x1Pack4DynamicWeight(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeTexture dynamicW4, ComputeBuffer b4, int outPacks, int activationType, float activationParam, ComputeTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            ValidateGfpganDynamicConv(srcPack4, dynamicW4, b4, inPacks, outPacks, 1, dstPack4);
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeIntParam(_cs, "_UseGfpganDynWeights", 1);
+            cmd.SetComputeIntParam(_cs, "_GfpganDynamicConvW4Width", dynamicW4.width);
+            cmd.SetComputeBufferParam(_cs, _kConv1x1Pack4, "_ConvW4", b4);
+            cmd.SetComputeBufferParam(_cs, _kConv1x1Pack4, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_GfpganDynamicConvW4Tex", dynamicW4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConv1x1Pack4, "_ConvOutArr", dstPack4.nameID);
             Dispatch3D(cmd, _kConv1x1Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
@@ -6113,8 +6437,30 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_Pad", Mathf.Max(0, pad));
             cmd.SetComputeIntParam(_cs, "_ActType", activationType);
             cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeIntParam(_cs, "_UseGfpganDynWeights", 0);
+            cmd.SetComputeIntParam(_cs, "_GfpganDynamicConvW4Width", Mathf.Max(1, srcPack4.width));
             cmd.SetComputeBufferParam(_cs, _kConv3x3Pack4, "_ConvW4", w4);
             cmd.SetComputeBufferParam(_cs, _kConv3x3Pack4, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_GfpganDynamicConvW4Tex", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvInArr", srcPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvOutArr", dstPack4.nameID);
+            Dispatch3D(cmd, _kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
+        }
+
+        public void Conv3x3Pack4DynamicWeight(CommandBuffer cmd, ComputeTexture srcPack4, int inPacks, ComputeTexture dynamicW4, ComputeBuffer b4, int outPacks, int pad, int activationType, float activationParam, ComputeTexture dstPack4)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            ValidateGfpganDynamicConv(srcPack4, dynamicW4, b4, inPacks, outPacks, 9, dstPack4);
+            cmd.SetComputeIntParam(_cs, "_InPacks", inPacks);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", outPacks);
+            cmd.SetComputeIntParam(_cs, "_Pad", Mathf.Max(0, pad));
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeIntParam(_cs, "_UseGfpganDynWeights", 1);
+            cmd.SetComputeIntParam(_cs, "_GfpganDynamicConvW4Width", dynamicW4.width);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3Pack4, "_ConvW4", b4);
+            cmd.SetComputeBufferParam(_cs, _kConv3x3Pack4, "_ConvB4", b4);
+            cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_GfpganDynamicConvW4Tex", dynamicW4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvInArr", srcPack4.nameID);
             cmd.SetComputeTextureParam(_cs, _kConv3x3Pack4, "_ConvOutArr", dstPack4.nameID);
             Dispatch3D(cmd, _kConv3x3Pack4, (dstPack4.width + 1) / 2, (dstPack4.height + 1) / 2, (outPacks + 1) / 2, 8, 8);
@@ -8084,6 +8430,36 @@ namespace Aexis.Execution
             _cs.SetFloat("_DeepFillSoftmaxScale", softmaxScale);
         }
 
+        private void ConfigureDeepFillV2(
+            CommandBuffer cmd,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int featurePacks,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            cmd.SetComputeIntParam(_cs, "_DeepFillFeatureW", featureW);
+            cmd.SetComputeIntParam(_cs, "_DeepFillFeatureH", featureH);
+            cmd.SetComputeIntParam(_cs, "_DeepFillFeatureChannels", featureChannels);
+            cmd.SetComputeIntParam(_cs, "_DeepFillFeaturePacks", featurePacks);
+            cmd.SetComputeIntParam(_cs, "_DeepFillMatchW", matchW);
+            cmd.SetComputeIntParam(_cs, "_DeepFillMatchH", matchH);
+            cmd.SetComputeIntParam(_cs, "_DeepFillSourceCount", matchW * matchH);
+            cmd.SetComputeIntParam(_cs, "_DeepFillSourcePacks", Mathf.CeilToInt(matchW * matchH / 4f));
+            cmd.SetComputeIntParam(_cs, "_DeepFillMaskW", maskW);
+            cmd.SetComputeIntParam(_cs, "_DeepFillMaskH", maskH);
+            cmd.SetComputeIntParam(_cs, "_DeepFillMaskDownsample", maskDownsample);
+            cmd.SetComputeFloatParam(_cs, "_DeepFillPatchEpsilon", patchEpsilon);
+            cmd.SetComputeFloatParam(_cs, "_DeepFillSoftmaxScale", softmaxScale);
+        }
+
         public void DeepFillV2PatchStats(
             RenderTexture feature,
             RenderTexture mask,
@@ -8108,6 +8484,34 @@ namespace Aexis.Execution
             _cs.SetTexture(_kDeepFillV2PatchStats, "_DeepFillMaskArr", mask);
             _cs.SetTexture(_kDeepFillV2PatchStats, "_DeepFillPatchStatsOutArr", output);
             Dispatch3D(_kDeepFillV2PatchStats, matchW, matchH, 1, 8, 8);
+        }
+
+        public void DeepFillV2PatchStats(
+            CommandBuffer cmd,
+            ComputeTexture feature,
+            ComputeTexture mask,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (feature == null) throw new ArgumentNullException(nameof(feature));
+            if (mask == null) throw new ArgumentNullException(nameof(mask));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            ConfigureDeepFillV2(cmd, featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2PatchStats, "_DeepFillFeatureArr", feature.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2PatchStats, "_DeepFillMaskArr", mask.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2PatchStats, "_DeepFillPatchStatsOutArr", output.nameID);
+            Dispatch3D(cmd, _kDeepFillV2PatchStats, matchW, matchH, 1, 8, 8);
         }
 
         public void DeepFillV2Scores(
@@ -8137,6 +8541,35 @@ namespace Aexis.Execution
             Dispatch3D(_kDeepFillV2Scores, matchW, matchH, sourcePacks, 4, 4);
         }
 
+        public void DeepFillV2Scores(
+            CommandBuffer cmd,
+            ComputeTexture feature,
+            ComputeTexture patchStats,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (feature == null) throw new ArgumentNullException(nameof(feature));
+            if (patchStats == null) throw new ArgumentNullException(nameof(patchStats));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            ConfigureDeepFillV2(cmd, featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Scores, "_DeepFillFeatureArr", feature.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Scores, "_DeepFillPatchStatsArr", patchStats.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Scores, "_DeepFillScoresOutArr", output.nameID);
+            Dispatch3D(cmd, _kDeepFillV2Scores, matchW, matchH, sourcePacks, 4, 4);
+        }
+
         public void DeepFillV2Softmax(
             RenderTexture scores,
             RenderTexture patchStats,
@@ -8163,6 +8596,34 @@ namespace Aexis.Execution
             _cs.Dispatch(_kDeepFillV2Softmax, Mathf.Max(1, matchW * matchH), 1, 1);
         }
 
+        public void DeepFillV2Softmax(
+            CommandBuffer cmd,
+            ComputeTexture scores,
+            ComputeTexture patchStats,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (scores == null) throw new ArgumentNullException(nameof(scores));
+            if (patchStats == null) throw new ArgumentNullException(nameof(patchStats));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            ConfigureDeepFillV2(cmd, featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Softmax, "_DeepFillScoresArr", scores.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Softmax, "_DeepFillPatchStatsArr", patchStats.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Softmax, "_DeepFillWeightsOutArr", output.nameID);
+            cmd.DispatchCompute(_cs, _kDeepFillV2Softmax, Mathf.Max(1, matchW * matchH), 1, 1);
+        }
+
         public void DeepFillV2Reconstruct(
             RenderTexture feature,
             RenderTexture weights,
@@ -8187,6 +8648,34 @@ namespace Aexis.Execution
             _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillWeightsArr", weights);
             _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillOutputArr", output);
             Dispatch3D(_kDeepFillV2Reconstruct, featureW, featureH, featurePacks, 4, 4);
+        }
+
+        public void DeepFillV2Reconstruct(
+            CommandBuffer cmd,
+            ComputeTexture feature,
+            ComputeTexture weights,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (feature == null) throw new ArgumentNullException(nameof(feature));
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            ConfigureDeepFillV2(cmd, featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillFeatureArr", feature.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillWeightsArr", weights.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillOutputArr", output.nameID);
+            Dispatch3D(cmd, _kDeepFillV2Reconstruct, featureW, featureH, featurePacks, 4, 4);
         }
 
         public void ExtractPatchesPack4(
@@ -9028,7 +9517,8 @@ namespace Aexis.Execution
             float scale,
             RenderTexture output,
             RenderTexture mask = null,
-            bool causal = false)
+            bool causal = false,
+            int causalQueryOffset = 0)
         {
             if (query == null) throw new ArgumentNullException(nameof(query));
             if (key == null) throw new ArgumentNullException(nameof(key));
@@ -9061,7 +9551,8 @@ namespace Aexis.Execution
                 scale,
                 output,
                 mask,
-                causal);
+                causal,
+                causalQueryOffset);
 
             var headPacks = Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f));
             var outChunks = Mathf.Max(1, Mathf.CeilToInt(outEmbedDim / 64f));
@@ -9082,7 +9573,8 @@ namespace Aexis.Execution
             float scale,
             ComputeTexture output,
             ComputeTexture mask = null,
-            bool causal = false)
+            bool causal = false,
+            int causalQueryOffset = 0)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (query == null) throw new ArgumentNullException(nameof(query));
@@ -9117,7 +9609,8 @@ namespace Aexis.Execution
                 scale,
                 output,
                 mask,
-                causal);
+                causal,
+                causalQueryOffset);
 
             var headPacks = Mathf.Max(1, Mathf.CeilToInt(numHeads / 4f));
             var outChunks = Mathf.Max(1, Mathf.CeilToInt(outEmbedDim / 64f));
@@ -9138,7 +9631,8 @@ namespace Aexis.Execution
             float scale,
             RenderTexture output,
             RenderTexture mask,
-            bool causal)
+            bool causal,
+            int causalQueryOffset)
         {
             _cs.SetInt("_SdpaSrcLen", srcLen);
             _cs.SetInt("_SdpaDstLen", dstLen);
@@ -9151,6 +9645,7 @@ namespace Aexis.Execution
             _cs.SetInt("_SdpaTextureMaskW", mask != null ? mask.width : 0);
             _cs.SetInt("_SdpaTextureMaskH", mask != null ? mask.height : 0);
             _cs.SetInt("_SdpaCausal", causal ? 1 : 0);
+            _cs.SetInt("_SdpaCausalOffset", Mathf.Max(0, causalQueryOffset));
             _cs.SetFloat("_SdpaScale", scale);
             _cs.SetTexture(kernel, "_TexIn0Arr", query);
             _cs.SetTexture(kernel, "_TexIn1Arr", key);
@@ -9174,7 +9669,8 @@ namespace Aexis.Execution
             float scale,
             ComputeTexture output,
             ComputeTexture mask,
-            bool causal)
+            bool causal,
+            int causalQueryOffset)
         {
             cmd.SetComputeIntParam(_cs, "_SdpaSrcLen", srcLen);
             cmd.SetComputeIntParam(_cs, "_SdpaDstLen", dstLen);
@@ -9187,6 +9683,7 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_SdpaTextureMaskW", mask != null ? mask.width : 0);
             cmd.SetComputeIntParam(_cs, "_SdpaTextureMaskH", mask != null ? mask.height : 0);
             cmd.SetComputeIntParam(_cs, "_SdpaCausal", causal ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_SdpaCausalOffset", Mathf.Max(0, causalQueryOffset));
             cmd.SetComputeFloatParam(_cs, "_SdpaScale", scale);
             cmd.SetComputeTextureParam(_cs, kernel, "_TexIn0Arr", query.nameID);
             cmd.SetComputeTextureParam(_cs, kernel, "_TexIn1Arr", key.nameID);
@@ -11334,6 +11831,124 @@ namespace Aexis.Execution
             cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentGdrOutArr", output.nameID);
             cmd.SetComputeTextureParam(_cs, _kGatedDeltaRulePack4, "_RecurrentGdrStateOutArr", stateOut.nameID);
             Dispatch3D(cmd, _kGatedDeltaRulePack4, Mathf.CeilToInt(valueDim / 4f), heads, 1, 8, 8);
+        }
+
+        private static int GfpganDynamicWeightCount(int hiddenDim, int outputChannels, int kernelArea)
+        {
+            if (hiddenDim <= 0 || (hiddenDim & 3) != 0)
+                throw new ArgumentOutOfRangeException(nameof(hiddenDim), "GFPGAN hidden dimension must be positive and Pack4-aligned.");
+            if (outputChannels <= 0) throw new ArgumentOutOfRangeException(nameof(outputChannels));
+            if (kernelArea <= 0) throw new ArgumentOutOfRangeException(nameof(kernelArea));
+            var count = (long)((outputChannels + 3) / 4) * (hiddenDim / 4) * kernelArea * 4;
+            if (count <= 0 || count > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(outputChannels), "GFPGAN dynamic Pack4 weight count is outside the supported range.");
+            return (int)count;
+        }
+
+        private static void ValidateGfpganStyleModulation(RenderTexture styles, int styleRow, int styleInputDim, ComputeBuffer modulationW, ComputeBuffer modulationB, int outputDim, RenderTexture output)
+        {
+            if (styles == null) throw new ArgumentNullException(nameof(styles));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (modulationW == null) throw new ArgumentNullException(nameof(modulationW));
+            if (modulationB == null) throw new ArgumentNullException(nameof(modulationB));
+            if (styles.dimension != TextureDimension.Tex2D || output.dimension != TextureDimension.Tex2D)
+                throw new InvalidOperationException("GFPGAN style modulation requires texture-native 2D linear matrices.");
+            if (styleRow < 0 || styleInputDim <= 0 || outputDim <= 0 || styleInputDim > styles.width || styleRow >= styles.height || output.width < outputDim)
+                throw new ArgumentOutOfRangeException(nameof(styleInputDim), "GFPGAN style modulation texture dimensions are incompatible with the requested row/vector.");
+        }
+
+        private static void ValidateGfpganStyleModulation(ComputeTexture styles, int styleRow, int styleInputDim, ComputeBuffer modulationW, ComputeBuffer modulationB, int outputDim, ComputeTexture output)
+        {
+            if (styles == null) throw new ArgumentNullException(nameof(styles));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (modulationW == null) throw new ArgumentNullException(nameof(modulationW));
+            if (modulationB == null) throw new ArgumentNullException(nameof(modulationB));
+            if (styles.dimension != TextureDimension.Tex2D || output.dimension != TextureDimension.Tex2D)
+                throw new InvalidOperationException("GFPGAN style modulation requires texture-native 2D linear matrices.");
+            if (styleRow < 0 || styleInputDim <= 0 || outputDim <= 0 || styleInputDim > styles.width || styleRow >= styles.height || output.width < outputDim)
+                throw new ArgumentOutOfRangeException(nameof(styleInputDim), "GFPGAN style modulation texture dimensions are incompatible with the requested row/vector.");
+        }
+
+        private static void ValidateGfpganStyleDemod(RenderTexture styleVector, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, RenderTexture output)
+        {
+            if (styleVector == null) throw new ArgumentNullException(nameof(styleVector));
+            if (selfWeight == null) throw new ArgumentNullException(nameof(selfWeight));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (styleVector.dimension != TextureDimension.Tex2D || output.dimension != TextureDimension.Tex2D)
+                throw new InvalidOperationException("GFPGAN style demodulation requires texture-native 2D vectors.");
+            GfpganDynamicWeightCount(hiddenDim, outputChannels, kernelArea);
+            if (styleVector.width < hiddenDim || output.width < outputChannels)
+                throw new ArgumentOutOfRangeException(nameof(hiddenDim), "GFPGAN style/demod vector width is insufficient.");
+        }
+
+        private static void ValidateGfpganStyleDemod(ComputeTexture styleVector, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, ComputeTexture output)
+        {
+            if (styleVector == null) throw new ArgumentNullException(nameof(styleVector));
+            if (selfWeight == null) throw new ArgumentNullException(nameof(selfWeight));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (styleVector.dimension != TextureDimension.Tex2D || output.dimension != TextureDimension.Tex2D)
+                throw new InvalidOperationException("GFPGAN style demodulation requires texture-native 2D vectors.");
+            GfpganDynamicWeightCount(hiddenDim, outputChannels, kernelArea);
+            if (styleVector.width < hiddenDim || output.width < outputChannels)
+                throw new ArgumentOutOfRangeException(nameof(hiddenDim), "GFPGAN style/demod vector width is insufficient.");
+        }
+
+        private static void ValidateGfpganBuildDynamicWeight(RenderTexture styleVector, RenderTexture demod, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, bool useDemod, RenderTexture output)
+        {
+            if (styleVector == null) throw new ArgumentNullException(nameof(styleVector));
+            if (selfWeight == null) throw new ArgumentNullException(nameof(selfWeight));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (styleVector.dimension != TextureDimension.Tex2D || output.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("GFPGAN dynamic Pack4 weights require a 2D style vector and a Texture2DArray output.");
+            if (useDemod && (demod == null || demod.dimension != TextureDimension.Tex2D))
+                throw new InvalidOperationException("GFPGAN demodulated weights require a texture-native demodulation vector.");
+            var total = GfpganDynamicWeightCount(hiddenDim, outputChannels, kernelArea);
+            if (styleVector.width < hiddenDim || output.width <= 0 || (long)output.width * output.height < total)
+                throw new ArgumentOutOfRangeException(nameof(output), "GFPGAN dynamic weight texture cannot store the requested Pack4 layout.");
+        }
+
+        private static void ValidateGfpganBuildDynamicWeight(ComputeTexture styleVector, ComputeTexture demod, ComputeBuffer selfWeight, int hiddenDim, int outputChannels, int kernelArea, bool useDemod, ComputeTexture output)
+        {
+            if (styleVector == null) throw new ArgumentNullException(nameof(styleVector));
+            if (selfWeight == null) throw new ArgumentNullException(nameof(selfWeight));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (styleVector.dimension != TextureDimension.Tex2D || output.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("GFPGAN dynamic Pack4 weights require a 2D style vector and a Texture2DArray output.");
+            if (useDemod && (demod == null || demod.dimension != TextureDimension.Tex2D))
+                throw new InvalidOperationException("GFPGAN demodulated weights require a texture-native demodulation vector.");
+            var total = GfpganDynamicWeightCount(hiddenDim, outputChannels, kernelArea);
+            if (styleVector.width < hiddenDim || output.width <= 0 || (long)output.width * output.height < total)
+                throw new ArgumentOutOfRangeException(nameof(output), "GFPGAN dynamic weight texture cannot store the requested Pack4 layout.");
+        }
+
+        private static void ValidateGfpganDynamicConv(RenderTexture input, RenderTexture dynamicW4, ComputeBuffer bias4, int inputPacks, int outputPacks, int kernelArea, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (dynamicW4 == null) throw new ArgumentNullException(nameof(dynamicW4));
+            if (bias4 == null) throw new ArgumentNullException(nameof(bias4));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (input.dimension != TextureDimension.Tex2DArray || dynamicW4.dimension != TextureDimension.Tex2DArray || output.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("GFPGAN dynamic convolution requires Pack4 Texture2DArray input, weights, and output.");
+            if (inputPacks <= 0 || outputPacks <= 0 || kernelArea <= 0 || input.volumeDepth < inputPacks || output.volumeDepth < outputPacks)
+                throw new ArgumentOutOfRangeException(nameof(inputPacks), "GFPGAN dynamic convolution Pack4 dimensions are invalid.");
+            var required = (long)inputPacks * outputPacks * kernelArea * 4;
+            if (dynamicW4.width <= 0 || (long)dynamicW4.width * dynamicW4.height < required)
+                throw new ArgumentOutOfRangeException(nameof(dynamicW4), "GFPGAN dynamic convolution weight texture is smaller than the Pack4 ABI requires.");
+        }
+
+        private static void ValidateGfpganDynamicConv(ComputeTexture input, ComputeTexture dynamicW4, ComputeBuffer bias4, int inputPacks, int outputPacks, int kernelArea, ComputeTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (dynamicW4 == null) throw new ArgumentNullException(nameof(dynamicW4));
+            if (bias4 == null) throw new ArgumentNullException(nameof(bias4));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (input.dimension != TextureDimension.Tex2DArray || dynamicW4.dimension != TextureDimension.Tex2DArray || output.dimension != TextureDimension.Tex2DArray)
+                throw new InvalidOperationException("GFPGAN dynamic convolution requires Pack4 Texture2DArray input, weights, and output.");
+            if (inputPacks <= 0 || outputPacks <= 0 || kernelArea <= 0 || input.depth < inputPacks || output.depth < outputPacks)
+                throw new ArgumentOutOfRangeException(nameof(inputPacks), "GFPGAN dynamic convolution Pack4 dimensions are invalid.");
+            var required = (long)inputPacks * outputPacks * kernelArea * 4;
+            if (dynamicW4.width <= 0 || (long)dynamicW4.width * dynamicW4.height < required)
+                throw new ArgumentOutOfRangeException(nameof(dynamicW4), "GFPGAN dynamic convolution weight texture is smaller than the Pack4 ABI requires.");
         }
 
         private void Dispatch1D(int kernel, int total, int threadsPerGroup)

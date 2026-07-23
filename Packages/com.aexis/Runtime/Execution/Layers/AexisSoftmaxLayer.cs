@@ -21,7 +21,8 @@ namespace Aexis.Execution
                     out var softScalarTex,
                     out var softScalarShape)
                 && TryResolvePack4SoftmaxWidthAxis(layer, softScalarShape, out _)
-                && CanUseScalar2DSoftmax(softScalarTex, softScalarShape))
+                && (CanUseScalar2DSoftmax(softScalarTex, softScalarShape)
+                    || AexisGraphSession.IsPack4LinearMatTexture(softScalarTex, softScalarShape)))
             {
                 ExecuteRenderTexturePath(owner, layer, context);
                 return;
@@ -143,6 +144,26 @@ namespace Aexis.Execution
                 return;
             }
 
+            if (AexisGraphSession.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var pack4LinearSrc, out var pack4LinearShape)
+                && AexisGraphSession.IsPack4LinearMatTexture(pack4LinearSrc, pack4LinearShape))
+            {
+                if (!TryResolvePack4SoftmaxWidthAxis(layer, pack4LinearShape, out var linearAxis))
+                    throw new NotSupportedException("Softmax axis is outside the Pack4 LinearMat rank: " + layer.name);
+
+                var storageShape = AexisGraphSession.GetTextureStorageShape(pack4LinearSrc, pack4LinearShape);
+                var outPack4Linear = owner.RentTempArray(storageShape.w, storageShape.h, 1, pack4LinearSrc.texture.format);
+                owner.Ops.SoftmaxPack4LinearMat2D(
+                    pack4LinearSrc.texture,
+                    pack4LinearShape.w,
+                    pack4LinearShape.h,
+                    outPack4Linear,
+                    linearAxis,
+                    layer.GetInt(10, 0));
+                AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outPack4Linear, pack4LinearShape, storageShape);
+                owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
+                return;
+            }
+
             if (!owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out var srcTex, out var srcShape)
                 || !CanUsePack4Softmax(srcTex, srcShape))
             {
@@ -169,6 +190,28 @@ namespace Aexis.Execution
 
             var src = AexisGraphSession.GetCmdTensor(blobs, layer.bottomNames[0]);
             var srcShape = AexisGraphSession.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
+            if (AexisGraphSession.IsPack4LinearMatTexture(src, srcShape))
+            {
+                if (!TryResolvePack4SoftmaxWidthAxis(layer, srcShape, out var linearAxis))
+                    throw new NotSupportedException("Softmax axis is outside the Pack4 LinearMat rank: " + layer.name);
+
+                var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
+                var outPack4Linear = owner.RentTempArray(cmd, storageShape.w, storageShape.h, 1, src.texture.format);
+                owner.Ops.SoftmaxPack4LinearMat2D(
+                    cmd,
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    outPack4Linear,
+                    linearAxis,
+                    layer.GetInt(10, 0));
+                blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outPack4Linear, srcShape, storageShape, owned: true);
+                if (shapes != null)
+                    shapes[layer.topNames[0]] = srcShape;
+                owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                return;
+            }
+
             if (CanUseScalar2DSoftmax(src, srcShape))
             {
                 if (!TryResolvePack4SoftmaxWidthAxis(layer, srcShape, out var scalarAxis))

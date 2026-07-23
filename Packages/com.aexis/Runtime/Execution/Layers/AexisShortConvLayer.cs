@@ -68,17 +68,35 @@ namespace Aexis.Execution
         {
             if (layer.bottomNames == null || layer.bottomNames.Length < 3 || layer.topNames == null || layer.topNames.Length < 2)
                 throw new InvalidOperationException("ShortConv command contract is invalid: " + layer.name);
-            var weight = RequireCmdArray(context, layer.bottomNames[0], layer.name);
-            var mixed = RequireCmdArray(context, layer.bottomNames[1], layer.name);
-            var cache = RequireCmdArray(context, layer.bottomNames[2], layer.name);
-            var mixedShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[1]);
-            var cacheShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[2]);
-            var output = owner.RentTempArray(context.commandBuffer, mixed.texture.width, mixed.texture.height, mixed.texture.depth, owner.TensorTextureFormat);
-            var cacheOut = owner.RentTempArray(context.commandBuffer, cache.texture.width, cache.texture.height, cache.texture.depth, owner.TensorTextureFormat);
-            owner.Ops.ShortConvPack4(context.commandBuffer, weight.texture, mixed.texture, cache.texture, output, cacheOut, mixedShape.w, Mathf.Max(1, cacheShape.h), mixedShape.h, Mathf.Max(1, cacheShape.h));
-            context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, mixedShape, new AexisGraphSession.BufferShape(3, output.width, output.height, 1, output.depth * 4), owned: true);
-            context.blobs[layer.topNames[1]] = AexisGraphSession.CreateCmdTensorRef(cacheOut, cacheShape, new AexisGraphSession.BufferShape(3, cacheOut.width, cacheOut.height, 1, cacheOut.depth * 4), owned: true);
-            if (context.shapes != null) { context.shapes[layer.topNames[0]] = mixedShape; context.shapes[layer.topNames[1]] = cacheShape; }
+            var weight = default(CmdTextureView);
+            var mixed = default(CmdTextureView);
+            var cache = default(CmdTextureView);
+            ComputeTexture output = null;
+            ComputeTexture cacheOut = null;
+            try
+            {
+                weight = ToCmdArray(owner, context, layer.bottomNames[0], layer.name);
+                mixed = ToCmdArray(owner, context, layer.bottomNames[1], layer.name);
+                cache = ToCmdArray(owner, context, layer.bottomNames[2], layer.name);
+                var mixedShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[1]);
+                var cacheShape = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, layer.bottomNames[2]);
+                output = owner.RentTempArray(context.commandBuffer, mixed.texture.width, mixed.texture.height, mixed.texture.depth, owner.TensorTextureFormat);
+                cacheOut = owner.RentTempArray(context.commandBuffer, cache.texture.width, cache.texture.height, cache.texture.depth, owner.TensorTextureFormat);
+                owner.Ops.ShortConvPack4(context.commandBuffer, weight.texture, mixed.texture, cache.texture, output, cacheOut, mixedShape.w, Mathf.Max(1, cacheShape.h), mixedShape.h, Mathf.Max(1, cacheShape.h));
+                context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(output, mixedShape, new AexisGraphSession.BufferShape(3, output.width, output.height, 1, output.depth * 4), owned: true);
+                context.blobs[layer.topNames[1]] = AexisGraphSession.CreateCmdTensorRef(cacheOut, cacheShape, new AexisGraphSession.BufferShape(3, cacheOut.width, cacheOut.height, 1, cacheOut.depth * 4), owned: true);
+                if (context.shapes != null) { context.shapes[layer.topNames[0]] = mixedShape; context.shapes[layer.topNames[1]] = cacheShape; }
+                output = null;
+                cacheOut = null;
+            }
+            finally
+            {
+                if (output != null) owner.ReturnTempArray(context.commandBuffer, output);
+                if (cacheOut != null) owner.ReturnTempArray(context.commandBuffer, cacheOut);
+                ReleaseCmdTextureView(owner, context.commandBuffer, weight);
+                ReleaseCmdTextureView(owner, context.commandBuffer, mixed);
+                ReleaseCmdTextureView(owner, context.commandBuffer, cache);
+            }
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
         }
 
@@ -89,12 +107,44 @@ namespace Aexis.Execution
             return tensor;
         }
 
-        private static AexisGraphSession.CmdTensorRef RequireCmdArray(AexisLayerCommandBufferContext context, string name, string layer)
+        private struct CmdTextureView { public ComputeTexture texture; public bool temporary; }
+
+        private static CmdTextureView ToCmdArray(AexisGraphSession owner, AexisLayerCommandBufferContext context, string name, string layer)
         {
             var tensor = AexisGraphSession.GetCmdTensor(context.blobs, name);
-            if (tensor == null || tensor.texture == null || tensor.texture.dimension != TextureDimension.Tex2DArray)
-                throw new InvalidOperationException("ShortConv command path requires Texture2DArray input: layer=" + layer + " blob=" + name);
-            return tensor;
+            if (tensor == null || tensor.texture == null)
+                throw new InvalidOperationException("ShortConv command path requires texture input: layer=" + layer + " blob=" + name);
+            if (tensor.texture.dimension == TextureDimension.Tex2DArray)
+                return new CmdTextureView { texture = tensor.texture };
+            if (!AexisGraphSession.IsStrictLinearMatTexture(tensor))
+                throw new InvalidOperationException("ShortConv command path requires Texture2DArray or strict LinearMat input: layer=" + layer + " blob=" + name);
+
+            var logical = AexisGraphSession.GetCmdShape(context.shapes, context.blobs, name);
+            var storage = AexisGraphSession.GetCmdStorageShape(tensor, logical);
+            var array = owner.RentTempArray(
+                context.commandBuffer,
+                Mathf.CeilToInt(Mathf.Max(1, logical.w) / 4f),
+                Mathf.Max(1, logical.h),
+                1,
+                owner.TensorTextureFormat);
+            owner.Ops.ReshapeLinearMatToPack4(
+                context.commandBuffer,
+                tensor.texture,
+                storage.w,
+                storage.h,
+                logical.w,
+                logical.h,
+                Mathf.Max(1, logical.d),
+                Mathf.Max(1, logical.c),
+                logical.dims,
+                array);
+            return new CmdTextureView { texture = array, temporary = true };
+        }
+
+        private static void ReleaseCmdTextureView(AexisGraphSession owner, CommandBuffer commandBuffer, CmdTextureView view)
+        {
+            if (view.temporary && view.texture != null)
+                owner.ReturnTempArray(commandBuffer, view.texture);
         }
 
         private struct TextureView { public RenderTexture texture; public bool temporary; }

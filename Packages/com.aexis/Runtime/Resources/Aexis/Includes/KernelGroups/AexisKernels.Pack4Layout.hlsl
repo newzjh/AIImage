@@ -44,6 +44,20 @@ void AexisFillLinearMatFromBuffer_Impl(uint3 id)
     _LinearOut0[int2((int)id.x, (int)id.y)] = idx < total ? _FillIn[idx] : 0.0;
 }
 
+void AexisFillLinearMatFromIntBuffer_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    uint logicalW = (uint)max(_FillW, 1);
+    uint logicalH = (uint)max(_FillH, 1);
+    uint idx = id.y * logicalW + id.x;
+    uint total = logicalW * logicalH;
+    _LinearOut0[int2((int)id.x, (int)id.y)] = idx < total ? (float)_FillIntIn[idx] : 0.0;
+}
+
 void AexisPack4ChannelsToWidth_Impl(uint3 id)
 {
     uint ow, oh, od;
@@ -814,6 +828,37 @@ void AexisReshapePack4ToLinearMat_Impl(uint3 id)
             _ReshapePack4ToScalar2DInC);
     }
     _LinearOut0[int2((int)id.x, (int)id.y)] = scalar;
+}
+
+// Rank-one/two Pack4-linear tensors use width lanes as a dense scalar stream.
+// A reshape only changes row breaks, so this kernel preserves that stream in a
+// Texture2DArray instead of degrading it to a scalar RFloat texture or Buffer.
+void AexisReshapePack4Linear2D_Impl(uint3 id)
+{
+    uint outW, outH, outD;
+    _TexOut0Arr.GetDimensions(outW, outH, outD);
+    if (id.x >= outW || id.y >= outH || id.z >= outD)
+        return;
+
+    uint logicalInputCount = (uint)max(1, _ReshapePack4ToScalar2DInW)
+        * (uint)max(1, _ReshapePack4ToScalar2DInH);
+    uint baseIndex = (id.y * outW + id.x) * 4u;
+    float4 value = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        uint index = baseIndex + (uint)lane;
+        if (index >= logicalInputCount)
+            continue;
+        uint row = index / (uint)max(1, _ReshapePack4ToScalar2DInW);
+        uint column = index - row * (uint)max(1, _ReshapePack4ToScalar2DInW);
+        float scalar = AexisReadLane(_TexIn0Arr[int3((int)(column >> 2), (int)row, 0)], (int)(column & 3));
+        if (lane == 0) value.x = scalar;
+        else if (lane == 1) value.y = scalar;
+        else if (lane == 2) value.z = scalar;
+        else value.w = scalar;
+    }
+    _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = value;
 }
 
 void AexisReshapePack4ToPack4_Impl(uint3 id)
