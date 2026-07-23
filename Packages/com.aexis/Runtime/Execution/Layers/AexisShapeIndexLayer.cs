@@ -650,7 +650,7 @@ namespace Aexis.Execution
         {
             var spec = ResolveStaticRange(layer);
             var logical = new AexisGraphSession.BufferShape(1, spec.count, 1, 1, 1);
-            AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, logical, (output, _) => owner.Ops.SentisRangeLinearMat(spec.start, spec.delta, spec.count, output));
+            AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, logical, (output, _) => owner.Ops.AexisRangeLinearMat(spec.start, spec.delta, spec.count, output));
             owner.Consume(context.textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
@@ -658,7 +658,7 @@ namespace Aexis.Execution
         {
             var spec = ResolveStaticRange(layer);
             var logical = new AexisGraphSession.BufferShape(1, spec.count, 1, 1, 1);
-            AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, logical, (output, _) => owner.Ops.SentisRangeLinearMat(context.commandBuffer, spec.start, spec.delta, spec.count, output));
+            AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, logical, (output, _) => owner.Ops.AexisRangeLinearMat(context.commandBuffer, spec.start, spec.delta, spec.count, output));
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
         }
 
@@ -690,7 +690,7 @@ namespace Aexis.Execution
                 throw new InvalidOperationException("ConstantOfShape texture path requires a static shape param: " + layer.name);
             var logical = AexisShapeIndexLayerUtil.FromAxisSizes(shapeValues);
             var value = AexisShapeIndexLayerUtil.GetFloat(layer, 1, "value", AexisShapeIndexLayerUtil.GetFloat(layer, 0, "fill", 0f));
-            AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, logical, (output, _) => owner.Ops.SentisConstantLinearMat(value, AexisShapeIndexLayerUtil.ElementCount(logical), output));
+            AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, logical, (output, _) => owner.Ops.AexisConstantLinearMat(value, AexisShapeIndexLayerUtil.ElementCount(logical), output));
             owner.Consume(context.textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
         }
 
@@ -701,7 +701,7 @@ namespace Aexis.Execution
                 throw new InvalidOperationException("ConstantOfShape command-buffer path requires a static shape param: " + layer.name);
             var logical = AexisShapeIndexLayerUtil.FromAxisSizes(shapeValues);
             var value = AexisShapeIndexLayerUtil.GetFloat(layer, 1, "value", AexisShapeIndexLayerUtil.GetFloat(layer, 0, "fill", 0f));
-            AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, logical, (output, _) => owner.Ops.SentisConstantLinearMat(context.commandBuffer, value, AexisShapeIndexLayerUtil.ElementCount(logical), output));
+            AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, logical, (output, _) => owner.Ops.AexisConstantLinearMat(context.commandBuffer, value, AexisShapeIndexLayerUtil.ElementCount(logical), output));
             owner.ConsumeCmd(context.commandBuffer, context.blobs, context.remaining, layer.bottomNames, context.pinnedNames, context.shapes);
         }
     }
@@ -721,7 +721,7 @@ namespace Aexis.Execution
                     throw new InvalidOperationException("Expand texture path requires a static shape param: " + layer.name);
                 var outShape = AexisShapeIndexLayerUtil.ResolveExpandShape(input.logicalShape, requested);
                 AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisExpandLinearMat(input.texture, input.logicalShape, input.storageShape, outShape, storage, output));
+                    owner.Ops.AexisExpandLinearMat(input.texture, input.logicalShape, input.storageShape, outShape, storage, output));
             }
             finally
             {
@@ -741,7 +741,7 @@ namespace Aexis.Execution
                     throw new InvalidOperationException("Expand command-buffer path requires a static shape param: " + layer.name);
                 var outShape = AexisShapeIndexLayerUtil.ResolveExpandShape(input.logicalShape, requested);
                 AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisExpandLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, outShape, storage, output));
+                    owner.Ops.AexisExpandLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, outShape, storage, output));
             }
             finally
             {
@@ -766,7 +766,7 @@ namespace Aexis.Execution
                 var b = AexisShapeIndexLayerUtil.GetRenderLinearInput(owner, layer, context, layer.bottomNames[2], temps);
                 var outShape = AexisShapeIndexLayerUtil.BroadcastShapes(cond.logicalShape, a.logicalShape, b.logicalShape);
                 AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisWhereLinearMat(cond.texture, cond.logicalShape, cond.storageShape, a.texture, a.logicalShape, a.storageShape, b.texture, b.logicalShape, b.storageShape, outShape, storage, output));
+                    owner.Ops.AexisWhereLinearMat(cond.texture, cond.logicalShape, cond.storageShape, a.texture, a.logicalShape, a.storageShape, b.texture, b.logicalShape, b.storageShape, outShape, storage, output));
             }
             finally
             {
@@ -786,7 +786,7 @@ namespace Aexis.Execution
                 var b = AexisShapeIndexLayerUtil.GetCmdLinearInput(owner, context.commandBuffer, layer, context, layer.bottomNames[2], temps);
                 var outShape = AexisShapeIndexLayerUtil.BroadcastShapes(cond.logicalShape, a.logicalShape, b.logicalShape);
                 AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisWhereLinearMat(context.commandBuffer, cond.texture, cond.logicalShape, cond.storageShape, a.texture, a.logicalShape, a.storageShape, b.texture, b.logicalShape, b.storageShape, outShape, storage, output));
+                    owner.Ops.AexisWhereLinearMat(context.commandBuffer, cond.texture, cond.logicalShape, cond.storageShape, a.texture, a.logicalShape, a.storageShape, b.texture, b.logicalShape, b.storageShape, outShape, storage, output));
             }
             finally
             {
@@ -811,7 +811,7 @@ namespace Aexis.Execution
                 var axis = AexisShapeIndexLayerUtil.GetInt(layer, 0, "axis", 0);
                 var outShape = AexisShapeIndexLayerUtil.ResolveGatherShape(data.logicalShape, indices.logicalShape, axis);
                 AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisGatherLinearMat(data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
+                    owner.Ops.AexisGatherLinearMat(data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
             }
             finally
             {
@@ -831,7 +831,7 @@ namespace Aexis.Execution
                 var axis = AexisShapeIndexLayerUtil.GetInt(layer, 0, "axis", 0);
                 var outShape = AexisShapeIndexLayerUtil.ResolveGatherShape(data.logicalShape, indices.logicalShape, axis);
                 AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisGatherLinearMat(context.commandBuffer, data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
+                    owner.Ops.AexisGatherLinearMat(context.commandBuffer, data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
             }
             finally
             {
@@ -857,7 +857,7 @@ namespace Aexis.Execution
                 AexisShapeIndexLayerUtil.ValidateGatherElementsShape(layer, data.logicalShape, indices.logicalShape, axis);
                 var outShape = indices.logicalShape;
                 AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisGatherElementsLinearMat(data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
+                    owner.Ops.AexisGatherElementsLinearMat(data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
             }
             finally
             {
@@ -878,7 +878,7 @@ namespace Aexis.Execution
                 AexisShapeIndexLayerUtil.ValidateGatherElementsShape(layer, data.logicalShape, indices.logicalShape, axis);
                 var outShape = indices.logicalShape;
                 AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisGatherElementsLinearMat(context.commandBuffer, data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
+                    owner.Ops.AexisGatherElementsLinearMat(context.commandBuffer, data.texture, data.logicalShape, data.storageShape, indices.texture, indices.logicalShape, indices.storageShape, axis, outShape, storage, output));
             }
             finally
             {
@@ -910,7 +910,7 @@ namespace Aexis.Execution
                 var selectLast = AexisShapeIndexLayerUtil.GetInt(layer, 2, "selectLastIndex", 0) != 0;
                 var outShape = AexisShapeIndexLayerUtil.ResolveArgReduceShape(input.logicalShape, axis, keepDims);
                 AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisArgReduceLinearMat(input.texture, input.logicalShape, input.storageShape, axis, keepDims, selectLast, _reduceMax, outShape, storage, output));
+                    owner.Ops.AexisArgReduceLinearMat(input.texture, input.logicalShape, input.storageShape, axis, keepDims, selectLast, _reduceMax, outShape, storage, output));
             }
             finally
             {
@@ -931,7 +931,7 @@ namespace Aexis.Execution
                 var selectLast = AexisShapeIndexLayerUtil.GetInt(layer, 2, "selectLastIndex", 0) != 0;
                 var outShape = AexisShapeIndexLayerUtil.ResolveArgReduceShape(input.logicalShape, axis, keepDims);
                 AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, outShape, (output, storage) =>
-                    owner.Ops.SentisArgReduceLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, axis, keepDims, selectLast, _reduceMax, outShape, storage, output));
+                    owner.Ops.AexisArgReduceLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, axis, keepDims, selectLast, _reduceMax, outShape, storage, output));
             }
             finally
             {
@@ -957,7 +957,7 @@ namespace Aexis.Execution
                 var storage = AexisGraphSession.ResolveLinearMatStorageShape(spec.outShape);
                 var values = owner.RentTempMat(storage.w, storage.h, AexisGraphSession.ResolveLinearMatTextureFormat());
                 var indices = layer.tops > 1 ? owner.RentTempMat(storage.w, storage.h, AexisGraphSession.ResolveLinearMatTextureFormat()) : null;
-                owner.Ops.SentisTopKLinearMat(input.texture, input.logicalShape, input.storageShape, spec.axis, spec.k, spec.largest, spec.outShape, storage, values, indices);
+                owner.Ops.AexisTopKLinearMat(input.texture, input.logicalShape, input.storageShape, spec.axis, spec.k, spec.largest, spec.outShape, storage, values, indices);
                 AexisGraphSession.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[0], values, spec.outShape, storage);
                 if (indices != null)
                     AexisGraphSession.SetTextureBlob(context.textureBlobs, context.textureShapes, layer.topNames[1], indices, spec.outShape, storage);
@@ -981,7 +981,7 @@ namespace Aexis.Execution
                 var storage = AexisGraphSession.ResolveLinearMatStorageShape(spec.outShape);
                 var values = owner.RentTempMat(context.commandBuffer, storage.w, storage.h, AexisGraphSession.ResolveLinearMatTextureFormat());
                 var indices = layer.tops > 1 ? owner.RentTempMat(context.commandBuffer, storage.w, storage.h, AexisGraphSession.ResolveLinearMatTextureFormat()) : null;
-                owner.Ops.SentisTopKLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, spec.axis, spec.k, spec.largest, spec.outShape, storage, values, indices);
+                owner.Ops.AexisTopKLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, spec.axis, spec.k, spec.largest, spec.outShape, storage, values, indices);
                 context.blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(values, spec.outShape, storage, owned: true);
                 if (context.shapes != null)
                     context.shapes[layer.topNames[0]] = spec.outShape;
@@ -1027,7 +1027,7 @@ namespace Aexis.Execution
                 var indices = AexisShapeIndexLayerUtil.GetRenderLinearInput(owner, layer, context, layer.bottomNames[0], temps);
                 var spec = ResolveSpec(layer, indices.logicalShape);
                 AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, spec.outShape, (output, storage) =>
-                    owner.Ops.SentisOneHotLinearMat(indices.texture, indices.logicalShape, indices.storageShape, spec.axis, spec.depth, spec.offValue, spec.onValue, spec.outShape, storage, output));
+                    owner.Ops.AexisOneHotLinearMat(indices.texture, indices.logicalShape, indices.storageShape, spec.axis, spec.depth, spec.offValue, spec.onValue, spec.outShape, storage, output));
             }
             finally
             {
@@ -1045,7 +1045,7 @@ namespace Aexis.Execution
                 var indices = AexisShapeIndexLayerUtil.GetCmdLinearInput(owner, context.commandBuffer, layer, context, layer.bottomNames[0], temps);
                 var spec = ResolveSpec(layer, indices.logicalShape);
                 AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, spec.outShape, (output, storage) =>
-                    owner.Ops.SentisOneHotLinearMat(context.commandBuffer, indices.texture, indices.logicalShape, indices.storageShape, spec.axis, spec.depth, spec.offValue, spec.onValue, spec.outShape, storage, output));
+                    owner.Ops.AexisOneHotLinearMat(context.commandBuffer, indices.texture, indices.logicalShape, indices.storageShape, spec.axis, spec.depth, spec.offValue, spec.onValue, spec.outShape, storage, output));
             }
             finally
             {
@@ -1083,7 +1083,7 @@ namespace Aexis.Execution
                 var input = AexisShapeIndexLayerUtil.GetRenderLinearInput(owner, layer, context, layer.bottomNames[0], temps);
                 var spec = ResolveSpec(layer, input.logicalShape);
                 AexisShapeIndexLayerUtil.PublishRenderLinear(owner, layer, context, input.logicalShape, (output, storage) =>
-                    owner.Ops.SentisCumSumLinearMat(input.texture, input.logicalShape, input.storageShape, spec.axis, spec.exclusive, spec.reverse, storage, output));
+                    owner.Ops.AexisCumSumLinearMat(input.texture, input.logicalShape, input.storageShape, spec.axis, spec.exclusive, spec.reverse, storage, output));
             }
             finally
             {
@@ -1101,7 +1101,7 @@ namespace Aexis.Execution
                 var input = AexisShapeIndexLayerUtil.GetCmdLinearInput(owner, context.commandBuffer, layer, context, layer.bottomNames[0], temps);
                 var spec = ResolveSpec(layer, input.logicalShape);
                 AexisShapeIndexLayerUtil.PublishCmdLinear(owner, layer, context, input.logicalShape, (output, storage) =>
-                    owner.Ops.SentisCumSumLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, spec.axis, spec.exclusive, spec.reverse, storage, output));
+                    owner.Ops.AexisCumSumLinearMat(context.commandBuffer, input.texture, input.logicalShape, input.storageShape, spec.axis, spec.exclusive, spec.reverse, storage, output));
             }
             finally
             {

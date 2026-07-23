@@ -1,6 +1,6 @@
-// Auto-generated kernel implementation group: NcnnKernels.Pack4Elementwise.hlsl
+// Auto-generated kernel implementation group: AexisKernels.Pack4Elementwise.hlsl
 
-void NcnnAddPack4_Impl(uint3 id)
+void AexisAddPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _AddOutArr.GetDimensions(w, h, d);
@@ -12,7 +12,7 @@ void NcnnAddPack4_Impl(uint3 id)
     _AddOutArr[int3((int)id.x, (int)id.y, p)] = a * _CoeffA + b * _CoeffB;
 }
 
-void NcnnCopyPack4_Impl(uint3 id)
+void AexisCopyPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _CopyOutArr.GetDimensions(w, h, d);
@@ -25,7 +25,7 @@ void NcnnCopyPack4_Impl(uint3 id)
     _CopyOutArr[int3((int)id.x, (int)id.y, outP)] = v;
 }
 
-void NcnnConcatPack4CDHW_Impl(uint3 id)
+void AexisConcatPack4CDHW_Impl(uint3 id)
 {
     uint w, h, d;
     _ConcatPack4CDHWOutArr.GetDimensions(w, h, d);
@@ -53,15 +53,15 @@ void NcnnConcatPack4CDHW_Impl(uint3 id)
             continue;
 
         float scalar = outC < _ConcatPack4CDHWAC
-            ? NcnnReadPack4ChannelCDHW(_ConcatPack4CDHWAInArr, outX, outY, outZ, outC, _ConcatPack4CDHWAC)
-            : NcnnReadPack4ChannelCDHW(_ConcatPack4CDHWBInArr, outX, outY, outZ, outC - _ConcatPack4CDHWAC, _ConcatPack4CDHWBC);
-        NcnnWriteLane(o, lane, scalar);
+            ? AexisReadPack4ChannelCDHW(_ConcatPack4CDHWAInArr, outX, outY, outZ, outC, _ConcatPack4CDHWAC)
+            : AexisReadPack4ChannelCDHW(_ConcatPack4CDHWBInArr, outX, outY, outZ, outC - _ConcatPack4CDHWAC, _ConcatPack4CDHWBC);
+        AexisWriteLane(o, lane, scalar);
     }
 
     _ConcatPack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnConcatSequencePack4CDHW_Impl(uint3 id)
+void AexisConcatSequencePack4CDHW_Impl(uint3 id)
 {
     uint w, h, d;
     _ConcatSequenceOutArr.GetDimensions(w, h, d);
@@ -81,7 +81,7 @@ void NcnnConcatSequencePack4CDHW_Impl(uint3 id)
 }
 
 // Writes only the newly generated sequence into a capacity-backed cache.
-void NcnnAppendSequencePack4CDHW_Impl(uint3 id)
+void AexisAppendSequencePack4CDHW_Impl(uint3 id)
 {
     uint w, h, d;
     _AppendSequenceInArr.GetDimensions(w, h, d);
@@ -97,7 +97,7 @@ void NcnnAppendSequencePack4CDHW_Impl(uint3 id)
     _AppendSequenceOutArr[int3(id.x, destinationY, id.z)] = _AppendSequenceInArr[int3(id.x, id.y, id.z)];
 }
 
-void NcnnBuildSdInpaintInput9Pack4_Impl(uint3 id)
+void AexisBuildSdInpaintInput9Pack4_Impl(uint3 id)
 {
     uint w, h, d;
     _SdInpaintInputOutArr.GetDimensions(w, h, d);
@@ -128,7 +128,7 @@ void NcnnBuildSdInpaintInput9Pack4_Impl(uint3 id)
     _SdInpaintInputOutArr[int3(x, y, p)] = outv;
 }
 
-void NcnnFillPack4FromBufferCHW_Impl(uint3 id)
+void AexisFillPack4FromBufferCHW_Impl(uint3 id)
 {
     uint w, h, d;
     _FillOutArr.GetDimensions(w, h, d);
@@ -151,7 +151,7 @@ void NcnnFillPack4FromBufferCHW_Impl(uint3 id)
     _FillOutArr[int3((int)id.x, (int)id.y, p)] = float4(x0, x1, x2, x3);
 }
 
-void NcnnFillPack4FromBufferCDHW_Impl(uint3 id)
+void AexisFillPack4FromBufferCDHW_Impl(uint3 id)
 {
     uint w, h, d;
     _FillOutArr.GetDimensions(w, h, d);
@@ -185,7 +185,7 @@ void NcnnFillPack4FromBufferCDHW_Impl(uint3 id)
     _FillOutArr[int3((int)id.x, (int)id.y, slice)] = float4(x0, x1, x2, x3);
 }
 
-void NcnnFillScalarTexture_Impl(uint3 id)
+void AexisFillScalarTexture_Impl(uint3 id)
 {
     uint w, h, d;
     _FillScalarOutArr.GetDimensions(w, h, d);
@@ -205,7 +205,7 @@ void NcnnFillScalarTexture_Impl(uint3 id)
     _FillScalarOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = float4(value, 0.0, 0.0, 0.0);
 }
 
-void NcnnFillScalarLinearMat_Impl(uint3 id)
+void AexisFillScalarLinearMat_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -225,7 +225,7 @@ void NcnnFillScalarLinearMat_Impl(uint3 id)
     _LinearOut0[int2((int)id.x, (int)id.y)] = value;
 }
 
-void NcnnScalePack4_Impl(uint3 id)
+void AexisScalePack4_Impl(uint3 id)
 {
     uint w, h, d;
     _ScaleOutArr.GetDimensions(w, h, d);
@@ -236,7 +236,7 @@ void NcnnScalePack4_Impl(uint3 id)
     _ScaleOutArr[int3((int)id.x, (int)id.y, p)] = v * _ScaleK;
 }
 
-void NcnnAddBiasPack4_Impl(uint3 id)
+void AexisAddBiasPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _BiasOutArr.GetDimensions(w, h, d);
@@ -248,7 +248,7 @@ void NcnnAddBiasPack4_Impl(uint3 id)
     _BiasOutArr[int3((int)id.x, (int)id.y, p)] = v + b;
 }
 
-void NcnnBatchNormPack4_Impl(uint3 id)
+void AexisBatchNormPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _BatchNormOutArr.GetDimensions(w, h, d);
@@ -261,7 +261,7 @@ void NcnnBatchNormPack4_Impl(uint3 id)
     _BatchNormOutArr[int3((int)id.x, (int)id.y, p)] = v * b + a;
 }
 
-void NcnnLeakyReluPack4_Impl(uint3 id)
+void AexisLeakyReluPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _LreluOutArr.GetDimensions(w, h, d);
@@ -273,7 +273,7 @@ void NcnnLeakyReluPack4_Impl(uint3 id)
     _LreluOutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
-void NcnnPReluPack4_Impl(uint3 id)
+void AexisPReluPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _LreluOutArr.GetDimensions(w, h, d);
@@ -293,7 +293,7 @@ void NcnnPReluPack4_Impl(uint3 id)
     _LreluOutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
-void NcnnAddNoiseBroadcastPack4_Impl(uint3 id)
+void AexisAddNoiseBroadcastPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _NoiseInOutArr.GetDimensions(w, h, d);
@@ -306,7 +306,7 @@ void NcnnAddNoiseBroadcastPack4_Impl(uint3 id)
     _NoiseInOutArr[int3((int)id.x, (int)id.y, p)] = v + n;
 }
 
-void NcnnClipPack4_Impl(uint3 id)
+void AexisClipPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _ClipOutArr.GetDimensions(w, h, d);
@@ -317,7 +317,7 @@ void NcnnClipPack4_Impl(uint3 id)
     _ClipOutArr[int3((int)id.x, (int)id.y, p)] = clamp(v, _ClipMin, _ClipMax);
 }
 
-void NcnnSftPack4_Impl(uint3 id)
+void AexisSftPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _SftOutArr.GetDimensions(w, h, d);
@@ -335,7 +335,7 @@ void NcnnSftPack4_Impl(uint3 id)
     _SftOutArr[int3((int)id.x, (int)id.y, p)] = v;
 }
 
-void NcnnPack4ToRgb01_Impl(uint3 id)
+void AexisPack4ToRgb01_Impl(uint3 id)
 {
     uint w, h;
     _RgbOut.GetDimensions(w, h);
@@ -346,7 +346,7 @@ void NcnnPack4ToRgb01_Impl(uint3 id)
     _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
 }
 
-void NcnnPack4ToRgbScaled_Impl(uint3 id)
+void AexisPack4ToRgbScaled_Impl(uint3 id)
 {
     uint w, h;
     _RgbOut.GetDimensions(w, h);
@@ -357,7 +357,7 @@ void NcnnPack4ToRgbScaled_Impl(uint3 id)
     _RgbOut[int2((int)id.x, (int)id.y)] = float4(v.x, v.y, v.z, 1.0);
 }
 
-void NcnnNhwcPack4ToRgbScaled_Impl(uint3 id)
+void AexisNhwcPack4ToRgbScaled_Impl(uint3 id)
 {
     uint w, h;
     _RgbOut.GetDimensions(w, h);
@@ -368,9 +368,9 @@ void NcnnNhwcPack4ToRgbScaled_Impl(uint3 id)
     int lane = logicalY & 3;
     int x = (int)id.x;
 
-    float r = NcnnReadLane(_RgbInArr[int3(0, x, pack)], lane);
-    float g = NcnnReadLane(_RgbInArr[int3(1, x, pack)], lane);
-    float b = NcnnReadLane(_RgbInArr[int3(2, x, pack)], lane);
+    float r = AexisReadLane(_RgbInArr[int3(0, x, pack)], lane);
+    float g = AexisReadLane(_RgbInArr[int3(1, x, pack)], lane);
+    float b = AexisReadLane(_RgbInArr[int3(2, x, pack)], lane);
     _RgbOut[int2((int)id.x, (int)id.y)] = float4(
         saturate(r * _OutputValueScale + _OutputValueBias),
         saturate(g * _OutputValueScale + _OutputValueBias),
@@ -378,7 +378,7 @@ void NcnnNhwcPack4ToRgbScaled_Impl(uint3 id)
         1.0);
 }
 
-void NcnnProbeTilePack4_Impl(uint3 id)
+void AexisProbeTilePack4_Impl(uint3 id)
 {
     uint iw, ih, idd;
     _ProbeInArr.GetDimensions(iw, ih, idd);
@@ -408,7 +408,7 @@ void NcnnProbeTilePack4_Impl(uint3 id)
     _ProbeOut[_ProbeIndex] = sum * (1.0 / 16.0);
 }
 
-void NcnnProbeSeams_Impl(uint3 id)
+void AexisProbeSeams_Impl(uint3 id)
 {
     int seamsV = max(0, _SeamTilesX - 1);
     int seamsH = max(0, _SeamTilesY - 1);

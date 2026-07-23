@@ -1603,7 +1603,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         var root = Application.temporaryCachePath;
         if (string.IsNullOrWhiteSpace(root))
             root = Path.GetTempPath();
-        var dir = Path.Combine(root, "Aexis_NcnnFaceRegion_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        var dir = Path.Combine(root, "Aexis_AexisFaceRegion_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         try { Directory.CreateDirectory(dir); } catch { }
         return dir;
     }

@@ -470,7 +470,7 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             guidanceScale = Mathf.Max(1f, guidanceScale);
 
             if (enableDebugDump)
-                _lastDumpDir = CreateDumpDir("AIImage_SDInpaint_NcnnRepro");
+                _lastDumpDir = CreateDumpDir("AIImage_SDInpaint_AexisRepro");
 
             var stageSw = Stopwatch.StartNew();
             EnsureRuntimeObjects();

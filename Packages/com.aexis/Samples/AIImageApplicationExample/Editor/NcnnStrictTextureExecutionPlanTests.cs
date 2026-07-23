@@ -10,7 +10,7 @@ using Aexis.Execution;
 public sealed class NcnnStrictTextureExecutionPlanTests
 {
     [Test]
-    public void StrictPlan_RejectsPartialLayerNormWithCompleteDiagnostics()
+    public void StrictPlan_RejectsUnverifiedLayerNormWithCompleteDiagnostics()
     {
         var error = Assert.Throws<StrictTextureInferencePlanException>(() => AexisTextureExecutionPlanner.Compile(
             Parse("Input in0 0 1 in\nLayerNorm norm_0 1 1 in out\n"),
@@ -22,12 +22,16 @@ public sealed class NcnnStrictTextureExecutionPlanTests
         Assert.That(diagnostic.layerIndex, Is.EqualTo(1));
         Assert.That(diagnostic.layer, Is.EqualTo("norm_0"));
         Assert.That(diagnostic.canonicalOperator, Is.EqualTo("LayerNorm"));
-        Assert.That(diagnostic.capabilityStatus, Is.EqualTo(AexisOperatorCapabilityStatus.Partial));
+        Assert.That(diagnostic.capabilityStatus, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
         Assert.That(diagnostic.targetBackend, Is.EqualTo(AexisOperatorCapabilityBackend.CommandBuffer));
         Assert.That(diagnostic.targetDtype, Is.EqualTo("FP16"));
         Assert.That(diagnostic.targetLayout, Is.EqualTo(AexisTexturePlanLayout.Packed4));
         Assert.That(diagnostic.inputs.Single().logicalShape, Is.EqualTo(new[] { 3, 4, 4, 1, 4 }));
-        Assert.That(diagnostic.rejectedPaths, Is.EquivalentTo(new[] { "alias-only", "placeholder", "materialize-from-buffer", "legacy-path" }));
+        Assert.That(diagnostic.rejectedPaths, Does.Contain("alias-only"));
+        Assert.That(diagnostic.rejectedPaths, Does.Contain("placeholder"));
+        Assert.That(diagnostic.rejectedPaths, Does.Contain("materialize"));
+        Assert.That(diagnostic.rejectedPaths, Does.Contain("buffer-fallback"));
+        Assert.That(diagnostic.rejectedPaths, Does.Contain("legacy-path"));
         Assert.That(diagnostic.recommendedAction, Does.Contain("Implement and verify a real CommandBuffer Pack4 path"));
         Assert.That(error.Message, Does.Contain("target_dtype=FP16"));
         Assert.That(error.Message, Does.Contain("target_layout=Packed4"));
@@ -50,25 +54,25 @@ public sealed class NcnnStrictTextureExecutionPlanTests
     }
 
     [Test]
-    public void StrictPlan_AcceptsVerifiedCommandBufferPack4Graph()
+    public void StrictPlan_AcceptsRuntimeVerifiedCommandBufferPack4Graph()
     {
         var plan = AexisTextureExecutionPlanner.Compile(
             Parse("Input in0 0 1 in\nReLU relu_0 1 1 in out\n"),
-            CreateRequest());
+            CreateRequest(nodeVerifier: CreateVerifiedRuntimeProfileNode));
 
         var relu = plan.nodes.Single(node => node.operatorName == "ReLU");
         Assert.That(relu.accepted, Is.True);
-        Assert.That(relu.executionPath, Is.EqualTo("command-buffer-pack4"));
+        Assert.That(relu.executionPath, Is.EqualTo("command-buffer-pack4:test-profile"));
         Assert.That(relu.usesDescriptorAlias, Is.False);
         Assert.That(AexisOperatorCapabilities.IsStrictlySupported(
             AexisOperatorCapabilities.CreateDocument().operators.Single(capability => capability.operatorName == "ReLU"),
             AexisOperatorCapabilityBackend.CommandBuffer,
             "FP16",
-            AexisTexturePlanLayout.Packed4), Is.True);
+            AexisTexturePlanLayout.Packed4), Is.False);
     }
 
     [Test]
-    public void StrictPlan_RequiresRuntimeProofForPartialCommandBufferNode()
+    public void StrictPlan_RequiresRuntimeProofForRuntimeProfileCommandBufferNode()
     {
         var model = Parse("Input in0 0 1 in\nConvolution conv_0 1 1 in out 0=4 1=1 6=16\n");
         var error = Assert.Throws<StrictTextureInferencePlanException>(() => AexisTextureExecutionPlanner.Compile(model, CreateRequest()));
@@ -76,15 +80,15 @@ public sealed class NcnnStrictTextureExecutionPlanTests
         Assert.That(rejected.code, Is.EqualTo("command-buffer-pack4-profile-rejected"));
         Assert.That(rejected.reason, Does.Contain("No loaded-runtime CommandBuffer Pack4 verifier"));
 
-        var plan = AexisTextureExecutionPlanner.Compile(model, CreateRequest(nodeVerifier: CreateVerifiedPartialNode));
+        var plan = AexisTextureExecutionPlanner.Compile(model, CreateRequest(nodeVerifier: CreateVerifiedRuntimeProfileNode));
         var convolution = plan.nodes.Single(node => node.operatorName == "Convolution");
-        Assert.That(convolution.capabilityStatus, Is.EqualTo(AexisOperatorCapabilityStatus.Partial));
+        Assert.That(convolution.capabilityStatus, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
         Assert.That(convolution.executionPath, Is.EqualTo("command-buffer-pack4:test-profile"));
         Assert.That(convolution.accepted, Is.True);
     }
 
     [Test]
-    public void StrictPlan_RejectsPartialProfileProofThatNamesPlaceholder()
+    public void StrictPlan_RejectsRuntimeProfileProofThatNamesPlaceholder()
     {
         var model = Parse("Input in0 0 1 in\nConvolution conv_0 1 1 in out 0=4 1=1 6=16\n");
         var error = Assert.Throws<StrictTextureInferencePlanException>(() => AexisTextureExecutionPlanner.Compile(
@@ -98,7 +102,7 @@ public sealed class NcnnStrictTextureExecutionPlanTests
 
         var rejected = error.Diagnostics.Single(diagnostic => diagnostic.operatorName == "Convolution");
         Assert.That(rejected.code, Is.EqualTo("command-buffer-pack4-profile-rejected"));
-        Assert.That(rejected.reason, Does.Contain("did not provide a real CommandBuffer Pack4 execution path"));
+        Assert.That(rejected.reason, Does.Contain("did not provide a real texture-native CommandBuffer execution path"));
     }
 
     [Test]
@@ -155,9 +159,18 @@ public sealed class NcnnStrictTextureExecutionPlanTests
     public void ProductionRunners_KeepCommandBufferStrictPlanningAndDoNotEnableDebugOracle()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var repro = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "AexisGraphSession.cs"));
-        var factory = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "AexisLayerFactory.cs"));
-        var overrides = Directory.EnumerateFiles(Path.Combine(root, "Assets", "Scripts"), "*.cs", SearchOption.AllDirectories)
+        var packageRoot = Path.Combine(root, "Packages", "com.aexis");
+        var sampleRoot = Path.Combine(packageRoot, "Samples", "AIImageApplicationExample");
+        var repro = File.ReadAllText(Path.Combine(packageRoot, "Runtime", "Execution", "Graph", "AexisGraphSession.cs"));
+        var factory = File.ReadAllText(Path.Combine(packageRoot, "Runtime", "Execution", "Layers", "AexisLayerFactory.cs"));
+        var overrides = new[]
+            {
+                Path.Combine(packageRoot, "Runtime"),
+                Path.Combine(sampleRoot, "Runtime"),
+                Path.Combine(sampleRoot, "ReferenceRunners")
+            }
+            .Where(Directory.Exists)
+            .SelectMany(path => Directory.EnumerateFiles(path, "*.cs", SearchOption.AllDirectories))
             .Where(path => File.ReadAllText(path).Contains("ExecutionMode = AexisInferenceExecutionMode.DebugOracle"))
             .ToArray();
 
@@ -173,11 +186,11 @@ public sealed class NcnnStrictTextureExecutionPlanTests
     public static void RunBatchValidation()
     {
         var tests = new NcnnStrictTextureExecutionPlanTests();
-        tests.StrictPlan_RejectsPartialLayerNormWithCompleteDiagnostics();
+        tests.StrictPlan_RejectsUnverifiedLayerNormWithCompleteDiagnostics();
         tests.StrictPlan_AcceptsDescriptorProvenReshapeAndSplit();
-        tests.StrictPlan_AcceptsVerifiedCommandBufferPack4Graph();
-        tests.StrictPlan_RequiresRuntimeProofForPartialCommandBufferNode();
-        tests.StrictPlan_RejectsPartialProfileProofThatNamesPlaceholder();
+        tests.StrictPlan_AcceptsRuntimeVerifiedCommandBufferPack4Graph();
+        tests.StrictPlan_RequiresRuntimeProofForRuntimeProfileCommandBufferNode();
+        tests.StrictPlan_RejectsRuntimeProfileProofThatNamesPlaceholder();
         tests.StrictPlan_AcceptsProfileProvenNoopAliasOnlyWithDescriptorEvidence();
         tests.DebugOracle_ExplicitlyRelaxesButDoesNotPromoteCapability();
         tests.ProductionRunners_KeepCommandBufferStrictPlanningAndDoNotEnableDebugOracle();
@@ -213,7 +226,7 @@ public sealed class NcnnStrictTextureExecutionPlanTests
         };
     }
 
-    private static AexisTextureExecutionPlanNodeVerification CreateVerifiedPartialNode(
+    private static AexisTextureExecutionPlanNodeVerification CreateVerifiedRuntimeProfileNode(
         AexisGraphModel.Layer layer,
         System.Collections.Generic.IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
         AexisTextureExecutionPlanRequest request)

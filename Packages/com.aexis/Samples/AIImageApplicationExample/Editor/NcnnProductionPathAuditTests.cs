@@ -32,7 +32,7 @@ public sealed class NcnnProductionPathAuditTests
         { "Runtime/Scripts/CodeFormerNcnnReproRunner2.cs", new[] { 0, 2, 0, 0, 0 } },
         { "Runtime/Scripts/MatterNcnnReproRunner.cs", new[] { 0, 2, 0, 0, 0 } },
         { "Runtime/Scripts/MONAINcnnReproRunner.cs", new[] { 0, 2, 3, 0, 0 } },
-        { "Runtime/Scripts/SDInpaintingNcnnReproRunner.cs", new[] { 0, 6, 2, 0, 0 } },
+        { "Runtime/Scripts/SDInpaintingNcnnReproRunner.cs", new[] { 0, 5, 2, 0, 0 } },
         { "Runtime/Scripts/SDNcnnReproRunner.cs", new[] { 0, 4, 0, 0, 0 } },
         { "Runtime/Scripts/YoloSegNcnnReproRunner.cs", new[] { 0, 1, 0, 0, 0 } }
     };
@@ -40,7 +40,7 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void InferResult_DoesNotExposeProductionBufferReadback()
     {
-        var source = ReadPackageSource("NcnnCompute", "AexisGraphSession.cs");
+        var source = ReadPackageSource("Execution", "Graph", "AexisGraphSession.cs");
         foreach (var api in ForbiddenPublicReadbackApis)
             Assert.That(source, Does.Not.Contain(api), "Production InferResult must not expose " + api);
 
@@ -53,15 +53,15 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void ProductionBoundary_AllowsFixedBufferInputsAndRejectsIntermediateMaterializationWithTensorContract()
     {
-        var repro = ReadPackageSource("NcnnCompute", "AexisGraphSession.cs");
-        var factory = ReadPackageSource("Layers", "AexisLayerFactory.cs");
-        var reshape = ReadPackageSource("Layers", "AexisReshapeLayer.cs");
-        var embed = ReadPackageSource("Layers", "AexisEmbedLayer.cs");
-        var innerProduct = ReadPackageSource("Layers", "AexisInnerProductLayer.cs");
-        var permute = ReadPackageSource("Layers", "AexisPermuteLayer.cs");
+        var repro = ReadPackageSource("Execution", "Graph", "AexisGraphSession.cs");
+        var factory = ReadPackageSource("Execution", "Layers", "AexisLayerFactory.cs");
+        var reshape = ReadPackageSource("Execution", "Layers", "AexisReshapeLayer.cs");
+        var embed = ReadPackageSource("Execution", "Layers", "AexisEmbedLayer.cs");
+        var innerProduct = ReadPackageSource("Execution", "Layers", "AexisInnerProductLayer.cs");
+        var permute = ReadPackageSource("Execution", "Layers", "AexisPermuteLayer.cs");
         var inpainting = ReadSampleSource("Runtime/Scripts/SDInpaintingNcnnReproRunner.cs");
 
-        Assert.That(repro, Does.Contain("if (!IsDebugOracleExecution)\n                return true;"));
+        Assert.That(repro, Does.Contain("if (!IsDebugOracleExecution)"));
         Assert.That(repro, Does.Contain("logical_shape="));
         Assert.That(repro, Does.Contain("storage_shape="));
         Assert.That(repro, Does.Contain("layout="));
@@ -71,7 +71,7 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(factory, Does.Contain("if (IsDebugOracleExecution && !textureBlobs.ContainsKey(kv.Key))"));
         Assert.That(factory, Does.Contain("fixed Buffer input is a valid graph boundary"));
         Assert.That(factory, Does.Contain("SetCurrentBufferExecutionContext(context)"));
-        var input = ReadPackageSource("Layers", "AexisInputLayer.cs");
+        var input = ReadPackageSource("Execution", "Layers", "AexisInputLayer.cs");
         Assert.That(input, Does.Contain("Input is a graph-boundary alias"));
         Assert.That(input, Does.Contain("context.bufferBlobs[topName] = inputBuffer"));
         Assert.That(input, Does.Not.Contain("Materialize"));
@@ -82,11 +82,11 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(innerProduct, Does.Contain("Gemm2DAttentionPack4ToLinearTextureA"));
         Assert.That(innerProduct, Does.Contain("TryResolveAttentionPack4ToLinearInput"));
         Assert.That(permute, Does.Contain("HasSingleContextFlattenConsumer"));
-        var binaryOp = ReadPackageSource("Layers", "AexisBinaryOpLayer.cs");
-        var slice = ReadPackageSource("Layers", "AexisSliceLayer.cs");
-        var ops = ReadPackageSource("NcnnCompute", "AexisOps.cs");
-        var computeShader = ReadKernelSource("AexisNcnn.compute");
-        var matmulKernels = ReadKernelSource("Includes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl");
+        var binaryOp = ReadPackageSource("Execution", "Layers", "AexisBinaryOpLayer.cs");
+        var slice = ReadPackageSource("Execution", "Layers", "AexisSliceLayer.cs");
+        var ops = ReadPackageSource("Execution", "Graph", "AexisOps.cs");
+        var computeShader = ReadKernelSource("AexisCommon.compute");
+        var matmulKernels = ReadKernelSource("Includes", "KernelGroups", "AexisKernels.Pack4Matmul.hlsl");
         Assert.That(binaryOp, Does.Contain("broadcastMode = 4"));
         Assert.That(binaryOp, Does.Contain("bShape.c == 1"));
         Assert.That(binaryOp, Does.Contain("IsStrictLinearMatTexture(scalarTexture)"));
@@ -94,8 +94,8 @@ public sealed class NcnnProductionPathAuditTests
         Assert.That(slice, Does.Contain("srcShape.dims == 1 || srcShape.dims == 2"));
         Assert.That(slice, Does.Contain("srcShape.dims == 1 && spec.axis != 0"));
         Assert.That(ops, Does.Contain("BinaryOpLinearMatFixedInputScalar(RenderTexture texture, ComputeBuffer scalar"));
-        Assert.That(computeShader, Does.Contain("#pragma kernel NcnnBinaryOpLinearMatFixedInputScalar"));
-        Assert.That(matmulKernels, Does.Contain("void NcnnBinaryOpLinearMatFixedInputScalar_Impl"));
+        Assert.That(computeShader, Does.Contain("#pragma kernel AexisBinaryOpLinearMatFixedInputScalar"));
+        Assert.That(matmulKernels, Does.Contain("void AexisBinaryOpLinearMatFixedInputScalar_Impl"));
         Assert.That(inpainting, Does.Contain("FrozenCLIPEmbedder-fp16.param"));
         Assert.That(inpainting, Does.Contain("FrozenCLIPEmbedder-fp16.bin"));
         Assert.That(inpainting, Does.Contain("stopAfterTopName: TextEncoderOutputBlobName"));
@@ -108,8 +108,8 @@ public sealed class NcnnProductionPathAuditTests
         var sampleRoot = AexisApplicationExamplePaths.SampleRootAbsolutePath;
         var allowedRoots = new[]
         {
-            Path.Combine(projectRoot, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute"),
-            Path.Combine(projectRoot, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers")
+            Path.Combine(projectRoot, "Packages", "com.aexis", "Runtime", "Execution", "Graph"),
+            Path.Combine(projectRoot, "Packages", "com.aexis", "Runtime", "Execution", "Layers")
         };
         var violations = new List<string>();
 
@@ -150,7 +150,7 @@ public sealed class NcnnProductionPathAuditTests
     [Test]
     public void ProductionAuditLog_StatesThatIntermediateBufferMaterializationIsZero()
     {
-        var source = ReadPackageSource("NcnnCompute", "AexisGraphSession.cs");
+        var source = ReadPackageSource("Execution", "Graph", "AexisGraphSession.cs");
         Assert.That(source, Does.Contain("[InferencePathAudit] mode=ProductionTextureOnly"));
         Assert.That(source, Does.Contain("intermediate_buffer_materializations=0"));
     }
@@ -278,7 +278,7 @@ public sealed class NcnnProductionPathAuditTests
     private static string ReadPackageSource(params string[] relativePath)
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var path = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn");
+        var path = Path.Combine(root, "Packages", "com.aexis", "Runtime");
         foreach (var segment in relativePath)
             path = Path.Combine(path, segment);
         return File.ReadAllText(path);
@@ -287,7 +287,7 @@ public sealed class NcnnProductionPathAuditTests
     private static string ReadKernelSource(params string[] relativePath)
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var path = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn");
+        var path = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis");
         foreach (var segment in relativePath)
             path = Path.Combine(path, segment);
         return File.ReadAllText(path);

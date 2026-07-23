@@ -294,15 +294,15 @@ public sealed class NcnnInt8WeightOnlyTests
     public void Int8Kernels_ReadPackedWeightsAndAccumulateIntoFloatTextures()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Conv.hlsl"));
-        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl"));
-        var bindings = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "AexisNcnn.compute"));
+        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Includes", "KernelGroups", "AexisKernels.Pack4Conv.hlsl"));
+        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Includes", "KernelGroups", "AexisKernels.Pack4Matmul.hlsl"));
+        var bindings = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "AexisCommon.compute"));
 
-        Assert.That(conv, Does.Contain("NcnnReadRawConvWeight"));
+        Assert.That(conv, Does.Contain("AexisReadRawConvWeight"));
         Assert.That(conv, Does.Contain("_ConvWInt8Packed"));
         Assert.That(gemm, Does.Contain("_MatBInt8Packed"));
         Assert.That(gemm, Does.Contain("_MatBInt8Scales[col]"));
-        Assert.That(gemm, Does.Contain("NcnnQuantizeGemmActivationForInt8"));
+        Assert.That(gemm, Does.Contain("AexisQuantizeGemmActivationForInt8"));
         Assert.That(gemm, Does.Contain("_UseInt8Activations"));
         Assert.That(gemm, Does.Contain("float acc"));
         Assert.That(bindings, Does.Contain("StructuredBuffer<uint> _ConvWInt8Packed"));

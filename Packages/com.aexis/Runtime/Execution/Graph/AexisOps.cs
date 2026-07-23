@@ -434,20 +434,20 @@ namespace Aexis.Execution
         private readonly int _kFillLinearMatFromBuffer;
         private readonly int _kFillScalarTexture;
         private readonly int _kFillScalarLinearMat;
-        private readonly int _kSentisConstantLinearMat;
-        private readonly int _kSentisRangeLinearMat;
-        private readonly int _kSentisExpandLinearMat;
-        private readonly int _kSentisWhereLinearMat;
-        private readonly int _kSentisGatherLinearMat;
-        private readonly int _kSentisGatherElementsLinearMat;
-        private readonly int _kSentisArgReduceLinearMat;
-        private readonly int _kSentisTopKLinearMat;
-        private readonly int _kSentisOneHotLinearMat;
-        private readonly int _kSentisCumSumLinearMat;
-        private readonly int _kSentisNonZeroLinearMat;
-        private readonly int _kSentisCompressLinearMat;
-        private readonly int _kSentisGatherNdLinearMat;
-        private readonly int _kSentisScatterLinearMat;
+        private readonly int _kAexisConstantLinearMat;
+        private readonly int _kAexisRangeLinearMat;
+        private readonly int _kAexisExpandLinearMat;
+        private readonly int _kAexisWhereLinearMat;
+        private readonly int _kAexisGatherLinearMat;
+        private readonly int _kAexisGatherElementsLinearMat;
+        private readonly int _kAexisArgReduceLinearMat;
+        private readonly int _kAexisTopKLinearMat;
+        private readonly int _kAexisOneHotLinearMat;
+        private readonly int _kAexisCumSumLinearMat;
+        private readonly int _kAexisNonZeroLinearMat;
+        private readonly int _kAexisCompressLinearMat;
+        private readonly int _kAexisGatherNdLinearMat;
+        private readonly int _kAexisScatterLinearMat;
         private readonly int _kScalePack4;
         private readonly int _kAddBiasPack4;
         private readonly int _kBatchNormPack4;
@@ -888,261 +888,261 @@ namespace Aexis.Execution
             var sharedShader = AexisComputeShaderLoader.LoadOrThrow();
             _cs = UnityEngine.Object.Instantiate(sharedShader);
             _cs.hideFlags = HideFlags.DontSave;
-            _kConv3x3 = _cs.FindKernel("NcnnConv3x3");
-            _kConv3dBuf = _cs.FindKernel("NcnnConv3dBuf");
-            _kConv3dPack4Cdhw16x4 = _cs.FindKernel("NcnnConv3dPack4CDHW16x4");
-            _kConv3dPack4CdhwTile3x3 = _cs.FindKernel("NcnnConv3dPack4CDHWTile3x3");
-            _kDeconvolutionBuf = _cs.FindKernel("NcnnDeconvolutionBuf");
-            _kDeconvolution3dPack4Cdhw = _cs.FindKernel("NcnnDeconvolution3dPack4CDHW");
-            _kDeconvolution3dBuf = _cs.FindKernel("NcnnDeconvolution3dBuf");
-            _kConvDepthWise = _cs.FindKernel("NcnnConvDepthWise");
-            _kTexToBuf3 = _cs.FindKernel("NcnnTexToBuf3");
-            _kBufToTex3 = _cs.FindKernel("NcnnBufToTex3");
-            _kLeakyReluBuf = _cs.FindKernel("NcnnLeakyReluBuf");
-            _kAddWeighted = _cs.FindKernel("NcnnAddWeighted");
-            _kCopyBuf = _cs.FindKernel("NcnnCopyBuf");
-            _kCopyBufPartial = _cs.FindKernel("NcnnCopyBufPartial");
-            _kBinaryOpBuf = _cs.FindKernel("NcnnBinaryOpBuf");
-            _kUnaryOpBuf = _cs.FindKernel("NcnnUnaryOpBuf");
-            _kSigmoidBuf = _cs.FindKernel("NcnnSigmoidBuf");
-            _kSwishBuf = _cs.FindKernel("NcnnSwishBuf");
-            _kGeluBuf = _cs.FindKernel("NcnnGeluBuf");
-            _kPointwiseBuf = _cs.FindKernel("NcnnPointwiseBuf");
-            _kCopyC = _cs.FindKernel("NcnnCopyC");
-            _kInterp2x = _cs.FindKernel("NcnnInterp2x");
-            _kBlitTileToDst = _cs.FindKernel("NcnnBlitTileToDst");
-            _kPackRgbToPack4 = _cs.FindKernel("NcnnPackRgbToPack4");
-            _kPackRgbToNhwcPack4 = _cs.FindKernel("NcnnPackRgbToNhwcPack4");
-            _kPackMaskToNhwcPack4 = _cs.FindKernel("NcnnPackMaskToNhwcPack4");
-            _kConv3x3Pack4 = _cs.FindKernel("NcnnConv3x3Pack4");
-            _kConvPack4General = _cs.FindKernel("NcnnConvPack4General");
-            _kDeconvolutionPack4General = _cs.FindKernel("NcnnDeconvolutionPack4General");
-            _kConv2dGroupPack4 = _cs.FindKernel("NcnnConv2dGroupPack4");
-            _kDeconvolution2dGroupPack4 = _cs.FindKernel("NcnnDeconvolution2dGroupPack4");
-            _kDeconvolutionDepthWisePack4 = _cs.FindKernel("NcnnDeconvolutionDepthWisePack4");
-            _kConvDepthWisePack4 = _cs.FindKernel("NcnnConvDepthWisePack4");
-            _kWinograd23TransformInput = _cs.FindKernel("NcnnWinograd23TransformInputPack4");
-            _kWinograd23Gemm = _cs.FindKernel("NcnnWinograd23GemmPack4");
-            _kWinograd23TransformOutput = _cs.FindKernel("NcnnWinograd23TransformOutputPack4");
-            _kConv1x1Pack4 = _cs.FindKernel("NcnnConv1x1Pack4");
-            _kAddPack4 = _cs.FindKernel("NcnnAddPack4");
-            _kCopyPack4 = _cs.FindKernel("NcnnCopyPack4");
-            _kCopyToPack4 = _cs.FindKernel("NcnnCopyToPack4");
-            _kConcatPack4Cdhw = _cs.FindKernel("NcnnConcatPack4CDHW");
-            _kConcatSequencePack4Cdhw = _cs.FindKernel("NcnnConcatSequencePack4CDHW");
-            _kAppendSequencePack4Cdhw = _cs.FindKernel("NcnnAppendSequencePack4CDHW");
-            _kBuildSdInpaintInput9Pack4 = _cs.FindKernel("NcnnBuildSdInpaintInput9Pack4");
-            _kInterpPack4 = _cs.FindKernel("NcnnInterpPack4");
-            _kInterpPack4Nearest = _cs.FindKernel("NcnnInterpPack4Nearest");
-            _kInterpPack4Cdhw = _cs.FindKernel("NcnnInterpPack4CDHW");
-            _kInterp2xPack4 = _cs.FindKernel("NcnnInterp2xPack4");
-            _kInterp2xNearestPack4 = _cs.FindKernel("NcnnInterp2xNearestPack4");
-            _kInterpDown2Pack4 = _cs.FindKernel("NcnnInterpDown2Pack4");
-            _kInterpDown2NearestPack4 = _cs.FindKernel("NcnnInterpDown2NearestPack4");
-            _kPack4ToBufferChw = _cs.FindKernel("NcnnPack4ToBufferCHW");
-            _kLinearMatToBuffer = _cs.FindKernel("NcnnLinearMatToBuffer");
-            _kPack4ChannelsToWidth = _cs.FindKernel("NcnnPack4ChannelsToWidth");
-            _kPack4SpatialToPack4Linear = _cs.FindKernel("NcnnPack4SpatialToPack4Linear");
-            _kPack4ReorderMergeRows = _cs.FindKernel("NcnnPack4ReorderMergeRows");
-            _kLinearMatReorderMergeRows = _cs.FindKernel("NcnnLinearMatReorderMergeRows");
-            _kPack4ToBufferCdhw = _cs.FindKernel("NcnnPack4ToBufferCDHW");
-            _kInnerProduct = _cs.FindKernel("NcnnInnerProduct");
-            _kPackRgbToPack4Gfpgan = _cs.FindKernel("NcnnPackRgbToPack4Gfpgan");
-            _kFillPack4FromBufferChw = _cs.FindKernel("NcnnFillPack4FromBufferCHW");
-            _kFillPack4FromBufferCdhw = _cs.FindKernel("NcnnFillPack4FromBufferCDHW");
-            _kFillLinearMatFromBuffer = _cs.FindKernel("NcnnFillLinearMatFromBuffer");
-            _kFillScalarTexture = _cs.FindKernel("NcnnFillScalarTexture");
-            _kFillScalarLinearMat = _cs.FindKernel("NcnnFillScalarLinearMat");
-            _kSentisConstantLinearMat = _cs.FindKernel("NcnnSentisConstantLinearMat");
-            _kSentisRangeLinearMat = _cs.FindKernel("NcnnSentisRangeLinearMat");
-            _kSentisExpandLinearMat = _cs.FindKernel("NcnnSentisExpandLinearMat");
-            _kSentisWhereLinearMat = _cs.FindKernel("NcnnSentisWhereLinearMat");
-            _kSentisGatherLinearMat = _cs.FindKernel("NcnnSentisGatherLinearMat");
-            _kSentisGatherElementsLinearMat = _cs.FindKernel("NcnnSentisGatherElementsLinearMat");
-            _kSentisArgReduceLinearMat = _cs.FindKernel("NcnnSentisArgReduceLinearMat");
-            _kSentisTopKLinearMat = _cs.FindKernel("NcnnSentisTopKLinearMat");
-            _kSentisOneHotLinearMat = _cs.FindKernel("NcnnSentisOneHotLinearMat");
-            _kSentisCumSumLinearMat = _cs.FindKernel("NcnnSentisCumSumLinearMat");
-            _kSentisNonZeroLinearMat = _cs.FindKernel("NcnnSentisNonZeroLinearMat");
-            _kSentisCompressLinearMat = _cs.FindKernel("NcnnSentisCompressLinearMat");
-            _kSentisGatherNdLinearMat = _cs.FindKernel("NcnnSentisGatherNDLinearMat");
-            _kSentisScatterLinearMat = _cs.FindKernel("NcnnSentisScatterLinearMat");
-            _kScalePack4 = _cs.FindKernel("NcnnScalePack4");
-            _kAddBiasPack4 = _cs.FindKernel("NcnnAddBiasPack4");
-            _kBatchNormPack4 = _cs.FindKernel("NcnnBatchNormPack4");
-            _kLeakyReluPack4 = _cs.FindKernel("NcnnLeakyReluPack4");
-            _kPReluPack4 = _cs.FindKernel("NcnnPReluPack4");
-            _kAddNoiseBroadcastPack4 = _cs.FindKernel("NcnnAddNoiseBroadcastPack4");
-            _kClipPack4 = _cs.FindKernel("NcnnClipPack4");
-            _kSftPack4 = _cs.FindKernel("NcnnSftPack4");
-            _kPack4ToRgb01 = _cs.FindKernel("NcnnPack4ToRgb01");
-            _kPack4ToRgbScaled = _cs.FindKernel("NcnnPack4ToRgbScaled");
-            _kNhwcPack4ToRgbScaled = _cs.FindKernel("NcnnNhwcPack4ToRgbScaled");
-            _kProbeTilePack4 = _cs.FindKernel("NcnnProbeTilePack4");
-            _kProbeSeams = _cs.FindKernel("NcnnProbeSeams");
-            _kPaddingPack4 = _cs.FindKernel("NcnnPaddingPack4");
-            _kPoolingPack4 = _cs.FindKernel("NcnnPoolingPack4");
-            _kPooling1DPack4 = _cs.FindKernel("NcnnPooling1DPack4");
-            _kPoolingPack4Cdhw = _cs.FindKernel("NcnnPoolingPack4CDHW");
-            _kMaxPoolingIndPack4 = _cs.FindKernel("NcnnMaxPoolingIndPack4");
-            _kMaxPoolingIndicesFromValuePack4 = _cs.FindKernel("NcnnMaxPoolingIndicesFromValuePack4");
-            _kMaxUnPoolingPack4 = _cs.FindKernel("NcnnMaxUnPoolingPack4");
-            _kSoftmaxChannelPack4 = _cs.FindKernel("NcnnSoftmaxChannelPack4");
-            _kSoftmaxLinearMat2D = _cs.FindKernel("NcnnSoftmaxLinearMat2D");
-            _kUnaryOpPack4 = _cs.FindKernel("NcnnUnaryOpPack4");
-            _kUnaryOpLinearMat = _cs.FindKernel("NcnnUnaryOpLinearMat");
-            _kTriluPack4 = _cs.FindKernel("NcnnTriluPack4");
-            _kTriluLinearMat = _cs.FindKernel("NcnnTriluLinearMat");
-            _kBinaryOpLinearMat = _cs.FindKernel("NcnnBinaryOpLinearMat");
-            _kBinaryOpLinearMatFixedInputScalar = _cs.FindKernel("NcnnBinaryOpLinearMatFixedInputScalar");
-            _kBinaryOpPack4 = _cs.FindKernel("NcnnBinaryOpPack4");
-            _kBinaryOpPack4LinearMixed = _cs.FindKernel("NcnnBinaryOpPack4LinearMixed");
-            _kBinaryOpPack4Broadcast = _cs.FindKernel("NcnnBinaryOpPack4Broadcast");
-            _kBinaryOpPack4BufferScalar = _cs.FindKernel("NcnnBinaryOpPack4BufferScalar");
-            _kBinaryOpPack4ChannelVectorTex = _cs.FindKernel("NcnnBinaryOpPack4ChannelVectorTex");
-            _kBinaryOpScalarSingleBroadcast = _cs.FindKernel("NcnnBinaryOpScalarSingleBroadcast");
-            _kCodeFormerMinEncodingFromSoftOneHot = _cs.FindKernel("NcnnCodeFormerMinEncodingFromSoftOneHot");
-            _kCodeFormerMinEncodingFromSoftOneHotLinearMat = _cs.FindKernel("NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat");
-            _kShuffleChannelPack4 = _cs.FindKernel("NcnnShuffleChannelPack4");
-            _kFlipPack4P1 = _cs.FindKernel("NcnnFlipPack4P1");
-            _kP1GridSamplePack4 = _cs.FindKernel("NcnnP1GridSamplePack4");
-            _kP1GluPack4 = _cs.FindKernel("NcnnP1GluPack4");
-            _kP1DiagPack4 = _cs.FindKernel("NcnnP1DiagPack4");
-            _kP1FoldPack4 = _cs.FindKernel("NcnnP1FoldPack4");
-            _kP1SppPack4 = _cs.FindKernel("NcnnP1SppPack4");
-            _kP1RoiAlignPack4 = _cs.FindKernel("NcnnP1RoiAlignPack4");
-            _kP1RoiPoolPack4 = _cs.FindKernel("NcnnP1RoiPoolPack4");
-            _kP1PsRoiPoolPack4 = _cs.FindKernel("NcnnP1PsRoiPoolPack4");
-            _kP1DeformableConv2dPack4 = _cs.FindKernel("NcnnP1DeformableConv2dPack4");
-            _kP1ProposalPack4 = _cs.FindKernel("NcnnP1ProposalPack4");
-            _kP1DetectionOutputPack4 = _cs.FindKernel("NcnnP1DetectionOutputPack4");
-            _kP1YoloDetectionOutputPack4 = _cs.FindKernel("NcnnP1YoloDetectionOutputPack4");
-            _kP1EinsumPack4 = _cs.FindKernel("NcnnP1EinsumPack4");
-            _kCropPack4 = _cs.FindKernel("NcnnCropPack4");
-            _kSlicePack4 = _cs.FindKernel("NcnnSlicePack4");
-            _kSliceLinearMat2D = _cs.FindKernel("NcnnSliceLinearMat2D");
-            _kSlicePack4Cdhw = _cs.FindKernel("NcnnSlicePack4CDHW");
-            _kPermutePack4 = _cs.FindKernel("NcnnPermutePack4");
-            _kPermutePack4Cdhw = _cs.FindKernel("NcnnPermutePack4CDHW");
-            _kPermutePack4CdhwFoldD = _cs.FindKernel("NcnnPermutePack4CDHWFoldD");
-            _kPermutePack4FoldDToCdhw = _cs.FindKernel("NcnnPermutePack4FoldDToCDHW");
-            _kPermuteLinearMat2D = _cs.FindKernel("NcnnPermuteLinearMat2D");
-            _kWindowPartitionPack4 = _cs.FindKernel("NcnnWindowPartitionPack4");
-            _kWindowUnpartitionPack4 = _cs.FindKernel("NcnnWindowUnpartitionPack4");
-            _kReshapePack4ToScalar2D = _cs.FindKernel("NcnnReshapePack4ToScalar2D");
-            _kReshapePack4ToLinearMat = _cs.FindKernel("NcnnReshapePack4ToLinearMat");
-            _kReshapePack4ToPack4 = _cs.FindKernel("NcnnReshapePack4ToPack4");
-            _kReshapeScalar2DToPack4 = _cs.FindKernel("NcnnReshapeScalar2DToPack4");
-            _kPack4LinearFromScalar2D = _cs.FindKernel("NcnnPack4LinearFromScalar2D");
-            _kReshapeLinearMatToPack4 = _cs.FindKernel("NcnnReshapeLinearMatToPack4");
-            _kReshapeLinearMat2D = _cs.FindKernel("NcnnReshapeLinearMat2D");
-            _kAttentionReshapePack4 = _cs.FindKernel("NcnnAttentionReshapePack4");
-            _kAttentionContextFlattenPack4 = _cs.FindKernel("NcnnAttentionContextFlattenPack4");
-            _kSwishPack4 = _cs.FindKernel("NcnnSwishPack4");
-            _kSwishLinearMat = _cs.FindKernel("NcnnSwishLinearMat");
-            _kSigmoidPack4 = _cs.FindKernel("NcnnSigmoidPack4");
-            _kSigmoidLinearMat = _cs.FindKernel("NcnnSigmoidLinearMat");
-            _kGeluPack4 = _cs.FindKernel("NcnnGeluPack4");
-            _kGeluLinearMat = _cs.FindKernel("NcnnGeluLinearMat");
-            _kMatMul2D = _cs.FindKernel("NcnnMatMul2D");
-            _kMatMulPack4Cdhw = _cs.FindKernel("NcnnMatMulPack4CDHW");
-            _kVistaTailPromptDotPack4 = _cs.FindKernel("NcnnVistaTailPromptDotPack4");
-            _kVistaTailPromptDotPack4Tex = _cs.FindKernel("NcnnVistaTailPromptDotPack4Tex");
-            _kArgmaxUpdatePack4Cdhw = _cs.FindKernel("NcnnArgmaxUpdatePack4CDHW");
-            _kArgMaxPack4LinearMat = _cs.FindKernel("NcnnArgMaxPack4LinearMat");
-            _kGemm2DTextureA = _cs.FindKernel("NcnnGemm2DTextureA");
-            _kGemm2DLinearTextureA = _cs.FindKernel("NcnnGemm2DLinearTextureA");
-            _kGemm2DPack4LinearTextureA = _cs.FindKernel("NcnnGemm2DPack4LinearTextureA");
-            _kGemm2DPack4LinearTextureAFromLinear = _cs.FindKernel("NcnnGemm2DPack4LinearTextureAFromLinear");
-            _kGemm2DPack4LinearTextureAFromPack4 = _cs.FindKernel("NcnnGemm2DPack4LinearTextureAFromPack4");
-            _kGemm2DPack4TiledTextureAFromLinear = _cs.FindKernel("NcnnGemm2DPack4TiledTextureAFromLinear");
-            _kGemm2DPack4TiledTextureAFromPack4 = _cs.FindKernel("NcnnGemm2DPack4TiledTextureAFromPack4");
-            _kGemm2DAttentionQkvTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvTextureA");
-            _kGemm2DAttentionQkvLinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvLinearTextureA");
-            _kGemm2DAttentionQkvPack4LinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionQkvPack4LinearTextureA");
-            _kGemm2DAttentionPack4ToLinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionPack4ToLinearTextureA");
-            _kGemm2DAttentionPack4ToPack4LinearTextureA = _cs.FindKernel("NcnnGemm2DAttentionPack4ToPack4LinearTextureA");
-            _kGemm2D = _cs.FindKernel("NcnnGemm2D");
-            _kGemm2D16 = _cs.FindKernel("NcnnGemm2D16");
-            _kLayerNorm2D = _cs.FindKernel("NcnnLayerNorm2D");
-            _kLayerNormPack4WidthTex = _cs.FindKernel("NcnnLayerNormPack4WidthTex");
-            _kLayerNormPack4Linear2D = _cs.FindKernel("NcnnLayerNormPack4Linear2D");
-            _kSoftmax2D = _cs.FindKernel("NcnnSoftmax2D");
-            _kSoftmaxPack4Cdhw = _cs.FindKernel("NcnnSoftmaxPack4CDHW");
-            _kReductionScalar2D = _cs.FindKernel("NcnnReductionScalar2D");
-            _kReductionLinearMat2D = _cs.FindKernel("NcnnReductionLinearMat2D");
-            _kReductionPack4Width = _cs.FindKernel("NcnnReductionPack4Width");
-            _kReductionPack4Channel = _cs.FindKernel("NcnnReductionPack4Channel");
-            _kEmbed = _cs.FindKernel("NcnnEmbed");
-            _kEmbedTexture = _cs.FindKernel("NcnnEmbedTexture");
-            _kEmbedTextureLinearIndex = _cs.FindKernel("NcnnEmbedTextureLinearIndex");
-            _kEmbedTexturePack4Index = _cs.FindKernel("NcnnEmbedTexturePack4Index");
-            _kPermute = _cs.FindKernel("NcnnPermute");
-            _kSlice = _cs.FindKernel("NcnnSlice");
-            _kTile = _cs.FindKernel("NcnnTile");
-            _kTilePack4 = _cs.FindKernel("NcnnTilePack4");
-            _kTileLinearMat = _cs.FindKernel("NcnnTileLinearMat");
-            _kReduceSum256 = _cs.FindKernel("NcnnReduceSum256");
-            _kMulScalarBuf = _cs.FindKernel("NcnnMulScalarBuf");
-            _kGroupNormStats = _cs.FindKernel("NcnnGroupNormStats");
-            _kGroupNormApply = _cs.FindKernel("NcnnGroupNormApply");
-            _kGroupNormMean = _cs.FindKernel("NcnnGroupNormMean");
-            _kGroupNormVariance = _cs.FindKernel("NcnnGroupNormVariance");
-            _kGroupNormApplyMeanVar = _cs.FindKernel("NcnnGroupNormApplyMeanVar");
-            _kGroupNormPack4Mean = _cs.FindKernel("NcnnGroupNormPack4Mean");
-            _kGroupNormPack4Variance = _cs.FindKernel("NcnnGroupNormPack4Variance");
-            _kGroupNormPack4ApplyMeanVar = _cs.FindKernel("NcnnGroupNormPack4ApplyMeanVar");
-            _kGroupNormPack4MeanTex = _cs.FindKernel("NcnnGroupNormPack4MeanTex");
-            _kGroupNormPack4VarianceTex = _cs.FindKernel("NcnnGroupNormPack4VarianceTex");
-            _kGroupNormPack4ApplyMeanVarTex = _cs.FindKernel("NcnnGroupNormPack4ApplyMeanVarTex");
-            _kTouchU32 = _cs.FindKernel("NcnnTouchU32");
-            _kInnerProduct2D = _cs.FindKernel("NcnnInnerProduct2D");
-            _kMhaAttention = _cs.FindKernel("NcnnMhaAttention");
-            _kMhaAttentionFast = _cs.FindKernel("NcnnMhaAttentionFast");
-            _kMhaAttentionQkvFast = _cs.FindKernel("NcnnMhaAttentionQkvFast");
-            _kMhaProjectQkv2D = _cs.FindKernel("NcnnMhaProjectQkv2D");
-            _kReorgPack4 = _cs.FindKernel("NcnnReorgPack4");
-            _kPointwisePack4 = _cs.FindKernel("NcnnPointwisePack4");
-            _kPixelShufflePack4 = _cs.FindKernel("NcnnPixelShufflePack4");
-            _kCastBuf = _cs.FindKernel("NcnnCastBuf");
-            _kScaleBuf = _cs.FindKernel("NcnnScaleBuf");
-            _kPReluBuf = _cs.FindKernel("NcnnPReluBuf");
-            _kReorgBuf = _cs.FindKernel("NcnnReorgBuf");
-            _kReductionRowsBuf = _cs.FindKernel("NcnnReductionRowsBuf");
-            _kConv1dBuf = _cs.FindKernel("NcnnConv1dBuf");
-            _kQuantizeBuf = _cs.FindKernel("NcnnQuantizeBuf");
-            _kDequantizeBuf = _cs.FindKernel("NcnnDequantizeBuf");
-            _kRequantizeBuf = _cs.FindKernel("NcnnRequantizeBuf");
-            _kCastPack4 = _cs.FindKernel("NcnnCastPack4");
-            _kQuantizePack4 = _cs.FindKernel("NcnnQuantizePack4");
-            _kDequantizePack4 = _cs.FindKernel("NcnnDequantizePack4");
-            _kRequantizePack4 = _cs.FindKernel("NcnnRequantizePack4");
-            _kNormalizePack4 = _cs.FindKernel("NcnnNormalizePack4");
-            _kLrnPack4 = _cs.FindKernel("NcnnLrnPack4");
-            _kRmsNormPack4 = _cs.FindKernel("NcnnRmsNormPack4");
-            _kRmsNormPack4LinearMat = _cs.FindKernel("NcnnRmsNormPack4LinearMat");
-            _kPixelShuffleBuf = _cs.FindKernel("NcnnPixelShuffleBuf");
-            _kRotaryEmbedBuf = _cs.FindKernel("NcnnRotaryEmbedBuf");
-            _kRotaryEmbedPack4 = _cs.FindKernel("NcnnRotaryEmbedPack4");
-            _kPriorBox = _cs.FindKernel("NcnnPriorBox");
-            _kNormalizeBuf = _cs.FindKernel("NcnnNormalizeBuf");
-            _kLrnBuf = _cs.FindKernel("NcnnLrnBuf");
-            _kRmsNormBuf = _cs.FindKernel("NcnnRmsNormBuf");
-            _kUnfoldBuf = _cs.FindKernel("NcnnUnfoldBuf");
-            _kUnfoldPack4 = _cs.FindKernel("NcnnUnfoldPack4");
-            _kExtractPatchesPack4 = _cs.FindKernel("NcnnExtractPatchesPack4");
-            _kExtractPatchesFoldDPack4 = _cs.FindKernel("NcnnExtractPatchesFoldDPack4");
-            _kDeepFillV2PatchStats = _cs.FindKernel("NcnnDeepFillV2PatchStats");
-            _kDeepFillV2Scores = _cs.FindKernel("NcnnDeepFillV2Scores");
-            _kDeepFillV2Softmax = _cs.FindKernel("NcnnDeepFillV2Softmax");
-            _kDeepFillV2Reconstruct = _cs.FindKernel("NcnnDeepFillV2Reconstruct");
-            _kSdpaQkBuf = _cs.FindKernel("NcnnSdpaQkBuf");
-            _kSdpaSoftmaxBuf = _cs.FindKernel("NcnnSdpaSoftmaxBuf");
-            _kSdpaQkvBuf = _cs.FindKernel("NcnnSdpaQkvBuf");
-            _kSdpaAttentionFast = _cs.FindKernel("NcnnSdpaAttentionFast");
-            _kSdpaAttentionPack4Cdhw = _cs.FindKernel("NcnnSdpaAttentionPack4CDHW");
-            _kShortConvPack4 = _cs.FindKernel("NcnnShortConvPack4");
-            _kGatedDeltaRulePack4 = _cs.FindKernel("NcnnGatedDeltaRulePack4");
+            _kConv3x3 = _cs.FindKernel("AexisConv3x3");
+            _kConv3dBuf = _cs.FindKernel("AexisConv3dBuf");
+            _kConv3dPack4Cdhw16x4 = _cs.FindKernel("AexisConv3dPack4CDHW16x4");
+            _kConv3dPack4CdhwTile3x3 = _cs.FindKernel("AexisConv3dPack4CDHWTile3x3");
+            _kDeconvolutionBuf = _cs.FindKernel("AexisDeconvolutionBuf");
+            _kDeconvolution3dPack4Cdhw = _cs.FindKernel("AexisDeconvolution3dPack4CDHW");
+            _kDeconvolution3dBuf = _cs.FindKernel("AexisDeconvolution3dBuf");
+            _kConvDepthWise = _cs.FindKernel("AexisConvDepthWise");
+            _kTexToBuf3 = _cs.FindKernel("AexisTexToBuf3");
+            _kBufToTex3 = _cs.FindKernel("AexisBufToTex3");
+            _kLeakyReluBuf = _cs.FindKernel("AexisLeakyReluBuf");
+            _kAddWeighted = _cs.FindKernel("AexisAddWeighted");
+            _kCopyBuf = _cs.FindKernel("AexisCopyBuf");
+            _kCopyBufPartial = _cs.FindKernel("AexisCopyBufPartial");
+            _kBinaryOpBuf = _cs.FindKernel("AexisBinaryOpBuf");
+            _kUnaryOpBuf = _cs.FindKernel("AexisUnaryOpBuf");
+            _kSigmoidBuf = _cs.FindKernel("AexisSigmoidBuf");
+            _kSwishBuf = _cs.FindKernel("AexisSwishBuf");
+            _kGeluBuf = _cs.FindKernel("AexisGeluBuf");
+            _kPointwiseBuf = _cs.FindKernel("AexisPointwiseBuf");
+            _kCopyC = _cs.FindKernel("AexisCopyC");
+            _kInterp2x = _cs.FindKernel("AexisInterp2x");
+            _kBlitTileToDst = _cs.FindKernel("AexisBlitTileToDst");
+            _kPackRgbToPack4 = _cs.FindKernel("AexisPackRgbToPack4");
+            _kPackRgbToNhwcPack4 = _cs.FindKernel("AexisPackRgbToNhwcPack4");
+            _kPackMaskToNhwcPack4 = _cs.FindKernel("AexisPackMaskToNhwcPack4");
+            _kConv3x3Pack4 = _cs.FindKernel("AexisConv3x3Pack4");
+            _kConvPack4General = _cs.FindKernel("AexisConvPack4General");
+            _kDeconvolutionPack4General = _cs.FindKernel("AexisDeconvolutionPack4General");
+            _kConv2dGroupPack4 = _cs.FindKernel("AexisConv2dGroupPack4");
+            _kDeconvolution2dGroupPack4 = _cs.FindKernel("AexisDeconvolution2dGroupPack4");
+            _kDeconvolutionDepthWisePack4 = _cs.FindKernel("AexisDeconvolutionDepthWisePack4");
+            _kConvDepthWisePack4 = _cs.FindKernel("AexisConvDepthWisePack4");
+            _kWinograd23TransformInput = _cs.FindKernel("AexisWinograd23TransformInputPack4");
+            _kWinograd23Gemm = _cs.FindKernel("AexisWinograd23GemmPack4");
+            _kWinograd23TransformOutput = _cs.FindKernel("AexisWinograd23TransformOutputPack4");
+            _kConv1x1Pack4 = _cs.FindKernel("AexisConv1x1Pack4");
+            _kAddPack4 = _cs.FindKernel("AexisAddPack4");
+            _kCopyPack4 = _cs.FindKernel("AexisCopyPack4");
+            _kCopyToPack4 = _cs.FindKernel("AexisCopyToPack4");
+            _kConcatPack4Cdhw = _cs.FindKernel("AexisConcatPack4CDHW");
+            _kConcatSequencePack4Cdhw = _cs.FindKernel("AexisConcatSequencePack4CDHW");
+            _kAppendSequencePack4Cdhw = _cs.FindKernel("AexisAppendSequencePack4CDHW");
+            _kBuildSdInpaintInput9Pack4 = _cs.FindKernel("AexisBuildSdInpaintInput9Pack4");
+            _kInterpPack4 = _cs.FindKernel("AexisInterpPack4");
+            _kInterpPack4Nearest = _cs.FindKernel("AexisInterpPack4Nearest");
+            _kInterpPack4Cdhw = _cs.FindKernel("AexisInterpPack4CDHW");
+            _kInterp2xPack4 = _cs.FindKernel("AexisInterp2xPack4");
+            _kInterp2xNearestPack4 = _cs.FindKernel("AexisInterp2xNearestPack4");
+            _kInterpDown2Pack4 = _cs.FindKernel("AexisInterpDown2Pack4");
+            _kInterpDown2NearestPack4 = _cs.FindKernel("AexisInterpDown2NearestPack4");
+            _kPack4ToBufferChw = _cs.FindKernel("AexisPack4ToBufferCHW");
+            _kLinearMatToBuffer = _cs.FindKernel("AexisLinearMatToBuffer");
+            _kPack4ChannelsToWidth = _cs.FindKernel("AexisPack4ChannelsToWidth");
+            _kPack4SpatialToPack4Linear = _cs.FindKernel("AexisPack4SpatialToPack4Linear");
+            _kPack4ReorderMergeRows = _cs.FindKernel("AexisPack4ReorderMergeRows");
+            _kLinearMatReorderMergeRows = _cs.FindKernel("AexisLinearMatReorderMergeRows");
+            _kPack4ToBufferCdhw = _cs.FindKernel("AexisPack4ToBufferCDHW");
+            _kInnerProduct = _cs.FindKernel("AexisInnerProduct");
+            _kPackRgbToPack4Gfpgan = _cs.FindKernel("AexisPackRgbToPack4Gfpgan");
+            _kFillPack4FromBufferChw = _cs.FindKernel("AexisFillPack4FromBufferCHW");
+            _kFillPack4FromBufferCdhw = _cs.FindKernel("AexisFillPack4FromBufferCDHW");
+            _kFillLinearMatFromBuffer = _cs.FindKernel("AexisFillLinearMatFromBuffer");
+            _kFillScalarTexture = _cs.FindKernel("AexisFillScalarTexture");
+            _kFillScalarLinearMat = _cs.FindKernel("AexisFillScalarLinearMat");
+            _kAexisConstantLinearMat = _cs.FindKernel("AexisConstantLinearMat");
+            _kAexisRangeLinearMat = _cs.FindKernel("AexisRangeLinearMat");
+            _kAexisExpandLinearMat = _cs.FindKernel("AexisExpandLinearMat");
+            _kAexisWhereLinearMat = _cs.FindKernel("AexisWhereLinearMat");
+            _kAexisGatherLinearMat = _cs.FindKernel("AexisGatherLinearMat");
+            _kAexisGatherElementsLinearMat = _cs.FindKernel("AexisGatherElementsLinearMat");
+            _kAexisArgReduceLinearMat = _cs.FindKernel("AexisArgReduceLinearMat");
+            _kAexisTopKLinearMat = _cs.FindKernel("AexisTopKLinearMat");
+            _kAexisOneHotLinearMat = _cs.FindKernel("AexisOneHotLinearMat");
+            _kAexisCumSumLinearMat = _cs.FindKernel("AexisCumSumLinearMat");
+            _kAexisNonZeroLinearMat = _cs.FindKernel("AexisNonZeroLinearMat");
+            _kAexisCompressLinearMat = _cs.FindKernel("AexisCompressLinearMat");
+            _kAexisGatherNdLinearMat = _cs.FindKernel("AexisGatherNDLinearMat");
+            _kAexisScatterLinearMat = _cs.FindKernel("AexisScatterLinearMat");
+            _kScalePack4 = _cs.FindKernel("AexisScalePack4");
+            _kAddBiasPack4 = _cs.FindKernel("AexisAddBiasPack4");
+            _kBatchNormPack4 = _cs.FindKernel("AexisBatchNormPack4");
+            _kLeakyReluPack4 = _cs.FindKernel("AexisLeakyReluPack4");
+            _kPReluPack4 = _cs.FindKernel("AexisPReluPack4");
+            _kAddNoiseBroadcastPack4 = _cs.FindKernel("AexisAddNoiseBroadcastPack4");
+            _kClipPack4 = _cs.FindKernel("AexisClipPack4");
+            _kSftPack4 = _cs.FindKernel("AexisSftPack4");
+            _kPack4ToRgb01 = _cs.FindKernel("AexisPack4ToRgb01");
+            _kPack4ToRgbScaled = _cs.FindKernel("AexisPack4ToRgbScaled");
+            _kNhwcPack4ToRgbScaled = _cs.FindKernel("AexisNhwcPack4ToRgbScaled");
+            _kProbeTilePack4 = _cs.FindKernel("AexisProbeTilePack4");
+            _kProbeSeams = _cs.FindKernel("AexisProbeSeams");
+            _kPaddingPack4 = _cs.FindKernel("AexisPaddingPack4");
+            _kPoolingPack4 = _cs.FindKernel("AexisPoolingPack4");
+            _kPooling1DPack4 = _cs.FindKernel("AexisPooling1DPack4");
+            _kPoolingPack4Cdhw = _cs.FindKernel("AexisPoolingPack4CDHW");
+            _kMaxPoolingIndPack4 = _cs.FindKernel("AexisMaxPoolingIndPack4");
+            _kMaxPoolingIndicesFromValuePack4 = _cs.FindKernel("AexisMaxPoolingIndicesFromValuePack4");
+            _kMaxUnPoolingPack4 = _cs.FindKernel("AexisMaxUnPoolingPack4");
+            _kSoftmaxChannelPack4 = _cs.FindKernel("AexisSoftmaxChannelPack4");
+            _kSoftmaxLinearMat2D = _cs.FindKernel("AexisSoftmaxLinearMat2D");
+            _kUnaryOpPack4 = _cs.FindKernel("AexisUnaryOpPack4");
+            _kUnaryOpLinearMat = _cs.FindKernel("AexisUnaryOpLinearMat");
+            _kTriluPack4 = _cs.FindKernel("AexisTriluPack4");
+            _kTriluLinearMat = _cs.FindKernel("AexisTriluLinearMat");
+            _kBinaryOpLinearMat = _cs.FindKernel("AexisBinaryOpLinearMat");
+            _kBinaryOpLinearMatFixedInputScalar = _cs.FindKernel("AexisBinaryOpLinearMatFixedInputScalar");
+            _kBinaryOpPack4 = _cs.FindKernel("AexisBinaryOpPack4");
+            _kBinaryOpPack4LinearMixed = _cs.FindKernel("AexisBinaryOpPack4LinearMixed");
+            _kBinaryOpPack4Broadcast = _cs.FindKernel("AexisBinaryOpPack4Broadcast");
+            _kBinaryOpPack4BufferScalar = _cs.FindKernel("AexisBinaryOpPack4BufferScalar");
+            _kBinaryOpPack4ChannelVectorTex = _cs.FindKernel("AexisBinaryOpPack4ChannelVectorTex");
+            _kBinaryOpScalarSingleBroadcast = _cs.FindKernel("AexisBinaryOpScalarSingleBroadcast");
+            _kCodeFormerMinEncodingFromSoftOneHot = _cs.FindKernel("AexisCodeFormerMinEncodingFromSoftOneHot");
+            _kCodeFormerMinEncodingFromSoftOneHotLinearMat = _cs.FindKernel("AexisCodeFormerMinEncodingFromSoftOneHotLinearMat");
+            _kShuffleChannelPack4 = _cs.FindKernel("AexisShuffleChannelPack4");
+            _kFlipPack4P1 = _cs.FindKernel("AexisFlipPack4P1");
+            _kP1GridSamplePack4 = _cs.FindKernel("AexisP1GridSamplePack4");
+            _kP1GluPack4 = _cs.FindKernel("AexisP1GluPack4");
+            _kP1DiagPack4 = _cs.FindKernel("AexisP1DiagPack4");
+            _kP1FoldPack4 = _cs.FindKernel("AexisP1FoldPack4");
+            _kP1SppPack4 = _cs.FindKernel("AexisP1SppPack4");
+            _kP1RoiAlignPack4 = _cs.FindKernel("AexisP1RoiAlignPack4");
+            _kP1RoiPoolPack4 = _cs.FindKernel("AexisP1RoiPoolPack4");
+            _kP1PsRoiPoolPack4 = _cs.FindKernel("AexisP1PsRoiPoolPack4");
+            _kP1DeformableConv2dPack4 = _cs.FindKernel("AexisP1DeformableConv2dPack4");
+            _kP1ProposalPack4 = _cs.FindKernel("AexisP1ProposalPack4");
+            _kP1DetectionOutputPack4 = _cs.FindKernel("AexisP1DetectionOutputPack4");
+            _kP1YoloDetectionOutputPack4 = _cs.FindKernel("AexisP1YoloDetectionOutputPack4");
+            _kP1EinsumPack4 = _cs.FindKernel("AexisP1EinsumPack4");
+            _kCropPack4 = _cs.FindKernel("AexisCropPack4");
+            _kSlicePack4 = _cs.FindKernel("AexisSlicePack4");
+            _kSliceLinearMat2D = _cs.FindKernel("AexisSliceLinearMat2D");
+            _kSlicePack4Cdhw = _cs.FindKernel("AexisSlicePack4CDHW");
+            _kPermutePack4 = _cs.FindKernel("AexisPermutePack4");
+            _kPermutePack4Cdhw = _cs.FindKernel("AexisPermutePack4CDHW");
+            _kPermutePack4CdhwFoldD = _cs.FindKernel("AexisPermutePack4CDHWFoldD");
+            _kPermutePack4FoldDToCdhw = _cs.FindKernel("AexisPermutePack4FoldDToCDHW");
+            _kPermuteLinearMat2D = _cs.FindKernel("AexisPermuteLinearMat2D");
+            _kWindowPartitionPack4 = _cs.FindKernel("AexisWindowPartitionPack4");
+            _kWindowUnpartitionPack4 = _cs.FindKernel("AexisWindowUnpartitionPack4");
+            _kReshapePack4ToScalar2D = _cs.FindKernel("AexisReshapePack4ToScalar2D");
+            _kReshapePack4ToLinearMat = _cs.FindKernel("AexisReshapePack4ToLinearMat");
+            _kReshapePack4ToPack4 = _cs.FindKernel("AexisReshapePack4ToPack4");
+            _kReshapeScalar2DToPack4 = _cs.FindKernel("AexisReshapeScalar2DToPack4");
+            _kPack4LinearFromScalar2D = _cs.FindKernel("AexisPack4LinearFromScalar2D");
+            _kReshapeLinearMatToPack4 = _cs.FindKernel("AexisReshapeLinearMatToPack4");
+            _kReshapeLinearMat2D = _cs.FindKernel("AexisReshapeLinearMat2D");
+            _kAttentionReshapePack4 = _cs.FindKernel("AexisAttentionReshapePack4");
+            _kAttentionContextFlattenPack4 = _cs.FindKernel("AexisAttentionContextFlattenPack4");
+            _kSwishPack4 = _cs.FindKernel("AexisSwishPack4");
+            _kSwishLinearMat = _cs.FindKernel("AexisSwishLinearMat");
+            _kSigmoidPack4 = _cs.FindKernel("AexisSigmoidPack4");
+            _kSigmoidLinearMat = _cs.FindKernel("AexisSigmoidLinearMat");
+            _kGeluPack4 = _cs.FindKernel("AexisGeluPack4");
+            _kGeluLinearMat = _cs.FindKernel("AexisGeluLinearMat");
+            _kMatMul2D = _cs.FindKernel("AexisMatMul2D");
+            _kMatMulPack4Cdhw = _cs.FindKernel("AexisMatMulPack4CDHW");
+            _kVistaTailPromptDotPack4 = _cs.FindKernel("AexisVistaTailPromptDotPack4");
+            _kVistaTailPromptDotPack4Tex = _cs.FindKernel("AexisVistaTailPromptDotPack4Tex");
+            _kArgmaxUpdatePack4Cdhw = _cs.FindKernel("AexisArgmaxUpdatePack4CDHW");
+            _kArgMaxPack4LinearMat = _cs.FindKernel("AexisArgMaxPack4LinearMat");
+            _kGemm2DTextureA = _cs.FindKernel("AexisGemm2DTextureA");
+            _kGemm2DLinearTextureA = _cs.FindKernel("AexisGemm2DLinearTextureA");
+            _kGemm2DPack4LinearTextureA = _cs.FindKernel("AexisGemm2DPack4LinearTextureA");
+            _kGemm2DPack4LinearTextureAFromLinear = _cs.FindKernel("AexisGemm2DPack4LinearTextureAFromLinear");
+            _kGemm2DPack4LinearTextureAFromPack4 = _cs.FindKernel("AexisGemm2DPack4LinearTextureAFromPack4");
+            _kGemm2DPack4TiledTextureAFromLinear = _cs.FindKernel("AexisGemm2DPack4TiledTextureAFromLinear");
+            _kGemm2DPack4TiledTextureAFromPack4 = _cs.FindKernel("AexisGemm2DPack4TiledTextureAFromPack4");
+            _kGemm2DAttentionQkvTextureA = _cs.FindKernel("AexisGemm2DAttentionQkvTextureA");
+            _kGemm2DAttentionQkvLinearTextureA = _cs.FindKernel("AexisGemm2DAttentionQkvLinearTextureA");
+            _kGemm2DAttentionQkvPack4LinearTextureA = _cs.FindKernel("AexisGemm2DAttentionQkvPack4LinearTextureA");
+            _kGemm2DAttentionPack4ToLinearTextureA = _cs.FindKernel("AexisGemm2DAttentionPack4ToLinearTextureA");
+            _kGemm2DAttentionPack4ToPack4LinearTextureA = _cs.FindKernel("AexisGemm2DAttentionPack4ToPack4LinearTextureA");
+            _kGemm2D = _cs.FindKernel("AexisGemm2D");
+            _kGemm2D16 = _cs.FindKernel("AexisGemm2D16");
+            _kLayerNorm2D = _cs.FindKernel("AexisLayerNorm2D");
+            _kLayerNormPack4WidthTex = _cs.FindKernel("AexisLayerNormPack4WidthTex");
+            _kLayerNormPack4Linear2D = _cs.FindKernel("AexisLayerNormPack4Linear2D");
+            _kSoftmax2D = _cs.FindKernel("AexisSoftmax2D");
+            _kSoftmaxPack4Cdhw = _cs.FindKernel("AexisSoftmaxPack4CDHW");
+            _kReductionScalar2D = _cs.FindKernel("AexisReductionScalar2D");
+            _kReductionLinearMat2D = _cs.FindKernel("AexisReductionLinearMat2D");
+            _kReductionPack4Width = _cs.FindKernel("AexisReductionPack4Width");
+            _kReductionPack4Channel = _cs.FindKernel("AexisReductionPack4Channel");
+            _kEmbed = _cs.FindKernel("AexisEmbed");
+            _kEmbedTexture = _cs.FindKernel("AexisEmbedTexture");
+            _kEmbedTextureLinearIndex = _cs.FindKernel("AexisEmbedTextureLinearIndex");
+            _kEmbedTexturePack4Index = _cs.FindKernel("AexisEmbedTexturePack4Index");
+            _kPermute = _cs.FindKernel("AexisPermute");
+            _kSlice = _cs.FindKernel("AexisSlice");
+            _kTile = _cs.FindKernel("AexisTile");
+            _kTilePack4 = _cs.FindKernel("AexisTilePack4");
+            _kTileLinearMat = _cs.FindKernel("AexisTileLinearMat");
+            _kReduceSum256 = _cs.FindKernel("AexisReduceSum256");
+            _kMulScalarBuf = _cs.FindKernel("AexisMulScalarBuf");
+            _kGroupNormStats = _cs.FindKernel("AexisGroupNormStats");
+            _kGroupNormApply = _cs.FindKernel("AexisGroupNormApply");
+            _kGroupNormMean = _cs.FindKernel("AexisGroupNormMean");
+            _kGroupNormVariance = _cs.FindKernel("AexisGroupNormVariance");
+            _kGroupNormApplyMeanVar = _cs.FindKernel("AexisGroupNormApplyMeanVar");
+            _kGroupNormPack4Mean = _cs.FindKernel("AexisGroupNormPack4Mean");
+            _kGroupNormPack4Variance = _cs.FindKernel("AexisGroupNormPack4Variance");
+            _kGroupNormPack4ApplyMeanVar = _cs.FindKernel("AexisGroupNormPack4ApplyMeanVar");
+            _kGroupNormPack4MeanTex = _cs.FindKernel("AexisGroupNormPack4MeanTex");
+            _kGroupNormPack4VarianceTex = _cs.FindKernel("AexisGroupNormPack4VarianceTex");
+            _kGroupNormPack4ApplyMeanVarTex = _cs.FindKernel("AexisGroupNormPack4ApplyMeanVarTex");
+            _kTouchU32 = _cs.FindKernel("AexisTouchU32");
+            _kInnerProduct2D = _cs.FindKernel("AexisInnerProduct2D");
+            _kMhaAttention = _cs.FindKernel("AexisMhaAttention");
+            _kMhaAttentionFast = _cs.FindKernel("AexisMhaAttentionFast");
+            _kMhaAttentionQkvFast = _cs.FindKernel("AexisMhaAttentionQkvFast");
+            _kMhaProjectQkv2D = _cs.FindKernel("AexisMhaProjectQkv2D");
+            _kReorgPack4 = _cs.FindKernel("AexisReorgPack4");
+            _kPointwisePack4 = _cs.FindKernel("AexisPointwisePack4");
+            _kPixelShufflePack4 = _cs.FindKernel("AexisPixelShufflePack4");
+            _kCastBuf = _cs.FindKernel("AexisCastBuf");
+            _kScaleBuf = _cs.FindKernel("AexisScaleBuf");
+            _kPReluBuf = _cs.FindKernel("AexisPReluBuf");
+            _kReorgBuf = _cs.FindKernel("AexisReorgBuf");
+            _kReductionRowsBuf = _cs.FindKernel("AexisReductionRowsBuf");
+            _kConv1dBuf = _cs.FindKernel("AexisConv1dBuf");
+            _kQuantizeBuf = _cs.FindKernel("AexisQuantizeBuf");
+            _kDequantizeBuf = _cs.FindKernel("AexisDequantizeBuf");
+            _kRequantizeBuf = _cs.FindKernel("AexisRequantizeBuf");
+            _kCastPack4 = _cs.FindKernel("AexisCastPack4");
+            _kQuantizePack4 = _cs.FindKernel("AexisQuantizePack4");
+            _kDequantizePack4 = _cs.FindKernel("AexisDequantizePack4");
+            _kRequantizePack4 = _cs.FindKernel("AexisRequantizePack4");
+            _kNormalizePack4 = _cs.FindKernel("AexisNormalizePack4");
+            _kLrnPack4 = _cs.FindKernel("AexisLrnPack4");
+            _kRmsNormPack4 = _cs.FindKernel("AexisRmsNormPack4");
+            _kRmsNormPack4LinearMat = _cs.FindKernel("AexisRmsNormPack4LinearMat");
+            _kPixelShuffleBuf = _cs.FindKernel("AexisPixelShuffleBuf");
+            _kRotaryEmbedBuf = _cs.FindKernel("AexisRotaryEmbedBuf");
+            _kRotaryEmbedPack4 = _cs.FindKernel("AexisRotaryEmbedPack4");
+            _kPriorBox = _cs.FindKernel("AexisPriorBox");
+            _kNormalizeBuf = _cs.FindKernel("AexisNormalizeBuf");
+            _kLrnBuf = _cs.FindKernel("AexisLrnBuf");
+            _kRmsNormBuf = _cs.FindKernel("AexisRmsNormBuf");
+            _kUnfoldBuf = _cs.FindKernel("AexisUnfoldBuf");
+            _kUnfoldPack4 = _cs.FindKernel("AexisUnfoldPack4");
+            _kExtractPatchesPack4 = _cs.FindKernel("AexisExtractPatchesPack4");
+            _kExtractPatchesFoldDPack4 = _cs.FindKernel("AexisExtractPatchesFoldDPack4");
+            _kDeepFillV2PatchStats = _cs.FindKernel("AexisDeepFillV2PatchStats");
+            _kDeepFillV2Scores = _cs.FindKernel("AexisDeepFillV2Scores");
+            _kDeepFillV2Softmax = _cs.FindKernel("AexisDeepFillV2Softmax");
+            _kDeepFillV2Reconstruct = _cs.FindKernel("AexisDeepFillV2Reconstruct");
+            _kSdpaQkBuf = _cs.FindKernel("AexisSdpaQkBuf");
+            _kSdpaSoftmaxBuf = _cs.FindKernel("AexisSdpaSoftmaxBuf");
+            _kSdpaQkvBuf = _cs.FindKernel("AexisSdpaQkvBuf");
+            _kSdpaAttentionFast = _cs.FindKernel("AexisSdpaAttentionFast");
+            _kSdpaAttentionPack4Cdhw = _cs.FindKernel("AexisSdpaAttentionPack4CDHW");
+            _kShortConvPack4 = _cs.FindKernel("AexisShortConvPack4");
+            _kGatedDeltaRulePack4 = _cs.FindKernel("AexisGatedDeltaRulePack4");
             _probeFastZeroGemm = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_GEMM_ZERO", "gemm");
             _probeFastZeroSdpa = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_SDPA_ZERO", "sdpa");
             _probeFastZeroBinaryOp = ResolveProbeFlag("AIIMAGE_NCNN_PROBE_BINARY_ZERO", "binary");
@@ -1180,7 +1180,7 @@ namespace Aexis.Execution
             _cs.SetInt("_InH", output.h);
             _cs.SetInt("_OffsetX", offsetX);
             _cs.SetInt("_OffsetY", offsetY);
-            _cs.SetTexture(_kTexToBuf3, "_NcnnIn", src);
+            _cs.SetTexture(_kTexToBuf3, "_AexisIn", src);
             _cs.SetBuffer(_kTexToBuf3, "_BufOut", output.buffer);
 
             var n = output.w * output.h;
@@ -1196,7 +1196,7 @@ namespace Aexis.Execution
                 throw new ArgumentOutOfRangeException(nameof(output), "output dimensions must match input");
 
             _cs.SetBuffer(_kBufToTex3, "_BufA", input.buffer);
-            _cs.SetTexture(_kBufToTex3, "_NcnnOut", output);
+            _cs.SetTexture(_kBufToTex3, "_AexisOut", output);
             Dispatch2D(_kBufToTex3, output.width, output.height, 8, 8);
         }
 
@@ -1218,8 +1218,8 @@ namespace Aexis.Execution
             _cs.SetInt("_TileCoreH", tileCoreH);
             _cs.SetInt("_TileW", tileW);
             _cs.SetInt("_TileH", tileH);
-            _cs.SetTexture(_kBlitTileToDst, "_NcnnInArr", tileOut);
-            _cs.SetTexture(_kBlitTileToDst, "_NcnnOut", dst);
+            _cs.SetTexture(_kBlitTileToDst, "_AexisInArr", tileOut);
+            _cs.SetTexture(_kBlitTileToDst, "_AexisOut", dst);
             Dispatch2D(_cs, _kBlitTileToDst, dstW, dstH, 32, 32);
         }
 
@@ -1241,8 +1241,8 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_TileCoreH", tileCoreH);
             cmd.SetComputeIntParam(_cs, "_TileW", tileW);
             cmd.SetComputeIntParam(_cs, "_TileH", tileH);
-            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_NcnnInArr", tileOut.nameID);
-            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_NcnnOut", dst);
+            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_AexisInArr", tileOut.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBlitTileToDst, "_AexisOut", dst);
             Dispatch2D(cmd, _cs, _kBlitTileToDst, dstW, dstH, 32, 32);
         }
 
@@ -1261,8 +1261,8 @@ namespace Aexis.Execution
             _cs.SetFloat("_ScaleY", sy);
             _cs.SetFloat("_InputValueScale", valueScale);
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
-            _cs.SetTexture(_kPackRgbToPack4, "_NcnnIn", src);
-            _cs.SetTexture(_kPackRgbToPack4, "_NcnnOutArr", dstPack4);
+            _cs.SetTexture(_kPackRgbToPack4, "_AexisIn", src);
+            _cs.SetTexture(_kPackRgbToPack4, "_AexisOutArr", dstPack4);
             Dispatch2D(_cs, _kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);
         }
 
@@ -1276,8 +1276,8 @@ namespace Aexis.Execution
             _cs.SetFloat("_ScaleY", sy);
             _cs.SetFloat("_InputValueScale", valueScale);
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
-            _cs.SetTexture(_kPackRgbToNhwcPack4, "_NcnnIn", src);
-            _cs.SetTexture(_kPackRgbToNhwcPack4, "_NcnnOutArr", dstPack4);
+            _cs.SetTexture(_kPackRgbToNhwcPack4, "_AexisIn", src);
+            _cs.SetTexture(_kPackRgbToNhwcPack4, "_AexisOutArr", dstPack4);
             Dispatch3D(_kPackRgbToNhwcPack4, dstPack4.width, dstPack4.height, ResolveRenderTextureDispatchDepth(dstPack4, dstPack4.volumeDepth > 0 ? dstPack4.volumeDepth : 1), 8, 8);
         }
 
@@ -1292,8 +1292,8 @@ namespace Aexis.Execution
             _cs.SetFloat("_InputValueScale", 1f);
             _cs.SetFloat("_MaskThreshold", maskThreshold);
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
-            _cs.SetTexture(_kPackMaskToNhwcPack4, "_NcnnIn", src);
-            _cs.SetTexture(_kPackMaskToNhwcPack4, "_NcnnOutArr", dstPack4);
+            _cs.SetTexture(_kPackMaskToNhwcPack4, "_AexisIn", src);
+            _cs.SetTexture(_kPackMaskToNhwcPack4, "_AexisOutArr", dstPack4);
             Dispatch3D(_kPackMaskToNhwcPack4, dstPack4.width, dstPack4.height, ResolveRenderTextureDispatchDepth(dstPack4, dstPack4.volumeDepth > 0 ? dstPack4.volumeDepth : 1), 8, 8);
         }
 
@@ -1312,8 +1312,8 @@ namespace Aexis.Execution
             cmd.SetComputeFloatParam(_cs, "_ScaleY", sy);
             cmd.SetComputeFloatParam(_cs, "_InputValueScale", valueScale);
             cmd.SetComputeIntParam(_cs, "_FlipY", flipY ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_NcnnIn", src);
-            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_NcnnOutArr", dstPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_AexisIn", src);
+            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4, "_AexisOutArr", dstPack4.nameID);
             Dispatch2D(cmd, _cs, _kPackRgbToPack4, dstPack4.width, dstPack4.height, 32, 32);
         }
 
@@ -1329,8 +1329,8 @@ namespace Aexis.Execution
             _cs.SetFloat("_ScaleY", sy);
             _cs.SetFloat("_InputValueScale", 1f);
             _cs.SetInt("_FlipY", flipY ? 1 : 0);
-            _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnIn", src);
-            _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_NcnnOutArr", dstPack4);
+            _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_AexisIn", src);
+            _cs.SetTexture(_kPackRgbToPack4Gfpgan, "_AexisOutArr", dstPack4);
             Dispatch2D(_kPackRgbToPack4Gfpgan, dstPack4.width, dstPack4.height, 32, 32);
         }
 
@@ -1345,8 +1345,8 @@ namespace Aexis.Execution
             cmd.SetComputeFloatParam(_cs, "_ScaleY", sy);
             cmd.SetComputeFloatParam(_cs, "_InputValueScale", 1f);
             cmd.SetComputeIntParam(_cs, "_FlipY", flipY ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_NcnnIn", src);
-            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_NcnnOutArr", dstPack4.nameID);
+            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_AexisIn", src);
+            cmd.SetComputeTextureParam(_cs, _kPackRgbToPack4Gfpgan, "_AexisOutArr", dstPack4.nameID);
             Dispatch2D(cmd, _cs, _kPackRgbToPack4Gfpgan, dstPack4.width, dstPack4.height, 32, 32);
         }
 
@@ -1484,7 +1484,7 @@ namespace Aexis.Execution
             if (values.Length > 3) values4.w = values[3];
         }
 
-        private void SetSentisShape(
+        private void SetAexisShape(
             int kernel,
             string prefix,
             AexisGraphSession.BufferShape logicalShape,
@@ -1499,7 +1499,7 @@ namespace Aexis.Execution
             _cs.SetInt(prefix + "StorageH", Mathf.Max(1, storageShape.h));
         }
 
-        private void SetSentisShape(
+        private void SetAexisShape(
             CommandBuffer cmd,
             string prefix,
             AexisGraphSession.BufferShape logicalShape,
@@ -1514,47 +1514,47 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, prefix + "StorageH", Mathf.Max(1, storageShape.h));
         }
 
-        public void SentisConstantLinearMat(float value, int total, RenderTexture output)
+        public void AexisConstantLinearMat(float value, int total, RenderTexture output)
         {
             if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetFloat("_SentisValue0", value);
-            _cs.SetInt("_SentisTotal", Mathf.Max(1, total));
-            _cs.SetTexture(_kSentisConstantLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisConstantLinearMat, output.width, output.height, 8, 8);
+            _cs.SetFloat("_AexisValue0", value);
+            _cs.SetInt("_AexisTotal", Mathf.Max(1, total));
+            _cs.SetTexture(_kAexisConstantLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisConstantLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisConstantLinearMat(CommandBuffer cmd, float value, int total, ComputeTexture output)
-        {
-            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
-            if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeFloatParam(_cs, "_SentisValue0", value);
-            cmd.SetComputeIntParam(_cs, "_SentisTotal", Mathf.Max(1, total));
-            cmd.SetComputeTextureParam(_cs, _kSentisConstantLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisConstantLinearMat, output.width, output.height, 8, 8);
-        }
-
-        public void SentisRangeLinearMat(float start, float delta, int total, RenderTexture output)
-        {
-            if (output == null) throw new ArgumentNullException(nameof(output));
-            _cs.SetFloat("_SentisValue0", start);
-            _cs.SetFloat("_SentisValue1", delta);
-            _cs.SetInt("_SentisTotal", Mathf.Max(1, total));
-            _cs.SetTexture(_kSentisRangeLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisRangeLinearMat, output.width, output.height, 8, 8);
-        }
-
-        public void SentisRangeLinearMat(CommandBuffer cmd, float start, float delta, int total, ComputeTexture output)
+        public void AexisConstantLinearMat(CommandBuffer cmd, float value, int total, ComputeTexture output)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            cmd.SetComputeFloatParam(_cs, "_SentisValue0", start);
-            cmd.SetComputeFloatParam(_cs, "_SentisValue1", delta);
-            cmd.SetComputeIntParam(_cs, "_SentisTotal", Mathf.Max(1, total));
-            cmd.SetComputeTextureParam(_cs, _kSentisRangeLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisRangeLinearMat, output.width, output.height, 8, 8);
+            cmd.SetComputeFloatParam(_cs, "_AexisValue0", value);
+            cmd.SetComputeIntParam(_cs, "_AexisTotal", Mathf.Max(1, total));
+            cmd.SetComputeTextureParam(_cs, _kAexisConstantLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisConstantLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisExpandLinearMat(
+        public void AexisRangeLinearMat(float start, float delta, int total, RenderTexture output)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            _cs.SetFloat("_AexisValue0", start);
+            _cs.SetFloat("_AexisValue1", delta);
+            _cs.SetInt("_AexisTotal", Mathf.Max(1, total));
+            _cs.SetTexture(_kAexisRangeLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisRangeLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void AexisRangeLinearMat(CommandBuffer cmd, float start, float delta, int total, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            cmd.SetComputeFloatParam(_cs, "_AexisValue0", start);
+            cmd.SetComputeFloatParam(_cs, "_AexisValue1", delta);
+            cmd.SetComputeIntParam(_cs, "_AexisTotal", Mathf.Max(1, total));
+            cmd.SetComputeTextureParam(_cs, _kAexisRangeLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisRangeLinearMat, output.width, output.height, 8, 8);
+        }
+
+        public void AexisExpandLinearMat(
             RenderTexture input,
             AexisGraphSession.BufferShape inShape,
             AexisGraphSession.BufferShape inStorageShape,
@@ -1564,14 +1564,14 @@ namespace Aexis.Execution
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(_kSentisExpandLinearMat, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(_kSentisExpandLinearMat, "_SentisOut", outShape, outStorageShape);
-            _cs.SetTexture(_kSentisExpandLinearMat, "_LinearIn0", input);
-            _cs.SetTexture(_kSentisExpandLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisExpandLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(_kAexisExpandLinearMat, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(_kAexisExpandLinearMat, "_AexisOut", outShape, outStorageShape);
+            _cs.SetTexture(_kAexisExpandLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kAexisExpandLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisExpandLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisExpandLinearMat(
+        public void AexisExpandLinearMat(
             CommandBuffer cmd,
             ComputeTexture input,
             AexisGraphSession.BufferShape inShape,
@@ -1583,14 +1583,14 @@ namespace Aexis.Execution
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
-            cmd.SetComputeTextureParam(_cs, _kSentisExpandLinearMat, "_LinearIn0", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisExpandLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisExpandLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(cmd, "_AexisOut", outShape, outStorageShape);
+            cmd.SetComputeTextureParam(_cs, _kAexisExpandLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisExpandLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisExpandLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisWhereLinearMat(
+        public void AexisWhereLinearMat(
             RenderTexture cond,
             AexisGraphSession.BufferShape condShape,
             AexisGraphSession.BufferShape condStorageShape,
@@ -1608,18 +1608,18 @@ namespace Aexis.Execution
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(_kSentisWhereLinearMat, "_SentisIn0", condShape, condStorageShape);
-            SetSentisShape(_kSentisWhereLinearMat, "_SentisIn1", aShape, aStorageShape);
-            SetSentisShape(_kSentisWhereLinearMat, "_SentisIn2", bShape, bStorageShape);
-            SetSentisShape(_kSentisWhereLinearMat, "_SentisOut", outShape, outStorageShape);
-            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearIn0", cond);
-            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearIn1", a);
-            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearIn2", b);
-            _cs.SetTexture(_kSentisWhereLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisWhereLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(_kAexisWhereLinearMat, "_AexisIn0", condShape, condStorageShape);
+            SetAexisShape(_kAexisWhereLinearMat, "_AexisIn1", aShape, aStorageShape);
+            SetAexisShape(_kAexisWhereLinearMat, "_AexisIn2", bShape, bStorageShape);
+            SetAexisShape(_kAexisWhereLinearMat, "_AexisOut", outShape, outStorageShape);
+            _cs.SetTexture(_kAexisWhereLinearMat, "_LinearIn0", cond);
+            _cs.SetTexture(_kAexisWhereLinearMat, "_LinearIn1", a);
+            _cs.SetTexture(_kAexisWhereLinearMat, "_LinearIn2", b);
+            _cs.SetTexture(_kAexisWhereLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisWhereLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisWhereLinearMat(
+        public void AexisWhereLinearMat(
             CommandBuffer cmd,
             ComputeTexture cond,
             AexisGraphSession.BufferShape condShape,
@@ -1639,18 +1639,18 @@ namespace Aexis.Execution
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(cmd, "_SentisIn0", condShape, condStorageShape);
-            SetSentisShape(cmd, "_SentisIn1", aShape, aStorageShape);
-            SetSentisShape(cmd, "_SentisIn2", bShape, bStorageShape);
-            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
-            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearIn0", cond.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearIn1", a.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearIn2", b.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisWhereLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisWhereLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", condShape, condStorageShape);
+            SetAexisShape(cmd, "_AexisIn1", aShape, aStorageShape);
+            SetAexisShape(cmd, "_AexisIn2", bShape, bStorageShape);
+            SetAexisShape(cmd, "_AexisOut", outShape, outStorageShape);
+            cmd.SetComputeTextureParam(_cs, _kAexisWhereLinearMat, "_LinearIn0", cond.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisWhereLinearMat, "_LinearIn1", a.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisWhereLinearMat, "_LinearIn2", b.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisWhereLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisWhereLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisGatherLinearMat(
+        public void AexisGatherLinearMat(
             RenderTexture data,
             AexisGraphSession.BufferShape dataShape,
             AexisGraphSession.BufferShape dataStorageShape,
@@ -1665,17 +1665,17 @@ namespace Aexis.Execution
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (indices == null) throw new ArgumentNullException(nameof(indices));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(_kSentisGatherLinearMat, "_SentisIn0", dataShape, dataStorageShape);
-            SetSentisShape(_kSentisGatherLinearMat, "_SentisIn1", indicesShape, indicesStorageShape);
-            SetSentisShape(_kSentisGatherLinearMat, "_SentisOut", outShape, outStorageShape);
-            _cs.SetInt("_SentisAxis", axis);
-            _cs.SetTexture(_kSentisGatherLinearMat, "_LinearIn0", data);
-            _cs.SetTexture(_kSentisGatherLinearMat, "_LinearIn1", indices);
-            _cs.SetTexture(_kSentisGatherLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisGatherLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(_kAexisGatherLinearMat, "_AexisIn0", dataShape, dataStorageShape);
+            SetAexisShape(_kAexisGatherLinearMat, "_AexisIn1", indicesShape, indicesStorageShape);
+            SetAexisShape(_kAexisGatherLinearMat, "_AexisOut", outShape, outStorageShape);
+            _cs.SetInt("_AexisAxis", axis);
+            _cs.SetTexture(_kAexisGatherLinearMat, "_LinearIn0", data);
+            _cs.SetTexture(_kAexisGatherLinearMat, "_LinearIn1", indices);
+            _cs.SetTexture(_kAexisGatherLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisGatherLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisGatherLinearMat(
+        public void AexisGatherLinearMat(
             CommandBuffer cmd,
             ComputeTexture data,
             AexisGraphSession.BufferShape dataShape,
@@ -1692,17 +1692,17 @@ namespace Aexis.Execution
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (indices == null) throw new ArgumentNullException(nameof(indices));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(cmd, "_SentisIn0", dataShape, dataStorageShape);
-            SetSentisShape(cmd, "_SentisIn1", indicesShape, indicesStorageShape);
-            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
-            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
-            cmd.SetComputeTextureParam(_cs, _kSentisGatherLinearMat, "_LinearIn0", data.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisGatherLinearMat, "_LinearIn1", indices.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisGatherLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisGatherLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", dataShape, dataStorageShape);
+            SetAexisShape(cmd, "_AexisIn1", indicesShape, indicesStorageShape);
+            SetAexisShape(cmd, "_AexisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_AexisAxis", axis);
+            cmd.SetComputeTextureParam(_cs, _kAexisGatherLinearMat, "_LinearIn0", data.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisGatherLinearMat, "_LinearIn1", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisGatherLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisGatherLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisGatherElementsLinearMat(
+        public void AexisGatherElementsLinearMat(
             RenderTexture data,
             AexisGraphSession.BufferShape dataShape,
             AexisGraphSession.BufferShape dataStorageShape,
@@ -1717,17 +1717,17 @@ namespace Aexis.Execution
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (indices == null) throw new ArgumentNullException(nameof(indices));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(_kSentisGatherElementsLinearMat, "_SentisIn0", dataShape, dataStorageShape);
-            SetSentisShape(_kSentisGatherElementsLinearMat, "_SentisIn1", indicesShape, indicesStorageShape);
-            SetSentisShape(_kSentisGatherElementsLinearMat, "_SentisOut", outShape, outStorageShape);
-            _cs.SetInt("_SentisAxis", axis);
-            _cs.SetTexture(_kSentisGatherElementsLinearMat, "_LinearIn0", data);
-            _cs.SetTexture(_kSentisGatherElementsLinearMat, "_LinearIn1", indices);
-            _cs.SetTexture(_kSentisGatherElementsLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisGatherElementsLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(_kAexisGatherElementsLinearMat, "_AexisIn0", dataShape, dataStorageShape);
+            SetAexisShape(_kAexisGatherElementsLinearMat, "_AexisIn1", indicesShape, indicesStorageShape);
+            SetAexisShape(_kAexisGatherElementsLinearMat, "_AexisOut", outShape, outStorageShape);
+            _cs.SetInt("_AexisAxis", axis);
+            _cs.SetTexture(_kAexisGatherElementsLinearMat, "_LinearIn0", data);
+            _cs.SetTexture(_kAexisGatherElementsLinearMat, "_LinearIn1", indices);
+            _cs.SetTexture(_kAexisGatherElementsLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisGatherElementsLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisGatherElementsLinearMat(
+        public void AexisGatherElementsLinearMat(
             CommandBuffer cmd,
             ComputeTexture data,
             AexisGraphSession.BufferShape dataShape,
@@ -1744,17 +1744,17 @@ namespace Aexis.Execution
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (indices == null) throw new ArgumentNullException(nameof(indices));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(cmd, "_SentisIn0", dataShape, dataStorageShape);
-            SetSentisShape(cmd, "_SentisIn1", indicesShape, indicesStorageShape);
-            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
-            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
-            cmd.SetComputeTextureParam(_cs, _kSentisGatherElementsLinearMat, "_LinearIn0", data.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisGatherElementsLinearMat, "_LinearIn1", indices.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisGatherElementsLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisGatherElementsLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", dataShape, dataStorageShape);
+            SetAexisShape(cmd, "_AexisIn1", indicesShape, indicesStorageShape);
+            SetAexisShape(cmd, "_AexisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_AexisAxis", axis);
+            cmd.SetComputeTextureParam(_cs, _kAexisGatherElementsLinearMat, "_LinearIn0", data.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisGatherElementsLinearMat, "_LinearIn1", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisGatherElementsLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisGatherElementsLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisArgReduceLinearMat(
+        public void AexisArgReduceLinearMat(
             RenderTexture input,
             AexisGraphSession.BufferShape inShape,
             AexisGraphSession.BufferShape inStorageShape,
@@ -1768,18 +1768,18 @@ namespace Aexis.Execution
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(_kSentisArgReduceLinearMat, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(_kSentisArgReduceLinearMat, "_SentisOut", outShape, outStorageShape);
-            _cs.SetInt("_SentisAxis", axis);
-            _cs.SetInt("_SentisKeepDims", keepDims ? 1 : 0);
-            _cs.SetInt("_SentisSelectLast", selectLast ? 1 : 0);
-            _cs.SetInt("_SentisMode", reduceMax ? 1 : 0);
-            _cs.SetTexture(_kSentisArgReduceLinearMat, "_LinearIn0", input);
-            _cs.SetTexture(_kSentisArgReduceLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisArgReduceLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(_kAexisArgReduceLinearMat, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(_kAexisArgReduceLinearMat, "_AexisOut", outShape, outStorageShape);
+            _cs.SetInt("_AexisAxis", axis);
+            _cs.SetInt("_AexisKeepDims", keepDims ? 1 : 0);
+            _cs.SetInt("_AexisSelectLast", selectLast ? 1 : 0);
+            _cs.SetInt("_AexisMode", reduceMax ? 1 : 0);
+            _cs.SetTexture(_kAexisArgReduceLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kAexisArgReduceLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisArgReduceLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisArgReduceLinearMat(
+        public void AexisArgReduceLinearMat(
             CommandBuffer cmd,
             ComputeTexture input,
             AexisGraphSession.BufferShape inShape,
@@ -1795,18 +1795,18 @@ namespace Aexis.Execution
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
-            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
-            cmd.SetComputeIntParam(_cs, "_SentisKeepDims", keepDims ? 1 : 0);
-            cmd.SetComputeIntParam(_cs, "_SentisSelectLast", selectLast ? 1 : 0);
-            cmd.SetComputeIntParam(_cs, "_SentisMode", reduceMax ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kSentisArgReduceLinearMat, "_LinearIn0", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisArgReduceLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisArgReduceLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(cmd, "_AexisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_AexisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_AexisKeepDims", keepDims ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_AexisSelectLast", selectLast ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_AexisMode", reduceMax ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kAexisArgReduceLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisArgReduceLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisArgReduceLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisTopKLinearMat(
+        public void AexisTopKLinearMat(
             RenderTexture input,
             AexisGraphSession.BufferShape inShape,
             AexisGraphSession.BufferShape inStorageShape,
@@ -1820,19 +1820,19 @@ namespace Aexis.Execution
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (values == null) throw new ArgumentNullException(nameof(values));
-            SetSentisShape(_kSentisTopKLinearMat, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(_kSentisTopKLinearMat, "_SentisOut", outShape, outStorageShape);
-            _cs.SetInt("_SentisAxis", axis);
-            _cs.SetInt("_SentisK", Mathf.Max(1, k));
-            _cs.SetInt("_SentisMode", largest ? 1 : 0);
-            _cs.SetInt("_SentisHasIndices", indices != null ? 1 : 0);
-            _cs.SetTexture(_kSentisTopKLinearMat, "_LinearIn0", input);
-            _cs.SetTexture(_kSentisTopKLinearMat, "_LinearOut0", values);
-            _cs.SetTexture(_kSentisTopKLinearMat, "_LinearOut1", indices != null ? indices : values);
-            Dispatch2D(_cs, _kSentisTopKLinearMat, values.width, values.height, 8, 8);
+            SetAexisShape(_kAexisTopKLinearMat, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(_kAexisTopKLinearMat, "_AexisOut", outShape, outStorageShape);
+            _cs.SetInt("_AexisAxis", axis);
+            _cs.SetInt("_AexisK", Mathf.Max(1, k));
+            _cs.SetInt("_AexisMode", largest ? 1 : 0);
+            _cs.SetInt("_AexisHasIndices", indices != null ? 1 : 0);
+            _cs.SetTexture(_kAexisTopKLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kAexisTopKLinearMat, "_LinearOut0", values);
+            _cs.SetTexture(_kAexisTopKLinearMat, "_LinearOut1", indices != null ? indices : values);
+            Dispatch2D(_cs, _kAexisTopKLinearMat, values.width, values.height, 8, 8);
         }
 
-        public void SentisTopKLinearMat(
+        public void AexisTopKLinearMat(
             CommandBuffer cmd,
             ComputeTexture input,
             AexisGraphSession.BufferShape inShape,
@@ -1848,19 +1848,19 @@ namespace Aexis.Execution
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (values == null) throw new ArgumentNullException(nameof(values));
-            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
-            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
-            cmd.SetComputeIntParam(_cs, "_SentisK", Mathf.Max(1, k));
-            cmd.SetComputeIntParam(_cs, "_SentisMode", largest ? 1 : 0);
-            cmd.SetComputeIntParam(_cs, "_SentisHasIndices", indices != null ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kSentisTopKLinearMat, "_LinearIn0", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisTopKLinearMat, "_LinearOut0", values.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisTopKLinearMat, "_LinearOut1", indices != null ? indices.nameID : values.nameID);
-            Dispatch2D(cmd, _cs, _kSentisTopKLinearMat, values.width, values.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(cmd, "_AexisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_AexisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_AexisK", Mathf.Max(1, k));
+            cmd.SetComputeIntParam(_cs, "_AexisMode", largest ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_AexisHasIndices", indices != null ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kAexisTopKLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisTopKLinearMat, "_LinearOut0", values.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisTopKLinearMat, "_LinearOut1", indices != null ? indices.nameID : values.nameID);
+            Dispatch2D(cmd, _cs, _kAexisTopKLinearMat, values.width, values.height, 8, 8);
         }
 
-        public void SentisOneHotLinearMat(
+        public void AexisOneHotLinearMat(
             RenderTexture indices,
             AexisGraphSession.BufferShape indicesShape,
             AexisGraphSession.BufferShape indicesStorageShape,
@@ -1874,18 +1874,18 @@ namespace Aexis.Execution
         {
             if (indices == null) throw new ArgumentNullException(nameof(indices));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(_kSentisOneHotLinearMat, "_SentisIn0", indicesShape, indicesStorageShape);
-            SetSentisShape(_kSentisOneHotLinearMat, "_SentisOut", outShape, outStorageShape);
-            _cs.SetInt("_SentisAxis", axis);
-            _cs.SetInt("_SentisK", Mathf.Max(1, depth));
-            _cs.SetFloat("_SentisValue0", offValue);
-            _cs.SetFloat("_SentisValue1", onValue);
-            _cs.SetTexture(_kSentisOneHotLinearMat, "_LinearIn0", indices);
-            _cs.SetTexture(_kSentisOneHotLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisOneHotLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(_kAexisOneHotLinearMat, "_AexisIn0", indicesShape, indicesStorageShape);
+            SetAexisShape(_kAexisOneHotLinearMat, "_AexisOut", outShape, outStorageShape);
+            _cs.SetInt("_AexisAxis", axis);
+            _cs.SetInt("_AexisK", Mathf.Max(1, depth));
+            _cs.SetFloat("_AexisValue0", offValue);
+            _cs.SetFloat("_AexisValue1", onValue);
+            _cs.SetTexture(_kAexisOneHotLinearMat, "_LinearIn0", indices);
+            _cs.SetTexture(_kAexisOneHotLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisOneHotLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisOneHotLinearMat(
+        public void AexisOneHotLinearMat(
             CommandBuffer cmd,
             ComputeTexture indices,
             AexisGraphSession.BufferShape indicesShape,
@@ -1901,18 +1901,18 @@ namespace Aexis.Execution
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (indices == null) throw new ArgumentNullException(nameof(indices));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(cmd, "_SentisIn0", indicesShape, indicesStorageShape);
-            SetSentisShape(cmd, "_SentisOut", outShape, outStorageShape);
-            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
-            cmd.SetComputeIntParam(_cs, "_SentisK", Mathf.Max(1, depth));
-            cmd.SetComputeFloatParam(_cs, "_SentisValue0", offValue);
-            cmd.SetComputeFloatParam(_cs, "_SentisValue1", onValue);
-            cmd.SetComputeTextureParam(_cs, _kSentisOneHotLinearMat, "_LinearIn0", indices.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisOneHotLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisOneHotLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", indicesShape, indicesStorageShape);
+            SetAexisShape(cmd, "_AexisOut", outShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_AexisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_AexisK", Mathf.Max(1, depth));
+            cmd.SetComputeFloatParam(_cs, "_AexisValue0", offValue);
+            cmd.SetComputeFloatParam(_cs, "_AexisValue1", onValue);
+            cmd.SetComputeTextureParam(_cs, _kAexisOneHotLinearMat, "_LinearIn0", indices.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisOneHotLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisOneHotLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisCumSumLinearMat(
+        public void AexisCumSumLinearMat(
             RenderTexture input,
             AexisGraphSession.BufferShape inShape,
             AexisGraphSession.BufferShape inStorageShape,
@@ -1924,17 +1924,17 @@ namespace Aexis.Execution
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(_kSentisCumSumLinearMat, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(_kSentisCumSumLinearMat, "_SentisOut", inShape, outStorageShape);
-            _cs.SetInt("_SentisAxis", axis);
-            _cs.SetInt("_SentisExclusive", exclusive ? 1 : 0);
-            _cs.SetInt("_SentisReverse", reverse ? 1 : 0);
-            _cs.SetTexture(_kSentisCumSumLinearMat, "_LinearIn0", input);
-            _cs.SetTexture(_kSentisCumSumLinearMat, "_LinearOut0", output);
-            Dispatch2D(_cs, _kSentisCumSumLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(_kAexisCumSumLinearMat, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(_kAexisCumSumLinearMat, "_AexisOut", inShape, outStorageShape);
+            _cs.SetInt("_AexisAxis", axis);
+            _cs.SetInt("_AexisExclusive", exclusive ? 1 : 0);
+            _cs.SetInt("_AexisReverse", reverse ? 1 : 0);
+            _cs.SetTexture(_kAexisCumSumLinearMat, "_LinearIn0", input);
+            _cs.SetTexture(_kAexisCumSumLinearMat, "_LinearOut0", output);
+            Dispatch2D(_cs, _kAexisCumSumLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisCumSumLinearMat(
+        public void AexisCumSumLinearMat(
             CommandBuffer cmd,
             ComputeTexture input,
             AexisGraphSession.BufferShape inShape,
@@ -1948,41 +1948,41 @@ namespace Aexis.Execution
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
-            SetSentisShape(cmd, "_SentisIn0", inShape, inStorageShape);
-            SetSentisShape(cmd, "_SentisOut", inShape, outStorageShape);
-            cmd.SetComputeIntParam(_cs, "_SentisAxis", axis);
-            cmd.SetComputeIntParam(_cs, "_SentisExclusive", exclusive ? 1 : 0);
-            cmd.SetComputeIntParam(_cs, "_SentisReverse", reverse ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kSentisCumSumLinearMat, "_LinearIn0", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kSentisCumSumLinearMat, "_LinearOut0", output.nameID);
-            Dispatch2D(cmd, _cs, _kSentisCumSumLinearMat, output.width, output.height, 8, 8);
+            SetAexisShape(cmd, "_AexisIn0", inShape, inStorageShape);
+            SetAexisShape(cmd, "_AexisOut", inShape, outStorageShape);
+            cmd.SetComputeIntParam(_cs, "_AexisAxis", axis);
+            cmd.SetComputeIntParam(_cs, "_AexisExclusive", exclusive ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_AexisReverse", reverse ? 1 : 0);
+            cmd.SetComputeTextureParam(_cs, _kAexisCumSumLinearMat, "_LinearIn0", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisCumSumLinearMat, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kAexisCumSumLinearMat, output.width, output.height, 8, 8);
         }
 
-        public void SentisNonZeroLinearMat(RenderTexture input, AexisGraphSession.BufferShape inputShape, AexisGraphSession.BufferShape inputStorage, int capacity, RenderTexture output, RenderTexture count)
+        public void AexisNonZeroLinearMat(RenderTexture input, AexisGraphSession.BufferShape inputShape, AexisGraphSession.BufferShape inputStorage, int capacity, RenderTexture output, RenderTexture count)
         {
-            var outShape = new AexisGraphSession.BufferShape(2, capacity, 1, 1, 1); SetSentisShape(_kSentisNonZeroLinearMat, "_SentisIn0", inputShape, inputStorage); SetSentisShape(_kSentisNonZeroLinearMat, "_SentisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape));
-            _cs.SetInt("_SentisTotal", capacity); _cs.SetTexture(_kSentisNonZeroLinearMat, "_LinearIn0", input); _cs.SetTexture(_kSentisNonZeroLinearMat, "_LinearOut0", output); _cs.SetTexture(_kSentisNonZeroLinearMat, "_LinearOut1", count); _cs.Dispatch(_kSentisNonZeroLinearMat, 1, 1, 1);
+            var outShape = new AexisGraphSession.BufferShape(2, capacity, 1, 1, 1); SetAexisShape(_kAexisNonZeroLinearMat, "_AexisIn0", inputShape, inputStorage); SetAexisShape(_kAexisNonZeroLinearMat, "_AexisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape));
+            _cs.SetInt("_AexisTotal", capacity); _cs.SetTexture(_kAexisNonZeroLinearMat, "_LinearIn0", input); _cs.SetTexture(_kAexisNonZeroLinearMat, "_LinearOut0", output); _cs.SetTexture(_kAexisNonZeroLinearMat, "_LinearOut1", count); _cs.Dispatch(_kAexisNonZeroLinearMat, 1, 1, 1);
         }
-        public void SentisNonZeroLinearMat(CommandBuffer cmd, ComputeTexture input, AexisGraphSession.BufferShape inputShape, AexisGraphSession.BufferShape inputStorage, int capacity, ComputeTexture output, ComputeTexture count)
+        public void AexisNonZeroLinearMat(CommandBuffer cmd, ComputeTexture input, AexisGraphSession.BufferShape inputShape, AexisGraphSession.BufferShape inputStorage, int capacity, ComputeTexture output, ComputeTexture count)
         {
-            var outShape = new AexisGraphSession.BufferShape(2, capacity, 1, 1, 1); SetSentisShape(cmd, "_SentisIn0", inputShape, inputStorage); SetSentisShape(cmd, "_SentisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape)); cmd.SetComputeIntParam(_cs, "_SentisTotal", capacity); cmd.SetComputeTextureParam(_cs, _kSentisNonZeroLinearMat, "_LinearIn0", input.nameID); cmd.SetComputeTextureParam(_cs, _kSentisNonZeroLinearMat, "_LinearOut0", output.nameID); cmd.SetComputeTextureParam(_cs, _kSentisNonZeroLinearMat, "_LinearOut1", count.nameID); cmd.DispatchCompute(_cs, _kSentisNonZeroLinearMat, 1, 1, 1);
+            var outShape = new AexisGraphSession.BufferShape(2, capacity, 1, 1, 1); SetAexisShape(cmd, "_AexisIn0", inputShape, inputStorage); SetAexisShape(cmd, "_AexisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape)); cmd.SetComputeIntParam(_cs, "_AexisTotal", capacity); cmd.SetComputeTextureParam(_cs, _kAexisNonZeroLinearMat, "_LinearIn0", input.nameID); cmd.SetComputeTextureParam(_cs, _kAexisNonZeroLinearMat, "_LinearOut0", output.nameID); cmd.SetComputeTextureParam(_cs, _kAexisNonZeroLinearMat, "_LinearOut1", count.nameID); cmd.DispatchCompute(_cs, _kAexisNonZeroLinearMat, 1, 1, 1);
         }
-        public void SentisCompressLinearMat(RenderTexture values, AexisGraphSession.BufferShape valuesShape, AexisGraphSession.BufferShape valuesStorage, RenderTexture condition, AexisGraphSession.BufferShape conditionShape, AexisGraphSession.BufferShape conditionStorage, int capacity, RenderTexture output, RenderTexture count)
+        public void AexisCompressLinearMat(RenderTexture values, AexisGraphSession.BufferShape valuesShape, AexisGraphSession.BufferShape valuesStorage, RenderTexture condition, AexisGraphSession.BufferShape conditionShape, AexisGraphSession.BufferShape conditionStorage, int capacity, RenderTexture output, RenderTexture count)
         {
-            var outShape = new AexisGraphSession.BufferShape(1, capacity, 1, 1, 1); SetSentisShape(_kSentisCompressLinearMat, "_SentisIn0", valuesShape, valuesStorage); SetSentisShape(_kSentisCompressLinearMat, "_SentisIn1", conditionShape, conditionStorage); SetSentisShape(_kSentisCompressLinearMat, "_SentisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape)); _cs.SetInt("_SentisTotal", capacity); _cs.SetTexture(_kSentisCompressLinearMat, "_LinearIn0", values); _cs.SetTexture(_kSentisCompressLinearMat, "_LinearIn1", condition); _cs.SetTexture(_kSentisCompressLinearMat, "_LinearOut0", output); _cs.SetTexture(_kSentisCompressLinearMat, "_LinearOut1", count); _cs.Dispatch(_kSentisCompressLinearMat, 1, 1, 1);
+            var outShape = new AexisGraphSession.BufferShape(1, capacity, 1, 1, 1); SetAexisShape(_kAexisCompressLinearMat, "_AexisIn0", valuesShape, valuesStorage); SetAexisShape(_kAexisCompressLinearMat, "_AexisIn1", conditionShape, conditionStorage); SetAexisShape(_kAexisCompressLinearMat, "_AexisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape)); _cs.SetInt("_AexisTotal", capacity); _cs.SetTexture(_kAexisCompressLinearMat, "_LinearIn0", values); _cs.SetTexture(_kAexisCompressLinearMat, "_LinearIn1", condition); _cs.SetTexture(_kAexisCompressLinearMat, "_LinearOut0", output); _cs.SetTexture(_kAexisCompressLinearMat, "_LinearOut1", count); _cs.Dispatch(_kAexisCompressLinearMat, 1, 1, 1);
         }
-        public void SentisCompressLinearMat(CommandBuffer cmd, ComputeTexture values, AexisGraphSession.BufferShape valuesShape, AexisGraphSession.BufferShape valuesStorage, ComputeTexture condition, AexisGraphSession.BufferShape conditionShape, AexisGraphSession.BufferShape conditionStorage, int capacity, ComputeTexture output, ComputeTexture count)
+        public void AexisCompressLinearMat(CommandBuffer cmd, ComputeTexture values, AexisGraphSession.BufferShape valuesShape, AexisGraphSession.BufferShape valuesStorage, ComputeTexture condition, AexisGraphSession.BufferShape conditionShape, AexisGraphSession.BufferShape conditionStorage, int capacity, ComputeTexture output, ComputeTexture count)
         {
-            var outShape = new AexisGraphSession.BufferShape(1, capacity, 1, 1, 1); SetSentisShape(cmd, "_SentisIn0", valuesShape, valuesStorage); SetSentisShape(cmd, "_SentisIn1", conditionShape, conditionStorage); SetSentisShape(cmd, "_SentisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape)); cmd.SetComputeIntParam(_cs, "_SentisTotal", capacity); cmd.SetComputeTextureParam(_cs, _kSentisCompressLinearMat, "_LinearIn0", values.nameID); cmd.SetComputeTextureParam(_cs, _kSentisCompressLinearMat, "_LinearIn1", condition.nameID); cmd.SetComputeTextureParam(_cs, _kSentisCompressLinearMat, "_LinearOut0", output.nameID); cmd.SetComputeTextureParam(_cs, _kSentisCompressLinearMat, "_LinearOut1", count.nameID); cmd.DispatchCompute(_cs, _kSentisCompressLinearMat, 1, 1, 1);
+            var outShape = new AexisGraphSession.BufferShape(1, capacity, 1, 1, 1); SetAexisShape(cmd, "_AexisIn0", valuesShape, valuesStorage); SetAexisShape(cmd, "_AexisIn1", conditionShape, conditionStorage); SetAexisShape(cmd, "_AexisOut", outShape, AexisGraphSession.ResolveLinearMatStorageShape(outShape)); cmd.SetComputeIntParam(_cs, "_AexisTotal", capacity); cmd.SetComputeTextureParam(_cs, _kAexisCompressLinearMat, "_LinearIn0", values.nameID); cmd.SetComputeTextureParam(_cs, _kAexisCompressLinearMat, "_LinearIn1", condition.nameID); cmd.SetComputeTextureParam(_cs, _kAexisCompressLinearMat, "_LinearOut0", output.nameID); cmd.SetComputeTextureParam(_cs, _kAexisCompressLinearMat, "_LinearOut1", count.nameID); cmd.DispatchCompute(_cs, _kAexisCompressLinearMat, 1, 1, 1);
         }
-        public void SentisGatherNdLinearMat(RenderTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, RenderTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, AexisGraphSession.BufferShape outShape, AexisGraphSession.BufferShape outStorage, RenderTexture output)
-        { SetSentisShape(_kSentisGatherNdLinearMat, "_SentisIn0", dataShape, dataStorage); SetSentisShape(_kSentisGatherNdLinearMat, "_SentisIn1", indicesShape, indicesStorage); SetSentisShape(_kSentisGatherNdLinearMat, "_SentisOut", outShape, outStorage); _cs.SetTexture(_kSentisGatherNdLinearMat, "_LinearIn0", data); _cs.SetTexture(_kSentisGatherNdLinearMat, "_LinearIn1", indices); _cs.SetTexture(_kSentisGatherNdLinearMat, "_LinearOut0", output); Dispatch2D(_cs, _kSentisGatherNdLinearMat, output.width, output.height, 8, 8); }
-        public void SentisGatherNdLinearMat(CommandBuffer cmd, ComputeTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, ComputeTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, AexisGraphSession.BufferShape outShape, AexisGraphSession.BufferShape outStorage, ComputeTexture output)
-        { SetSentisShape(cmd, "_SentisIn0", dataShape, dataStorage); SetSentisShape(cmd, "_SentisIn1", indicesShape, indicesStorage); SetSentisShape(cmd, "_SentisOut", outShape, outStorage); cmd.SetComputeTextureParam(_cs, _kSentisGatherNdLinearMat, "_LinearIn0", data.nameID); cmd.SetComputeTextureParam(_cs, _kSentisGatherNdLinearMat, "_LinearIn1", indices.nameID); cmd.SetComputeTextureParam(_cs, _kSentisGatherNdLinearMat, "_LinearOut0", output.nameID); Dispatch2D(cmd, _cs, _kSentisGatherNdLinearMat, output.width, output.height, 8, 8); }
-        public void SentisScatterLinearMat(CommandBuffer cmd, ComputeTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, ComputeTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, ComputeTexture updates, AexisGraphSession.BufferShape updatesShape, AexisGraphSession.BufferShape updatesStorage, int updateCount, ComputeTexture output)
-        { SetSentisShape(cmd, "_SentisIn0", dataShape, dataStorage); SetSentisShape(cmd, "_SentisIn1", indicesShape, indicesStorage); SetSentisShape(cmd, "_SentisIn2", updatesShape, updatesStorage); SetSentisShape(cmd, "_SentisOut", dataShape, dataStorage); cmd.SetComputeIntParam(_cs, "_SentisTotal", updateCount); cmd.SetComputeTextureParam(_cs, _kSentisScatterLinearMat, "_LinearIn0", data.nameID); cmd.SetComputeTextureParam(_cs, _kSentisScatterLinearMat, "_LinearIn1", indices.nameID); cmd.SetComputeTextureParam(_cs, _kSentisScatterLinearMat, "_LinearIn2", updates.nameID); cmd.SetComputeTextureParam(_cs, _kSentisScatterLinearMat, "_LinearOut0", output.nameID); cmd.DispatchCompute(_cs, _kSentisScatterLinearMat, 1, 1, 1); }
-        public void SentisScatterLinearMat(RenderTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, RenderTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, RenderTexture updates, AexisGraphSession.BufferShape updatesShape, AexisGraphSession.BufferShape updatesStorage, int updateCount, RenderTexture output)
-        { SetSentisShape(_kSentisScatterLinearMat, "_SentisIn0", dataShape, dataStorage); SetSentisShape(_kSentisScatterLinearMat, "_SentisIn1", indicesShape, indicesStorage); SetSentisShape(_kSentisScatterLinearMat, "_SentisIn2", updatesShape, updatesStorage); SetSentisShape(_kSentisScatterLinearMat, "_SentisOut", dataShape, dataStorage); _cs.SetInt("_SentisTotal", updateCount); _cs.SetTexture(_kSentisScatterLinearMat, "_LinearIn0", data); _cs.SetTexture(_kSentisScatterLinearMat, "_LinearIn1", indices); _cs.SetTexture(_kSentisScatterLinearMat, "_LinearIn2", updates); _cs.SetTexture(_kSentisScatterLinearMat, "_LinearOut0", output); _cs.Dispatch(_kSentisScatterLinearMat, 1, 1, 1); }
+        public void AexisGatherNdLinearMat(RenderTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, RenderTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, AexisGraphSession.BufferShape outShape, AexisGraphSession.BufferShape outStorage, RenderTexture output)
+        { SetAexisShape(_kAexisGatherNdLinearMat, "_AexisIn0", dataShape, dataStorage); SetAexisShape(_kAexisGatherNdLinearMat, "_AexisIn1", indicesShape, indicesStorage); SetAexisShape(_kAexisGatherNdLinearMat, "_AexisOut", outShape, outStorage); _cs.SetTexture(_kAexisGatherNdLinearMat, "_LinearIn0", data); _cs.SetTexture(_kAexisGatherNdLinearMat, "_LinearIn1", indices); _cs.SetTexture(_kAexisGatherNdLinearMat, "_LinearOut0", output); Dispatch2D(_cs, _kAexisGatherNdLinearMat, output.width, output.height, 8, 8); }
+        public void AexisGatherNdLinearMat(CommandBuffer cmd, ComputeTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, ComputeTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, AexisGraphSession.BufferShape outShape, AexisGraphSession.BufferShape outStorage, ComputeTexture output)
+        { SetAexisShape(cmd, "_AexisIn0", dataShape, dataStorage); SetAexisShape(cmd, "_AexisIn1", indicesShape, indicesStorage); SetAexisShape(cmd, "_AexisOut", outShape, outStorage); cmd.SetComputeTextureParam(_cs, _kAexisGatherNdLinearMat, "_LinearIn0", data.nameID); cmd.SetComputeTextureParam(_cs, _kAexisGatherNdLinearMat, "_LinearIn1", indices.nameID); cmd.SetComputeTextureParam(_cs, _kAexisGatherNdLinearMat, "_LinearOut0", output.nameID); Dispatch2D(cmd, _cs, _kAexisGatherNdLinearMat, output.width, output.height, 8, 8); }
+        public void AexisScatterLinearMat(CommandBuffer cmd, ComputeTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, ComputeTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, ComputeTexture updates, AexisGraphSession.BufferShape updatesShape, AexisGraphSession.BufferShape updatesStorage, int updateCount, ComputeTexture output)
+        { SetAexisShape(cmd, "_AexisIn0", dataShape, dataStorage); SetAexisShape(cmd, "_AexisIn1", indicesShape, indicesStorage); SetAexisShape(cmd, "_AexisIn2", updatesShape, updatesStorage); SetAexisShape(cmd, "_AexisOut", dataShape, dataStorage); cmd.SetComputeIntParam(_cs, "_AexisTotal", updateCount); cmd.SetComputeTextureParam(_cs, _kAexisScatterLinearMat, "_LinearIn0", data.nameID); cmd.SetComputeTextureParam(_cs, _kAexisScatterLinearMat, "_LinearIn1", indices.nameID); cmd.SetComputeTextureParam(_cs, _kAexisScatterLinearMat, "_LinearIn2", updates.nameID); cmd.SetComputeTextureParam(_cs, _kAexisScatterLinearMat, "_LinearOut0", output.nameID); cmd.DispatchCompute(_cs, _kAexisScatterLinearMat, 1, 1, 1); }
+        public void AexisScatterLinearMat(RenderTexture data, AexisGraphSession.BufferShape dataShape, AexisGraphSession.BufferShape dataStorage, RenderTexture indices, AexisGraphSession.BufferShape indicesShape, AexisGraphSession.BufferShape indicesStorage, RenderTexture updates, AexisGraphSession.BufferShape updatesShape, AexisGraphSession.BufferShape updatesStorage, int updateCount, RenderTexture output)
+        { SetAexisShape(_kAexisScatterLinearMat, "_AexisIn0", dataShape, dataStorage); SetAexisShape(_kAexisScatterLinearMat, "_AexisIn1", indicesShape, indicesStorage); SetAexisShape(_kAexisScatterLinearMat, "_AexisIn2", updatesShape, updatesStorage); SetAexisShape(_kAexisScatterLinearMat, "_AexisOut", dataShape, dataStorage); _cs.SetInt("_AexisTotal", updateCount); _cs.SetTexture(_kAexisScatterLinearMat, "_LinearIn0", data); _cs.SetTexture(_kAexisScatterLinearMat, "_LinearIn1", indices); _cs.SetTexture(_kAexisScatterLinearMat, "_LinearIn2", updates); _cs.SetTexture(_kAexisScatterLinearMat, "_LinearOut0", output); _cs.Dispatch(_kAexisScatterLinearMat, 1, 1, 1); }
 
         public void ScalePack4(RenderTexture input, float k, int packs, RenderTexture output)
         {
@@ -2210,8 +2210,8 @@ namespace Aexis.Execution
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
             SetFlipPack4Parameters(width, height, depth, channels, flipWidth, flipHeight, flipDepth, flipChannels);
-            _cs.SetTexture(_kFlipPack4P1, "_NcnnInArr", input);
-            _cs.SetTexture(_kFlipPack4P1, "_NcnnOutArr", output);
+            _cs.SetTexture(_kFlipPack4P1, "_AexisInArr", input);
+            _cs.SetTexture(_kFlipPack4P1, "_AexisOutArr", output);
             Dispatch3D(_kFlipPack4P1, width, height, depth * Mathf.CeilToInt(channels / 4f), 8, 8);
         }
 
@@ -2243,8 +2243,8 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_P1FlipHeight", flipHeight ? 1 : 0);
             cmd.SetComputeIntParam(_cs, "_P1FlipDepth", flipDepth ? 1 : 0);
             cmd.SetComputeIntParam(_cs, "_P1FlipChannels", flipChannels ? 1 : 0);
-            cmd.SetComputeTextureParam(_cs, _kFlipPack4P1, "_NcnnInArr", input.nameID);
-            cmd.SetComputeTextureParam(_cs, _kFlipPack4P1, "_NcnnOutArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kFlipPack4P1, "_AexisInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kFlipPack4P1, "_AexisOutArr", output.nameID);
             Dispatch3D(cmd, _kFlipPack4P1, width, height, ResolveComputeTextureDispatchDepth(output, depth * packs), 8, 8);
         }
 

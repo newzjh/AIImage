@@ -118,10 +118,10 @@ public sealed class NcnnFp16ModelManifestTests
         Assert.That(AexisGraphSession.RequiresFp32AccumulatorOutput("Convolution"), Is.False);
 
         var root = Path.GetDirectoryName(Application.dataPath);
-        var source = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4PointwiseNorm.hlsl"));
+        var source = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Includes", "KernelGroups", "AexisKernels.Pack4PointwiseNorm.hlsl"));
         Assert.That(source, Does.Contain("float sumSquare = 0.0"));
 
-        var reproSource = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "AexisGraphSession.cs"));
+        var reproSource = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Graph", "AexisGraphSession.cs"));
         Assert.That(reproSource, Does.Contain("format = ResolveLinearTextureFormat(format);"));
         Assert.That(reproSource, Does.Not.Contain("format = format == RenderTextureFormat.ARGBHalf ? ResolveLinearMatTextureFormat() : format;"));
         Assert.That(reproSource, Does.Contain("Fp32ActivationStartLayerName"));
@@ -131,7 +131,7 @@ public sealed class NcnnFp16ModelManifestTests
         Assert.That(codeFormerRunner, Does.Contain("Fp32ActivationStartLayerName = _generatorRepro.UsesFp16ActivationStorage"));
         Assert.That(codeFormerRunner, Does.Contain("\"Resize_512\""));
 
-        var reshapeKernel = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "AexisNcnn.compute"));
+        var reshapeKernel = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "AexisCommon.compute"));
         Assert.That(reshapeKernel, Does.Contain("linearIndex >> 2"));
         Assert.That(reshapeKernel, Does.Contain("linearIndex & 3"));
     }
@@ -140,23 +140,23 @@ public sealed class NcnnFp16ModelManifestTests
     public void Fp16WeightKernels_UsePackedHalfUploadsAndNoActivationBufferFallback()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Conv.hlsl"));
-        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Ncnn", "Includes", "KernelGroups", "NcnnKernels.Pack4Matmul.hlsl"));
-        var convolutionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "AexisConvolutionLayer.cs"));
+        var conv = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Includes", "KernelGroups", "AexisKernels.Pack4Conv.hlsl"));
+        var gemm = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Resources", "Aexis", "Includes", "KernelGroups", "AexisKernels.Pack4Matmul.hlsl"));
+        var convolutionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Layers", "AexisConvolutionLayer.cs"));
 
         Assert.That(conv, Does.Contain("_ConvW4Fp16"));
         Assert.That(conv, Does.Contain("_DwConvW4Fp16"));
-        Assert.That(conv, Does.Contain("NcnnMaskConvOutputTail"));
+        Assert.That(conv, Does.Contain("AexisMaskConvOutputTail"));
         Assert.That(conv, Does.Contain("f16tof32"));
         Assert.That(gemm, Does.Contain("_MatBFp16"));
         Assert.That(gemm, Does.Contain("f16tof32"));
         Assert.That(convolutionLayer, Does.Contain("SetFp16ConvWeights"));
 
-        var innerProductLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "AexisInnerProductLayer.cs"));
+        var innerProductLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Layers", "AexisInnerProductLayer.cs"));
         Assert.That(innerProductLayer, Does.Contain("wFp16"));
         Assert.That(innerProductLayer, Does.Contain("SetFp16GemmWeights"));
 
-        var multiHeadAttentionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", "AexisMultiHeadAttentionLayer.cs"));
+        var multiHeadAttentionLayer = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Layers", "AexisMultiHeadAttentionLayer.cs"));
         Assert.That(multiHeadAttentionLayer, Does.Contain("owner.Ops.SetFp16GemmWeights(null);"));
     }
 

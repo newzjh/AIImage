@@ -17,7 +17,7 @@ public sealed class NcnnC2CdhwCmdPack4Tests
         foreach (var operatorName in new[] { "Convolution3D", "Deconvolution3D", "Pooling3D", "Interp" })
         {
             var capability = capabilities.Single(item => item.operatorName == operatorName);
-            Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.Partial));
+            Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
             Assert.That(capability.profiles, Is.Not.Empty);
             var profile = capability.profiles.Single(item => item.backend == AexisOperatorCapabilityBackend.CommandBuffer);
             Assert.That(profile.layouts, Does.Contain("CDHW"));
@@ -58,7 +58,7 @@ public sealed class NcnnC2CdhwCmdPack4Tests
 
         var diagnostic = error.Diagnostics.Single(item => item.operatorName == "Interp");
         Assert.That(diagnostic.code, Is.EqualTo("command-buffer-pack4-profile-rejected"));
-        Assert.That(diagnostic.rejectedPaths, Does.Contain("materialize-from-buffer"));
+        Assert.That(diagnostic.rejectedPaths, Does.Contain("materialize"));
         Assert.That(diagnostic.rejectedPaths, Does.Contain("placeholder"));
     }
 
@@ -157,7 +157,7 @@ public sealed class NcnnC2CdhwCmdPack4Tests
     public void CdhwCommandLayersPublishDescriptorsAndAvoidCmdPlaceholders()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var layersDirectory = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers");
+        var layersDirectory = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Layers");
         foreach (var file in new[]
         {
             "AexisConvolution3DLayer.cs",

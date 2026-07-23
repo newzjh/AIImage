@@ -1,6 +1,6 @@
-// Auto-generated kernel implementation group: NcnnKernels.Pack4Layout.hlsl
+// Auto-generated kernel implementation group: AexisKernels.Pack4Layout.hlsl
 
-void NcnnPack4ToBufferCHW_Impl(uint3 id)
+void AexisPack4ToBufferCHW_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     uint wh = (uint)(_Pack4W * _Pack4H);
@@ -16,7 +16,7 @@ void NcnnPack4ToBufferCHW_Impl(uint3 id)
     _Pack4Out[idx] = o;
 }
 
-void NcnnLinearMatToBuffer_Impl(uint3 id)
+void AexisLinearMatToBuffer_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     uint w = (uint)max(_Pack4W, 1);
@@ -30,7 +30,7 @@ void NcnnLinearMatToBuffer_Impl(uint3 id)
     _Pack4Out[idx] = _LinearIn0[int2((int)x, (int)y)];
 }
 
-void NcnnFillLinearMatFromBuffer_Impl(uint3 id)
+void AexisFillLinearMatFromBuffer_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -44,7 +44,7 @@ void NcnnFillLinearMatFromBuffer_Impl(uint3 id)
     _LinearOut0[int2((int)id.x, (int)id.y)] = idx < total ? _FillIn[idx] : 0.0;
 }
 
-void NcnnPack4ChannelsToWidth_Impl(uint3 id)
+void AexisPack4ChannelsToWidth_Impl(uint3 id)
 {
     uint ow, oh, od;
     _Pack4ChannelOutArr.GetDimensions(ow, oh, od);
@@ -58,11 +58,11 @@ void NcnnPack4ChannelsToWidth_Impl(uint3 id)
         return;
     }
 
-    float scalar = NcnnReadPack4Channel(_Pack4ChannelInArr, 0, 0, outX);
+    float scalar = AexisReadPack4Channel(_Pack4ChannelInArr, 0, 0, outX);
     _Pack4ChannelOutArr[int3(outX, 0, 0)] = float4(scalar, 0.0, 0.0, 0.0);
 }
 
-void NcnnPack4ToBufferCDHW_Impl(uint3 id)
+void AexisPack4ToBufferCDHW_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     uint wh = (uint)(_Pack4W * _Pack4H);
@@ -85,7 +85,7 @@ void NcnnPack4ToBufferCDHW_Impl(uint3 id)
     _Pack4Out[idx] = o;
 }
 
-void NcnnShuffleChannelPack4_Impl(uint3 id)
+void AexisShuffleChannelPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _ShuffleOutArr.GetDimensions(w, h, d);
@@ -100,28 +100,28 @@ void NcnnShuffleChannelPack4_Impl(uint3 id)
     if (gz4.x < _ShuffleChannels)
     {
         int srcChannel = (gz4.x % _ShuffleGroup) * channelsPerGroup + (gz4.x / _ShuffleGroup);
-        o.x = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+        o.x = AexisReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
     }
     if (gz4.y < _ShuffleChannels)
     {
         int srcChannel = (gz4.y % _ShuffleGroup) * channelsPerGroup + (gz4.y / _ShuffleGroup);
-        o.y = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+        o.y = AexisReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
     }
     if (gz4.z < _ShuffleChannels)
     {
         int srcChannel = (gz4.z % _ShuffleGroup) * channelsPerGroup + (gz4.z / _ShuffleGroup);
-        o.z = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+        o.z = AexisReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
     }
     if (gz4.w < _ShuffleChannels)
     {
         int srcChannel = (gz4.w % _ShuffleGroup) * channelsPerGroup + (gz4.w / _ShuffleGroup);
-        o.w = NcnnReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
+        o.w = AexisReadPack4Channel(_ShuffleInArr, (int)id.x, (int)id.y, srcChannel);
     }
 
     _ShuffleOutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
-void NcnnCropPack4_Impl(uint3 id)
+void AexisCropPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _CropPack4OutArr.GetDimensions(w, h, d);
@@ -133,33 +133,33 @@ void NcnnCropPack4_Impl(uint3 id)
     int y = (int)id.y + _CropPack4OffsetH;
     int4 oc4 = p * 4 + int4(0, 1, 2, 3);
     float4 o = 0.0;
-    if (oc4.x < _CropPack4OutC) o.x = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.x + _CropPack4OffsetC);
-    if (oc4.y < _CropPack4OutC) o.y = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.y + _CropPack4OffsetC);
-    if (oc4.z < _CropPack4OutC) o.z = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.z + _CropPack4OffsetC);
-    if (oc4.w < _CropPack4OutC) o.w = NcnnReadPack4Channel(_CropPack4InArr, x, y, oc4.w + _CropPack4OffsetC);
+    if (oc4.x < _CropPack4OutC) o.x = AexisReadPack4Channel(_CropPack4InArr, x, y, oc4.x + _CropPack4OffsetC);
+    if (oc4.y < _CropPack4OutC) o.y = AexisReadPack4Channel(_CropPack4InArr, x, y, oc4.y + _CropPack4OffsetC);
+    if (oc4.z < _CropPack4OutC) o.z = AexisReadPack4Channel(_CropPack4InArr, x, y, oc4.z + _CropPack4OffsetC);
+    if (oc4.w < _CropPack4OutC) o.w = AexisReadPack4Channel(_CropPack4InArr, x, y, oc4.w + _CropPack4OffsetC);
     _CropPack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
-int NcnnTileLinearIndex(int x, int y, int z, int c, int w, int h, int d)
+int AexisTileLinearIndex(int x, int y, int z, int c, int w, int h, int d)
 {
     return (((c * max(1, d) + z) * max(1, h) + y) * max(1, w)) + x;
 }
 
-float NcnnTileReadPack4Scalar(int x, int y, int z, int c)
+float AexisTileReadPack4Scalar(int x, int y, int z, int c)
 {
     float value = 0.0;
     if (_TileDims <= 1)
-        value = NcnnReadPack4Channel(_TexIn0Arr, x, 0, 0);
+        value = AexisReadPack4Channel(_TexIn0Arr, x, 0, 0);
     else if (_TileDims == 2)
-        value = NcnnReadPack4Channel(_TexIn0Arr, x, y, 0);
+        value = AexisReadPack4Channel(_TexIn0Arr, x, y, 0);
     else if (_TileDims == 3)
-        value = NcnnReadPack4Channel(_TexIn0Arr, x, y, c);
+        value = AexisReadPack4Channel(_TexIn0Arr, x, y, c);
     else
-        value = NcnnReadPack4ChannelCDHW(_TexIn0Arr, x, y, z, c, _TileInC);
+        value = AexisReadPack4ChannelCDHW(_TexIn0Arr, x, y, z, c, _TileInC);
     return value;
 }
 
-void NcnnTilePack4_Impl(uint3 id)
+void AexisTilePack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -191,13 +191,13 @@ void NcnnTilePack4_Impl(uint3 id)
             continue;
 
         int ic = oc % max(1, _TileInC);
-        NcnnWriteLane(o, lane, NcnnTileReadPack4Scalar(ix, iy, iz, ic));
+        AexisWriteLane(o, lane, AexisTileReadPack4Scalar(ix, iy, iz, ic));
     }
 
     _TexOut0Arr[int3(outX, outY, outSlice)] = o;
 }
 
-void NcnnTileLinearMat_Impl(uint3 id)
+void AexisTileLinearMat_Impl(uint3 id)
 {
     uint sw, sh;
     _LinearOut0.GetDimensions(sw, sh);
@@ -223,14 +223,14 @@ void NcnnTileLinearMat_Impl(uint3 id)
     int iz = outZ % max(1, _TileInD);
     int ic = outC % max(1, _TileInC);
 
-    int inLinear = NcnnTileLinearIndex(ix, iy, iz, ic, _TileInW, _TileInH, _TileInD);
+    int inLinear = AexisTileLinearIndex(ix, iy, iz, ic, _TileInW, _TileInH, _TileInD);
     int inStorageW = max(1, _TileInStorageW);
     int inX = inLinear % inStorageW;
     int inY = inLinear / inStorageW;
     _LinearOut0[int2((int)id.x, (int)id.y)] = _LinearIn0[int2(inX, inY)];
 }
 
-void NcnnSlicePack4_Impl(uint3 id)
+void AexisSlicePack4_Impl(uint3 id)
 {
     uint w, h, d;
     _SlicePack4OutArr.GetDimensions(w, h, d);
@@ -251,28 +251,28 @@ void NcnnSlicePack4_Impl(uint3 id)
     if (oc4.x < _SlicePack4OutC)
     {
         int sc = _SlicePack4Axis == 2 ? oc4.x + _SlicePack4Begin : oc4.x;
-        o.x = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+        o.x = AexisReadPack4Channel(_SlicePack4InArr, x, y, sc);
     }
     if (oc4.y < _SlicePack4OutC)
     {
         int sc = _SlicePack4Axis == 2 ? oc4.y + _SlicePack4Begin : oc4.y;
-        o.y = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+        o.y = AexisReadPack4Channel(_SlicePack4InArr, x, y, sc);
     }
     if (oc4.z < _SlicePack4OutC)
     {
         int sc = _SlicePack4Axis == 2 ? oc4.z + _SlicePack4Begin : oc4.z;
-        o.z = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+        o.z = AexisReadPack4Channel(_SlicePack4InArr, x, y, sc);
     }
     if (oc4.w < _SlicePack4OutC)
     {
         int sc = _SlicePack4Axis == 2 ? oc4.w + _SlicePack4Begin : oc4.w;
-        o.w = NcnnReadPack4Channel(_SlicePack4InArr, x, y, sc);
+        o.w = AexisReadPack4Channel(_SlicePack4InArr, x, y, sc);
     }
 
     _SlicePack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
-void NcnnSliceLinearMat2D_Impl(uint3 id)
+void AexisSliceLinearMat2D_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -289,7 +289,7 @@ void NcnnSliceLinearMat2D_Impl(uint3 id)
     _LinearOut0[int2((int)id.x, (int)id.y)] = _LinearIn0[int2(x, y)];
 }
 
-void NcnnPermutePack4_Impl(uint3 id)
+void AexisPermutePack4_Impl(uint3 id)
 {
     uint w, h, d;
     _PermutePack4OutArr.GetDimensions(w, h, d);
@@ -307,34 +307,34 @@ void NcnnPermutePack4_Impl(uint3 id)
         int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.x);
         int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.x);
         int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.x);
-        o.x = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+        o.x = AexisReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
     }
     if (oc4.y < _PermutePack4OutC)
     {
         int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.y);
         int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.y);
         int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.y);
-        o.y = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+        o.y = AexisReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
     }
     if (oc4.z < _PermutePack4OutC)
     {
         int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.z);
         int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.z);
         int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.z);
-        o.z = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+        o.z = AexisReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
     }
     if (oc4.w < _PermutePack4OutC)
     {
         int srcW = _PermutePack4Axis0 == 0 ? x : (_PermutePack4Axis1 == 0 ? y : oc4.w);
         int srcH = _PermutePack4Axis0 == 1 ? x : (_PermutePack4Axis1 == 1 ? y : oc4.w);
         int srcC = _PermutePack4Axis0 == 2 ? x : (_PermutePack4Axis1 == 2 ? y : oc4.w);
-        o.w = NcnnReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
+        o.w = AexisReadPack4Channel(_PermutePack4InArr, srcW, srcH, srcC);
     }
 
     _PermutePack4OutArr[int3(x, y, p)] = o;
 }
 
-void NcnnPermutePack4CDHW_Impl(uint3 id)
+void AexisPermutePack4CDHW_Impl(uint3 id)
 {
     uint w, h, d;
     _PermutePack4CDHWOutArr.GetDimensions(w, h, d);
@@ -362,7 +362,7 @@ void NcnnPermutePack4CDHW_Impl(uint3 id)
         int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.x));
         int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.x));
         int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.x));
-        o.x = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+        o.x = AexisReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
     }
     if (oc4.y < _PermutePack4CDHWOutC)
     {
@@ -370,7 +370,7 @@ void NcnnPermutePack4CDHW_Impl(uint3 id)
         int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.y));
         int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.y));
         int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.y));
-        o.y = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+        o.y = AexisReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
     }
     if (oc4.z < _PermutePack4CDHWOutC)
     {
@@ -378,7 +378,7 @@ void NcnnPermutePack4CDHW_Impl(uint3 id)
         int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.z));
         int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.z));
         int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.z));
-        o.z = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+        o.z = AexisReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
     }
     if (oc4.w < _PermutePack4CDHWOutC)
     {
@@ -386,13 +386,13 @@ void NcnnPermutePack4CDHW_Impl(uint3 id)
         int srcH = _PermutePack4CDHWAxis0 == 1 ? outX : (_PermutePack4CDHWAxis1 == 1 ? outY : (_PermutePack4CDHWAxis2 == 1 ? outZ : oc4.w));
         int srcD = _PermutePack4CDHWAxis0 == 2 ? outX : (_PermutePack4CDHWAxis1 == 2 ? outY : (_PermutePack4CDHWAxis2 == 2 ? outZ : oc4.w));
         int srcC = _PermutePack4CDHWAxis0 == 3 ? outX : (_PermutePack4CDHWAxis1 == 3 ? outY : (_PermutePack4CDHWAxis2 == 3 ? outZ : oc4.w));
-        o.w = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+        o.w = AexisReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
     }
 
     _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnPack4SpatialToPack4Linear_Impl(uint3 id)
+void AexisPack4SpatialToPack4Linear_Impl(uint3 id)
 {
     uint inputWidth, inputHeight, inputDepth;
     uint outputWidth, outputHeight, outputDepth;
@@ -417,7 +417,7 @@ int _Pack4ReorderGridWidth;
 int _Pack4ReorderGridHeight;
 int _Pack4ReorderMerge;
 
-void NcnnPack4ReorderMergeRows_Impl(uint3 id)
+void AexisPack4ReorderMergeRows_Impl(uint3 id)
 {
     uint inputWidth, inputHeight, inputDepth;
     uint outputWidth, outputHeight, outputDepth;
@@ -455,7 +455,7 @@ void NcnnPack4ReorderMergeRows_Impl(uint3 id)
         _Pack4SpatialInArr[int3((int)id.x, sourceRow, (int)id.z)];
 }
 
-void NcnnLinearMatReorderMergeRows_Impl(uint3 id)
+void AexisLinearMatReorderMergeRows_Impl(uint3 id)
 {
     uint inputWidth, inputHeight;
     uint outputWidth, outputHeight;
@@ -492,13 +492,13 @@ void NcnnLinearMatReorderMergeRows_Impl(uint3 id)
     _LinearOut0[int2((int)id.x, (int)id.y)] = _LinearIn0[int2((int)id.x, sourceRow)];
 }
 
-float NcnnReadPack4ChannelFoldD(Texture2DArray<float4> tex, int x, int y, int z, int channel, int logicalH)
+float AexisReadPack4ChannelFoldD(Texture2DArray<float4> tex, int x, int y, int z, int channel, int logicalH)
 {
     int foldedY = z * max(1, logicalH) + y;
-    return NcnnReadPack4Channel(tex, x, foldedY, channel);
+    return AexisReadPack4Channel(tex, x, foldedY, channel);
 }
 
-void NcnnPermutePack4CDHWFoldD_Impl(uint3 id)
+void AexisPermutePack4CDHWFoldD_Impl(uint3 id)
 {
     uint ow, oh, od;
     _PermutePack4CDHWOutArr.GetDimensions(ow, oh, od);
@@ -537,15 +537,15 @@ void NcnnPermutePack4CDHWFoldD_Impl(uint3 id)
             && (uint)srcD < (uint)_PermutePack4CDHWInD
             && (uint)srcC < (uint)_PermutePack4CDHWInC)
         {
-            scalar = NcnnReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
+            scalar = AexisReadPack4ChannelCDHW(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInC);
         }
-        NcnnWriteLane(o, lane, scalar);
+        AexisWriteLane(o, lane, scalar);
     }
 
     _PermutePack4CDHWOutArr[int3(outX, foldedY, outPack)] = o;
 }
 
-void NcnnPermutePack4FoldDToCDHW_Impl(uint3 id)
+void AexisPermutePack4FoldDToCDHW_Impl(uint3 id)
 {
     uint ow, oh, od;
     _PermutePack4CDHWOutArr.GetDimensions(ow, oh, od);
@@ -584,15 +584,15 @@ void NcnnPermutePack4FoldDToCDHW_Impl(uint3 id)
             && (uint)srcD < (uint)_PermutePack4CDHWInD
             && (uint)srcC < (uint)_PermutePack4CDHWInC)
         {
-            scalar = NcnnReadPack4ChannelFoldD(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInH);
+            scalar = AexisReadPack4ChannelFoldD(_PermutePack4CDHWInArr, srcW, srcH, srcD, srcC, _PermutePack4CDHWInH);
         }
-        NcnnWriteLane(o, lane, scalar);
+        AexisWriteLane(o, lane, scalar);
     }
 
     _PermutePack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnPermuteLinearMat2D_Impl(uint3 id)
+void AexisPermuteLinearMat2D_Impl(uint3 id)
 {
     uint ow, oh;
     _LinearOut0.GetDimensions(ow, oh);
@@ -611,7 +611,7 @@ void NcnnPermuteLinearMat2D_Impl(uint3 id)
     _LinearOut0[int2(outX, outY)] = value;
 }
 
-void NcnnWindowPartitionPack4_Impl(uint3 id)
+void AexisWindowPartitionPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _WindowPartitionPack4OutArr.GetDimensions(w, h, d);
@@ -639,7 +639,7 @@ void NcnnWindowPartitionPack4_Impl(uint3 id)
         int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
         int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
         int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
-        o.x = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+        o.x = AexisReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
     }
     if (outWindow4.y < _WindowPartitionPack4OutC)
     {
@@ -650,7 +650,7 @@ void NcnnWindowPartitionPack4_Impl(uint3 id)
         int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
         int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
         int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
-        o.y = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+        o.y = AexisReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
     }
     if (outWindow4.z < _WindowPartitionPack4OutC)
     {
@@ -661,7 +661,7 @@ void NcnnWindowPartitionPack4_Impl(uint3 id)
         int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
         int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
         int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
-        o.z = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+        o.z = AexisReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
     }
     if (outWindow4.w < _WindowPartitionPack4OutC)
     {
@@ -672,13 +672,13 @@ void NcnnWindowPartitionPack4_Impl(uint3 id)
         int srcC = groupA * _WindowPartitionPack4TokensA + tokenA;
         int srcD = groupB * _WindowPartitionPack4TokensB + tokenB;
         int srcH = groupC * _WindowPartitionPack4TokensC + tokenC;
-        o.w = NcnnReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
+        o.w = AexisReadPack4ChannelCDHW(_WindowPartitionPack4InArr, outX, srcH, srcD, srcC, _WindowPartitionPack4InC);
     }
 
     _WindowPartitionPack4OutArr[int3(outX, outToken, pack)] = o;
 }
 
-void NcnnWindowUnpartitionPack4_Impl(uint3 id)
+void AexisWindowUnpartitionPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _WindowUnpartitionPack4OutArr.GetDimensions(w, h, d);
@@ -710,7 +710,7 @@ void NcnnWindowUnpartitionPack4_Impl(uint3 id)
         int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
         int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
         int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
-        o.x = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+        o.x = AexisReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
     }
     if (outC4.y < _WindowUnpartitionPack4OutC)
     {
@@ -722,7 +722,7 @@ void NcnnWindowUnpartitionPack4_Impl(uint3 id)
         int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
         int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
         int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
-        o.y = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+        o.y = AexisReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
     }
     if (outC4.z < _WindowUnpartitionPack4OutC)
     {
@@ -734,7 +734,7 @@ void NcnnWindowUnpartitionPack4_Impl(uint3 id)
         int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
         int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
         int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
-        o.z = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+        o.z = AexisReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
     }
     if (outC4.w < _WindowUnpartitionPack4OutC)
     {
@@ -746,13 +746,13 @@ void NcnnWindowUnpartitionPack4_Impl(uint3 id)
         int tokenC = outY - groupC * _WindowUnpartitionPack4TokensC;
         int inputGroup = ((groupA * _WindowUnpartitionPack4GroupsB) + groupB) * _WindowUnpartitionPack4GroupsC + groupC;
         int inputToken = ((tokenA * _WindowUnpartitionPack4TokensB) + tokenB) * _WindowUnpartitionPack4TokensC + tokenC;
-        o.w = NcnnReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
+        o.w = AexisReadPack4Channel(_WindowUnpartitionPack4InArr, outX, inputToken, inputGroup);
     }
 
     _WindowUnpartitionPack4OutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnReshapePack4ToScalar2D_Impl(uint3 id)
+void AexisReshapePack4ToScalar2D_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ReshapePack4ToScalar2DOutArr.GetDimensions(ow, oh, od);
@@ -768,12 +768,12 @@ void NcnnReshapePack4ToScalar2D_Impl(uint3 id)
         uint row = linearIndex / inputWidth;
         uint column = linearIndex - row * inputWidth;
         scalar = row < (uint)_ReshapePack4ToScalar2DInH
-            ? NcnnReadLane(_ReshapePack4ToScalar2DInArr[int3((int)(column >> 2), (int)row, 0)], (int)(column & 3))
+            ? AexisReadLane(_ReshapePack4ToScalar2DInArr[int3((int)(column >> 2), (int)row, 0)], (int)(column & 3))
             : 0.0;
     }
     else
     {
-        scalar = NcnnReadPack4LinearScalar2DInput(
+        scalar = AexisReadPack4LinearScalar2DInput(
             linearIndex,
             _ReshapePack4ToScalar2DInDims,
             _ReshapePack4ToScalar2DInW,
@@ -784,7 +784,7 @@ void NcnnReshapePack4ToScalar2D_Impl(uint3 id)
     _ReshapePack4ToScalar2DOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = float4(scalar, 0.0, 0.0, 0.0);
 }
 
-void NcnnReshapePack4ToLinearMat_Impl(uint3 id)
+void AexisReshapePack4ToLinearMat_Impl(uint3 id)
 {
     uint ow, oh;
     _LinearOut0.GetDimensions(ow, oh);
@@ -800,12 +800,12 @@ void NcnnReshapePack4ToLinearMat_Impl(uint3 id)
         uint row = linearIndex / inputWidth;
         uint column = linearIndex - row * inputWidth;
         scalar = row < (uint)_ReshapePack4ToScalar2DInH
-            ? NcnnReadLane(_TexIn0Arr[int3((int)(column >> 2), (int)row, 0)], (int)(column & 3))
+            ? AexisReadLane(_TexIn0Arr[int3((int)(column >> 2), (int)row, 0)], (int)(column & 3))
             : 0.0;
     }
     else
     {
-        scalar = NcnnReadPack4LinearScalar2DInput(
+        scalar = AexisReadPack4LinearScalar2DInput(
             linearIndex,
             _ReshapePack4ToScalar2DInDims,
             _ReshapePack4ToScalar2DInW,
@@ -816,7 +816,7 @@ void NcnnReshapePack4ToLinearMat_Impl(uint3 id)
     _LinearOut0[int2((int)id.x, (int)id.y)] = scalar;
 }
 
-void NcnnReshapePack4ToPack4_Impl(uint3 id)
+void AexisReshapePack4ToPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ReshapePack4ToPack4OutArr.GetDimensions(ow, oh, od);
@@ -861,7 +861,7 @@ void NcnnReshapePack4ToPack4_Impl(uint3 id)
         uint linearIndex = _ReshapePack4ToPack4OutDims >= 4
             ? (((uint)outC * (uint)max(1, _ReshapePack4ToPack4OutD) + (uint)outZ) * (uint)_ReshapePack4ToPack4OutH + (uint)outY) * (uint)_ReshapePack4ToPack4OutW + id.x
             : ((uint)outC * (uint)_ReshapePack4ToPack4OutH + id.y) * (uint)_ReshapePack4ToPack4OutW + id.x;
-        float scalar = NcnnReadPack4LinearPack4Input(
+        float scalar = AexisReadPack4LinearPack4Input(
             linearIndex,
             _ReshapePack4ToPack4InDims,
             _ReshapePack4ToPack4InW,
@@ -877,7 +877,7 @@ void NcnnReshapePack4ToPack4_Impl(uint3 id)
     _ReshapePack4ToPack4OutArr[int3((int)id.x, (int)id.y, slice)] = value;
 }
 
-void NcnnReshapeScalar2DToPack4_Impl(uint3 id)
+void AexisReshapeScalar2DToPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ReshapeScalar2DOutArr.GetDimensions(ow, oh, od);
@@ -911,7 +911,7 @@ void NcnnReshapeScalar2DToPack4_Impl(uint3 id)
             ? (((uint)c * (uint)max(1, _ReshapeScalar2DOutD) + (uint)z) * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x
             : ((uint)c * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x;
 
-        float scalar = NcnnReadScalar2DLinear(linearIndex, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
+        float scalar = AexisReadScalar2DLinear(linearIndex, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
         if (lane == 0) value.x = scalar;
         else if (lane == 1) value.y = scalar;
         else if (lane == 2) value.z = scalar;
@@ -921,7 +921,7 @@ void NcnnReshapeScalar2DToPack4_Impl(uint3 id)
     _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = value;
 }
 
-void NcnnPack4LinearFromScalar2D_Impl(uint3 id)
+void AexisPack4LinearFromScalar2D_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -941,7 +941,7 @@ void NcnnPack4LinearFromScalar2D_Impl(uint3 id)
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = packed;
 }
 
-void NcnnReshapeLinearMatToPack4_Impl(uint3 id)
+void AexisReshapeLinearMatToPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ReshapeScalar2DOutArr.GetDimensions(ow, oh, od);
@@ -975,7 +975,7 @@ void NcnnReshapeLinearMatToPack4_Impl(uint3 id)
             ? (((uint)c * (uint)max(1, _ReshapeScalar2DOutD) + (uint)z) * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x
             : ((uint)c * (uint)_ReshapeScalar2DOutH + id.y) * (uint)_ReshapeScalar2DOutW + id.x;
 
-        float scalar = NcnnReadLinearMatScalar(_LinearIn0, linearIndex, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
+        float scalar = AexisReadLinearMatScalar(_LinearIn0, linearIndex, _ReshapeScalar2DInW, _ReshapeScalar2DInH);
         if (lane == 0) value.x = scalar;
         else if (lane == 1) value.y = scalar;
         else if (lane == 2) value.z = scalar;
@@ -985,7 +985,7 @@ void NcnnReshapeLinearMatToPack4_Impl(uint3 id)
     _ReshapeScalar2DOutArr[int3((int)id.x, (int)id.y, slice)] = value;
 }
 
-void NcnnAttentionReshapePack4_Impl(uint3 id)
+void AexisAttentionReshapePack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _AttentionReshapeOutArr.GetDimensions(ow, oh, od);
@@ -1024,14 +1024,14 @@ void NcnnAttentionReshapePack4_Impl(uint3 id)
         if (srcChannel < 0 || srcChannel >= _AttentionReshapeInW)
             continue;
 
-        float scalar = NcnnReadPack4Channel(_AttentionReshapeInArr, srcChannel, srcToken, srcWindow);
-        NcnnWriteLane(o, lane, scalar);
+        float scalar = AexisReadPack4Channel(_AttentionReshapeInArr, srcChannel, srcToken, srcWindow);
+        AexisWriteLane(o, lane, scalar);
     }
 
     _AttentionReshapeOutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnAttentionContextFlattenPack4_Impl(uint3 id)
+void AexisAttentionContextFlattenPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _AttentionContextFlattenOutArr.GetDimensions(ow, oh, od);
@@ -1088,20 +1088,20 @@ void NcnnAttentionContextFlattenPack4_Impl(uint3 id)
         if (srcDim < 0 || srcDim >= _AttentionContextFlattenInW)
             continue;
 
-        float scalar = NcnnReadPack4ChannelCDHW(
+        float scalar = AexisReadPack4ChannelCDHW(
             _AttentionContextFlattenInArr,
             srcDim,
             srcToken,
             srcWindow,
             srcHead,
             _AttentionContextFlattenInC);
-        NcnnWriteLane(o, lane, scalar);
+        AexisWriteLane(o, lane, scalar);
     }
 
     _AttentionContextFlattenOutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnSlicePack4CDHW_Impl(uint3 id)
+void AexisSlicePack4CDHW_Impl(uint3 id)
 {
     uint w, h, d;
     _SlicePack4CDHWOutArr.GetDimensions(w, h, d);
@@ -1141,20 +1141,20 @@ void NcnnSlicePack4CDHW_Impl(uint3 id)
         int srcC = _SlicePack4CDHWAxis == 3
             ? outC + _SlicePack4CDHWBegin
             : outC;
-        float scalar = NcnnReadPack4ChannelCDHW(
+        float scalar = AexisReadPack4ChannelCDHW(
             _SlicePack4CDHWInArr,
             srcX,
             srcY,
             srcZ,
             srcC,
             _SlicePack4CDHWInC);
-        NcnnWriteLane(o, lane, scalar);
+        AexisWriteLane(o, lane, scalar);
     }
 
     _SlicePack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnReorgPack4_Impl(uint3 id)
+void AexisReorgPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _ReorgOutArr.GetDimensions(w, h, d);
@@ -1171,7 +1171,7 @@ void NcnnReorgPack4_Impl(uint3 id)
     _ReorgOutArr[int3((int)id.x, (int)id.y, p)] = _ReorgInArr[int3(srcX, srcY, srcP)];
 }
 
-void NcnnPointwisePack4_Impl(uint3 id)
+void AexisPointwisePack4_Impl(uint3 id)
 {
     uint w, h, d;
     _PointwiseOutArr.GetDimensions(w, h, d);
@@ -1179,7 +1179,7 @@ void NcnnPointwisePack4_Impl(uint3 id)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
     float4 x = _PointwiseInArr[int3((int)id.x, (int)id.y, p)];
-    float4 y = NcnnApplyPointwise4(x);
+    float4 y = AexisApplyPointwise4(x);
     if (_PointwiseChannels > 0)
     {
         int packsPerDepth = max(1, (_PointwiseChannels + 3) / 4);
@@ -1193,7 +1193,7 @@ void NcnnPointwisePack4_Impl(uint3 id)
     _PointwiseOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
-void NcnnPixelShufflePack4_Impl(uint3 id)
+void AexisPixelShufflePack4_Impl(uint3 id)
 {
     uint w, h, d;
     _PixelShufflePack4OutArr.GetDimensions(w, h, d);
@@ -1214,34 +1214,34 @@ void NcnnPixelShufflePack4_Impl(uint3 id)
         int srcChannel = _PixelShufflePack4Mode == 0
             ? oc4.x * scale * scale + sh * scale + sw
             : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.x;
-        o.x = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+        o.x = AexisReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
     }
     if (oc4.y < _PixelShufflePack4OutC)
     {
         int srcChannel = _PixelShufflePack4Mode == 0
             ? oc4.y * scale * scale + sh * scale + sw
             : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.y;
-        o.y = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+        o.y = AexisReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
     }
     if (oc4.z < _PixelShufflePack4OutC)
     {
         int srcChannel = _PixelShufflePack4Mode == 0
             ? oc4.z * scale * scale + sh * scale + sw
             : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.z;
-        o.z = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+        o.z = AexisReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
     }
     if (oc4.w < _PixelShufflePack4OutC)
     {
         int srcChannel = _PixelShufflePack4Mode == 0
             ? oc4.w * scale * scale + sh * scale + sw
             : (sh * scale + sw) * _PixelShufflePack4OutC + oc4.w;
-        o.w = NcnnReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
+        o.w = AexisReadPack4Channel(_PixelShufflePack4InArr, inX, inY, srcChannel);
     }
 
     _PixelShufflePack4OutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
-void NcnnUnfoldPack4_Impl(uint3 id)
+void AexisUnfoldPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -1268,12 +1268,12 @@ void NcnnUnfoldPack4_Impl(uint3 id)
 
     float value = _UnfoldPadValue;
     if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && c < _UnfoldInC)
-        value = NcnnReadPack4Channel(_TexIn0Arr, inX, inY, c);
+        value = AexisReadPack4Channel(_TexIn0Arr, inX, inY, c);
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, 0)] = float4(value, 0.0, 0.0, 0.0);
 }
 
-void NcnnExtractPatchesPack4_Impl(uint3 id)
+void AexisExtractPatchesPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -1307,7 +1307,7 @@ void NcnnExtractPatchesPack4_Impl(uint3 id)
         int inX = (int)id.x * _UnfoldStrideW + kx * _UnfoldDilationW - _UnfoldPadLeft;
         float sampleValue = _UnfoldPadValue;
         if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && c < inC)
-            sampleValue = NcnnReadPack4Channel(_TexIn0Arr, inX, inY, c);
+            sampleValue = AexisReadPack4Channel(_TexIn0Arr, inX, inY, c);
 
         if (lane == 0) value.x = sampleValue;
         else if (lane == 1) value.y = sampleValue;
@@ -1318,7 +1318,7 @@ void NcnnExtractPatchesPack4_Impl(uint3 id)
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = value;
 }
 
-void NcnnExtractPatchesFoldDPack4_Impl(uint3 id)
+void AexisExtractPatchesFoldDPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -1364,9 +1364,9 @@ void NcnnExtractPatchesFoldDPack4_Impl(uint3 id)
 
         float sampleValue = _UnfoldPadValue;
         if ((uint)inX < (uint)_UnfoldInW && (uint)inY < (uint)_UnfoldInH && inputChannel < inD)
-            sampleValue = NcnnReadPack4ChannelFoldD(_TexIn0Arr, inX, inY, inputChannel, batch, _UnfoldInH);
+            sampleValue = AexisReadPack4ChannelFoldD(_TexIn0Arr, inX, inY, inputChannel, batch, _UnfoldInH);
 
-        NcnnWriteLane(value, lane, sampleValue);
+        AexisWriteLane(value, lane, sampleValue);
     }
 
     _TexOut0Arr[int3((int)id.x, foldedY, (int)id.z)] = value;

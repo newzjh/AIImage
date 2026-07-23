@@ -1,3 +1,3 @@
 # Kernel Metadata Sample
 
-The Aexis NCNN backend resolves its package-owned compute shader by Resources name `Aexis/Ncnn/AexisNcnn`.
+The Aexis shared runtime resolves its package-owned compute shader by Resources name `Aexis/AexisCommon`.

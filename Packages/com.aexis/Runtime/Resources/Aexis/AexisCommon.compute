@@ -1,264 +1,264 @@
-#pragma kernel NcnnPassthrough
-#pragma kernel NcnnLeakyRelu
-#pragma kernel NcnnConv3x3
-#pragma kernel NcnnConv3dBuf
-#pragma kernel NcnnConv3dPack4CDHW16x4
-#pragma kernel NcnnConv3dPack4CDHWTile3x3
-#pragma kernel NcnnConv3dPack4CDHWZ2
-#pragma kernel NcnnConvDepthWise
-#pragma kernel NcnnDeconvolutionBuf
-#pragma kernel NcnnDeconvolution3dPack4CDHW
-#pragma kernel NcnnDeconvolution3dBuf
-#pragma kernel NcnnTexToBuf3
-#pragma kernel NcnnBufToTex3
-#pragma kernel NcnnLeakyReluBuf
-#pragma kernel NcnnAddWeighted
-#pragma kernel NcnnCopyC
-#pragma kernel NcnnInterp2x
-#pragma kernel NcnnBlitTileToDst
-#pragma kernel NcnnPackRgbToPack4
-#pragma kernel NcnnPackRgbToNhwcPack4
-#pragma kernel NcnnPackMaskToNhwcPack4
-#pragma kernel NcnnUnpackPack4ToRgb
-#pragma kernel NcnnConv3x3Pack4
-#pragma kernel NcnnConvPack4General
-#pragma kernel NcnnDeconvolutionPack4General
-#pragma kernel NcnnConv2dGroupPack4
-#pragma kernel NcnnDeconvolution2dGroupPack4
-#pragma kernel NcnnDeconvolutionDepthWisePack4
-#pragma kernel NcnnConvDepthWisePack4
-#pragma kernel NcnnWinograd23TransformInputPack4
-#pragma kernel NcnnWinograd23GemmPack4
-#pragma kernel NcnnWinograd23TransformOutputPack4
-#pragma kernel NcnnConv1x1Pack4
-#pragma kernel NcnnAddPack4
-#pragma kernel NcnnCopyPack4
-#pragma kernel NcnnCopyToPack4
-#pragma kernel NcnnConcatPack4CDHW
-#pragma kernel NcnnConcatSequencePack4CDHW
-#pragma kernel NcnnAppendSequencePack4CDHW
-#pragma kernel NcnnBuildSdInpaintInput9Pack4
-#pragma kernel NcnnInterpPack4
-#pragma kernel NcnnInterpPack4Nearest
-#pragma kernel NcnnInterpPack4CDHW
-#pragma kernel NcnnInterp2xPack4
-#pragma kernel NcnnInterp2xNearestPack4
-#pragma kernel NcnnInterpDown2Pack4
-#pragma kernel NcnnInterpDown2NearestPack4
-#pragma kernel NcnnPack4ToBufferCHW
-#pragma kernel NcnnLinearMatToBuffer
-#pragma kernel NcnnPack4ChannelsToWidth
-#pragma kernel NcnnPack4SpatialToPack4Linear
-#pragma kernel NcnnPack4ReorderMergeRows
-#pragma kernel NcnnLinearMatReorderMergeRows
-#pragma kernel NcnnPack4ToBufferCDHW
-#pragma kernel NcnnInnerProduct
-#pragma kernel NcnnPackRgbToPack4Gfpgan
-#pragma kernel NcnnFillPack4FromBufferCHW
-#pragma kernel NcnnFillPack4FromBufferCDHW
-#pragma kernel NcnnFillLinearMatFromBuffer
-#pragma kernel NcnnFillScalarTexture
-#pragma kernel NcnnFillScalarLinearMat
-#pragma kernel NcnnSentisConstantLinearMat
-#pragma kernel NcnnSentisRangeLinearMat
-#pragma kernel NcnnSentisExpandLinearMat
-#pragma kernel NcnnSentisWhereLinearMat
-#pragma kernel NcnnSentisGatherLinearMat
-#pragma kernel NcnnSentisGatherElementsLinearMat
-#pragma kernel NcnnSentisArgReduceLinearMat
-#pragma kernel NcnnSentisTopKLinearMat
-#pragma kernel NcnnSentisOneHotLinearMat
-#pragma kernel NcnnSentisCumSumLinearMat
-#pragma kernel NcnnSentisNonZeroLinearMat
-#pragma kernel NcnnSentisCompressLinearMat
-#pragma kernel NcnnSentisGatherNDLinearMat
-#pragma kernel NcnnSentisScatterLinearMat
-#pragma kernel NcnnScalePack4
-#pragma kernel NcnnAddBiasPack4
-#pragma kernel NcnnBatchNormPack4
-#pragma kernel NcnnLeakyReluPack4
-#pragma kernel NcnnPReluPack4
-#pragma kernel NcnnAddNoiseBroadcastPack4
-#pragma kernel NcnnClipPack4
-#pragma kernel NcnnSftPack4
-#pragma kernel NcnnPack4ToRgb01
-#pragma kernel NcnnPack4ToRgbScaled
-#pragma kernel NcnnNhwcPack4ToRgbScaled
-#pragma kernel NcnnProbeTilePack4
-#pragma kernel NcnnProbeSeams
-#pragma kernel NcnnPaddingPack4
-#pragma kernel NcnnPoolingPack4
-#pragma kernel NcnnPooling1DPack4
-#pragma kernel NcnnPoolingPack4CDHW
-#pragma kernel NcnnMaxPoolingIndPack4
-#pragma kernel NcnnMaxPoolingIndicesFromValuePack4
-#pragma kernel NcnnMaxUnPoolingPack4
-#pragma kernel NcnnSoftmaxChannelPack4
-#pragma kernel NcnnSoftmaxLinearMat2D
-#pragma kernel NcnnUnaryOpPack4
-#pragma kernel NcnnUnaryOpLinearMat
-#pragma kernel NcnnTriluPack4
-#pragma kernel NcnnTriluLinearMat
-#pragma kernel NcnnBinaryOpLinearMat
-#pragma kernel NcnnBinaryOpLinearMatFixedInputScalar
-#pragma kernel NcnnBinaryOpPack4
-#pragma kernel NcnnBinaryOpPack4LinearMixed
-#pragma kernel NcnnBinaryOpPack4Broadcast
-#pragma kernel NcnnBinaryOpPack4BufferScalar
-#pragma kernel NcnnBinaryOpPack4ChannelVectorTex
-#pragma kernel NcnnBinaryOpScalarSingleBroadcast
-#pragma kernel NcnnCodeFormerMinEncodingFromSoftOneHot
-#pragma kernel NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat
-#pragma kernel NcnnShuffleChannelPack4
-#pragma kernel NcnnFlipPack4P1
-#pragma kernel NcnnP1GridSamplePack4
-#pragma kernel NcnnP1GluPack4
-#pragma kernel NcnnP1DiagPack4
-#pragma kernel NcnnP1FoldPack4
-#pragma kernel NcnnP1SppPack4
-#pragma kernel NcnnP1RoiAlignPack4
-#pragma kernel NcnnP1RoiPoolPack4
-#pragma kernel NcnnP1PsRoiPoolPack4
-#pragma kernel NcnnP1DeformableConv2dPack4
-#pragma kernel NcnnP1ProposalPack4
-#pragma kernel NcnnP1DetectionOutputPack4
-#pragma kernel NcnnP1YoloDetectionOutputPack4
-#pragma kernel NcnnP1EinsumPack4
-#pragma kernel NcnnCropPack4
-#pragma kernel NcnnSlicePack4
-#pragma kernel NcnnSliceLinearMat2D
-#pragma kernel NcnnPermutePack4
-#pragma kernel NcnnPermutePack4CDHW
-#pragma kernel NcnnPermutePack4CDHWFoldD
-#pragma kernel NcnnPermutePack4FoldDToCDHW
-#pragma kernel NcnnPermuteLinearMat2D
-#pragma kernel NcnnWindowPartitionPack4
-#pragma kernel NcnnWindowUnpartitionPack4
-#pragma kernel NcnnReshapePack4ToScalar2D
-#pragma kernel NcnnReshapePack4ToLinearMat
-#pragma kernel NcnnReshapePack4ToPack4
-#pragma kernel NcnnReshapeScalar2DToPack4
-#pragma kernel NcnnPack4LinearFromScalar2D
-#pragma kernel NcnnReshapeLinearMatToPack4
-#pragma kernel NcnnReshapeLinearMat2D
-#pragma kernel NcnnAttentionReshapePack4
-#pragma kernel NcnnAttentionContextFlattenPack4
-#pragma kernel NcnnSlicePack4CDHW
-#pragma kernel NcnnSwishPack4
-#pragma kernel NcnnSwishLinearMat
-#pragma kernel NcnnSigmoidPack4
-#pragma kernel NcnnSigmoidLinearMat
-#pragma kernel NcnnGeluPack4
-#pragma kernel NcnnGeluLinearMat
-#pragma kernel NcnnMatMul2D
-#pragma kernel NcnnMatMulPack4CDHW
-#pragma kernel NcnnVistaTailPromptDotPack4
-#pragma kernel NcnnVistaTailPromptDotPack4Tex
-#pragma kernel NcnnArgmaxUpdatePack4CDHW
-#pragma kernel NcnnArgMaxPack4LinearMat
-#pragma kernel NcnnGemm2DTextureA
-#pragma kernel NcnnGemm2DLinearTextureA
-#pragma kernel NcnnGemm2DPack4LinearTextureA
-#pragma kernel NcnnGemm2DPack4LinearTextureAFromLinear
-#pragma kernel NcnnGemm2DPack4LinearTextureAFromPack4
-#pragma kernel NcnnGemm2DPack4TiledTextureAFromLinear
-#pragma kernel NcnnGemm2DPack4TiledTextureAFromPack4
-#pragma kernel NcnnGemm2DAttentionQkvTextureA
-#pragma kernel NcnnGemm2DAttentionQkvLinearTextureA
-#pragma kernel NcnnGemm2DAttentionQkvPack4LinearTextureA
-#pragma kernel NcnnGemm2DAttentionPack4ToLinearTextureA
-#pragma kernel NcnnGemm2DAttentionPack4ToPack4LinearTextureA
-#pragma kernel NcnnGemm2D
-#pragma kernel NcnnGemm2D16
-#pragma kernel NcnnLayerNorm2D
-#pragma kernel NcnnLayerNormPack4WidthTex
-#pragma kernel NcnnLayerNormPack4Linear2D
-#pragma kernel NcnnSoftmax2D
-#pragma kernel NcnnSoftmaxPack4CDHW
-#pragma kernel NcnnReductionScalar2D
-#pragma kernel NcnnReductionLinearMat2D
-#pragma kernel NcnnReductionPack4Width
-#pragma kernel NcnnReductionPack4Channel
-#pragma kernel NcnnEmbed
-#pragma kernel NcnnEmbedTexture
-#pragma kernel NcnnEmbedTextureLinearIndex
-#pragma kernel NcnnEmbedTexturePack4Index
-#pragma kernel NcnnPermute
-#pragma kernel NcnnSlice
-#pragma kernel NcnnTile
-#pragma kernel NcnnTilePack4
-#pragma kernel NcnnTileLinearMat
-#pragma kernel NcnnReduceSum256
-#pragma kernel NcnnMulScalarBuf
-#pragma kernel NcnnGroupNormStats
-#pragma kernel NcnnGroupNormApply
-#pragma kernel NcnnGroupNormMean
-#pragma kernel NcnnGroupNormVariance
-#pragma kernel NcnnGroupNormApplyMeanVar
-#pragma kernel NcnnGroupNormPack4Mean
-#pragma kernel NcnnGroupNormPack4Variance
-#pragma kernel NcnnGroupNormPack4ApplyMeanVar
-#pragma kernel NcnnGroupNormPack4MeanTex
-#pragma kernel NcnnGroupNormPack4VarianceTex
-#pragma kernel NcnnGroupNormPack4ApplyMeanVarTex
-#pragma kernel NcnnTouchU32
-#pragma kernel NcnnCopyBuf
-#pragma kernel NcnnCopyBufPartial
-#pragma kernel NcnnBinaryOpBuf
-#pragma kernel NcnnUnaryOpBuf
-#pragma kernel NcnnSigmoidBuf
-#pragma kernel NcnnSwishBuf
-#pragma kernel NcnnGeluBuf
-#pragma kernel NcnnPointwiseBuf
-#pragma kernel NcnnInnerProduct2D
-#pragma kernel NcnnMhaAttention
-#pragma kernel NcnnMhaAttentionFast
-#pragma kernel NcnnMhaAttentionQkvFast
-#pragma kernel NcnnMhaProjectQkv2D
-#pragma kernel NcnnReorgPack4
-#pragma kernel NcnnPointwisePack4
-#pragma kernel NcnnPixelShufflePack4
-#pragma kernel NcnnCastBuf
-#pragma kernel NcnnScaleBuf
-#pragma kernel NcnnPReluBuf
-#pragma kernel NcnnReorgBuf
-#pragma kernel NcnnReductionRowsBuf
-#pragma kernel NcnnConv1dBuf
-#pragma kernel NcnnQuantizeBuf
-#pragma kernel NcnnDequantizeBuf
-#pragma kernel NcnnRequantizeBuf
-#pragma kernel NcnnCastPack4
-#pragma kernel NcnnQuantizePack4
-#pragma kernel NcnnDequantizePack4
-#pragma kernel NcnnRequantizePack4
-#pragma kernel NcnnNormalizePack4
-#pragma kernel NcnnLrnPack4
-#pragma kernel NcnnRmsNormPack4
-#pragma kernel NcnnRmsNormPack4LinearMat
-#pragma kernel NcnnPixelShuffleBuf
-#pragma kernel NcnnRotaryEmbedBuf
-#pragma kernel NcnnRotaryEmbedPack4
-#pragma kernel NcnnPriorBox
-#pragma kernel NcnnNormalizeBuf
-#pragma kernel NcnnLrnBuf
-#pragma kernel NcnnRmsNormBuf
-#pragma kernel NcnnUnfoldBuf
-#pragma kernel NcnnUnfoldPack4
-#pragma kernel NcnnExtractPatchesPack4
-#pragma kernel NcnnExtractPatchesFoldDPack4
-#pragma kernel NcnnDeepFillV2PatchStats AIIMAGE_DEEPFILLV2
-#pragma kernel NcnnDeepFillV2Scores AIIMAGE_DEEPFILLV2
-#pragma kernel NcnnDeepFillV2Softmax AIIMAGE_DEEPFILLV2
-#pragma kernel NcnnDeepFillV2Reconstruct AIIMAGE_DEEPFILLV2
-#pragma kernel NcnnSdpaQkBuf
-#pragma kernel NcnnSdpaSoftmaxBuf
-#pragma kernel NcnnSdpaQkvBuf
-#pragma kernel NcnnSdpaAttentionFast
-#pragma kernel NcnnSdpaAttentionPack4CDHW
-#pragma kernel NcnnShortConvPack4
-#pragma kernel NcnnGatedDeltaRulePack4
+#pragma kernel AexisPassthrough
+#pragma kernel AexisLeakyRelu
+#pragma kernel AexisConv3x3
+#pragma kernel AexisConv3dBuf
+#pragma kernel AexisConv3dPack4CDHW16x4
+#pragma kernel AexisConv3dPack4CDHWTile3x3
+#pragma kernel AexisConv3dPack4CDHWZ2
+#pragma kernel AexisConvDepthWise
+#pragma kernel AexisDeconvolutionBuf
+#pragma kernel AexisDeconvolution3dPack4CDHW
+#pragma kernel AexisDeconvolution3dBuf
+#pragma kernel AexisTexToBuf3
+#pragma kernel AexisBufToTex3
+#pragma kernel AexisLeakyReluBuf
+#pragma kernel AexisAddWeighted
+#pragma kernel AexisCopyC
+#pragma kernel AexisInterp2x
+#pragma kernel AexisBlitTileToDst
+#pragma kernel AexisPackRgbToPack4
+#pragma kernel AexisPackRgbToNhwcPack4
+#pragma kernel AexisPackMaskToNhwcPack4
+#pragma kernel AexisUnpackPack4ToRgb
+#pragma kernel AexisConv3x3Pack4
+#pragma kernel AexisConvPack4General
+#pragma kernel AexisDeconvolutionPack4General
+#pragma kernel AexisConv2dGroupPack4
+#pragma kernel AexisDeconvolution2dGroupPack4
+#pragma kernel AexisDeconvolutionDepthWisePack4
+#pragma kernel AexisConvDepthWisePack4
+#pragma kernel AexisWinograd23TransformInputPack4
+#pragma kernel AexisWinograd23GemmPack4
+#pragma kernel AexisWinograd23TransformOutputPack4
+#pragma kernel AexisConv1x1Pack4
+#pragma kernel AexisAddPack4
+#pragma kernel AexisCopyPack4
+#pragma kernel AexisCopyToPack4
+#pragma kernel AexisConcatPack4CDHW
+#pragma kernel AexisConcatSequencePack4CDHW
+#pragma kernel AexisAppendSequencePack4CDHW
+#pragma kernel AexisBuildSdInpaintInput9Pack4
+#pragma kernel AexisInterpPack4
+#pragma kernel AexisInterpPack4Nearest
+#pragma kernel AexisInterpPack4CDHW
+#pragma kernel AexisInterp2xPack4
+#pragma kernel AexisInterp2xNearestPack4
+#pragma kernel AexisInterpDown2Pack4
+#pragma kernel AexisInterpDown2NearestPack4
+#pragma kernel AexisPack4ToBufferCHW
+#pragma kernel AexisLinearMatToBuffer
+#pragma kernel AexisPack4ChannelsToWidth
+#pragma kernel AexisPack4SpatialToPack4Linear
+#pragma kernel AexisPack4ReorderMergeRows
+#pragma kernel AexisLinearMatReorderMergeRows
+#pragma kernel AexisPack4ToBufferCDHW
+#pragma kernel AexisInnerProduct
+#pragma kernel AexisPackRgbToPack4Gfpgan
+#pragma kernel AexisFillPack4FromBufferCHW
+#pragma kernel AexisFillPack4FromBufferCDHW
+#pragma kernel AexisFillLinearMatFromBuffer
+#pragma kernel AexisFillScalarTexture
+#pragma kernel AexisFillScalarLinearMat
+#pragma kernel AexisConstantLinearMat
+#pragma kernel AexisRangeLinearMat
+#pragma kernel AexisExpandLinearMat
+#pragma kernel AexisWhereLinearMat
+#pragma kernel AexisGatherLinearMat
+#pragma kernel AexisGatherElementsLinearMat
+#pragma kernel AexisArgReduceLinearMat
+#pragma kernel AexisTopKLinearMat
+#pragma kernel AexisOneHotLinearMat
+#pragma kernel AexisCumSumLinearMat
+#pragma kernel AexisNonZeroLinearMat
+#pragma kernel AexisCompressLinearMat
+#pragma kernel AexisGatherNDLinearMat
+#pragma kernel AexisScatterLinearMat
+#pragma kernel AexisScalePack4
+#pragma kernel AexisAddBiasPack4
+#pragma kernel AexisBatchNormPack4
+#pragma kernel AexisLeakyReluPack4
+#pragma kernel AexisPReluPack4
+#pragma kernel AexisAddNoiseBroadcastPack4
+#pragma kernel AexisClipPack4
+#pragma kernel AexisSftPack4
+#pragma kernel AexisPack4ToRgb01
+#pragma kernel AexisPack4ToRgbScaled
+#pragma kernel AexisNhwcPack4ToRgbScaled
+#pragma kernel AexisProbeTilePack4
+#pragma kernel AexisProbeSeams
+#pragma kernel AexisPaddingPack4
+#pragma kernel AexisPoolingPack4
+#pragma kernel AexisPooling1DPack4
+#pragma kernel AexisPoolingPack4CDHW
+#pragma kernel AexisMaxPoolingIndPack4
+#pragma kernel AexisMaxPoolingIndicesFromValuePack4
+#pragma kernel AexisMaxUnPoolingPack4
+#pragma kernel AexisSoftmaxChannelPack4
+#pragma kernel AexisSoftmaxLinearMat2D
+#pragma kernel AexisUnaryOpPack4
+#pragma kernel AexisUnaryOpLinearMat
+#pragma kernel AexisTriluPack4
+#pragma kernel AexisTriluLinearMat
+#pragma kernel AexisBinaryOpLinearMat
+#pragma kernel AexisBinaryOpLinearMatFixedInputScalar
+#pragma kernel AexisBinaryOpPack4
+#pragma kernel AexisBinaryOpPack4LinearMixed
+#pragma kernel AexisBinaryOpPack4Broadcast
+#pragma kernel AexisBinaryOpPack4BufferScalar
+#pragma kernel AexisBinaryOpPack4ChannelVectorTex
+#pragma kernel AexisBinaryOpScalarSingleBroadcast
+#pragma kernel AexisCodeFormerMinEncodingFromSoftOneHot
+#pragma kernel AexisCodeFormerMinEncodingFromSoftOneHotLinearMat
+#pragma kernel AexisShuffleChannelPack4
+#pragma kernel AexisFlipPack4P1
+#pragma kernel AexisP1GridSamplePack4
+#pragma kernel AexisP1GluPack4
+#pragma kernel AexisP1DiagPack4
+#pragma kernel AexisP1FoldPack4
+#pragma kernel AexisP1SppPack4
+#pragma kernel AexisP1RoiAlignPack4
+#pragma kernel AexisP1RoiPoolPack4
+#pragma kernel AexisP1PsRoiPoolPack4
+#pragma kernel AexisP1DeformableConv2dPack4
+#pragma kernel AexisP1ProposalPack4
+#pragma kernel AexisP1DetectionOutputPack4
+#pragma kernel AexisP1YoloDetectionOutputPack4
+#pragma kernel AexisP1EinsumPack4
+#pragma kernel AexisCropPack4
+#pragma kernel AexisSlicePack4
+#pragma kernel AexisSliceLinearMat2D
+#pragma kernel AexisPermutePack4
+#pragma kernel AexisPermutePack4CDHW
+#pragma kernel AexisPermutePack4CDHWFoldD
+#pragma kernel AexisPermutePack4FoldDToCDHW
+#pragma kernel AexisPermuteLinearMat2D
+#pragma kernel AexisWindowPartitionPack4
+#pragma kernel AexisWindowUnpartitionPack4
+#pragma kernel AexisReshapePack4ToScalar2D
+#pragma kernel AexisReshapePack4ToLinearMat
+#pragma kernel AexisReshapePack4ToPack4
+#pragma kernel AexisReshapeScalar2DToPack4
+#pragma kernel AexisPack4LinearFromScalar2D
+#pragma kernel AexisReshapeLinearMatToPack4
+#pragma kernel AexisReshapeLinearMat2D
+#pragma kernel AexisAttentionReshapePack4
+#pragma kernel AexisAttentionContextFlattenPack4
+#pragma kernel AexisSlicePack4CDHW
+#pragma kernel AexisSwishPack4
+#pragma kernel AexisSwishLinearMat
+#pragma kernel AexisSigmoidPack4
+#pragma kernel AexisSigmoidLinearMat
+#pragma kernel AexisGeluPack4
+#pragma kernel AexisGeluLinearMat
+#pragma kernel AexisMatMul2D
+#pragma kernel AexisMatMulPack4CDHW
+#pragma kernel AexisVistaTailPromptDotPack4
+#pragma kernel AexisVistaTailPromptDotPack4Tex
+#pragma kernel AexisArgmaxUpdatePack4CDHW
+#pragma kernel AexisArgMaxPack4LinearMat
+#pragma kernel AexisGemm2DTextureA
+#pragma kernel AexisGemm2DLinearTextureA
+#pragma kernel AexisGemm2DPack4LinearTextureA
+#pragma kernel AexisGemm2DPack4LinearTextureAFromLinear
+#pragma kernel AexisGemm2DPack4LinearTextureAFromPack4
+#pragma kernel AexisGemm2DPack4TiledTextureAFromLinear
+#pragma kernel AexisGemm2DPack4TiledTextureAFromPack4
+#pragma kernel AexisGemm2DAttentionQkvTextureA
+#pragma kernel AexisGemm2DAttentionQkvLinearTextureA
+#pragma kernel AexisGemm2DAttentionQkvPack4LinearTextureA
+#pragma kernel AexisGemm2DAttentionPack4ToLinearTextureA
+#pragma kernel AexisGemm2DAttentionPack4ToPack4LinearTextureA
+#pragma kernel AexisGemm2D
+#pragma kernel AexisGemm2D16
+#pragma kernel AexisLayerNorm2D
+#pragma kernel AexisLayerNormPack4WidthTex
+#pragma kernel AexisLayerNormPack4Linear2D
+#pragma kernel AexisSoftmax2D
+#pragma kernel AexisSoftmaxPack4CDHW
+#pragma kernel AexisReductionScalar2D
+#pragma kernel AexisReductionLinearMat2D
+#pragma kernel AexisReductionPack4Width
+#pragma kernel AexisReductionPack4Channel
+#pragma kernel AexisEmbed
+#pragma kernel AexisEmbedTexture
+#pragma kernel AexisEmbedTextureLinearIndex
+#pragma kernel AexisEmbedTexturePack4Index
+#pragma kernel AexisPermute
+#pragma kernel AexisSlice
+#pragma kernel AexisTile
+#pragma kernel AexisTilePack4
+#pragma kernel AexisTileLinearMat
+#pragma kernel AexisReduceSum256
+#pragma kernel AexisMulScalarBuf
+#pragma kernel AexisGroupNormStats
+#pragma kernel AexisGroupNormApply
+#pragma kernel AexisGroupNormMean
+#pragma kernel AexisGroupNormVariance
+#pragma kernel AexisGroupNormApplyMeanVar
+#pragma kernel AexisGroupNormPack4Mean
+#pragma kernel AexisGroupNormPack4Variance
+#pragma kernel AexisGroupNormPack4ApplyMeanVar
+#pragma kernel AexisGroupNormPack4MeanTex
+#pragma kernel AexisGroupNormPack4VarianceTex
+#pragma kernel AexisGroupNormPack4ApplyMeanVarTex
+#pragma kernel AexisTouchU32
+#pragma kernel AexisCopyBuf
+#pragma kernel AexisCopyBufPartial
+#pragma kernel AexisBinaryOpBuf
+#pragma kernel AexisUnaryOpBuf
+#pragma kernel AexisSigmoidBuf
+#pragma kernel AexisSwishBuf
+#pragma kernel AexisGeluBuf
+#pragma kernel AexisPointwiseBuf
+#pragma kernel AexisInnerProduct2D
+#pragma kernel AexisMhaAttention
+#pragma kernel AexisMhaAttentionFast
+#pragma kernel AexisMhaAttentionQkvFast
+#pragma kernel AexisMhaProjectQkv2D
+#pragma kernel AexisReorgPack4
+#pragma kernel AexisPointwisePack4
+#pragma kernel AexisPixelShufflePack4
+#pragma kernel AexisCastBuf
+#pragma kernel AexisScaleBuf
+#pragma kernel AexisPReluBuf
+#pragma kernel AexisReorgBuf
+#pragma kernel AexisReductionRowsBuf
+#pragma kernel AexisConv1dBuf
+#pragma kernel AexisQuantizeBuf
+#pragma kernel AexisDequantizeBuf
+#pragma kernel AexisRequantizeBuf
+#pragma kernel AexisCastPack4
+#pragma kernel AexisQuantizePack4
+#pragma kernel AexisDequantizePack4
+#pragma kernel AexisRequantizePack4
+#pragma kernel AexisNormalizePack4
+#pragma kernel AexisLrnPack4
+#pragma kernel AexisRmsNormPack4
+#pragma kernel AexisRmsNormPack4LinearMat
+#pragma kernel AexisPixelShuffleBuf
+#pragma kernel AexisRotaryEmbedBuf
+#pragma kernel AexisRotaryEmbedPack4
+#pragma kernel AexisPriorBox
+#pragma kernel AexisNormalizeBuf
+#pragma kernel AexisLrnBuf
+#pragma kernel AexisRmsNormBuf
+#pragma kernel AexisUnfoldBuf
+#pragma kernel AexisUnfoldPack4
+#pragma kernel AexisExtractPatchesPack4
+#pragma kernel AexisExtractPatchesFoldDPack4
+#pragma kernel AexisDeepFillV2PatchStats AIIMAGE_DEEPFILLV2
+#pragma kernel AexisDeepFillV2Scores AIIMAGE_DEEPFILLV2
+#pragma kernel AexisDeepFillV2Softmax AIIMAGE_DEEPFILLV2
+#pragma kernel AexisDeepFillV2Reconstruct AIIMAGE_DEEPFILLV2
+#pragma kernel AexisSdpaQkBuf
+#pragma kernel AexisSdpaSoftmaxBuf
+#pragma kernel AexisSdpaQkvBuf
+#pragma kernel AexisSdpaAttentionFast
+#pragma kernel AexisSdpaAttentionPack4CDHW
+#pragma kernel AexisShortConvPack4
+#pragma kernel AexisGatedDeltaRulePack4
 
-#include "Includes/NcnnUnifiedBindings.Pack4.hlsl"
+#include "Includes/AexisUnifiedBindings.Pack4.hlsl"
 
 // Recurrent NCNN operators. These bindings are texture-only for
 // activations and caches; the only StructuredBuffer use is immutable debug-free
@@ -337,7 +337,7 @@ float4 RecurrentWriteLane(float4 value, int lane, float scalar)
 }
 
 [numthreads(8, 8, 1)]
-void NcnnShortConvPack4(uint3 id : SV_DispatchThreadID)
+void AexisShortConvPack4(uint3 id : SV_DispatchThreadID)
 {
     int groupBase = (int)id.x * 4;
     int token = (int)id.y;
@@ -395,7 +395,7 @@ void NcnnShortConvPack4(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 1)]
-void NcnnGatedDeltaRulePack4(uint3 id : SV_DispatchThreadID)
+void AexisGatedDeltaRulePack4(uint3 id : SV_DispatchThreadID)
 {
     int head = (int)id.y;
     int valueBase = (int)id.x * 4;
@@ -462,10 +462,10 @@ void NcnnGatedDeltaRulePack4(uint3 id : SV_DispatchThreadID)
 }
 
 
-RWTexture2D<float4> _NcnnOut;
-Texture2D<float4> _NcnnIn;
-RWTexture2DArray<float4> _NcnnOutArr;
-Texture2DArray<float4> _NcnnInArr;
+RWTexture2D<float4> _AexisOut;
+Texture2D<float4> _AexisIn;
+RWTexture2DArray<float4> _AexisOutArr;
+Texture2DArray<float4> _AexisInArr;
 
 StructuredBuffer<float> _BufA;
 StructuredBuffer<float> _BufB;
@@ -491,10 +491,10 @@ int _TileH;
 RWStructuredBuffer<uint> _TouchOut;
 int _TouchValue;
 
-float NcnnReadLane(float4 v, int lane);
-void NcnnWriteLane(inout float4 v, int lane, float value);
-float NcnnReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel);
-float NcnnReadPack4ChannelCDHW(Texture2DArray<float4> tex, int x, int y, int z, int channel, int channelCount);
+float AexisReadLane(float4 v, int lane);
+void AexisWriteLane(inout float4 v, int lane, float value);
+float AexisReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel);
+float AexisReadPack4ChannelCDHW(Texture2DArray<float4> tex, int x, int y, int z, int channel, int channelCount);
 
 int _UnaryOpType;
 int _UnaryChannels;
@@ -640,266 +640,266 @@ groupshared float red0[256];
 groupshared float red1[256];
 
 // Auto-generated grouped kernel implementation forward declarations.
-void NcnnLeakyRelu_Impl(uint3 id);
-void NcnnPackRgbToPack4_Impl(uint3 id);
-void NcnnPackRgbToNhwcPack4_Impl(uint3 id);
-void NcnnPackMaskToNhwcPack4_Impl(uint3 id);
-void NcnnPackRgbToPack4Gfpgan_Impl(uint3 id);
-void NcnnUnpackPack4ToRgb_Impl(uint3 id);
-void NcnnConv3x3Pack4_Impl(uint3 id, uint3 groupId, uint3 groupThreadId);
-void NcnnWinograd23TransformInputPack4_Impl(uint3 id);
-void NcnnWinograd23GemmPack4_Impl(uint3 id);
-void NcnnWinograd23TransformOutputPack4_Impl(uint3 id);
-void NcnnConv1x1Pack4_Impl(uint3 id);
-void NcnnConvPack4General_Impl(uint3 id);
-void NcnnDeconvolutionPack4General_Impl(uint3 id);
-void NcnnDeconvolutionDepthWisePack4_Impl(uint3 id);
-void NcnnConvDepthWisePack4_Impl(uint3 id);
-void NcnnAddPack4_Impl(uint3 id);
-void NcnnCopyPack4_Impl(uint3 id);
-void NcnnCopyToPack4_Impl(uint3 id);
-void NcnnConcatPack4CDHW_Impl(uint3 id);
-void NcnnConcatSequencePack4CDHW_Impl(uint3 id);
-void NcnnAppendSequencePack4CDHW_Impl(uint3 id);
-void NcnnBuildSdInpaintInput9Pack4_Impl(uint3 id);
-void NcnnInterpPack4CDHW_Impl(uint3 id);
-void NcnnInterpPack4_Impl(uint3 id);
-void NcnnInterp2xPack4_Impl(uint3 id);
-void NcnnInterpPack4Nearest_Impl(uint3 id);
-void NcnnInterp2xNearestPack4_Impl(uint3 id);
-void NcnnInterpDown2Pack4_Impl(uint3 id);
-void NcnnInterpDown2NearestPack4_Impl(uint3 id);
-void NcnnPack4ToBufferCHW_Impl(uint3 id);
-void NcnnLinearMatToBuffer_Impl(uint3 id);
-void NcnnPack4ToBufferCDHW_Impl(uint3 id);
-void NcnnInnerProduct_Impl(uint3 id);
-void NcnnInnerProduct2D_Impl(uint3 id);
-void NcnnMhaAttention_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnSdpaQkBuf_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnSdpaSoftmaxBuf_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnSdpaQkvBuf_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnSdpaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnMhaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnMhaAttentionQkvFast_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnFillPack4FromBufferCHW_Impl(uint3 id);
-void NcnnFillPack4FromBufferCDHW_Impl(uint3 id);
-void NcnnFillLinearMatFromBuffer_Impl(uint3 id);
-void NcnnFillScalarTexture_Impl(uint3 id);
-void NcnnFillScalarLinearMat_Impl(uint3 id);
-void NcnnSentisConstantLinearMat_Impl(uint3 id);
-void NcnnSentisRangeLinearMat_Impl(uint3 id);
-void NcnnSentisExpandLinearMat_Impl(uint3 id);
-void NcnnSentisWhereLinearMat_Impl(uint3 id);
-void NcnnSentisGatherLinearMat_Impl(uint3 id);
-void NcnnSentisGatherElementsLinearMat_Impl(uint3 id);
-void NcnnSentisArgReduceLinearMat_Impl(uint3 id);
-void NcnnSentisTopKLinearMat_Impl(uint3 id);
-void NcnnSentisOneHotLinearMat_Impl(uint3 id);
-void NcnnSentisCumSumLinearMat_Impl(uint3 id);
-void NcnnSentisNonZeroLinearMat_Impl(uint3 id);
-void NcnnSentisCompressLinearMat_Impl(uint3 id);
-void NcnnSentisGatherNDLinearMat_Impl(uint3 id);
-void NcnnSentisScatterLinearMat_Impl(uint3 id);
-void NcnnScalePack4_Impl(uint3 id);
-void NcnnAddBiasPack4_Impl(uint3 id);
-void NcnnBatchNormPack4_Impl(uint3 id);
-void NcnnLeakyReluPack4_Impl(uint3 id);
-void NcnnPReluPack4_Impl(uint3 id);
-void NcnnAddNoiseBroadcastPack4_Impl(uint3 id);
-void NcnnClipPack4_Impl(uint3 id);
-void NcnnSftPack4_Impl(uint3 id);
-void NcnnPack4ToRgb01_Impl(uint3 id);
-void NcnnPack4ToRgbScaled_Impl(uint3 id);
-void NcnnNhwcPack4ToRgbScaled_Impl(uint3 id);
-void NcnnConv3x3_Impl(uint3 id);
-void NcnnConvDepthWise_Impl(uint3 id);
-void NcnnConv3dBuf_Impl(uint3 id);
-void NcnnConv3dPack4CDHW16x4_Impl(uint3 id);
-void NcnnConv3dPack4CDHWZ2_Impl(uint3 id);
-void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id);
-void NcnnPack4ChannelsToWidth_Impl(uint3 id);
-void NcnnPack4SpatialToPack4Linear_Impl(uint3 id);
-void NcnnPack4ReorderMergeRows_Impl(uint3 id);
-void NcnnLinearMatReorderMergeRows_Impl(uint3 id);
-void NcnnArgmaxUpdatePack4CDHW_Impl(uint3 id);
-void NcnnArgMaxPack4LinearMat_Impl(uint3 id);
-void NcnnDeconvolution3dPack4CDHW_Impl(uint3 id);
-void NcnnDeconvolutionBuf_Impl(uint3 id);
-void NcnnDeconvolution3dBuf_Impl(uint3 id);
-void NcnnTexToBuf3_Impl(uint3 id);
-void NcnnBufToTex3_Impl(uint3 id);
-void NcnnLeakyReluBuf_Impl(uint3 id);
-void NcnnAddWeighted_Impl(uint3 id);
-void NcnnCopyBuf_Impl(uint3 id);
-void NcnnCopyBufPartial_Impl(uint3 id);
-void NcnnBinaryOpBuf_Impl(uint3 id);
-void NcnnUnaryOpBuf_Impl(uint3 id);
-void NcnnSigmoidBuf_Impl(uint3 id);
-void NcnnSwishBuf_Impl(uint3 id);
-void NcnnGeluBuf_Impl(uint3 id);
-void NcnnPointwiseBuf_Impl(uint3 id);
-void NcnnCopyC_Impl(uint3 id);
-void NcnnInterp2x_Impl(uint3 id);
-void NcnnBlitTileToDst_Impl(uint3 id);
-void NcnnTouchU32_Impl(uint3 id);
-void NcnnProbeTilePack4_Impl(uint3 id);
-void NcnnProbeSeams_Impl(uint3 id);
-void NcnnPaddingPack4_Impl(uint3 id);
-void NcnnPoolingPack4_Impl(uint3 id);
-void NcnnPooling1DPack4_Impl(uint3 id);
-void NcnnPoolingPack4CDHW_Impl(uint3 id);
-void NcnnMaxPoolingIndPack4_Impl(uint3 id);
-void NcnnMaxPoolingIndicesFromValuePack4_Impl(uint3 id);
-void NcnnMaxUnPoolingPack4_Impl(uint3 id);
-void NcnnSoftmaxChannelPack4_Impl(uint3 id);
-void NcnnSoftmaxPack4CDHW_Impl(uint3 id);
-void NcnnSoftmaxLinearMat2D_Impl(uint3 id);
-void NcnnUnaryOpPack4_Impl(uint3 id);
-void NcnnUnaryOpLinearMat_Impl(uint3 id);
-void NcnnTriluPack4_Impl(uint3 id);
-void NcnnTriluLinearMat_Impl(uint3 id);
-void NcnnBinaryOpLinearMat_Impl(uint3 id);
-void NcnnBinaryOpLinearMatFixedInputScalar_Impl(uint3 id);
-void NcnnBinaryOpPack4_Impl(uint3 id);
-void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id);
-void NcnnBinaryOpPack4Broadcast_Impl(uint3 id);
-void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id);
-void NcnnBinaryOpPack4ChannelVectorTex_Impl(uint3 id);
-void NcnnBinaryOpScalarSingleBroadcast_Impl(uint3 id);
-void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id);
-void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id);
-void NcnnShuffleChannelPack4_Impl(uint3 id);
-void NcnnFlipPack4P1_Impl(uint3 id);
-void NcnnP1GridSamplePack4_Impl(uint3 id);
-void NcnnP1GluPack4_Impl(uint3 id);
-void NcnnP1DiagPack4_Impl(uint3 id);
-void NcnnP1FoldPack4_Impl(uint3 id);
-void NcnnP1SppPack4_Impl(uint3 id);
-void NcnnP1RoiAlignPack4_Impl(uint3 id);
-void NcnnP1RoiPoolPack4_Impl(uint3 id);
-void NcnnP1PsRoiPoolPack4_Impl(uint3 id);
-void NcnnP1DeformableConv2dPack4_Impl(uint3 id);
-void NcnnP1ProposalPack4_Impl(uint3 id);
-void NcnnP1DetectionOutputPack4_Impl(uint3 id);
-void NcnnP1YoloDetectionOutputPack4_Impl(uint3 id);
-void NcnnP1EinsumPack4_Impl(uint3 id);
-void NcnnCropPack4_Impl(uint3 id);
-void NcnnSlicePack4_Impl(uint3 id);
-void NcnnSliceLinearMat2D_Impl(uint3 id);
-void NcnnPermutePack4_Impl(uint3 id);
-void NcnnPermutePack4CDHW_Impl(uint3 id);
-void NcnnPermutePack4CDHWFoldD_Impl(uint3 id);
-void NcnnPermutePack4FoldDToCDHW_Impl(uint3 id);
-void NcnnPermuteLinearMat2D_Impl(uint3 id);
-void NcnnWindowPartitionPack4_Impl(uint3 id);
-void NcnnWindowUnpartitionPack4_Impl(uint3 id);
-void NcnnSwishPack4_Impl(uint3 id);
-void NcnnSwishLinearMat_Impl(uint3 id);
-void NcnnSigmoidPack4_Impl(uint3 id);
-void NcnnSigmoidLinearMat_Impl(uint3 id);
-void NcnnGeluPack4_Impl(uint3 id);
-void NcnnGeluLinearMat_Impl(uint3 id);
-void NcnnEmbed_Impl(uint3 id);
-void NcnnEmbedTexture_Impl(uint3 id);
-void NcnnEmbedTextureLinearIndex_Impl(uint3 id);
-void NcnnEmbedTexturePack4Index_Impl(uint3 id);
-void NcnnLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnLayerNormPack4WidthTex_Impl(uint3 id);
-void NcnnLayerNormPack4Linear2D_Impl(uint3 id);
-void NcnnSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnPermute_Impl(uint3 id);
-void NcnnSlice_Impl(uint3 id);
-void NcnnTile_Impl(uint3 id);
-void NcnnTilePack4_Impl(uint3 id);
-void NcnnTileLinearMat_Impl(uint3 id);
-void NcnnReduceSum256_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnMulScalarBuf_Impl(uint3 id);
-void NcnnGroupNormStats_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormApply_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormMean_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormVariance_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormApplyMeanVar_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormPack4Mean_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormPack4Variance_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormPack4ApplyMeanVar_Impl(uint3 id);
-void NcnnGroupNormPack4MeanTex_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormPack4VarianceTex_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGroupNormPack4ApplyMeanVarTex_Impl(uint3 id);
-void NcnnMatMul2D_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnMatMulPack4CDHW_Impl(uint3 id);
-void NcnnVistaTailPromptDotPack4_Impl(uint3 id);
-void NcnnVistaTailPromptDotPack4Tex_Impl(uint3 id);
-void NcnnReshapePack4ToScalar2D_Impl(uint3 id);
-void NcnnReshapePack4ToLinearMat_Impl(uint3 id);
-void NcnnReshapePack4ToPack4_Impl(uint3 id);
-void NcnnReshapeScalar2DToPack4_Impl(uint3 id);
-void NcnnPack4LinearFromScalar2D_Impl(uint3 id);
-void NcnnReshapeLinearMatToPack4_Impl(uint3 id);
-void NcnnAttentionReshapePack4_Impl(uint3 id);
-void NcnnAttentionContextFlattenPack4_Impl(uint3 id);
-void NcnnSlicePack4CDHW_Impl(uint3 id);
-void NcnnGemm2DTextureA_Impl(uint3 id);
-void NcnnGemm2DLinearTextureA_Impl(uint3 id);
-void NcnnGemm2DPack4LinearTextureA_Impl(uint3 id);
-void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id);
-void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id);
-void NcnnGemm2DPack4TiledTextureAFromLinear_Impl(uint3 id);
-void NcnnGemm2DPack4TiledTextureAFromPack4_Impl(uint3 id);
-void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id);
-void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id);
-void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id);
-void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id);
-void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id);
-void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnGemm2D16_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnCastBuf_Impl(uint3 id);
-void NcnnScaleBuf_Impl(uint3 id);
-void NcnnPReluBuf_Impl(uint3 id);
-void NcnnReorgBuf_Impl(uint3 id);
-void NcnnReductionRowsBuf_Impl(uint3 id);
-void NcnnReductionScalar2D_Impl(uint3 id);
-void NcnnReductionLinearMat2D_Impl(uint3 id);
-void NcnnReductionPack4Width_Impl(uint3 id);
-void NcnnReductionPack4Channel_Impl(uint3 id);
-void NcnnConv1dBuf_Impl(uint3 id);
-void NcnnReorgPack4_Impl(uint3 id);
-void NcnnPointwisePack4_Impl(uint3 id);
-void NcnnPixelShufflePack4_Impl(uint3 id);
-void NcnnQuantizeBuf_Impl(uint3 id);
-void NcnnDequantizeBuf_Impl(uint3 id);
-void NcnnRequantizeBuf_Impl(uint3 id);
-void NcnnCastPack4_Impl(uint3 id);
-void NcnnQuantizePack4_Impl(uint3 id);
-void NcnnDequantizePack4_Impl(uint3 id);
-void NcnnRequantizePack4_Impl(uint3 id);
-void NcnnNormalizePack4_Impl(uint3 id);
-void NcnnLrnPack4_Impl(uint3 id);
-void NcnnRmsNormPack4_Impl(uint3 id);
-void NcnnPixelShuffleBuf_Impl(uint3 id);
-void NcnnRotaryEmbedBuf_Impl(uint3 id);
-void NcnnRotaryEmbedPack4_Impl(uint3 id);
-void NcnnPriorBox_Impl(uint3 id);
-void NcnnNormalizeBuf_Impl(uint3 id);
-void NcnnLrnBuf_Impl(uint3 id);
-void NcnnRmsNormBuf_Impl(uint3 id);
-void NcnnUnfoldBuf_Impl(uint3 id);
-void NcnnUnfoldPack4_Impl(uint3 id);
-void NcnnExtractPatchesPack4_Impl(uint3 id);
-void NcnnExtractPatchesFoldDPack4_Impl(uint3 id);
-void NcnnDeepFillV2PatchStats_Impl(uint3 id);
-void NcnnDeepFillV2Scores_Impl(uint3 id);
-void NcnnDeepFillV2Softmax_Impl(uint3 groupId, uint3 groupThreadId);
-void NcnnDeepFillV2Reconstruct_Impl(uint3 id);
-void NcnnPassthrough_Impl(uint3 id);
-void NcnnConv2dGroupPack4_Impl(uint3 id);
-void NcnnDeconvolution2dGroupPack4_Impl(uint3 id);
+void AexisLeakyRelu_Impl(uint3 id);
+void AexisPackRgbToPack4_Impl(uint3 id);
+void AexisPackRgbToNhwcPack4_Impl(uint3 id);
+void AexisPackMaskToNhwcPack4_Impl(uint3 id);
+void AexisPackRgbToPack4Gfpgan_Impl(uint3 id);
+void AexisUnpackPack4ToRgb_Impl(uint3 id);
+void AexisConv3x3Pack4_Impl(uint3 id, uint3 groupId, uint3 groupThreadId);
+void AexisWinograd23TransformInputPack4_Impl(uint3 id);
+void AexisWinograd23GemmPack4_Impl(uint3 id);
+void AexisWinograd23TransformOutputPack4_Impl(uint3 id);
+void AexisConv1x1Pack4_Impl(uint3 id);
+void AexisConvPack4General_Impl(uint3 id);
+void AexisDeconvolutionPack4General_Impl(uint3 id);
+void AexisDeconvolutionDepthWisePack4_Impl(uint3 id);
+void AexisConvDepthWisePack4_Impl(uint3 id);
+void AexisAddPack4_Impl(uint3 id);
+void AexisCopyPack4_Impl(uint3 id);
+void AexisCopyToPack4_Impl(uint3 id);
+void AexisConcatPack4CDHW_Impl(uint3 id);
+void AexisConcatSequencePack4CDHW_Impl(uint3 id);
+void AexisAppendSequencePack4CDHW_Impl(uint3 id);
+void AexisBuildSdInpaintInput9Pack4_Impl(uint3 id);
+void AexisInterpPack4CDHW_Impl(uint3 id);
+void AexisInterpPack4_Impl(uint3 id);
+void AexisInterp2xPack4_Impl(uint3 id);
+void AexisInterpPack4Nearest_Impl(uint3 id);
+void AexisInterp2xNearestPack4_Impl(uint3 id);
+void AexisInterpDown2Pack4_Impl(uint3 id);
+void AexisInterpDown2NearestPack4_Impl(uint3 id);
+void AexisPack4ToBufferCHW_Impl(uint3 id);
+void AexisLinearMatToBuffer_Impl(uint3 id);
+void AexisPack4ToBufferCDHW_Impl(uint3 id);
+void AexisInnerProduct_Impl(uint3 id);
+void AexisInnerProduct2D_Impl(uint3 id);
+void AexisMhaAttention_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisSdpaQkBuf_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisSdpaSoftmaxBuf_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisSdpaQkvBuf_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisSdpaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisMhaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisMhaAttentionQkvFast_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisFillPack4FromBufferCHW_Impl(uint3 id);
+void AexisFillPack4FromBufferCDHW_Impl(uint3 id);
+void AexisFillLinearMatFromBuffer_Impl(uint3 id);
+void AexisFillScalarTexture_Impl(uint3 id);
+void AexisFillScalarLinearMat_Impl(uint3 id);
+void AexisConstantLinearMat_Impl(uint3 id);
+void AexisRangeLinearMat_Impl(uint3 id);
+void AexisExpandLinearMat_Impl(uint3 id);
+void AexisWhereLinearMat_Impl(uint3 id);
+void AexisGatherLinearMat_Impl(uint3 id);
+void AexisGatherElementsLinearMat_Impl(uint3 id);
+void AexisArgReduceLinearMat_Impl(uint3 id);
+void AexisTopKLinearMat_Impl(uint3 id);
+void AexisOneHotLinearMat_Impl(uint3 id);
+void AexisCumSumLinearMat_Impl(uint3 id);
+void AexisNonZeroLinearMat_Impl(uint3 id);
+void AexisCompressLinearMat_Impl(uint3 id);
+void AexisGatherNDLinearMat_Impl(uint3 id);
+void AexisScatterLinearMat_Impl(uint3 id);
+void AexisScalePack4_Impl(uint3 id);
+void AexisAddBiasPack4_Impl(uint3 id);
+void AexisBatchNormPack4_Impl(uint3 id);
+void AexisLeakyReluPack4_Impl(uint3 id);
+void AexisPReluPack4_Impl(uint3 id);
+void AexisAddNoiseBroadcastPack4_Impl(uint3 id);
+void AexisClipPack4_Impl(uint3 id);
+void AexisSftPack4_Impl(uint3 id);
+void AexisPack4ToRgb01_Impl(uint3 id);
+void AexisPack4ToRgbScaled_Impl(uint3 id);
+void AexisNhwcPack4ToRgbScaled_Impl(uint3 id);
+void AexisConv3x3_Impl(uint3 id);
+void AexisConvDepthWise_Impl(uint3 id);
+void AexisConv3dBuf_Impl(uint3 id);
+void AexisConv3dPack4CDHW16x4_Impl(uint3 id);
+void AexisConv3dPack4CDHWZ2_Impl(uint3 id);
+void AexisConv3dPack4CDHWTile3x3_Impl(uint3 id);
+void AexisPack4ChannelsToWidth_Impl(uint3 id);
+void AexisPack4SpatialToPack4Linear_Impl(uint3 id);
+void AexisPack4ReorderMergeRows_Impl(uint3 id);
+void AexisLinearMatReorderMergeRows_Impl(uint3 id);
+void AexisArgmaxUpdatePack4CDHW_Impl(uint3 id);
+void AexisArgMaxPack4LinearMat_Impl(uint3 id);
+void AexisDeconvolution3dPack4CDHW_Impl(uint3 id);
+void AexisDeconvolutionBuf_Impl(uint3 id);
+void AexisDeconvolution3dBuf_Impl(uint3 id);
+void AexisTexToBuf3_Impl(uint3 id);
+void AexisBufToTex3_Impl(uint3 id);
+void AexisLeakyReluBuf_Impl(uint3 id);
+void AexisAddWeighted_Impl(uint3 id);
+void AexisCopyBuf_Impl(uint3 id);
+void AexisCopyBufPartial_Impl(uint3 id);
+void AexisBinaryOpBuf_Impl(uint3 id);
+void AexisUnaryOpBuf_Impl(uint3 id);
+void AexisSigmoidBuf_Impl(uint3 id);
+void AexisSwishBuf_Impl(uint3 id);
+void AexisGeluBuf_Impl(uint3 id);
+void AexisPointwiseBuf_Impl(uint3 id);
+void AexisCopyC_Impl(uint3 id);
+void AexisInterp2x_Impl(uint3 id);
+void AexisBlitTileToDst_Impl(uint3 id);
+void AexisTouchU32_Impl(uint3 id);
+void AexisProbeTilePack4_Impl(uint3 id);
+void AexisProbeSeams_Impl(uint3 id);
+void AexisPaddingPack4_Impl(uint3 id);
+void AexisPoolingPack4_Impl(uint3 id);
+void AexisPooling1DPack4_Impl(uint3 id);
+void AexisPoolingPack4CDHW_Impl(uint3 id);
+void AexisMaxPoolingIndPack4_Impl(uint3 id);
+void AexisMaxPoolingIndicesFromValuePack4_Impl(uint3 id);
+void AexisMaxUnPoolingPack4_Impl(uint3 id);
+void AexisSoftmaxChannelPack4_Impl(uint3 id);
+void AexisSoftmaxPack4CDHW_Impl(uint3 id);
+void AexisSoftmaxLinearMat2D_Impl(uint3 id);
+void AexisUnaryOpPack4_Impl(uint3 id);
+void AexisUnaryOpLinearMat_Impl(uint3 id);
+void AexisTriluPack4_Impl(uint3 id);
+void AexisTriluLinearMat_Impl(uint3 id);
+void AexisBinaryOpLinearMat_Impl(uint3 id);
+void AexisBinaryOpLinearMatFixedInputScalar_Impl(uint3 id);
+void AexisBinaryOpPack4_Impl(uint3 id);
+void AexisBinaryOpPack4LinearMixed_Impl(uint3 id);
+void AexisBinaryOpPack4Broadcast_Impl(uint3 id);
+void AexisBinaryOpPack4BufferScalar_Impl(uint3 id);
+void AexisBinaryOpPack4ChannelVectorTex_Impl(uint3 id);
+void AexisBinaryOpScalarSingleBroadcast_Impl(uint3 id);
+void AexisCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id);
+void AexisCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id);
+void AexisShuffleChannelPack4_Impl(uint3 id);
+void AexisFlipPack4P1_Impl(uint3 id);
+void AexisP1GridSamplePack4_Impl(uint3 id);
+void AexisP1GluPack4_Impl(uint3 id);
+void AexisP1DiagPack4_Impl(uint3 id);
+void AexisP1FoldPack4_Impl(uint3 id);
+void AexisP1SppPack4_Impl(uint3 id);
+void AexisP1RoiAlignPack4_Impl(uint3 id);
+void AexisP1RoiPoolPack4_Impl(uint3 id);
+void AexisP1PsRoiPoolPack4_Impl(uint3 id);
+void AexisP1DeformableConv2dPack4_Impl(uint3 id);
+void AexisP1ProposalPack4_Impl(uint3 id);
+void AexisP1DetectionOutputPack4_Impl(uint3 id);
+void AexisP1YoloDetectionOutputPack4_Impl(uint3 id);
+void AexisP1EinsumPack4_Impl(uint3 id);
+void AexisCropPack4_Impl(uint3 id);
+void AexisSlicePack4_Impl(uint3 id);
+void AexisSliceLinearMat2D_Impl(uint3 id);
+void AexisPermutePack4_Impl(uint3 id);
+void AexisPermutePack4CDHW_Impl(uint3 id);
+void AexisPermutePack4CDHWFoldD_Impl(uint3 id);
+void AexisPermutePack4FoldDToCDHW_Impl(uint3 id);
+void AexisPermuteLinearMat2D_Impl(uint3 id);
+void AexisWindowPartitionPack4_Impl(uint3 id);
+void AexisWindowUnpartitionPack4_Impl(uint3 id);
+void AexisSwishPack4_Impl(uint3 id);
+void AexisSwishLinearMat_Impl(uint3 id);
+void AexisSigmoidPack4_Impl(uint3 id);
+void AexisSigmoidLinearMat_Impl(uint3 id);
+void AexisGeluPack4_Impl(uint3 id);
+void AexisGeluLinearMat_Impl(uint3 id);
+void AexisEmbed_Impl(uint3 id);
+void AexisEmbedTexture_Impl(uint3 id);
+void AexisEmbedTextureLinearIndex_Impl(uint3 id);
+void AexisEmbedTexturePack4Index_Impl(uint3 id);
+void AexisLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisLayerNormPack4WidthTex_Impl(uint3 id);
+void AexisLayerNormPack4Linear2D_Impl(uint3 id);
+void AexisSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisPermute_Impl(uint3 id);
+void AexisSlice_Impl(uint3 id);
+void AexisTile_Impl(uint3 id);
+void AexisTilePack4_Impl(uint3 id);
+void AexisTileLinearMat_Impl(uint3 id);
+void AexisReduceSum256_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisMulScalarBuf_Impl(uint3 id);
+void AexisGroupNormStats_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormApply_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormMean_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormVariance_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormApplyMeanVar_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormPack4Mean_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormPack4Variance_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormPack4ApplyMeanVar_Impl(uint3 id);
+void AexisGroupNormPack4MeanTex_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormPack4VarianceTex_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGroupNormPack4ApplyMeanVarTex_Impl(uint3 id);
+void AexisMatMul2D_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisMatMulPack4CDHW_Impl(uint3 id);
+void AexisVistaTailPromptDotPack4_Impl(uint3 id);
+void AexisVistaTailPromptDotPack4Tex_Impl(uint3 id);
+void AexisReshapePack4ToScalar2D_Impl(uint3 id);
+void AexisReshapePack4ToLinearMat_Impl(uint3 id);
+void AexisReshapePack4ToPack4_Impl(uint3 id);
+void AexisReshapeScalar2DToPack4_Impl(uint3 id);
+void AexisPack4LinearFromScalar2D_Impl(uint3 id);
+void AexisReshapeLinearMatToPack4_Impl(uint3 id);
+void AexisAttentionReshapePack4_Impl(uint3 id);
+void AexisAttentionContextFlattenPack4_Impl(uint3 id);
+void AexisSlicePack4CDHW_Impl(uint3 id);
+void AexisGemm2DTextureA_Impl(uint3 id);
+void AexisGemm2DLinearTextureA_Impl(uint3 id);
+void AexisGemm2DPack4LinearTextureA_Impl(uint3 id);
+void AexisGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id);
+void AexisGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id);
+void AexisGemm2DPack4TiledTextureAFromLinear_Impl(uint3 id);
+void AexisGemm2DPack4TiledTextureAFromPack4_Impl(uint3 id);
+void AexisGemm2DAttentionQkvTextureA_Impl(uint3 id);
+void AexisGemm2DAttentionQkvLinearTextureA_Impl(uint3 id);
+void AexisGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id);
+void AexisGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id);
+void AexisGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id);
+void AexisGemm2D_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisGemm2D16_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisCastBuf_Impl(uint3 id);
+void AexisScaleBuf_Impl(uint3 id);
+void AexisPReluBuf_Impl(uint3 id);
+void AexisReorgBuf_Impl(uint3 id);
+void AexisReductionRowsBuf_Impl(uint3 id);
+void AexisReductionScalar2D_Impl(uint3 id);
+void AexisReductionLinearMat2D_Impl(uint3 id);
+void AexisReductionPack4Width_Impl(uint3 id);
+void AexisReductionPack4Channel_Impl(uint3 id);
+void AexisConv1dBuf_Impl(uint3 id);
+void AexisReorgPack4_Impl(uint3 id);
+void AexisPointwisePack4_Impl(uint3 id);
+void AexisPixelShufflePack4_Impl(uint3 id);
+void AexisQuantizeBuf_Impl(uint3 id);
+void AexisDequantizeBuf_Impl(uint3 id);
+void AexisRequantizeBuf_Impl(uint3 id);
+void AexisCastPack4_Impl(uint3 id);
+void AexisQuantizePack4_Impl(uint3 id);
+void AexisDequantizePack4_Impl(uint3 id);
+void AexisRequantizePack4_Impl(uint3 id);
+void AexisNormalizePack4_Impl(uint3 id);
+void AexisLrnPack4_Impl(uint3 id);
+void AexisRmsNormPack4_Impl(uint3 id);
+void AexisPixelShuffleBuf_Impl(uint3 id);
+void AexisRotaryEmbedBuf_Impl(uint3 id);
+void AexisRotaryEmbedPack4_Impl(uint3 id);
+void AexisPriorBox_Impl(uint3 id);
+void AexisNormalizeBuf_Impl(uint3 id);
+void AexisLrnBuf_Impl(uint3 id);
+void AexisRmsNormBuf_Impl(uint3 id);
+void AexisUnfoldBuf_Impl(uint3 id);
+void AexisUnfoldPack4_Impl(uint3 id);
+void AexisExtractPatchesPack4_Impl(uint3 id);
+void AexisExtractPatchesFoldDPack4_Impl(uint3 id);
+void AexisDeepFillV2PatchStats_Impl(uint3 id);
+void AexisDeepFillV2Scores_Impl(uint3 id);
+void AexisDeepFillV2Softmax_Impl(uint3 groupId, uint3 groupThreadId);
+void AexisDeepFillV2Reconstruct_Impl(uint3 id);
+void AexisPassthrough_Impl(uint3 id);
+void AexisConv2dGroupPack4_Impl(uint3 id);
+void AexisDeconvolution2dGroupPack4_Impl(uint3 id);
 
 [numthreads(256,1,1)]
-void NcnnLeakyRelu(uint3 id : SV_DispatchThreadID)
+void AexisLeakyRelu(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLeakyRelu_Impl(id);
+    AexisLeakyRelu_Impl(id);
 }
 
 StructuredBuffer<float> _ConvIn;
@@ -979,33 +979,33 @@ int _ArgmaxLogicalHeight;
 int _ArgmaxTileRowsPerMatrix;
 
 [numthreads(32,32,1)]
-void NcnnPackRgbToPack4(uint3 id : SV_DispatchThreadID)
+void AexisPackRgbToPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPackRgbToPack4_Impl(id);
+    AexisPackRgbToPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPackRgbToNhwcPack4(uint3 id : SV_DispatchThreadID)
+void AexisPackRgbToNhwcPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPackRgbToNhwcPack4_Impl(id);
+    AexisPackRgbToNhwcPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPackMaskToNhwcPack4(uint3 id : SV_DispatchThreadID)
+void AexisPackMaskToNhwcPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPackMaskToNhwcPack4_Impl(id);
+    AexisPackMaskToNhwcPack4_Impl(id);
 }
 
 [numthreads(32,32,1)]
-void NcnnPackRgbToPack4Gfpgan(uint3 id : SV_DispatchThreadID)
+void AexisPackRgbToPack4Gfpgan(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPackRgbToPack4Gfpgan_Impl(id);
+    AexisPackRgbToPack4Gfpgan_Impl(id);
 }
 
 [numthreads(32,32,1)]
-void NcnnUnpackPack4ToRgb(uint3 id : SV_DispatchThreadID)
+void AexisUnpackPack4ToRgb(uint3 id : SV_DispatchThreadID)
 {
-    NcnnUnpackPack4ToRgb_Impl(id);
+    AexisUnpackPack4ToRgb_Impl(id);
 }
 
 StructuredBuffer<float4> _ConvW4;
@@ -1021,7 +1021,7 @@ int _OutPacks;
 int _UseFp16ConvWeights;
 int _UseFp16DepthWiseWeights;
 
-float4 NcnnApplyActivation(float4 v)
+float4 AexisApplyActivation(float4 v)
 {
     if (_ActType == 1)
         v = max(v, 0.0);
@@ -1032,7 +1032,7 @@ float4 NcnnApplyActivation(float4 v)
     return v;
 }
 
-float NcnnApplyActivationScalar(float v)
+float AexisApplyActivationScalar(float v)
 {
     if (_ActType == 1)
         v = v >= 0.0 ? v : 0.0;
@@ -1043,7 +1043,7 @@ float NcnnApplyActivationScalar(float v)
     return v;
 }
 
-void NcnnAccumulateDot4(inout float4 sum, float4 v, float4 w0, float4 w1, float4 w2, float4 w3)
+void AexisAccumulateDot4(inout float4 sum, float4 v, float4 w0, float4 w1, float4 w2, float4 w3)
 {
     sum.x += dot(v, w0);
     sum.y += dot(v, w1);
@@ -1059,9 +1059,9 @@ groupshared float4 _ConvWeight1[9 * 4];
 // One 8x8 thread group covers a 16x16 output region and stages the corresponding
 // 18x18 input tile once per input-pack, while each invocation computes a 2x2 x 2-pack block.
 [numthreads(8,8,1)]
-void NcnnConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisConv3x3Pack4(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnConv3x3Pack4_Impl(id, groupId, groupThreadId);
+    AexisConv3x3Pack4_Impl(id, groupId, groupThreadId);
 }
 
 Texture2DArray<float4> _WinoInArr;
@@ -1082,73 +1082,73 @@ int _WinoBiasTerm;
 
 // ncnn pack4 winograd23 transform_input: local_size 8x8x1, 2x2 output tile per block.
 [numthreads(8,8,1)]
-void NcnnWinograd23TransformInputPack4(uint3 id : SV_DispatchThreadID)
+void AexisWinograd23TransformInputPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnWinograd23TransformInputPack4_Impl(id);
+    AexisWinograd23TransformInputPack4_Impl(id);
 }
 
 // ncnn pack4 winograd gemm: gx*4 spatial tiles, gy output pack, gz winograd tile (16).
 [numthreads(8,8,1)]
-void NcnnWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
+void AexisWinograd23GemmPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnWinograd23GemmPack4_Impl(id);
+    AexisWinograd23GemmPack4_Impl(id);
 }
 
 // ncnn pack4 winograd23 transform_output: local_size 8x8x1.
 [numthreads(8,8,1)]
-void NcnnWinograd23TransformOutputPack4(uint3 id : SV_DispatchThreadID)
+void AexisWinograd23TransformOutputPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnWinograd23TransformOutputPack4_Impl(id);
+    AexisWinograd23TransformOutputPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConv1x1Pack4(uint3 id : SV_DispatchThreadID)
+void AexisConv1x1Pack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv1x1Pack4_Impl(id);
+    AexisConv1x1Pack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConvPack4General(uint3 id : SV_DispatchThreadID)
+void AexisConvPack4General(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConvPack4General_Impl(id);
+    AexisConvPack4General_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnDeconvolutionPack4General(uint3 id : SV_DispatchThreadID)
+void AexisDeconvolutionPack4General(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeconvolutionPack4General_Impl(id);
+    AexisDeconvolutionPack4General_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConv2dGroupPack4(uint3 id : SV_DispatchThreadID)
+void AexisConv2dGroupPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv2dGroupPack4_Impl(id);
+    AexisConv2dGroupPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnDeconvolution2dGroupPack4(uint3 id : SV_DispatchThreadID)
+void AexisDeconvolution2dGroupPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeconvolution2dGroupPack4_Impl(id);
+    AexisDeconvolution2dGroupPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnDeconvolutionDepthWisePack4(uint3 id : SV_DispatchThreadID)
+void AexisDeconvolutionDepthWisePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeconvolutionDepthWisePack4_Impl(id);
+    AexisDeconvolutionDepthWisePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConvDepthWisePack4(uint3 id : SV_DispatchThreadID)
+void AexisConvDepthWisePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConvDepthWisePack4_Impl(id);
+    AexisConvDepthWisePack4_Impl(id);
 }
 
 
 
 [numthreads(8,8,1)]
-void NcnnAddPack4(uint3 id : SV_DispatchThreadID)
+void AexisAddPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnAddPack4_Impl(id);
+    AexisAddPack4_Impl(id);
 }
 
 
@@ -1167,15 +1167,15 @@ int _CopyToOffsetD;
 int _CopyToOffsetC;
 
 [numthreads(8,8,1)]
-void NcnnCopyPack4(uint3 id : SV_DispatchThreadID)
+void AexisCopyPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCopyPack4_Impl(id);
+    AexisCopyPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnCopyToPack4(uint3 id : SV_DispatchThreadID)
+void AexisCopyToPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCopyToPack4_Impl(id);
+    AexisCopyToPack4_Impl(id);
 }
 
 
@@ -1191,34 +1191,34 @@ int _ConcatSequencePack4CDHWBH;
 int _AppendSequencePack4CDHWOffset;
 
 [numthreads(8,8,1)]
-void NcnnConcatPack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisConcatPack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConcatPack4CDHW_Impl(id);
+    AexisConcatPack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConcatSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisConcatSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConcatSequencePack4CDHW_Impl(id);
+    AexisConcatSequencePack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnAppendSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisAppendSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnAppendSequencePack4CDHW_Impl(id);
+    AexisAppendSequencePack4CDHW_Impl(id);
 }
 
 
 
 
 [numthreads(8,8,1)]
-void NcnnBuildSdInpaintInput9Pack4(uint3 id : SV_DispatchThreadID)
+void AexisBuildSdInpaintInput9Pack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBuildSdInpaintInput9Pack4_Impl(id);
+    AexisBuildSdInpaintInput9Pack4_Impl(id);
 }
 
 
-float4 NcnnReadInterpPack4CDHW(int x, int y, int z, int pack, int srcW, int srcH, int srcD, int srcPacks)
+float4 AexisReadInterpPack4CDHW(int x, int y, int z, int pack, int srcW, int srcH, int srcD, int srcPacks)
 {
     x = clamp(x, 0, max(0, srcW - 1));
     y = clamp(y, 0, max(0, srcH - 1));
@@ -1228,48 +1228,48 @@ float4 NcnnReadInterpPack4CDHW(int x, int y, int z, int pack, int srcW, int srcH
 }
 
 [numthreads(8,8,1)]
-void NcnnInterpPack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisInterpPack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInterpPack4CDHW_Impl(id);
+    AexisInterpPack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnInterpPack4(uint3 id : SV_DispatchThreadID)
+void AexisInterpPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInterpPack4_Impl(id);
+    AexisInterpPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnInterp2xPack4(uint3 id : SV_DispatchThreadID)
+void AexisInterp2xPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInterp2xPack4_Impl(id);
+    AexisInterp2xPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnInterpPack4Nearest(uint3 id : SV_DispatchThreadID)
+void AexisInterpPack4Nearest(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInterpPack4Nearest_Impl(id);
-}
-
-
-[numthreads(8,8,1)]
-void NcnnInterp2xNearestPack4(uint3 id : SV_DispatchThreadID)
-{
-    NcnnInterp2xNearestPack4_Impl(id);
+    AexisInterpPack4Nearest_Impl(id);
 }
 
 
 [numthreads(8,8,1)]
-void NcnnInterpDown2Pack4(uint3 id : SV_DispatchThreadID)
+void AexisInterp2xNearestPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInterpDown2Pack4_Impl(id);
+    AexisInterp2xNearestPack4_Impl(id);
 }
 
 
 [numthreads(8,8,1)]
-void NcnnInterpDown2NearestPack4(uint3 id : SV_DispatchThreadID)
+void AexisInterpDown2Pack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInterpDown2NearestPack4_Impl(id);
+    AexisInterpDown2Pack4_Impl(id);
+}
+
+
+[numthreads(8,8,1)]
+void AexisInterpDown2NearestPack4(uint3 id : SV_DispatchThreadID)
+{
+    AexisInterpDown2NearestPack4_Impl(id);
 }
 
 RWStructuredBuffer<float> _Pack4Out;
@@ -1279,21 +1279,21 @@ int _Pack4D;
 int _Pack4C;
 
 [numthreads(256,1,1)]
-void NcnnPack4ToBufferCHW(uint3 id : SV_DispatchThreadID)
+void AexisPack4ToBufferCHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4ToBufferCHW_Impl(id);
+    AexisPack4ToBufferCHW_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnLinearMatToBuffer(uint3 id : SV_DispatchThreadID)
+void AexisLinearMatToBuffer(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLinearMatToBuffer_Impl(id);
+    AexisLinearMatToBuffer_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnPack4ToBufferCDHW(uint3 id : SV_DispatchThreadID)
+void AexisPack4ToBufferCDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4ToBufferCDHW_Impl(id);
+    AexisPack4ToBufferCDHW_Impl(id);
 }
 
 StructuredBuffer<float> _IPIn;
@@ -1312,15 +1312,15 @@ int _IP2InFeatures;
 int _IP2OutFeatures;
 
 [numthreads(64,1,1)]
-void NcnnInnerProduct(uint3 id : SV_DispatchThreadID)
+void AexisInnerProduct(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInnerProduct_Impl(id);
+    AexisInnerProduct_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnInnerProduct2D(uint3 id : SV_DispatchThreadID)
+void AexisInnerProduct2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInnerProduct2D_Impl(id);
+    AexisInnerProduct2D_Impl(id);
 }
 
 StructuredBuffer<float> _MhaQ;
@@ -1374,7 +1374,7 @@ float _SdpaScale;
 groupshared float _SdpaReduce[64];
 groupshared float _SdpaScoresFast[4096];
 
-float NcnnResolveSdpaMask(int head, int row, int col)
+float AexisResolveSdpaMask(int head, int row, int col)
 {
     if (_SdpaMaskDims <= 0)
         return 0.0;
@@ -1401,57 +1401,57 @@ float NcnnResolveSdpaMask(int head, int row, int col)
 }
 
 [numthreads(64,1,1)]
-void NcnnMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisMhaAttention(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnMhaAttention_Impl(groupId, groupThreadId);
+    AexisMhaAttention_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
-void NcnnSdpaQkBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisSdpaQkBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnSdpaQkBuf_Impl(groupId, groupThreadId);
+    AexisSdpaQkBuf_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
-void NcnnSdpaSoftmaxBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisSdpaSoftmaxBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnSdpaSoftmaxBuf_Impl(groupId, groupThreadId);
+    AexisSdpaSoftmaxBuf_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
-void NcnnSdpaQkvBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisSdpaQkvBuf(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnSdpaQkvBuf_Impl(groupId, groupThreadId);
+    AexisSdpaQkvBuf_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
-void NcnnSdpaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisSdpaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnSdpaAttentionFast_Impl(groupId, groupThreadId);
+    AexisSdpaAttentionFast_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
-void NcnnSdpaAttentionPack4CDHW(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisSdpaAttentionPack4CDHW(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnSdpaAttentionPack4CDHW_Impl(groupId, groupThreadId);
+    AexisSdpaAttentionPack4CDHW_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
-void NcnnMhaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisMhaAttentionFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnMhaAttentionFast_Impl(groupId, groupThreadId);
+    AexisMhaAttentionFast_Impl(groupId, groupThreadId);
 }
 
 [numthreads(64,1,1)]
-void NcnnMhaAttentionQkvFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisMhaAttentionQkvFast(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnMhaAttentionQkvFast_Impl(groupId, groupThreadId);
+    AexisMhaAttentionQkvFast_Impl(groupId, groupThreadId);
 }
 
 [numthreads(16,16,1)]
-void NcnnMhaProjectQkv2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisMhaProjectQkv2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnMhaProjectQkv2D_Impl(groupId, groupThreadId);
+    AexisMhaProjectQkv2D_Impl(groupId, groupThreadId);
 }
 
 StructuredBuffer<float> _FillIn;
@@ -1459,170 +1459,170 @@ StructuredBuffer<float> _FillIn;
 
 float4 _FillScalarValues4;
 int _FillScalarValueCount;
-int _SentisTotal;
-int _SentisMode;
-int _SentisAxis;
-int _SentisK;
-int _SentisKeepDims;
-int _SentisSelectLast;
-int _SentisHasIndices;
-int _SentisExclusive;
-int _SentisReverse;
-float _SentisValue0;
-float _SentisValue1;
-int _SentisIn0Dims;
-int _SentisIn0W;
-int _SentisIn0H;
-int _SentisIn0D;
-int _SentisIn0C;
-int _SentisIn0StorageW;
-int _SentisIn0StorageH;
-int _SentisIn1Dims;
-int _SentisIn1W;
-int _SentisIn1H;
-int _SentisIn1D;
-int _SentisIn1C;
-int _SentisIn1StorageW;
-int _SentisIn1StorageH;
-int _SentisIn2Dims;
-int _SentisIn2W;
-int _SentisIn2H;
-int _SentisIn2D;
-int _SentisIn2C;
-int _SentisIn2StorageW;
-int _SentisIn2StorageH;
-int _SentisOutDims;
-int _SentisOutW;
-int _SentisOutH;
-int _SentisOutD;
-int _SentisOutC;
-int _SentisOutStorageW;
-int _SentisOutStorageH;
+int _AexisTotal;
+int _AexisMode;
+int _AexisAxis;
+int _AexisK;
+int _AexisKeepDims;
+int _AexisSelectLast;
+int _AexisHasIndices;
+int _AexisExclusive;
+int _AexisReverse;
+float _AexisValue0;
+float _AexisValue1;
+int _AexisIn0Dims;
+int _AexisIn0W;
+int _AexisIn0H;
+int _AexisIn0D;
+int _AexisIn0C;
+int _AexisIn0StorageW;
+int _AexisIn0StorageH;
+int _AexisIn1Dims;
+int _AexisIn1W;
+int _AexisIn1H;
+int _AexisIn1D;
+int _AexisIn1C;
+int _AexisIn1StorageW;
+int _AexisIn1StorageH;
+int _AexisIn2Dims;
+int _AexisIn2W;
+int _AexisIn2H;
+int _AexisIn2D;
+int _AexisIn2C;
+int _AexisIn2StorageW;
+int _AexisIn2StorageH;
+int _AexisOutDims;
+int _AexisOutW;
+int _AexisOutH;
+int _AexisOutD;
+int _AexisOutC;
+int _AexisOutStorageW;
+int _AexisOutStorageH;
 int _FillW;
 int _FillH;
 int _FillD;
 int _FillC;
 
 [numthreads(8,8,1)]
-void NcnnFillPack4FromBufferCHW(uint3 id : SV_DispatchThreadID)
+void AexisFillPack4FromBufferCHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnFillPack4FromBufferCHW_Impl(id);
+    AexisFillPack4FromBufferCHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnFillPack4FromBufferCDHW(uint3 id : SV_DispatchThreadID)
+void AexisFillPack4FromBufferCDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnFillPack4FromBufferCDHW_Impl(id);
+    AexisFillPack4FromBufferCDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnFillLinearMatFromBuffer(uint3 id : SV_DispatchThreadID)
+void AexisFillLinearMatFromBuffer(uint3 id : SV_DispatchThreadID)
 {
-    NcnnFillLinearMatFromBuffer_Impl(id);
+    AexisFillLinearMatFromBuffer_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnFillScalarTexture(uint3 id : SV_DispatchThreadID)
+void AexisFillScalarTexture(uint3 id : SV_DispatchThreadID)
 {
-    NcnnFillScalarTexture_Impl(id);
+    AexisFillScalarTexture_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnFillScalarLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisFillScalarLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnFillScalarLinearMat_Impl(id);
+    AexisFillScalarLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisConstantLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisConstantLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisConstantLinearMat_Impl(id);
+    AexisConstantLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisRangeLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisRangeLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisRangeLinearMat_Impl(id);
+    AexisRangeLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisExpandLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisExpandLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisExpandLinearMat_Impl(id);
+    AexisExpandLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisWhereLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisWhereLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisWhereLinearMat_Impl(id);
+    AexisWhereLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisGatherLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisGatherLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisGatherLinearMat_Impl(id);
+    AexisGatherLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisGatherElementsLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisGatherElementsLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisGatherElementsLinearMat_Impl(id);
+    AexisGatherElementsLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisArgReduceLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisArgReduceLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisArgReduceLinearMat_Impl(id);
+    AexisArgReduceLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisTopKLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisTopKLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisTopKLinearMat_Impl(id);
+    AexisTopKLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisOneHotLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisOneHotLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisOneHotLinearMat_Impl(id);
+    AexisOneHotLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisCumSumLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisCumSumLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisCumSumLinearMat_Impl(id);
+    AexisCumSumLinearMat_Impl(id);
 }
 
 [numthreads(1,1,1)]
-void NcnnSentisNonZeroLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisNonZeroLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisNonZeroLinearMat_Impl(id);
+    AexisNonZeroLinearMat_Impl(id);
 }
 
 [numthreads(1,1,1)]
-void NcnnSentisCompressLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisCompressLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisCompressLinearMat_Impl(id);
+    AexisCompressLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSentisGatherNDLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisGatherNDLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisGatherNDLinearMat_Impl(id);
+    AexisGatherNDLinearMat_Impl(id);
 }
 
 [numthreads(1,1,1)]
-void NcnnSentisScatterLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisScatterLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSentisScatterLinearMat_Impl(id);
+    AexisScatterLinearMat_Impl(id);
 }
 
 float _ScaleK;
 
 [numthreads(8,8,1)]
-void NcnnScalePack4(uint3 id : SV_DispatchThreadID)
+void AexisScalePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnScalePack4_Impl(id);
+    AexisScalePack4_Impl(id);
 }
 
 
@@ -1630,9 +1630,9 @@ StructuredBuffer<float4> _Bias4;
 int _BiasPacks;
 
 [numthreads(8,8,1)]
-void NcnnAddBiasPack4(uint3 id : SV_DispatchThreadID)
+void AexisAddBiasPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnAddBiasPack4_Impl(id);
+    AexisAddBiasPack4_Impl(id);
 }
 
 
@@ -1640,9 +1640,9 @@ StructuredBuffer<float4> _BatchNormA4;
 StructuredBuffer<float4> _BatchNormB4;
 
 [numthreads(8,8,1)]
-void NcnnBatchNormPack4(uint3 id : SV_DispatchThreadID)
+void AexisBatchNormPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBatchNormPack4_Impl(id);
+    AexisBatchNormPack4_Impl(id);
 }
 
 
@@ -1652,24 +1652,24 @@ int _PReluSlopePack4Count;
 int _PReluSlopePack4Packs;
 
 [numthreads(8,8,1)]
-void NcnnLeakyReluPack4(uint3 id : SV_DispatchThreadID)
+void AexisLeakyReluPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLeakyReluPack4_Impl(id);
+    AexisLeakyReluPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPReluPack4(uint3 id : SV_DispatchThreadID)
+void AexisPReluPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPReluPack4_Impl(id);
+    AexisPReluPack4_Impl(id);
 }
 
 StructuredBuffer<float> _Noise;
 float _NoiseWeight;
 
 [numthreads(8,8,1)]
-void NcnnAddNoiseBroadcastPack4(uint3 id : SV_DispatchThreadID)
+void AexisAddNoiseBroadcastPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnAddNoiseBroadcastPack4_Impl(id);
+    AexisAddNoiseBroadcastPack4_Impl(id);
 }
 
 
@@ -1677,9 +1677,9 @@ float _ClipMin;
 float _ClipMax;
 
 [numthreads(8,8,1)]
-void NcnnClipPack4(uint3 id : SV_DispatchThreadID)
+void AexisClipPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnClipPack4_Impl(id);
+    AexisClipPack4_Impl(id);
 }
 
 
@@ -1688,49 +1688,49 @@ void NcnnClipPack4(uint3 id : SV_DispatchThreadID)
 int _SftHalfPacks;
 
 [numthreads(8,8,1)]
-void NcnnSftPack4(uint3 id : SV_DispatchThreadID)
+void AexisSftPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSftPack4_Impl(id);
+    AexisSftPack4_Impl(id);
 }
 
 RWTexture2D<float4> _RgbOut;
 
 [numthreads(32,32,1)]
-void NcnnPack4ToRgb01(uint3 id : SV_DispatchThreadID)
+void AexisPack4ToRgb01(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4ToRgb01_Impl(id);
+    AexisPack4ToRgb01_Impl(id);
 }
 [numthreads(32,32,1)]
-void NcnnPack4ToRgbScaled(uint3 id : SV_DispatchThreadID)
+void AexisPack4ToRgbScaled(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4ToRgbScaled_Impl(id);
+    AexisPack4ToRgbScaled_Impl(id);
 }
 
 [numthreads(32,32,1)]
-void NcnnNhwcPack4ToRgbScaled(uint3 id : SV_DispatchThreadID)
+void AexisNhwcPack4ToRgbScaled(uint3 id : SV_DispatchThreadID)
 {
-    NcnnNhwcPack4ToRgbScaled_Impl(id);
+    AexisNhwcPack4ToRgbScaled_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConv3x3(uint3 id : SV_DispatchThreadID)
+void AexisConv3x3(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv3x3_Impl(id);
+    AexisConv3x3_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConvDepthWise(uint3 id : SV_DispatchThreadID)
+void AexisConvDepthWise(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConvDepthWise_Impl(id);
+    AexisConvDepthWise_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnConv3dBuf(uint3 id : SV_DispatchThreadID)
+void AexisConv3dBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv3dBuf_Impl(id);
+    AexisConv3dBuf_Impl(id);
 }
 
-void NcnnConv3dPack4CDHWBody(uint3 id)
+void AexisConv3dPack4CDHWBody(uint3 id)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
@@ -1841,10 +1841,10 @@ void NcnnConv3dPack4CDHWBody(uint3 id)
     }
 
     int outSlice0 = oz * _OutPacks + op;
-    sum00 = NcnnApplyActivation(sum00);
-    if (hasX1) sum01 = NcnnApplyActivation(sum01);
-    if (hasY1) sum10 = NcnnApplyActivation(sum10);
-    if (hasX1 && hasY1) sum11 = NcnnApplyActivation(sum11);
+    sum00 = AexisApplyActivation(sum00);
+    if (hasX1) sum01 = AexisApplyActivation(sum01);
+    if (hasY1) sum10 = AexisApplyActivation(sum10);
+    if (hasX1 && hasY1) sum11 = AexisApplyActivation(sum11);
     _ConvOutArr[int3(ox, oy, outSlice0)] = sum00;
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice0)] = sum01;
     if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice0)] = sum10;
@@ -1854,10 +1854,10 @@ void NcnnConv3dPack4CDHWBody(uint3 id)
         return;
 
     int outSlice1 = oz * _OutPacks + op1;
-    sum20 = NcnnApplyActivation(sum20);
-    if (hasX1) sum21 = NcnnApplyActivation(sum21);
-    if (hasY1) sum30 = NcnnApplyActivation(sum30);
-    if (hasX1 && hasY1) sum31 = NcnnApplyActivation(sum31);
+    sum20 = AexisApplyActivation(sum20);
+    if (hasX1) sum21 = AexisApplyActivation(sum21);
+    if (hasY1) sum30 = AexisApplyActivation(sum30);
+    if (hasX1 && hasY1) sum31 = AexisApplyActivation(sum31);
     _ConvOutArr[int3(ox, oy, outSlice1)] = sum20;
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice1)] = sum21;
     if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice1)] = sum30;
@@ -1865,150 +1865,150 @@ void NcnnConv3dPack4CDHWBody(uint3 id)
 }
 
 [numthreads(16,4,1)]
-void NcnnConv3dPack4CDHW16x4(uint3 id : SV_DispatchThreadID)
+void AexisConv3dPack4CDHW16x4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv3dPack4CDHW16x4_Impl(id);
+    AexisConv3dPack4CDHW16x4_Impl(id);
 }
 
 // Specialized 3x3x3 stride-1 pack4 conv that computes two adjacent output-z
 // positions per invocation. This reuses four source z planes and one set of
 // weights across what would otherwise be two separate z threads.
 [numthreads(8,8,1)]
-void NcnnConv3dPack4CDHWZ2(uint3 id : SV_DispatchThreadID)
+void AexisConv3dPack4CDHWZ2(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv3dPack4CDHWZ2_Impl(id);
+    AexisConv3dPack4CDHWZ2_Impl(id);
 }
 
 // Specialized 3x3x3 stride-1 pack4 conv for 4D tensors.
 // Interior 2x2 output blocks skip the general-path bounds checks and use direct
 // fetches; boundary blocks fall back to the stable general path.
 [numthreads(16,4,1)]
-void NcnnConv3dPack4CDHWTile3x3(uint3 id : SV_DispatchThreadID)
+void AexisConv3dPack4CDHWTile3x3(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv3dPack4CDHWTile3x3_Impl(id);
+    AexisConv3dPack4CDHWTile3x3_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPack4ChannelsToWidth(uint3 id : SV_DispatchThreadID)
+void AexisPack4ChannelsToWidth(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4ChannelsToWidth_Impl(id);
+    AexisPack4ChannelsToWidth_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPack4SpatialToPack4Linear(uint3 id : SV_DispatchThreadID)
+void AexisPack4SpatialToPack4Linear(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4SpatialToPack4Linear_Impl(id);
+    AexisPack4SpatialToPack4Linear_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPack4ReorderMergeRows(uint3 id : SV_DispatchThreadID)
+void AexisPack4ReorderMergeRows(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4ReorderMergeRows_Impl(id);
+    AexisPack4ReorderMergeRows_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnLinearMatReorderMergeRows(uint3 id : SV_DispatchThreadID)
+void AexisLinearMatReorderMergeRows(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLinearMatReorderMergeRows_Impl(id);
+    AexisLinearMatReorderMergeRows_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnArgmaxUpdatePack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisArgmaxUpdatePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnArgmaxUpdatePack4CDHW_Impl(id);
+    AexisArgmaxUpdatePack4CDHW_Impl(id);
 }
 
 [numthreads(1,8,1)]
-void NcnnArgMaxPack4LinearMat(uint3 id : SV_DispatchThreadID)
+void AexisArgMaxPack4LinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnArgMaxPack4LinearMat_Impl(id);
+    AexisArgMaxPack4LinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnDeconvolution3dPack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisDeconvolution3dPack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeconvolution3dPack4CDHW_Impl(id);
+    AexisDeconvolution3dPack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnDeconvolutionBuf(uint3 id : SV_DispatchThreadID)
+void AexisDeconvolutionBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeconvolutionBuf_Impl(id);
+    AexisDeconvolutionBuf_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnDeconvolution3dBuf(uint3 id : SV_DispatchThreadID)
+void AexisDeconvolution3dBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeconvolution3dBuf_Impl(id);
+    AexisDeconvolution3dBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnTexToBuf3(uint3 id : SV_DispatchThreadID)
+void AexisTexToBuf3(uint3 id : SV_DispatchThreadID)
 {
-    NcnnTexToBuf3_Impl(id);
+    AexisTexToBuf3_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBufToTex3(uint3 id : SV_DispatchThreadID)
+void AexisBufToTex3(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBufToTex3_Impl(id);
+    AexisBufToTex3_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnLeakyReluBuf(uint3 id : SV_DispatchThreadID)
+void AexisLeakyReluBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLeakyReluBuf_Impl(id);
+    AexisLeakyReluBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnAddWeighted(uint3 id : SV_DispatchThreadID)
+void AexisAddWeighted(uint3 id : SV_DispatchThreadID)
 {
-    NcnnAddWeighted_Impl(id);
+    AexisAddWeighted_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnCopyBuf(uint3 id : SV_DispatchThreadID)
+void AexisCopyBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCopyBuf_Impl(id);
+    AexisCopyBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnCopyBufPartial(uint3 id : SV_DispatchThreadID)
+void AexisCopyBufPartial(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCopyBufPartial_Impl(id);
+    AexisCopyBufPartial_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnBinaryOpBuf(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpBuf_Impl(id);
+    AexisBinaryOpBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnUnaryOpBuf(uint3 id : SV_DispatchThreadID)
+void AexisUnaryOpBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnUnaryOpBuf_Impl(id);
+    AexisUnaryOpBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnSigmoidBuf(uint3 id : SV_DispatchThreadID)
+void AexisSigmoidBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSigmoidBuf_Impl(id);
+    AexisSigmoidBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnSwishBuf(uint3 id : SV_DispatchThreadID)
+void AexisSwishBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSwishBuf_Impl(id);
+    AexisSwishBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnGeluBuf(uint3 id : SV_DispatchThreadID)
+void AexisGeluBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGeluBuf_Impl(id);
+    AexisGeluBuf_Impl(id);
 }
 
-float NcnnErfApproxScalar(float x)
+float AexisErfApproxScalar(float x)
 {
     float a1 = 0.254829592;
     float a2 = -0.284496736;
@@ -2023,11 +2023,11 @@ float NcnnErfApproxScalar(float x)
     return s * y;
 }
 
-float NcnnApplyPointwiseScalar(float x)
+float AexisApplyPointwiseScalar(float x)
 {
     int t = _PointwiseType;
     if (t == 0) return x < 0.0 ? _PointwiseA * (exp(x) - 1.0) : x; // ELU
-    if (t == 1) return NcnnErfApproxScalar(x); // Erf
+    if (t == 1) return AexisErfApproxScalar(x); // Erf
     if (t == 2)
     {
         float alpha = abs(_PointwiseA) < 1e-12 ? 0.2 : _PointwiseA;
@@ -2091,7 +2091,7 @@ float NcnnApplyPointwiseScalar(float x)
     return x;
 }
 
-float NcnnApplyBinaryOpScalar(float a, float b, int t)
+float AexisApplyBinaryOpScalar(float a, float b, int t)
 {
     if (t == 0) return a + b;
     if (t == 1) return a - b;
@@ -2129,37 +2129,37 @@ float NcnnApplyBinaryOpScalar(float a, float b, int t)
     return a;
 }
 
-float4 NcnnApplyBinaryOp4(float4 a, float4 b, int t)
+float4 AexisApplyBinaryOp4(float4 a, float4 b, int t)
 {
     return float4(
-        NcnnApplyBinaryOpScalar(a.x, b.x, t),
-        NcnnApplyBinaryOpScalar(a.y, b.y, t),
-        NcnnApplyBinaryOpScalar(a.z, b.z, t),
-        NcnnApplyBinaryOpScalar(a.w, b.w, t));
+        AexisApplyBinaryOpScalar(a.x, b.x, t),
+        AexisApplyBinaryOpScalar(a.y, b.y, t),
+        AexisApplyBinaryOpScalar(a.z, b.z, t),
+        AexisApplyBinaryOpScalar(a.w, b.w, t));
 }
 
 [numthreads(256,1,1)]
-void NcnnPointwiseBuf(uint3 id : SV_DispatchThreadID)
+void AexisPointwiseBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPointwiseBuf_Impl(id);
+    AexisPointwiseBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnCopyC(uint3 id : SV_DispatchThreadID)
+void AexisCopyC(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCopyC_Impl(id);
+    AexisCopyC_Impl(id);
 }
 
 [numthreads(64,1,1)]
-void NcnnInterp2x(uint3 id : SV_DispatchThreadID)
+void AexisInterp2x(uint3 id : SV_DispatchThreadID)
 {
-    NcnnInterp2x_Impl(id);
+    AexisInterp2x_Impl(id);
 }
 
 [numthreads(32,32,1)]
-void NcnnBlitTileToDst(uint3 id : SV_DispatchThreadID)
+void AexisBlitTileToDst(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBlitTileToDst_Impl(id);
+    AexisBlitTileToDst_Impl(id);
 }
 
 RWStructuredBuffer<float4> _ProbeOut;
@@ -2565,173 +2565,173 @@ static int Reflect101Index(int x, int len)
 }
 
 [numthreads(1,1,1)]
-void NcnnTouchU32(uint3 id : SV_DispatchThreadID)
+void AexisTouchU32(uint3 id : SV_DispatchThreadID)
 {
-    NcnnTouchU32_Impl(id);
+    AexisTouchU32_Impl(id);
 }
 
 [numthreads(1,1,1)]
-void NcnnProbeTilePack4(uint3 id : SV_DispatchThreadID)
+void AexisProbeTilePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnProbeTilePack4_Impl(id);
+    AexisProbeTilePack4_Impl(id);
 }
 
 [numthreads(64,1,1)]
-void NcnnProbeSeams(uint3 id : SV_DispatchThreadID)
+void AexisProbeSeams(uint3 id : SV_DispatchThreadID)
 {
-    NcnnProbeSeams_Impl(id);
+    AexisProbeSeams_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPaddingPack4(uint3 id : SV_DispatchThreadID)
+void AexisPaddingPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPaddingPack4_Impl(id);
+    AexisPaddingPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPoolingPack4(uint3 id : SV_DispatchThreadID)
+void AexisPoolingPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPoolingPack4_Impl(id);
+    AexisPoolingPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPooling1DPack4(uint3 id : SV_DispatchThreadID)
+void AexisPooling1DPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPooling1DPack4_Impl(id);
+    AexisPooling1DPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPoolingPack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisPoolingPack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPoolingPack4CDHW_Impl(id);
+    AexisPoolingPack4CDHW_Impl(id);
 }
 
-
-
-
-[numthreads(8,8,1)]
-void NcnnMaxPoolingIndPack4(uint3 id : SV_DispatchThreadID)
-{
-    NcnnMaxPoolingIndPack4_Impl(id);
-}
-
-[numthreads(8,8,1)]
-void NcnnMaxPoolingIndicesFromValuePack4(uint3 id : SV_DispatchThreadID)
-{
-    NcnnMaxPoolingIndicesFromValuePack4_Impl(id);
-}
 
 
 
 [numthreads(8,8,1)]
-void NcnnMaxUnPoolingPack4(uint3 id : SV_DispatchThreadID)
+void AexisMaxPoolingIndPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnMaxUnPoolingPack4_Impl(id);
+    AexisMaxPoolingIndPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSoftmaxChannelPack4(uint3 id : SV_DispatchThreadID)
+void AexisMaxPoolingIndicesFromValuePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSoftmaxChannelPack4_Impl(id);
+    AexisMaxPoolingIndicesFromValuePack4_Impl(id);
+}
+
+
+
+[numthreads(8,8,1)]
+void AexisMaxUnPoolingPack4(uint3 id : SV_DispatchThreadID)
+{
+    AexisMaxUnPoolingPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSoftmaxPack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisSoftmaxChannelPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSoftmaxPack4CDHW_Impl(id);
+    AexisSoftmaxChannelPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSoftmaxLinearMat2D(uint3 id : SV_DispatchThreadID)
+void AexisSoftmaxPack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSoftmaxLinearMat2D_Impl(id);
+    AexisSoftmaxPack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnUnaryOpPack4(uint3 id : SV_DispatchThreadID)
+void AexisSoftmaxLinearMat2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnUnaryOpPack4_Impl(id);
+    AexisSoftmaxLinearMat2D_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnUnaryOpLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisUnaryOpPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnUnaryOpLinearMat_Impl(id);
+    AexisUnaryOpPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnTriluPack4(uint3 id : SV_DispatchThreadID)
+void AexisUnaryOpLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnTriluPack4_Impl(id);
+    AexisUnaryOpLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnTriluLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisTriluPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnTriluLinearMat_Impl(id);
+    AexisTriluPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisTriluLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpLinearMat_Impl(id);
+    AexisTriluLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpLinearMatFixedInputScalar(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpLinearMatFixedInputScalar_Impl(id);
+    AexisBinaryOpLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpPack4(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpLinearMatFixedInputScalar(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpPack4_Impl(id);
+    AexisBinaryOpLinearMatFixedInputScalar_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpPack4LinearMixed(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpPack4LinearMixed_Impl(id);
+    AexisBinaryOpPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpPack4Broadcast(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpPack4LinearMixed(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpPack4Broadcast_Impl(id);
+    AexisBinaryOpPack4LinearMixed_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpPack4BufferScalar(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpPack4Broadcast(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpPack4BufferScalar_Impl(id);
+    AexisBinaryOpPack4Broadcast_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpPack4ChannelVectorTex(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpPack4BufferScalar(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpPack4ChannelVectorTex_Impl(id);
+    AexisBinaryOpPack4BufferScalar_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnBinaryOpScalarSingleBroadcast(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpPack4ChannelVectorTex(uint3 id : SV_DispatchThreadID)
 {
-    NcnnBinaryOpScalarSingleBroadcast_Impl(id);
+    AexisBinaryOpPack4ChannelVectorTex_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnCodeFormerMinEncodingFromSoftOneHot(uint3 id : SV_DispatchThreadID)
+void AexisBinaryOpScalarSingleBroadcast(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(id);
+    AexisBinaryOpScalarSingleBroadcast_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisCodeFormerMinEncodingFromSoftOneHot(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(id);
+    AexisCodeFormerMinEncodingFromSoftOneHot_Impl(id);
 }
 
-float NcnnReadLane(float4 v, int lane)
+[numthreads(8,8,1)]
+void AexisCodeFormerMinEncodingFromSoftOneHotLinearMat(uint3 id : SV_DispatchThreadID)
+{
+    AexisCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(id);
+}
+
+float AexisReadLane(float4 v, int lane)
 {
     if (lane <= 0) return v.x;
     if (lane == 1) return v.y;
@@ -2739,7 +2739,7 @@ float NcnnReadLane(float4 v, int lane)
     return v.w;
 }
 
-void NcnnWriteLane(inout float4 v, int lane, float value)
+void AexisWriteLane(inout float4 v, int lane, float value)
 {
     if (lane <= 0) v.x = value;
     else if (lane == 1) v.y = value;
@@ -2747,234 +2747,234 @@ void NcnnWriteLane(inout float4 v, int lane, float value)
     else v.w = value;
 }
 
-float NcnnReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel)
+float AexisReadPack4Channel(Texture2DArray<float4> tex, int x, int y, int channel)
 {
     float4 v = tex[int3(x, y, channel >> 2)];
-    return NcnnReadLane(v, channel & 3);
+    return AexisReadLane(v, channel & 3);
 }
 
-float NcnnReadPack4ChannelCDHW(Texture2DArray<float4> tex, int x, int y, int z, int channel, int channelCount)
+float AexisReadPack4ChannelCDHW(Texture2DArray<float4> tex, int x, int y, int z, int channel, int channelCount)
 {
     int packCount = max(1, (channelCount + 3) >> 2);
     int slice = z * packCount + (channel >> 2);
     float4 v = tex[int3(x, y, slice)];
-    return NcnnReadLane(v, channel & 3);
+    return AexisReadLane(v, channel & 3);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DAttentionQkvPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DAttentionQkvPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(id);
+    AexisGemm2DAttentionQkvPack4LinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnShuffleChannelPack4(uint3 id : SV_DispatchThreadID)
+void AexisShuffleChannelPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnShuffleChannelPack4_Impl(id);
+    AexisShuffleChannelPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnFlipPack4P1(uint3 id : SV_DispatchThreadID)
+void AexisFlipPack4P1(uint3 id : SV_DispatchThreadID)
 {
-    NcnnFlipPack4P1_Impl(id);
+    AexisFlipPack4P1_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1GridSamplePack4(uint3 id : SV_DispatchThreadID)
+void AexisP1GridSamplePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1GridSamplePack4_Impl(id);
+    AexisP1GridSamplePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1GluPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1GluPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1GluPack4_Impl(id);
+    AexisP1GluPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1DiagPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1DiagPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1DiagPack4_Impl(id);
+    AexisP1DiagPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1FoldPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1FoldPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1FoldPack4_Impl(id);
+    AexisP1FoldPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1SppPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1SppPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1SppPack4_Impl(id);
+    AexisP1SppPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1RoiAlignPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1RoiAlignPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1RoiAlignPack4_Impl(id);
+    AexisP1RoiAlignPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1RoiPoolPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1RoiPoolPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1RoiPoolPack4_Impl(id);
+    AexisP1RoiPoolPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1PsRoiPoolPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1PsRoiPoolPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1PsRoiPoolPack4_Impl(id);
+    AexisP1PsRoiPoolPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1DeformableConv2dPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1DeformableConv2dPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1DeformableConv2dPack4_Impl(id);
+    AexisP1DeformableConv2dPack4_Impl(id);
 }
 
 [numthreads(1,1,1)]
-void NcnnP1ProposalPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1ProposalPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1ProposalPack4_Impl(id);
+    AexisP1ProposalPack4_Impl(id);
 }
 
 [numthreads(1,1,1)]
-void NcnnP1DetectionOutputPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1DetectionOutputPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1DetectionOutputPack4_Impl(id);
+    AexisP1DetectionOutputPack4_Impl(id);
 }
 
 [numthreads(1,1,1)]
-void NcnnP1YoloDetectionOutputPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1YoloDetectionOutputPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1YoloDetectionOutputPack4_Impl(id);
+    AexisP1YoloDetectionOutputPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnP1EinsumPack4(uint3 id : SV_DispatchThreadID)
+void AexisP1EinsumPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnP1EinsumPack4_Impl(id);
+    AexisP1EinsumPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnCropPack4(uint3 id : SV_DispatchThreadID)
+void AexisCropPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCropPack4_Impl(id);
+    AexisCropPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSlicePack4(uint3 id : SV_DispatchThreadID)
+void AexisSlicePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSlicePack4_Impl(id);
+    AexisSlicePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSliceLinearMat2D(uint3 id : SV_DispatchThreadID)
+void AexisSliceLinearMat2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSliceLinearMat2D_Impl(id);
+    AexisSliceLinearMat2D_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPermutePack4(uint3 id : SV_DispatchThreadID)
+void AexisPermutePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPermutePack4_Impl(id);
+    AexisPermutePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPermutePack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisPermutePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPermutePack4CDHW_Impl(id);
+    AexisPermutePack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPermutePack4CDHWFoldD(uint3 id : SV_DispatchThreadID)
+void AexisPermutePack4CDHWFoldD(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPermutePack4CDHWFoldD_Impl(id);
+    AexisPermutePack4CDHWFoldD_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPermutePack4FoldDToCDHW(uint3 id : SV_DispatchThreadID)
+void AexisPermutePack4FoldDToCDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPermutePack4FoldDToCDHW_Impl(id);
+    AexisPermutePack4FoldDToCDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnWindowPartitionPack4(uint3 id : SV_DispatchThreadID)
+void AexisWindowPartitionPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnWindowPartitionPack4_Impl(id);
+    AexisWindowPartitionPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnWindowUnpartitionPack4(uint3 id : SV_DispatchThreadID)
+void AexisWindowUnpartitionPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnWindowUnpartitionPack4_Impl(id);
+    AexisWindowUnpartitionPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPermuteLinearMat2D(uint3 id : SV_DispatchThreadID)
+void AexisPermuteLinearMat2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPermuteLinearMat2D_Impl(id);
+    AexisPermuteLinearMat2D_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSwishPack4(uint3 id : SV_DispatchThreadID)
+void AexisSwishPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSwishPack4_Impl(id);
+    AexisSwishPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSwishLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisSwishLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSwishLinearMat_Impl(id);
+    AexisSwishLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSigmoidPack4(uint3 id : SV_DispatchThreadID)
+void AexisSigmoidPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSigmoidPack4_Impl(id);
+    AexisSigmoidPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSigmoidLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisSigmoidLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSigmoidLinearMat_Impl(id);
+    AexisSigmoidLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGeluPack4(uint3 id : SV_DispatchThreadID)
+void AexisGeluPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGeluPack4_Impl(id);
+    AexisGeluPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGeluLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisGeluLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGeluLinearMat_Impl(id);
+    AexisGeluLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnEmbed(uint3 id : SV_DispatchThreadID)
+void AexisEmbed(uint3 id : SV_DispatchThreadID)
 {
-    NcnnEmbed_Impl(id);
+    AexisEmbed_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnEmbedTexture(uint3 id : SV_DispatchThreadID)
+void AexisEmbedTexture(uint3 id : SV_DispatchThreadID)
 {
-    NcnnEmbedTexture_Impl(id);
+    AexisEmbedTexture_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnEmbedTextureLinearIndex(uint3 id : SV_DispatchThreadID)
+void AexisEmbedTextureLinearIndex(uint3 id : SV_DispatchThreadID)
 {
-    NcnnEmbedTextureLinearIndex_Impl(id);
+    AexisEmbedTextureLinearIndex_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnEmbedTexturePack4Index(uint3 id : SV_DispatchThreadID)
+void AexisEmbedTexturePack4Index(uint3 id : SV_DispatchThreadID)
 {
-    NcnnEmbedTexturePack4Index_Impl(id);
+    AexisEmbedTexturePack4Index_Impl(id);
 }
 
 groupshared float _Red0[256];
@@ -2982,103 +2982,103 @@ groupshared float _Red1[256];
 groupshared float _ReduceSum256_sdata[256];
 
 [numthreads(256,1,1)]
-void NcnnLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisLayerNorm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnLayerNorm2D_Impl(groupId, groupThreadId);
+    AexisLayerNorm2D_Impl(groupId, groupThreadId);
 }
 
 [numthreads(8,8,1)]
-void NcnnLayerNormPack4WidthTex(uint3 id : SV_DispatchThreadID)
+void AexisLayerNormPack4WidthTex(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLayerNormPack4WidthTex_Impl(id);
+    AexisLayerNormPack4WidthTex_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnLayerNormPack4Linear2D(uint3 id : SV_DispatchThreadID)
+void AexisLayerNormPack4Linear2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLayerNormPack4Linear2D_Impl(id);
+    AexisLayerNormPack4Linear2D_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisSoftmax2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnSoftmax2D_Impl(groupId, groupThreadId);
+    AexisSoftmax2D_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnPermute(uint3 id : SV_DispatchThreadID)
+void AexisPermute(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPermute_Impl(id);
+    AexisPermute_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnSlice(uint3 id : SV_DispatchThreadID)
+void AexisSlice(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSlice_Impl(id);
+    AexisSlice_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnTile(uint3 id : SV_DispatchThreadID)
+void AexisTile(uint3 id : SV_DispatchThreadID)
 {
-    NcnnTile_Impl(id);
+    AexisTile_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnTilePack4(uint3 id : SV_DispatchThreadID)
+void AexisTilePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnTilePack4_Impl(id);
+    AexisTilePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnTileLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisTileLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnTileLinearMat_Impl(id);
+    AexisTileLinearMat_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnReduceSum256(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisReduceSum256(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnReduceSum256_Impl(groupId, groupThreadId);
+    AexisReduceSum256_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnMulScalarBuf(uint3 id : SV_DispatchThreadID)
+void AexisMulScalarBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnMulScalarBuf_Impl(id);
+    AexisMulScalarBuf_Impl(id);
 }
 
 
 [numthreads(256,1,1)]
-void NcnnGroupNormStats(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormStats(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormStats_Impl(groupId, groupThreadId);
+    AexisGroupNormStats_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormApply(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormApply(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormApply_Impl(groupId, groupThreadId);
+    AexisGroupNormApply_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormMean(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormMean(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormMean_Impl(groupId, groupThreadId);
+    AexisGroupNormMean_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormVariance(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormVariance(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormVariance_Impl(groupId, groupThreadId);
+    AexisGroupNormVariance_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormApplyMeanVar(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormApplyMeanVar(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormApplyMeanVar_Impl(groupId, groupThreadId);
+    AexisGroupNormApplyMeanVar_Impl(groupId, groupThreadId);
 }
 
-float NcnnGnReadPack4(uint c, uint s)
+float AexisGnReadPack4(uint c, uint s)
 {
     uint wh = (uint)(_GnW * _GnH);
     uint z = s / wh;
@@ -3094,18 +3094,18 @@ float NcnnGnReadPack4(uint c, uint s)
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormPack4Mean(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormPack4Mean(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormPack4Mean_Impl(groupId, groupThreadId);
+    AexisGroupNormPack4Mean_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormPack4Variance(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormPack4Variance(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormPack4Variance_Impl(groupId, groupThreadId);
+    AexisGroupNormPack4Variance_Impl(groupId, groupThreadId);
 }
 
-float NcnnGnApplyOne(float x, int c)
+float AexisGnApplyOne(float x, int c)
 {
     if (c < 0 || c >= _GnC)
         return 0.0;
@@ -3121,24 +3121,24 @@ float NcnnGnApplyOne(float x, int c)
 }
 
 [numthreads(8,8,1)]
-void NcnnGroupNormPack4ApplyMeanVar(uint3 id : SV_DispatchThreadID)
+void AexisGroupNormPack4ApplyMeanVar(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGroupNormPack4ApplyMeanVar_Impl(id);
+    AexisGroupNormPack4ApplyMeanVar_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormPack4MeanTex(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormPack4MeanTex(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormPack4MeanTex_Impl(groupId, groupThreadId);
+    AexisGroupNormPack4MeanTex_Impl(groupId, groupThreadId);
 }
 
 [numthreads(256,1,1)]
-void NcnnGroupNormPack4VarianceTex(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGroupNormPack4VarianceTex(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGroupNormPack4VarianceTex_Impl(groupId, groupThreadId);
+    AexisGroupNormPack4VarianceTex_Impl(groupId, groupThreadId);
 }
 
-float NcnnGnApplyOneTex(float x, int c)
+float AexisGnApplyOneTex(float x, int c)
 {
     if (c < 0 || c >= _GnC)
         return 0.0;
@@ -3154,9 +3154,9 @@ float NcnnGnApplyOneTex(float x, int c)
 }
 
 [numthreads(8,8,1)]
-void NcnnGroupNormPack4ApplyMeanVarTex(uint3 id : SV_DispatchThreadID)
+void AexisGroupNormPack4ApplyMeanVarTex(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGroupNormPack4ApplyMeanVarTex_Impl(id);
+    AexisGroupNormPack4ApplyMeanVarTex_Impl(id);
 }
 
 #define TILE 8
@@ -3169,30 +3169,30 @@ groupshared float _MatBs16[256];
 
 
 [numthreads(8,8,1)]
-void NcnnMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisMatMul2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnMatMul2D_Impl(groupId, groupThreadId);
+    AexisMatMul2D_Impl(groupId, groupThreadId);
 }
 
 [numthreads(8,8,1)]
-void NcnnMatMulPack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisMatMulPack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnMatMulPack4CDHW_Impl(id);
+    AexisMatMulPack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnVistaTailPromptDotPack4(uint3 id : SV_DispatchThreadID)
+void AexisVistaTailPromptDotPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnVistaTailPromptDotPack4_Impl(id);
+    AexisVistaTailPromptDotPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnVistaTailPromptDotPack4Tex(uint3 id : SV_DispatchThreadID)
+void AexisVistaTailPromptDotPack4Tex(uint3 id : SV_DispatchThreadID)
 {
-    NcnnVistaTailPromptDotPack4Tex_Impl(id);
+    AexisVistaTailPromptDotPack4Tex_Impl(id);
 }
 
-static float NcnnReadScalar2DLinear(uint linearIndex, int inW, int inH)
+static float AexisReadScalar2DLinear(uint linearIndex, int inW, int inH)
 {
     if (inW <= 0 || inH <= 0)
         return 0.0;
@@ -3206,7 +3206,7 @@ static float NcnnReadScalar2DLinear(uint linearIndex, int inW, int inH)
     return _ReshapeScalar2DInArr[int3((int)x, (int)y, 0)].x;
 }
 
-static float NcnnReadLinearMatScalar(Texture2D<float> tex, uint linearIndex, int inW, int inH)
+static float AexisReadLinearMatScalar(Texture2D<float> tex, uint linearIndex, int inW, int inH)
 {
     if (inW <= 0 || inH <= 0)
         return 0.0;
@@ -3220,7 +3220,7 @@ static float NcnnReadLinearMatScalar(Texture2D<float> tex, uint linearIndex, int
     return tex[int2((int)x, (int)y)];
 }
 
-static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int inW, int inH, int inD, int inC)
+static float AexisReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int inW, int inH, int inD, int inC)
 {
     if (inW <= 0 || inH <= 0 || inD <= 0 || inC <= 0)
         return 0.0;
@@ -3233,7 +3233,7 @@ static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int 
     {
         if (linearIndex >= width)
             return 0.0;
-        return NcnnReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)linearIndex, 0, 0);
+        return AexisReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)linearIndex, 0, 0);
     }
 
     if (inDims == 2)
@@ -3251,7 +3251,7 @@ static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int 
     {
         if (index >= (uint)inC)
             return 0.0;
-        return NcnnReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)x, (int)y, (int)index);
+        return AexisReadPack4Channel(_ReshapePack4ToScalar2DInArr, (int)x, (int)y, (int)index);
     }
 
     uint depth = (uint)max(1, inD);
@@ -3259,10 +3259,10 @@ static float NcnnReadPack4LinearScalar2DInput(uint linearIndex, int inDims, int 
     uint c = index / depth;
     if (c >= (uint)inC)
         return 0.0;
-    return NcnnReadPack4ChannelCDHW(_ReshapePack4ToScalar2DInArr, (int)x, (int)y, (int)z, (int)c, _ReshapePack4ToScalar2DInC);
+    return AexisReadPack4ChannelCDHW(_ReshapePack4ToScalar2DInArr, (int)x, (int)y, (int)z, (int)c, _ReshapePack4ToScalar2DInC);
 }
 
-static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW, int inH, int inD, int inC)
+static float AexisReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW, int inH, int inD, int inC)
 {
     if (inW <= 0 || inH <= 0 || inD <= 0 || inC <= 0)
         return 0.0;
@@ -3275,7 +3275,7 @@ static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW
         if (row >= (uint)inH)
             return 0.0;
         float4 packed = _ReshapePack4ToPack4InArr[int3((int)(col >> 2), (int)row, 0)];
-        return NcnnReadLane(packed, (int)(col & 3));
+        return AexisReadLane(packed, (int)(col & 3));
     }
 
     uint x = linearIndex % width;
@@ -3286,7 +3286,7 @@ static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW
         if (linearIndex >= width)
             return 0.0;
         float4 packed = _ReshapePack4ToPack4InArr[int3((int)(linearIndex >> 2), 0, 0)];
-        return NcnnReadLane(packed, (int)(linearIndex & 3));
+        return AexisReadLane(packed, (int)(linearIndex & 3));
     }
 
     if (inDims == 2)
@@ -3304,7 +3304,7 @@ static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW
     {
         if (index >= (uint)inC)
             return 0.0;
-        return NcnnReadPack4Channel(_ReshapePack4ToPack4InArr, (int)x, (int)y, (int)index);
+        return AexisReadPack4Channel(_ReshapePack4ToPack4InArr, (int)x, (int)y, (int)index);
     }
 
     uint depth = (uint)max(1, inD);
@@ -3312,47 +3312,47 @@ static float NcnnReadPack4LinearPack4Input(uint linearIndex, int inDims, int inW
     uint c = index / depth;
     if (c >= (uint)inC)
         return 0.0;
-    return NcnnReadPack4ChannelCDHW(_ReshapePack4ToPack4InArr, (int)x, (int)y, (int)z, (int)c, _ReshapePack4ToPack4InC);
+    return AexisReadPack4ChannelCDHW(_ReshapePack4ToPack4InArr, (int)x, (int)y, (int)z, (int)c, _ReshapePack4ToPack4InC);
 }
 
 [numthreads(8,8,1)]
-void NcnnReshapePack4ToScalar2D(uint3 id : SV_DispatchThreadID)
+void AexisReshapePack4ToScalar2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReshapePack4ToScalar2D_Impl(id);
+    AexisReshapePack4ToScalar2D_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReshapePack4ToLinearMat(uint3 id : SV_DispatchThreadID)
+void AexisReshapePack4ToLinearMat(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReshapePack4ToLinearMat_Impl(id);
+    AexisReshapePack4ToLinearMat_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReshapePack4ToPack4(uint3 id : SV_DispatchThreadID)
+void AexisReshapePack4ToPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReshapePack4ToPack4_Impl(id);
+    AexisReshapePack4ToPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReshapeScalar2DToPack4(uint3 id : SV_DispatchThreadID)
+void AexisReshapeScalar2DToPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReshapeScalar2DToPack4_Impl(id);
+    AexisReshapeScalar2DToPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPack4LinearFromScalar2D(uint3 id : SV_DispatchThreadID)
+void AexisPack4LinearFromScalar2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPack4LinearFromScalar2D_Impl(id);
+    AexisPack4LinearFromScalar2D_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReshapeLinearMatToPack4(uint3 id : SV_DispatchThreadID)
+void AexisReshapeLinearMatToPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReshapeLinearMatToPack4_Impl(id);
+    AexisReshapeLinearMatToPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReshapeLinearMat2D(uint3 id : SV_DispatchThreadID)
+void AexisReshapeLinearMat2D(uint3 id : SV_DispatchThreadID)
 {
     uint outW, outH;
     _LinearOut0.GetDimensions(outW, outH);
@@ -3365,99 +3365,99 @@ void NcnnReshapeLinearMat2D(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
-void NcnnAttentionReshapePack4(uint3 id : SV_DispatchThreadID)
+void AexisAttentionReshapePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnAttentionReshapePack4_Impl(id);
+    AexisAttentionReshapePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnAttentionContextFlattenPack4(uint3 id : SV_DispatchThreadID)
+void AexisAttentionContextFlattenPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnAttentionContextFlattenPack4_Impl(id);
+    AexisAttentionContextFlattenPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnSlicePack4CDHW(uint3 id : SV_DispatchThreadID)
+void AexisSlicePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
-    NcnnSlicePack4CDHW_Impl(id);
+    AexisSlicePack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DTextureA_Impl(id);
+    AexisGemm2DTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DLinearTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DLinearTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DLinearTextureA_Impl(id);
+    AexisGemm2DLinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DPack4LinearTextureA_Impl(id);
+    AexisGemm2DPack4LinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DPack4LinearTextureAFromLinear(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DPack4LinearTextureAFromLinear(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DPack4LinearTextureAFromLinear_Impl(id);
+    AexisGemm2DPack4LinearTextureAFromLinear_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DPack4LinearTextureAFromPack4(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DPack4LinearTextureAFromPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DPack4LinearTextureAFromPack4_Impl(id);
+    AexisGemm2DPack4LinearTextureAFromPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DPack4TiledTextureAFromLinear(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DPack4TiledTextureAFromLinear(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DPack4TiledTextureAFromLinear_Impl(id);
+    AexisGemm2DPack4TiledTextureAFromLinear_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DPack4TiledTextureAFromPack4(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DPack4TiledTextureAFromPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DPack4TiledTextureAFromPack4_Impl(id);
+    AexisGemm2DPack4TiledTextureAFromPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DAttentionQkvTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DAttentionQkvTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DAttentionQkvTextureA_Impl(id);
+    AexisGemm2DAttentionQkvTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DAttentionQkvLinearTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DAttentionQkvLinearTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DAttentionQkvLinearTextureA_Impl(id);
+    AexisGemm2DAttentionQkvLinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DAttentionPack4ToLinearTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DAttentionPack4ToLinearTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(id);
+    AexisGemm2DAttentionPack4ToLinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2DAttentionPack4ToPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
+void AexisGemm2DAttentionPack4ToPack4LinearTextureA(uint3 id : SV_DispatchThreadID)
 {
-    NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(id);
+    AexisGemm2DAttentionPack4ToPack4LinearTextureA_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGemm2D(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGemm2D_Impl(groupId, groupThreadId);
+    AexisGemm2D_Impl(groupId, groupThreadId);
 }
 
 [numthreads(16,16,1)]
-void NcnnGemm2D16(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisGemm2D16(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnGemm2D16_Impl(groupId, groupThreadId);
+    AexisGemm2D16_Impl(groupId, groupThreadId);
 }
 
 
@@ -3629,7 +3629,7 @@ int _UnfoldPadLeft;
 int _UnfoldPadTop;
 float _UnfoldPadValue;
 
-float4 NcnnErfApprox4(float4 x)
+float4 AexisErfApprox4(float4 x)
 {
     float4 a1 = 0.254829592;
     float4 a2 = -0.284496736;
@@ -3644,11 +3644,11 @@ float4 NcnnErfApprox4(float4 x)
     return s * y;
 }
 
-float4 NcnnApplyPointwise4(float4 x)
+float4 AexisApplyPointwise4(float4 x)
 {
     int t = _PointwiseType;
     if (t == 0) return x < 0.0 ? _PointwiseA * (exp(x) - 1.0) : x;
-    if (t == 1) return NcnnErfApprox4(x);
+    if (t == 1) return AexisErfApprox4(x);
     if (t == 2)
     {
         float alpha = abs(_PointwiseA) < 1e-12 ? 0.2 : _PointwiseA;
@@ -3712,7 +3712,7 @@ float4 NcnnApplyPointwise4(float4 x)
     return x;
 }
 
-int NcnnQuantAxisIndex(int idx)
+int AexisQuantAxisIndex(int idx)
 {
     if (_QuantDims <= 1)
         return idx;
@@ -3722,7 +3722,7 @@ int NcnnQuantAxisIndex(int idx)
     return idx / plane;
 }
 
-float NcnnResolveQuantScaleIn(int axis)
+float AexisResolveQuantScaleIn(int axis)
 {
     if (_QuantScaleInSize <= 0)
         return 1.0;
@@ -3731,7 +3731,7 @@ float NcnnResolveQuantScaleIn(int axis)
     return _QuantScale[clamp(axis, 0, _QuantScaleInSize - 1)];
 }
 
-float NcnnResolveQuantScaleOut(int axis)
+float AexisResolveQuantScaleOut(int axis)
 {
     if (_QuantScaleOutSize <= 0)
         return 1.0;
@@ -3740,7 +3740,7 @@ float NcnnResolveQuantScaleOut(int axis)
     return _QuantScaleOut[clamp(axis, 0, _QuantScaleOutSize - 1)];
 }
 
-float NcnnResolveQuantBias(int axis)
+float AexisResolveQuantBias(int axis)
 {
     if (_QuantBiasSize <= 0)
         return 0.0;
@@ -3749,7 +3749,7 @@ float NcnnResolveQuantBias(int axis)
     return _QuantBias[clamp(axis, 0, _QuantBiasSize - 1)];
 }
 
-float NcnnApplyActivationScalarQuant(float v)
+float AexisApplyActivationScalarQuant(float v)
 {
     if (_QuantActType == 1)
         return max(v, 0.0);
@@ -3766,7 +3766,7 @@ float NcnnApplyActivationScalarQuant(float v)
     return v;
 }
 
-float NcnnCastScalar(float value)
+float AexisCastScalar(float value)
 {
     if (_CastTypeFrom == _CastTypeTo)
         return value;
@@ -3811,7 +3811,7 @@ float NcnnCastScalar(float value)
     return value;
 }
 
-int NcnnBufferAxisIndex(int dims, int w, int h, int d, int c, int idx)
+int AexisBufferAxisIndex(int dims, int w, int h, int d, int c, int idx)
 {
     if (dims <= 1)
         return idx;
@@ -3821,7 +3821,7 @@ int NcnnBufferAxisIndex(int dims, int w, int h, int d, int c, int idx)
     return idx / plane;
 }
 
-float NcnnResolveScaleValue(int axis)
+float AexisResolveScaleValue(int axis)
 {
     if (_ScaleDataSize <= 0)
         return 1.0;
@@ -3830,7 +3830,7 @@ float NcnnResolveScaleValue(int axis)
     return _ScaleScaleBuf[clamp(axis, 0, _ScaleDataSize - 1)];
 }
 
-float NcnnResolveScaleBias(int axis)
+float AexisResolveScaleBias(int axis)
 {
     if (_ScaleBiasTerm == 0)
         return 0.0;
@@ -3841,7 +3841,7 @@ float NcnnResolveScaleBias(int axis)
     return _ScaleBiasBuf[clamp(axis, 0, _ScaleDataSize - 1)];
 }
 
-float NcnnResolvePReluSlope(int axis)
+float AexisResolvePReluSlope(int axis)
 {
     if (_PReluSlopeCount <= 0)
         return 0.0;
@@ -3851,71 +3851,71 @@ float NcnnResolvePReluSlope(int axis)
 }
 
 [numthreads(256,1,1)]
-void NcnnCastBuf(uint3 id : SV_DispatchThreadID)
+void AexisCastBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCastBuf_Impl(id);
+    AexisCastBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnScaleBuf(uint3 id : SV_DispatchThreadID)
+void AexisScaleBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnScaleBuf_Impl(id);
+    AexisScaleBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnPReluBuf(uint3 id : SV_DispatchThreadID)
+void AexisPReluBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPReluBuf_Impl(id);
+    AexisPReluBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnReorgBuf(uint3 id : SV_DispatchThreadID)
+void AexisReorgBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReorgBuf_Impl(id);
+    AexisReorgBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnReductionRowsBuf(uint3 id : SV_DispatchThreadID)
+void AexisReductionRowsBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReductionRowsBuf_Impl(id);
+    AexisReductionRowsBuf_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReductionScalar2D(uint3 id : SV_DispatchThreadID)
+void AexisReductionScalar2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReductionScalar2D_Impl(id);
+    AexisReductionScalar2D_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReductionLinearMat2D(uint3 id : SV_DispatchThreadID)
+void AexisReductionLinearMat2D(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReductionLinearMat2D_Impl(id);
+    AexisReductionLinearMat2D_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReductionPack4Width(uint3 id : SV_DispatchThreadID)
+void AexisReductionPack4Width(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReductionPack4Width_Impl(id);
+    AexisReductionPack4Width_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnReductionPack4Channel(uint3 id : SV_DispatchThreadID)
+void AexisReductionPack4Channel(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReductionPack4Channel_Impl(id);
+    AexisReductionPack4Channel_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnConv1dBuf(uint3 id : SV_DispatchThreadID)
+void AexisConv1dBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnConv1dBuf_Impl(id);
+    AexisConv1dBuf_Impl(id);
 }
 
-float NcnnRoundToNearest(float v)
+float AexisRoundToNearest(float v)
 {
     return v >= 0.0 ? floor(v + 0.5) : ceil(v - 0.5);
 }
 
-float NcnnComputeNormAlpha(float sumSquare)
+float AexisComputeNormAlpha(float sumSquare)
 {
     if (_NormEpsMode == 1)
         return 1.0 / max(sqrt(sumSquare), _NormEps);
@@ -3924,7 +3924,7 @@ float NcnnComputeNormAlpha(float sumSquare)
     return rsqrt(sumSquare + _NormEps);
 }
 
-float NcnnResolveNormScale(int channel)
+float AexisResolveNormScale(int channel)
 {
     if (_NormScaleSize <= 0)
         return 1.0;
@@ -3933,7 +3933,7 @@ float NcnnResolveNormScale(int channel)
     return _NormScale[clamp(channel, 0, _NormScaleSize - 1)];
 }
 
-void NcnnDecodeRmsNormSegment(int idx, out int segmentBase, out int segmentSize, out int innerIndex)
+void AexisDecodeRmsNormSegment(int idx, out int segmentBase, out int segmentSize, out int innerIndex)
 {
     int w = max(1, _RmsNormW);
     int h = max(1, _RmsNormH);
@@ -4008,85 +4008,85 @@ void NcnnDecodeRmsNormSegment(int idx, out int segmentBase, out int segmentSize,
 }
 
 [numthreads(8,8,1)]
-void NcnnReorgPack4(uint3 id : SV_DispatchThreadID)
+void AexisReorgPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnReorgPack4_Impl(id);
+    AexisReorgPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPointwisePack4(uint3 id : SV_DispatchThreadID)
+void AexisPointwisePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPointwisePack4_Impl(id);
+    AexisPointwisePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPixelShufflePack4(uint3 id : SV_DispatchThreadID)
+void AexisPixelShufflePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPixelShufflePack4_Impl(id);
+    AexisPixelShufflePack4_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnQuantizeBuf(uint3 id : SV_DispatchThreadID)
+void AexisQuantizeBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnQuantizeBuf_Impl(id);
+    AexisQuantizeBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnDequantizeBuf(uint3 id : SV_DispatchThreadID)
+void AexisDequantizeBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDequantizeBuf_Impl(id);
+    AexisDequantizeBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnRequantizeBuf(uint3 id : SV_DispatchThreadID)
+void AexisRequantizeBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnRequantizeBuf_Impl(id);
+    AexisRequantizeBuf_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnCastPack4(uint3 id : SV_DispatchThreadID)
+void AexisCastPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnCastPack4_Impl(id);
+    AexisCastPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnQuantizePack4(uint3 id : SV_DispatchThreadID)
+void AexisQuantizePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnQuantizePack4_Impl(id);
+    AexisQuantizePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnDequantizePack4(uint3 id : SV_DispatchThreadID)
+void AexisDequantizePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDequantizePack4_Impl(id);
+    AexisDequantizePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnRequantizePack4(uint3 id : SV_DispatchThreadID)
+void AexisRequantizePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnRequantizePack4_Impl(id);
+    AexisRequantizePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnNormalizePack4(uint3 id : SV_DispatchThreadID)
+void AexisNormalizePack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnNormalizePack4_Impl(id);
+    AexisNormalizePack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnLrnPack4(uint3 id : SV_DispatchThreadID)
+void AexisLrnPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLrnPack4_Impl(id);
+    AexisLrnPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnRmsNormPack4(uint3 id : SV_DispatchThreadID)
+void AexisRmsNormPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnRmsNormPack4_Impl(id);
+    AexisRmsNormPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnRmsNormPack4LinearMat(uint3 id : SV_DispatchThreadID)
+void AexisRmsNormPack4LinearMat(uint3 id : SV_DispatchThreadID)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -4099,7 +4099,7 @@ void NcnnRmsNormPack4LinearMat(uint3 id : SV_DispatchThreadID)
     for (int i = 0; i < logicalWidth; ++i)
     {
         float4 packed = _TexIn0Arr[int3(i / 4, (int)id.y, 0)];
-        float value = NcnnReadLane(packed, i & 3);
+        float value = AexisReadLane(packed, i & 3);
         sumSquare += value * value;
     }
 
@@ -4112,128 +4112,223 @@ void NcnnRmsNormPack4LinearMat(uint3 id : SV_DispatchThreadID)
         int innerIndex = packBase + lane;
         if (innerIndex >= logicalWidth)
             continue;
-        float value = NcnnReadLane(src, lane) * invRms;
+        float value = AexisReadLane(src, lane) * invRms;
         if (_RmsNormAffine != 0 && _RmsNormAffineSize > 0)
             value *= _RmsNormGamma[clamp(innerIndex, 0, _RmsNormAffineSize - 1)];
-        NcnnWriteLane(dst, lane, value);
+        AexisWriteLane(dst, lane, value);
     }
     _TexOut0Arr[int3((int)id.x, (int)id.y, 0)] = dst;
 }
 
 [numthreads(256,1,1)]
-void NcnnPixelShuffleBuf(uint3 id : SV_DispatchThreadID)
+void AexisPixelShuffleBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPixelShuffleBuf_Impl(id);
+    AexisPixelShuffleBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnRotaryEmbedBuf(uint3 id : SV_DispatchThreadID)
+void AexisRotaryEmbedBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnRotaryEmbedBuf_Impl(id);
+    AexisRotaryEmbedBuf_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnRotaryEmbedPack4(uint3 id : SV_DispatchThreadID)
+void AexisRotaryEmbedPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnRotaryEmbedPack4_Impl(id);
+    AexisRotaryEmbedPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPriorBox(uint3 id : SV_DispatchThreadID)
+void AexisPriorBox(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPriorBox_Impl(id);
+    AexisPriorBox_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnNormalizeBuf(uint3 id : SV_DispatchThreadID)
+void AexisNormalizeBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnNormalizeBuf_Impl(id);
+    AexisNormalizeBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnLrnBuf(uint3 id : SV_DispatchThreadID)
+void AexisLrnBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnLrnBuf_Impl(id);
+    AexisLrnBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnRmsNormBuf(uint3 id : SV_DispatchThreadID)
+void AexisRmsNormBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnRmsNormBuf_Impl(id);
+    AexisRmsNormBuf_Impl(id);
 }
 
 [numthreads(256,1,1)]
-void NcnnUnfoldBuf(uint3 id : SV_DispatchThreadID)
+void AexisUnfoldBuf(uint3 id : SV_DispatchThreadID)
 {
-    NcnnUnfoldBuf_Impl(id);
+    AexisUnfoldBuf_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnUnfoldPack4(uint3 id : SV_DispatchThreadID)
+void AexisUnfoldPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnUnfoldPack4_Impl(id);
+    AexisUnfoldPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnExtractPatchesPack4(uint3 id : SV_DispatchThreadID)
+void AexisExtractPatchesPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnExtractPatchesPack4_Impl(id);
+    AexisExtractPatchesPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnExtractPatchesFoldDPack4(uint3 id : SV_DispatchThreadID)
+void AexisExtractPatchesFoldDPack4(uint3 id : SV_DispatchThreadID)
 {
-    NcnnExtractPatchesFoldDPack4_Impl(id);
+    AexisExtractPatchesFoldDPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]
-void NcnnPassthrough(uint3 id : SV_DispatchThreadID)
+void AexisPassthrough(uint3 id : SV_DispatchThreadID)
 {
-    NcnnPassthrough_Impl(id);
+    AexisPassthrough_Impl(id);
 }
 
 
 #if defined(AIIMAGE_DEEPFILLV2)
 [numthreads(8, 8, 1)]
-void NcnnDeepFillV2PatchStats(uint3 id : SV_DispatchThreadID)
+void AexisDeepFillV2PatchStats(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeepFillV2PatchStats_Impl(id);
+    AexisDeepFillV2PatchStats_Impl(id);
 }
 
 [numthreads(4, 4, 1)]
-void NcnnDeepFillV2Scores(uint3 id : SV_DispatchThreadID)
+void AexisDeepFillV2Scores(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeepFillV2Scores_Impl(id);
+    AexisDeepFillV2Scores_Impl(id);
 }
 
 [numthreads(128, 1, 1)]
-void NcnnDeepFillV2Softmax(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+void AexisDeepFillV2Softmax(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-    NcnnDeepFillV2Softmax_Impl(groupId, groupThreadId);
+    AexisDeepFillV2Softmax_Impl(groupId, groupThreadId);
 }
 
 [numthreads(4, 4, 1)]
-void NcnnDeepFillV2Reconstruct(uint3 id : SV_DispatchThreadID)
+void AexisDeepFillV2Reconstruct(uint3 id : SV_DispatchThreadID)
 {
-    NcnnDeepFillV2Reconstruct_Impl(id);
+    AexisDeepFillV2Reconstruct_Impl(id);
 }
 #endif
 
-#include "Includes/KernelGroups/NcnnKernels.BufferCore.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.Pack4Conv.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.Pack4Elementwise.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.Pack4Spatial.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.Pack4Layout.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.Pack4Matmul.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.Pack4PointwiseNorm.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.PriorBox.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.BufferTensor.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.OnnxShapeOps.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.GroupNorm.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.BufferAttention.hlsl"
-#include "Includes/KernelGroups/NcnnKernels.BufferPointwiseNorm.hlsl"
-#include "Includes/NcnnFlipPack4P1.cginc"
-#include "Includes/NcnnP1VisionPack4.cginc"
+#include "Includes/KernelGroups/AexisKernels.BufferCore.hlsl"
+#include "Includes/KernelGroups/AexisKernels.Pack4Conv.hlsl"
+#include "Includes/KernelGroups/AexisKernels.Pack4Elementwise.hlsl"
+#include "Includes/KernelGroups/AexisKernels.Pack4Spatial.hlsl"
+#include "Includes/KernelGroups/AexisKernels.Pack4Layout.hlsl"
+#include "Includes/KernelGroups/AexisKernels.Pack4Matmul.hlsl"
+#include "Includes/KernelGroups/AexisKernels.Pack4PointwiseNorm.hlsl"
+#include "Includes/KernelGroups/AexisKernels.PriorBox.hlsl"
+#include "Includes/KernelGroups/AexisKernels.BufferTensor.hlsl"
+#include "Includes/KernelGroups/AexisKernels.ShapeOps.hlsl"
+#include "Includes/KernelGroups/AexisKernels.GroupNorm.hlsl"
+#include "Includes/KernelGroups/AexisKernels.BufferAttention.hlsl"
+#include "Includes/KernelGroups/AexisKernels.BufferPointwiseNorm.hlsl"
+#include "Includes/AexisFlipPack4P1.cginc"
+#include "Includes/AexisP1VisionPack4.cginc"
 #if defined(AIIMAGE_DEEPFILLV2)
-#include "Includes/KernelGroups/NcnnKernels.DeepFillV2.hlsl"
+#include "Includes/KernelGroups/AexisKernels.DeepFillV2.hlsl"
 #endif
+
+// Common texture-native shape/index kernels formerly owned by the ONNX adapter.
+#pragma kernel AexisNonZeroLinear
+#pragma kernel AexisCompressLinear
+#pragma kernel AexisGatherNDLinear
+#pragma kernel AexisScatterLinear
+#pragma kernel AexisTopKLinear
+#pragma kernel AexisOneHotLinear
+
+// D3 shape/index kernels intentionally use textures only. _ShapeOut[0] stores
+// logical length, _ShapeOut[1] stores overflow (0/1); neither value is read back
+// by the execution plan.
+Texture2D<float> _Values;
+Texture2D<int> _Indices;
+Texture2D<int> _Parameter;
+Texture2D<float> _Updates;
+RWTexture2D<float> _Output;
+RWTexture2D<int> _IndexOutput;
+RWTexture2D<int> _ShapeOut;
+int _InputLength;
+int _Capacity;
+int _KOrDepth;
+int _Largest;
+float _OffValue;
+float _OnValue;
+
+int ReadIndex(int index) { return _Indices[int2(index, 0)]; }
+int ReadParameter(int index) { return _Parameter[int2(index, 0)]; }
+float ReadValue(int index) { return _Values[int2(index, 0)]; }
+float ReadUpdate(int index) { return _Updates[int2(index, 0)]; }
+
+[numthreads(1, 1, 1)]
+void AexisNonZeroLinear(uint3 id : SV_DispatchThreadID)
+{
+    int count = 0;
+    [loop] for (int i = 0; i < _InputLength; ++i)
+        if (ReadValue(i) != 0.0) { if (count < _Capacity) _IndexOutput[int2(count, 0)] = i; ++count; }
+    _ShapeOut[int2(0, 0)] = min(count, _Capacity);
+    _ShapeOut[int2(1, 0)] = count > _Capacity ? 1 : 0;
+}
+
+[numthreads(1, 1, 1)]
+void AexisCompressLinear(uint3 id : SV_DispatchThreadID)
+{
+    int count = 0;
+    [loop] for (int i = 0; i < _InputLength; ++i)
+        if (ReadIndex(i) != 0) { if (count < _Capacity) _Output[int2(count, 0)] = ReadValue(i); ++count; }
+    _ShapeOut[int2(0, 0)] = min(count, _Capacity);
+    _ShapeOut[int2(1, 0)] = count > _Capacity ? 1 : 0;
+}
+
+[numthreads(64, 1, 1)]
+void AexisGatherNDLinear(uint3 id : SV_DispatchThreadID)
+{
+    int i = id.x;
+    if (i >= _Capacity) return;
+    int source = ReadIndex(i);
+    _Output[int2(i, 0)] = source >= 0 && source < _InputLength ? ReadValue(source) : 0.0;
+}
+
+[numthreads(1, 1, 1)]
+void AexisScatterLinear(uint3 id : SV_DispatchThreadID)
+{
+    [loop] for (int i = 0; i < _InputLength; ++i) _Output[int2(i, 0)] = ReadValue(i);
+    // Planner accepts only statically/provably unique destinations. Serial writes
+    // make that public reject-on-conflict contract deterministic on every backend.
+    [loop] for (int i = 0; i < _Capacity; ++i) { int dst = ReadIndex(i); if (dst >= 0 && dst < _InputLength) _Output[int2(dst, 0)] = ReadUpdate(i); }
+}
+
+[numthreads(1, 1, 1)]
+void AexisTopKLinear(uint3 id : SV_DispatchThreadID)
+{
+    int requestedK = ReadParameter(0);
+    int k = min(max(0, requestedK), min(_InputLength, _Capacity));
+    [loop] for (int rank = 0; rank < k; ++rank) {
+        int chosen = -1; float chosenValue = 0.0;
+        [loop] for (int candidate = 0; candidate < _InputLength; ++candidate) {
+            float value = ReadValue(candidate); int ahead = 0;
+            [loop] for (int other = 0; other < _InputLength; ++other) { float otherValue = ReadValue(other); bool better = _Largest != 0 ? (otherValue > value || (otherValue == value && other < candidate)) : (otherValue < value || (otherValue == value && other < candidate)); if (better) ++ahead; }
+            if (ahead == rank) { chosen = candidate; chosenValue = value; break; }
+        }
+        _Output[int2(rank, 0)] = chosenValue; _IndexOutput[int2(rank, 0)] = chosen;
+    }
+    _ShapeOut[int2(0, 0)] = k; _ShapeOut[int2(1, 0)] = requestedK > _Capacity ? 1 : 0;
+}
+
+[numthreads(64, 1, 1)]
+void AexisOneHotLinear(uint3 id : SV_DispatchThreadID)
+{
+    int outputIndex = id.x; int requestedDepth = ReadParameter(0); int depth = min(max(0, requestedDepth), _Capacity); int total = _InputLength * depth;
+    if (outputIndex >= total) return;
+    int row = outputIndex / depth; int column = outputIndex - row * depth; int index = ReadIndex(row); if (index < 0) index += depth;
+    _Output[int2(outputIndex, 0)] = index == column ? _OnValue : _OffValue;
+    if (outputIndex == 0) { _ShapeOut[int2(0, 0)] = depth; _ShapeOut[int2(1, 0)] = requestedDepth > _Capacity ? 1 : 0; }
+}

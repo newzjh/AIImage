@@ -1,6 +1,6 @@
-// Auto-generated kernel implementation group: NcnnKernels.GroupNorm.hlsl
+// Auto-generated kernel implementation group: AexisKernels.GroupNorm.hlsl
 
-void NcnnGroupNormStats_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormStats_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -41,7 +41,7 @@ void NcnnGroupNormStats_Impl(uint3 groupId, uint3 groupThreadId)
         _GnStatsOut[g] = float4(red0[0], red1[0], 0.0, 0.0);
 }
 
-void NcnnGroupNormApply_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormApply_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -70,7 +70,7 @@ void NcnnGroupNormApply_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGroupNormMean_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormMean_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -107,7 +107,7 @@ void NcnnGroupNormMean_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGroupNormVariance_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormVariance_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -147,7 +147,7 @@ void NcnnGroupNormVariance_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGroupNormApplyMeanVar_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormApplyMeanVar_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -173,7 +173,7 @@ void NcnnGroupNormApplyMeanVar_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGroupNormPack4Mean_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormPack4Mean_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -189,7 +189,7 @@ void NcnnGroupNormPack4Mean_Impl(uint3 groupId, uint3 groupThreadId)
         uint ch = t / size;
         uint s = t - ch * size;
         uint c = chBase + ch;
-        sum += NcnnGnReadPack4(c, s);
+        sum += AexisGnReadPack4(c, s);
     }
 
     red0[tid] = sum;
@@ -210,7 +210,7 @@ void NcnnGroupNormPack4Mean_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGroupNormPack4Variance_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormPack4Variance_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -227,7 +227,7 @@ void NcnnGroupNormPack4Variance_Impl(uint3 groupId, uint3 groupThreadId)
         uint ch = t / size;
         uint s = t - ch * size;
         uint c = chBase + ch;
-        float v = NcnnGnReadPack4(c, s) - mean;
+        float v = AexisGnReadPack4(c, s) - mean;
         sqsum += v * v;
     }
 
@@ -250,7 +250,7 @@ void NcnnGroupNormPack4Variance_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGroupNormPack4ApplyMeanVar_Impl(uint3 id)
+void AexisGroupNormPack4ApplyMeanVar_Impl(uint3 id)
 {
     uint w, h, d;
     _GnTexOutArr.GetDimensions(w, h, d);
@@ -267,13 +267,13 @@ void NcnnGroupNormPack4ApplyMeanVar_Impl(uint3 id)
     int c2 = pack * 4 + 2;
     int c3 = pack * 4 + 3;
     _GnTexOutArr[int3((int)id.x, (int)id.y, p)] = float4(
-        NcnnGnApplyOne(v.x, c0),
-        NcnnGnApplyOne(v.y, c1),
-        NcnnGnApplyOne(v.z, c2),
-        NcnnGnApplyOne(v.w, c3));
+        AexisGnApplyOne(v.x, c0),
+        AexisGnApplyOne(v.y, c1),
+        AexisGnApplyOne(v.z, c2),
+        AexisGnApplyOne(v.w, c3));
 }
 
-void NcnnGroupNormPack4MeanTex_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormPack4MeanTex_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -289,7 +289,7 @@ void NcnnGroupNormPack4MeanTex_Impl(uint3 groupId, uint3 groupThreadId)
         uint ch = t / size;
         uint s = t - ch * size;
         uint c = chBase + ch;
-        sum += NcnnGnReadPack4(c, s);
+        sum += AexisGnReadPack4(c, s);
     }
 
     red0[tid] = sum;
@@ -310,7 +310,7 @@ void NcnnGroupNormPack4MeanTex_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGroupNormPack4VarianceTex_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGroupNormPack4VarianceTex_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int g = (int)groupId.x;
     int tid = (int)groupThreadId.x;
@@ -327,7 +327,7 @@ void NcnnGroupNormPack4VarianceTex_Impl(uint3 groupId, uint3 groupThreadId)
         uint ch = t / size;
         uint s = t - ch * size;
         uint c = chBase + ch;
-        float v = NcnnGnReadPack4(c, s) - mean;
+        float v = AexisGnReadPack4(c, s) - mean;
         sqsum += v * v;
     }
 
@@ -346,7 +346,7 @@ void NcnnGroupNormPack4VarianceTex_Impl(uint3 groupId, uint3 groupThreadId)
         _GnStatsTexOut[int3(g, 0, 0)] = float4(mean, red0[0] / (float)max(1u, total), 0.0, 0.0);
 }
 
-void NcnnGroupNormPack4ApplyMeanVarTex_Impl(uint3 id)
+void AexisGroupNormPack4ApplyMeanVarTex_Impl(uint3 id)
 {
     uint w, h, d;
     _GnTexOutArr.GetDimensions(w, h, d);
@@ -363,8 +363,8 @@ void NcnnGroupNormPack4ApplyMeanVarTex_Impl(uint3 id)
     int c2 = pack * 4 + 2;
     int c3 = pack * 4 + 3;
     _GnTexOutArr[int3((int)id.x, (int)id.y, p)] = float4(
-        NcnnGnApplyOneTex(v.x, c0),
-        NcnnGnApplyOneTex(v.y, c1),
-        NcnnGnApplyOneTex(v.z, c2),
-        NcnnGnApplyOneTex(v.w, c3));
+        AexisGnApplyOneTex(v.x, c0),
+        AexisGnApplyOneTex(v.y, c1),
+        AexisGnApplyOneTex(v.z, c2),
+        AexisGnApplyOneTex(v.w, c3));
 }

@@ -10,7 +10,7 @@ float P1Read(Texture2DArray<float4> tex, int x, int y, int z, int c, int w, int 
 {
     if (x < 0 || y < 0 || z < 0 || c < 0 || x >= w || y >= h || z >= d || c >= channels)
         return 0.0;
-    return NcnnReadPack4ChannelCDHW(tex, x, y, z, c, channels);
+    return AexisReadPack4ChannelCDHW(tex, x, y, z, c, channels);
 }
 
 float P1Read0(int x, int y, int z, int c)
@@ -166,7 +166,7 @@ float P1Sample3D(int channel, float fx, float fy, float fz)
     return (a * (1.0 - ay) + b * ay) * (1.0 - az) + (c * (1.0 - ay) + d * ay) * az;
 }
 
-void NcnnP1GridSamplePack4_Impl(uint3 id)
+void AexisP1GridSamplePack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -195,12 +195,12 @@ void NcnnP1GridSamplePack4_Impl(uint3 id)
     {
         int c = pack * 4 + lane;
         if (c < _P1OutC)
-            NcnnWriteLane(dst, lane, _P1OutDims == 4 ? P1Sample3D(c, gx, gy, gz) : P1Sample2D(c, gx, gy));
+            AexisWriteLane(dst, lane, _P1OutDims == 4 ? P1Sample3D(c, gx, gy, gz) : P1Sample2D(c, gx, gy));
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
 
-void NcnnP1GluPack4_Impl(uint3 id)
+void AexisP1GluPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -225,12 +225,12 @@ void NcnnP1GluPack4_Impl(uint3 id)
         else gx += offset;
         float a = P1Read0(sx, sy, sz, sc);
         float b = P1Read0(gx, gy, gz, gc);
-        NcnnWriteLane(dst, lane, a / (1.0 + exp(-b)));
+        AexisWriteLane(dst, lane, a / (1.0 + exp(-b)));
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
 
-void NcnnP1DiagPack4_Impl(uint3 id)
+void AexisP1DiagPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -254,7 +254,7 @@ void NcnnP1DiagPack4_Impl(uint3 id)
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
 
-void NcnnP1FoldPack4_Impl(uint3 id)
+void AexisP1FoldPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -284,12 +284,12 @@ void NcnnP1FoldPack4_Impl(uint3 id)
             int row = c * kernelArea + ky * _P1KernelW + kx;
             sum += P1Read0Linear(row * _P1In0W + iy * inW + ix);
         }
-        NcnnWriteLane(dst, lane, sum);
+        AexisWriteLane(dst, lane, sum);
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
 
-void NcnnP1SppPack4_Impl(uint3 id)
+void AexisP1SppPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -347,7 +347,7 @@ void P1ReadRoi(out float x1, out float y1, out float x2, out float y2)
     y2 = P1Read1Linear(3) * _P1SpatialScale;
 }
 
-void NcnnP1RoiAlignPack4_Impl(uint3 id)
+void AexisP1RoiAlignPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -371,12 +371,12 @@ void NcnnP1RoiAlignPack4_Impl(uint3 id)
         for (int iy = 0; iy < gridH; ++iy)
         for (int ix = 0; ix < gridW; ++ix)
             sum += P1BilinearFeature(c, x1 + (x + (ix + 0.5) / gridW) * bw, y1 + (y + (iy + 0.5) / gridH) * bh);
-        NcnnWriteLane(dst, lane, sum / (gridW * gridH));
+        AexisWriteLane(dst, lane, sum / (gridW * gridH));
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
 
-void NcnnP1RoiPoolPack4_Impl(uint3 id)
+void AexisP1RoiPoolPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -402,12 +402,12 @@ void NcnnP1RoiPoolPack4_Impl(uint3 id)
         for (int py = hs; py < he; ++py)
         for (int px = ws; px < we; ++px)
             value = max(value, P1Read0(px, py, 0, c));
-        NcnnWriteLane(dst, lane, value);
+        AexisWriteLane(dst, lane, value);
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
 
-void NcnnP1PsRoiPoolPack4_Impl(uint3 id)
+void AexisP1PsRoiPoolPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -435,7 +435,7 @@ void NcnnP1PsRoiPoolPack4_Impl(uint3 id)
         for (int px = ws; px < we; ++px)
             sum += P1Read0(px, py, 0, sourceChannel);
         int area = (he - hs) * (we - ws);
-        NcnnWriteLane(dst, lane, area > 0 ? sum / area : 0.0);
+        AexisWriteLane(dst, lane, area > 0 ? sum / area : 0.0);
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
@@ -461,7 +461,7 @@ float P1ApplyActivation(float v)
     return v;
 }
 
-void NcnnP1DeformableConv2dPack4_Impl(uint3 id)
+void AexisP1DeformableConv2dPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -487,7 +487,7 @@ void NcnnP1DeformableConv2dPack4_Impl(uint3 id)
                 sum += P1DeformableSample(ic, sx, sy) * mask * _P1Weights[weightIndex];
             }
         }
-        NcnnWriteLane(dst, lane, P1ApplyActivation(sum));
+        AexisWriteLane(dst, lane, P1ApplyActivation(sum));
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }
@@ -585,7 +585,7 @@ bool P1ProposalCandidate(int candidate, out float score, out float x1, out float
     return x2 - x1 + 1.0 >= _P1MinSize * imScale && y2 - y1 + 1.0 >= _P1MinSize * imScale;
 }
 
-void NcnnP1ProposalPack4_Impl(uint3 id)
+void AexisP1ProposalPack4_Impl(uint3 id)
 {
     if (any(id != uint3(0, 0, 0))) return;
     P1ClearProposals();
@@ -645,7 +645,7 @@ bool P1SsdCandidate(int candidate, out int label, out float score, out float x1,
     return score > _P1ConfidenceThreshold;
 }
 
-void NcnnP1DetectionOutputPack4_Impl(uint3 id)
+void AexisP1DetectionOutputPack4_Impl(uint3 id)
 {
     if (any(id != uint3(0, 0, 0))) return;
     P1ClearDetections();
@@ -724,7 +724,7 @@ bool P1YoloCandidate(int candidate, out int label, out float score, out float x1
     return score >= _P1ConfidenceThreshold;
 }
 
-void NcnnP1YoloDetectionOutputPack4_Impl(uint3 id)
+void AexisP1YoloDetectionOutputPack4_Impl(uint3 id)
 {
     if (any(id != uint3(0, 0, 0))) return;
     P1ClearDetections();
@@ -798,7 +798,7 @@ float P1EinsumReadOperand(int operand, int coords[8])
     return operand == 0 ? P1Read0(w, h, d, c) : (operand == 1 ? P1Read1(w, h, d, c) : P1Read2(w, h, d, c));
 }
 
-void NcnnP1EinsumPack4_Impl(uint3 id)
+void AexisP1EinsumPack4_Impl(uint3 id)
 {
     if (!P1OutputInRange(id)) return;
     int x, y, z, pack;
@@ -833,7 +833,7 @@ void NcnnP1EinsumPack4_Impl(uint3 id)
             if (_P1EinsumOperandCount == 3) term *= P1EinsumReadOperand(2, coords);
             sum += term;
         }
-        NcnnWriteLane(dst, lane, sum);
+        AexisWriteLane(dst, lane, sum);
     }
     _P1OutArr[int3(x, y, id.z)] = dst;
 }

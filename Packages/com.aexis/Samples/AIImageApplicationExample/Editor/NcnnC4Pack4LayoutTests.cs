@@ -56,7 +56,7 @@ public sealed class NcnnC4Pack4LayoutTests
         foreach (var operatorName in new[] { "Reshape", "Flatten", "Squeeze", "ExpandDims", "Permute", "Slice", "Tile", "Packing", "Cast" })
         {
             var capability = capabilities.Single(item => item.operatorName == operatorName);
-            Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.Partial), operatorName);
+            Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile), operatorName);
             Assert.That(capability.profiles.Single(profile => profile.backend == AexisOperatorCapabilityBackend.CommandBuffer).shapeProfile, Does.Contain("descriptor alias"), operatorName);
             Assert.That(capability.limitations, Does.Contain("Placeholder publication is not a production path"), operatorName);
         }
@@ -108,7 +108,7 @@ public sealed class NcnnC4Pack4LayoutTests
         var diagnostic = error.Diagnostics.Single(item => item.operatorName == "Flatten");
         Assert.That(diagnostic.code, Is.EqualTo("command-buffer-pack4-profile-rejected"));
         Assert.That(diagnostic.rejectedPaths, Does.Contain("placeholder"));
-        Assert.That(diagnostic.rejectedPaths, Does.Contain("materialize-from-buffer"));
+        Assert.That(diagnostic.rejectedPaths, Does.Contain("materialize"));
     }
 
     [Test]
@@ -227,7 +227,7 @@ public sealed class NcnnC4Pack4LayoutTests
     public void C4LayersPublishDescriptorsAndDoNotPublishCmdPlaceholders()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var layers = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers");
+        var layers = Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Layers");
         foreach (var file in new[]
         {
             "AexisReshapeLayer.cs", "AexisFlattenLayer.cs", "AexisSqueezeLayer.cs", "AexisExpandDimsLayer.cs",

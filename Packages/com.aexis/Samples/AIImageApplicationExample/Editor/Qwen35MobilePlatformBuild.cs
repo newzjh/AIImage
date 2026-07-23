@@ -205,7 +205,7 @@ public static class Qwen35MobilePlatformBuild
     private static JObject DescribeInferenceShader()
     {
         var path = Path.Combine(ProjectRoot,
-            "Packages/com.aexis/Runtime/Resources/Aexis/Ncnn/AexisNcnn.compute".Replace('/', Path.DirectorySeparatorChar));
+            "Packages/com.aexis/Runtime/Resources/Aexis/AexisCommon.compute".Replace('/', Path.DirectorySeparatorChar));
         if (!File.Exists(path)) throw new FileNotFoundException("NCNN ComputeShader is missing.", path);
         var source = File.ReadAllText(path);
         return new JObject

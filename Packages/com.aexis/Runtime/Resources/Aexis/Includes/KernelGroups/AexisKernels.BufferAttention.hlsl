@@ -1,6 +1,6 @@
-// Auto-generated kernel implementation group: NcnnKernels.BufferAttention.hlsl
+// Auto-generated kernel implementation group: AexisKernels.BufferAttention.hlsl
 
-void NcnnInnerProduct2D_Impl(uint3 id)
+void AexisInnerProduct2D_Impl(uint3 id)
 {
     int o = (int)id.x;
     int r = (int)id.y;
@@ -16,7 +16,7 @@ void NcnnInnerProduct2D_Impl(uint3 id)
     _IP2Out[(uint)r * (uint)_IP2OutFeatures + (uint)o] = sum;
 }
 
-void NcnnMhaAttention_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisMhaAttention_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int q = (int)groupId.x;
     int head = (int)groupId.y;
@@ -41,7 +41,7 @@ void NcnnMhaAttention_Impl(uint3 groupId, uint3 groupThreadId)
         {
             s += (_MhaQ[qBase + dotIndex] * _MhaScale) * _MhaK[kBase + dotIndex];
         }
-        s += NcnnResolveSdpaMask(head, q, scoreIndex);
+        s += AexisResolveSdpaMask(head, q, scoreIndex);
         _MhaScores[scoreIndex] = s;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -82,7 +82,7 @@ void NcnnMhaAttention_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnMhaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisMhaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int q = (int)groupId.x;
     int head = (int)groupId.y;
@@ -105,7 +105,7 @@ void NcnnMhaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId)
         {
             s += (_MhaQ[qBase + dotIndex] * _MhaScale) * _MhaK[kBase + dotIndex];
         }
-        s += NcnnResolveSdpaMask(head, q, scoreIndex);
+        s += AexisResolveSdpaMask(head, q, scoreIndex);
         _MhaScores[scoreIndex] = s;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -164,7 +164,7 @@ void NcnnMhaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnMhaAttentionQkvFast_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisMhaAttentionQkvFast_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int q = (int)groupId.x;
     int head = (int)groupId.y;
@@ -246,7 +246,7 @@ void NcnnMhaAttentionQkvFast_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int lx = (int)groupThreadId.x;
     int ly = (int)groupThreadId.y;
@@ -310,7 +310,7 @@ void NcnnMhaProjectQkv2D_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnSdpaQkBuf_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisSdpaQkBuf_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int row = (int)groupId.x;
     int head = (int)groupId.y;
@@ -334,12 +334,12 @@ void NcnnSdpaQkBuf_Impl(uint3 groupId, uint3 groupThreadId)
         for (int i = 0; i < embedDim; i++)
             s += _SdpaQ[qBase + i] * _SdpaK[kBase + i];
         s *= _SdpaScale;
-        s += NcnnResolveSdpaMask(head, row, col);
+        s += AexisResolveSdpaMask(head, row, col);
         _SdpaScores[scoreBase + col] = s;
     }
 }
 
-void NcnnSdpaSoftmaxBuf_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisSdpaSoftmaxBuf_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int row = (int)groupId.x;
     int head = (int)groupId.y;
@@ -389,7 +389,7 @@ void NcnnSdpaSoftmaxBuf_Impl(uint3 groupId, uint3 groupThreadId)
         _SdpaScores[scoreBase + col] *= invSum;
 }
 
-void NcnnSdpaQkvBuf_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisSdpaQkvBuf_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int row = (int)groupId.x;
     int head = (int)groupId.y;
@@ -415,7 +415,7 @@ void NcnnSdpaQkvBuf_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnSdpaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisSdpaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int row = (int)groupId.x;
     int head = (int)groupId.y;
@@ -441,7 +441,7 @@ void NcnnSdpaAttentionFast_Impl(uint3 groupId, uint3 groupThreadId)
         for (int i = 0; i < embedDim; i++)
             s += _SdpaQ[qBase + i] * _SdpaK[kBase + i];
         s *= _SdpaScale;
-        s += NcnnResolveSdpaMask(head, row, col);
+        s += AexisResolveSdpaMask(head, row, col);
         _SdpaScoresFast[col] = s;
     }
     GroupMemoryBarrierWithGroupSync();

@@ -1,18 +1,18 @@
 // Pack4 texture variants for ncnn pointwise, quantization, and normalization layers.
 
-int NcnnPack4TextureChannelCount(int dims, int c)
+int AexisPack4TextureChannelCount(int dims, int c)
 {
     return dims >= 3 ? max(1, c) : 1;
 }
 
-int NcnnPack4TexturePackCount(int dims, int c)
+int AexisPack4TexturePackCount(int dims, int c)
 {
-    return max(1, (NcnnPack4TextureChannelCount(dims, c) + 3) / 4);
+    return max(1, (AexisPack4TextureChannelCount(dims, c) + 3) / 4);
 }
 
-void NcnnDecodePack4TextureSlice(int dims, int c, int slice, out int z, out int pack)
+void AexisDecodePack4TextureSlice(int dims, int c, int slice, out int z, out int pack)
 {
-    int packs = NcnnPack4TexturePackCount(dims, c);
+    int packs = AexisPack4TexturePackCount(dims, c);
     if (dims == 4)
     {
         z = slice / packs;
@@ -24,14 +24,14 @@ void NcnnDecodePack4TextureSlice(int dims, int c, int slice, out int z, out int 
     pack = slice;
 }
 
-bool NcnnIsPack4TextureLaneValid(int dims, int c, int channel)
+bool AexisIsPack4TextureLaneValid(int dims, int c, int channel)
 {
     if (dims <= 2)
         return channel == 0;
     return channel >= 0 && channel < c;
 }
 
-float NcnnReadPack4TensorScalar(Texture2DArray<float4> tex, int dims, int w, int h, int d, int c, int x, int y, int z, int channel)
+float AexisReadPack4TensorScalar(Texture2DArray<float4> tex, int dims, int w, int h, int d, int c, int x, int y, int z, int channel)
 {
     if (x < 0 || x >= w || y < 0 || y >= max(1, h))
         return 0.0;
@@ -43,14 +43,14 @@ float NcnnReadPack4TensorScalar(Texture2DArray<float4> tex, int dims, int w, int
         return tex[int3(x, y, 0)].x;
 
     if (dims == 3)
-        return NcnnReadPack4Channel(tex, x, y, channel);
+        return AexisReadPack4Channel(tex, x, y, channel);
 
     if (z < 0 || z >= max(1, d))
         return 0.0;
-    return NcnnReadPack4ChannelCDHW(tex, x, y, z, channel, c);
+    return AexisReadPack4ChannelCDHW(tex, x, y, z, channel, c);
 }
 
-int NcnnPack4TensorLinearIndex(int dims, int w, int h, int d, int c, int x, int y, int z, int channel)
+int AexisPack4TensorLinearIndex(int dims, int w, int h, int d, int c, int x, int y, int z, int channel)
 {
     int width = max(1, w);
     int height = max(1, h);
@@ -65,7 +65,7 @@ int NcnnPack4TensorLinearIndex(int dims, int w, int h, int d, int c, int x, int 
     return ((channel * depth + z) * height + y) * width + x;
 }
 
-float NcnnReadPack4TensorScalarByLinear(Texture2DArray<float4> tex, int linearIndex, int dims, int w, int h, int d, int c)
+float AexisReadPack4TensorScalarByLinear(Texture2DArray<float4> tex, int linearIndex, int dims, int w, int h, int d, int c)
 {
     int width = max(1, w);
     int height = max(1, h);
@@ -96,7 +96,7 @@ float NcnnReadPack4TensorScalarByLinear(Texture2DArray<float4> tex, int linearIn
         int x = rem - y * width;
         if (channel < 0 || channel >= c)
             return 0.0;
-        return NcnnReadPack4Channel(tex, x, y, channel);
+        return AexisReadPack4Channel(tex, x, y, channel);
     }
 
     int volume = plane * depth;
@@ -108,10 +108,10 @@ float NcnnReadPack4TensorScalarByLinear(Texture2DArray<float4> tex, int linearIn
     int x4 = rem4 - y4 * width;
     if (channel4 < 0 || channel4 >= c || z < 0 || z >= depth)
         return 0.0;
-    return NcnnReadPack4ChannelCDHW(tex, x4, y4, z, channel4, c);
+    return AexisReadPack4ChannelCDHW(tex, x4, y4, z, channel4, c);
 }
 
-int NcnnPack4QuantAxis(int dims, int w, int h, int d, int x, int y, int z, int channel)
+int AexisPack4QuantAxis(int dims, int w, int h, int d, int x, int y, int z, int channel)
 {
     if (dims <= 1)
         return x;
@@ -120,7 +120,7 @@ int NcnnPack4QuantAxis(int dims, int w, int h, int d, int x, int y, int z, int c
     return channel;
 }
 
-void NcnnCastPack4_Impl(uint3 id)
+void AexisCastPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -129,7 +129,7 @@ void NcnnCastPack4_Impl(uint3 id)
 
     int z;
     int pack;
-    NcnnDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
+    AexisDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
     float4 src = _TexIn0Arr[int3((int)id.x, (int)id.y, (int)id.z)];
     float4 dst = 0.0;
 
@@ -137,15 +137,15 @@ void NcnnCastPack4_Impl(uint3 id)
     for (int lane = 0; lane < 4; lane++)
     {
         int channel = _QuantDims >= 3 ? pack * 4 + lane : lane;
-        if (!NcnnIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
+        if (!AexisIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
             continue;
-        NcnnWriteLane(dst, lane, NcnnCastScalar(NcnnReadLane(src, lane)));
+        AexisWriteLane(dst, lane, AexisCastScalar(AexisReadLane(src, lane)));
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = dst;
 }
 
-void NcnnQuantizePack4_Impl(uint3 id)
+void AexisQuantizePack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -154,7 +154,7 @@ void NcnnQuantizePack4_Impl(uint3 id)
 
     int z;
     int pack;
-    NcnnDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
+    AexisDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
     float4 src = _TexIn0Arr[int3((int)id.x, (int)id.y, (int)id.z)];
     float4 dst = 0.0;
 
@@ -162,19 +162,19 @@ void NcnnQuantizePack4_Impl(uint3 id)
     for (int lane = 0; lane < 4; lane++)
     {
         int channel = _QuantDims >= 3 ? pack * 4 + lane : lane;
-        if (!NcnnIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
+        if (!AexisIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
             continue;
 
-        int axis = NcnnPack4QuantAxis(_QuantDims, _QuantW, _QuantH, _QuantD, (int)id.x, (int)id.y, z, channel);
-        float scale = NcnnResolveQuantScaleIn(axis);
-        float value = clamp(NcnnRoundToNearest(NcnnReadLane(src, lane) * scale), -127.0, 127.0);
-        NcnnWriteLane(dst, lane, value);
+        int axis = AexisPack4QuantAxis(_QuantDims, _QuantW, _QuantH, _QuantD, (int)id.x, (int)id.y, z, channel);
+        float scale = AexisResolveQuantScaleIn(axis);
+        float value = clamp(AexisRoundToNearest(AexisReadLane(src, lane) * scale), -127.0, 127.0);
+        AexisWriteLane(dst, lane, value);
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = dst;
 }
 
-void NcnnDequantizePack4_Impl(uint3 id)
+void AexisDequantizePack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -183,7 +183,7 @@ void NcnnDequantizePack4_Impl(uint3 id)
 
     int z;
     int pack;
-    NcnnDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
+    AexisDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
     float4 src = _TexIn0Arr[int3((int)id.x, (int)id.y, (int)id.z)];
     float4 dst = 0.0;
 
@@ -191,20 +191,20 @@ void NcnnDequantizePack4_Impl(uint3 id)
     for (int lane = 0; lane < 4; lane++)
     {
         int channel = _QuantDims >= 3 ? pack * 4 + lane : lane;
-        if (!NcnnIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
+        if (!AexisIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
             continue;
 
-        int axis = NcnnPack4QuantAxis(_QuantDims, _QuantW, _QuantH, _QuantD, (int)id.x, (int)id.y, z, channel);
-        float scale = NcnnResolveQuantScaleIn(axis);
-        float bias = NcnnResolveQuantBias(axis);
-        float value = NcnnRoundToNearest(NcnnReadLane(src, lane)) * scale + bias;
-        NcnnWriteLane(dst, lane, value);
+        int axis = AexisPack4QuantAxis(_QuantDims, _QuantW, _QuantH, _QuantD, (int)id.x, (int)id.y, z, channel);
+        float scale = AexisResolveQuantScaleIn(axis);
+        float bias = AexisResolveQuantBias(axis);
+        float value = AexisRoundToNearest(AexisReadLane(src, lane)) * scale + bias;
+        AexisWriteLane(dst, lane, value);
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = dst;
 }
 
-void NcnnRequantizePack4_Impl(uint3 id)
+void AexisRequantizePack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -213,7 +213,7 @@ void NcnnRequantizePack4_Impl(uint3 id)
 
     int z;
     int pack;
-    NcnnDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
+    AexisDecodePack4TextureSlice(_QuantDims, _QuantC, (int)id.z, z, pack);
     float4 src = _TexIn0Arr[int3((int)id.x, (int)id.y, (int)id.z)];
     float4 dst = 0.0;
 
@@ -221,23 +221,23 @@ void NcnnRequantizePack4_Impl(uint3 id)
     for (int lane = 0; lane < 4; lane++)
     {
         int channel = _QuantDims >= 3 ? pack * 4 + lane : lane;
-        if (!NcnnIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
+        if (!AexisIsPack4TextureLaneValid(_QuantDims, _QuantC, channel))
             continue;
 
-        int axis = NcnnPack4QuantAxis(_QuantDims, _QuantW, _QuantH, _QuantD, (int)id.x, (int)id.y, z, channel);
-        float scaleIn = NcnnResolveQuantScaleIn(axis);
-        float scaleOut = NcnnResolveQuantScaleOut(axis);
-        float bias = NcnnResolveQuantBias(axis);
-        float value = NcnnRoundToNearest(NcnnReadLane(src, lane)) * scaleIn + bias;
-        value = NcnnApplyActivationScalarQuant(value);
-        value = clamp(NcnnRoundToNearest(value * scaleOut), -127.0, 127.0);
-        NcnnWriteLane(dst, lane, value);
+        int axis = AexisPack4QuantAxis(_QuantDims, _QuantW, _QuantH, _QuantD, (int)id.x, (int)id.y, z, channel);
+        float scaleIn = AexisResolveQuantScaleIn(axis);
+        float scaleOut = AexisResolveQuantScaleOut(axis);
+        float bias = AexisResolveQuantBias(axis);
+        float value = AexisRoundToNearest(AexisReadLane(src, lane)) * scaleIn + bias;
+        value = AexisApplyActivationScalarQuant(value);
+        value = clamp(AexisRoundToNearest(value * scaleOut), -127.0, 127.0);
+        AexisWriteLane(dst, lane, value);
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = dst;
 }
 
-void NcnnNormalizePack4_Impl(uint3 id)
+void AexisNormalizePack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -246,7 +246,7 @@ void NcnnNormalizePack4_Impl(uint3 id)
 
     int z;
     int pack;
-    NcnnDecodePack4TextureSlice(_NormDims, _NormC, (int)id.z, z, pack);
+    AexisDecodePack4TextureSlice(_NormDims, _NormC, (int)id.z, z, pack);
     float4 src = _TexIn0Arr[int3((int)id.x, (int)id.y, (int)id.z)];
     float4 dst = 0.0;
     int plane = max(1, _NormW * _NormH * _NormD);
@@ -257,10 +257,10 @@ void NcnnNormalizePack4_Impl(uint3 id)
     for (int lane = 0; lane < 4; lane++)
     {
         int channel = _NormDims >= 3 ? pack * 4 + lane : lane;
-        if (!NcnnIsPack4TextureLaneValid(_NormDims, _NormC, channel))
+        if (!AexisIsPack4TextureLaneValid(_NormDims, _NormC, channel))
             continue;
 
-        float value = NcnnReadLane(src, lane);
+        float value = AexisReadLane(src, lane);
         float sumSquare = 0.0;
 
         if (_NormAcrossSpatial != 0 && _NormAcrossChannel != 0)
@@ -269,7 +269,7 @@ void NcnnNormalizePack4_Impl(uint3 id)
             {
                 for (int i = 0; i < plane; i++)
                 {
-                    float v = NcnnReadPack4TensorScalarByLinear(_TexIn0Arr, c0 * plane + i, _NormDims, _NormW, _NormH, _NormD, _NormC);
+                    float v = AexisReadPack4TensorScalarByLinear(_TexIn0Arr, c0 * plane + i, _NormDims, _NormW, _NormH, _NormD, _NormC);
                     sumSquare += v * v;
                 }
             }
@@ -279,7 +279,7 @@ void NcnnNormalizePack4_Impl(uint3 id)
             int baseIndex = channel * plane;
             for (int i1 = 0; i1 < plane; i1++)
             {
-                float v1 = NcnnReadPack4TensorScalarByLinear(_TexIn0Arr, baseIndex + i1, _NormDims, _NormW, _NormH, _NormD, _NormC);
+                float v1 = AexisReadPack4TensorScalarByLinear(_TexIn0Arr, baseIndex + i1, _NormDims, _NormW, _NormH, _NormD, _NormC);
                 sumSquare += v1 * v1;
             }
         }
@@ -287,24 +287,24 @@ void NcnnNormalizePack4_Impl(uint3 id)
         {
             for (int c1 = 0; c1 < channels; c1++)
             {
-                float v2 = NcnnReadPack4TensorScalarByLinear(_TexIn0Arr, c1 * plane + s, _NormDims, _NormW, _NormH, _NormD, _NormC);
+                float v2 = AexisReadPack4TensorScalarByLinear(_TexIn0Arr, c1 * plane + s, _NormDims, _NormW, _NormH, _NormD, _NormC);
                 sumSquare += v2 * v2;
             }
         }
         else
         {
-            NcnnWriteLane(dst, lane, value);
+            AexisWriteLane(dst, lane, value);
             continue;
         }
 
-        float scale = NcnnResolveNormScale(channel);
-        NcnnWriteLane(dst, lane, value * NcnnComputeNormAlpha(sumSquare) * scale);
+        float scale = AexisResolveNormScale(channel);
+        AexisWriteLane(dst, lane, value * AexisComputeNormAlpha(sumSquare) * scale);
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = dst;
 }
 
-void NcnnLrnPack4_Impl(uint3 id)
+void AexisLrnPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -333,12 +333,12 @@ void NcnnLrnPack4_Impl(uint3 id)
             int p1 = min(channels - 1, channel + half);
             for (int p = p0; p <= p1; p++)
             {
-                float v = NcnnReadPack4Channel(_TexIn0Arr, (int)id.x, (int)id.y, p);
+                float v = AexisReadPack4Channel(_TexIn0Arr, (int)id.x, (int)id.y, p);
                 sumSquare += v * v;
             }
 
             float norm = pow(_LrnBias + (_LrnAlpha / max(1, _LrnLocalSize)) * sumSquare, -_LrnBeta);
-            NcnnWriteLane(dst, lane, NcnnReadLane(src, lane) * norm);
+            AexisWriteLane(dst, lane, AexisReadLane(src, lane) * norm);
             continue;
         }
 
@@ -355,20 +355,20 @@ void NcnnLrnPack4_Impl(uint3 id)
                 if (sx < 0 || sx >= width)
                     continue;
 
-                float v2 = NcnnReadPack4Channel(_TexIn0Arr, sx, sy, channel);
+                float v2 = AexisReadPack4Channel(_TexIn0Arr, sx, sy, channel);
                 sumSquare += v2 * v2;
             }
         }
 
         float maxk = max(1, _LrnLocalSize * _LrnLocalSize);
         float normWithin = pow(_LrnBias + (_LrnAlpha / maxk) * sumSquare, -_LrnBeta);
-        NcnnWriteLane(dst, lane, NcnnReadLane(src, lane) * normWithin);
+        AexisWriteLane(dst, lane, AexisReadLane(src, lane) * normWithin);
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, pack)] = dst;
 }
 
-void NcnnRmsNormPack4_Impl(uint3 id)
+void AexisRmsNormPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -377,7 +377,7 @@ void NcnnRmsNormPack4_Impl(uint3 id)
 
     int z;
     int pack;
-    NcnnDecodePack4TextureSlice(_RmsNormDims, _RmsNormC, (int)id.z, z, pack);
+    AexisDecodePack4TextureSlice(_RmsNormDims, _RmsNormC, (int)id.z, z, pack);
     float4 src = _TexIn0Arr[int3((int)id.x, (int)id.y, (int)id.z)];
     float4 dst = 0.0;
 
@@ -385,33 +385,33 @@ void NcnnRmsNormPack4_Impl(uint3 id)
     for (int lane = 0; lane < 4; lane++)
     {
         int channel = _RmsNormDims >= 3 ? pack * 4 + lane : lane;
-        if (!NcnnIsPack4TextureLaneValid(_RmsNormDims, _RmsNormC, channel))
+        if (!AexisIsPack4TextureLaneValid(_RmsNormDims, _RmsNormC, channel))
             continue;
 
-        int idx = NcnnPack4TensorLinearIndex(_RmsNormDims, _RmsNormW, _RmsNormH, _RmsNormD, _RmsNormC, (int)id.x, (int)id.y, z, channel);
+        int idx = AexisPack4TensorLinearIndex(_RmsNormDims, _RmsNormW, _RmsNormH, _RmsNormD, _RmsNormC, (int)id.x, (int)id.y, z, channel);
         int segmentBase;
         int segmentSize;
         int innerIndex;
-        NcnnDecodeRmsNormSegment(idx, segmentBase, segmentSize, innerIndex);
+        AexisDecodeRmsNormSegment(idx, segmentBase, segmentSize, innerIndex);
 
         float sqsum = 0.0;
         for (int i = 0; i < segmentSize; i++)
         {
-            float v = NcnnReadPack4TensorScalarByLinear(_TexIn0Arr, segmentBase + i, _RmsNormDims, _RmsNormW, _RmsNormH, _RmsNormD, _RmsNormC);
+            float v = AexisReadPack4TensorScalarByLinear(_TexIn0Arr, segmentBase + i, _RmsNormDims, _RmsNormW, _RmsNormH, _RmsNormD, _RmsNormC);
             sqsum += v * v;
         }
 
         float rms = sqsum / max(1, segmentSize);
-        float value = NcnnReadLane(src, lane) * rsqrt(max(rms + _RmsNormEps, 1e-20));
+        float value = AexisReadLane(src, lane) * rsqrt(max(rms + _RmsNormEps, 1e-20));
         if (_RmsNormAffine != 0 && _RmsNormAffineSize > 0)
             value *= _RmsNormGamma[clamp(innerIndex, 0, _RmsNormAffineSize - 1)];
-        NcnnWriteLane(dst, lane, value);
+        AexisWriteLane(dst, lane, value);
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = dst;
 }
 
-void NcnnRotaryEmbedPack4_Impl(uint3 id)
+void AexisRotaryEmbedPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _TexOut0Arr.GetDimensions(ow, oh, od);
@@ -457,16 +457,16 @@ void NcnnRotaryEmbedPack4_Impl(uint3 id)
 
         if (pair1 >= embedDim)
         {
-            NcnnWriteLane(dst, lane, NcnnReadPack4TensorScalar(_TexIn0Arr, 3, embedDim, seqLen, 1, numHeads, embed, seq, 0, head));
+            AexisWriteLane(dst, lane, AexisReadPack4TensorScalar(_TexIn0Arr, 3, embedDim, seqLen, 1, numHeads, embed, seq, 0, head));
             continue;
         }
 
-        float cosVal = NcnnReadPack4TensorScalarByLinear(_TexIn1Arr, cacheIndex, _RotaryCosDims, _RotaryCosW, _RotaryCosH, _RotaryCosD, _RotaryCosC);
-        float sinVal = NcnnReadPack4TensorScalarByLinear(_TexIn2Arr, cacheIndex, _RotarySinDims, _RotarySinW, _RotarySinH, _RotarySinD, _RotarySinC);
-        float x0 = NcnnReadPack4TensorScalar(_TexIn0Arr, 3, embedDim, seqLen, 1, numHeads, pair0, seq, 0, head);
-        float x1 = NcnnReadPack4TensorScalar(_TexIn0Arr, 3, embedDim, seqLen, 1, numHeads, pair1, seq, 0, head);
+        float cosVal = AexisReadPack4TensorScalarByLinear(_TexIn1Arr, cacheIndex, _RotaryCosDims, _RotaryCosW, _RotaryCosH, _RotaryCosD, _RotaryCosC);
+        float sinVal = AexisReadPack4TensorScalarByLinear(_TexIn2Arr, cacheIndex, _RotarySinDims, _RotarySinW, _RotarySinH, _RotarySinD, _RotarySinC);
+        float x0 = AexisReadPack4TensorScalar(_TexIn0Arr, 3, embedDim, seqLen, 1, numHeads, pair0, seq, 0, head);
+        float x1 = AexisReadPack4TensorScalar(_TexIn0Arr, 3, embedDim, seqLen, 1, numHeads, pair1, seq, 0, head);
         float value = first ? x0 * cosVal - x1 * sinVal : x0 * sinVal + x1 * cosVal;
-        NcnnWriteLane(dst, lane, value);
+        AexisWriteLane(dst, lane, value);
     }
 
     _TexOut0Arr[int3((int)id.x, (int)id.y, (int)id.z)] = dst;

@@ -1,9 +1,9 @@
-// Auto-generated kernel implementation group: NcnnKernels.Pack4Matmul.hlsl
+// Auto-generated kernel implementation group: AexisKernels.Pack4Matmul.hlsl
 
 #define NCNN_SDPA_Q_CACHE_FLOATS 1024
 groupshared float _SdpaQCache[NCNN_SDPA_Q_CACHE_FLOATS];
 
-float NcnnApplyUnaryOpLinearScalar(float x)
+float AexisApplyUnaryOpLinearScalar(float x)
 {
     float y = x;
     int t = _UnaryOpType;
@@ -39,29 +39,29 @@ float NcnnApplyUnaryOpLinearScalar(float x)
     return y;
 }
 
-float NcnnApplyBinaryOpLinearScalar(float a, float b)
+float AexisApplyBinaryOpLinearScalar(float a, float b)
 {
-    return NcnnApplyBinaryOpScalar(a, b, _BinaryOpType);
+    return AexisApplyBinaryOpScalar(a, b, _BinaryOpType);
 }
 
-float NcnnApplySwishLinearScalar(float x)
+float AexisApplySwishLinearScalar(float x)
 {
     return x / (1.0 + exp(-x));
 }
 
-float NcnnApplySigmoidLinearScalar(float x)
+float AexisApplySigmoidLinearScalar(float x)
 {
     return 1.0 / (1.0 + exp(-x));
 }
 
-float NcnnApplyGeluLinearScalar(float x)
+float AexisApplyGeluLinearScalar(float x)
 {
     float x3 = x * x * x;
     float t = clamp(0.79788452 * (x + 0.044715 * x3), -10.0, 10.0);
     return 0.5 * x * (1.0 + tanh(t));
 }
 
-void NcnnSwishPack4_Impl(uint3 id)
+void AexisSwishPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _ActOutArr.GetDimensions(w, h, d);
@@ -73,7 +73,7 @@ void NcnnSwishPack4_Impl(uint3 id)
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
-void NcnnSwishLinearMat_Impl(uint3 id)
+void AexisSwishLinearMat_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -82,10 +82,10 @@ void NcnnSwishLinearMat_Impl(uint3 id)
 
     int2 coord = int2((int)id.x, (int)id.y);
     float x = _LinearIn0[coord];
-    _LinearOut0[coord] = NcnnApplySwishLinearScalar(x);
+    _LinearOut0[coord] = AexisApplySwishLinearScalar(x);
 }
 
-void NcnnSigmoidPack4_Impl(uint3 id)
+void AexisSigmoidPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _ActOutArr.GetDimensions(w, h, d);
@@ -97,7 +97,7 @@ void NcnnSigmoidPack4_Impl(uint3 id)
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
-void NcnnSigmoidLinearMat_Impl(uint3 id)
+void AexisSigmoidLinearMat_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -106,10 +106,10 @@ void NcnnSigmoidLinearMat_Impl(uint3 id)
 
     int2 coord = int2((int)id.x, (int)id.y);
     float x = _LinearIn0[coord];
-    _LinearOut0[coord] = NcnnApplySigmoidLinearScalar(x);
+    _LinearOut0[coord] = AexisApplySigmoidLinearScalar(x);
 }
 
-void NcnnGeluPack4_Impl(uint3 id)
+void AexisGeluPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _ActOutArr.GetDimensions(w, h, d);
@@ -123,7 +123,7 @@ void NcnnGeluPack4_Impl(uint3 id)
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
-void NcnnGeluLinearMat_Impl(uint3 id)
+void AexisGeluLinearMat_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -132,10 +132,10 @@ void NcnnGeluLinearMat_Impl(uint3 id)
 
     int2 coord = int2((int)id.x, (int)id.y);
     float x = _LinearIn0[coord];
-    _LinearOut0[coord] = NcnnApplyGeluLinearScalar(x);
+    _LinearOut0[coord] = AexisApplyGeluLinearScalar(x);
 }
 
-void NcnnUnaryOpLinearMat_Impl(uint3 id)
+void AexisUnaryOpLinearMat_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -144,10 +144,10 @@ void NcnnUnaryOpLinearMat_Impl(uint3 id)
 
     int2 coord = int2((int)id.x, (int)id.y);
     float x = _LinearIn0[coord];
-    _LinearOut0[coord] = NcnnApplyUnaryOpLinearScalar(x);
+    _LinearOut0[coord] = AexisApplyUnaryOpLinearScalar(x);
 }
 
-void NcnnTriluLinearMat_Impl(uint3 id)
+void AexisTriluLinearMat_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -162,7 +162,7 @@ void NcnnTriluLinearMat_Impl(uint3 id)
     _LinearOut0[coordinate] = keep ? _LinearIn0[coordinate] : 0.0;
 }
 
-void NcnnBinaryOpLinearMat_Impl(uint3 id)
+void AexisBinaryOpLinearMat_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -172,12 +172,12 @@ void NcnnBinaryOpLinearMat_Impl(uint3 id)
     int2 coord = int2((int)id.x, (int)id.y);
     float a = _LinearIn0[coord];
     float b = _BinaryWithScalar != 0 ? _BinaryScalar : _LinearIn1[coord];
-    _LinearOut0[coord] = NcnnApplyBinaryOpLinearScalar(a, b);
+    _LinearOut0[coord] = AexisApplyBinaryOpLinearScalar(a, b);
 }
 
 // The scalar is a fixed graph input, uploaded once in a ComputeBuffer. The
 // activation and output remain Texture2D LinearMat resources.
-void NcnnBinaryOpLinearMatFixedInputScalar_Impl(uint3 id)
+void AexisBinaryOpLinearMatFixedInputScalar_Impl(uint3 id)
 {
     uint w, h;
     _LinearOut0.GetDimensions(w, h);
@@ -189,10 +189,10 @@ void NcnnBinaryOpLinearMatFixedInputScalar_Impl(uint3 id)
     float scalarValue = _BufB[0];
     float a = _BinaryPack4BufferScalarMode == 1 ? scalarValue : textureValue;
     float b = _BinaryPack4BufferScalarMode == 1 ? textureValue : scalarValue;
-    _LinearOut0[coord] = NcnnApplyBinaryOpLinearScalar(a, b);
+    _LinearOut0[coord] = AexisApplyBinaryOpLinearScalar(a, b);
 }
 
-void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id)
+void AexisBinaryOpPack4LinearMixed_Impl(uint3 id)
 {
     uint w, h, d;
     _TexOut0Arr.GetDimensions(w, h, d);
@@ -216,17 +216,17 @@ void NcnnBinaryOpPack4LinearMixed_Impl(uint3 id)
             if (col >= (int)linearW || row >= (int)linearH)
                 continue;
         }
-        float packValue = NcnnReadLane(a, lane);
+        float packValue = AexisReadLane(a, lane);
         float linearValue = _BinaryWithScalar != 0 ? _BinaryScalar : _LinearIn1[int2(col, row)];
         float lhs = _BinaryPack4LinearMixedMode == 2 ? linearValue : packValue;
         float rhs = _BinaryPack4LinearMixedMode == 2 ? packValue : linearValue;
-        NcnnWriteLane(o, lane, NcnnApplyBinaryOpLinearScalar(lhs, rhs));
+        AexisWriteLane(o, lane, AexisApplyBinaryOpLinearScalar(lhs, rhs));
     }
 
     _TexOut0Arr[int3(packX, row, (int)id.z)] = o;
 }
 
-void NcnnMatMul2D_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisMatMul2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int lx = (int)groupThreadId.x;
     int ly = (int)groupThreadId.y;
@@ -270,7 +270,7 @@ void NcnnMatMul2D_Impl(uint3 groupId, uint3 groupThreadId)
         _MatOut[row * _MatN + col] = acc;
 }
 
-void NcnnMatMulPack4CDHW_Impl(uint3 id)
+void AexisMatMulPack4CDHW_Impl(uint3 id)
 {
     uint ow, oh, od;
     _MatPack4OutArr.GetDimensions(ow, oh, od);
@@ -306,20 +306,20 @@ void NcnnMatMulPack4CDHW_Impl(uint3 id)
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
-            float a = NcnnReadPack4ChannelCDHW(_MatPack4AInArr, kk, outRow, aBatchD, aBatchC, _MatPack4ABatchC);
+            float a = AexisReadPack4ChannelCDHW(_MatPack4AInArr, kk, outRow, aBatchD, aBatchC, _MatPack4ABatchC);
             float b = _MatTransB != 0
-                ? NcnnReadPack4ChannelCDHW(_MatPack4BInArr, kk, outCol, bBatchD, bBatchC, _MatPack4BBatchC)
-                : NcnnReadPack4ChannelCDHW(_MatPack4BInArr, outCol, kk, bBatchD, bBatchC, _MatPack4BBatchC);
+                ? AexisReadPack4ChannelCDHW(_MatPack4BInArr, kk, outCol, bBatchD, bBatchC, _MatPack4BBatchC)
+                : AexisReadPack4ChannelCDHW(_MatPack4BInArr, outCol, kk, bBatchD, bBatchC, _MatPack4BBatchC);
             acc += a * b;
         }
 
-        NcnnWriteLane(o, lane, acc);
+        AexisWriteLane(o, lane, acc);
     }
 
     _MatPack4OutArr[int3(outCol, outRow, slice)] = o;
 }
 
-void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int row = (int)groupId.x;
     int headPack = (int)groupId.y;
@@ -349,7 +349,7 @@ void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
             int headForCache = headPack * 4 + laneForCache;
             bool validHeadForCache = headForCache >= 0 && headForCache < _SdpaNumHeads;
             _SdpaQCache[cacheIndex] = validHeadForCache
-                ? NcnnReadPack4ChannelCDHW(_SdpaQArr, iForCache, row, 0, headForCache, _SdpaNumHeads)
+                ? AexisReadPack4ChannelCDHW(_SdpaQArr, iForCache, row, 0, headForCache, _SdpaNumHeads)
                 : 0.0;
         }
     }
@@ -372,8 +372,8 @@ void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
                 {
                     float q = useQCache
                         ? _SdpaQCache[lane * embedDim + i]
-                        : NcnnReadPack4ChannelCDHW(_SdpaQArr, i, row, 0, head, _SdpaNumHeads);
-                    float k = NcnnReadPack4ChannelCDHW(_SdpaKArr, i, colScore, 0, keyHead, _SdpaNumGroups);
+                        : AexisReadPack4ChannelCDHW(_SdpaQArr, i, row, 0, head, _SdpaNumHeads);
+                    float k = AexisReadPack4ChannelCDHW(_SdpaKArr, i, colScore, 0, keyHead, _SdpaNumGroups);
                     s += q * k;
                 }
                 s *= _SdpaScale;
@@ -382,7 +382,7 @@ void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
                 else if (_SdpaHasTextureMask != 0
                     && colScore < _SdpaTextureMaskW
                     && row < _SdpaTextureMaskH)
-                    s += NcnnReadPack4ChannelCDHW(_SdpaMaskArr, colScore, row, 0, 0, 1);
+                    s += AexisReadPack4ChannelCDHW(_SdpaMaskArr, colScore, row, 0, 0, 1);
             }
             _SdpaScoresFast[colScore] = s;
         }
@@ -432,10 +432,10 @@ void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
             [loop]
             for (int colValue = 0; colValue < dst; colValue++)
             {
-                float v = NcnnReadPack4ChannelCDHW(_SdpaVArr, outX, colValue, 0, keyHead, _SdpaNumGroups);
+                float v = AexisReadPack4ChannelCDHW(_SdpaVArr, outX, colValue, 0, keyHead, _SdpaNumGroups);
                 sum += _SdpaScoresFast[colValue] * v;
             }
-            NcnnWriteLane(outValue, lane, sum);
+            AexisWriteLane(outValue, lane, sum);
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -445,7 +445,7 @@ void NcnnSdpaAttentionPack4CDHW_Impl(uint3 groupId, uint3 groupThreadId)
         _SdpaOutArr[int3(outX, row, headPack)] = outValue;
 }
 
-void NcnnVistaTailPromptDotPack4_Impl(uint3 id)
+void AexisVistaTailPromptDotPack4_Impl(uint3 id)
 {
     uint w, h, slices;
     _VistaTailOutArr.GetDimensions(w, h, slices);
@@ -477,7 +477,7 @@ void NcnnVistaTailPromptDotPack4_Impl(uint3 id)
     _VistaTailOutArr[int3(x, y, z)] = float4(sum, 0.0, 0.0, 0.0);
 }
 
-void NcnnVistaTailPromptDotPack4Tex_Impl(uint3 id)
+void AexisVistaTailPromptDotPack4Tex_Impl(uint3 id)
 {
     uint w, h, slices;
     _VistaTailOutArr.GetDimensions(w, h, slices);
@@ -503,7 +503,7 @@ void NcnnVistaTailPromptDotPack4Tex_Impl(uint3 id)
     _VistaTailOutArr[int3(x, y, z)] = float4(sum, 0.0, 0.0, 0.0);
 }
 
-void NcnnArgmaxUpdatePack4CDHW_Impl(uint3 id)
+void AexisArgmaxUpdatePack4CDHW_Impl(uint3 id)
 {
     uint w, h, outputDepth;
     _ArgmaxBestValueArr.GetDimensions(w, h, outputDepth);
@@ -531,7 +531,7 @@ void NcnnArgmaxUpdatePack4CDHW_Impl(uint3 id)
             if (localChannel < 0 || localChannel >= _ArgmaxInC)
                 continue;
 
-            float value = NcnnReadLane(logits, lane);
+            float value = AexisReadLane(logits, lane);
             if (value > bestValue)
             {
                 bestValue = value;
@@ -544,7 +544,7 @@ void NcnnArgmaxUpdatePack4CDHW_Impl(uint3 id)
     _ArgmaxBestLabelArr[int3((int)id.x, (int)id.y, z)] = float4(bestLabel, 0.0, 0.0, 0.0);
 }
 
-void NcnnArgMaxPack4LinearMat_Impl(uint3 id)
+void AexisArgMaxPack4LinearMat_Impl(uint3 id)
 {
     int row = (int)id.y;
     if (id.x != 0 || row < 0 || row >= _ArgmaxLogicalHeight)
@@ -575,7 +575,7 @@ void NcnnArgMaxPack4LinearMat_Impl(uint3 id)
             int index = pack * 4 + lane;
             if (index >= _ArgmaxLogicalWidth)
                 break;
-            float value = NcnnReadLane(values, lane);
+            float value = AexisReadLane(values, lane);
             if (index == 0 || value > bestValue)
             {
                 bestValue = value;
@@ -587,7 +587,7 @@ void NcnnArgMaxPack4LinearMat_Impl(uint3 id)
     _LinearOut0[int2(0, row)] = (float)bestIndex;
 }
 
-float NcnnResolveGemm2DBias(int row, int col)
+float AexisResolveGemm2DBias(int row, int col)
 {
     float sum = 0.0;
     if (_MatUseC != 0)
@@ -606,7 +606,7 @@ float NcnnResolveGemm2DBias(int row, int col)
     return sum;
 }
 
-float NcnnGemm2DReadB(int col, int kk)
+float AexisGemm2DReadB(int col, int kk)
 {
     int index = _MatTransB != 0
         ? col * _MatK + kk
@@ -632,29 +632,29 @@ float NcnnGemm2DReadB(int col, int kk)
     return f16tof32((index & 1) == 0 ? (packed & 0xffffu) : (packed >> 16));
 }
 
-int NcnnGemmPack4LinearOutPacksPerThread()
+int AexisGemmPack4LinearOutPacksPerThread()
 {
     return clamp(_GemmTexOutsPerThread, 1, 2);
 }
 
-float4 NcnnGemm2DReadB4(int baseCol, int kk)
+float4 AexisGemm2DReadB4(int baseCol, int kk)
 {
     float4 b = 0.0;
-    if (baseCol < _MatN) b.x = NcnnGemm2DReadB(baseCol, kk);
-    if (baseCol + 1 < _MatN) b.y = NcnnGemm2DReadB(baseCol + 1, kk);
-    if (baseCol + 2 < _MatN) b.z = NcnnGemm2DReadB(baseCol + 2, kk);
-    if (baseCol + 3 < _MatN) b.w = NcnnGemm2DReadB(baseCol + 3, kk);
+    if (baseCol < _MatN) b.x = AexisGemm2DReadB(baseCol, kk);
+    if (baseCol + 1 < _MatN) b.y = AexisGemm2DReadB(baseCol + 1, kk);
+    if (baseCol + 2 < _MatN) b.z = AexisGemm2DReadB(baseCol + 2, kk);
+    if (baseCol + 3 < _MatN) b.w = AexisGemm2DReadB(baseCol + 3, kk);
     return b;
 }
 
-bool NcnnCanReadPackedInt8TransB4()
+bool AexisCanReadPackedInt8TransB4()
 {
     return _UseInt8GemmWeights != 0
         && _MatTransB != 0
         && (_MatK & 3) == 0;
 }
 
-uint4 NcnnLoadPackedInt8TransB4(int baseCol, int kkBase)
+uint4 AexisLoadPackedInt8TransB4(int baseCol, int kkBase)
 {
     return uint4(
         _MatBInt8Packed[(baseCol * _MatK + kkBase) >> 2],
@@ -663,13 +663,13 @@ uint4 NcnnLoadPackedInt8TransB4(int baseCol, int kkBase)
         _MatBInt8Packed[((baseCol + 3) * _MatK + kkBase) >> 2]);
 }
 
-float NcnnDecodePackedInt8Weight(uint packed, int shift)
+float AexisDecodePackedInt8Weight(uint packed, int shift)
 {
     uint raw = (packed >> shift) & 0xffu;
     return (float)(raw >= 128u ? (int)raw - 256 : (int)raw);
 }
 
-float4 NcnnReadPackedInt8Scales4(int baseCol)
+float4 AexisReadPackedInt8Scales4(int baseCol)
 {
     return float4(
         _MatBInt8Scales[baseCol],
@@ -678,17 +678,17 @@ float4 NcnnReadPackedInt8Scales4(int baseCol)
         _MatBInt8Scales[baseCol + 3]);
 }
 
-float4 NcnnDecodePackedInt8TransB4(uint4 packed, int kLane, float4 scales)
+float4 AexisDecodePackedInt8TransB4(uint4 packed, int kLane, float4 scales)
 {
     int shift = kLane << 3;
     return float4(
-        NcnnDecodePackedInt8Weight(packed.x, shift),
-        NcnnDecodePackedInt8Weight(packed.y, shift),
-        NcnnDecodePackedInt8Weight(packed.z, shift),
-        NcnnDecodePackedInt8Weight(packed.w, shift)) * scales;
+        AexisDecodePackedInt8Weight(packed.x, shift),
+        AexisDecodePackedInt8Weight(packed.y, shift),
+        AexisDecodePackedInt8Weight(packed.z, shift),
+        AexisDecodePackedInt8Weight(packed.w, shift)) * scales;
 }
 
-float NcnnQuantizeGemmActivationForInt8(float value)
+float AexisQuantizeGemmActivationForInt8(float value)
 {
     if (_UseInt8Activations == 0)
         return value;
@@ -697,28 +697,28 @@ float NcnnQuantizeGemmActivationForInt8(float value)
     return (float)(quantized - _Int8ActivationZeroPoint) * _Int8ActivationScale;
 }
 
-float4 NcnnQuantizeGemmActivationForInt8(float4 value)
+float4 AexisQuantizeGemmActivationForInt8(float4 value)
 {
     if (_UseInt8Activations == 0)
         return value;
     return float4(
-        NcnnQuantizeGemmActivationForInt8(value.x),
-        NcnnQuantizeGemmActivationForInt8(value.y),
-        NcnnQuantizeGemmActivationForInt8(value.z),
-        NcnnQuantizeGemmActivationForInt8(value.w));
+        AexisQuantizeGemmActivationForInt8(value.x),
+        AexisQuantizeGemmActivationForInt8(value.y),
+        AexisQuantizeGemmActivationForInt8(value.z),
+        AexisQuantizeGemmActivationForInt8(value.w));
 }
 
-float4 NcnnResolveGemm2DBias4(int row, int baseCol)
+float4 AexisResolveGemm2DBias4(int row, int baseCol)
 {
     float4 bias = 0.0;
-    if (baseCol < _MatN) bias.x = NcnnResolveGemm2DBias(row, baseCol);
-    if (baseCol + 1 < _MatN) bias.y = NcnnResolveGemm2DBias(row, baseCol + 1);
-    if (baseCol + 2 < _MatN) bias.z = NcnnResolveGemm2DBias(row, baseCol + 2);
-    if (baseCol + 3 < _MatN) bias.w = NcnnResolveGemm2DBias(row, baseCol + 3);
+    if (baseCol < _MatN) bias.x = AexisResolveGemm2DBias(row, baseCol);
+    if (baseCol + 1 < _MatN) bias.y = AexisResolveGemm2DBias(row, baseCol + 1);
+    if (baseCol + 2 < _MatN) bias.z = AexisResolveGemm2DBias(row, baseCol + 2);
+    if (baseCol + 3 < _MatN) bias.w = AexisResolveGemm2DBias(row, baseCol + 3);
     return bias;
 }
 
-float NcnnGemm2DTextureAValue(int row, int col)
+float AexisGemm2DTextureAValue(int row, int col)
 {
     float acc = 0.0;
     [loop]
@@ -728,14 +728,14 @@ float NcnnGemm2DTextureAValue(int row, int col)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _GemmTexAInArr[int3(kk, row, 0)].x;
 
-        a = NcnnQuantizeGemmActivationForInt8(a);
-        acc += a * NcnnGemm2DReadB(col, kk);
+        a = AexisQuantizeGemmActivationForInt8(a);
+        acc += a * AexisGemm2DReadB(col, kk);
     }
 
-    return NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha;
+    return AexisResolveGemm2DBias(row, col) + acc * _MatAlpha;
 }
 
-float NcnnGemm2DLinearTextureAValue(int row, int col)
+float AexisGemm2DLinearTextureAValue(int row, int col)
 {
     float acc = 0.0;
     [loop]
@@ -745,20 +745,20 @@ float NcnnGemm2DLinearTextureAValue(int row, int col)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _LinearIn0[int2(kk, row)];
 
-        a = NcnnQuantizeGemmActivationForInt8(a);
-        acc += a * NcnnGemm2DReadB(col, kk);
+        a = AexisQuantizeGemmActivationForInt8(a);
+        acc += a * AexisGemm2DReadB(col, kk);
     }
 
-    return NcnnResolveGemm2DBias(row, col) + acc * _MatAlpha;
+    return AexisResolveGemm2DBias(row, col) + acc * _MatAlpha;
 }
 
-float NcnnGemm2DPack4LinearTextureARead(int row, int kk)
+float AexisGemm2DPack4LinearTextureARead(int row, int kk)
 {
     if (kk < 0 || kk >= _MatK || row < 0 || row >= _GemmTexAInH)
         return 0.0;
 
     if (_GemmTexAInW == _MatK)
-        return NcnnQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
+        return AexisQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
 
     int logicalPack = kk >> 2;
     int packX = logicalPack % max(1, _GemmTexAInW);
@@ -766,17 +766,17 @@ float NcnnGemm2DPack4LinearTextureARead(int row, int kk)
     if (packX < 0 || packX >= _GemmTexAInW)
         return 0.0;
 
-    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, packSlice)], kk & 3));
+    return AexisQuantizeGemmActivationForInt8(AexisReadLane(_GemmTexAInArr[int3(packX, row, packSlice)], kk & 3));
 }
 
-float NcnnGemm2DPack4LinearTextureAReadLinear(int row, int kk)
+float AexisGemm2DPack4LinearTextureAReadLinear(int row, int kk)
 {
     if (kk < 0 || kk >= _MatK || kk >= _GemmTexAInW || row < 0 || row >= _GemmTexAInH)
         return 0.0;
-    return NcnnQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
+    return AexisQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
 }
 
-float NcnnGemm2DPack4LinearTextureAReadPack4(int row, int kk)
+float AexisGemm2DPack4LinearTextureAReadPack4(int row, int kk)
 {
     if (kk < 0 || kk >= _MatK || row < 0 || row >= _GemmTexAInH)
         return 0.0;
@@ -787,10 +787,10 @@ float NcnnGemm2DPack4LinearTextureAReadPack4(int row, int kk)
     if (packX < 0 || packX >= _GemmTexAInW)
         return 0.0;
 
-    return NcnnQuantizeGemmActivationForInt8(NcnnReadLane(_GemmTexAInArr[int3(packX, row, packSlice)], kk & 3));
+    return AexisQuantizeGemmActivationForInt8(AexisReadLane(_GemmTexAInArr[int3(packX, row, packSlice)], kk & 3));
 }
 
-void NcnnGemm2DTextureA_Impl(uint3 id)
+void AexisGemm2DTextureA_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
@@ -808,7 +808,7 @@ void NcnnGemm2DTextureA_Impl(uint3 id)
         int col = (int)id.x;
         if (col >= 0 && col < _MatN && col < (int)ow)
         {
-            float sum = NcnnGemm2DTextureAValue(row, col);
+            float sum = AexisGemm2DTextureAValue(row, col);
             _GemmTexOutArr[int3(col, row, 0)] = float4(sum, 0.0, 0.0, 0.0);
         }
         return;
@@ -831,20 +831,20 @@ void NcnnGemm2DTextureA_Impl(uint3 id)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _GemmTexAInArr[int3(kk, row, 0)].x;
 
-        a = NcnnQuantizeGemmActivationForInt8(a);
-        if (valid0) acc0 += a * NcnnGemm2DReadB(baseCol, kk);
-        if (valid1) acc1 += a * NcnnGemm2DReadB(baseCol + 1, kk);
-        if (valid2) acc2 += a * NcnnGemm2DReadB(baseCol + 2, kk);
-        if (valid3) acc3 += a * NcnnGemm2DReadB(baseCol + 3, kk);
+        a = AexisQuantizeGemmActivationForInt8(a);
+        if (valid0) acc0 += a * AexisGemm2DReadB(baseCol, kk);
+        if (valid1) acc1 += a * AexisGemm2DReadB(baseCol + 1, kk);
+        if (valid2) acc2 += a * AexisGemm2DReadB(baseCol + 2, kk);
+        if (valid3) acc3 += a * AexisGemm2DReadB(baseCol + 3, kk);
     }
 
-    if (valid0) _GemmTexOutArr[int3(baseCol, row, 0)] = float4(NcnnResolveGemm2DBias(row, baseCol) + acc0 * _MatAlpha, 0.0, 0.0, 0.0);
-    if (valid1) _GemmTexOutArr[int3(baseCol + 1, row, 0)] = float4(NcnnResolveGemm2DBias(row, baseCol + 1) + acc1 * _MatAlpha, 0.0, 0.0, 0.0);
-    if (valid2) _GemmTexOutArr[int3(baseCol + 2, row, 0)] = float4(NcnnResolveGemm2DBias(row, baseCol + 2) + acc2 * _MatAlpha, 0.0, 0.0, 0.0);
-    if (valid3) _GemmTexOutArr[int3(baseCol + 3, row, 0)] = float4(NcnnResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha, 0.0, 0.0, 0.0);
+    if (valid0) _GemmTexOutArr[int3(baseCol, row, 0)] = float4(AexisResolveGemm2DBias(row, baseCol) + acc0 * _MatAlpha, 0.0, 0.0, 0.0);
+    if (valid1) _GemmTexOutArr[int3(baseCol + 1, row, 0)] = float4(AexisResolveGemm2DBias(row, baseCol + 1) + acc1 * _MatAlpha, 0.0, 0.0, 0.0);
+    if (valid2) _GemmTexOutArr[int3(baseCol + 2, row, 0)] = float4(AexisResolveGemm2DBias(row, baseCol + 2) + acc2 * _MatAlpha, 0.0, 0.0, 0.0);
+    if (valid3) _GemmTexOutArr[int3(baseCol + 3, row, 0)] = float4(AexisResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha, 0.0, 0.0, 0.0);
 }
 
-void NcnnGemm2DLinearTextureA_Impl(uint3 id)
+void AexisGemm2DLinearTextureA_Impl(uint3 id)
 {
     uint ow, oh;
     _LinearOut0.GetDimensions(ow, oh);
@@ -861,7 +861,7 @@ void NcnnGemm2DLinearTextureA_Impl(uint3 id)
     {
         int col = (int)id.x;
         if (col >= 0 && col < _MatN && col < (int)ow)
-            _LinearOut0[int2(col, row)] = NcnnGemm2DLinearTextureAValue(row, col);
+            _LinearOut0[int2(col, row)] = AexisGemm2DLinearTextureAValue(row, col);
         return;
     }
 
@@ -882,20 +882,20 @@ void NcnnGemm2DLinearTextureA_Impl(uint3 id)
         if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
             a = _LinearIn0[int2(kk, row)];
 
-        a = NcnnQuantizeGemmActivationForInt8(a);
-        if (valid0) acc0 += a * NcnnGemm2DReadB(baseCol, kk);
-        if (valid1) acc1 += a * NcnnGemm2DReadB(baseCol + 1, kk);
-        if (valid2) acc2 += a * NcnnGemm2DReadB(baseCol + 2, kk);
-        if (valid3) acc3 += a * NcnnGemm2DReadB(baseCol + 3, kk);
+        a = AexisQuantizeGemmActivationForInt8(a);
+        if (valid0) acc0 += a * AexisGemm2DReadB(baseCol, kk);
+        if (valid1) acc1 += a * AexisGemm2DReadB(baseCol + 1, kk);
+        if (valid2) acc2 += a * AexisGemm2DReadB(baseCol + 2, kk);
+        if (valid3) acc3 += a * AexisGemm2DReadB(baseCol + 3, kk);
     }
 
-    if (valid0) _LinearOut0[int2(baseCol, row)] = NcnnResolveGemm2DBias(row, baseCol) + acc0 * _MatAlpha;
-    if (valid1) _LinearOut0[int2(baseCol + 1, row)] = NcnnResolveGemm2DBias(row, baseCol + 1) + acc1 * _MatAlpha;
-    if (valid2) _LinearOut0[int2(baseCol + 2, row)] = NcnnResolveGemm2DBias(row, baseCol + 2) + acc2 * _MatAlpha;
-    if (valid3) _LinearOut0[int2(baseCol + 3, row)] = NcnnResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha;
+    if (valid0) _LinearOut0[int2(baseCol, row)] = AexisResolveGemm2DBias(row, baseCol) + acc0 * _MatAlpha;
+    if (valid1) _LinearOut0[int2(baseCol + 1, row)] = AexisResolveGemm2DBias(row, baseCol + 1) + acc1 * _MatAlpha;
+    if (valid2) _LinearOut0[int2(baseCol + 2, row)] = AexisResolveGemm2DBias(row, baseCol + 2) + acc2 * _MatAlpha;
+    if (valid3) _LinearOut0[int2(baseCol + 3, row)] = AexisResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha;
 }
 
-void NcnnGemm2DPack4LinearTextureA_Impl(uint3 id)
+void AexisGemm2DPack4LinearTextureA_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
@@ -919,26 +919,26 @@ void NcnnGemm2DPack4LinearTextureA_Impl(uint3 id)
     [loop]
     for (int kk = 0; kk < _MatK; kk++)
     {
-        float a = NcnnGemm2DPack4LinearTextureARead(row, kk);
-        if (valid0) acc0 += a * NcnnGemm2DReadB(baseCol, kk);
-        if (valid1) acc1 += a * NcnnGemm2DReadB(baseCol + 1, kk);
-        if (valid2) acc2 += a * NcnnGemm2DReadB(baseCol + 2, kk);
-        if (valid3) acc3 += a * NcnnGemm2DReadB(baseCol + 3, kk);
+        float a = AexisGemm2DPack4LinearTextureARead(row, kk);
+        if (valid0) acc0 += a * AexisGemm2DReadB(baseCol, kk);
+        if (valid1) acc1 += a * AexisGemm2DReadB(baseCol + 1, kk);
+        if (valid2) acc2 += a * AexisGemm2DReadB(baseCol + 2, kk);
+        if (valid3) acc3 += a * AexisGemm2DReadB(baseCol + 3, kk);
     }
 
     float4 o = 0.0;
-    if (valid0) o.x = NcnnResolveGemm2DBias(row, baseCol) + acc0 * _MatAlpha;
-    if (valid1) o.y = NcnnResolveGemm2DBias(row, baseCol + 1) + acc1 * _MatAlpha;
-    if (valid2) o.z = NcnnResolveGemm2DBias(row, baseCol + 2) + acc2 * _MatAlpha;
-    if (valid3) o.w = NcnnResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha;
+    if (valid0) o.x = AexisResolveGemm2DBias(row, baseCol) + acc0 * _MatAlpha;
+    if (valid1) o.y = AexisResolveGemm2DBias(row, baseCol + 1) + acc1 * _MatAlpha;
+    if (valid2) o.z = AexisResolveGemm2DBias(row, baseCol + 2) + acc2 * _MatAlpha;
+    if (valid3) o.w = AexisResolveGemm2DBias(row, baseCol + 3) + acc3 * _MatAlpha;
     _GemmTexOutArr[int3((int)id.x, row, 0)] = o;
 }
 
-void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
+void AexisGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
-    int packsPerThread = NcnnGemmPack4LinearOutPacksPerThread();
+    int packsPerThread = AexisGemmPack4LinearOutPacksPerThread();
     int outPackX = (int)id.x * packsPerThread;
     if (outPackX >= (int)ow || id.y >= oh || id.z >= od)
         return;
@@ -952,10 +952,10 @@ void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
     bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
     // ncnn initializes Gemm accumulation with beta * C. Keeping the bias in
     // the running FP32 sum is numerically observable for large cancellation.
-    float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
-    float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
+    float4 acc0 = AexisResolveGemm2DBias4(row, baseCol0);
+    float4 acc1 = writeSecondPack ? AexisResolveGemm2DBias4(row, baseCol1) : 0.0;
 
-    bool usePackedInt8 = NcnnCanReadPackedInt8TransB4()
+    bool usePackedInt8 = AexisCanReadPackedInt8TransB4()
         && baseCol0 + 3 < _MatN
         && (!writeSecondPack || baseCol1 + 3 < _MatN);
     if (usePackedInt8)
@@ -964,24 +964,24 @@ void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
         for (int kk = 0; kk < _MatK; kk += 4)
         {
             float4 a = float4(
-                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk),
-                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk + 1),
-                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk + 2),
-                NcnnGemm2DPack4LinearTextureAReadLinear(row, kk + 3));
-            uint4 packed0 = NcnnLoadPackedInt8TransB4(baseCol0, kk);
-            float4 scales0 = NcnnReadPackedInt8Scales4(baseCol0);
-            acc0 += a.x * NcnnDecodePackedInt8TransB4(packed0, 0, scales0);
-            acc0 += a.y * NcnnDecodePackedInt8TransB4(packed0, 1, scales0);
-            acc0 += a.z * NcnnDecodePackedInt8TransB4(packed0, 2, scales0);
-            acc0 += a.w * NcnnDecodePackedInt8TransB4(packed0, 3, scales0);
+                AexisGemm2DPack4LinearTextureAReadLinear(row, kk),
+                AexisGemm2DPack4LinearTextureAReadLinear(row, kk + 1),
+                AexisGemm2DPack4LinearTextureAReadLinear(row, kk + 2),
+                AexisGemm2DPack4LinearTextureAReadLinear(row, kk + 3));
+            uint4 packed0 = AexisLoadPackedInt8TransB4(baseCol0, kk);
+            float4 scales0 = AexisReadPackedInt8Scales4(baseCol0);
+            acc0 += a.x * AexisDecodePackedInt8TransB4(packed0, 0, scales0);
+            acc0 += a.y * AexisDecodePackedInt8TransB4(packed0, 1, scales0);
+            acc0 += a.z * AexisDecodePackedInt8TransB4(packed0, 2, scales0);
+            acc0 += a.w * AexisDecodePackedInt8TransB4(packed0, 3, scales0);
             if (writeSecondPack)
             {
-                uint4 packed1 = NcnnLoadPackedInt8TransB4(baseCol1, kk);
-                float4 scales1 = NcnnReadPackedInt8Scales4(baseCol1);
-                acc1 += a.x * NcnnDecodePackedInt8TransB4(packed1, 0, scales1);
-                acc1 += a.y * NcnnDecodePackedInt8TransB4(packed1, 1, scales1);
-                acc1 += a.z * NcnnDecodePackedInt8TransB4(packed1, 2, scales1);
-                acc1 += a.w * NcnnDecodePackedInt8TransB4(packed1, 3, scales1);
+                uint4 packed1 = AexisLoadPackedInt8TransB4(baseCol1, kk);
+                float4 scales1 = AexisReadPackedInt8Scales4(baseCol1);
+                acc1 += a.x * AexisDecodePackedInt8TransB4(packed1, 0, scales1);
+                acc1 += a.y * AexisDecodePackedInt8TransB4(packed1, 1, scales1);
+                acc1 += a.z * AexisDecodePackedInt8TransB4(packed1, 2, scales1);
+                acc1 += a.w * AexisDecodePackedInt8TransB4(packed1, 3, scales1);
             }
         }
     }
@@ -990,10 +990,10 @@ void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
-            float a = NcnnGemm2DPack4LinearTextureAReadLinear(row, kk);
-            acc0 += a * NcnnGemm2DReadB4(baseCol0, kk);
+            float a = AexisGemm2DPack4LinearTextureAReadLinear(row, kk);
+            acc0 += a * AexisGemm2DReadB4(baseCol0, kk);
             if (writeSecondPack)
-                acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);
+                acc1 += a * AexisGemm2DReadB4(baseCol1, kk);
         }
     }
 
@@ -1002,11 +1002,11 @@ void NcnnGemm2DPack4LinearTextureAFromLinear_Impl(uint3 id)
         _GemmTexOutArr[int3(outPackX + 1, row, 0)] = acc1 * _MatAlpha;
 }
 
-void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
+void AexisGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
-    int packsPerThread = NcnnGemmPack4LinearOutPacksPerThread();
+    int packsPerThread = AexisGemmPack4LinearOutPacksPerThread();
     int outPackX = (int)id.x * packsPerThread;
     if (outPackX >= (int)ow || id.y >= oh || id.z >= od)
         return;
@@ -1018,9 +1018,9 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
         return;
 
     bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
-    float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
-    float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
-    bool usePackedInt8 = NcnnCanReadPackedInt8TransB4()
+    float4 acc0 = AexisResolveGemm2DBias4(row, baseCol0);
+    float4 acc1 = writeSecondPack ? AexisResolveGemm2DBias4(row, baseCol1) : 0.0;
+    bool usePackedInt8 = AexisCanReadPackedInt8TransB4()
         && baseCol0 + 3 < _MatN
         && (!writeSecondPack || baseCol1 + 3 < _MatN);
 
@@ -1034,38 +1034,38 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
         if (packSlice >= (int)inputSlices)
             break;
         int kkBase = logicalPack << 2;
-        float4 a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, packSlice)]);
+        float4 a = AexisQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, packSlice)]);
         if (usePackedInt8 && kkBase + 3 < _MatK)
         {
-            uint4 packed0 = NcnnLoadPackedInt8TransB4(baseCol0, kkBase);
-            float4 scales0 = NcnnReadPackedInt8Scales4(baseCol0);
-            acc0 += a.x * NcnnDecodePackedInt8TransB4(packed0, 0, scales0);
-            acc0 += a.y * NcnnDecodePackedInt8TransB4(packed0, 1, scales0);
-            acc0 += a.z * NcnnDecodePackedInt8TransB4(packed0, 2, scales0);
-            acc0 += a.w * NcnnDecodePackedInt8TransB4(packed0, 3, scales0);
+            uint4 packed0 = AexisLoadPackedInt8TransB4(baseCol0, kkBase);
+            float4 scales0 = AexisReadPackedInt8Scales4(baseCol0);
+            acc0 += a.x * AexisDecodePackedInt8TransB4(packed0, 0, scales0);
+            acc0 += a.y * AexisDecodePackedInt8TransB4(packed0, 1, scales0);
+            acc0 += a.z * AexisDecodePackedInt8TransB4(packed0, 2, scales0);
+            acc0 += a.w * AexisDecodePackedInt8TransB4(packed0, 3, scales0);
             if (writeSecondPack)
             {
-                uint4 packed1 = NcnnLoadPackedInt8TransB4(baseCol1, kkBase);
-                float4 scales1 = NcnnReadPackedInt8Scales4(baseCol1);
-                acc1 += a.x * NcnnDecodePackedInt8TransB4(packed1, 0, scales1);
-                acc1 += a.y * NcnnDecodePackedInt8TransB4(packed1, 1, scales1);
-                acc1 += a.z * NcnnDecodePackedInt8TransB4(packed1, 2, scales1);
-                acc1 += a.w * NcnnDecodePackedInt8TransB4(packed1, 3, scales1);
+                uint4 packed1 = AexisLoadPackedInt8TransB4(baseCol1, kkBase);
+                float4 scales1 = AexisReadPackedInt8Scales4(baseCol1);
+                acc1 += a.x * AexisDecodePackedInt8TransB4(packed1, 0, scales1);
+                acc1 += a.y * AexisDecodePackedInt8TransB4(packed1, 1, scales1);
+                acc1 += a.z * AexisDecodePackedInt8TransB4(packed1, 2, scales1);
+                acc1 += a.w * AexisDecodePackedInt8TransB4(packed1, 3, scales1);
             }
             continue;
         }
         if (kkBase + 3 < _MatK)
         {
-            acc0 += a.x * NcnnGemm2DReadB4(baseCol0, kkBase);
-            acc0 += a.y * NcnnGemm2DReadB4(baseCol0, kkBase + 1);
-            acc0 += a.z * NcnnGemm2DReadB4(baseCol0, kkBase + 2);
-            acc0 += a.w * NcnnGemm2DReadB4(baseCol0, kkBase + 3);
+            acc0 += a.x * AexisGemm2DReadB4(baseCol0, kkBase);
+            acc0 += a.y * AexisGemm2DReadB4(baseCol0, kkBase + 1);
+            acc0 += a.z * AexisGemm2DReadB4(baseCol0, kkBase + 2);
+            acc0 += a.w * AexisGemm2DReadB4(baseCol0, kkBase + 3);
             if (writeSecondPack)
             {
-                acc1 += a.x * NcnnGemm2DReadB4(baseCol1, kkBase);
-                acc1 += a.y * NcnnGemm2DReadB4(baseCol1, kkBase + 1);
-                acc1 += a.z * NcnnGemm2DReadB4(baseCol1, kkBase + 2);
-                acc1 += a.w * NcnnGemm2DReadB4(baseCol1, kkBase + 3);
+                acc1 += a.x * AexisGemm2DReadB4(baseCol1, kkBase);
+                acc1 += a.y * AexisGemm2DReadB4(baseCol1, kkBase + 1);
+                acc1 += a.z * AexisGemm2DReadB4(baseCol1, kkBase + 2);
+                acc1 += a.w * AexisGemm2DReadB4(baseCol1, kkBase + 3);
             }
             continue;
         }
@@ -1076,10 +1076,10 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
             int kk = kkBase + lane;
             if (kk >= _MatK)
                 break;
-            float av = NcnnReadLane(a, lane);
-            acc0 += av * NcnnGemm2DReadB4(baseCol0, kk);
+            float av = AexisReadLane(a, lane);
+            acc0 += av * AexisGemm2DReadB4(baseCol0, kk);
             if (writeSecondPack)
-                acc1 += av * NcnnGemm2DReadB4(baseCol1, kk);
+                acc1 += av * AexisGemm2DReadB4(baseCol1, kk);
         }
     }
 
@@ -1088,7 +1088,7 @@ void NcnnGemm2DPack4LinearTextureAFromPack4_Impl(uint3 id)
         _GemmTexOutArr[int3(outPackX + 1, row, 0)] = acc1 * _MatAlpha;
 }
 
-void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
+void AexisGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
@@ -1115,24 +1115,24 @@ void NcnnGemm2DAttentionQkvLinearTextureA_Impl(uint3 id)
         if (col < 0 || col >= _MatN)
             continue;
 
-        float acc = NcnnResolveGemm2DBias(row, col);
+        float acc = AexisResolveGemm2DBias(row, col);
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
             float a = 0.0;
             if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
                 a = _LinearIn0[int2(kk, row)];
-            a = NcnnQuantizeGemmActivationForInt8(a);
-            acc += a * NcnnGemm2DReadB(col, kk);
+            a = AexisQuantizeGemmActivationForInt8(a);
+            acc += a * AexisGemm2DReadB(col, kk);
         }
 
-        NcnnWriteLane(o, lane, acc * _MatAlpha);
+        AexisWriteLane(o, lane, acc * _MatAlpha);
     }
 
     _GemmTexOutArr[int3(outX, row, headPack)] = o;
 }
 
-void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id)
+void AexisGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
@@ -1159,22 +1159,22 @@ void NcnnGemm2DAttentionQkvPack4LinearTextureA_Impl(uint3 id)
         if (col < 0 || col >= _MatN)
             continue;
 
-        float acc = NcnnResolveGemm2DBias(row, col);
+        float acc = AexisResolveGemm2DBias(row, col);
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
             int packX = kk >> 2;
-            float a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)][kk & 3]);
-            acc += a * NcnnGemm2DReadB(col, kk);
+            float a = AexisQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)][kk & 3]);
+            acc += a * AexisGemm2DReadB(col, kk);
         }
 
-        NcnnWriteLane(o, lane, acc * _MatAlpha);
+        AexisWriteLane(o, lane, acc * _MatAlpha);
     }
 
     _GemmTexOutArr[int3(outX, row, headPack)] = o;
 }
 
-void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id)
+void AexisGemm2DAttentionQkvTextureA_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
@@ -1201,24 +1201,24 @@ void NcnnGemm2DAttentionQkvTextureA_Impl(uint3 id)
         if (col < 0 || col >= _MatN)
             continue;
 
-        float acc = NcnnResolveGemm2DBias(row, col);
+        float acc = AexisResolveGemm2DBias(row, col);
         [loop]
         for (int kk = 0; kk < _MatK; kk++)
         {
             float a = 0.0;
             if (kk >= 0 && kk < _GemmTexAInW && row >= 0 && row < _GemmTexAInH)
                 a = _GemmTexAInArr[int3(kk, row, 0)].x;
-            a = NcnnQuantizeGemmActivationForInt8(a);
-            acc += a * NcnnGemm2DReadB(col, kk);
+            a = AexisQuantizeGemmActivationForInt8(a);
+            acc += a * AexisGemm2DReadB(col, kk);
         }
 
-        NcnnWriteLane(o, lane, acc * _MatAlpha);
+        AexisWriteLane(o, lane, acc * _MatAlpha);
     }
 
     _GemmTexOutArr[int3(outX, row, headPack)] = o;
 }
 
-void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id)
+void AexisGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id)
 {
     uint ow, oh;
     _LinearOut0.GetDimensions(ow, oh);
@@ -1231,24 +1231,24 @@ void NcnnGemm2DAttentionPack4ToLinearTextureA_Impl(uint3 id)
     if (col < 0 || col >= _MatN || row < 0 || row >= _MatM)
         return;
 
-    float acc = NcnnResolveGemm2DBias(row, col);
+    float acc = AexisResolveGemm2DBias(row, col);
     [loop]
     for (int kk = 0; kk < _MatK; kk++)
     {
         int head = kk / headDim;
         int dim = kk - head * headDim;
-        float a = NcnnQuantizeGemmActivationForInt8(NcnnReadPack4Channel(_GemmTexAInArr, dim, row, head));
-        acc += a * NcnnGemm2DReadB(col, kk);
+        float a = AexisQuantizeGemmActivationForInt8(AexisReadPack4Channel(_GemmTexAInArr, dim, row, head));
+        acc += a * AexisGemm2DReadB(col, kk);
     }
 
     _LinearOut0[int2(col, row)] = acc * _MatAlpha;
 }
 
-void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
+void AexisGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
-    int packsPerThread = NcnnGemmPack4LinearOutPacksPerThread();
+    int packsPerThread = AexisGemmPack4LinearOutPacksPerThread();
     int outPackX = (int)id.x * packsPerThread;
     if (outPackX >= (int)ow || id.y >= oh || id.z >= od)
         return;
@@ -1262,8 +1262,8 @@ void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
         return;
 
     bool writeSecondPack = packsPerThread > 1 && outPackX + 1 < (int)ow && baseCol1 < _MatN;
-    float4 acc0 = NcnnResolveGemm2DBias4(row, baseCol0);
-    float4 acc1 = writeSecondPack ? NcnnResolveGemm2DBias4(row, baseCol1) : 0.0;
+    float4 acc0 = AexisResolveGemm2DBias4(row, baseCol0);
+    float4 acc1 = writeSecondPack ? AexisResolveGemm2DBias4(row, baseCol1) : 0.0;
 
     [loop]
     for (int head = 0; head < headCount; head++)
@@ -1275,10 +1275,10 @@ void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
             if (kk >= _MatK)
                 break;
 
-            float a = NcnnQuantizeGemmActivationForInt8(NcnnReadPack4Channel(_GemmTexAInArr, dim, row, head));
-            acc0 += a * NcnnGemm2DReadB4(baseCol0, kk);
+            float a = AexisQuantizeGemmActivationForInt8(AexisReadPack4Channel(_GemmTexAInArr, dim, row, head));
+            acc0 += a * AexisGemm2DReadB4(baseCol0, kk);
             if (writeSecondPack)
-                acc1 += a * NcnnGemm2DReadB4(baseCol1, kk);
+                acc1 += a * AexisGemm2DReadB4(baseCol1, kk);
         }
     }
 
@@ -1287,7 +1287,7 @@ void NcnnGemm2DAttentionPack4ToPack4LinearTextureA_Impl(uint3 id)
         _GemmTexOutArr[int3(outPackX + 1, row, 0)] = acc1 * _MatAlpha;
 }
 
-void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGemm2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int lx = (int)groupThreadId.x;
     int ly = (int)groupThreadId.y;
@@ -1348,7 +1348,7 @@ void NcnnGemm2D_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnGemm2D16_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisGemm2D16_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int lx = (int)groupThreadId.x;
     int ly = (int)groupThreadId.y;
@@ -1409,7 +1409,7 @@ void NcnnGemm2D16_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnLayerNormPack4WidthTex_Impl(uint3 id)
+void AexisLayerNormPack4WidthTex_Impl(uint3 id)
 {
     uint ow, oh, od;
     _LnTexOutArr.GetDimensions(ow, oh, od);
@@ -1516,17 +1516,17 @@ void NcnnLayerNormPack4WidthTex_Impl(uint3 id)
         int channel = pack * 4 + lane;
         if (channel >= _LnC)
             continue;
-        float scalar = NcnnReadLane(_LnTexInArr[int3(x, y, slice)], lane);
-        float normalized = (scalar - NcnnReadLane(mean, lane)) * NcnnReadLane(invstd, lane);
+        float scalar = AexisReadLane(_LnTexInArr[int3(x, y, slice)], lane);
+        float normalized = (scalar - AexisReadLane(mean, lane)) * AexisReadLane(invstd, lane);
         if (_LnAffine != 0)
             normalized = normalized * _LnGamma[x] + _LnBeta[x];
-        NcnnWriteLane(o, lane, normalized);
+        AexisWriteLane(o, lane, normalized);
     }
 
     _LnTexOutArr[int3(x, y, slice)] = o;
 }
 
-void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
+void AexisLayerNormPack4Linear2D_Impl(uint3 id)
 {
     uint ow, oh, od;
     _LnTexOutArr.GetDimensions(ow, oh, od);
@@ -1549,7 +1549,7 @@ void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
         {
             int inputCol = inputPack * 4 + inputLane;
             if (inputCol < logicalW)
-                sum += NcnnReadLane(packed, inputLane);
+                sum += AexisReadLane(packed, inputLane);
         }
     }
 
@@ -1565,7 +1565,7 @@ void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
             int varianceCol = variancePack * 4 + varianceLane;
             if (varianceCol < logicalW)
             {
-                float centered = NcnnReadLane(packedVariance, varianceLane) - mean;
+                float centered = AexisReadLane(packedVariance, varianceLane) - mean;
                 sqsum += centered * centered;
             }
         }
@@ -1584,16 +1584,16 @@ void NcnnLayerNormPack4Linear2D_Impl(uint3 id)
         int col = packX * 4 + outLane;
         if (col >= logicalW)
             continue;
-        float normalized = NcnnReadLane(src, outLane) * invstd - scaledMean;
+        float normalized = AexisReadLane(src, outLane) * invstd - scaledMean;
         if (_LnAffine != 0)
             normalized = normalized * _LnGamma[col] + _LnBeta[col];
-        NcnnWriteLane(o, outLane, normalized);
+        AexisWriteLane(o, outLane, normalized);
     }
 
     _LnTexOutArr[int3(packX, row, 0)] = o;
 }
 
-void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
+void AexisSoftmaxPack4CDHW_Impl(uint3 id)
 {
     uint w, h, d;
     _SoftmaxPack4CDHWOutArr.GetDimensions(w, h, d);
@@ -1635,7 +1635,7 @@ void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
             int y = axis == 1 ? i : outY;
             int z = axis == 2 ? i : outZ;
             int channel = axis == 3 ? i : c;
-            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, x, y, z, channel, _SoftmaxPack4CDHWC);
+            float v = AexisReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, x, y, z, channel, _SoftmaxPack4CDHWC);
             maxv = max(maxv, v);
         }
 
@@ -1648,7 +1648,7 @@ void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
             int y = axis == 1 ? i : outY;
             int z = axis == 2 ? i : outZ;
             int channel = axis == 3 ? i : c;
-            float v = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, x, y, z, channel, _SoftmaxPack4CDHWC);
+            float v = AexisReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, x, y, z, channel, _SoftmaxPack4CDHWC);
             if (!foundMaximum && v == maxv)
             {
                 firstMaximum = i;
@@ -1657,20 +1657,20 @@ void NcnnSoftmaxPack4CDHW_Impl(uint3 id)
             sum += exp(v - maxv);
         }
 
-        float current = NcnnReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, outX, outY, outZ, c, _SoftmaxPack4CDHWC);
+        float current = AexisReadPack4ChannelCDHW(_SoftmaxPack4CDHWInArr, outX, outY, outZ, c, _SoftmaxPack4CDHWC);
         int currentIndex = axis == 0 ? outX : axis == 1 ? outY : axis == 2 ? outZ : c;
         float value = _SoftmaxMode == 2
             ? (currentIndex == firstMaximum ? 1.0 : 0.0)
             : _SoftmaxMode == 1
                 ? current - maxv - log(max(sum, 1e-20))
                 : (sum > 0.0 ? exp(current - maxv) / sum : 0.0);
-        NcnnWriteLane(o, lane, value);
+        AexisWriteLane(o, lane, value);
     }
 
     _SoftmaxPack4CDHWOutArr[int3(outX, outY, slice)] = o;
 }
 
-void NcnnSoftmaxLinearMat2D_Impl(uint3 id)
+void AexisSoftmaxLinearMat2D_Impl(uint3 id)
 {
     uint ow, oh;
     _LinearOut0.GetDimensions(ow, oh);
@@ -1727,7 +1727,7 @@ void NcnnSoftmaxLinearMat2D_Impl(uint3 id)
             : (sum > 0.0 ? exp(current - maxv) / sum : 0.0);
 }
 
-void NcnnReductionScalar2D_Impl(uint3 id)
+void AexisReductionScalar2D_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ReduceScalar2DOutArr.GetDimensions(ow, oh, od);
@@ -2013,7 +2013,7 @@ void NcnnReductionScalar2D_Impl(uint3 id)
     _ReduceScalar2DOutArr[int3(outX, outY, (int)id.z)] = float4(result, 0.0, 0.0, 0.0);
 }
 
-void NcnnGemm2DPack4TiledTextureAFromLinear_Impl(uint3 id)
+void AexisGemm2DPack4TiledTextureAFromLinear_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
@@ -2032,14 +2032,14 @@ void NcnnGemm2DPack4TiledTextureAFromLinear_Impl(uint3 id)
     [loop]
     for (int kk = 0; kk < _MatK; ++kk)
     {
-        float a = NcnnQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
-        acc += a * NcnnGemm2DReadB4(baseCol, kk);
+        float a = AexisQuantizeGemmActivationForInt8(_LinearIn0[int2(kk, row)]);
+        acc += a * AexisGemm2DReadB4(baseCol, kk);
     }
 
-    _GemmTexOutArr[int3((int)id.x, (int)id.y, 0)] = NcnnResolveGemm2DBias4(row, baseCol) + acc * _MatAlpha;
+    _GemmTexOutArr[int3((int)id.x, (int)id.y, 0)] = AexisResolveGemm2DBias4(row, baseCol) + acc * _MatAlpha;
 }
 
-void NcnnGemm2DPack4TiledTextureAFromPack4_Impl(uint3 id)
+void AexisGemm2DPack4TiledTextureAFromPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _GemmTexOutArr.GetDimensions(ow, oh, od);
@@ -2059,20 +2059,20 @@ void NcnnGemm2DPack4TiledTextureAFromPack4_Impl(uint3 id)
     for (int packX = 0; packX < _GemmTexAInW; ++packX)
     {
         int kkBase = packX << 2;
-        float4 a = NcnnQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)]);
+        float4 a = AexisQuantizeGemmActivationForInt8(_GemmTexAInArr[int3(packX, row, 0)]);
         [unroll]
         for (int lane = 0; lane < 4; ++lane)
         {
             int kk = kkBase + lane;
             if (kk < _MatK)
-                acc += NcnnReadLane(a, lane) * NcnnGemm2DReadB4(baseCol, kk);
+                acc += AexisReadLane(a, lane) * AexisGemm2DReadB4(baseCol, kk);
         }
     }
 
-    _GemmTexOutArr[int3((int)id.x, (int)id.y, 0)] = NcnnResolveGemm2DBias4(row, baseCol) + acc * _MatAlpha;
+    _GemmTexOutArr[int3((int)id.x, (int)id.y, 0)] = AexisResolveGemm2DBias4(row, baseCol) + acc * _MatAlpha;
 }
 
-void NcnnReductionPack4Width_Impl(uint3 id)
+void AexisReductionPack4Width_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ReduceScalar2DOutArr.GetDimensions(ow, oh, od);
@@ -2166,7 +2166,7 @@ void NcnnReductionPack4Width_Impl(uint3 id)
     _ReduceScalar2DOutArr[int3(outX, row, pack)] = result;
 }
 
-void NcnnReductionPack4Channel_Impl(uint3 id)
+void AexisReductionPack4Channel_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ReduceScalar2DOutArr.GetDimensions(ow, oh, od);
@@ -2191,23 +2191,23 @@ void NcnnReductionPack4Channel_Impl(uint3 id)
 
     if (opType == 4)
     {
-        float acc = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0);
+        float acc = AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0);
         for (int c = 1; c < inC; c++)
-            acc = max(acc, NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
+            acc = max(acc, AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
         result = acc * coeff;
     }
     else if (opType == 5)
     {
-        float acc = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0);
+        float acc = AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0);
         for (int c = 1; c < inC; c++)
-            acc = min(acc, NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
+            acc = min(acc, AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
         result = acc * coeff;
     }
     else if (opType == 0 || opType == 3)
     {
         float sum = 0.0;
         for (int c = 0; c < inC; c++)
-            sum += NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+            sum += AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
         if (opType == 3)
             sum /= (float)inC;
         result = sum * coeff;
@@ -2217,7 +2217,7 @@ void NcnnReductionPack4Channel_Impl(uint3 id)
         float sumSq = 0.0;
         for (int c = 0; c < inC; c++)
         {
-            float v = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+            float v = AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
             sumSq += v * v;
         }
         result = sumSq * coeff;
@@ -2226,21 +2226,21 @@ void NcnnReductionPack4Channel_Impl(uint3 id)
     {
         float sumAbs = 0.0;
         for (int c = 0; c < inC; c++)
-            sumAbs += abs(NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
+            sumAbs += abs(AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c));
         result = sumAbs * coeff;
     }
     else if (opType == 6 || opType == 10)
     {
         float sumLog = 0.0;
         for (int c = 0; c < inC; c++)
-            sumLog += log(max(NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c), 1e-12));
+            sumLog += log(max(AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c), 1e-12));
         result = exp(sumLog) * coeff;
     }
     else if (opType == 9)
     {
         float sumVal = 0.0;
         for (int c = 0; c < inC; c++)
-            sumVal += NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+            sumVal += AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
         result = log(max(sumVal, 1e-12)) * coeff;
     }
     else if (opType == 8)
@@ -2248,20 +2248,20 @@ void NcnnReductionPack4Channel_Impl(uint3 id)
         float sumSq = 0.0;
         for (int c = 0; c < inC; c++)
         {
-            float v = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
+            float v = AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, c);
             sumSq += v * v;
         }
         result = sqrt(max(sumSq, 0.0)) * coeff;
     }
     else
     {
-        result = NcnnReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0) * coeff;
+        result = AexisReadPack4Channel(_ReduceScalar2DInArr, outX, outY, 0) * coeff;
     }
 
     _ReduceScalar2DOutArr[int3(outX, outY, outPack)] = float4(result, 0.0, 0.0, 0.0);
 }
 
-void NcnnReductionLinearMat2D_Impl(uint3 id)
+void AexisReductionLinearMat2D_Impl(uint3 id)
 {
     uint ow, oh;
     _LinearOut0.GetDimensions(ow, oh);

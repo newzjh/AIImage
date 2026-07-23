@@ -1,6 +1,6 @@
 // Texture-backed PriorBox generation for scalar linear-mat outputs.
 
-float NcnnPriorBoxCoord(float centerX, float centerY, float boxW, float boxH, int imageW, int imageH, int coord)
+float AexisPriorBoxCoord(float centerX, float centerY, float boxW, float boxH, int imageW, int imageH, int coord)
 {
     float value;
     if (coord == 0)
@@ -14,7 +14,7 @@ float NcnnPriorBoxCoord(float centerX, float centerY, float boxW, float boxH, in
     return _PriorClip != 0 ? clamp(value, 0.0, 1.0) : value;
 }
 
-float NcnnPriorBoxMxNetValue(int x)
+float AexisPriorBoxMxNetValue(int x)
 {
     int featW = max(1, _PriorFeatW);
     int featH = max(1, _PriorFeatH);
@@ -62,7 +62,7 @@ float NcnnPriorBoxMxNetValue(int x)
     return _PriorClip != 0 ? clamp(value, 0.0, 1.0) : value;
 }
 
-float NcnnPriorBoxCaffeValue(int x, int y)
+float AexisPriorBoxCaffeValue(int x, int y)
 {
     if (y == 1)
         return _PriorVariances[x - (x / 4) * 4];
@@ -97,14 +97,14 @@ float NcnnPriorBoxCaffeValue(int x, int y)
     {
         float minSize = _PriorMinSizes[k];
         if (boxIndex == emitted)
-            return NcnnPriorBoxCoord(centerX, centerY, minSize, minSize, imageW, imageH, coord);
+            return AexisPriorBoxCoord(centerX, centerY, minSize, minSize, imageW, imageH, coord);
         emitted++;
 
         if (_PriorNumMaxSizes > 0 && k < _PriorNumMaxSizes)
         {
             float boxSize = sqrt(max(minSize * _PriorMaxSizes[k], 0.0));
             if (boxIndex == emitted)
-                return NcnnPriorBoxCoord(centerX, centerY, boxSize, boxSize, imageW, imageH, coord);
+                return AexisPriorBoxCoord(centerX, centerY, boxSize, boxSize, imageW, imageH, coord);
             emitted++;
         }
 
@@ -114,13 +114,13 @@ float NcnnPriorBoxCaffeValue(int x, int y)
             float boxW = minSize * arSqrt;
             float boxH = minSize / arSqrt;
             if (boxIndex == emitted)
-                return NcnnPriorBoxCoord(centerX, centerY, boxW, boxH, imageW, imageH, coord);
+                return AexisPriorBoxCoord(centerX, centerY, boxW, boxH, imageW, imageH, coord);
             emitted++;
 
             if (_PriorFlip != 0)
             {
                 if (boxIndex == emitted)
-                    return NcnnPriorBoxCoord(centerX, centerY, boxH, boxW, imageW, imageH, coord);
+                    return AexisPriorBoxCoord(centerX, centerY, boxH, boxW, imageW, imageH, coord);
                 emitted++;
             }
         }
@@ -129,7 +129,7 @@ float NcnnPriorBoxCaffeValue(int x, int y)
     return 0.0;
 }
 
-void NcnnPriorBox_Impl(uint3 id)
+void AexisPriorBox_Impl(uint3 id)
 {
     uint ow, oh;
     _LinearOut0.GetDimensions(ow, oh);
@@ -138,6 +138,6 @@ void NcnnPriorBox_Impl(uint3 id)
 
     int x = (int)id.x;
     int y = (int)id.y;
-    float value = _PriorMode == 0 ? NcnnPriorBoxMxNetValue(x) : NcnnPriorBoxCaffeValue(x, y);
+    float value = _PriorMode == 0 ? AexisPriorBoxMxNetValue(x) : AexisPriorBoxCaffeValue(x, y);
     _LinearOut0[int2(x, y)] = value;
 }

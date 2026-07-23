@@ -1,6 +1,6 @@
-// Auto-generated kernel implementation group: NcnnKernels.BufferTensor.hlsl
+// Auto-generated kernel implementation group: AexisKernels.BufferTensor.hlsl
 
-void NcnnEmbed_Impl(uint3 id)
+void AexisEmbed_Impl(uint3 id)
 {
     int p = (int)id.x;
     int q = (int)id.y;
@@ -26,7 +26,7 @@ void NcnnEmbed_Impl(uint3 id)
     _EmbedOut[q * _EmbedNumOutput + p] = v;
 }
 
-float NcnnEmbedValue(int wordIndex, int p)
+float AexisEmbedValue(int wordIndex, int p)
 {
     wordIndex = clamp(wordIndex, 0, _EmbedInputDim - 1);
     int weightIndex = wordIndex * _EmbedNumOutput + p;
@@ -47,16 +47,16 @@ float NcnnEmbedValue(int wordIndex, int p)
     return v;
 }
 
-void NcnnEmbedTexture_Impl(uint3 id)
+void AexisEmbedTexture_Impl(uint3 id)
 {
     int p = (int)id.x;
     int q = (int)id.y;
     if (q < 0 || p < 0 || q >= _EmbedWords || p >= _EmbedNumOutput) return;
 
-    _LinearOut0[int2(p, q)] = NcnnEmbedValue(_EmbedIdx[q], p);
+    _LinearOut0[int2(p, q)] = AexisEmbedValue(_EmbedIdx[q], p);
 }
 
-void NcnnEmbedTextureLinearIndex_Impl(uint3 id)
+void AexisEmbedTextureLinearIndex_Impl(uint3 id)
 {
     int p = (int)id.x;
     int q = (int)id.y;
@@ -66,10 +66,10 @@ void NcnnEmbedTextureLinearIndex_Impl(uint3 id)
     int x = q % storageW;
     int y = q / storageW;
     int wordIndex = (int)round(_LinearIn0[int2(x, y)]);
-    _LinearOut0[int2(p, q)] = NcnnEmbedValue(wordIndex, p);
+    _LinearOut0[int2(p, q)] = AexisEmbedValue(wordIndex, p);
 }
 
-void NcnnEmbedTexturePack4Index_Impl(uint3 id)
+void AexisEmbedTexturePack4Index_Impl(uint3 id)
 {
     int p = (int)id.x;
     int q = (int)id.y;
@@ -80,10 +80,10 @@ void NcnnEmbedTexturePack4Index_Impl(uint3 id)
     int y = q / storageW;
     float4 packed = _TexIn0Arr[int3(x, y, 0)];
     int wordIndex = (int)round(packed.x);
-    _LinearOut0[int2(p, q)] = NcnnEmbedValue(wordIndex, p);
+    _LinearOut0[int2(p, q)] = AexisEmbedValue(wordIndex, p);
 }
 
-void NcnnPermute_Impl(uint3 id)
+void AexisPermute_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     int dims = _PermuteDims;
@@ -177,7 +177,7 @@ void NcnnPermute_Impl(uint3 id)
     }
 }
 
-void NcnnSlice_Impl(uint3 id)
+void AexisSlice_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     int dims = _SliceDims;
@@ -229,7 +229,7 @@ void NcnnSlice_Impl(uint3 id)
     _SliceOut[idx] = _SliceIn[inIdx4];
 }
 
-void NcnnTile_Impl(uint3 id)
+void AexisTile_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     int dims = _TileDims;
@@ -295,7 +295,7 @@ void NcnnTile_Impl(uint3 id)
     _TileOut[idx] = _TileIn[inIdx4];
 }
 
-void NcnnReduceSum256_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisReduceSum256_Impl(uint3 groupId, uint3 groupThreadId)
 {
     uint tid = groupThreadId.x;
     uint group = groupId.x;
@@ -320,28 +320,28 @@ void NcnnReduceSum256_Impl(uint3 groupId, uint3 groupThreadId)
         _ReduceOut[group] = _ReduceSum256_sdata[0];
 }
 
-void NcnnMulScalarBuf_Impl(uint3 id)
+void AexisMulScalarBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_MulTotal) return;
     _MulOut[idx] = _MulIn[idx] * _MulK;
 }
 
-void NcnnCopyBuf_Impl(uint3 id)
+void AexisCopyBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
     _BufOut[idx] = _BufA[idx];
 }
 
-void NcnnCopyBufPartial_Impl(uint3 id)
+void AexisCopyBufPartial_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
     _BufOut[idx + (uint)_DstOffset] = _BufA[idx + (uint)_SrcOffset];
 }
 
-void NcnnBinaryOpBuf_Impl(uint3 id)
+void AexisBinaryOpBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -361,10 +361,10 @@ void NcnnBinaryOpBuf_Impl(uint3 id)
                     ? _BufB[channelIndex]
                     : _BufB[idx])));
 
-    _BufOut[idx] = NcnnApplyBinaryOpScalar(a, b, _BinaryOpType);
+    _BufOut[idx] = AexisApplyBinaryOpScalar(a, b, _BinaryOpType);
 }
 
-void NcnnUnaryOpBuf_Impl(uint3 id)
+void AexisUnaryOpBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -404,7 +404,7 @@ void NcnnUnaryOpBuf_Impl(uint3 id)
     _BufOut[idx] = y;
 }
 
-void NcnnSigmoidBuf_Impl(uint3 id)
+void AexisSigmoidBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -412,7 +412,7 @@ void NcnnSigmoidBuf_Impl(uint3 id)
     _BufOut[idx] = 1.0 / (1.0 + exp(-x));
 }
 
-void NcnnSwishBuf_Impl(uint3 id)
+void AexisSwishBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -421,7 +421,7 @@ void NcnnSwishBuf_Impl(uint3 id)
     _BufOut[idx] = x * s;
 }
 
-void NcnnGeluBuf_Impl(uint3 id)
+void AexisGeluBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -432,41 +432,41 @@ void NcnnGeluBuf_Impl(uint3 id)
     _BufOut[idx] = y;
 }
 
-void NcnnPointwiseBuf_Impl(uint3 id)
+void AexisPointwiseBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    _BufOut[idx] = NcnnApplyPointwiseScalar(_BufA[idx]);
+    _BufOut[idx] = AexisApplyPointwiseScalar(_BufA[idx]);
 }
 
-void NcnnCastBuf_Impl(uint3 id)
+void AexisCastBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    _QuantOut[idx] = NcnnCastScalar(_QuantIn[idx]);
+    _QuantOut[idx] = AexisCastScalar(_QuantIn[idx]);
 }
 
-void NcnnScaleBuf_Impl(uint3 id)
+void AexisScaleBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    int axis = NcnnBufferAxisIndex(_ScaleDims, _ScaleW, _ScaleH, _ScaleD, _ScaleC, (int)idx);
-    float scale = NcnnResolveScaleValue(axis);
-    float bias = NcnnResolveScaleBias(axis);
+    int axis = AexisBufferAxisIndex(_ScaleDims, _ScaleW, _ScaleH, _ScaleD, _ScaleC, (int)idx);
+    float scale = AexisResolveScaleValue(axis);
+    float bias = AexisResolveScaleBias(axis);
     _ScaleOutBuf[idx] = _ScaleInBuf[idx] * scale + bias;
 }
 
-void NcnnPReluBuf_Impl(uint3 id)
+void AexisPReluBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    int axis = NcnnBufferAxisIndex(_PReluDims, _PReluW, _PReluH, _PReluD, _PReluC, (int)idx);
-    float slope = NcnnResolvePReluSlope(axis);
+    int axis = AexisBufferAxisIndex(_PReluDims, _PReluW, _PReluH, _PReluD, _PReluC, (int)idx);
+    float slope = AexisResolvePReluSlope(axis);
     float v = _PReluInBuf[idx];
     _PReluOutBuf[idx] = v < 0.0 ? v * slope : v;
 }
 
-void NcnnReorgBuf_Impl(uint3 id)
+void AexisReorgBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -502,7 +502,7 @@ void NcnnReorgBuf_Impl(uint3 id)
     _ReorgOutBuf[idx] = _ReorgInBuf[srcIdx];
 }
 
-void NcnnReductionRowsBuf_Impl(uint3 id)
+void AexisReductionRowsBuf_Impl(uint3 id)
 {
     uint row = id.x;
     if (row >= (uint)_ReductionRowsOutCount) return;
@@ -602,7 +602,7 @@ void NcnnReductionRowsBuf_Impl(uint3 id)
     _ReductionRowsOut[row] = acc * _ReductionRowsCoeff;
 }
 
-void NcnnConv1dBuf_Impl(uint3 id)
+void AexisConv1dBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -625,5 +625,5 @@ void NcnnConv1dBuf_Impl(uint3 id)
         }
     }
 
-    _Conv1dOut[idx] = NcnnApplyActivationScalar(sum);
+    _Conv1dOut[idx] = AexisApplyActivationScalar(sum);
 }

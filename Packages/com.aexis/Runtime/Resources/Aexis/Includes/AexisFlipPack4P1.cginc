@@ -1,4 +1,4 @@
-void NcnnFlipPack4P1_Impl(uint3 id)
+void AexisFlipPack4P1_Impl(uint3 id)
 {
     if (id.x >= (uint)_P1Width || id.y >= (uint)_P1Height || id.z >= (uint)(_P1Depth * _P1Packs))
         return;
@@ -16,7 +16,7 @@ void NcnnFlipPack4P1_Impl(uint3 id)
         if (outputChannel >= _P1Channels)
             continue;
         const int sourceChannel = _P1FlipChannels != 0 ? _P1Channels - 1 - outputChannel : outputChannel;
-        NcnnWriteLane(outputValue, lane, NcnnReadPack4ChannelCDHW(_NcnnInArr, sourceX, sourceY, sourceDepth, sourceChannel, _P1Channels));
+        AexisWriteLane(outputValue, lane, AexisReadPack4ChannelCDHW(_AexisInArr, sourceX, sourceY, sourceDepth, sourceChannel, _P1Channels));
     }
-    _NcnnOutArr[int3(id.x, id.y, id.z)] = outputValue;
+    _AexisOutArr[int3(id.x, id.y, id.z)] = outputValue;
 }

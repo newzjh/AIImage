@@ -1450,7 +1450,7 @@ public static class NcnnDebugRunner
                         ? result.dumpDir
                         : !string.IsNullOrWhiteSpace(runner.LastDumpDir)
                             ? runner.LastDumpDir
-                        : CreateGenericDumpDir("AIImage_SD_NcnnRepro");
+                        : CreateGenericDumpDir("AIImage_SD_AexisRepro");
                     TryWriteTexturePng(result.texture, dir, "final_output.png");
                 }
                 UnityEngine.Object.DestroyImmediate(result.texture);

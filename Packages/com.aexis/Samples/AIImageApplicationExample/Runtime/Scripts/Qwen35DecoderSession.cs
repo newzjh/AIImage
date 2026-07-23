@@ -595,7 +595,7 @@ namespace AIImage.Qwen35
                 {
                     if (logits.dimension == UnityEngine.Rendering.TextureDimension.Tex2D)
                     {
-                        _ops.SentisArgReduceLinearMat(
+                        _ops.AexisArgReduceLinearMat(
                             logits,
                             logicalShape,
                             storageShape,

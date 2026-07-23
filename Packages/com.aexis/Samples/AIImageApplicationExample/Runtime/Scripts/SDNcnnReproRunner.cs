@@ -547,7 +547,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             if ((width % 128) != 0 || (height % 128) != 0)
                 return Finish(new SDNcnnReproResult { error = "Stable Diffusion width/height must be multiples of 128." });
             if (enableDebugDump)
-                _lastDumpDir = CreateDumpDir("AIImage_SD_NcnnRepro");
+                _lastDumpDir = CreateDumpDir("AIImage_SD_AexisRepro");
 
             ReportProgress(0.02f, "Load models");
             var stageSw = Stopwatch.StartNew();
@@ -773,7 +773,7 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
                 return Finish(new SDNcnnReproResult { error = "Stable Diffusion width/height must be multiples of 128.", seed = actualSeed, usedInitImage = true, usedMask = true });
 
             if (enableDebugDump)
-                _lastDumpDir = CreateDumpDir("AIImage_SD_NcnnRepro");
+                _lastDumpDir = CreateDumpDir("AIImage_SD_AexisRepro");
 
             ReportProgress(0.02f, "Load models");
             var stageSw = Stopwatch.StartNew();

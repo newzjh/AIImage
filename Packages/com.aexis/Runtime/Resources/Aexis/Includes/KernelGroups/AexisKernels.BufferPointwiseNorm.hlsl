@@ -1,6 +1,6 @@
-// Auto-generated kernel implementation group: NcnnKernels.BufferPointwiseNorm.hlsl
+// Auto-generated kernel implementation group: AexisKernels.BufferPointwiseNorm.hlsl
 
-void NcnnLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int row = (int)groupId.x;
     if (row < 0 || row >= _LnRows) return;
@@ -46,7 +46,7 @@ void NcnnLayerNorm2D_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId)
+void AexisSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId)
 {
     int row = (int)groupId.x;
     if (row < 0 || row >= _SoftRows) return;
@@ -115,39 +115,39 @@ void NcnnSoftmax2D_Impl(uint3 groupId, uint3 groupThreadId)
     }
 }
 
-void NcnnQuantizeBuf_Impl(uint3 id)
+void AexisQuantizeBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    int axis = NcnnQuantAxisIndex((int)idx);
-    float scale = NcnnResolveQuantScaleIn(axis);
-    _QuantOut[idx] = clamp(NcnnRoundToNearest(_QuantIn[idx] * scale), -127.0, 127.0);
+    int axis = AexisQuantAxisIndex((int)idx);
+    float scale = AexisResolveQuantScaleIn(axis);
+    _QuantOut[idx] = clamp(AexisRoundToNearest(_QuantIn[idx] * scale), -127.0, 127.0);
 }
 
-void NcnnDequantizeBuf_Impl(uint3 id)
+void AexisDequantizeBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    int axis = NcnnQuantAxisIndex((int)idx);
-    float scale = NcnnResolveQuantScaleIn(axis);
-    float bias = NcnnResolveQuantBias(axis);
-    _QuantOut[idx] = NcnnRoundToNearest(_QuantIn[idx]) * scale + bias;
+    int axis = AexisQuantAxisIndex((int)idx);
+    float scale = AexisResolveQuantScaleIn(axis);
+    float bias = AexisResolveQuantBias(axis);
+    _QuantOut[idx] = AexisRoundToNearest(_QuantIn[idx]) * scale + bias;
 }
 
-void NcnnRequantizeBuf_Impl(uint3 id)
+void AexisRequantizeBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
-    int axis = NcnnQuantAxisIndex((int)idx);
-    float scaleIn = NcnnResolveQuantScaleIn(axis);
-    float scaleOut = NcnnResolveQuantScaleOut(axis);
-    float bias = NcnnResolveQuantBias(axis);
-    float v = NcnnRoundToNearest(_QuantIn[idx]) * scaleIn + bias;
-    v = NcnnApplyActivationScalarQuant(v);
-    _QuantOut[idx] = clamp(NcnnRoundToNearest(v * scaleOut), -127.0, 127.0);
+    int axis = AexisQuantAxisIndex((int)idx);
+    float scaleIn = AexisResolveQuantScaleIn(axis);
+    float scaleOut = AexisResolveQuantScaleOut(axis);
+    float bias = AexisResolveQuantBias(axis);
+    float v = AexisRoundToNearest(_QuantIn[idx]) * scaleIn + bias;
+    v = AexisApplyActivationScalarQuant(v);
+    _QuantOut[idx] = clamp(AexisRoundToNearest(v * scaleOut), -127.0, 127.0);
 }
 
-void NcnnPixelShuffleBuf_Impl(uint3 id)
+void AexisPixelShuffleBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -175,7 +175,7 @@ void NcnnPixelShuffleBuf_Impl(uint3 id)
     _PixelShuffleOut[idx] = _PixelShuffleIn[srcIdx];
 }
 
-void NcnnRotaryEmbedBuf_Impl(uint3 id)
+void AexisRotaryEmbedBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -216,7 +216,7 @@ void NcnnRotaryEmbedBuf_Impl(uint3 id)
     }
 }
 
-void NcnnNormalizeBuf_Impl(uint3 id)
+void AexisNormalizeBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -259,12 +259,12 @@ void NcnnNormalizeBuf_Impl(uint3 id)
         return;
     }
 
-    float scale = NcnnResolveNormScale(q);
-    float a = NcnnComputeNormAlpha(sumSquare) * scale;
+    float scale = AexisResolveNormScale(q);
+    float a = AexisComputeNormAlpha(sumSquare) * scale;
     _NormOut[idx] = _NormIn[idx] * a;
 }
 
-void NcnnLrnBuf_Impl(uint3 id)
+void AexisLrnBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -319,7 +319,7 @@ void NcnnLrnBuf_Impl(uint3 id)
     _LrnOut[idx] = _LrnIn[idx] * normWithin;
 }
 
-void NcnnRmsNormBuf_Impl(uint3 id)
+void AexisRmsNormBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -327,7 +327,7 @@ void NcnnRmsNormBuf_Impl(uint3 id)
     int segmentBase;
     int segmentSize;
     int innerIndex;
-    NcnnDecodeRmsNormSegment((int)idx, segmentBase, segmentSize, innerIndex);
+    AexisDecodeRmsNormSegment((int)idx, segmentBase, segmentSize, innerIndex);
 
     float sqsum = 0.0;
     for (int i = 0; i < segmentSize; i++)
@@ -343,7 +343,7 @@ void NcnnRmsNormBuf_Impl(uint3 id)
     _RmsNormOut[idx] = y;
 }
 
-void NcnnUnfoldBuf_Impl(uint3 id)
+void AexisUnfoldBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -376,7 +376,7 @@ void NcnnUnfoldBuf_Impl(uint3 id)
     _UnfoldOut[idx] = value;
 }
 
-void NcnnTouchU32_Impl(uint3 id)
+void AexisTouchU32_Impl(uint3 id)
 {
     _TouchOut[0] = (uint)_TouchValue;
 }

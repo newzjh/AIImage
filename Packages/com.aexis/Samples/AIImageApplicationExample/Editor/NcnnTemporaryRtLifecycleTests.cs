@@ -88,8 +88,8 @@ public sealed class NcnnTemporaryRtLifecycleTests
     public void TemporaryRtPaths_UseUnityApisAndContainNoPool()
     {
         var root = Path.GetDirectoryName(Application.dataPath);
-        var repro = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "AexisGraphSession.cs"));
-        var tracker = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "AexisGpuResourceTracker.cs"));
+        var repro = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Graph", "AexisGraphSession.cs"));
+        var tracker = File.ReadAllText(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Graph", "AexisGpuResourceTracker.cs"));
 
         Assert.That(repro, Does.Contain("RenderTexture.GetTemporary(desc)"));
         Assert.That(repro, Does.Contain("RenderTexture.ReleaseTemporary(rt)"));
@@ -105,7 +105,7 @@ public sealed class NcnnTemporaryRtLifecycleTests
         Assert.That(tracker, Does.Contain("random_write="));
         Assert.That(tracker, Does.Not.Contain("ReuseTexture("));
         Assert.That(tracker, Does.Not.Contain("ReuseBuffer("));
-        Assert.That(File.Exists(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "NcnnCompute", "NcnnTempComputeBufferPool.cs")), Is.False);
+        Assert.That(File.Exists(Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Graph", "NcnnTempComputeBufferPool.cs")), Is.False);
     }
 
     public static void RunBatchValidation()

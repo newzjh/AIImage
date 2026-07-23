@@ -56,7 +56,7 @@ public sealed class NcnnConvCmdPack4GoldenTests
 
         foreach (var layer in layers)
         {
-            var path = System.IO.Path.Combine(root, "Packages", "com.aexis", "Runtime", "Ncnn", "Layers", layer);
+            var path = System.IO.Path.Combine(root, "Packages", "com.aexis", "Runtime", "Execution", "Layers", layer);
             var source = System.IO.File.ReadAllText(path);
             Assert.That(source, Does.Not.Contain("CmdPlaceholder"), layer);
             Assert.That(source, Does.Not.Contain("PublishCmdTensorLikeInput"), layer);

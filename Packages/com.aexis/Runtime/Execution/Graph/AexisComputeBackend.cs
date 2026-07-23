@@ -11,7 +11,7 @@ namespace Aexis.Execution
         public AexisComputeBackend()
         {
             _cs = AexisComputeShaderLoader.LoadOrThrow();
-            _kPassthrough = _cs.FindKernel("NcnnPassthrough");
+            _kPassthrough = _cs.FindKernel("AexisPassthrough");
         }
 
         public AexisTensor Passthrough(Texture src)
@@ -19,8 +19,8 @@ namespace Aexis.Execution
             if (src == null)
                 throw new ArgumentNullException(nameof(src));
             var outT = new AexisTensor(src.width, src.height);
-            _cs.SetTexture(_kPassthrough, "_NcnnIn", src);
-            _cs.SetTexture(_kPassthrough, "_NcnnOut", outT.rt);
+            _cs.SetTexture(_kPassthrough, "_AexisIn", src);
+            _cs.SetTexture(_kPassthrough, "_AexisOut", outT.rt);
             Dispatch2D(_cs, _kPassthrough, src.width, src.height, 8, 8);
             return outT;
         }

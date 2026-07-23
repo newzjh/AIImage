@@ -1760,15 +1760,15 @@ namespace Aexis.Tests.Editor
             var scatterOutput = CreateRFloatTarget(4, 1);
             try
             {
-                ops.SentisNonZeroLinearMat(nonZeroInput, vectorShape, vectorStorage, 4, nonZeroOutput, nonZeroCount);
-                ops.SentisCompressLinearMat(nonZeroInput, vectorShape, vectorStorage, condition, vectorShape, vectorStorage, 4, compressOutput, compressCount);
+                ops.AexisNonZeroLinearMat(nonZeroInput, vectorShape, vectorStorage, 4, nonZeroOutput, nonZeroCount);
+                ops.AexisCompressLinearMat(nonZeroInput, vectorShape, vectorStorage, condition, vectorShape, vectorStorage, 4, compressOutput, compressCount);
 
                 var indexShape = new AexisGraphSession.BufferShape(2, 1, 2, 1, 1);
                 var indexStorage = new AexisGraphSession.BufferShape(2, 1, 2, 1, 1);
                 var outputShape = new AexisGraphSession.BufferShape(1, 2, 1, 1, 1);
                 var outputStorage = new AexisGraphSession.BufferShape(2, 2, 1, 1, 1);
-                ops.SentisGatherNdLinearMat(data, vectorShape, vectorStorage, indices, indexShape, indexStorage, outputShape, outputStorage, gatherOutput);
-                ops.SentisScatterLinearMat(data, vectorShape, vectorStorage, indices, indexShape, indexStorage, updates, outputShape, outputStorage, 2, scatterOutput);
+                ops.AexisGatherNdLinearMat(data, vectorShape, vectorStorage, indices, indexShape, indexStorage, outputShape, outputStorage, gatherOutput);
+                ops.AexisScatterLinearMat(data, vectorShape, vectorStorage, indices, indexShape, indexStorage, updates, outputShape, outputStorage, 2, scatterOutput);
 
                 Assert.That(ReadRFloat(nonZeroCount, 1)[0], Is.EqualTo(2f));
                 Assert.That(ReadRFloat(nonZeroOutput, 2), Is.EqualTo(new[] { 1f, 3f }).Within(1e-6f));
@@ -2019,7 +2019,7 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
-        public void SentisStaticTextureOperators_PassOnlyExactLoadedProfiles()
+        public void AexisStaticTextureOperators_PassOnlyExactLoadedProfiles()
         {
             var fp32 = LinearTexture("data", 2, 3, 2, 1, 1);
             var intIndices = LinearTexture("indices", 1, 2, 1, 1, 1, "Int32");
@@ -2195,7 +2195,7 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
-        public void SentisGatherTopKAndOneHot_LinearMatGpuMatchesReference()
+        public void AexisGatherTopKAndOneHot_LinearMatGpuMatchesReference()
         {
             if (!SystemInfo.supportsComputeShaders || !SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat))
                 Assert.Ignore("The graphics device does not support the RFloat compute profile required by this golden.");
@@ -2218,23 +2218,23 @@ namespace Aexis.Tests.Editor
                 var gatherIndexShape = new AexisGraphSession.BufferShape(1, 2, 1, 1, 1);
                 var gatherOutShape = new AexisGraphSession.BufferShape(2, 2, 2, 1, 1);
                 var gatherOutStorage = new AexisGraphSession.BufferShape(2, 2, 2, 1, 1);
-                ops.SentisGatherLinearMat(data, dataShape, dataStorage, gatherIndices, gatherIndexShape, new AexisGraphSession.BufferShape(2, 2, 1, 1, 1), 1, gatherOutShape, gatherOutStorage, gatherOutput);
+                ops.AexisGatherLinearMat(data, dataShape, dataStorage, gatherIndices, gatherIndexShape, new AexisGraphSession.BufferShape(2, 2, 1, 1, 1), 1, gatherOutShape, gatherOutStorage, gatherOutput);
                 Assert.That(ReadRFloat(gatherOutput, 4), Is.EqualTo(new[] { 3f, 1f, 6f, 4f }).Within(1e-6f));
 
                 var elementIndexShape = new AexisGraphSession.BufferShape(2, 3, 2, 1, 1);
-                ops.SentisGatherElementsLinearMat(data, dataShape, dataStorage, gatherElementsIndices, elementIndexShape, dataStorage, 1, elementIndexShape, dataStorage, gatherElementsOutput);
+                ops.AexisGatherElementsLinearMat(data, dataShape, dataStorage, gatherElementsIndices, elementIndexShape, dataStorage, 1, elementIndexShape, dataStorage, gatherElementsOutput);
                 Assert.That(ReadRFloat(gatherElementsOutput, 6), Is.EqualTo(new[] { 3f, 1f, 2f, 6f, 4f, 5f }).Within(1e-6f));
 
                 var topKInputShape = new AexisGraphSession.BufferShape(1, 4, 1, 1, 1);
                 var topKOutputShape = new AexisGraphSession.BufferShape(1, 2, 1, 1, 1);
                 var topKOutputStorage = new AexisGraphSession.BufferShape(2, 2, 1, 1, 1);
-                ops.SentisTopKLinearMat(topKInput, topKInputShape, new AexisGraphSession.BufferShape(2, 4, 1, 1, 1), 0, 2, true, topKOutputShape, topKOutputStorage, topKValues, topKIndices);
+                ops.AexisTopKLinearMat(topKInput, topKInputShape, new AexisGraphSession.BufferShape(2, 4, 1, 1, 1), 0, 2, true, topKOutputShape, topKOutputStorage, topKValues, topKIndices);
                 Assert.That(ReadRFloat(topKValues, 2), Is.EqualTo(new[] { 3f, 3f }).Within(1e-6f));
                 Assert.That(ReadRFloat(topKIndices, 2), Is.EqualTo(new[] { 1f, 2f }).Within(1e-6f));
 
                 var oneHotInputShape = new AexisGraphSession.BufferShape(1, 3, 1, 1, 1);
                 var oneHotOutputShape = new AexisGraphSession.BufferShape(2, 3, 3, 1, 1);
-                ops.SentisOneHotLinearMat(oneHotIndices, oneHotInputShape, new AexisGraphSession.BufferShape(2, 3, 1, 1, 1), 1, 3, 0f, 1f, oneHotOutputShape, new AexisGraphSession.BufferShape(2, 3, 3, 1, 1), oneHotOutput);
+                ops.AexisOneHotLinearMat(oneHotIndices, oneHotInputShape, new AexisGraphSession.BufferShape(2, 3, 1, 1, 1), 1, 3, 0f, 1f, oneHotOutputShape, new AexisGraphSession.BufferShape(2, 3, 3, 1, 1), oneHotOutput);
                 Assert.That(ReadRFloat(oneHotOutput, 9), Is.EqualTo(new[] { 0f, 0f, 1f, 1f, 0f, 0f, 0f, 0f, 1f }).Within(1e-6f));
             }
             finally

@@ -39,7 +39,7 @@ public sealed class Qwen35Q8ArchiveTests
             using var ops = new AexisOps();
             var inputShape = new AexisGraphSession.BufferShape(2, vocabularySize, 1, 1, 1);
             var outputShape = new AexisGraphSession.BufferShape(2, 1, 1, 1, 1);
-            ops.SentisArgReduceLinearMat(
+            ops.AexisArgReduceLinearMat(
                 logits,
                 inputShape,
                 inputShape,

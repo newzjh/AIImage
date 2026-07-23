@@ -1,29 +1,29 @@
-// Auto-generated kernel implementation group: NcnnKernels.BufferCore.hlsl
+// Auto-generated kernel implementation group: AexisKernels.BufferCore.hlsl
 
-void NcnnPassthrough_Impl(uint3 id)
+void AexisPassthrough_Impl(uint3 id)
 {
     uint w, h;
-    _NcnnOut.GetDimensions(w, h);
+    _AexisOut.GetDimensions(w, h);
     if (id.x >= w || id.y >= h) return;
-    _NcnnOut[int2(id.x, id.y)] = _NcnnIn[int2(id.x, id.y)];
+    _AexisOut[int2(id.x, id.y)] = _AexisIn[int2(id.x, id.y)];
 }
 
-void NcnnLeakyRelu_Impl(uint3 id)
+void AexisLeakyRelu_Impl(uint3 id)
 {
     uint w, h;
-    _NcnnOut.GetDimensions(w, h);
+    _AexisOut.GetDimensions(w, h);
     uint idx = _BaseIndex + id.x;
     uint n = w * h;
     if (idx >= n) return;
     uint x = idx % w;
     uint y = idx / w;
-    float4 v = _NcnnIn[int2(x, y)];
+    float4 v = _AexisIn[int2(x, y)];
     float slope = 0.2;
     v.xyz = (v.xyz >= 0) ? v.xyz : v.xyz * slope;
-    _NcnnOut[int2(x, y)] = v;
+    _AexisOut[int2(x, y)] = v;
 }
 
-void NcnnConv3x3_Impl(uint3 id)
+void AexisConv3x3_Impl(uint3 id)
 {
     int outW = _OutW;
     int outH = _OutH;
@@ -53,13 +53,13 @@ void NcnnConv3x3_Impl(uint3 id)
         }
     }
 
-    sum = NcnnApplyActivationScalar(sum);
+    sum = AexisApplyActivationScalar(sum);
 
     uint outIndex = (uint)((oc * outH + oy) * outW + ox);
     _ConvOut[outIndex] = sum;
 }
 
-void NcnnConv3dBuf_Impl(uint3 id)
+void AexisConv3dBuf_Impl(uint3 id)
 {
     int outChannelDepth = _OutD * _OutC;
     if ((int)id.x >= _OutW || (int)id.y >= _OutH || (int)id.z >= outChannelDepth) return;
@@ -102,15 +102,15 @@ void NcnnConv3dBuf_Impl(uint3 id)
     }
 
     int outIndex = (((oc * _OutD) + oz) * _OutH + (int)id.y) * _OutW + (int)id.x;
-    _ConvOut[outIndex] = NcnnApplyActivationScalar(sum);
+    _ConvOut[outIndex] = AexisApplyActivationScalar(sum);
 }
 
-void NcnnConv3dPack4CDHW16x4_Impl(uint3 id)
+void AexisConv3dPack4CDHW16x4_Impl(uint3 id)
 {
-    NcnnConv3dPack4CDHWBody(id);
+    AexisConv3dPack4CDHWBody(id);
 }
 
-void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id)
+void AexisConv3dPack4CDHWTile3x3_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
@@ -142,7 +142,7 @@ void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id)
         && (szBase + 2) < _InD;
     if (!interior)
     {
-        NcnnConv3dPack4CDHWBody(id);
+        AexisConv3dPack4CDHWBody(id);
         return;
     }
 
@@ -186,10 +186,10 @@ void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id)
                     float4 w02 = _ConvW4[wbase + 2];
                     float4 w03 = _ConvW4[wbase + 3];
 
-                    NcnnAccumulateDot4(sum00, v00, w00, w01, w02, w03);
-                    NcnnAccumulateDot4(sum01, v01, w00, w01, w02, w03);
-                    NcnnAccumulateDot4(sum10, v10, w00, w01, w02, w03);
-                    NcnnAccumulateDot4(sum11, v11, w00, w01, w02, w03);
+                    AexisAccumulateDot4(sum00, v00, w00, w01, w02, w03);
+                    AexisAccumulateDot4(sum01, v01, w00, w01, w02, w03);
+                    AexisAccumulateDot4(sum10, v10, w00, w01, w02, w03);
+                    AexisAccumulateDot4(sum11, v11, w00, w01, w02, w03);
 
                     if (hasOp1)
                     {
@@ -199,10 +199,10 @@ void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id)
                         float4 q02 = _ConvW4[qbase + 2];
                         float4 q03 = _ConvW4[qbase + 3];
 
-                        NcnnAccumulateDot4(sum20, v00, q00, q01, q02, q03);
-                        NcnnAccumulateDot4(sum21, v01, q00, q01, q02, q03);
-                        NcnnAccumulateDot4(sum30, v10, q00, q01, q02, q03);
-                        NcnnAccumulateDot4(sum31, v11, q00, q01, q02, q03);
+                        AexisAccumulateDot4(sum20, v00, q00, q01, q02, q03);
+                        AexisAccumulateDot4(sum21, v01, q00, q01, q02, q03);
+                        AexisAccumulateDot4(sum30, v10, q00, q01, q02, q03);
+                        AexisAccumulateDot4(sum31, v11, q00, q01, q02, q03);
                     }
                 }
             }
@@ -210,10 +210,10 @@ void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id)
     }
 
     int outSlice0 = oz * _OutPacks + op;
-    sum00 = NcnnApplyActivation(sum00);
-    sum01 = NcnnApplyActivation(sum01);
-    sum10 = NcnnApplyActivation(sum10);
-    sum11 = NcnnApplyActivation(sum11);
+    sum00 = AexisApplyActivation(sum00);
+    sum01 = AexisApplyActivation(sum01);
+    sum10 = AexisApplyActivation(sum10);
+    sum11 = AexisApplyActivation(sum11);
     _ConvOutArr[int3(ox, oy, outSlice0)] = sum00;
     _ConvOutArr[int3(ox + 1, oy, outSlice0)] = sum01;
     _ConvOutArr[int3(ox, oy + 1, outSlice0)] = sum10;
@@ -223,17 +223,17 @@ void NcnnConv3dPack4CDHWTile3x3_Impl(uint3 id)
         return;
 
     int outSlice1 = oz * _OutPacks + op1;
-    sum20 = NcnnApplyActivation(sum20);
-    sum21 = NcnnApplyActivation(sum21);
-    sum30 = NcnnApplyActivation(sum30);
-    sum31 = NcnnApplyActivation(sum31);
+    sum20 = AexisApplyActivation(sum20);
+    sum21 = AexisApplyActivation(sum21);
+    sum30 = AexisApplyActivation(sum30);
+    sum31 = AexisApplyActivation(sum31);
     _ConvOutArr[int3(ox, oy, outSlice1)] = sum20;
     _ConvOutArr[int3(ox + 1, oy, outSlice1)] = sum21;
     _ConvOutArr[int3(ox, oy + 1, outSlice1)] = sum30;
     _ConvOutArr[int3(ox + 1, oy + 1, outSlice1)] = sum31;
 }
 
-void NcnnConv3dPack4CDHWZ2_Impl(uint3 id)
+void AexisConv3dPack4CDHWZ2_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
@@ -449,10 +449,10 @@ void NcnnConv3dPack4CDHWZ2_Impl(uint3 id)
     }
 
     int outSlice0 = oz0 * _OutPacks + op;
-    z0sum00 = NcnnApplyActivation(z0sum00);
-    if (hasX1) z0sum01 = NcnnApplyActivation(z0sum01);
-    if (hasY1) z0sum10 = NcnnApplyActivation(z0sum10);
-    if (hasX1 && hasY1) z0sum11 = NcnnApplyActivation(z0sum11);
+    z0sum00 = AexisApplyActivation(z0sum00);
+    if (hasX1) z0sum01 = AexisApplyActivation(z0sum01);
+    if (hasY1) z0sum10 = AexisApplyActivation(z0sum10);
+    if (hasX1 && hasY1) z0sum11 = AexisApplyActivation(z0sum11);
     _ConvOutArr[int3(ox, oy, outSlice0)] = z0sum00;
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice0)] = z0sum01;
     if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice0)] = z0sum10;
@@ -461,10 +461,10 @@ void NcnnConv3dPack4CDHWZ2_Impl(uint3 id)
     if (hasOp1)
     {
         int outSlice0b = oz0 * _OutPacks + op1;
-        z0sum20 = NcnnApplyActivation(z0sum20);
-        if (hasX1) z0sum21 = NcnnApplyActivation(z0sum21);
-        if (hasY1) z0sum30 = NcnnApplyActivation(z0sum30);
-        if (hasX1 && hasY1) z0sum31 = NcnnApplyActivation(z0sum31);
+        z0sum20 = AexisApplyActivation(z0sum20);
+        if (hasX1) z0sum21 = AexisApplyActivation(z0sum21);
+        if (hasY1) z0sum30 = AexisApplyActivation(z0sum30);
+        if (hasX1 && hasY1) z0sum31 = AexisApplyActivation(z0sum31);
         _ConvOutArr[int3(ox, oy, outSlice0b)] = z0sum20;
         if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice0b)] = z0sum21;
         if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice0b)] = z0sum30;
@@ -475,10 +475,10 @@ void NcnnConv3dPack4CDHWZ2_Impl(uint3 id)
         return;
 
     int outSlice1 = oz1 * _OutPacks + op;
-    z1sum00 = NcnnApplyActivation(z1sum00);
-    if (hasX1) z1sum01 = NcnnApplyActivation(z1sum01);
-    if (hasY1) z1sum10 = NcnnApplyActivation(z1sum10);
-    if (hasX1 && hasY1) z1sum11 = NcnnApplyActivation(z1sum11);
+    z1sum00 = AexisApplyActivation(z1sum00);
+    if (hasX1) z1sum01 = AexisApplyActivation(z1sum01);
+    if (hasY1) z1sum10 = AexisApplyActivation(z1sum10);
+    if (hasX1 && hasY1) z1sum11 = AexisApplyActivation(z1sum11);
     _ConvOutArr[int3(ox, oy, outSlice1)] = z1sum00;
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice1)] = z1sum01;
     if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice1)] = z1sum10;
@@ -488,17 +488,17 @@ void NcnnConv3dPack4CDHWZ2_Impl(uint3 id)
         return;
 
     int outSlice1b = oz1 * _OutPacks + op1;
-    z1sum20 = NcnnApplyActivation(z1sum20);
-    if (hasX1) z1sum21 = NcnnApplyActivation(z1sum21);
-    if (hasY1) z1sum30 = NcnnApplyActivation(z1sum30);
-    if (hasX1 && hasY1) z1sum31 = NcnnApplyActivation(z1sum31);
+    z1sum20 = AexisApplyActivation(z1sum20);
+    if (hasX1) z1sum21 = AexisApplyActivation(z1sum21);
+    if (hasY1) z1sum30 = AexisApplyActivation(z1sum30);
+    if (hasX1 && hasY1) z1sum31 = AexisApplyActivation(z1sum31);
     _ConvOutArr[int3(ox, oy, outSlice1b)] = z1sum20;
     if (hasX1) _ConvOutArr[int3(ox + 1, oy, outSlice1b)] = z1sum21;
     if (hasY1) _ConvOutArr[int3(ox, oy + 1, outSlice1b)] = z1sum30;
     if (hasX1 && hasY1) _ConvOutArr[int3(ox + 1, oy + 1, outSlice1b)] = z1sum31;
 }
 
-void NcnnConvDepthWise_Impl(uint3 id)
+void AexisConvDepthWise_Impl(uint3 id)
 {
     if ((int)id.x >= _OutW || (int)id.y >= _OutH || (int)id.z >= _OutC) return;
 
@@ -536,10 +536,10 @@ void NcnnConvDepthWise_Impl(uint3 id)
     }
 
     int outIndex = (oc * _OutH + (int)id.y) * _OutW + (int)id.x;
-    _ConvOut[outIndex] = NcnnApplyActivationScalar(sum);
+    _ConvOut[outIndex] = AexisApplyActivationScalar(sum);
 }
 
-void NcnnDeconvolutionBuf_Impl(uint3 id)
+void AexisDeconvolutionBuf_Impl(uint3 id)
 {
     if ((int)id.x >= _OutW || (int)id.y >= _OutH || (int)id.z >= _OutC) return;
 
@@ -585,10 +585,10 @@ void NcnnDeconvolutionBuf_Impl(uint3 id)
     }
 
     int outIndex = (oc * _OutH + (int)id.y) * _OutW + (int)id.x;
-    _ConvOut[outIndex] = NcnnApplyActivationScalar(sum);
+    _ConvOut[outIndex] = AexisApplyActivationScalar(sum);
 }
 
-void NcnnDeconvolution3dPack4CDHW_Impl(uint3 id)
+void AexisDeconvolution3dPack4CDHW_Impl(uint3 id)
 {
     uint ow, oh, od;
     _ConvOutArr.GetDimensions(ow, oh, od);
@@ -652,10 +652,10 @@ void NcnnDeconvolution3dPack4CDHW_Impl(uint3 id)
         }
     }
 
-    _ConvOutArr[int3((int)id.x, (int)id.y, outSlice)] = NcnnApplyActivation(sum);
+    _ConvOutArr[int3((int)id.x, (int)id.y, outSlice)] = AexisApplyActivation(sum);
 }
 
-void NcnnDeconvolution3dBuf_Impl(uint3 id)
+void AexisDeconvolution3dBuf_Impl(uint3 id)
 {
     int outChannelDepth = _OutD * _OutC;
     if ((int)id.x >= _OutW || (int)id.y >= _OutH || (int)id.z >= outChannelDepth) return;
@@ -718,10 +718,10 @@ void NcnnDeconvolution3dBuf_Impl(uint3 id)
     }
 
     int outIndex = (((oc * _OutD) + oz) * _OutH + (int)id.y) * _OutW + (int)id.x;
-    _ConvOut[outIndex] = NcnnApplyActivationScalar(sum);
+    _ConvOut[outIndex] = AexisApplyActivationScalar(sum);
 }
 
-void NcnnTexToBuf3_Impl(uint3 id)
+void AexisTexToBuf3_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     uint w = (uint)_InW;
@@ -733,29 +733,29 @@ void NcnnTexToBuf3_Impl(uint3 id)
     int sx = (int)x + _OffsetX;
     int sy = (int)y + _OffsetY;
     uint tw, th;
-    _NcnnIn.GetDimensions(tw, th);
+    _AexisIn.GetDimensions(tw, th);
     sx = clamp(sx, 0, (int)tw - 1);
     sy = clamp(sy, 0, (int)th - 1);
-    float4 c = _NcnnIn[int2(sx, sy)];
+    float4 c = _AexisIn[int2(sx, sy)];
     _BufOut[idx] = c.x;
     _BufOut[n + idx] = c.y;
     _BufOut[n * 2 + idx] = c.z;
 }
 
-void NcnnBufToTex3_Impl(uint3 id)
+void AexisBufToTex3_Impl(uint3 id)
 {
     uint w, h;
-    _NcnnOut.GetDimensions(w, h);
+    _AexisOut.GetDimensions(w, h);
     if (id.x >= w || id.y >= h) return;
     uint idx = id.y * w + id.x;
     uint n = w * h;
     float r = _BufA[idx];
     float g = _BufA[n + idx];
     float b = _BufA[n * 2 + idx];
-    _NcnnOut[int2(id.x, id.y)] = float4(r, g, b, 1.0);
+    _AexisOut[int2(id.x, id.y)] = float4(r, g, b, 1.0);
 }
 
-void NcnnLeakyReluBuf_Impl(uint3 id)
+void AexisLeakyReluBuf_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
@@ -763,14 +763,14 @@ void NcnnLeakyReluBuf_Impl(uint3 id)
     _BufOut[idx] = v >= 0.0 ? v : v * _CoeffA;
 }
 
-void NcnnAddWeighted_Impl(uint3 id)
+void AexisAddWeighted_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_Total) return;
     _BufOut[idx] = _BufA[idx] * _CoeffA + _BufB[idx] * _CoeffB;
 }
 
-void NcnnCopyC_Impl(uint3 id)
+void AexisCopyC_Impl(uint3 id)
 {
     uint idx = _BaseIndex + id.x;
     if (idx >= (uint)_CopyTotal) return;
@@ -782,7 +782,7 @@ void NcnnCopyC_Impl(uint3 id)
     _BufOut[outIdx] = _BufA[idx];
 }
 
-void NcnnInterp2x_Impl(uint3 id)
+void AexisInterp2x_Impl(uint3 id)
 {
     uint outIndex = _BaseIndex + id.x;
     uint inW = (uint)_InW;
@@ -823,7 +823,7 @@ void NcnnInterp2x_Impl(uint3 id)
     _BufOut[outIndex] = v;
 }
 
-void NcnnBlitTileToDst_Impl(uint3 id)
+void AexisBlitTileToDst_Impl(uint3 id)
 {
     if ((int)id.x >= _BlitW || (int)id.y >= _BlitH) return;
 
@@ -843,17 +843,17 @@ void NcnnBlitTileToDst_Impl(uint3 id)
     src0 = clamp(src0, int2(0, 0), srcLimit);
     src1 = clamp(src1, int2(0, 0), srcLimit);
 
-    float4 v00 = _NcnnInArr[int3(src0.x, src0.y, 0)];
-    float4 v10 = _NcnnInArr[int3(src1.x, src0.y, 0)];
-    float4 v01 = _NcnnInArr[int3(src0.x, src1.y, 0)];
-    float4 v11 = _NcnnInArr[int3(src1.x, src1.y, 0)];
+    float4 v00 = _AexisInArr[int3(src0.x, src0.y, 0)];
+    float4 v10 = _AexisInArr[int3(src1.x, src0.y, 0)];
+    float4 v01 = _AexisInArr[int3(src0.x, src1.y, 0)];
+    float4 v11 = _AexisInArr[int3(src1.x, src1.y, 0)];
 
     float4 v = lerp(lerp(v00, v10, t.x), lerp(v01, v11, t.x), t.y);
     v.w = 1.0;
-    _NcnnOut[Dst] = v;
+    _AexisOut[Dst] = v;
 }
 
-void NcnnInnerProduct_Impl(uint3 id)
+void AexisInnerProduct_Impl(uint3 id)
 {
     uint o = _BaseIndex + id.x;
     if (o >= (uint)_IPOutFeatures) return;

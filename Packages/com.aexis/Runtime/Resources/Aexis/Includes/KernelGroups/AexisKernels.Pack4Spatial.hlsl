@@ -1,6 +1,6 @@
-// Auto-generated kernel implementation group: NcnnKernels.Pack4Spatial.hlsl
+// Auto-generated kernel implementation group: AexisKernels.Pack4Spatial.hlsl
 
-void NcnnInterpPack4_Impl(uint3 id)
+void AexisInterpPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _InterpOutArr.GetDimensions(ow, oh, od);
@@ -67,7 +67,7 @@ void NcnnInterpPack4_Impl(uint3 id)
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = lerp(vx0, vx1, ty);
 }
 
-void NcnnInterpPack4Nearest_Impl(uint3 id)
+void AexisInterpPack4Nearest_Impl(uint3 id)
 {
     uint ow, oh, od;
     _InterpOutArr.GetDimensions(ow, oh, od);
@@ -98,7 +98,7 @@ void NcnnInterpPack4Nearest_Impl(uint3 id)
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = _InterpInArr[int3(sx, sy, p)];
 }
 
-void NcnnInterpPack4CDHW_Impl(uint3 id)
+void AexisInterpPack4CDHW_Impl(uint3 id)
 {
     uint ow, oh, od;
     _InterpOutArr.GetDimensions(ow, oh, od);
@@ -122,7 +122,7 @@ void NcnnInterpPack4CDHW_Impl(uint3 id)
         int sxn = min((int)((float)id.x / max(scaleX, 1e-6)), max(0, _InW - 1));
         int syn = min((int)((float)id.y / max(scaleY, 1e-6)), max(0, _InH - 1));
         int szn = min((int)((float)oz / max(scaleZ, 1e-6)), max(0, _InD - 1));
-        _InterpOutArr[int3((int)id.x, (int)id.y, outSlice)] = NcnnReadInterpPack4CDHW(sxn, syn, szn, op, _InW, _InH, _InD, srcPacks);
+        _InterpOutArr[int3((int)id.x, (int)id.y, outSlice)] = AexisReadInterpPack4CDHW(sxn, syn, szn, op, _InW, _InH, _InD, srcPacks);
         return;
     }
 
@@ -168,14 +168,14 @@ void NcnnInterpPack4CDHW_Impl(uint3 id)
     int y1 = min(y0 + 1, max(0, _InH - 1));
     int z1 = min(z0 + 1, max(0, _InD - 1));
 
-    float4 c000 = NcnnReadInterpPack4CDHW(x0, y0, z0, op, _InW, _InH, _InD, srcPacks);
-    float4 c100 = NcnnReadInterpPack4CDHW(x1, y0, z0, op, _InW, _InH, _InD, srcPacks);
-    float4 c010 = NcnnReadInterpPack4CDHW(x0, y1, z0, op, _InW, _InH, _InD, srcPacks);
-    float4 c110 = NcnnReadInterpPack4CDHW(x1, y1, z0, op, _InW, _InH, _InD, srcPacks);
-    float4 c001 = NcnnReadInterpPack4CDHW(x0, y0, z1, op, _InW, _InH, _InD, srcPacks);
-    float4 c101 = NcnnReadInterpPack4CDHW(x1, y0, z1, op, _InW, _InH, _InD, srcPacks);
-    float4 c011 = NcnnReadInterpPack4CDHW(x0, y1, z1, op, _InW, _InH, _InD, srcPacks);
-    float4 c111 = NcnnReadInterpPack4CDHW(x1, y1, z1, op, _InW, _InH, _InD, srcPacks);
+    float4 c000 = AexisReadInterpPack4CDHW(x0, y0, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c100 = AexisReadInterpPack4CDHW(x1, y0, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c010 = AexisReadInterpPack4CDHW(x0, y1, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c110 = AexisReadInterpPack4CDHW(x1, y1, z0, op, _InW, _InH, _InD, srcPacks);
+    float4 c001 = AexisReadInterpPack4CDHW(x0, y0, z1, op, _InW, _InH, _InD, srcPacks);
+    float4 c101 = AexisReadInterpPack4CDHW(x1, y0, z1, op, _InW, _InH, _InD, srcPacks);
+    float4 c011 = AexisReadInterpPack4CDHW(x0, y1, z1, op, _InW, _InH, _InD, srcPacks);
+    float4 c111 = AexisReadInterpPack4CDHW(x1, y1, z1, op, _InW, _InH, _InD, srcPacks);
 
     float4 c00 = lerp(c000, c100, tx);
     float4 c10 = lerp(c010, c110, tx);
@@ -186,7 +186,7 @@ void NcnnInterpPack4CDHW_Impl(uint3 id)
     _InterpOutArr[int3((int)id.x, (int)id.y, outSlice)] = lerp(c0, c1, tz);
 }
 
-void NcnnInterp2xPack4_Impl(uint3 id)
+void AexisInterp2xPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _InterpOutArr.GetDimensions(ow, oh, od);
@@ -223,7 +223,7 @@ void NcnnInterp2xPack4_Impl(uint3 id)
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = v;
 }
 
-void NcnnInterp2xNearestPack4_Impl(uint3 id)
+void AexisInterp2xNearestPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _InterpNnOutArr.GetDimensions(ow, oh, od);
@@ -238,7 +238,7 @@ void NcnnInterp2xNearestPack4_Impl(uint3 id)
     _InterpNnOutArr[int3((int)id.x, (int)id.y, p)] = _InterpNnInArr[int3(sx, sy, p)];
 }
 
-void NcnnInterpDown2Pack4_Impl(uint3 id)
+void AexisInterpDown2Pack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _InterpDownOutArr.GetDimensions(ow, oh, od);
@@ -275,7 +275,7 @@ void NcnnInterpDown2Pack4_Impl(uint3 id)
     _InterpDownOutArr[int3((int)id.x, (int)id.y, p)] = v;
 }
 
-void NcnnInterpDown2NearestPack4_Impl(uint3 id)
+void AexisInterpDown2NearestPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _InterpDownNnOutArr.GetDimensions(ow, oh, od);
@@ -290,7 +290,7 @@ void NcnnInterpDown2NearestPack4_Impl(uint3 id)
     _InterpDownNnOutArr[int3((int)id.x, (int)id.y, p)] = _InterpDownNnInArr[int3(sx, sy, p)];
 }
 
-void NcnnPaddingPack4_Impl(uint3 id)
+void AexisPaddingPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _PadOutArr.GetDimensions(ow, oh, od);
@@ -333,7 +333,7 @@ void NcnnPaddingPack4_Impl(uint3 id)
     _PadOutArr[int3((int)id.x, (int)id.y, p)] = _PadInArr[int3(sx, sy, sp)];
 }
 
-void NcnnPoolingPack4_Impl(uint3 id)
+void AexisPoolingPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _PoolOutArr.GetDimensions(ow, oh, od);
@@ -389,7 +389,7 @@ void NcnnPoolingPack4_Impl(uint3 id)
     _PoolOutArr[int3(ox, oy, p)] = acc;
 }
 
-void NcnnPooling1DPack4_Impl(uint3 id)
+void AexisPooling1DPack4_Impl(uint3 id)
 {
     uint outW, outH, outPacks;
     _PoolOutArr.GetDimensions(outW, outH, outPacks);
@@ -433,7 +433,7 @@ void NcnnPooling1DPack4_Impl(uint3 id)
     _PoolOutArr[int3((int)id.x, 0, (int)id.z)] = value;
 }
 
-void NcnnPoolingPack4CDHW_Impl(uint3 id)
+void AexisPoolingPack4CDHW_Impl(uint3 id)
 {
     uint ow, oh, od;
     _Pool4DOutArr.GetDimensions(ow, oh, od);
@@ -540,7 +540,7 @@ void NcnnPoolingPack4CDHW_Impl(uint3 id)
     _Pool4DOutArr[int3(ox, oy, slice)] = acc;
 }
 
-void NcnnMaxPoolingIndPack4_Impl(uint3 id)
+void AexisMaxPoolingIndPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _MaxPoolOutArr.GetDimensions(ow, oh, od);
@@ -583,7 +583,7 @@ void NcnnMaxPoolingIndPack4_Impl(uint3 id)
     _MaxPoolIndicesArr[int3(ox, oy, p)] = bestIndex;
 }
 
-void NcnnMaxPoolingIndicesFromValuePack4_Impl(uint3 id)
+void AexisMaxPoolingIndicesFromValuePack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _MaxPoolIndicesArr.GetDimensions(ow, oh, od);
@@ -624,7 +624,7 @@ void NcnnMaxPoolingIndicesFromValuePack4_Impl(uint3 id)
     _MaxPoolIndicesArr[int3(ox, oy, p)] = bestIndex;
 }
 
-void NcnnMaxUnPoolingPack4_Impl(uint3 id)
+void AexisMaxUnPoolingPack4_Impl(uint3 id)
 {
     uint ow, oh, od;
     _MaxUnpoolOutArr.GetDimensions(ow, oh, od);
@@ -686,7 +686,7 @@ void NcnnMaxUnPoolingPack4_Impl(uint3 id)
     _MaxUnpoolOutArr[int3(x, y, p)] = outValue;
 }
 
-void NcnnSoftmaxChannelPack4_Impl(uint3 id)
+void AexisSoftmaxChannelPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _SoftmaxOutArr.GetDimensions(w, h, d);
@@ -719,7 +719,7 @@ void NcnnSoftmaxChannelPack4_Impl(uint3 id)
             float4 t = _SoftmaxInArr[int3((int)id.x, (int)id.y, ip2)];
             for (int lane = 0; lane < 4; lane++)
             {
-                if (NcnnReadLane(t, lane) == maxv)
+                if (AexisReadLane(t, lane) == maxv)
                 {
                     firstIndex = ip2 * 4 + lane;
                     found = true;
@@ -729,7 +729,7 @@ void NcnnSoftmaxChannelPack4_Impl(uint3 id)
         }
         float4 hard = 0.0;
         for (int outLane = 0; outLane < 4; outLane++)
-            NcnnWriteLane(hard, outLane, p * 4 + outLane == firstIndex ? 1.0 : 0.0);
+            AexisWriteLane(hard, outLane, p * 4 + outLane == firstIndex ? 1.0 : 0.0);
         _SoftmaxOutArr[int3((int)id.x, (int)id.y, p)] = hard;
         return;
     }
@@ -740,7 +740,7 @@ void NcnnSoftmaxChannelPack4_Impl(uint3 id)
     _SoftmaxOutArr[int3((int)id.x, (int)id.y, p)] = o;
 }
 
-void NcnnUnaryOpPack4_Impl(uint3 id)
+void AexisUnaryOpPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _UnaryOutArr.GetDimensions(w, h, d);
@@ -792,7 +792,7 @@ void NcnnUnaryOpPack4_Impl(uint3 id)
     _UnaryOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 
-void NcnnTriluPack4_Impl(uint3 id)
+void AexisTriluPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _TriluOutArr.GetDimensions(w, h, d);
@@ -807,7 +807,7 @@ void NcnnTriluPack4_Impl(uint3 id)
     _TriluOutArr[coordinate] = keep ? _TriluInArr[coordinate] : 0.0;
 }
 
-void NcnnBinaryOpPack4_Impl(uint3 id)
+void AexisBinaryOpPack4_Impl(uint3 id)
 {
     uint w, h, d;
     _BinaryOutArr.GetDimensions(w, h, d);
@@ -818,10 +818,10 @@ void NcnnBinaryOpPack4_Impl(uint3 id)
     float4 a = _BinaryA[int3((int)id.x, (int)id.y, p)];
     float4 b = _BinaryWithScalar != 0 ? _BinaryScalar : _BinaryB[int3((int)id.x, (int)id.y, p)];
 
-    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
+    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = AexisApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
-void NcnnBinaryOpPack4Broadcast_Impl(uint3 id)
+void AexisBinaryOpPack4Broadcast_Impl(uint3 id)
 {
     uint w, h, d;
     _BinaryOutArr.GetDimensions(w, h, d);
@@ -860,10 +860,10 @@ void NcnnBinaryOpPack4Broadcast_Impl(uint3 id)
     else if (broadcastMode == 8)
         b = b.xxxx;
 
-    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
+    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = AexisApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
-void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id)
+void AexisBinaryOpPack4BufferScalar_Impl(uint3 id)
 {
     uint w, h, d;
     _BinaryOutArr.GetDimensions(w, h, d);
@@ -877,10 +877,10 @@ void NcnnBinaryOpPack4BufferScalar_Impl(uint3 id)
     float4 a = _BinaryPack4BufferScalarMode == 1 ? scalar : tex;
     float4 b = _BinaryPack4BufferScalarMode == 1 ? tex : scalar;
 
-    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
+    _BinaryOutArr[int3((int)id.x, (int)id.y, p)] = AexisApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
-void NcnnBinaryOpPack4ChannelVectorTex_Impl(uint3 id)
+void AexisBinaryOpPack4ChannelVectorTex_Impl(uint3 id)
 {
     uint w, h, d;
     _BinaryOutArr.GetDimensions(w, h, d);
@@ -921,10 +921,10 @@ void NcnnBinaryOpPack4ChannelVectorTex_Impl(uint3 id)
     float4 a = _BinaryPack4ChannelVectorMode == 1 ? vec : tex;
     float4 b = _BinaryPack4ChannelVectorMode == 1 ? tex : vec;
 
-    _BinaryOutArr[int3((int)id.x, (int)id.y, slice)] = NcnnApplyBinaryOp4(a, b, _BinaryOpType);
+    _BinaryOutArr[int3((int)id.x, (int)id.y, slice)] = AexisApplyBinaryOp4(a, b, _BinaryOpType);
 }
 
-void NcnnBinaryOpScalarSingleBroadcast_Impl(uint3 id)
+void AexisBinaryOpScalarSingleBroadcast_Impl(uint3 id)
 {
     uint w, h, d;
     _BinaryOutArr.GetDimensions(w, h, d);
@@ -971,11 +971,11 @@ void NcnnBinaryOpScalarSingleBroadcast_Impl(uint3 id)
 
     float a = _BinaryA[aCoord].x;
     float b = _BinaryB[bCoord].x;
-    float o = NcnnApplyBinaryOpScalar(a, b, _BinaryOpType);
+    float o = AexisApplyBinaryOpScalar(a, b, _BinaryOpType);
     _BinaryOutArr[int3(x, y, (int)id.z)] = float4(o, 0.0, 0.0, 0.0);
 }
 
-void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id)
+void AexisCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id)
 {
     uint ow, oh, od;
     _CodeFormerMinEncodingArr.GetDimensions(ow, oh, od);
@@ -1007,7 +1007,7 @@ void NcnnCodeFormerMinEncodingFromSoftOneHot_Impl(uint3 id)
     _CodeFormerMinEncodingArr[int3(outX, outY, (int)id.z)] = float4(oneHot, 0.0, 0.0, 0.0);
 }
 
-void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id)
+void AexisCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id)
 {
     uint ow, oh, od;
     _CodeFormerMinEncodingArr.GetDimensions(ow, oh, od);
@@ -1038,7 +1038,7 @@ void NcnnCodeFormerMinEncodingFromSoftOneHotLinearMat_Impl(uint3 id)
     float oneHot = outX == bestIndex ? 1.0 : 0.0;
     _CodeFormerMinEncodingArr[int3(outX, outY, (int)id.z)] = float4(oneHot, 0.0, 0.0, 0.0);
 }
-void NcnnCopyToPack4_Impl(uint3 id)
+void AexisCopyToPack4_Impl(uint3 id)
 {
     if (id.x >= (uint)_CopyToSrcW || id.y >= (uint)_CopyToSrcH || id.z >= (uint)(_CopyToSrcD * _CopyToDstPacks))
         return;
@@ -1058,14 +1058,14 @@ void NcnnCopyToPack4_Impl(uint3 id)
         int srcChannel = dstChannel - _CopyToOffsetC;
         if (dstChannel < _CopyToDstC && srcChannel >= 0 && srcChannel < _CopyToSrcC)
         {
-            float sourceValue = NcnnReadPack4ChannelCDHW(
+            float sourceValue = AexisReadPack4ChannelCDHW(
                 _CopyToSrcArr,
                 (int)id.x,
                 (int)id.y,
                 srcZ,
                 srcChannel,
                 _CopyToSrcC);
-            NcnnWriteLane(value, lane, sourceValue);
+            AexisWriteLane(value, lane, sourceValue);
         }
     }
     _CopyToOutArr[int3(dstX, dstY, dstSlice)] = value;
