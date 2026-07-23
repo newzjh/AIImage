@@ -398,10 +398,23 @@ public static class NcnnDebugRunner
     {
         var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
         if (!string.IsNullOrWhiteSpace(configured))
-            return Path.GetFullPath(configured);
+            return Qwen35ModelDirectoryResolver.Resolve(configured, fallbackModelDirectory);
         if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory))
-            return streamingAssetsDirectory;
+            return Qwen35ModelDirectoryResolver.Resolve(streamingAssetsDirectory, fallbackModelDirectory);
         return Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", fallbackModelDirectory);
+    }
+
+    private static string ResolveQwen35ImagePath(string projectRoot)
+    {
+        var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
+        if (!string.IsNullOrWhiteSpace(configured))
+            return Path.GetFullPath(configured);
+
+        var baselineImage = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        if (File.Exists(baselineImage))
+            return baselineImage;
+
+        return Path.Combine(projectRoot, "ref", "03.jpg");
     }
 
     [MenuItem("Tools/AIImage/Run YOLO + DeepFillV2 Debug")]
@@ -2743,17 +2756,23 @@ public static class NcnnDebugRunner
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
         var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
-        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
-        if (string.IsNullOrWhiteSpace(imagePath))
-            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var imagePath = ResolveQwen35ImagePath(projectRoot);
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MULTIMODAL_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_multimodal_generation.json");
         var referencePath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "reference_cli_validation.json");
-        var reference = JObject.Parse(File.ReadAllText(referencePath));
+        JObject reference = null;
+        string referenceError = null;
+        if (File.Exists(referencePath))
+        {
+            try { reference = JObject.Parse(File.ReadAllText(referencePath)); }
+            catch (Exception exception) { referenceError = exception.Message; }
+        }
         var prompt = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE_PROMPT");
         if (string.IsNullOrWhiteSpace(prompt))
-            prompt = (string)reference["prompt"];
+            prompt = reference == null
+                ? "Describe the image accurately."
+                : (string)reference["prompt"];
         var maxNewTokens = 1;
         if (int.TryParse(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MAX_NEW_TOKENS"), out var configuredMax))
             maxNewTokens = Mathf.Clamp(configuredMax, 1, 512);
@@ -2839,6 +2858,10 @@ public static class NcnnDebugRunner
         sampleMemory("start");
         try
         {
+            if (requireOcrMarkers && reference == null)
+                throw new InvalidOperationException(
+                    "AIIMAGE_QWEN35_REQUIRE_OCR_MARKERS=1 requires the offline reference report: " + referencePath);
+
             var stageTimer = Stopwatch.StartNew();
             using (var runner = new Qwen35Runner(modelDir, maxNewTokens))
             {
@@ -2915,7 +2938,7 @@ public static class NcnnDebugRunner
                     }
                 }
 
-                if (reference["marker_group_hits"] is JArray groups)
+                if (reference != null && reference["marker_group_hits"] is JArray groups)
                 {
                     markerGroupCount = groups.Count;
                     for (var groupIndex = 0; groupIndex < groups.Count; groupIndex++)
@@ -2978,6 +3001,9 @@ public static class NcnnDebugRunner
             ["image"] = imagePath,
             ["image_sha256"] = File.Exists(imagePath) ? ComputeQwen35Sha256(imagePath) : string.Empty,
             ["prompt"] = prompt,
+            ["reference_report"] = referencePath,
+            ["reference_report_available"] = reference != null,
+            ["reference_report_error"] = referenceError ?? string.Empty,
             ["max_new_tokens"] = maxNewTokens,
             ["require_ocr_markers"] = requireOcrMarkers,
             ["generated_token_ids"] = generatedIds,
@@ -3051,9 +3077,7 @@ public static class NcnnDebugRunner
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
         var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
-        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
-        if (string.IsNullOrWhiteSpace(imagePath))
-            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var imagePath = ResolveQwen35ImagePath(projectRoot);
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_ASYNC_MULTIMODAL_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
         {
@@ -3377,8 +3401,16 @@ public static class NcnnDebugRunner
         report["strict_texture_execution"] = true;
         report["native_fallback"] = false;
         var manifestPath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Tools", "Qwen35NcnnBaseline", "reports", "qwen35_0_8b_compare_manifest.json");
+        var compareManifestAvailable = File.Exists(manifestPath);
+        var requireCompareManifest = string.Equals(
+            Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_REQUIRE_COMPARE_MANIFEST"),
+            "1",
+            StringComparison.Ordinal);
         var compareManifest = Qwen35CompareManifest.Load(manifestPath);
-        report["compare_manifest"] = compareManifest.ToJson();
+        var compareManifestReport = compareManifest.ToJson();
+        compareManifestReport["available"] = compareManifestAvailable;
+        compareManifestReport["required"] = requireCompareManifest;
+        report["compare_manifest"] = compareManifestReport;
         var catalog = Qwen35NetworkAssetCatalog.Create(contract);
         var catalogErrors = catalog.ValidateFiles();
         report["network_asset_catalog"] = new JObject
@@ -3402,7 +3434,12 @@ public static class NcnnDebugRunner
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath)));
         File.WriteAllText(outputPath, report.ToString(Aexis.Samples.Json.Formatting.Indented));
         Debug.Log("[Qwen35] contract report: " + outputPath + " valid=" + (contract.IsValid && registration));
-        if (!contract.IsValid || !registration || !shaderKernels || !compareManifest.IsContractValid || catalogErrors.Count != 0)
+        if (!contract.IsValid
+            || !registration
+            || !shaderKernels
+            || catalogErrors.Count != 0
+            || (compareManifestAvailable && !compareManifest.IsContractValid)
+            || (requireCompareManifest && !compareManifestAvailable))
             throw new InvalidOperationException("Qwen35 contract validation failed: " + string.Join("; ", contract.Errors));
         EditorApplication.Exit(0);
     }
@@ -3886,9 +3923,7 @@ public static class NcnnDebugRunner
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
         var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
-        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
-        if (string.IsNullOrWhiteSpace(imagePath))
-            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var imagePath = ResolveQwen35ImagePath(projectRoot);
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_PATCH_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_patch_probe.json");
@@ -4125,9 +4160,7 @@ public static class NcnnDebugRunner
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
         var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
-        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
-        if (string.IsNullOrWhiteSpace(imagePath))
-            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var imagePath = ResolveQwen35ImagePath(projectRoot);
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_PATCH_ATLAS_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_vision_patch_atlas_probe.json");
@@ -4293,9 +4326,7 @@ public static class NcnnDebugRunner
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
         var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
-        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
-        if (string.IsNullOrWhiteSpace(imagePath))
-            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var imagePath = ResolveQwen35ImagePath(projectRoot);
         var stopAfter = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_ENCODER_STOP_AFTER");
         if (string.IsNullOrWhiteSpace(stopAfter)) stopAfter = "52";
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_VISION_ENCODER_REPORT");
@@ -4501,9 +4532,7 @@ public static class NcnnDebugRunner
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
         var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
-        var imagePath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE");
-        if (string.IsNullOrWhiteSpace(imagePath))
-            imagePath = Path.Combine(projectRoot, "ref", "ncnn_llm-main", "test.jpg");
+        var imagePath = ResolveQwen35ImagePath(projectRoot);
         var manifestPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_COMPARE_MANIFEST");
         if (string.IsNullOrWhiteSpace(manifestPath))
             manifestPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "qwen35_0_8b_compare_manifest.json");

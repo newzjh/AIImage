@@ -344,6 +344,25 @@ namespace AIImage.Qwen35
         }
     }
 
+    public static class Qwen35ModelDirectoryResolver
+    {
+        public static string Resolve(string directoryOrCollectionRoot, string modelDirectoryName)
+        {
+            if (string.IsNullOrWhiteSpace(directoryOrCollectionRoot))
+                return string.Empty;
+
+            var root = Path.GetFullPath(directoryOrCollectionRoot);
+            if (string.IsNullOrWhiteSpace(modelDirectoryName)
+                || File.Exists(Path.Combine(root, "model.json")))
+            {
+                return root;
+            }
+
+            var candidate = Path.Combine(root, modelDirectoryName);
+            return Directory.Exists(candidate) ? candidate : root;
+        }
+    }
+
     internal static class Qwen35RuntimeTuning
     {
         private const long DefaultMobileLoadGcIntervalBytes = 0L;

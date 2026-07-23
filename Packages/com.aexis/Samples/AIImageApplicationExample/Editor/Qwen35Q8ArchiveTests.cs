@@ -236,6 +236,25 @@ public sealed class Qwen35Q8ArchiveTests
         }
     }
 
+    [Test]
+    public void ModelDirectoryResolverSelectsRequestedModelFromCollectionRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "aiimage-qwen35-models-" + Guid.NewGuid().ToString("N"));
+        var modelName = "qwen3.5_0.8b_mobile_q8";
+        var modelDirectory = Path.Combine(root, modelName);
+        Directory.CreateDirectory(modelDirectory);
+        try
+        {
+            File.WriteAllText(Path.Combine(modelDirectory, "model.json"), "{}");
+            Assert.That(Qwen35ModelDirectoryResolver.Resolve(root, modelName), Is.EqualTo(modelDirectory));
+            Assert.That(Qwen35ModelDirectoryResolver.Resolve(modelDirectory, "other"), Is.EqualTo(modelDirectory));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static MemoryStream BuildRawNcnnMat(float[] values)
     {
         var stream = new MemoryStream();

@@ -669,17 +669,21 @@ public sealed class MainView2 : BasePageView
 
     private static string ResolveQwen35ModelDirectory()
     {
+        const string mobileModelDirectoryName = "qwen3.5_0.8b_mobile_q8";
         var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
         if (!string.IsNullOrWhiteSpace(configured))
-            return Path.GetFullPath(configured);
+            return Qwen35ModelDirectoryResolver.Resolve(configured, mobileModelDirectoryName);
 
-        var mobileDirectory = Path.Combine(Application.persistentDataPath, "qwen3.5_0.8b_mobile_q8");
+        var mobileDirectory = Path.Combine(Application.persistentDataPath, mobileModelDirectoryName);
         if (HasQwen35ModelPayload(mobileDirectory))
             return mobileDirectory;
 
-        if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory)
-            && HasQwen35ModelPayload(streamingAssetsDirectory))
-            return streamingAssetsDirectory;
+        if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory))
+        {
+            var deployedDirectory = Qwen35ModelDirectoryResolver.Resolve(streamingAssetsDirectory, mobileModelDirectoryName);
+            if (HasQwen35ModelPayload(deployedDirectory))
+                return deployedDirectory;
+        }
 
 #if UNITY_EDITOR
         var projectDirectory = Path.GetFullPath(Path.Combine(
