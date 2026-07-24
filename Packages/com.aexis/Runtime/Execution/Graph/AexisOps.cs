@@ -3064,7 +3064,7 @@ namespace Aexis.Execution
             Dispatch3D(cmd, _kWindowUnpartitionPack4, output.width, output.height, Mathf.Max(1, outD * Mathf.CeilToInt(outC / 4f)), 8, 8);
         }
 
-        public void ReshapePack4ToScalar2D(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, RenderTexture output)
+        public void ReshapePack4ToScalar2D(RenderTexture input, int inW, int inH, int inD, int inC, int inDims, RenderTexture output, bool inputPack4Linear = false)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -3073,12 +3073,13 @@ namespace Aexis.Execution
             _cs.SetInt("_ReshapePack4ToScalar2DInD", inD);
             _cs.SetInt("_ReshapePack4ToScalar2DInC", inC);
             _cs.SetInt("_ReshapePack4ToScalar2DInDims", inDims);
+            _cs.SetInt("_ReshapePack4ToLinearMatInputPack4Linear", inputPack4Linear ? 1 : 0);
             _cs.SetTexture(_kReshapePack4ToScalar2D, "_TexIn0Arr", input);
             _cs.SetTexture(_kReshapePack4ToScalar2D, "_TexOut0Arr", output);
             Dispatch3D(_kReshapePack4ToScalar2D, output.width, output.height, ResolveRenderTextureDispatchDepth(output, 1), 8, 8);
         }
 
-        public void ReshapePack4ToScalar2D(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, ComputeTexture output)
+        public void ReshapePack4ToScalar2D(CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int inC, int inDims, ComputeTexture output, bool inputPack4Linear = false)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (input == null) throw new ArgumentNullException(nameof(input));
@@ -3088,6 +3089,7 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInD", inD);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInC", inC);
             cmd.SetComputeIntParam(_cs, "_ReshapePack4ToScalar2DInDims", inDims);
+            cmd.SetComputeIntParam(_cs, "_ReshapePack4ToLinearMatInputPack4Linear", inputPack4Linear ? 1 : 0);
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_TexIn0Arr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kReshapePack4ToScalar2D, "_TexOut0Arr", output.nameID);
             Dispatch3D(cmd, _kReshapePack4ToScalar2D, output.width, output.height, ResolveComputeTextureDispatchDepth(output, 1), 8, 8);
@@ -4533,6 +4535,12 @@ namespace Aexis.Execution
             _cs.SetInt("_SoftmaxPack4CDHWH", h);
             _cs.SetInt("_SoftmaxAxis", axis);
             _cs.SetInt("_SoftmaxMode", mode);
+            // Unity's reflection keeps the shared Pack4 texture declarations
+            // live for this kernel as well as its dedicated Softmax bindings.
+            // Bind both names to the same Pack4 RT so a fresh CodeFormer
+            // session never relies on state left by a previous dispatch.
+            _cs.SetTexture(_kSoftmaxPack4LinearMat2D, "_TexIn0Arr", input);
+            _cs.SetTexture(_kSoftmaxPack4LinearMat2D, "_TexOut0Arr", output);
             _cs.SetTexture(_kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWInArr", input);
             _cs.SetTexture(_kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWOutArr", output);
             Dispatch2D(_kSoftmaxPack4LinearMat2D, output.width, output.height, 8, 8);
@@ -4547,6 +4555,8 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, "_SoftmaxPack4CDHWH", h);
             cmd.SetComputeIntParam(_cs, "_SoftmaxAxis", axis);
             cmd.SetComputeIntParam(_cs, "_SoftmaxMode", mode);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4LinearMat2D, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4LinearMat2D, "_TexOut0Arr", output.nameID);
             cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWInArr", input.nameID);
             cmd.SetComputeTextureParam(_cs, _kSoftmaxPack4LinearMat2D, "_SoftmaxPack4CDHWOutArr", output.nameID);
             Dispatch2D(cmd, _cs, _kSoftmaxPack4LinearMat2D, output.width, output.height, 8, 8);

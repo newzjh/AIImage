@@ -275,12 +275,14 @@ namespace Aexis.Execution
             else
                 return false;
 
-            // A Pack4-linear input must stay in the Pack4 matrix contract.  The
-            // shader reads the four logical input values from each texel; routing
-            // it through the scalar kernel would silently reinterpret width=K/4.
-            var usePack4LinearMat = (srcIsStrictLinear || srcIsPack4Linear)
+            var usePack4LinearMat = owner.UsesFp16ActivationStorage
+                && (srcIsStrictLinear || srcIsPack4Linear)
                 && outLogicalShape.dims == 2
-                && (ip.outFeatures & 3) == 0;
+                && (ip.outFeatures & 3) == 0
+                && !owner.PreserveLegacyFp32Execution
+                && !owner.UseLegacyPack4AttentionLayout
+                && !HasDirectSoftmaxConsumer(owner, layer)
+                && !owner.RequiresFp32SensitiveOutputStorage(layer);
             if (srcIsPack4Linear && !usePack4LinearMat)
                 return false;
             var useStrictLinearMat = srcIsStrictLinear && !usePack4LinearMat;
@@ -447,12 +449,14 @@ namespace Aexis.Execution
             else
                 return false;
 
-            // Keep Pack4-linear matrices in their native texture layout.  This
-            // is required for both immediate RT and CommandBuffer inference and
-            // never materializes an activation into a ComputeBuffer.
-            var usePack4LinearMat = (srcIsStrictLinear || srcIsPack4Linear)
+            var usePack4LinearMat = owner.UsesFp16ActivationStorage
+                && (srcIsStrictLinear || srcIsPack4Linear)
                 && logicalShape.dims == 2
-                && (ip.outFeatures & 3) == 0;
+                && (ip.outFeatures & 3) == 0
+                && !owner.PreserveLegacyFp32Execution
+                && !owner.UseLegacyPack4AttentionLayout
+                && !HasDirectSoftmaxConsumer(owner, layer)
+                && !owner.RequiresFp32SensitiveOutputStorage(layer);
             if (srcIsPack4Linear && !usePack4LinearMat)
                 return false;
             var useStrictLinearMat = srcIsStrictLinear && !usePack4LinearMat;

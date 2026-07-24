@@ -1045,7 +1045,8 @@ namespace Aexis.Execution
                     1,
                     1,
                     2,
-                    materialized);
+                    materialized,
+                    inputPack4Linear: true);
             }
             else if (AexisGraphSession.IsStrictLinearMatTexture(source))
             {
@@ -1091,7 +1092,8 @@ namespace Aexis.Execution
                     1,
                     1,
                     2,
-                    materialized);
+                    materialized,
+                    inputPack4Linear: true);
             }
             else if (AexisGraphSession.IsStrictLinearMatTexture(source))
             {

@@ -27,6 +27,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
     private const string GeneratorForceBufferNamesEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_FORCE_BUFFER_NAMES";
     private const string GeneratorUseCommandBufferEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_USE_COMMAND_BUFFER";
     private const string GeneratorUseAsyncCommandBufferEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_USE_ASYNC_COMMAND_BUFFER";
+    private const string GeneratorCommandBufferStopAfterEnvVar = "AIIMAGE_CODEFORMER_GENERATOR_COMMAND_BUFFER_STOP_AFTER";
 
     private readonly struct Affine2D
     {
@@ -363,10 +364,20 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             if (enableDebugDump)
             {
                 dumpDir ??= CreateDumpDir();
-                _encoderRepro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
+                // Production Pack4 inference may dump texture results after execution,
+                // but texture-vs-buffer comparisons are an explicit DebugOracle feature.
+                // Do not let a diagnostic flag introduce a Buffer/CPU oracle request.
+                if (_encoderRepro.IsDebugOracleExecution)
                 {
-                    "Conv_759"
-                };
+                    _encoderRepro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
+                    {
+                        "Conv_759"
+                    };
+                }
+                else
+                {
+                    _encoderRepro.DebugCompareTextureLayers = null;
+                }
                 _encoderRepro.DebugLog = line =>
                 {
                     try
@@ -519,15 +530,22 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             HashSet<string> generatorPinned = null;
             if (enableDebugDump)
             {
-                _generatorRepro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
+                if (_generatorRepro.IsDebugOracleExecution)
                 {
-                    "Conv_939",
-                    "Conv_953",
-                    "Conv_967",
-                    "Conv_983",
-                    "Conv_997",
-                    "Conv_1010"
-                };
+                    _generatorRepro.DebugCompareTextureLayers = new HashSet<string>(StringComparer.Ordinal)
+                    {
+                        "Conv_939",
+                        "Conv_953",
+                        "Conv_967",
+                        "Conv_983",
+                        "Conv_997",
+                        "Conv_1010"
+                    };
+                }
+                else
+                {
+                    _generatorRepro.DebugCompareTextureLayers = null;
+                }
                 _generatorRepro.DebugLog = line =>
                 {
                     try
@@ -799,6 +817,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         var cmdInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal);
         RenderTexture outputReadbackRt = null;
         ComputeTexture outputCmd = null;
+        var outputBlobName = Environment.GetEnvironmentVariable(GeneratorCommandBufferStopAfterEnvVar);
+        if (string.IsNullOrWhiteSpace(outputBlobName))
+            outputBlobName = "out";
         try
         {
             foreach (var kv in textureInputs)
@@ -827,8 +848,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 textureInputShapes,
                 out var outputShape,
                 pinnedNames,
-                "out",
-                null);
+                outputBlobName,
+                outputBlobName);
             if (outputCmd == null)
                 return null;
 
@@ -846,11 +867,27 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             cmdInputs.Clear();
 
             if (_useGeneratorAsyncCommandBufferThisRun)
+            {
+                // The output copy is recorded on the async compute queue, while
+                // clipping and RGB conversion below run on the graphics queue.
+                // Make that dependency explicit: DebugSyncGpu only submits work to
+                // the graphics queue and cannot by itself wait for async compute.
+                var completionFence = cmd.CreateGraphicsFence(
+                    GraphicsFenceType.AsyncQueueSynchronisation,
+                    SynchronisationStageFlags.AllGPUOperations);
                 Graphics.ExecuteCommandBufferAsync(cmd, ComputeQueueType.Default);
+                Graphics.WaitOnAsyncGraphicsFence(completionFence);
+            }
             else
+            {
                 Graphics.ExecuteCommandBuffer(cmd);
+            }
 
-            _generatorRepro.Ops.DebugSyncGpu();
+            // Texture dumps are explicitly diagnostic and can synchronize through
+            // the debug readback helper. Production Pack4 execution remains
+            // texture-only and relies on the queue fence above.
+            if (enableDebugDump)
+                _generatorRepro.Ops.DebugSyncGpu();
             ct.ThrowIfCancellationRequested();
 
             if (enableDebugDump)

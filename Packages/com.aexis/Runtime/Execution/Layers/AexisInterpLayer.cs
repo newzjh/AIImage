@@ -267,6 +267,15 @@ namespace Aexis.Execution
 
             ResolveCmdTargetShape(layer, shapes, blobs, srcShape, sx, sy, out var outW, out var outH, out var outD);
             var outShape = ResolveCmdOutputShape(srcShape, outW, outH, outD);
+            owner.DebugLog?.Invoke(
+                "[CmdTexture][Interp]"
+                + " | layer=" + layer.name
+                + " | src=d" + srcShape.dims + ":" + srcShape.w + "x" + srcShape.h + "x" + srcShape.d + "x" + srcShape.c
+                + " | srcStorage=d" + srcContract.StorageShape.dims + ":" + srcContract.StorageShape.w + "x" + srcContract.StorageShape.h + "x" + srcContract.StorageShape.d + "x" + srcContract.StorageShape.c
+                + " | srcTexture=" + src.width + "x" + src.height + "x" + src.texture.depth
+                + " | packs=" + srcContract.Packs
+                + " | out=d" + outShape.dims + ":" + outShape.w + "x" + outShape.h + "x" + outShape.d + "x" + outShape.c
+                + " | scale=" + sx + "x" + sy);
 
             if (IsCmdInterpNoop(srcShape, outShape))
             {
@@ -336,11 +345,30 @@ namespace Aexis.Execution
             if (!alignCornersPack && Mathf.Abs(sx - 2f) < 1e-3f && Mathf.Abs(sy - 2f) < 1e-3f)
             {
                 var outArr = owner.RentTempArray(cmd, src.width * 2, src.height * 2, src.packs, RenderTextureFormat.ARGBHalf);
-                if (resizeType == 1)
-                    owner.Ops.Interp2xNearestPack4(cmd, src.texture, src.packs, outArr, coordinateTransformModePack);
-                else
-                    owner.Ops.Interp2xPack4(cmd, src.texture, src.packs, outArr, coordinateTransformModePack);
-                blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef { texture = outArr, width = src.width * 2, height = src.height * 2, packs = src.packs, refs = 1, owned = true };
+                owner.Ops.InterpPack4CDHW(
+                    cmd,
+                    src.texture,
+                    srcShape.w,
+                    srcShape.h,
+                    1,
+                    srcContract.Packs,
+                    outShape.w,
+                    outShape.h,
+                    1,
+                    srcContract.Packs,
+                    outShape.w / (float)Mathf.Max(1, srcShape.w),
+                    outShape.h / (float)Mathf.Max(1, srcShape.h),
+                    1f,
+                    resizeType == 1 ? 1 : 2,
+                    alignCorners: false,
+                    output: outArr,
+                    coordinateTransformMode: coordinateTransformModePack);
+                blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(
+                    outArr,
+                    outShape,
+                    outShape,
+                    owned: true,
+                    blobName: layer.topNames[0]);
                 if (shapes != null)
                     shapes[layer.topNames[0]] = outShape;
                 owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
