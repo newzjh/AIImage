@@ -737,16 +737,18 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             for (var ty = 0; ty < runInH; ty += Mathf.Max(1, effectiveTileSize))
             {
                 CommandBuffer rowCmd = null;
-                if (_useCmdThisRun)
+                try
                 {
-                    rowCmd = new CommandBuffer();
-                    rowCmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
-                    rowCmd.name = "CmdTileRow_" + ty;
-                }
+                    if (_useCmdThisRun)
+                    {
+                        rowCmd = new CommandBuffer();
+                        rowCmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
+                        rowCmd.name = "CmdTileRow_" + ty;
+                    }
 
-                for (var tx = 0; tx < runInW; tx += Mathf.Max(1, effectiveTileSize))
-                {
-                    ct.ThrowIfCancellationRequested();
+                    for (var tx = 0; tx < runInW; tx += Mathf.Max(1, effectiveTileSize))
+                    {
+                        ct.ThrowIfCancellationRequested();
 
                     var tw = Mathf.Min(effectiveTileSize, runInW - tx);
                     var th = Mathf.Min(effectiveTileSize, runInH - ty);
@@ -850,50 +852,59 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                         returnMs += swRet.ElapsedMilliseconds;
                     }
 
-                    tileIndex++;
-                }
+                        tileIndex++;
+                        var tileProgress = Mathf.Lerp(0.1f, 0.98f, (float)tileIndex / tileCount);
+                        ReportProgress(tileProgress, "推理分块 " + tileIndex + "/" + tileCount);
 
-                if (_useCmdThisRun)
+                        // Recording one tile can take long enough to starve the editor event loop on large inputs.
+                        // Keep the CommandBuffer and Pack4 texture work intact, but let UI/cancellation run between tiles.
+                        var sw = Stopwatch.StartNew();
+                        await YieldForGpuProgressAsync();
+                        yieldMs += sw.ElapsedMilliseconds;
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    if (_useCmdThisRun)
+                    {
+                        var sC = Stopwatch.StartNew();
+                        Graphics.ExecuteCommandBufferAsync(rowCmd, ComputeQueueType.Default);
+                        try
+                        {
+                            UnityEngine.Debug.Log("[RealESRGAN(repro)] submitted command buffer row | y=" + ty + " | tiles_done=" + tileIndex + "/" + tileCount);
+                        }
+                        catch
+                        {
+                        }
+                        rowCmd.Dispose();
+                        rowCmd = null;
+                        cmdMs += sC.ElapsedMilliseconds;
+                    }
+
+                    if (Application.isBatchMode)
+                    {
+                        try
+                        {
+                            UnityEngine.Debug.Log("[RealESRGAN(repro)] row gpu sync start | y=" + ty + " | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate"));
+                        }
+                        catch
+                        {
+                        }
+
+                        _repro?.Ops?.DebugSyncGpu();
+
+                        try
+                        {
+                            UnityEngine.Debug.Log("[RealESRGAN(repro)] row gpu sync done | y=" + ty + " | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate"));
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                finally
                 {
-                    var sC = Stopwatch.StartNew();
-                    Graphics.ExecuteCommandBufferAsync(rowCmd, ComputeQueueType.Default);
-                    try
-                    {
-                        UnityEngine.Debug.Log("[RealESRGAN(repro)] submitted command buffer row | y=" + ty + " | tiles_done=" + tileIndex + "/" + tileCount);
-                    }
-                    catch
-                    {
-                    }
-                    rowCmd.Dispose();
-                    cmdMs += sC.ElapsedMilliseconds;
+                    rowCmd?.Dispose();
                 }
-
-                if (Application.isBatchMode)
-                {
-                    try
-                    {
-                        UnityEngine.Debug.Log("[RealESRGAN(repro)] row gpu sync start | y=" + ty + " | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate"));
-                    }
-                    catch
-                    {
-                    }
-
-                    _repro?.Ops?.DebugSyncGpu();
-
-                    try
-                    {
-                        UnityEngine.Debug.Log("[RealESRGAN(repro)] row gpu sync done | y=" + ty + " | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate"));
-                    }
-                    catch
-                    {
-                    }
-                }
-
-                var tileProgress = (float)tileIndex / tileCount;
-                ReportProgress(tileProgress, "推理分块 " + (tileIndex + 1) + "/" + tileCount);
-                var sw = Stopwatch.StartNew();
-                await YieldForGpuProgressAsync();
-                yieldMs += sw.ElapsedMilliseconds;
             }
 
             ReportProgress(0.98f, "后处理");
