@@ -94,7 +94,7 @@ session.Release();
 | `NcnnGraphSession.ForwardPack4` | 执行 Pack4 RenderTexture 推理 |
 | `NcnnGraphSession.Release` | 释放会话持有的 GPU 资源，允许重复调用 |
 
-生产路径必须保持 Pack4 RenderTexture 和 CommandBuffer 兼容的纹理流。不要因为某一层缺失而把普通推理回退到临时 ComputeBuffer；应补齐纹理实现或在严格模式下抛出可定位错误。
+生产路径必须保持 Pack4 RenderTexture 和 CommandBuffer 兼容的纹理流。不要因为某一层缺失而把普通推理回退到临时 ComputeBuffer；应补齐纹理实现或在严格模式下抛出可定位错误。对同时需要纹理和固定 Buffer 输入的 CommandBuffer 图，使用 `ForwardPack4WithFixedInputs`：固定 Buffer 只能在图边界由 GPU dispatch 上传为纹理（Embed token 使用精确 RFloat LinearMat），进入第一层后不允许保留或回退为 ComputeBuffer activation。
 
 ## 5. 完整应用样例
 
