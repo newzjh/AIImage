@@ -569,7 +569,16 @@ namespace Aexis.Execution
                 && source.aliasGroup != null
                 && source.aliasGroup.StartsWith("input:", StringComparison.Ordinal)
                 && IsVerifiedLinearMatTexture(source, request);
-            var isVerifiedLinearMatInput = IsVerifiedLinearMatTexture(source, request);
+            // Qwen's vision patch embed has one verified FP32 LinearMat image
+            // boundary before its Convolution3D Pack4 path.  Do not turn that
+            // narrowly-scoped native texture intake into a general FP32
+            // activation exception for an FP16 graph: token/index inputs must
+            // remain Int32 and use the Embed-specific proof above.
+            var isVerifiedLinearMatInput = IsVerifiedNativeFp32ImageInput(
+                source,
+                layer,
+                layers,
+                request);
             if (string.IsNullOrWhiteSpace(sourceName)
                 || source == null
                 || (!MatchesTarget(source, request) && !isExactTextureIndex && !isVerifiedLinearMatInput))
@@ -607,6 +616,43 @@ namespace Aexis.Execution
             node.executionPath = "external-pack4-input";
             node.outputs = outputs.ToArray();
             RegisterOutputs(descriptors, node.outputs);
+        }
+
+        private static bool IsVerifiedNativeFp32ImageInput(
+            AexisTexturePlanTensorDescriptor descriptor,
+            AexisGraphModel.Layer inputLayer,
+            IReadOnlyList<AexisGraphModel.Layer> layers,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!IsVerifiedLinearMatTexture(descriptor, request)
+                || !string.Equals(descriptor.logicalDtype, "Float32", StringComparison.Ordinal)
+                || inputLayer?.topNames == null
+                || layers == null)
+            {
+                return false;
+            }
+
+            // The native FP32 image boundary is intentionally limited to the
+            // Convolution3D patch embedding profile.  Every other FP32 input
+            // must match the requested activation dtype, while Embed token ids
+            // are admitted only by the exact Int32 index contract above.
+            foreach (var topName in inputLayer.topNames)
+            {
+                if (string.IsNullOrWhiteSpace(topName))
+                    continue;
+                foreach (var candidate in layers)
+                {
+                    if (candidate?.bottomNames == null || !candidate.bottomNames.Contains(topName))
+                        continue;
+                    var operatorName = string.IsNullOrWhiteSpace(candidate.typeName)
+                        ? candidate.type.ToString()
+                        : candidate.typeName;
+                    if (string.Equals(operatorName, "Convolution3D", StringComparison.Ordinal))
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private static List<AexisTexturePlanTensorDescriptor> ResolveInputs(

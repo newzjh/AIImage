@@ -2675,7 +2675,9 @@ namespace Aexis.Execution
                     || consumer.type == AexisLayerTypes.Gemm
                     || consumer.type == AexisLayerTypes.InnerProduct
                     || consumer.type == AexisLayerTypes.RMSNorm
-                    || consumer.type == AexisLayerTypes.Swish))
+                    || consumer.type == AexisLayerTypes.Swish
+                    || consumer.type == AexisLayerTypes.Sigmoid
+                    || consumer.type == AexisLayerTypes.BinaryOp))
             {
                 return true;
             }

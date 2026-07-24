@@ -659,9 +659,11 @@ namespace Aexis.Execution
             var canUseLowDimLinearConcat =
                 (firstShape.dims == 1 && tensorAxis == 0)
                 || (firstShape.dims == 2 && (tensorAxis == 0 || tensorAxis == 1));
+            var canUsePack4WidthConcat = firstShape.dims == 3 && tensorAxis == 0;
             var canUseLowDimStrictLinearConcat = canUseLowDimLinearConcat && IsStrictLinearLowDimTexture(parts[0], firstShape);
             var canUseExactPack4 = ((firstShape.dims == 3 || firstShape.dims == 4) && tensorAxis == concatChannelAxis)
-                || canUseLowDimLinearConcat;
+                || canUseLowDimLinearConcat
+                || canUsePack4WidthConcat;
 
             for (var i = 0; i < partShapes.Length; i++)
             {
@@ -719,6 +721,44 @@ namespace Aexis.Execution
 
             if (canUseExactPack4)
             {
+                if (canUsePack4WidthConcat)
+                {
+                    var outArr = owner.RentTempArray(
+                        cmd,
+                        outShape.w,
+                        outShape.h,
+                        parts[0].packs,
+                        AexisGraphSession.ResolveTensorTextureFormat(outShape.dims));
+                    var dstOffsetX = 0;
+                    for (var i = 0; i < parts.Length; i++)
+                    {
+                        var source = parts[i];
+                        for (var pack = 0; pack < source.packs; pack++)
+                        {
+                            cmd.CopyTexture(
+                                source.texture.nameID,
+                                pack,
+                                0,
+                                0,
+                                0,
+                                source.texture.width,
+                                source.texture.height,
+                                outArr.nameID,
+                                pack,
+                                0,
+                                dstOffsetX,
+                                0);
+                        }
+                        dstOffsetX += partShapes[i].w;
+                    }
+
+                    blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, outShape, outShape, owned: true);
+                    if (shapes != null)
+                        shapes[layer.topNames[0]] = outShape;
+                    owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+                    return;
+                }
+
                 if (canUseLowDimLinearConcat)
                 {
                     if (canUseLowDimStrictLinearConcat)

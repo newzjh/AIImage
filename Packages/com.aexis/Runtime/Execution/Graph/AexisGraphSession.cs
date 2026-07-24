@@ -2840,6 +2840,30 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node("Concat axis is outside the input rank.");
             var tensorAxis = MapNcnnAxisToTensorAxis(shapes[0].dims, axis);
             var channelAxis = shapes[0].dims == 4 ? 3 : 2;
+            if (shapes[0].dims == 3 && tensorAxis == 0)
+            {
+                var outputWidth = 0;
+                for (var index = 0; index < shapes.Length; index++)
+                {
+                    var shape = shapes[index];
+                    if (shape.dims != 3
+                        || shape.h != shapes[0].h
+                        || shape.d != shapes[0].d
+                        || shape.c != shapes[0].c
+                        || !HasStrictExactPack4Storage(inputs[index], shape))
+                    {
+                        return RejectStrictCommandBufferPack4Node(
+                            "Rank-three width Concat requires exact Pack4 inputs with matching height, depth, and channel descriptors.");
+                    }
+                    outputWidth += shape.w;
+                }
+
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    new BufferShape(3, outputWidth, shapes[0].h, 1, shapes[0].c),
+                    request,
+                    "command-buffer-pack4:concat-width");
+            }
             if (tensorAxis != channelAxis)
                 return RejectStrictCommandBufferPack4Node("Only channel-axis Concat has a verified CommandBuffer Pack4 path.");
 
@@ -5403,7 +5427,9 @@ namespace Aexis.Execution
             return consumer != null
                 && (consumer.type == AexisLayerTypes.Permute
                     || consumer.type == AexisLayerTypes.Gemm
-                    || consumer.type == AexisLayerTypes.InnerProduct);
+                    || consumer.type == AexisLayerTypes.InnerProduct
+                    || consumer.type == AexisLayerTypes.Sigmoid
+                    || consumer.type == AexisLayerTypes.BinaryOp);
         }
 
         // The CodeFormer generator reshapes a [W,H,D,C] Pack4 activation to
@@ -5602,15 +5628,24 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node("The loaded Gemm bias matrix is unavailable.");
 
             var output = new BufferShape(2, outputColumns, input.h, 1, 1);
-            var storage = outputColumns % 4 == 0
-                ? ResolvePack4LinearMatStorageShape(output)
-                : ResolveLinearMatStorageShape(output);
+            var pack4LinearOutput = outputColumns % 4 == 0;
+            // Keep the planner descriptor in lockstep with the verified tiled
+            // CommandBuffer Gemm path used for wide vocabulary projections.
+            var tiledPack4LinearOutput = pack4LinearOutput
+                && Mathf.CeilToInt(outputColumns / 4f) > GetMaxTextureSize();
+            var storage = tiledPack4LinearOutput
+                ? ResolvePack4TiledLinearMatStorageShape(output)
+                : pack4LinearOutput
+                    ? ResolvePack4LinearMatStorageShape(output)
+                    : ResolveLinearMatStorageShape(output);
             return AcceptStrictCommandBufferPack4Node(
                 layer,
                 output,
                 storage,
                 request,
-                outputColumns % 4 == 0
+                tiledPack4LinearOutput
+                    ? "command-buffer-pack4:gemm-linear-to-pack4-tiled-linear"
+                    : pack4LinearOutput
                     ? "command-buffer-pack4:gemm-linear-to-pack4-linear"
                     : "command-buffer-pack4:gemm-linear-mat");
         }
@@ -6315,7 +6350,7 @@ namespace Aexis.Execution
                     && storage[1] == cache.w
                     && storage[2] == cache.h
                     && storage[3] == 1
-                    && storage[4] == 4);
+                    && (storage[4] == 1 || storage[4] == 4));
         }
 
         private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferGatedDeltaRule(
@@ -10327,6 +10362,19 @@ namespace Aexis.Execution
                 var linearStorage = ResolveLinearMatStorageShape(logicalShape);
                 if (textureWidth == linearStorage.w && textureHeight == linearStorage.h)
                     return linearStorage;
+            }
+
+            if ((logicalShape.dims == 1 || logicalShape.dims == 2)
+                && dimension == TextureDimension.Tex2DArray
+                && textureDepth == 1
+                && textureWidth == Mathf.Max(1, logicalShape.w)
+                && textureHeight == (logicalShape.dims == 1 ? 1 : Mathf.Max(1, logicalShape.h)))
+            {
+                // Texture2DArray scalar uploads (for example Qwen causal masks)
+                // store one logical scalar in the x lane of each float4 texel.
+                // Preserve this scalar-Pack4 contract instead of collapsing its
+                // physical descriptor to rank two.
+                return new BufferShape(3, logicalShape.w, logicalShape.dims == 1 ? 1 : logicalShape.h, 1, 1);
             }
 
             if ((logicalShape.dims == 1 || logicalShape.dims == 2)
