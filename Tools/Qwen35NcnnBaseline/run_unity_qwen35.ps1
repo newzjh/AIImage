@@ -29,10 +29,24 @@ function Get-Sha256WithRetry([string]$Path, [int]$Attempts = 80, [int]$DelayMill
 
 $toolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($ModelDir)) {
-    $ModelDir = Join-Path $toolDir '_models\qwen3.5_0.8b'
+    $baselineModel = Join-Path $toolDir '_models\qwen3.5_0.8b'
+    $streamingFp32Model = Join-Path $ProjectPath 'Assets\StreamingAssets\QWEN35\qwen3.5_0.8b'
+    $streamingQ8Model = Join-Path $ProjectPath 'Assets\StreamingAssets\QWEN35\qwen3.5_0.8b_mobile_q8'
+    $ModelDir = if (Test-Path -LiteralPath $baselineModel) {
+        $baselineModel
+    } elseif (Test-Path -LiteralPath $streamingFp32Model) {
+        $streamingFp32Model
+    } else {
+        $streamingQ8Model
+    }
 }
 if ([string]::IsNullOrWhiteSpace($ImagePath)) {
-    $ImagePath = Join-Path $ProjectPath 'ref\ncnn_llm-main\test.jpg'
+    $baselineImage = Join-Path $ProjectPath 'ref\ncnn_llm-main\test.jpg'
+    $ImagePath = if (Test-Path -LiteralPath $baselineImage) {
+        $baselineImage
+    } else {
+        Join-Path $ProjectPath 'ref\03.jpg'
+    }
 }
 if ([string]::IsNullOrWhiteSpace($UnityReport)) {
     $UnityReport = Join-Path $toolDir 'reports\unity_multimodal_ocr_e2e.json'
